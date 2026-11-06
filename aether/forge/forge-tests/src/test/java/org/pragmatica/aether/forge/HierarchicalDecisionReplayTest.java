@@ -213,7 +213,7 @@ class HierarchicalDecisionReplayTest {
     private void replay(AetherNode receiver, Decision<?> decision) {
         var sender = cluster.getNode(decision.sender().id()).unwrap();
         assertThat(HierarchyAuthorityAcceptanceTest.runtime(sender).network()
-            .sendOutcome(receiver.self(), decision).await(REQUEST).unwrap().isSent()).isTrue();
+            .send(receiver.self(), decision).await(REQUEST).unwrap().isSent()).isTrue();
     }
 
     private void awaitValue(long revision) {

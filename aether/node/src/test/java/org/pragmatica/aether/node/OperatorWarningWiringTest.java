@@ -14,9 +14,36 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// read the assembly source with comments stripped and whitespace removed. They pin that the wiring is PRESENT; that
 /// the sink and scheduler actually run is shared by every other site and task in the node.
 class OperatorWarningWiringTest {
+    /// D1 item 9 (KVStore dispatcher design §3.5 R4): the sink carries the replay bit read on the raising thread, from the node's
+    /// own store, into the aggregator's hand-off entry.
     @Test
     void assembly_bindsOneSinkToThisNodesAggregator() {
-        assertThat(assemblyCode()).containsOnlyOnce("varoperatorWarningSink=OperatorWarningSink.handingOffTo(eventAggregator::onOperatorWarning);");
+        var code = assemblyCode();
+
+        assertThat(code).containsOnlyOnce("varoperatorWarningSink=operatorWarningSink(eventAggregator,kvStore::isReplaying);");
+        assertThat(code).containsOnlyOnce("returnOperatorWarningSink.handingOffTo(replaying,aggregator::onHandedOffWarning);");
+    }
+
+    /// D1 item 10 (KVStore dispatcher design §3.6): the `kv-dispatch-lagging` watch samples THIS node's store and raises on this node's
+    /// sink, once a second. `KvDispatchLagWatchTest` drives the watch itself.
+    @Test
+    void assembly_watchesTheNodeStoresDispatchLagOnThisNodesSink() {
+        var code = assemblyCode();
+
+        assertThat(code).containsOnlyOnce("varkvDispatchLagWatch=KvDispatchLagWatch.kvDispatchLagWatch(kvStore::deliveryMetrics,operatorWarningSink);");
+        assertThat(code).containsOnlyOnce("defer.accept(()->SharedScheduler.scheduleAtFixedRate(kvDispatchLagWatch::tick,KvDispatchLagWatch.TICK));");
+    }
+
+    /// v-2648 F5 (KVStore dispatcher design §3.6): the node store's dispatcher events (slow handler, read-ahead, failure) go to
+    /// the events object the store was built with, and that object is bound to THIS node's sink. Behaviour:
+    /// `AetherNodeKvDispatcherWiringBootTest.slowHandler_raisesKvDispatchSlowHandler_throughTheNodesSink`.
+    @Test
+    void assembly_bindsTheNodeStoresDispatcherEventsToThisNodesSink() {
+        var code = assemblyCode();
+
+        assertThat(code).containsOnlyOnce("varkvDispatchEvents=KvDispatchOperatorEvents.kvDispatchOperatorEvents();");
+        assertThat(code).containsOnlyOnce("kvDelivery(config,dispatcherSink,kvDispatchEvents)");
+        assertThat(code).containsOnlyOnce("kvDispatchEvents.operatorWarnings(operatorWarningSink);");
     }
 
     @Test
@@ -46,6 +73,13 @@ class OperatorWarningWiringTest {
         assertThat(assemblyCode()).containsOnlyOnce("signalReadyActivatingStorage(()->signalReadyAndWakePrefetch(nodeLifecycle::signalReady,storageSetups,nodeDraining),storageSetups,nodeDraining)");
     }
 
+    /// Know 73fd8d9759: a graceful stop that cannot seal what the sealer holds is reported to this node's sink, naming this node.
+    /// The sealer's tests hand it their own sink, so un-binding it here left them green.
+    @Test
+    void assembly_givesTheSinkToTheStreamSegmentSealer() {
+        assertThat(assemblyCode()).containsOnlyOnce("streamSegmentSealer.operatorWarnings(operatorWarningSink,config.self().id());");
+    }
+
     @Test
     void assembly_givesTheSinkToTheStreamConsumerManager() {
         assertThat(assemblyCode()).containsOnlyOnce("streamConsumerManager.setOperatorWarningSink(operatorWarningSink);");
@@ -56,6 +90,13 @@ class OperatorWarningWiringTest {
     @Test
     void assembly_givesTheSinkToNodeDeployment() {
         assertThat(assemblyCode()).containsOnlyOnce("nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);");
+    }
+
+    /// #1654: genesis seat warnings raised by the consensus engine reach this node's sink. Only a genesis with a dead seat
+    /// observes the bind, so un-binding it left every other test green.
+    @Test
+    void assembly_givesTheSinkToTheConsensusEngine() {
+        assertThat(assemblyCode()).containsOnlyOnce("clusterNode.useOperatorWarningSink(operatorWarningSink);");
     }
 
     /// #1996: request frames the transport drops at an offline-buffer flush reach the event stream only if the assembly routes
@@ -105,9 +146,9 @@ class OperatorWarningWiringTest {
         var code = assemblyCode();
 
         assertThat(code).containsOnlyOnce("spi.registerExtension(OperatorWarningSink.class,operatorWarningSink);");
-        // The node's operator-warning sink is the sixth argument; what follows it (the HEADER-mode flag admission needs, #1206) is pinned on its own.
+        // The node's operator-warning sink is the sixth argument; what follows it (the HEADER-mode flag admission needs, #1206, and the engine's apply-record flag, phase-3 B17) is pinned on its own.
         assertThat(code).containsOnlyOnce("BlueprintService.blueprintService(clusterNode,kvStore,repository,artifactStore,resourceProviderSetup.nodeComposite(),operatorWarningSink,");
-        assertThat(code).containsOnlyOnce("operatorWarningSink,config.appHttp().apiVersioningDetection().isHeaderMode());");
+        assertThat(code).containsOnlyOnce("operatorWarningSink,config.appHttp().apiVersioningDetection().isHeaderMode(),deploymentWiring.applyRecords());");
         assertThat(code).containsOnlyOnce("cause->raiseClusterEventsRefusal(operatorWarningSink,alertManager,cause)");
         // v1680 N-r3-1: the refusal is also a REST-visible alert, resolved when a corrected config commits the stream.
         assertThat(code).containsOnlyOnce("()->alertManager.clearInjected(OperatorWarningCode.CLUSTER_EVENTS_REGISTRATION_REFUSED.code())");
@@ -155,6 +196,13 @@ class OperatorWarningWiringTest {
 
     /// The assembly source (`AetherNode.java` plus `node/assembly/*.java`) with line comments removed and all whitespace
     /// stripped; each pin must match exactly once across that set. See [AssemblySource].
+    /// #2034 T22: once the aggregator is bound, each drain episode's departure push raises its events through THIS node's aggregator,
+    /// for the episode's subject. `ClusterEventAggregatorTest.DepartureEventsBinding` drives the bound observer itself.
+    @Test
+    void assembly_bindsTheDepartureObserverFactoryToThisNodesAggregator() {
+        assertThat(assemblyCode()).containsOnlyOnce("departurePushObserverRef.set(subject->DhtDeparturePush.departureEvents(eventAggregator,config.self(),subject));");
+    }
+
     private static String assemblyCode() {
         return AssemblySource.stripped();
     }

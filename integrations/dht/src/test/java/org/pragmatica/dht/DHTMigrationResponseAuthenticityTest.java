@@ -275,7 +275,7 @@ class DHTMigrationResponseAuthenticityTest {
             ids.forEach(ring::addNode);
 
             var node = dhtNode(id, memoryStorageEngine(), ring, CONFIG);
-            DHTNetwork network = (target, message) -> sent.add(Map.entry(target, message));
+            DHTNetwork network = AcceptingNetwork.accepting((target, message) -> sent.add(Map.entry(target, message)));
 
             return new Member(id, node, dhtAntiEntropy(node, network, CONFIG, departing::contains));
         }

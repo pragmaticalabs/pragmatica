@@ -59,7 +59,7 @@ class GovernorAuthorityClientTest {
     }
 
     private static GovernorAuthorityMessage.Request request(long id) {
-        return new GovernorAuthorityMessage.Request(WORKER, "community", id, 0, "host:9000");
+        return new GovernorAuthorityMessage.Request(WORKER, "community", id, 0, "host:9000", false);
     }
 
     private static GovernorAuthorityMessage.Response response(NodeId sender, String community, long id) {

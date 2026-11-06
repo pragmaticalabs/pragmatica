@@ -19,7 +19,10 @@ public sealed interface SegmentError extends Cause {
             public boolean isTerminal() {
                 return true;
             }
-        };
+        },
+        /// The segment sealer was closed at node stop (#1875): a failed seal is not retried. Not terminal, so the retry
+        /// declines it quietly; the partition WAL keeps the range for the restart.
+        SEALER_CLOSED("Segment sealer closed; the pending seal is left to the WAL");
         private final String message;
         General(String message) {
             this.message = message;

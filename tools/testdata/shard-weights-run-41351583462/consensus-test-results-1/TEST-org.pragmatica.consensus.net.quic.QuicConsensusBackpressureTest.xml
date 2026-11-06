@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://maven.apache.org/surefire/maven-surefire-plugin/xsd/surefire-test-report.xsd" version="3.0.2" name="org.pragmatica.consensus.net.quic.QuicConsensusBackpressureTest" time="0.37" tests="0" errors="0" skipped="0" failures="0">
+  <testcase name="broadcastTargets_nullSupplierResetsToMandatoryTopologyDefault" classname="org.pragmatica.consensus.net.quic.QuicConsensusBackpressureTest$BroadcastMembershipFilter" time="0.023"/>
+  <testcase name="broadcastTargets_membershipViewExcludesPeer_peerNotTargeted" classname="org.pragmatica.consensus.net.quic.QuicConsensusBackpressureTest$BroadcastMembershipFilter" time="0.019"/>
+  <testcase name="broadcastTargets_unwiredDefault_filtersToAuthoritativeMembership" classname="org.pragmatica.consensus.net.quic.QuicConsensusBackpressureTest$BroadcastMembershipFilter" time="0.019"/>
+  <testcase name="rawConsensusWrite_nonRemovedPeer_writesNormally" classname="org.pragmatica.consensus.net.quic.QuicConsensusBackpressureTest$RemovedPeerShortCircuit" time="0.027"/>
+  <testcase name="rawConsensusWrite_removedPeer_dropsWithoutWriting" classname="org.pragmatica.consensus.net.quic.QuicConsensusBackpressureTest$RemovedPeerShortCircuit" time="0.022"/>
+  <testcase name="rawConsensusWrite_inactiveChannel_failsWithCause" classname="org.pragmatica.consensus.net.quic.QuicConsensusBackpressureTest$RawConsensusWriteUnit" time="0.023"/>
+  <testcase name="rawConsensusWrite_activeWritable_delivers" classname="org.pragmatica.consensus.net.quic.QuicConsensusBackpressureTest$RawConsensusWriteUnit" time="0.022"/>
+  <testcase name="writeIfWritable_dhtRelayBackpressured_refusesImmediately_noWrite" classname="org.pragmatica.consensus.net.quic.QuicConsensusBackpressureTest$StreamTypeBranch" time="0.023">
+  </testcase>
+  <testcase name="writeIfWritable_dhtInactiveChannel_refusesImmediately_noWrite" classname="org.pragmatica.consensus.net.quic.QuicConsensusBackpressureTest$StreamTypeBranch" time="0.03">
+  </testcase>
+  <testcase name="writeIfWritable_consensusWritable_writesImmediately" classname="org.pragmatica.consensus.net.quic.QuicConsensusBackpressureTest$StreamTypeBranch" time="0.027"/>
+  <testcase name="writeIfWritable_consensusBecomesWritable_eventuallyDelivers" classname="org.pragmatica.consensus.net.quic.QuicConsensusBackpressureTest$StreamTypeBranch" time="0.032">
+  </testcase>
+  <testcase name="writeIfWritable_dhtLiveButBackpressured_routesToRetry_reportsSent" classname="org.pragmatica.consensus.net.quic.QuicConsensusBackpressureTest$StreamTypeBranch" time="0.029">
+  </testcase>
+  <testcase name="writeIfWritable_kvBackpressured_refusesImmediately_evenWhenActive" classname="org.pragmatica.consensus.net.quic.QuicConsensusBackpressureTest$StreamTypeBranch" time="0.027">
+  </testcase>
+  <testcase name="consensusRetry_deliversAfterTransientBackpressure_withinAttempts" classname="org.pragmatica.consensus.net.quic.QuicConsensusBackpressureTest$RawConsensusWriteRetryComposition" time="0.018"/>
+  <testcase name="consensusRetry_exhaustsAndFails_whenPermanentlyBackpressured" classname="org.pragmatica.consensus.net.quic.QuicConsensusBackpressureTest$RawConsensusWriteRetryComposition" time="0.017">
+  </testcase>
+</testsuite>

@@ -53,6 +53,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -187,14 +188,17 @@ class RabiaEngineTest {
         }
 
         @Test
-        void identical_concurrent_submissions_each_complete_and_the_command_applies_once() throws InterruptedException {
+        @SuppressWarnings("unchecked")
+        void identical_concurrent_submissions_each_complete_and_apply_once_per_submission() throws InterruptedException {
             // #958: the batch id is a content hash, so two callers submitting byte-identical
             // commands register the same id. Before the fix, registerBatch() replaced the first
             // pending batch with the second, dropping the first caller's correlation id from the
             // local map; commitChanges() completes only the local batch's correlation ids, so the
             // first promise never settled and surfaced as ApplyTimeout although the command applied.
-            // Guarantee pinned: every caller's promise completes with its own command's outcome,
-            // and the command is applied exactly once.
+            // Guarantee pinned: every caller's promise completes with its own command's outcome.
+            // #2045 (know 32bd170946): a slot satisfies only the correlation ids its Decision carries, so a
+            // submission the Decision does not carry stays pending and applies in a slot of its own; the
+            // command applies once per slot that carries a submission of it, never more.
             var target = new RabiaEngine<>(topologyManager,
                                            network,
                                            stateMachine,
@@ -231,11 +235,41 @@ class RabiaEngineTest {
             awaitOwnVote2(Phase.ZERO);
             target.processVoteRound2(new VoteRound2(NODE_2, Phase.ZERO, StateValue.V1));
             target.processVoteRound2(new VoteRound2(NODE_3, Phase.ZERO, StateValue.V1));
+            // Wait for the slot itself, never for one named caller (#2645): the Decision carries the submission the
+            // engine registered first, and that is a race between the two submitting threads, not the test labels.
+            assertThat(awaitCondition(() -> !stateMachine.getProcessedCommands().isEmpty()))
+                .as("slot 0 must apply the command")
+                .isTrue();
+            target.settleForTesting().await();
+            // The Decision carries both ids when this voter's own merged proposal is the one stored for the slot;
+            // otherwise it carries one, and the other caller stays pending until a slot of its own.
+            var slotsCarryingIt = first.get().isResolved() && second.get().isResolved() ? 1 : 2;
+
+            if (slotsCarryingIt == 2) {
+                awaitOwnPropose(new Phase(1));
+                // A peer proposes what it learned from this voter: the leftover, carrying only the undecided correlation id.
+                var leftover = network.getMessages()
+                                      .stream()
+                                      .filter(propose(new Phase(1), NODE_1))
+                                      .map(m -> ((Propose<TestCommand>) m).value())
+                                      .findFirst()
+                                      .orElseThrow();
+                target.processPropose(new Propose<>(NODE_2, new Phase(1), leftover));
+                awaitOwnVote1(new Phase(1));
+                target.processVoteRound1(new VoteRound1(NODE_2, new Phase(1), StateValue.V1));
+                target.processVoteRound1(new VoteRound1(NODE_3, new Phase(1), StateValue.V1));
+                awaitOwnVote2(new Phase(1));
+                target.processVoteRound2(new VoteRound2(NODE_2, new Phase(1), StateValue.V1));
+                target.processVoteRound2(new VoteRound2(NODE_3, new Phase(1), StateValue.V1));
+            }
+
             var firstResult = first.get().await(timeSpan(5).seconds());
             var secondResult = second.get().await(timeSpan(5).seconds());
 
-            assertThat(stateMachine.getProcessedCommands()).as("the identical command is applied exactly once")
-                      .containsExactly(command);
+            assertThat(stateMachine.getProcessedCommands()).as("applied once per slot that carried a submission of it")
+                      .hasSize(slotsCarryingIt)
+                      .containsOnly(command);
+            assertThat(target.pendingBatchCountForTesting()).as("nothing left pending").isZero();
             assertThat(firstResult).as("first caller's promise must settle with its command's outcome")
                       .isEqualTo(Result.success(List.of("result:identical")));
             assertThat(secondResult).as("second caller's promise must settle with its command's outcome")
@@ -1165,9 +1199,14 @@ class RabiaEngineTest {
         public void handleBroadcast(NetworkServiceMessage.Broadcast broadcast) {}
 
         @Override
-        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             if (messages.stream().noneMatch(existing -> existing == message)) { messages.add(message); }
-            return Unit.unit();
+            return Promise.success(new WriteOutcome.Sent(nodeId));
+        }
+
+        @Override
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            return send(nodeId, message);
         }
 
         @Override

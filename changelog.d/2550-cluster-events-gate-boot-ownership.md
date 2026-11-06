@@ -1,0 +1,2 @@
+### Fixed (2026-11-01 — #2550: ClusterEventsCommittedGateBootTest failed in isolation)
+- **`ClusterEventsCommittedGateBootTest` ownership-record test failed 19 of 20 isolated runs** (#2550). Test only: it now waits for the node's own ownership bootstrap record before committing its own, checks that the committed record names the other node, and removes the record as the node left it. [verified: `ClusterEventsCommittedGateBootTest`]

@@ -175,6 +175,20 @@ class GcpComputeProviderTest {
             assertThat(sent.disks().get(0).initializeParams().sourceImage()).isEqualTo("projects/x/global/images/aether-img");
         }
 
+        /// G1-a: GCP has no server name that refuses a duplicate create, so an operation id it is handed is refused, typed, before any call.
+        @Test
+        void createFrom_operationId_refusedTypedBeforeAnyCall() {
+            var context = ProvisionContext.forBootstrap(clusterName("c").unwrap(), "core", sourceNameOrDefault("s"), "n0");
+            var request = new ProvisionRequest(InstanceType.ON_DEMAND, "n2-standard-8", "img", "",
+                                               Option.empty(), MarketOptions.ON_DEMAND, context).named();
+
+            provider.createFrom(request)
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(EnvironmentError.OperationIdUnsupported.class));
+            assertThat(testClient.lastInsertRequest).as("a refused operation id must fail before insertInstance").isNull();
+        }
+
         @Test
         void createFrom_spotRequest_rejectedLoud() {
             // GCP's InsertInstanceRequest has no provisioningModel/SPOT field, so a SPOT request must

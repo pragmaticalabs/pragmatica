@@ -15,6 +15,7 @@ import org.pragmatica.aether.slice.kvstore.BackupEntryCodec.BackupHeader;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Cause;
@@ -38,9 +39,9 @@ import org.pragmatica.utility.ULID;
 /// of it, in which case the right action is a restore (#1533) and declaring genesis would throw that state
 /// away — with one exception: a FORKED head, the same lineage and incarnation written by another cluster
 /// incarnation id (#1533). Declaring genesis is how the operator picks the cluster whose state continues.
-public record BackupGenesis(KvBackupService service) {
-    public static BackupGenesis backupGenesis(KvBackupService service) {
-        return new BackupGenesis(service);
+public record BackupGenesis(KvBackupService service, NodeId self) {
+    public static BackupGenesis backupGenesis(KvBackupService service, NodeId self) {
+        return new BackupGenesis(service, self);
     }
 
     /// The result of a declaration: this cluster's lineage at its new incarnation, and the head it
@@ -201,9 +202,11 @@ public record BackupGenesis(KvBackupService service) {
                                                   highestRecorded,
                                                   ULID.ulid().encoded());
         var transactionId = "declare-genesis:" + UUID.randomUUID();
-
+        // #2594: the supersede is a leader write, so it is issued only under this node's own committed record.
         return service.kvStore()
                       .getTyped(LeaderKey.INSTANCE, LeaderValue.class)
+                      .filter(leader -> leader.leader()
+                                              .equals(self) && service.isLeader())
                       .async(DeclareGenesisError.General.NOT_LEADER)
                       .flatMap(leader -> applier.apply(ClusterIncarnation.supersedeCommands(leader,
                                                                                             transactionId,

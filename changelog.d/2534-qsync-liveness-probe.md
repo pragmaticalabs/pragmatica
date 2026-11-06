@@ -1,0 +1,3 @@
+### Added (2026-11-01 — #2534: Qsync-scenario liveness probe for Rabia)
+- **A test-only probe asks whether Rabia can stall under a partial or asymmetric partition while voters hold different pending queues.** At the rc5 base it cannot: seven directed-cut cells (12 seeds each) on the real `RabiaEngine` and an Ember arm with five cores both commit throughout; no production line changed. `[verified: integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/RabiaPartialPartitionLivenessTest.java]` `[verified: aether/ember/src/test/java/org/pragmatica/aether/ember/EmberRabiaPartialPartitionTest.java]`
+- Removing the `learnProposedBatch` call in `RabiaEngine.handlePropose` turns the probe red, so the cells reach the mechanism.

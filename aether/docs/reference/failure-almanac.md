@@ -304,7 +304,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 - **Symptom:** a stream approaches or exceeds its memory budget.
 - **Detection surface:** `/api/v1/events` `STREAM_MEMORY_EXCEEDED`; metric `aether.streams.memory.used.ratio`.
 - **Automatic response:** the off-heap budget accounting applies back-pressure per policy.
-- **Operator action:** raise `STREAM_MAX_MEMORY_BYTES` (default 128 MB) or scale out.
+- **Operator action:** raise `[streaming] max_memory_bytes` (or the `STREAM_MAX_MEMORY_BYTES` override; by default an eighth of physical memory, 128 MiB to 1 GiB) or scale out. Ring growth stops at three quarters of the budget, so a stream refused its floors while rings still grow is past that quarter of headroom too.
 - **Proof anchor:** feature-catalog row 181; `ManagementServer` memory gauges.
 
 ### Scale capped

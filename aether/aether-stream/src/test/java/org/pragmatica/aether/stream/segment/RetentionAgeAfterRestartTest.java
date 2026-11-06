@@ -78,14 +78,15 @@ class RetentionAgeAfterRestartTest {
         return StorageInstance.storageInstance("age", List.of(MemoryTier.memoryTier(ONE_GB)));
     }
 
-    /// Identical events in two streams: one content-addressed block, two refs.
+    /// Identical events in two streams. Since #2258 each block carries its segment's identity header, so the two are two
+    /// blocks (one shared block is the legacy case, `SharedBlockRetentionTest`).
     private static void sealBothPartitions(StorageInstance storage, long eventTime) {
         var sink = storageSegmentSink(storage, new SegmentIndex());
         var bytes = encoded(eventTime, "a", "b", "c");
 
         sink.seal(sealedSegment("orders", 0, 0, 2, 3, eventTime, eventTime, bytes)).await();
         sink.seal(sealedSegment("audit", 0, 0, 2, 3, eventTime, eventTime, bytes)).await();
-        assertThat(storage.resolveRef("streams/orders/0/0-2")).isEqualTo(storage.resolveRef("streams/audit/0/0-2"));
+        assertThat(storage.resolveRef("streams/orders/0/0-2")).isNotEqualTo(storage.resolveRef("streams/audit/0/0-2"));
     }
 
     /// What a restart sees: the index rebuilt from ref NAMES, every timestamp unknown.

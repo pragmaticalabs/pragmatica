@@ -20,6 +20,7 @@ import java.util.function.LongSupplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.stream.segment.SegmentProvenance;
 import org.pragmatica.aether.config.SharedTierConfig;
 import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.config.StreamingConfig;
@@ -1466,6 +1467,9 @@ public final class StorageFactory {
                                                        Integer.MAX_VALUE);
 
         instance.reportTo(degrade);
+        // #2258 (spec 3.2 items 5-6): an orphan released without knowing its mark leaves the shared tier only if its block
+        // carries the sealed-segment identity header.
+        instance.sharedDeleteIdentification(SegmentProvenance::isIdentified);
         var snapshotConfig = SnapshotConfig.snapshotConfig(snapshotDir,
                                                            STREAM_SNAPSHOT_MUTATION_THRESHOLD,
                                                            STREAM_SNAPSHOT_INTERVAL_MILLIS,

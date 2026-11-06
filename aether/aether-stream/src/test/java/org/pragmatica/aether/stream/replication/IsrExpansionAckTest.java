@@ -64,7 +64,7 @@ class IsrExpansionAckTest {
             .forEach(node -> registry.registerReplica(STREAM, PARTITION, node));
         manager = new DefaultReplicationManager(OWNER,
                                                 registry,
-                                                (_, _) -> {},
+                                                AcceptingReplicationTransport.accepting((_, _) -> {}),
                                                 () -> {},
                                                 (_, _) -> neverFires.schedule(() -> {}, 1, TimeUnit.HOURS));
         // The proposal's consensus round never completes here: proposed, not yet applied on this owner.
@@ -75,9 +75,12 @@ class IsrExpansionAckTest {
                                         _ -> Promise.promise(),
                                         TimeSpan.timeSpan(30).seconds(),
                                         () -> 0L);
+        // Production reads the committed record's owner epoch for both the ack count and the ISR expansion (#2694).
+        manager.ownerEpochs((_, _) -> committed.get()
+                                               .ownerEpoch());
         manager.inSyncReplicaSource((_, _) -> Option.some(monitor.maximalIsr(STREAM, PARTITION, committed.get())));
-        manager.handleAck(replicateAck(NEAR, STREAM, PARTITION, 4L));
-        manager.handleAck(replicateAck(JOINER, STREAM, PARTITION, 4L));
+        manager.handleAck(replicateAck(NEAR, STREAM, PARTITION, 4L, base.ownerEpoch()));
+        manager.handleAck(replicateAck(JOINER, STREAM, PARTITION, 4L, base.ownerEpoch()));
     }
 
     @AfterEach
@@ -91,10 +94,10 @@ class IsrExpansionAckTest {
 
         assertThat(monitor.tick()).as("precondition: the monitor proposes JOINER at the high-water mark 4").hasSize(1);
         committed.set(base.withIsr(List.of(OWNER, NEAR, JOINER)));
-        manager.handleAck(replicateAck(NEAR, STREAM, PARTITION, IN_FLIGHT));
+        manager.handleAck(replicateAck(NEAR, STREAM, PARTITION, IN_FLIGHT, base.ownerEpoch()));
         assertThat(ack.isResolved()).as("JOINER is in the committed ISR and confirmed only through 4").isFalse();
 
-        manager.handleAck(replicateAck(JOINER, STREAM, PARTITION, IN_FLIGHT));
+        manager.handleAck(replicateAck(JOINER, STREAM, PARTITION, IN_FLIGHT, base.ownerEpoch()));
         assertThat(ack.isResolved()).isTrue();
     }
 
@@ -103,10 +106,10 @@ class IsrExpansionAckTest {
         var ack = manager.awaitReplication(STREAM, PARTITION, IN_FLIGHT, CF2_PEERS);
 
         assertThat(monitor.tick()).as("precondition: JOINER proposed; this owner has not applied the commit").hasSize(1);
-        manager.handleAck(replicateAck(NEAR, STREAM, PARTITION, IN_FLIGHT));
+        manager.handleAck(replicateAck(NEAR, STREAM, PARTITION, IN_FLIGHT, base.ownerEpoch()));
         assertThat(ack.isResolved()).as("the cluster may already hold JOINER in the committed ISR").isFalse();
 
-        manager.handleAck(replicateAck(JOINER, STREAM, PARTITION, IN_FLIGHT));
+        manager.handleAck(replicateAck(JOINER, STREAM, PARTITION, IN_FLIGHT, base.ownerEpoch()));
         assertThat(ack.isResolved()).isTrue();
     }
 
@@ -118,7 +121,7 @@ class IsrExpansionAckTest {
 
         assertThat(monitor.tick()).hasSize(1);
         committed.set(base.withIsr(List.of(OWNER, NEAR)));
-        manager.handleAck(replicateAck(NEAR, STREAM, PARTITION, IN_FLIGHT));
+        manager.handleAck(replicateAck(NEAR, STREAM, PARTITION, IN_FLIGHT, base.ownerEpoch()));
 
         assertThat(ack.isResolved()).isTrue();
     }
@@ -133,7 +136,7 @@ class IsrExpansionAckTest {
         var ack = manager.awaitReplication(STREAM, PARTITION, IN_FLIGHT, CF3_PEERS);
 
         committed.set(base.withIsr(List.of(OWNER, NEAR)));
-        manager.handleAck(replicateAck(NEAR, STREAM, PARTITION, IN_FLIGHT));
+        manager.handleAck(replicateAck(NEAR, STREAM, PARTITION, IN_FLIGHT, base.ownerEpoch()));
 
         assertThat(ack.isResolved()).as("one peer left in the ISR, CF 3 needs two").isFalse();
     }

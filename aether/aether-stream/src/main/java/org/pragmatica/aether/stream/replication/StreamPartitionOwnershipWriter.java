@@ -154,6 +154,17 @@ public interface StreamPartitionOwnershipWriter {
                                       committedLeader);
     }
 
+    /// #2594: the committed leader record the ISR-aware writer is authorized by, present only while it names `self` and
+    /// `self` leads. A deposed leader that has applied the new leader's record would otherwise carry that record, and the
+    /// applier's leader fence, an equality check, accepts it.
+    static Supplier<Option<LeaderValue>> ownCommittedLeader(Supplier<Option<LeaderValue>> committedLeader,
+                                                            NodeId self,
+                                                            BooleanSupplier isLeaderSupplier) {
+        return () -> committedLeader.get()
+                                    .filter(leader -> leader.leader()
+                                                            .equals(self) && isLeaderSupplier.getAsBoolean());
+    }
+
     /// What the ISR-aware writer reads besides the committed record (#1730).
     interface IsrInputs {
         /// The live placement members, as the leader sees them.
@@ -387,6 +398,10 @@ record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
 
     /// Failover elects from the live ISR only: the desired owner when it is a member, else the HRW-first member.
     /// None when no member is live — the unclean case, refused.
+    /// #2682: the rule is head-agnostic ON PURPOSE. An acknowledged record is on every ISR member (the acknowledgement waited
+    /// for all of them), so any live ISR member holds it; a tail some member appended beyond the others was never
+    /// acknowledged, and the elected owner's promotion gate pulls it from the highest live holder before it serves
+    /// (`OwnerActivation`, started eagerly by the committed record).
     private static Option<NodeId> failoverOwner(String stream, int partition, List<NodeId> liveIsr, NodeId desired) {
         if (liveIsr.contains(desired)) {
             return Option.some(desired);

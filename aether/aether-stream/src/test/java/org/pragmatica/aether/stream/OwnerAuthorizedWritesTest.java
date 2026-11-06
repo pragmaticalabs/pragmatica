@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.aether.stream.forward.AcceptingStreamForwardTransport;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
@@ -33,6 +34,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
+import org.pragmatica.aether.stream.replication.AcceptingReplicationTransport;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.slice.StreamConfig.streamConfig;
@@ -290,7 +292,7 @@ class OwnerAuthorizedWritesTest {
         void forwardHandler_repliesRetryable_ratherThanAnsweringNotEnoughReplicas() {
             var responses = new ArrayList<StreamForwardMessage>();
 
-            StreamForwardHandler.streamForwardHandler(SELF, partitionManager, (_, message) -> responses.add(message))
+            StreamForwardHandler.streamForwardHandler(SELF, partitionManager, AcceptingStreamForwardTransport.accepting((_, message) -> responses.add(message)))
                                 .onPublishForward(publishForward(OWNER, "c-1", STREAM, PARTITION, "e0".getBytes(), 1L));
 
             assertThat(responses).hasSize(1);
@@ -318,7 +320,7 @@ class OwnerAuthorizedWritesTest {
 
             registry.registerReplica(STREAM, PARTITION, SELF);
 
-            return replicationManager(SELF, registry, (_, _) -> {});
+            return replicationManager(SELF, registry, AcceptingReplicationTransport.accepting((_, _) -> {}));
         }
 
         private StreamConfig minSyncTwoConfig() {

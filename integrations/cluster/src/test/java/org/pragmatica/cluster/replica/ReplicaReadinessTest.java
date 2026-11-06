@@ -172,4 +172,172 @@ class ReplicaReadinessTest {
 
         assertThat(published).containsExactly(true, false, true);
     }
+
+    /// I-W5 input: `servable()` is (a)-(c), (e) plus `applied >= nextSlot` of the NEWEST counted heartbeat; the worker role (d) and the directory (f)
+    /// are not part of it. Mutation: compare against the oldest heartbeat only (the 5 s lag one), or require (d) or (f).
+    @Test
+    void servable_isTrue_whenCaughtUpToTheNewestHeartbeat_whateverTheRoleAndDirectory() {
+        worker.set(false);
+        directory.set(false);
+
+        assertThat(readiness.ready()).as("control: (d) and (f) fail").isFalse();
+        assertThat(readiness.servable()).isTrue();
+    }
+
+    @Test
+    void servable_isFalse_whenTheSourceIsAheadOfTheReplicaByAFreshHeartbeat() {
+        readiness.onHeartbeat(TAG, 12, true);
+
+        assertThat(readiness.ready()).as("control: the 5 s lag rule has not looked at the new heartbeat yet").isTrue();
+        assertThat(readiness.servable()).as("a governor behind its core's newest frontier must not serve members").isFalse();
+
+        position.set(ReplicaPosition.replicaPosition(TAG, 12, List.of(new AnchorPair(11, "y"))));
+
+        assertThat(readiness.servable()).isTrue();
+    }
+
+    /// Mutation: drop (e) or (b) from the shared computation.
+    @Test
+    void servable_isFalse_beforeTheInitialCatchUp_andWhenTheHeartbeatsAreStale() {
+        readiness.caughtUp(false);
+        assertThat(readiness.servable()).isFalse();
+
+        readiness.caughtUp(true);
+        advance(30_500);
+        assertThat(readiness.servable()).isFalse();
+    }
+
+    /// #2510 phase three (a): a member re-parents core -> a silent governor before any beat of the first new source; the grace restarts from the LATEST
+    /// subscribe, not the first. Mutation: carry only while no carry is set (`if (carriedUntilNanos == 0L)`), the rc5 guard.
+    @Test
+    void carryBeatsFor_secondReparentWithoutABeat_keepsAGraceFromTheLatestSubscribe() {
+        var grace = ReplicaClientLimits.DEFAULT.silenceMillis() * MS;
+
+        readiness.carryBeatsFor(grace);
+        advance(130);
+        readiness.carryBeatsFor(grace);
+        advance(2_900);
+
+        assertThat(readiness.ready()).as("3030 ms after the first subscribe, 2900 ms after the second: inside the second grace").isTrue();
+    }
+
+    /// Control for the test above: a single re-parent holds exactly its grace and drops after it, so the red of the second-subscribe case comes from the
+    /// guard and not from a short grace. Mutation: never expire the carry.
+    @Test
+    void carryBeatsFor_singleReparent_holdsItsGraceAndDropsAfterIt() {
+        var grace = ReplicaClientLimits.DEFAULT.silenceMillis() * MS;
+
+        readiness.carryBeatsFor(grace);
+        advance(2_900);
+        assertThat(readiness.ready()).isTrue();
+        advance(200);
+        assertThat(readiness.ready()).isFalse();
+    }
+
+    /// The deadline never moves backwards: a shorter grace asked later does not cut a longer one already granted. Mutation: assign `now + grace`
+    /// instead of `max(existing, now + grace)`.
+    @Test
+    void carryBeatsFor_aShorterLaterGrace_doesNotShortenTheDeadline() {
+        readiness.carryBeatsFor(10_000 * MS);
+        advance(100);
+        readiness.carryBeatsFor(1_000 * MS);
+        advance(5_000);
+
+        assertThat(readiness.ready()).isTrue();
+    }
+
+    /// The default grace covers a silent new source being waited out (silence + tick), the retry delay and the next source's first heartbeat, and no more.
+    /// Mutation: pass `silenceMillis` alone (the rc5 grace).
+    @Test
+    void carryGraceMillis_coversSilenceRetryAndOneHeartbeat() {
+        var limits = ReplicaClientLimits.DEFAULT;
+        var needed = limits.silenceMillis() + limits.tickMillis() + BusyBackoff.MIN_DELAY_MILLIS + ReplicaFeedServer.HEARTBEAT_INTERVAL_MILLIS;
+
+        assertThat(limits.carryGraceMillis()).isEqualTo(needed).isGreaterThan(limits.silenceMillis());
+
+        readiness.carryBeatsFor(limits.carryGraceMillis() * MS);
+        advance(limits.carryGraceMillis() - 100);
+        assertThat(readiness.ready()).isTrue();
+        advance(200);
+        assertThat(readiness.ready()).isFalse();
+    }
+
+    /// The cap: renewals never carry past the first carry since the last counted beat plus two silences. Mutation: drop the `Math.min` against
+    /// `carryAnchorNanos + carryCapNanos` in `carryBeatsFor`.
+    @Test
+    void carryBeatsFor_aChainOfRenewals_neverPassesTheCap() {
+        var limits = ReplicaClientLimits.DEFAULT;
+        var grace = limits.carryGraceMillis() * MS;
+
+        readiness.carryBeatsFor(grace);
+        advance(2_000);
+        readiness.carryBeatsFor(grace);
+        advance(2_000);
+        readiness.carryBeatsFor(grace);
+        advance(limits.carryCapMillis() - 4_000 - 100);
+        assertThat(readiness.ready()).as("100 ms inside the cap").isTrue();
+        advance(200);
+        assertThat(readiness.ready()).as("100 ms past the cap, though the last renewal asked for 4500 ms more").isFalse();
+    }
+
+    /// A counted beat clears the carry and resets the anchor: the next chain gets a full cap of its own. Mutation: keep `carryAnchorNanos` on a beat.
+    @Test
+    void carryBeatsFor_afterACountedBeat_theCapRestartsFromTheNewAnchor() {
+        var limits = ReplicaClientLimits.DEFAULT;
+        var grace = limits.carryGraceMillis() * MS;
+
+        readiness.carryBeatsFor(grace);
+        advance(4_000);
+        readiness.onHeartbeat(TAG, 10, true);
+        readiness.carryBeatsFor(grace);
+        advance(limits.carryGraceMillis() - 100);
+        assertThat(readiness.ready()).as("past the first chain's cap, inside the second grace").isTrue();
+    }
+
+    /// EXPIRED-CARRY rule: a carry that has expired is never renewed by a later re-parent, so readiness does not rise again without a counted beat.
+    /// Mutation: drop the `carryExpired` guard in `carryBeatsFor`.
+    @Test
+    void carryBeatsFor_afterTheCarryExpired_doesNotMakeTheReplicaReadyAgain() {
+        var grace = ReplicaClientLimits.DEFAULT.carryGraceMillis() * MS;
+
+        readiness.carryBeatsFor(grace);
+        advance(ReplicaClientLimits.DEFAULT.carryGraceMillis() + 100);
+        assertThat(readiness.ready()).as("the carry has expired").isFalse();
+        readiness.carryBeatsFor(grace);
+
+        assertThat(readiness.ready()).as("a renewal after expiry must not flap readiness back up").isFalse();
+    }
+
+    /// A counted beat clears an expired carry, so a later carry works again. Control for the expired-carry rule: the guard must not wedge the carry for good.
+    @Test
+    void carryBeatsFor_afterExpiryAndACountedBeat_carriesAgain() {
+        var grace = ReplicaClientLimits.DEFAULT.carryGraceMillis() * MS;
+
+        readiness.carryBeatsFor(grace);
+        advance(ReplicaClientLimits.DEFAULT.carryGraceMillis() + 100);
+        readiness.onHeartbeat(TAG, 10, true);
+        readiness.carryBeatsFor(grace);
+        advance(ReplicaClientLimits.DEFAULT.carryGraceMillis() - 100);
+
+        assertThat(readiness.ready()).isTrue();
+    }
+
+    /// The cap is two silences of THIS limits, derived from the silence, not a constant that happens to equal it at the default. Mutation: a literal
+    /// cap (6_000).
+    @Test
+    void carryCapMillis_isTwoSilences() {
+        var limits = new ReplicaClientLimits(30_000L, 5_000L, 5_000L, 1024L, 100L);
+
+        assertThat(limits.carryCapMillis()).isEqualTo(10_000L);
+        assertThat(ReplicaClientLimits.DEFAULT.carryCapMillis()).isEqualTo(2 * ReplicaClientLimits.DEFAULT.silenceMillis());
+    }
+
+    /// The grace is derived from the limits' silence and tick plus the fixed retry delay and heartbeat interval. Mutation: a literal grace (4_500).
+    @Test
+    void carryGraceMillis_followsANonDefaultSilenceAndTick() {
+        var limits = new ReplicaClientLimits(30_000L, 5_000L, 5_000L, 1024L, 100L);
+        var expected = 5_000L + 100L + BusyBackoff.MIN_DELAY_MILLIS + ReplicaFeedServer.HEARTBEAT_INTERVAL_MILLIS;
+
+        assertThat(limits.carryGraceMillis()).isEqualTo(expected);
+    }
 }

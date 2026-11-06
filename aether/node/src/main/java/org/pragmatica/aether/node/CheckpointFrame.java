@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 
 import org.pragmatica.aether.resource.entity.EntityLogSubstrate.EntityCheckpoint;
+import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.lang.Option;
@@ -22,6 +23,11 @@ import org.pragmatica.lang.Result;
 /// How an entity checkpoint block carries the lineage identity of the record it was taken at (#2087 B4-cut). A block is the encoded fold
 /// alone, or -- when a lineage is recorded -- an 8-byte marker, the lineage's length, the lineage, and then the encoded fold. A block without
 /// the marker is a fold with no lineage recorded and is read as before.
+///
+/// Since PR-3c every block written opens with an identity header ([#IDENTITY_MARKER], the keyspace, the partition and the claim) ahead of
+/// that layout, so no two checkpoint pointers can name one block: content addressing gives byte-identical folds one id, and a writer that
+/// deletes the block its pointer swap displaced would otherwise delete another pointer's block with it. A block without the header (written
+/// before PR-3c) is read as before.
 final class CheckpointFrame {
     /// Records the lineage digest covers: up to this many, ending at the checkpoint's claim.
     static final int LINEAGE_WINDOW = 8;
@@ -29,10 +35,28 @@ final class CheckpointFrame {
     private static final int HASH_BYTES = 16;
     private static final int EPOCH_BYTES = 3 * Long.BYTES;
     private static final byte[] MARKER = "LNGCKPT1".getBytes(StandardCharsets.US_ASCII);
+    /// Opens the identity header. Its first byte, `'C'`, is neither snapshot version (1, 2) nor the first byte of [#MARKER], so a build
+    /// that predates the header reads the block as a fold with no lineage that does not decode: "no usable checkpoint", and the partition
+    /// is rebuilt from its log (the block-layout flag day of PR-3c).
+    private static final byte[] IDENTITY_MARKER = "CKPTID01".getBytes(StandardCharsets.US_ASCII);
 
     private CheckpointFrame() {}
 
-    static byte[] frame(byte[] snapshot, Option<byte[]> lineage) {
+    static byte[] frame(String keyspace, int partition, long throughOffset, byte[] snapshot, Option<byte[]> lineage) {
+        var name = keyspace.getBytes(StandardCharsets.UTF_8);
+        var body = withLineage(snapshot, lineage);
+
+        return ByteBuffer.allocate(IDENTITY_MARKER.length + Integer.BYTES + name.length + Integer.BYTES + Long.BYTES + body.length)
+                         .put(IDENTITY_MARKER)
+                         .putInt(name.length)
+                         .put(name)
+                         .putInt(partition)
+                         .putLong(throughOffset)
+                         .put(body)
+                         .array();
+    }
+
+    private static byte[] withLineage(byte[] snapshot, Option<byte[]> lineage) {
         return lineage.map(identity -> ByteBuffer.allocate(MARKER.length + Integer.BYTES + identity.length + snapshot.length)
                                                  .put(MARKER)
                                                  .putInt(identity.length)
@@ -43,6 +67,54 @@ final class CheckpointFrame {
     }
 
     static EntityCheckpoint unframe(long throughOffset, byte[] block) {
+        return unframeLineage(throughOffset, withoutIdentity(block));
+    }
+
+    /// `block` without its identity header; a block that has none (written before PR-3c), or whose header does not parse, whole.
+    private static byte[] withoutIdentity(byte[] block) {
+        return hasIdentity(block)
+               ? Arrays.copyOfRange(block, (int) bodyStart(block), block.length)
+               : block;
+    }
+
+    private static boolean hasIdentity(byte[] block) {
+        if (block.length < IDENTITY_MARKER.length + Integer.BYTES || !Arrays.equals(block,
+                                                                                    0,
+                                                                                    IDENTITY_MARKER.length,
+                                                                                    IDENTITY_MARKER,
+                                                                                    0,
+                                                                                    IDENTITY_MARKER.length)) {
+            return false;
+        }
+
+        return nameLength(block) >= 0 && bodyStart(block) <= block.length;
+    }
+
+    private static int nameLength(byte[] block) {
+        return ByteBuffer.wrap(block, IDENTITY_MARKER.length, Integer.BYTES).getInt();
+    }
+
+    private static long bodyStart(byte[] block) {
+        return (long) IDENTITY_MARKER.length + Integer.BYTES + nameLength(block) + Integer.BYTES + Long.BYTES;
+    }
+
+    /// The pointer the identity header of `block` names it for (its keyspace and partition); none for a block that has no header (written
+    /// before PR-3c), or whose header does not parse.
+    static Option<EntityCheckpointKey> pointerOf(byte[] block) {
+        if (!hasIdentity(block)) {
+            return Option.none();
+        }
+
+        var keyspace = new String(block,
+                                  IDENTITY_MARKER.length + Integer.BYTES,
+                                  nameLength(block),
+                                  StandardCharsets.UTF_8);
+        var partition = ByteBuffer.wrap(block, IDENTITY_MARKER.length + Integer.BYTES + nameLength(block), Integer.BYTES).getInt();
+
+        return Option.some(EntityCheckpointKey.entityCheckpointKey(keyspace, partition));
+    }
+
+    private static EntityCheckpoint unframeLineage(long throughOffset, byte[] block) {
         if (block.length < MARKER.length + Integer.BYTES || !Arrays.equals(block,
                                                                            0,
                                                                            MARKER.length,

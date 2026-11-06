@@ -4,7 +4,7 @@ Rabia CFT (Crash Fault Tolerant) consensus algorithm for replicated state machin
 
 ## Overview
 
-Implements the [Rabia consensus algorithm](https://dl.acm.org/doi/10.1145/3477132.3483582) (published 2021), a crash-fault-tolerant protocol simpler than RAFT or Paxos. The engine's persistence is pluggable through `RabiaPersistence`; the default is in-memory (`RabiaPersistence.inMemory()`), so durability across restarts is whatever the persistence you supply provides. Features batch-based command processing, automatic state synchronization on node recovery, a super-majority fast path, and optional leader election (local or consensus-based).
+Implements the [Rabia consensus algorithm](https://dl.acm.org/doi/10.1145/3477132.3483582) (published 2021), a crash-fault-tolerant protocol simpler than RAFT or Paxos. The engine's persistence is pluggable through `RabiaPersistence`; the default is in-memory (`RabiaPersistence.inMemory()`), so durability across restarts is whatever the persistence you supply provides. Features batch-based command processing, automatic state synchronization on node recovery, two-round voting in which every decision needs round-2 evidence (no round-1 shortcut), and optional leader election (local or consensus-based).
 
 Key components: `RabiaEngine` (consensus orchestration), `StateMachine` (user-provided replicated state), `ClusterNetwork` (node-to-node communication), `TopologyManager` (cluster topology and quorum calculations).
 

@@ -53,15 +53,34 @@ import org.pragmatica.lang.utils.Causes;
 /// since #889 review S2 a `[slices]` dependency reads through a context of its own, so a
 /// missing-key failure raised while loading slice A may belong to its dependency B — the message
 /// has to say which.
-record ConfigProviderFacade(String sliceId, ConfigurationProvider provider) implements ConfigFacade {
+record ConfigProviderFacade(String sliceId, ConfigurationProvider provider, WatchSupport watchSupport) implements ConfigFacade {
     private static final Fn1<Cause, String> MISSING_KEY = Causes.forOneValue("Required config key not found: %s");
 
     private static final Fn1<Cause, String> NESTED_ARRAY = Causes.forOneValue("Config %s holds a nested array, which is not a string list");
 
     private static final Fn2<Cause, String, String> MALFORMED_VALUE = Causes.forTwoValues("%s for slice %s");
 
+    /// The explicit non-Aether / test-kit facade (`ConfigFacade#configFacade`): [#watched] binds once and never
+    /// changes, because the caller chose an entry that has no change feed.
     static ConfigProviderFacade configProviderFacade(String sliceId, ConfigurationProvider provider) {
-        return new ConfigProviderFacade(sliceId, provider);
+        return new ConfigProviderFacade(sliceId, provider, WatchSupport.BindOnce.INSTANCE);
+    }
+
+    /// A deployed slice's facade: [#watched] subscribes to `watch`'s feed under `watch`'s owner.
+    static ConfigProviderFacade configProviderFacade(String sliceId,
+                                                     ConfigurationProvider provider,
+                                                     ConfigWatch watch) {
+        return new ConfigProviderFacade(sliceId, provider, new WatchSupport.Feed(watch));
+    }
+
+    /// A facade over a real composite whose loading context has no change feed: every read works, [#watched] refuses.
+    static ConfigProviderFacade watchRefusingConfigProviderFacade(String sliceId, ConfigurationProvider provider) {
+        return new ConfigProviderFacade(sliceId, provider, WatchSupport.Refused.INSTANCE);
+    }
+
+    @Override
+    public <T> Result<Watched<T>> watched(String section, Fn1<Result<T>, ConfigFacade> binder) {
+        return watchSupport.watched(this, section, binder);
     }
 
     @Override

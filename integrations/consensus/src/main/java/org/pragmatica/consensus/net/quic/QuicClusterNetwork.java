@@ -144,6 +144,18 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     private static final long DROP_WARN_INTERVAL_NANOS = 30_000_000_000L;
 
+    /// #2580: one open backpressure episode per (peer, lane). The first write that finds the lane unwritable opens
+    /// it with one WARN; later ones only count. The first write that finds the lane writable again closes it with one
+    /// INFO summary. Logging every backpressured write was measured at 785,923 WARN lines in 4.5 minutes, the log
+    /// volume landing exactly when the cluster is overloaded (CI run 41243342645). An episode also closes when the
+    /// peer's bound channel closes or the peer departs: worker NodeIds are new per incarnation, so an entry kept for a
+    /// gone peer would grow the map without bound over a long uptime.
+    private final Map<BackpressureLane, BackpressureEpisode> backpressureEpisodes = new ConcurrentHashMap<>();
+
+    private record BackpressureLane(NodeId peerId, StreamType streamType) {}
+
+    private record BackpressureEpisode(long startedNanos, AtomicLong writes) {}
+
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
     /// #1461: set by the first `stop()`, whether or not the network had started, and never cleared. A stop that
     /// arrived before `startOnPort` used to be a silent no-op (its CAS on `isRunning` failed), and the later start
@@ -320,6 +332,32 @@ public class QuicClusterNetwork implements ClusterNetwork {
         inboundFaultFilter = filter;
 
         return Unit.unit();
+    }
+
+    private volatile java.util.function.BiPredicate<NodeId, ProtocolMessage> outboundRefusalFilter = (_, _) -> false;
+
+    /// Test-only fault injection (#2574), on the QUIC transport alone (no [ClusterNetwork] method): a unicast send whose
+    /// peer and message the filter matches is refused before it is written, as a backpressured fast-fail lane refuses it --
+    /// the frame is dropped, and a caller that asks for the outcome gets [WriteOutcome.BackpressureRefused]. It stands in for
+    /// the FORWARD-lane refusal a loopback cluster cannot produce on demand. Broadcasts are not filtered.
+    public Unit setOutboundRefusalFilter(java.util.function.BiPredicate<NodeId, ProtocolMessage> filter) {
+        outboundRefusalFilter = filter;
+
+        return Unit.unit();
+    }
+
+    /// True when the test-only outbound filter refuses this send; the refusal is logged (no transport counter moves: it is
+    /// not a real backpressure drop).
+    private boolean refusedByFaultFilter(NodeId peerId, ProtocolMessage message) {
+        if (!outboundRefusalFilter.test(peerId, message)) {
+            return false;
+        }
+
+        log.warn("Outbound fault filter refused {} to peer {} (simulated backpressure)",
+                 message.getClass().getSimpleName(),
+                 peerId);
+
+        return true;
     }
 
     private volatile java.util.function.BiPredicate<NodeId, Message.Wired> inboundMessagePolicy = (_, _) -> true;
@@ -647,7 +685,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     @Override
     @Contract
     public void handleSend(NetworkServiceMessage.Send send) {
-        dispatchPayload(send.target(), send.payload());
+        var _ = dispatchPayloadWithOutcome(send.target(), send.payload());
     }
 
     @Override
@@ -988,6 +1026,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
         firstObservedMissingMs.remove(nodeId);
         if (peer == null) {
+            endBackpressureEpisodes(nodeId);
             log.debug("departurePermanent for {} suppressed: peer absent (no transition)", nodeId);
 
             return;
@@ -1003,6 +1042,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // first call; a repeated departurePermanent() finds the peer already REMOVED and
         // records nothing — no duplicate PeerDisconnected flood, no REMOVED→REMOVED journal noise.
         peer.authoritativeRemove(System.nanoTime()).onPresent(this::closeDroppedConnection);
+        // After REMOVED, not before: a write racing this departure re-checks REMOVED after counting (see
+        // countBackpressuredWrite), so its episode is dropped by whichever of the two runs second.
+        endBackpressureEpisodes(nodeId);
         var clientRef = client;
 
         if (clientRef != null) {
@@ -1118,25 +1160,29 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     @Override
-    public <M extends ProtocolMessage> Unit send(NodeId peerId, M message) {
+    public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId peerId, M message) {
         if (blackholed) {
-            return unit();
+            return Promise.success(new WriteOutcome.Sent(peerId));
         }
 
-        dispatchPayload(peerId, message);
+        if (refusedByFaultFilter(peerId, message)) {
+            return Promise.success(new WriteOutcome.BackpressureRefused(peerId));
+        }
 
-        return unit();
+        return Promise.success(dispatchPayloadWithOutcome(peerId, message));
     }
 
     @Override
-    public <M extends ProtocolMessage> Unit send(NodeId peerId, M message, TimeSpan offlineTtl) {
+    public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId peerId, M message, TimeSpan offlineTtl) {
         if (blackholed) {
-            return unit();
+            return Promise.success(new WriteOutcome.Sent(peerId));
         }
 
-        dispatchPayload(peerId, message, expiryWithin(offlineTtl));
+        if (refusedByFaultFilter(peerId, message)) {
+            return Promise.success(new WriteOutcome.BackpressureRefused(peerId));
+        }
 
-        return unit();
+        return Promise.success(dispatchPayloadWithOutcome(peerId, message, expiryWithin(offlineTtl)));
     }
 
     @Override
@@ -1161,26 +1207,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                       ? ttl
                                       : cap,
                                       System.nanoTime());
-    }
-
-    @Override
-    public <M extends ProtocolMessage> Promise<WriteOutcome> sendOutcome(NodeId peerId, M message) {
-        if (blackholed) {
-            return Promise.success(new WriteOutcome.Sent(peerId));
-        }
-
-        return Promise.success(dispatchPayloadWithOutcome(peerId, message));
-    }
-
-    @Override
-    public <M extends ProtocolMessage> Promise<WriteOutcome> sendOutcome(NodeId peerId,
-                                                                         M message,
-                                                                         TimeSpan offlineTtl) {
-        if (blackholed) {
-            return Promise.success(new WriteOutcome.Sent(peerId));
-        }
-
-        return Promise.success(dispatchPayloadWithOutcome(peerId, message, expiryWithin(offlineTtl)));
     }
 
     @Override
@@ -2058,40 +2084,13 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// Dispatch a typed message to a single peer — runs through the PeerState machine:
     /// SendNow → write to captured connection; Queued → buffered for reconnect; Dropped → REMOVED.
     /// The lane is resolved once here (from the message's `streamType()`); the message object is
-    /// never threaded past this point.
-    private void dispatchPayload(NodeId peerId, Message.Wired message) {
-        dispatchPayload(peerId, message, capExpiry());
-    }
-
-    /// As [#dispatchPayload(NodeId, Message.Wired)], for a request frame whose caller stops waiting at `expiry`: held in
-    /// the offline buffer past that instant it is dropped at the flush, not delivered (#1996).
-    private void dispatchPayload(NodeId peerId, Message.Wired message, PeerState.Expiry expiry) {
-        if (peerId.equals(self.id())) {
-            var _ = loopbackToSelf(message);
-
-            return;
-        }
-
-        var state = peers.get(peerId);
-
-        if (state == null) {
-            var _ = dispatchToAbsentPeer(peerId, message, expiry);
-
-            return;
-        }
-
-        var _ = dispatchToPeer(state, message, expiry);
-    }
-
-    /// Outcome-tracking variant used by `sendOutcome` callers (DHT quorum path). Same
-    /// dispatch flow as `dispatchPayload` but surfaces the synchronous local-transport
-    /// verdict so the caller can fail-fast against unreachable replicas.
+    /// never threaded past this point. Returns the synchronous local-transport verdict that `send` reports.
     private WriteOutcome dispatchPayloadWithOutcome(NodeId peerId, Message.Wired message) {
         return dispatchPayloadWithOutcome(peerId, message, capExpiry());
     }
 
     /// As [#dispatchPayloadWithOutcome(NodeId, Message.Wired)], for a request frame whose caller stops waiting at
-    /// `expiry` (#1996), as [#dispatchPayload(NodeId, Message.Wired, PeerState.Expiry)] does for the untracked send.
+    /// `expiry`: held in the offline buffer past that instant it is dropped at the flush, not delivered (#1996).
     private WriteOutcome dispatchPayloadWithOutcome(NodeId peerId, Message.Wired message, PeerState.Expiry expiry) {
         if (peerId.equals(self.id())) {
             return loopbackToSelf(message);
@@ -2148,7 +2147,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     /// Pre-start (or cert-rotation) self-send with no pinned loop: report the drop HONESTLY (#487
-    /// finding 4) rather than a false `Sent` — a tracked `sendOutcome` to self must not claim delivery
+    /// finding 4) rather than a false `Sent` — a `send` to self must not claim delivery
     /// while dropping. Matches the unknown-peer outcome (`NoPeerState`): no delivery happened.
     private WriteOutcome dropLoopbackBeforeStart(Message.Wired message) {
         warnLoopbackBeforeStart(message);
@@ -2543,6 +2542,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                          StreamType streamType,
                                          Option<QuicPeerConnection> resendVia) {
         if (ch.isWritable()) {
+            endBackpressureEpisode(peerId, streamType);
             quicMetrics.onMessageSent();
             quicMetrics.onBytesSent(bytes.length);
             trackedWrite(ch, streamType, bytes).addListener(future -> onLaneWriteResult(future,
@@ -2574,8 +2574,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
         //  - Everything else (KV / METRICS / INVOKE / FORWARD / CONTROL / SYNC): UNCHANGED
         //    fast-fail BackpressureRefused.
         // Backpressure entry: name the lane so a stalled stream is identifiable in the logs.
-        // One concise line per backpressure entry (per-retry logging stays at debug below).
-        log.warn("Backpressure on peer {} lane {} (isWritable={})", peerId, streamType, ch.isWritable());
+        // One WARN per backpressure entry, not per write (#2580); per-write and per-retry logging stay at debug.
+        countBackpressuredWrite(peerId, streamType);
 
         return switch (streamType) {
             case CONSENSUS -> retryBackpressuredWrite(ch, bytes, peerId, streamType);
@@ -2584,6 +2584,69 @@ public class QuicClusterNetwork implements ClusterNetwork {
                         : refuseBackpressured(peerId, streamType);
             default -> refuseBackpressured(peerId, streamType);
         };
+    }
+
+    /// Counts inside `compute`, under the same bin lock `remove` takes, so a summary never misses a write counted
+    /// before it. A write captured before its peer's departure can run after `departurePermanent` closed the peer's
+    /// episodes; the REMOVED re-check drops the episode it just opened, which no later event would close.
+    private void countBackpressuredWrite(NodeId peerId, StreamType streamType) {
+        var writes = backpressureEpisodes.compute(new BackpressureLane(peerId, streamType),
+                                                  (lane, open) -> countWrite(open == null
+                                                                             ? openBackpressureEpisode(lane)
+                                                                             : open))
+                                         .writes()
+                                         .get();
+
+        log.debug("Backpressure on peer {} lane {}: write {} of this episode", peerId, streamType, writes);
+        if (isPeerRemoved(peerId)) {
+            closeBackpressureEpisode(peerId, streamType);
+        }
+    }
+
+    private static BackpressureEpisode countWrite(BackpressureEpisode episode) {
+        episode.writes().incrementAndGet();
+
+        return episode;
+    }
+
+    private BackpressureEpisode openBackpressureEpisode(BackpressureLane lane) {
+        log.warn("Backpressure on peer {} lane {} (isWritable=false): entered; further writes are counted until it clears",
+                 lane.peerId(),
+                 lane.streamType());
+
+        return new BackpressureEpisode(System.nanoTime(), new AtomicLong());
+    }
+
+    /// Closes the (peer, lane) episode, if one is open, with one summary line. The `isEmpty` check keeps the
+    /// writable hot path to a single read while no lane is backpressured.
+    private void endBackpressureEpisode(NodeId peerId, StreamType streamType) {
+        if (backpressureEpisodes.isEmpty()) {
+            return;
+        }
+
+        closeBackpressureEpisode(peerId, streamType);
+    }
+
+    /// No `isEmpty` shortcut here: the map's size is updated after a new entry is visible, so the shortcut can miss
+    /// an episode opened concurrently, and departure and channel close are the only events that would close it.
+    private void closeBackpressureEpisode(NodeId peerId, StreamType streamType) {
+        Option.option(backpressureEpisodes.remove(new BackpressureLane(peerId, streamType)))
+              .onPresent(episode -> log.info("Backpressure on peer {} lane {} cleared: {} write(s) found it unwritable over {} ms",
+                                             peerId,
+                                             streamType,
+                                             episode.writes().get(),
+                                             TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - episode.startedNanos())));
+    }
+
+    /// Closes every open episode of a peer whose channel closed or who departed, each with its summary line.
+    private void endBackpressureEpisodes(NodeId peerId) {
+        Stream.of(StreamType.values())
+              .forEach(streamType -> closeBackpressureEpisode(peerId, streamType));
+    }
+
+    /// Package-private test seam: the number of open backpressure episodes, so tests can show an entry is gone.
+    int openBackpressureEpisodesForTests() {
+        return backpressureEpisodes.size();
     }
 
     /// Package-private test seam — drives `writeIfWritable` directly so regression tests can
@@ -2790,6 +2853,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var state = peers.get(peerId);
 
         if (state == null) {
+            endBackpressureEpisodes(peerId);
+
             return;
         }
         // Reference equality on the wrapper: adopt-newer (`attachOverConnected`) binds a
@@ -2799,6 +2864,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // loop, no double-close (`evictStaleConnection` guards its own `.close()` on `isActive()`).
         if (state.activeConnection().map(current -> current == closed).or(false)) {
             log.info("QUIC channel to {} closed — evicting (event-driven) so the reconciler re-dials", peerId);
+            endBackpressureEpisodes(peerId);
             evictStaleConnection(peerId, closed);
         }
     }

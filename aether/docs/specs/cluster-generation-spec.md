@@ -72,7 +72,7 @@ Consumer fencing:
 - `communityTerm: long` — bumps on each governor change within a community. Community-level equivalent of Rabia term.
 - `communityEpoch: Epoch` — `(communityTerm, localCounter)` for fencing community-level actions.
 - `observedCoreEpoch: Epoch` — stamped at announcement time.
-- `transitionedAt: HlcTimestamp` — when the `governorId` last changed. Distinct from existing `announcedAt` (which updates on every periodic re-announcement).
+- `transitionedAt: HlcTimestamp` — when the `governorId` last changed. Distinct from existing `announcedAt` (which updates on every periodic re-announcement; since #2542 a membership edge that changes nothing is not committed again, only the timer re-commits it).
 
 ### 5.3 New atoms
 

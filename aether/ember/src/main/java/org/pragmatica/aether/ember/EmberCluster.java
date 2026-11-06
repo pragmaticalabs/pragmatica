@@ -35,7 +35,6 @@ import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.invoke.ObservabilityConfig;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
-import org.pragmatica.aether.node.ReplicaCutover;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
@@ -49,6 +48,7 @@ import org.pragmatica.aether.environment.ProviderDefaults;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.rabia.ParticipationMarker;
@@ -157,6 +157,8 @@ public final class EmberCluster {
 
     private final int targetClusterSize;
     private int additionalNodeSlots;
+    /// Port distance between consecutive slots; 1 unless a measurement run needs more than 100 slots (see [#withPortStride]).
+    private int portStride = 1;
     private final AtomicInteger effectiveSize;
     private final Option<ConfigurationProvider> configProvider;
     private final ObservabilityConfig observability;
@@ -211,9 +213,6 @@ public final class EmberCluster {
     /// writable base dir (e.g. a JUnit `@TempDir`) via [#withDataBaseDir] BEFORE [#start] to turn the
     /// disk tier and the per-partition stream WAL on; see [#perNodeStorageConfig].
     private final AtomicReference<Option<Path>> dataBaseDir = new AtomicReference<>(Option.none());
-    /// W-OBS W3: whether workers follow the replica feed (`LIVE`) or still read the metadata projection (`DARK`, the production value). Set BEFORE
-    /// [#start] / [#addWorkerNode] via [#withReplicaCutover]; W4 deletes it with the cutover.
-    private final AtomicReference<ReplicaCutover> replicaCutover = new AtomicReference<>(ReplicaCutover.DARK);
     /// Opt-in restart-stable consensus state for recovery tests; retained across stop/start.
     private final AtomicReference<Option<KvBackup>> kvBackup = new AtomicReference<>(Option.none());
     /// #1212 — where this instance's nodes keep their durable first-boot markers when the test did
@@ -262,6 +261,17 @@ public final class EmberCluster {
     /// cannot admit each other's nodes; [#withClusterSecret] is the only sanctioned override.
     /// Exposed to tests via [#currentClusterSecret].
     private final AtomicReference<byte[]> clusterSecret = new AtomicReference<>(generateClusterSecret());
+    /// The engine the global selector names ([EngineSelector], `-Daether.deployment.engine`): read once per cluster. A value that names no
+    /// engine refuses [#start] instead of running LEGACY.
+    private final Result<DeploymentEngine> selectedEngine = EngineSelector.fromSystemProperty();
+
+    /// The deployment engine every node of this cluster is constructed with (phase-3 design 8.2): the selector's engine (LEGACY when the
+    /// property is absent) unless a test says otherwise. The committed engine marker, minted by the first leader, then makes the choice
+    /// cluster-wide.
+    private final AtomicReference<DeploymentEngine> deploymentEngine = new AtomicReference<>(selectedEngine.or(DeploymentEngine.LEGACY));
+
+    /// Per-node engine overrides (phase-3 design 8.2, W-29's misconfigured-newcomer arms), by NodeId; a node absent here takes [#deploymentEngine].
+    private final Map<String, DeploymentEngine> nodeEngines = new ConcurrentHashMap<>();
 
     /// #715 — the [AetherNodeConfig] object actually passed to the most recently constructed node's
     /// constructor. Captured from the real `config` value itself, never mirrored independently at
@@ -474,13 +484,6 @@ public final class EmberCluster {
         dataBaseDir.set(Option.option(baseDir));
     }
 
-    /// TEST SEAM (W-OBS W3) — run the workers of this cluster on the replica feed (`LIVE`) instead of the metadata projection. MUST be called
-    /// before [#start] / [#addWorkerNode]. Production never calls this; W4 deletes it with the cutover.
-    @Contract
-    public void withReplicaCutover(ReplicaCutover cutover) {
-        replicaCutover.set(cutover);
-    }
-
     /// TEST SEAM (#1532/#1533) — enable the change-triggered KV backup on every node created from now on:
     /// node N backs up into `<baseDir>/<nodeId>` and pushes to `remote`, which every node shares (a bare
     /// repository path or URL), and a cold restart applies `restore`. Consensus itself runs in memory
@@ -536,6 +539,24 @@ public final class EmberCluster {
     @Contract
     public void withStreamingConfig(StreamingConfig config) {
         streamingConfig.set(config);
+    }
+
+    /// Phase-3 design 8.2 — construct every node of this cluster with `engine`. MUST be called before [#start]. Harness-scoped: the engine
+    /// has no TOML key in phase 3.
+    @Contract
+    public void withDeploymentEngine(DeploymentEngine engine) {
+        deploymentEngine.set(engine);
+    }
+
+    /// W-29 — construct the node `nodeIdStr` with `engine`, whatever the cluster's engine is: a misconfigured node of the other engine. MUST be
+    /// called before that node is created (before [#start] for an initial node, before [#addCoreNode] for a newcomer). Harness-scoped.
+    @Contract
+    public void withDeploymentEngine(String nodeIdStr, DeploymentEngine engine) {
+        nodeEngines.put(nodeIdStr, engine);
+    }
+
+    private DeploymentEngine engineOf(NodeId nodeId) {
+        return Option.option(nodeEngines.get(nodeId.id())).or(deploymentEngine::get);
     }
 
     /// #715 — override this instance's cluster QUIC/SWIM identity secret. MUST be called before
@@ -691,12 +712,26 @@ public final class EmberCluster {
 
     /// Forge-only capacity for mixed-role acceptance fixtures; configure before starting nodes.
     public Result<Unit> withAdditionalNodeSlots(int additionalSlots) {
-        if (additionalSlots < 0 || additionalSlots > 32 || !nodes.isEmpty() || !heldBackNodes.isEmpty()) {
-            return org.pragmatica.lang.utils.Causes.cause("Additional node slots must be 0..32 and configured before start")
+        if (additionalSlots < 0 || additionalSlots > 256 || !nodes.isEmpty() || !heldBackNodes.isEmpty()) {
+            return org.pragmatica.lang.utils.Causes.cause("Additional node slots must be 0..256 and configured before start")
                                                    .result();
         }
 
         additionalNodeSlots = additionalSlots;
+
+        return Result.unitResult();
+    }
+
+    /// Measurement-only: with more than 100 slots a node's SWIM UDP port (its cluster port + 100) lands on another slot's QUIC port.
+    /// A stride of 3 keeps every QUIC port at an offset divisible by 3 and every SWIM port at one that leaves remainder 1, so they never meet.
+    /// Configure before starting nodes.
+    public Result<Unit> withPortStride(int stride) {
+        if (stride < 1 || !nodes.isEmpty() || !heldBackNodes.isEmpty()) {
+            return org.pragmatica.lang.utils.Causes.cause("Port stride must be at least 1 and configured before start")
+                                                   .result();
+        }
+
+        portStride = stride;
 
         return Result.unitResult();
     }
@@ -730,12 +765,18 @@ public final class EmberCluster {
     }
 
     private Promise<Unit> start(Set<String> heldBackNodeIds, Set<String> excludedFromGenesis) {
-        log.info("Starting Ember cluster with {} nodes on ports {}-{} ({} held back: {})",
+        return selectedEngine.async()
+                             .flatMap(_ -> startNodes(heldBackNodeIds, excludedFromGenesis));
+    }
+
+    private Promise<Unit> startNodes(Set<String> heldBackNodeIds, Set<String> excludedFromGenesis) {
+        log.info("Starting Ember cluster with {} nodes on ports {}-{} ({} held back: {}), deployment engine {}",
                  initialClusterSize,
                  basePort,
                  basePort + initialClusterSize - 1,
                  heldBackNodeIds.size(),
-                 heldBackNodeIds);
+                 heldBackNodeIds,
+                 deploymentEngine.get());
         int poolSize = 2 * targetClusterSize + additionalNodeSlots;
 
         genesisExcluded = Set.copyOf(excludedFromGenesis);
@@ -749,7 +790,7 @@ public final class EmberCluster {
         for (int i = 1; i <= initialClusterSize; i++) {
             var slot = availableSlots.poll();
             var nodeId = nodeId(nodeIdPrefix + "-" + i).unwrap();
-            var port = basePort + slot;
+            var port = basePort + slot * portStride;
             var info = versionLabel.isEmpty()
                        ? NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap())
                        : NodeInfo.nodeInfo(nodeId,
@@ -776,9 +817,9 @@ public final class EmberCluster {
             var nodeInfo = initialNodes.get(i);
             var nodeIdStr = nodeInfo.id().id();
             var slot = slotsByNodeId.get(nodeIdStr);
-            var port = basePort + slot;
-            var mgmtPort = baseMgmtPort + slot;
-            var appHttpPort = baseAppHttpPort + slot;
+            var port = basePort + slot * portStride;
+            var mgmtPort = baseMgmtPort + slot * portStride;
+            var appHttpPort = baseAppHttpPort + slot * portStride;
             var node = createNode(nodeInfo.id(), port, mgmtPort, appHttpPort, initialNodes, false);
 
             if (heldBackNodeIds.contains(nodeIdStr)) {
@@ -1257,9 +1298,9 @@ public final class EmberCluster {
         }
 
         var slot = slotOpt.unwrap();
-        var port = basePort + slot;
-        var mgmtPort = baseMgmtPort + slot;
-        var appHttpPort = baseAppHttpPort + slot;
+        var port = basePort + slot * portStride;
+        var mgmtPort = baseMgmtPort + slot * portStride;
+        var appHttpPort = baseAppHttpPort + slot * portStride;
         var advertised = withVersionLabel(labels);
         var info = advertised.isEmpty()
                    ? NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap())
@@ -1477,7 +1518,7 @@ public final class EmberCluster {
                                           .isRouteReady())
                     .map(entry -> slotsByNodeId.get(entry.getKey()))
                     .filter(slot -> slot != null)
-                    .map(slot -> baseAppHttpPort + slot)
+                    .map(slot -> baseAppHttpPort + slot * portStride)
                     .sorted()
                     .toList();
     }
@@ -1629,7 +1670,7 @@ public final class EmberCluster {
         // in-process node derives its bootstrap admin key exactly as a production node does rather
         // than falling back to a random one. An Ember harness that diverged here would be a fixture
         // encoding different behaviour from the code it exists to exercise.
-        Option.some(new String(clusterSecret.get(), StandardCharsets.UTF_8)));
+        Option.some(new String(clusterSecret.get(), StandardCharsets.UTF_8))).withDeploymentEngine(engineOf(nodeId));
 
         lastNodeConfig.set(Option.some(config));
         // Single-JVM hosting: when this node would exit (drain complete, or its identity refused by the
@@ -1638,8 +1679,7 @@ public final class EmberCluster {
         // cluster's registry instead.
         return AetherNode.aetherNode(config,
                                      code -> onNodeExit(nodeId.id(),
-                                                        code),
-                                     replicaCutover.get())
+                                                        code))
                          .unwrap();
     }
 

@@ -44,6 +44,7 @@ import org.pragmatica.serialization.Codec;
 import org.pragmatica.serialization.CodecFor;
 
 import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 
 
 @Codec
@@ -1266,8 +1267,14 @@ public sealed interface AetherValue {
 
         /// A new target version was deployed: the rollback history carries over.
         public PreviousVersionValue withVersionChange(Version newVersion, long nowMs) {
+            return withVersionChange(currentVersion, newVersion, nowMs);
+        }
+
+        /// A new target version was deployed over `previous`, which need not be this record's own current version
+        /// (#2613: the previous version is the one the SliceTarget change replaced). The rollback history carries over.
+        public PreviousVersionValue withVersionChange(Version previous, Version newVersion, long nowMs) {
             return new PreviousVersionValue(artifactBase,
-                                            currentVersion,
+                                            previous,
                                             newVersion,
                                             nowMs,
                                             rollbackCount,
@@ -1635,6 +1642,23 @@ public sealed interface AetherValue {
                                                  dissolved);
         }
 
+        /// True when `other` differs from this value in the two time stamps alone, i.e. committing this value over
+        /// `other` would change nothing but when it was announced: `announcedAt`, and `observedCoreEpoch`, which is the
+        /// core's generation counter at that moment (it ticks once a second while the core leads) and which nothing
+        /// reads from an announcement. Both are refreshed by the governor's timer.
+        public boolean unchangedFrom(GovernorAnnouncementValue other) {
+            return new GovernorAnnouncementValue(governorId,
+                                                 memberCount,
+                                                 members,
+                                                 tcpAddress,
+                                                 other.announcedAt(),
+                                                 communityTerm,
+                                                 communityEpoch,
+                                                 other.observedCoreEpoch(),
+                                                 transitionedAt,
+                                                 dissolved).equals(other);
+        }
+
         public GovernorAnnouncementValue withMembers(List<NodeId> newMembers, String newTcpAddress, Epoch coreEpoch) {
             return new GovernorAnnouncementValue(governorId,
                                                  newMembers.size(),
@@ -1722,6 +1746,21 @@ public sealed interface AetherValue {
             return new ClusterPhaseValue(phase, updatedAt);
         }
     }
+
+    /// The deployment engine a cluster runs (phase-3 design 8.2). `LEGACY` is the default of every node; `FSM2` is the rewrite.
+    @Codec
+    enum DeploymentEngine {
+        LEGACY,
+        FSM2,
+        /// Wire sentinel required of every `@Codec` enum; not an engine a leader mints.
+        UNKNOWN
+    }
+
+    /// The engine marker, under [AetherKey.DeploymentEngineKey] (phase-3 design 8.2, H-5): `engine` is the engine the minting leader was
+    /// configured with, `mintedBy` and `mintedAt` name that leader (the committed `LeaderValue` at refusal time may name a later one, so a
+    /// refusal reads the writer from here). [LeaderAuthorized]: the only writer is the lineage mint's `LeaderTransaction`, which expects the
+    /// incarnation key and this key both absent, so either both commit or neither does.
+    record DeploymentEngineValue(DeploymentEngine engine, NodeId mintedBy, long mintedAt) implements AetherValue, LeaderAuthorized {}
 
     /// The cluster's lineage and incarnation, under [AetherKey.ClusterIncarnationKey] (#1529 part 1).
     /// `lineageId` names the cluster's history across cold restarts; `incarnation` counts those restarts
@@ -2962,9 +3001,30 @@ public sealed interface AetherValue {
         }
     }
 
-    record ConsumerGroupValue(NodeId assignedTo, String consumerId, long assignedAt) implements AetherValue {
-        public static ConsumerGroupValue consumerGroupValue(NodeId assignedTo, String consumerId) {
-            return new ConsumerGroupValue(assignedTo, consumerId, System.currentTimeMillis());
+    /// One partition's consumer assignment, written by the group coordinator on every rebalance.
+    ///
+    /// [EpochBearing] on `epoch` (#2626): Rabia commits pending batches in content-hash order, not submission
+    /// order, so two rebalances submitted within one commit latency can commit the OLDER assignment last — a new
+    /// consumer starved, or a departed one keeping its partitions, with nothing to re-derive it. Every rebalance
+    /// stamps all its partitions with `Epoch(incarnation, leaderTerm, counter)`, and the applier refuses a Put
+    /// whose epoch is strictly older than the committed one, so the newest rebalance stands whatever order the
+    /// batches commit in.
+    ///
+    /// The leader term dominates the counter, which closes what a bare counter could not: a successor leader
+    /// always stamps above its predecessor (no lagging-seed refusal, no equal-stamp tie between two leaders), and a
+    /// deposed leader's late batch carries a lower term and is refused. Within one term a single coordinator owns
+    /// the counter, so two distinct rebalances never share an epoch. `assignedAt` is for operator diagnosis only,
+    /// never for ordering.
+    ///
+    /// @param epoch the rebalance this assignment belongs to; strictly increases from one rebalance to the next
+    record ConsumerGroupValue(NodeId assignedTo, String consumerId, long assignedAt, Epoch epoch) implements AetherValue, EpochBearing<Epoch> {
+        @Override
+        public Epoch fenceEpoch() {
+            return epoch;
+        }
+
+        public static ConsumerGroupValue consumerGroupValue(NodeId assignedTo, String consumerId, Epoch epoch) {
+            return new ConsumerGroupValue(assignedTo, consumerId, System.currentTimeMillis(), epoch);
         }
     }
 
@@ -4176,4 +4236,104 @@ public sealed interface AetherValue {
                               ProcessIncarnation process,
                               Option<DepartureCause> cause,
                               long decidedAt) implements AetherValue, LeaderAuthorized {}
+
+    /// Where an admitted process stands (O3-1, q4 7.1): the identity facet of [NodeLifecycleValue]. `TERMINATED` is final (I-J8).
+    @Codec
+    enum IdentityState {
+        ADMITTED,
+        DEPARTED,
+        TERMINATED,
+        /// Wire sentinel required of every `@Codec` enum; not a state the leader records.
+        UNKNOWN
+    }
+
+    /// Why a node id ended: the six ranks of the terminator (membership overhaul spec 2.1). `UNKNOWN` is last and is the codec sentinel.
+    @Codec
+    enum IdentityCause {
+        OPERATOR,
+        OPERATOR_FORCE,
+        REPLACED,
+        RETIRED,
+        DRAINED,
+        GONE,
+        /// Wire sentinel required of every `@Codec` enum; not a cause the leader records.
+        UNKNOWN;
+        /// One of the six ranks the terminator writes.
+        public boolean isWriterRank() {
+            return this != UNKNOWN;
+        }
+    }
+
+    /// The phase of a node's capacity reservation. The first three and `UNKNOWN` are `CapacityReservationPhase`, unchanged; `FREED` is the
+    /// tombstone that replaces the delete of today's release (I-O1). `UNKNOWN` is last and is the codec sentinel.
+    @Codec
+    enum CapacityPhase {
+        DISPATCHED,
+        OBSERVED,
+        RELEASED,
+        FREED,
+        UNKNOWN
+    }
+
+    /// Why a capacity was freed (q4 7.1.2). `UNKNOWN` is last and is the codec sentinel.
+    @Codec
+    enum FreedCause {
+        REFUSED,
+        ABSENT_CONFIRMED,
+        OPERATOR_CLEAR,
+        TERMINATED,
+        EXTERNAL_RELEASED,
+        /// Wire sentinel required of every `@Codec` enum; not a cause the leader records.
+        UNKNOWN;
+        /// A cause the leader records.
+        public boolean isCause() {
+            return this != UNKNOWN;
+        }
+    }
+
+    /// The identity facet of a node's lifecycle record: the process admitted for the node id, its epoch (+1 per admission, leader-assigned),
+    /// and, once ended, the cause. `supersededBy` stays on `CapacityAdmissionValue` in rc5.
+    @Codec
+    record IdentityFacet(IdentityState state,
+                         long epoch,
+                         ProcessIncarnation process,
+                         String role,
+                         Option<IdentityCause> cause,
+                         long decidedAt) {
+        public IdentityFacet admitted(ProcessIncarnation bound, long now) {
+            return new IdentityFacet(IdentityState.ADMITTED, epoch + 1, bound, role, none(), now);
+        }
+
+        public IdentityFacet departed(long now) {
+            return new IdentityFacet(IdentityState.DEPARTED, epoch, process, role, cause, now);
+        }
+
+        public IdentityFacet terminated(IdentityCause why, long now) {
+            return new IdentityFacet(IdentityState.TERMINATED, epoch, process, role, some(why), now);
+        }
+    }
+
+    /// The capacity facet of a node's lifecycle record: `CapacityReservationValue` plus the tombstone fields. `freedCause` and `freedAt` are
+    /// present for `FREED` only.
+    @Codec
+    record CapacityFacet(String sourceName,
+                         String sourceBinding,
+                         String intendedRole,
+                         CapacityPhase phase,
+                         Option<FreedCause> freedCause,
+                         Option<Long> freedAt) {
+        public CapacityFacet withPhase(CapacityPhase next) {
+            return new CapacityFacet(sourceName, sourceBinding, intendedRole, next, freedCause, freedAt);
+        }
+
+        public CapacityFacet freed(FreedCause why, long now) {
+            return new CapacityFacet(sourceName, sourceBinding, intendedRole, CapacityPhase.FREED, some(why), some(now));
+        }
+    }
+
+    /// The lifecycle record of one node id, under [AetherKey.NodeIdentityKey] (O3, q4 7.1; owner ruling c37a7c11e2): the identity facet
+    /// (membership overhaul spec 2.1) and the capacity facet (the reservation) of the same node id, so a node's life is one record. A record is
+    /// never deleted (I-O1). [LeaderAuthorized]: every write is a `LeaderTransaction` mutation expecting the WHOLE value the leader read, so a
+    /// change to one facet cannot overwrite a concurrent change to the other (I-O4).
+    record NodeLifecycleValue(Option<IdentityFacet> identity, Option<CapacityFacet> capacity) implements AetherValue, LeaderAuthorized {}
 }

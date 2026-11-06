@@ -5,6 +5,7 @@
 package org.pragmatica.aether.stream.replication;
 
 import java.util.List;
+import java.util.function.Supplier;
 
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -57,6 +58,40 @@ class IsrOwnershipWriterTest {
         }
     }
 
+    /// #2594: a deposed leader still holds its local leader flag but has applied the new leader's record. A write carrying
+    /// that record passes the applier's equality fence, so the production writer is authorized only by its own record.
+    @Nested
+    class LeaderFence {
+        @Test
+        void decide_committedLeaderIsAnotherNode_writesNothing() {
+            var fenced = writer(List.of(A, B, C, D),
+                                (_, _, owner) -> List.of(owner, B, C),
+                                StreamPartitionOwnershipWriter.ownCommittedLeader(() -> Option.some(new LeaderValue(B, 2L)), A, () -> true));
+
+            assertThat(fenced.decide(STREAM, PARTITION, Option.none(), A, GENERATION).isEmpty()).isTrue();
+        }
+
+        /// Control: the same decision under this node's own record writes, so the refusal above is the fence.
+        @Test
+        void decide_committedLeaderIsThisNode_writes() {
+            var fenced = writer(List.of(A, B, C, D),
+                                (_, _, owner) -> List.of(owner, B, C),
+                                StreamPartitionOwnershipWriter.ownCommittedLeader(() -> Option.some(LEADER), A, () -> true));
+
+            assertThat(fenced.decide(STREAM, PARTITION, Option.none(), A, GENERATION).isPresent()).isTrue();
+        }
+
+        /// The record names this node, but its term has ended: `decide` is reachable without the writer's own leader gate.
+        @Test
+        void decide_ownRecordAfterLeadershipEnded_writesNothing() {
+            var fenced = writer(List.of(A, B, C, D),
+                                (_, _, owner) -> List.of(owner, B, C),
+                                StreamPartitionOwnershipWriter.ownCommittedLeader(() -> Option.some(LEADER), A, () -> false));
+
+            assertThat(fenced.decide(STREAM, PARTITION, Option.none(), A, GENERATION).isEmpty()).isTrue();
+        }
+    }
+
     @Nested
     class OwnerUnchanged {
         @Test
@@ -89,6 +124,18 @@ class IsrOwnershipWriterTest {
             assertThat(next.isr()).containsExactly(B, C);
             assertThat(next.ownershipTerm()).isEqualTo(4L);
             assertThat(next.ownerEpoch().isStrictlyAfter(current.ownerEpoch())).isTrue();
+        }
+
+        /// #2682: the failover takes no head into account, on purpose. The desired owner is elected from the live ISR even
+        /// when it is not the HRW-first of the live ISR members, whatever any member holds: an acknowledged record is on every
+        /// ISR member, and catching up an unacknowledged tail is the promotion gate's work (`OwnerActivation`), not the election's.
+        @Test
+        void next_ownerGone_desiredIsALiveIsrMemberNotRankedFirst_isElectedRegardlessOfHeads() {
+            var desired = ReplicaPlacement.rank(STREAM, PARTITION, List.of(B, C)).getLast();
+            var current = record(A, 3L, List.of(A, B, C), 4L);
+            var next = writer.next(STREAM, PARTITION, Option.some(current), desired, GENERATION, List.of(B, C, D)).unwrap();
+
+            assertThat(next.owner()).as("the desired member, not the HRW-first live ISR member").isEqualTo(desired);
         }
 
         /// The election rule itself: D is live and is the desired (HRW) owner, but it is not in the ISR, so it may
@@ -309,6 +356,10 @@ class IsrOwnershipWriterTest {
     }
 
     private static IsrOwnershipWriter writer(List<NodeId> live, InitialIsr initialIsr) {
+        return writer(live, initialIsr, () -> Option.some(LEADER));
+    }
+
+    private static IsrOwnershipWriter writer(List<NodeId> live, InitialIsr initialIsr, Supplier<Option<LeaderValue>> committedLeader) {
         return new IsrOwnershipWriter(() -> true,
                                       () -> GENERATION,
                                       HlcClock.hlcClock(A),
@@ -325,7 +376,7 @@ class IsrOwnershipWriterTest {
                                               return initialIsr.of(stream, partition, owner);
                                           }
                                       },
-                                      () -> Option.some(LEADER));
+                                      committedLeader);
     }
 
     @FunctionalInterface

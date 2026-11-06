@@ -16,13 +16,15 @@ import org.pragmatica.storage.StorageInstance;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.stream.segment.RetentionEnforcer.retentionEnforcer;
-import static org.pragmatica.aether.stream.segment.SealedSegment.sealedSegment;
-import static org.pragmatica.aether.stream.segment.StorageSegmentSink.storageSegmentSink;
 
 /// #1604: segment blocks are content-addressed, and the segment encoding carries offsets, event timestamps and
 /// payloads but NOT the stream or partition -- so two partitions holding the same events share ONE block.
 /// Reclaiming one partition's segment must not take the other's: retention drops its own ref, and the block
 /// goes only when no ref is left (garbage collection, never a delete by block id).
+///
+/// #2258: a block this build seals carries the identity header and so is never shared by two partitions
+/// (`SegmentSharedDeleteTest`); this case is kept for a LEGACY block, written before the header existed, which the
+/// two refs still share.
 class SharedBlockRetentionTest {
     private static final long ONE_GB = 1024 * 1024 * 1024L;
     private static final long EVENT_TIME = 1_000L;
@@ -33,11 +35,10 @@ class SharedBlockRetentionTest {
     void reclaimingOnePartitionsSegment_keepsTheSharedBlockForTheOther() {
         var storage = StorageInstance.storageInstance("shared", List.of(MemoryTier.memoryTier(ONE_GB)));
         var index = new SegmentIndex();
-        var sink = storageSegmentSink(storage, index);
         var bytes = encoded(List.of(event(0, "same"), event(1, "payload"), event(2, "everywhere")));
 
-        sink.seal(sealedSegment(STREAM_A, 0, 0, 2, 3, EVENT_TIME, EVENT_TIME, bytes)).await();
-        sink.seal(sealedSegment(STREAM_B, 0, 0, 2, 3, EVENT_TIME, EVENT_TIME, bytes)).await();
+        storeLegacy(storage, index, STREAM_A, bytes);
+        storeLegacy(storage, index, STREAM_B, bytes);
 
         assertThat(storage.resolveRef("streams/orders/0/0-2"))
             .as("identical events in two streams dedup onto one block")
@@ -50,6 +51,12 @@ class SharedBlockRetentionTest {
 
         assertThat(readB.isSuccess()).as("B's read of the shared block: %s", readB).isTrue();
         assertThat(readB.unwrap()).extracting(RawEvent::offset).containsExactly(0L, 1L, 2L);
+    }
+
+    /// A segment as a build before the identity header stored it: its events alone, under its ref.
+    private static void storeLegacy(StorageInstance storage, SegmentIndex index, String stream, byte[] events) {
+        storage.putRef("streams/" + stream + "/0/0-2", events).await().unwrap();
+        index.addSegment(stream, 0, 0, 2, EVENT_TIME);
     }
 
     private static RawEvent event(long offset, String payload) {

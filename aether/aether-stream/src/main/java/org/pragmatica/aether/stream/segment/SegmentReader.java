@@ -9,6 +9,7 @@ import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.IntStream;
 
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.lang.Cause;
@@ -53,13 +54,31 @@ public final class SegmentReader {
 
     public Promise<List<RawEvent>> readEvents(String streamName, int partition, long fromOffset, int maxEvents) {
         var endOffset = fromOffset + maxEvents - 1;
-        var refs = index.segmentRange(streamName, partition, fromOffset, endOffset);
+        var refs = contiguousRun(index.segmentRange(streamName, partition, fromOffset, endOffset));
 
         if (refs.isEmpty()) {
             return Promise.success(List.of());
         }
 
         return readFromSegmentRefs(streamName, partition, refs, fromOffset, maxEvents);
+    }
+
+    /// The refs up to the first gap between two of them. Retention removes segments while a read runs, so the range lookup can
+    /// return a run with a segment missing from the middle; reading across the gap would deliver events with offsets skipped
+    /// (#2224). The run stops before the gap: the read answers the prefix, and the next read starts inside the gap.
+    private static List<SegmentIndex.SegmentRef> contiguousRun(List<SegmentIndex.SegmentRef> refs) {
+        return refs.subList(0,
+                            IntStream.range(1,
+                                            refs.size())
+                                     .filter(position -> isGapBefore(refs, position))
+                                     .findFirst()
+                                     .orElse(refs.size()));
+    }
+
+    private static boolean isGapBefore(List<SegmentIndex.SegmentRef> refs, int position) {
+        return refs.get(position)
+                   .startOffset() != refs.get(position - 1)
+                                         .endOffset() + 1;
     }
 
     /// The latest event timestamp in `ref`'s block (#1604), decoded the same way a read decodes it -- the
@@ -72,8 +91,12 @@ public final class SegmentReader {
 
     /// What a segment rebuilt after a restart lacks, learned from ONE read of its block (#1604; #2201 3.2 item 4): its
     /// newest event timestamp, and `size`, the block's length after decryption and decompression, which is what the
-    /// index records as `originalSize` at seal.
-    public record SegmentFacts(Option<Long> maxTimestamp, int size) {}
+    /// index records as `originalSize` at seal; and whether the block carries the identity header (#2258).
+    public record SegmentFacts(Option<Long> maxTimestamp, int size, SegmentIndex.IdentityMark identity) {
+        public SegmentFacts(Option<Long> maxTimestamp, int size) {
+            this(maxTimestamp, size, SegmentIndex.IdentityMark.UNKNOWN);
+        }
+    }
 
     /// A read that THROWS while starting is a failed read, as in [#containedStep].
     public Promise<SegmentFacts> segmentFacts(String streamName, int partition, SegmentIndex.SegmentRef ref) {
@@ -84,13 +107,16 @@ public final class SegmentReader {
 
     private Promise<SegmentFacts> readFacts(String refName, SegmentIndex.SegmentRef ref) {
         return rawBlock(refName, ref).flatMap(raw -> SegmentProvenance.split(raw)
-                                                                      .flatMap(split -> deserializeAndFilter(refName,
-                                                                                                             split.events(),
-                                                                                                             Long.MIN_VALUE,
-                                                                                                             Integer.MAX_VALUE))
-                                                                      .map(events -> new SegmentFacts(latestTimestamp(events),
-                                                                                                      raw.length))
+                                                                      .flatMap(split -> factsOf(refName, raw, split))
                                                                       .async());
+    }
+
+    private static Result<SegmentFacts> factsOf(String refName, byte[] raw, SegmentProvenance.Split split) {
+        return deserializeAndFilter(refName, split.events(), Long.MIN_VALUE, Integer.MAX_VALUE).map(events -> new SegmentFacts(latestTimestamp(events),
+                                                                                                                               raw.length,
+                                                                                                                               split.identified()
+                                                                                                                               ? SegmentIndex.IdentityMark.IDENTIFIED
+                                                                                                                               : SegmentIndex.IdentityMark.LEGACY));
     }
 
     private static Option<Long> latestTimestamp(List<RawEvent> events) {

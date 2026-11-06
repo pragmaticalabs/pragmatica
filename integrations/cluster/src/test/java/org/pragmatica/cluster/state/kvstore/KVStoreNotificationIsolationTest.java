@@ -79,16 +79,24 @@ class KVStoreNotificationIsolationTest {
         assertThat(observed).containsExactly(A, B, C);
     }
 
+    /// D1 (design §5, R4.3) supersedes this test's reentrant-replay half: a replay from inside a handler is a replay
+    /// from the dispatcher thread, which a dispatched store refuses (KVStoreDispatcherTest
+    /// .replayFromTheDispatcherThreadIsRefused). Its nested live write from a replayed notification stays legal and
+    /// keeps this test. A is installed silently, so the burst carries it.
     @Test
-    void reentrantReplayDoesNotDuplicateCapturedViewOrMarkNestedLiveWriteAsReplay() {
+    void nestedLiveWriteFromAReplayedNotificationIsNotMarkedReplay() {
         var router = MessageRouter.mutable();
-        var store = store(router);
-        store.process(store.createBatch(List.of(new KVCommand.Put<>(A, "one"))));
+        var store = new KVStore<StructuredKey, Object>(router, new Serializer() {
+            @Override public <T> void write(ByteBuf buffer, T value) {}
+        }, new Deserializer() {
+            @SuppressWarnings("unchecked")
+            @Override public <T> T read(ByteBuf buffer) { return (T) Map.of(A, "one"); }
+        });
+        store.restoreSnapshot(new byte[0]);
         var observed = new ArrayList<String>();
         router.addRoute(KVStoreNotification.ValuePut.class, (KVStoreNotification.ValuePut<StructuredKey, Object> put) -> {
             observed.add(((Key) put.cause().key()).value() + ":" + store.isReplaying());
             if (put.cause().key().equals(A)) {
-                store.replayNotifications();
                 store.process(store.createBatch(List.of(new KVCommand.Put<>(B, "nested"))));
             }
         });

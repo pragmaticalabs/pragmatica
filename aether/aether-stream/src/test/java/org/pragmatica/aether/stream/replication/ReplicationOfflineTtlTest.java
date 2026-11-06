@@ -12,6 +12,8 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry;
@@ -33,13 +35,17 @@ class ReplicationOfflineTtlTest {
 
     private final ReplicationTransport transport = new ReplicationTransport() {
         @Override
-        public void send(NodeId target, ReplicationMessage message) {
+        public Promise<WriteOutcome> send(NodeId target, ReplicationMessage message) {
             plain.add(message);
+
+            return Promise.success(new WriteOutcome.Sent(target));
         }
 
         @Override
-        public void send(NodeId target, ReplicationMessage message, TimeSpan callerWait) {
+        public Promise<WriteOutcome> send(NodeId target, ReplicationMessage message, TimeSpan callerWait) {
             lifetimes.add(callerWait);
+
+            return Promise.success(new WriteOutcome.Sent(target));
         }
     };
 

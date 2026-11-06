@@ -1,156 +1,157 @@
-# Measured wall seconds per Consensus test class (#2414). Source: CI build-and-test run 40193494341 (rc5 fe25a2796), surefire suite times summed per top-level class (@Nested included), rounded up.
-# Used only to balance shards; a class missing here still runs, at the default weight (the largest measured class).
-# BootTokensLedgerTest, DurableWriterAdapterTest, IdentityFactsTest, IdentityLedgerTest, ProtocolConfigIdentityLedgerTest (#2429): surefire class time 0.15-0.94 s in 3 runs on cloudbb-3 at c14c1858f3; 1 each.
-# OfferJournalTest (#2429, ID-1c): a fraction of a second on bigboy (a few small temp-file writes); 1.
-AcceptorVerdictTripwireTest 36
-AwaitingKvSyncTest 1
-BatchTest 1
-CertificateRotationTripwireTest 13
-ClusterFormationConfigTest 1
-ClusterFsmRouterReconnectTest 1
-ClusterStateNotificationTest 1
-CommittedBatchLedgerTest 1
-ConnectionDirectionTest 1
-ConnectionInitiatorRetentionTest 1
-DualDialTripwireTest 5
-ElectingPeerObservationTest 1
-EngineServingWritePathTest 1
-FileBackedParticipationMarkerTest 1
-GenerationSnapshotSourceTest 1
-GenesisJoinRuleTest 1
-GenesisRecoveryActionsTest 1
-GenesisViewAgreementSimulationTest 3
-HelloWireShapeTripwireTest 1
-HlcClockTest 1
-HlcTimestampTest 1
-InboundDispatchTripwireTest 25
-InboundFifoPinTest 13
-InboundMessageAuthorityTest 1
-JoinerElectionTest 3
-LeaderAdoptionSequenceGateTest 1
-LeaderElectionContextTest 1
-LeaderElectionHandledObservabilityTest 1
-LeaderElectionStaleTimerTest 1
-LeaderLeaseTest 2
-LeaderPreVoteTest 13
-LeaderProposalInFlightTest 1
-LeaderReconnectTransportTest 5
-LeaderReconnectTripwireTest 1
-LifecycleGoldenTranscriptTest 2
-LifecycleRoleTruthTableTest 1
-LifecycleTripwireTest 1
-OfflineBufferTripwireTest 5
-OutboundMessageLimitTest 1
-OversizedLaneFrameTest 1
-PeerStateArbitrationAgreementTest 2
-PeerStateDeliveryOrderTripwireTest 1
-PeerStateLinkRankTest 1
-PeerStateTest 1
-PhaseDataRoundTest 1
-PhaseDataTest 1
-PhaseTest 1
-QuicActivityKickStrandedLossTest 23
-QuicActivityKickTest 7
-QuicActivityKickWiringTest 24
-QuicBootTokenAdmissionTest 25
-QuicClusterAdmissionTest 26
-QuicClusterClientReconnectTest 17
-QuicClusterNetworkBlackHoleTest 15
-QuicClusterNetworkConnectingStalenessTest 9
-QuicClusterNetworkEncodeFailureTest 1
-QuicClusterNetworkHintEmissionTest 17
-QuicClusterNetworkInboundReadmitTest 29
-QuicClusterNetworkLifecycleTest 59
-QuicClusterNetworkLivenessSweepTest 36
-QuicClusterNetworkOfflineTtlTest 2
-QuicClusterNetworkReconcilerTest 52
-QuicClusterNetworkStreamZombieTest 5
-QuicClusterNetworkTest 60
-QuicClusterServerStopDuringBindTest 3
-QuicClusterServerTest 9
-QuicConsensusBackpressureTest 1
-QuicDialAttemptTest 41
-QuicDialFailureMetricsTest 9
-QuicDialSkippedObservationTest 3
-QuicDialSocketTest 5
-QuicEarlyStandInLaneTest 5
-QuicInboundRefusalCounterTest 17
-QuicLaneDataHandlerUnknownTagTest 1
-QuicLaneEndMarkerFinLossTest 32
-QuicLaneEndMarkerTest 1
-QuicLaneFinishUnderLossTest 43
-QuicLaneOwnershipTest 29
-QuicLaneWedgeTest 5
-QuicLateDesignatedDialTest 15
-QuicLinkRankNetworkTest 45
-QuicLinkRankWireTest 9
-QuicLoserDrainTest 14
-QuicMisdirectedDialTest 10
-QuicNativeLibraryFloorTest 1
-QuicPeerConnectionLaneOpenDedupTest 1
-QuicPeerConnectionLaneOwnershipTest 1
-QuicReceiptFloorWiringTest 1
-QuicReconnectObservationControlTest 5
-QuicRefusalTotalsTest 1
-QuicServerPortExclusiveTest 11
-QuicSimultaneousDialLaneTest 88
-QuicSupersedeObservationTest 1
-QuicTlsProviderTest 1
-QuicUntrackedConnectionBoundTest 13
-QuorumWaitingKvPollTest 2
-QuorumWaitingPeriodicRecheckTest 2
-RabiaConsensusIntegrationTest 2
-RabiaDemotionNotificationTest 1
-RabiaElectorateRefusalLogTest 1
-RabiaEngineApplyContainmentTest 2
-RabiaEngineApplyOrderTest 1
-RabiaEngineCleanupArmingTest 1
-RabiaEnginePauseResumeTest 3
-RabiaEngineSlowApplyDiagnosticsTest 6
-RabiaEngineTest 2
-RabiaHierarchySafetyTest 5
-RabiaMultiPhaseTest 1
-RabiaNoReplayWhileInactiveTest 6
-RabiaObserverStaleSyncTickTest 1
-RabiaOwnRestoreFailureTest 7
-RabiaPausedSyncResponseTest 1
-RabiaQuorumIntersectionTest 1
-RabiaReorderedDeliveryTest 37
-RabiaRestorePendingMergeTest 1
-RabiaRestoredStateSaveFailureLogTest 11
-RabiaSpecInvariantTest 1
-RabiaStaleSyncInputTest 1
-RabiaStopAdmissionTest 1
-RabiaSuperMajorityFastPathTest 1
-RabiaSyncAdoptionFirstBootMarkerTest 2
-RabiaSyncAdoptionLiveResponderTest 1
-RabiaSyncAdoptionOwnSnapshotTest 1
-RabiaSyncAdoptionQuorumTest 1
-RabiaSyncAdoptionResponseQuorumTest 2
-RabiaValueLockingTest 1
-RabiaVoterReconfigurationTest 1
-RabiaWrapperInvariantTest 1
-RankStaircaseTest 4
-ReconcileBackoffSwimGateTest 29
-ReconcileBackoffTripwireTest 5
-ReplicaFeedEngineTripwireTest 1
-SelfShutdownRemovalTest 5
-StopDuringRotationTripwireTest 5
-StreamTypeTest 1
-SyncResponseResponderStateCodecTest 1
-TopologyConfigTest 1
-TopologyObserverConnectivityQuorumTest 3
-TopologyObserverModeTest 2
-TopologyObserverSnapshotDualModeTest 1
-TopologyObserverTest 1
-TopologyObserverVoterQuorumTest 2
-V1554AmnesiaProbeTest 2
-V1796ProbeTest 1
-BootTokensTest 1
-BootTokensLedgerTest 1
-DurableWriterAdapterTest 1
-IdentityFactsTest 1
-IdentityLedgerTest 1
-ProtocolConfigIdentityLedgerTest 1
-OfferJournalTest 1
-OfferLockStressTest 3
+# Measured wall seconds per consensus test class: surefire suite times summed per top-level class (@Nested included),
+# rounded up. Generated by tools/regen-shard-weights.py --module consensus --run 41371046891; do not edit by hand.
+# Used only to balance shards; a class missing here still runs, at the planner's default weight (75th percentile).
+AcceptorVerdictTripwireTest 33  # measured at run 41371046891
+AwaitingKvSyncTest 1  # measured at run 41371046891
+BatchTest 1  # measured at run 41371046891
+BootTokensLedgerTest 1  # measured at run 41371046891
+BootTokensTest 1  # measured at run 41371046891
+CertificateRotationTripwireTest 13  # measured at run 41371046891
+ClusterFormationConfigTest 1  # measured at run 41371046891
+ClusterFsmRouterReconnectTest 1  # measured at run 41371046891
+ClusterStateNotificationTest 1  # measured at run 41371046891
+CommittedBatchLedgerTest 1  # measured at run 41371046891
+ConnectionDirectionTest 1  # measured at run 41371046891
+ConnectionInitiatorRetentionTest 1  # measured at run 41371046891
+DualDialTripwireTest 5  # measured at run 41371046891
+DurableWriterAdapterTest 1  # measured at run 41371046891
+ElectingPeerObservationTest 1  # measured at run 41371046891
+EngineServingWritePathTest 1  # measured at run 41371046891
+FileBackedParticipationMarkerTest 1  # measured at run 41371046891
+GenerationSnapshotSourceTest 1  # measured at run 41371046891
+GenesisJoinRuleTest 1  # measured at run 41371046891
+GenesisRecoveryActionsTest 1  # measured at run 41371046891
+GenesisViewAgreementSimulationTest 2  # measured at run 41371046891
+HelloWireShapeTripwireTest 1  # measured at run 41371046891
+HlcClockTest 1  # measured at run 41371046891
+HlcTimestampTest 1  # measured at run 41371046891
+IdentityFactsTest 1  # measured at run 41371046891
+IdentityLedgerTest 1  # measured at run 41371046891
+InboundDispatchTripwireTest 25  # measured at run 41371046891
+InboundFifoPinTest 13  # measured at run 41371046891
+InboundMessageAuthorityTest 1  # measured at run 41371046891
+JoinerElectionTest 3  # measured at run 41371046891
+LeaderAdoptionSequenceGateTest 1  # measured at run 41371046891
+LeaderElectionContextTest 1  # measured at run 41371046891
+LeaderElectionHandledObservabilityTest 1  # measured at run 41371046891
+LeaderElectionStaleTimerTest 1  # measured at run 41371046891
+LeaderLeaseTest 2  # measured at run 41371046891
+LeaderPreVoteTest 13  # measured at run 41371046891
+LeaderProposalInFlightTest 2  # measured at run 41371046891
+LeaderReconnectTransportTest 5  # measured at run 41371046891
+LeaderReconnectTripwireTest 1  # measured at run 41371046891
+LifecycleGoldenTranscriptTest 1  # measured at run 41371046891
+LifecycleRoleTruthTableTest 1  # measured at run 41371046891
+LifecycleTripwireTest 1  # measured at run 41371046891
+OfferJournalTest 1  # measured at run 41371046891
+OfferLockStressTest 2  # measured at run 41371046891
+OfflineBufferTripwireTest 5  # measured at run 41371046891
+OutboundMessageLimitTest 1  # measured at run 41371046891
+OversizedLaneFrameTest 1  # measured at run 41371046891
+PeerStateArbitrationAgreementTest 1  # measured at run 41371046891
+PeerStateDeliveryOrderTripwireTest 1  # measured at run 41371046891
+PeerStateLinkRankTest 1  # measured at run 41371046891
+PeerStateTest 1  # measured at run 41371046891
+PhaseDataRoundTest 1  # measured at run 41371046891
+PhaseDataTest 1  # measured at run 41371046891
+PhaseTest 1  # measured at run 41371046891
+ProtocolConfigIdentityLedgerTest 1  # measured at run 41371046891
+QuicActivityKickStrandedLossTest 23  # measured at run 41371046891
+QuicActivityKickTest 7  # measured at run 41371046891
+QuicActivityKickWiringTest 24  # measured at run 41371046891
+QuicBootTokenAdmissionTest 70  # measured at run 41371046891
+QuicClusterAdmissionTest 25  # measured at run 41371046891
+QuicClusterClientReconnectTest 17  # measured at run 41371046891
+QuicClusterNetworkBlackHoleTest 15  # measured at run 41371046891
+QuicClusterNetworkConnectingStalenessTest 9  # measured at run 41371046891
+QuicClusterNetworkEncodeFailureTest 1  # measured at run 41371046891
+QuicClusterNetworkHintEmissionTest 17  # measured at run 41371046891
+QuicClusterNetworkInboundReadmitTest 29  # measured at run 41371046891
+QuicClusterNetworkLifecycleTest 55  # measured at run 41371046891
+QuicClusterNetworkLivenessSweepTest 36  # measured at run 41371046891
+QuicClusterNetworkOfflineTtlTest 3  # measured at run 41371046891
+QuicClusterNetworkReconcilerTest 49  # measured at run 41371046891
+QuicClusterNetworkStreamZombieTest 5  # measured at run 41371046891
+QuicClusterNetworkTest 60  # measured at run 41371046891
+QuicClusterServerStopDuringBindTest 3  # measured at run 41371046891
+QuicClusterServerTest 9  # measured at run 41371046891
+QuicConsensusBackpressureTest 1  # measured at run 41371046891
+QuicDialAttemptTest 41  # measured at run 41371046891
+QuicDialFailureMetricsTest 9  # measured at run 41371046891
+QuicDialSkippedObservationTest 3  # measured at run 41371046891
+QuicDialSocketTest 5  # measured at run 41371046891
+QuicEarlyStandInLaneTest 5  # measured at run 41371046891
+QuicInboundRefusalCounterTest 17  # measured at run 41371046891
+QuicLaneDataHandlerUnknownTagTest 1  # measured at run 41371046891
+QuicLaneEndMarkerFinLossTest 32  # measured at run 41371046891
+QuicLaneEndMarkerTest 1  # measured at run 41371046891
+QuicLaneFinishUnderLossTest 43  # measured at run 41371046891
+QuicLaneOwnershipTest 29  # measured at run 41371046891
+QuicLaneWedgeTest 5  # measured at run 41371046891
+QuicLateDesignatedDialTest 15  # measured at run 41371046891
+QuicLinkRankNetworkTest 45  # measured at run 41371046891
+QuicLinkRankWireTest 10  # measured at run 41371046891
+QuicLoserDrainTest 15  # measured at run 41371046891
+QuicMisdirectedDialTest 10  # measured at run 41371046891
+QuicNativeLibraryFloorTest 1  # measured at run 41371046891
+QuicPeerConnectionLaneOpenDedupTest 1  # measured at run 41371046891
+QuicPeerConnectionLaneOwnershipTest 1  # measured at run 41371046891
+QuicReceiptFloorWiringTest 1  # measured at run 41371046891
+QuicReconnectObservationControlTest 5  # measured at run 41371046891
+QuicRefusalTotalsTest 1  # measured at run 41371046891
+QuicServerPortExclusiveTest 11  # measured at run 41371046891
+QuicSimultaneousDialLaneTest 88  # measured at run 41371046891
+QuicSupersedeObservationTest 1  # measured at run 41371046891
+QuicTlsProviderTest 1  # measured at run 41371046891
+QuicUntrackedConnectionBoundTest 14  # measured at run 41371046891
+QuorumWaitingKvPollTest 2  # measured at run 41371046891
+QuorumWaitingPeriodicRecheckTest 2  # measured at run 41371046891
+RabiaConsensusIntegrationTest 2  # measured at run 41371046891
+RabiaDemotionNotificationTest 1  # measured at run 41371046891
+RabiaElectorateRefusalLogTest 1  # measured at run 41371046891
+RabiaEngineApplyContainmentTest 2  # measured at run 41371046891
+RabiaEngineApplyOrderTest 1  # measured at run 41371046891
+RabiaEngineCleanupArmingTest 1  # measured at run 41371046891
+RabiaEnginePassiveVotersTest 1  # measured at run 41371046891
+RabiaEnginePauseResumeTest 3  # measured at run 41371046891
+RabiaEngineSlowApplyDiagnosticsTest 6  # measured at run 41371046891
+RabiaEngineTest 2  # measured at run 41371046891
+RabiaHierarchySafetyTest 5  # measured at run 41371046891
+RabiaMultiPhaseTest 1  # measured at run 41371046891
+RabiaNoReplayWhileInactiveTest 6  # measured at run 41371046891
+RabiaObserverStaleSyncTickTest 1  # measured at run 41371046891
+RabiaOwnRestoreFailureTest 7  # measured at run 41371046891
+RabiaPartialPartitionLivenessTest 41  # measured at run 41371046891
+RabiaPausedSyncResponseTest 1  # measured at run 41371046891
+RabiaQuorumIntersectionTest 1  # measured at run 41371046891
+RabiaReorderedDeliveryTest 35  # measured at run 41371046891
+RabiaRestorePendingMergeTest 1  # measured at run 41371046891
+RabiaRestoredStateSaveFailureLogTest 11  # measured at run 41371046891
+RabiaSpecInvariantTest 1  # measured at run 41371046891
+RabiaStaleSyncInputTest 1  # measured at run 41371046891
+RabiaStopAdmissionTest 1  # measured at run 41371046891
+RabiaSuperMajorityFastPathTest 0  # measured at run 41371046891
+RabiaSyncAdoptionFirstBootMarkerTest 2  # measured at run 41371046891
+RabiaSyncAdoptionLiveResponderTest 1  # measured at run 41371046891
+RabiaSyncAdoptionOwnSnapshotTest 1  # measured at run 41371046891
+RabiaSyncAdoptionQuorumTest 1  # measured at run 41371046891
+RabiaSyncAdoptionResponseQuorumTest 2  # measured at run 41371046891
+RabiaValueLockingTest 1  # measured at run 41371046891
+RabiaVoterReconfigurationTest 1  # measured at run 41371046891
+RabiaWrapperInvariantTest 1  # measured at run 41371046891
+RankStaircaseTest 4  # measured at run 41371046891
+ReconcileBackoffSwimGateTest 29  # measured at run 41371046891
+ReconcileBackoffTripwireTest 5  # measured at run 41371046891
+ReplicaFeedEngineTripwireTest 1  # measured at run 41371046891
+SelfShutdownRemovalTest 5  # measured at run 41371046891
+StopDuringRotationTripwireTest 5  # measured at run 41371046891
+StreamTypeTest 1  # measured at run 41371046891
+SyncResponseResponderStateCodecTest 1  # measured at run 41371046891
+TopologyConfigTest 1  # measured at run 41371046891
+TopologyObserverConnectivityQuorumTest 3  # measured at run 41371046891
+TopologyObserverModeTest 1  # measured at run 41371046891
+TopologyObserverSnapshotDualModeTest 1  # measured at run 41371046891
+TopologyObserverTest 1  # measured at run 41371046891
+TopologyObserverVoterQuorumTest 2  # measured at run 41371046891
+V1554AmnesiaProbeTest 1  # measured at run 41371046891
+V1796ProbeTest 1  # measured at run 41371046891

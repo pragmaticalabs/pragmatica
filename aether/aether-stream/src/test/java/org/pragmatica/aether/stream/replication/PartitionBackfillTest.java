@@ -329,7 +329,7 @@ class PartitionBackfillTest {
             var backfill = partitionBackfill(registry,
                                              recovery,
                                              gated,
-                                             (_, message) -> acks.add(message),
+                                             AcceptingReplicationTransport.accepting((_, message) -> acks.add(message)),
                                              SELF,
                                              TimeSpan.timeSpan(500).millis());
 
@@ -1858,6 +1858,131 @@ class PartitionBackfillTest {
         }
     }
 
+    /// #2347 pin: a replica that lost the TAIL `ReplicateEvents` chunk of a run (no later chunk reveals the gap on the
+    /// receive path) is repaired by the #333/#445 interval re-verify, never by the live path. The repair rests on the
+    /// replica's own registry row staying STALE while live chunks apply (see
+    /// `WriteIdleResidualReverify.redriveCandidates_liveReplicatingNonOwner_quiescedAcrossManyTicks_noPerTickProbe`):
+    /// the row stays at the backfilled offset, so after `sourceWaitBound` the partition re-enters
+    /// {@link PartitionBackfill#redriveCandidates}, the owner's head is probed, and the missing tail is pulled. If the
+    /// row is ever made to track live applies, `ownerHead > selfConfirmed` must still fire (arm 2 pins that edge).
+    @Nested
+    class LostTail {
+        private static final NodeId NODE_AA = NodeId.nodeId("node-aa").unwrap();
+        private static final NodeId NODE_BB = NodeId.nodeId("node-bb").unwrap();
+        private static final NodeId NODE_CC = NodeId.nodeId("node-cc").unwrap();
+        private static final TimeSpan BOUND = TimeSpan.timeSpan(10).seconds();
+        private static final List<NodeId> POPULATED = List.of(NODE_AA, NODE_BB, NODE_CC);
+        private static final NodeId OWNER = ReplicaPlacement.rank(STREAM, PARTITION, POPULATED).getFirst();
+        private static final NodeId SELF_NON_OWNER = ReplicaPlacement.rank(STREAM, PARTITION, POPULATED).getLast();
+
+        @Test
+        void redriveCandidates_liveReplicaMissedTheTail_afterReverifyInterval_pullsTheTail() {
+            // Owner holds 0..15; the replica backfills to 15, then applies 16..20 live. The owner then appends 21,
+            // whose chunk is dropped on the replica, and the partition goes write-idle.
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SELF_NON_OWNER);
+
+            var clock = new AtomicLong(0L);
+            var owner = new ArrayList<>(eventsFrom(0, 16));
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             ownerServing(owner),
+                                             ownerHeadProbe(owner),
+                                             localHeadWatermark(),
+                                             SELF_NON_OWNER,
+                                             BOUND,
+                                             clock::get,
+                                             () -> POPULATED);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).isTrue();
+            assertThat(descriptorFor(SELF_NON_OWNER).confirmedOffset()).isEqualTo(15L);
+
+            applyLive(16, 5);
+            owner.addAll(eventsFrom(16, 6));
+
+            assertThat(localHead()).as("control: the tail 21 never reached the replica").isEqualTo(20L);
+            assertThat(descriptorFor(SELF_NON_OWNER).confirmedOffset()).as("live applies leave the replica's own row stale").isEqualTo(15L);
+            assertThat(backfill.redriveCandidates()).as("quiesced before the interval").isEmpty();
+
+            clock.set(BOUND.millis() - 1);
+            assertThat(backfill.redriveCandidates()).as("still inside the interval").isEmpty();
+
+            clock.set(BOUND.millis() + 1);
+            assertThat(backfill.redriveCandidates()).as("interval elapsed: the lost-tail replica is re-driven")
+                                                    .containsExactly(PartitionKey.partitionKey(STREAM, PARTITION));
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).isTrue();
+            assertThat(localHead()).as("the re-verify pulled the lost tail").isEqualTo(21L);
+            assertThat(descriptorFor(SELF_NON_OWNER).confirmedOffset()).isEqualTo(21L);
+            assertThat(backfill.redriveCandidates()).as("repaired replica re-quiesces").isEmpty();
+        }
+
+        @Test
+        void redriveCandidates_completeReplicaAtOwnerHead_afterReverifyInterval_pullsNothing() {
+            // Negative control for the strict `ownerHead > selfConfirmed` comparison: row == owner head == 21.
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SELF_NON_OWNER);
+
+            var clock = new AtomicLong(0L);
+            var owner = new ArrayList<>(eventsFrom(0, 22));
+            var catchups = new AtomicInteger(0);
+            var served = ownerServing(owner);
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             (target, request) -> countedCatchup(catchups, served, target, request),
+                                             ownerHeadProbe(owner),
+                                             localHeadWatermark(),
+                                             SELF_NON_OWNER,
+                                             BOUND,
+                                             clock::get,
+                                             () -> POPULATED);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).isTrue();
+            assertThat(descriptorFor(SELF_NON_OWNER).confirmedOffset()).isEqualTo(21L);
+            assertThat(catchups.get()).as("the initial pull").isEqualTo(1);
+
+            clock.set(BOUND.millis() + 1);
+            assertThat(backfill.redriveCandidates()).containsExactly(PartitionKey.partitionKey(STREAM, PARTITION));
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).isTrue();
+
+            assertThat(catchups.get()).as("owner not ahead: no second catch-up request").isEqualTo(1);
+            assertThat(localHead()).isEqualTo(21L);
+        }
+
+        private Promise<ReplicationMessage.CatchupResponse> countedCatchup(AtomicInteger counter,
+                                                                          CatchupTransport delegate,
+                                                                          NodeId target,
+                                                                          ReplicationMessage.CatchupRequest request) {
+            counter.incrementAndGet();
+
+            return delegate.requestCatchup(target, request);
+        }
+
+        private void applyLive(long startOffset, int count) {
+            eventsFrom(startOffset, count).forEach(event -> manager.appendRecovered(STREAM,
+                                                                                    PARTITION,
+                                                                                    event.data(),
+                                                                                    event.timestamp())
+                                                                    .unwrap());
+        }
+
+        private long localHead() {
+            return manager.partitionInfo(STREAM, PARTITION)
+                          .map(StreamPartitionManager.PartitionInfo::headOffset)
+                          .or(-1L);
+        }
+
+        private SelfWatermark localHeadWatermark() {
+            return (_, _) -> localHead();
+        }
+
+        private ReplicaWatermarkProbe ownerHeadProbe(List<EventData> owner) {
+            return (target, _, _) -> target.equals(OWNER)
+                                     ? Promise.success((long) owner.size() - 1)
+                                     : ReplicationError.General.REPLICATION_TIMEOUT.promise();
+        }
+    }
+
     /// #336 phase-2 (lossless owner-kill failover): when `replicas > minSyncReplicas` a freshly HRW-promoted
     /// owner can be BEHIND a surviving replica, because different client-acked writes were confirmed by
     /// different peers. Promoting it at its short local watermark serves a truncated log (silent data loss).
@@ -2869,7 +2994,7 @@ class PartitionBackfillTest {
             registry.registerReplica(STREAM, PARTITION, NON_OWNER); // self, SYNCING@-1
 
             var sent = new AtomicReference<SentMessage>();
-            ReplicationTransport capturing = (target, message) -> sent.set(new SentMessage(target, message));
+            ReplicationTransport capturing = AcceptingReplicationTransport.accepting((target, message) -> sent.set(new SentMessage(target, message)));
             var backfill = partitionBackfill(registry,
                                              recovery,
                                              ownerSource(OWNER, 2L, eventsFrom(2, 14)), // owner holds 2..15

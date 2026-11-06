@@ -70,6 +70,8 @@ public final class ReplicaFeedServer<K extends StructuredKey, V> {
     private static final Logger log = LoggerFactory.getLogger(ReplicaFeedServer.class);
     private static final long NANOS_PER_MILLI = 1_000_000L;
     private static final int GRANT_ACK_SEQUENCE = 0;
+    /// How often a serving node calls [#heartbeat()]; the wiring schedules it, and a client's carry grace budgets one such interval.
+    public static final long HEARTBEAT_INTERVAL_MILLIS = 1_000L;
 
     private record TransferKey(NodeId peer, long requestId) {}
 
@@ -175,11 +177,14 @@ public final class ReplicaFeedServer<K extends StructuredKey, V> {
     }
 
     // ---- periodic (scheduler thread) ----
-    /// Releases the subscriptions of peers that went away, pushes each ready subscription's queue to the transport, and abandons idle transfers.
+    /// Releases the subscriptions of peers that went away, pushes each ready subscription's queue to the transport, dismisses every subscriber
+    /// once the node stopped serving (a governor that lost its role or fell behind its core closes its members' feed at once), and abandons idle
+    /// transfers.
     @Contract
     public void tick() {
         releaseGone();
         subscribers.values().forEach(this::drain);
+        dismissWhenNotServing();
         abandonIdleTransfers();
     }
 
@@ -291,14 +296,22 @@ public final class ReplicaFeedServer<K extends StructuredKey, V> {
         if (reason != CloseReason.RELEASED) {
             var ring = store.replicaRing();
 
-            refuse(peer, requestId, refusalFor(reason), ring.floor(), ring.tag());
+            refuse(peer, requestId, refusalFor(reason, ring.tag()), ring.floor(), ring.tag());
         }
     }
 
-    private static RefusalReason refusalFor(CloseReason reason) {
+    /// A ring that lost its incarnation (the store was reset: the node is stopping or restarting empty) is not an incarnation change the subscriber
+    /// must re-base on; it is a source that no longer serves (spec section 5 row 17), so the subscriber keeps its position and resumes elsewhere.
+    private static RefusalReason refusalFor(CloseReason reason, IncarnationTag tag) {
         return reason == CloseReason.INCARNATION_MISMATCH
-               ? RefusalReason.INCARNATION_MISMATCH
+               ? mismatchOrNotServing(tag)
                : RefusalReason.EVICTED;
+    }
+
+    private static RefusalReason mismatchOrNotServing(IncarnationTag tag) {
+        return tag.isNone()
+               ? RefusalReason.NOT_SERVING
+               : RefusalReason.INCARNATION_MISMATCH;
     }
 
     // ---- drain ----
@@ -309,6 +322,18 @@ public final class ReplicaFeedServer<K extends StructuredKey, V> {
                                            .isClosed() || !connected.test(served.peer()) || !eligible.test(served.peer()))
                    .toList()
                    .forEach(this::release);
+    }
+
+    /// After the drain, so a queued heartbeat that says `serving = false` still goes out before the refusal.
+    private void dismissWhenNotServing() {
+        if (!serving.getAsBoolean()) {
+            subscribers.values().stream().toList().forEach(this::dismiss);
+        }
+    }
+
+    private void dismiss(Served served) {
+        refuse(served.peer(), served.requestId(), RefusalReason.NOT_SERVING);
+        release(served);
     }
 
     private void release(Served served) {

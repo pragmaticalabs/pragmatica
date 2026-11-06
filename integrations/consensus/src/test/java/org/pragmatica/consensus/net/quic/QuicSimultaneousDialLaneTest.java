@@ -131,7 +131,7 @@ class QuicSimultaneousDialLaneTest {
         var deadline = System.nanoTime() + AWAIT.nanos();
 
         while (true) {
-            var outcome = network.sendOutcome(peer, probe).await(AWAIT).fold(cause -> fail("send failed: " + cause.message()),
+            var outcome = network.send(peer, probe).await(AWAIT).fold(cause -> fail("send failed: " + cause.message()),
                                                                               written -> written);
 
             if (outcome.isSent()) {

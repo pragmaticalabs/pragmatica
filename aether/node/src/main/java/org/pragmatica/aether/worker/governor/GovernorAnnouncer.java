@@ -38,6 +38,11 @@ public interface GovernorAnnouncer {
     @Contract
     void onMembershipChange(List<SwimMember> members);
 
+    /// The re-announce timer's tick, and the only request that asks the core to re-commit an unchanged announcement
+    /// (#2542): it keeps the committed `announcedAt` fresh. A membership change never does.
+    @Contract
+    void refresh();
+
     boolean isGovernor();
     Option<NodeId> currentGovernor();
 
@@ -47,14 +52,27 @@ public interface GovernorAnnouncer {
                                                Supplier<Option<GovernorAnnouncementValue>> committed,
                                                BooleanSupplier eligible,
                                                Function<GovernorAuthorityMessage.Request, Promise<GovernorAuthorityMessage.Response>> request) {
+        return governorAnnouncer(self, community, address, committed, eligible, request, DEFAULT_REANNOUNCE_INTERVAL);
+    }
+
+    /// `reannounceInterval` is the timer's period; the default is the one the core's freshness window is sized from.
+    static GovernorAnnouncer governorAnnouncer(NodeId self,
+                                               Supplier<String> community,
+                                               Supplier<String> address,
+                                               Supplier<Option<GovernorAnnouncementValue>> committed,
+                                               BooleanSupplier eligible,
+                                               Function<GovernorAuthorityMessage.Request, Promise<GovernorAuthorityMessage.Response>> request,
+                                               TimeSpan reannounceInterval) {
         record announcer(NodeId self,
                          Supplier<String> community,
                          Supplier<String> address,
                          Supplier<Option<GovernorAnnouncementValue>> committed,
                          BooleanSupplier eligible,
                          Function<GovernorAuthorityMessage.Request, Promise<GovernorAuthorityMessage.Response>> request,
+                         TimeSpan reannounceInterval,
                          AtomicBoolean started,
                          AtomicBoolean pending,
+                         AtomicBoolean refreshDue,
                          AtomicLong sequence,
                          AtomicReference<List<SwimMember>> members,
                          AtomicReference<Option<GovernorAnnouncementValue>> granted,
@@ -68,7 +86,7 @@ public interface GovernorAnnouncer {
             @Contract
             public void start() {
                 if (started.compareAndSet(false, true)) {
-                    timer.set(SharedScheduler.scheduleAtFixedRate(this::nominate, DEFAULT_REANNOUNCE_INTERVAL));
+                    timer.set(SharedScheduler.scheduleAtFixedRate(this::refresh, reannounceInterval));
                 }
             }
 
@@ -77,6 +95,7 @@ public interface GovernorAnnouncer {
             public void stop() {
                 started.set(false);
                 sequence.set(-1);
+                refreshDue.set(false);
                 granted.set(Option.none());
                 timer.cancel();
             }
@@ -112,6 +131,15 @@ public interface GovernorAnnouncer {
                 nominate();
             }
 
+            /// The flag outlives a tick that found a request in flight, so the next request (edge or tick) carries it
+            /// until a grant answers it.
+            @Override
+            @Contract
+            public void refresh() {
+                refreshDue.set(true);
+                nominate();
+            }
+
             @Contract
             private void nominate() {
                 if (!started.get() || !eligible.getAsBoolean() || pending.get()) {
@@ -125,6 +153,7 @@ public interface GovernorAnnouncer {
                 }
 
                 var id = REQUEST_IDS.incrementAndGet();
+                var refreshing = refreshDue.get();
 
                 sequence.set(id);
                 var proposal = new GovernorAuthorityMessage.Request(self,
@@ -132,10 +161,11 @@ public interface GovernorAnnouncer {
                                                                     id,
                                                                     authority().map(GovernorAnnouncementValue::communityTerm)
                                                                              .or(0L),
-                                                                    address.get());
+                                                                    address.get(),
+                                                                    refreshing);
 
                 request.apply(proposal)
-                       .withSuccess(response -> accept(id, response))
+                       .withSuccess(response -> accept(id, refreshing, response))
                        .withFailure(cause -> org.slf4j.LoggerFactory.getLogger(GovernorAnnouncer.class)
                                                                     .debug("Governor nomination deferred: {}",
                                                                            cause.message()))
@@ -143,10 +173,13 @@ public interface GovernorAnnouncer {
             }
 
             @Contract
-            private void accept(long id, GovernorAuthorityMessage.Response response) {
+            private void accept(long id, boolean refreshed, GovernorAuthorityMessage.Response response) {
                 if (started.get() && sequence.get() == id && response.requestId() == id && response.communityId()
                                                                                                    .equals(community.get())) {
                     granted.set(response.authority());
+                    if (refreshed && response.authority().isPresent()) {
+                        refreshDue.set(false);
+                    }
                 }
             }
         }
@@ -157,6 +190,8 @@ public interface GovernorAnnouncer {
                              committed,
                              eligible,
                              request,
+                             reannounceInterval,
+                             new AtomicBoolean(),
                              new AtomicBoolean(),
                              new AtomicBoolean(),
                              new AtomicLong(),

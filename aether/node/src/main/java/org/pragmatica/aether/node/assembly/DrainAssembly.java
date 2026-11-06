@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.api.AlertManager;
@@ -30,6 +31,7 @@ import org.pragmatica.aether.metrics.DrainCommandRegistry;
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.metrics.NodeReportedStateHolder;
 import org.pragmatica.aether.node.AetherNodeConfig;
+import org.pragmatica.aether.node.DepartureLegs;
 import org.pragmatica.aether.node.DhtDeparturePush;
 import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
@@ -49,7 +51,6 @@ import org.pragmatica.dht.DHTTopologyListener;
 import org.pragmatica.dht.DeparturePushObserver;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.utility.warning.OperatorWarningSink;
@@ -85,7 +86,7 @@ public sealed interface DrainAssembly {
     /// owners (the cluster-event aggregator, the scheduled-task manager).
     record Infrastructure(InFlightRequestTracker inFlightTrackerForDrain,
                           AtomicReference<Consumer<DrainReason>> clusterEventDrainEmitterRef,
-                          AtomicReference<DeparturePushObserver> departurePushObserverRef,
+                          AtomicReference<Function<String, DeparturePushObserver>> departurePushObserverRef,
                           AtomicReference<Runnable> scheduledTaskDrainHookRef,
                           DrainProcedure drainProcedure,
                           CommunityDrainCoordinator communityDrain) {}
@@ -156,24 +157,26 @@ public sealed interface DrainAssembly {
         // of any ClusterEvent dependency.
         var clusterEventDrainEmitterRef = new java.util.concurrent.atomic.AtomicReference<java.util.function.Consumer<org.pragmatica.aether.deployment.cluster.DrainReason>>(reason -> {});
         // #427 graceful-departure push: the leaving node pushes its held DHT chunks to their new
-        // replicas, ack-gated, before it halts. The DrainProcedure invokes this supplier once at
-        // DRAINING and its quiesced-fork exit waits for it (bounded by the push's own budget; the
-        // grace fork never does). The observer — resolved once the ClusterEventAggregator is bound
-        // below — turns a budget overrun into a DeparturePushIncomplete event; it stays a no-op until
+        // replicas, ack-gated, before it halts. The DrainProcedure invokes it once the node quiesced,
+        // inside the drain's DrainWindow, and its quiesced-fork exit waits for it (the push resolves
+        // before the window's deadline; the grace fork never waits). #2034: sole-copy pages are resent
+        // within an extra window and the push reports a DepartureOutcome. The observer factory —
+        // resolved once the ClusterEventAggregator is bound below — maps the drain-episode subject to
+        // the observer that raises the at-risk / delivered / incomplete events; it stays a no-op until
         // then, keeping aether-deployment free of any ClusterEvent / DHT-event dependency.
         // #1818: the push excludes every node the leader commanded to drain alongside this one (the
         // ping's global drain set), so it never lands on, or counts as a survivor, a co-drainer.
-        var departurePushObserverRef = new java.util.concurrent.atomic.AtomicReference<>(DeparturePushObserver.noop());
+        var departurePushObserverRef = new AtomicReference<Function<String, DeparturePushObserver>>(_ -> DeparturePushObserver.noop());
         var movementDrain = new AtomicReference<Option<CommunityDrainCoordinator>>(Option.none());
 
         departingSendersRef.set(DhtDeparturePush.departingSenders(metricsCollector, dhtTopologyListener));
         var dhtDeparturePush = DhtDeparturePush.dhtDeparturePush(dhtRebalancer,
                                                                  metricsCollector,
+                                                                 config.self(),
                                                                  departurePushObserverRef::get);
-        Supplier<Promise<Unit>> departurePush = () -> dhtDeparturePush.get()
-                                                                      .flatMap(_ -> movementDrain.get()
-                                                                                                 .fold(Promise::unitPromise,
-                                                                                                       CommunityDrainCoordinator::onQuiesced));
+        var departurePush = DepartureLegs.composed(dhtDeparturePush,
+                                                   movementDrain::get,
+                                                   CommunityDrainCoordinator.ACK_BUDGET);
         // #273 item 1: forward-declared hook resolved once the ScheduledTaskManager is built below. The
         // drain edge for scheduled tasks is THIS emitter, not a MembershipDecision — `NodeDraining` has
         // no producer since the membership-v2 finale removed the per-node lifecycle projection.
@@ -208,12 +211,12 @@ public sealed interface DrainAssembly {
     /// DRAINING reports from the pong fan reach the membership FSM and the cluster deployment manager.
     static Unit bindDrainReport(ClusterSyncPongSignalFan pongSignalFan,
                                 MembershipFsm membershipFsm,
-                                ClusterDeploymentManager clusterDeploymentManager) {
+                                Consumer<NodeId> drainReportTarget) {
         // #1054: every DRAINING pong the leader records is a drain acknowledgement, latched by the FSM for the
         // member's drain episode. It is latched as the pong lands because the readiness sweep forgets a halted
         // drainee within three pings, long before the DEPARTING timeout. An acknowledged drain terminalizes at
         // expiry; an undelivered DRAIN to a live target is withdrawn to MEMBER instead of reaped.
-        pongSignalFan.onDrainingReported(drainReportListener(membershipFsm, clusterDeploymentManager));
+        pongSignalFan.onDrainingReported(drainReportListener(membershipFsm, drainReportTarget));
 
         return Unit.unit();
     }
@@ -413,9 +416,14 @@ public sealed interface DrainAssembly {
     /// `startDrainEviction`. Package-private so the composition is pinned without booting a node.
     static Consumer<NodeId> drainReportListener(MembershipFsm membershipFsm,
                                                 ClusterDeploymentManager clusterDeploymentManager) {
+        return drainReportListener(membershipFsm, clusterDeploymentManager::onNodeDraining);
+    }
+
+    /// The same composition with the eviction half given as a target, which the deployment wiring binds per engine (B12).
+    static Consumer<NodeId> drainReportListener(MembershipFsm membershipFsm, Consumer<NodeId> eviction) {
         return drainingNode -> {
             membershipFsm.onDrainAcknowledged(drainingNode);
-            clusterDeploymentManager.onNodeDraining(drainingNode);
+            eviction.accept(drainingNode);
         };
     }
 

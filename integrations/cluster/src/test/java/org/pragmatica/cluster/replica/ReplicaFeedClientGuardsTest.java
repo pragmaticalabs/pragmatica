@@ -120,34 +120,53 @@ class ReplicaFeedClientGuardsTest {
         var applied = net.clientStore.committedRevision();
 
         net.client.onEntries(new ReplicaEntries(net.core(1).id, id, 0, List.of(), latest));
-        net.client.onHeartbeat(new ReplicaHeartbeat(net.core(1).id, id, 1, TAG, applied, true, applied));
+        net.client.onHeartbeat(new ReplicaHeartbeat(net.core(1).id, id, 1, TAG, latest, true, latest));
         net.pump();
+        net.advance(5_100);
 
         return net.readiness.ready();
     }
 
-    /// (e): a resumed session is caught up only once it applied everything the source held at the grant. Mutation: make `checkCaughtUp` unconditional.
+    /// (c), on a resumed session: the new source granted a frontier far past what the replica holds and says so in its heartbeat; once that heartbeat
+    /// is 5 s old the replica must have caught up to it. Mutation: drop the lag test in `ReplicaReadiness.isCaughtUpToLag`.
     @Test
-    void aResumedSession_isNotCaughtUp_beforeItAppliedTheGrantedFrontier() {
+    void aResumedSession_isNotReady_whenItStaysBehindTheGrantedFrontierPast5Seconds() {
         assertThat(readyAfterResumeGrantingLatest(100)).isFalse();
     }
 
     @Test
-    void aResumedSession_isCaughtUp_onceItHoldsTheGrantedFrontier() {
+    void aResumedSession_isReady_whenItHoldsTheGrantedFrontier() {
         assertThat(readyAfterResumeGrantingLatest(2)).as("control: the same session with nothing missing is ready").isTrue();
     }
 
-    /// Spec 2.8 (b): "from the current source". Mutation: drop `readiness.sourceChanged()` in `subscribeTo` (the previous source's heartbeat keeps
-    /// counting for 30 s).
+    /// A resume to another source keeps the replica's place: the heartbeats already counted stay true of it and age out under (b), so a re-parent
+    /// does not by itself drop readiness; with no heartbeat from the new source they are stale after 30 s (the bound S). Mutation: call
+    /// `readiness.sourceChanged()` on a resume in `subscribeTo`, or drop `caughtUp(false)`'s resumable test in `retire` (readiness drops at once).
     @Test
-    void afterASourceChange_theOldSourcesHeartbeat_doesNotMakeTheReplicaReady() {
+    void afterAResumeToAnotherSource_theReplicaStaysReady_untilTheCountedHeartbeatsAreStale() {
         var net = joinedOnTwoCores();
 
         failOver(net);
         net.client.tick();
         net.pump();
 
-        assertThat(net.readiness.ready()).as("caught up on the new source, but it has sent no heartbeat yet").isFalse();
+        assertThat(net.readiness.ready()).as("re-parented from its anchor: still ready").isTrue();
+        net.advance(30_001);
+        assertThat(net.readiness.ready()).as("no heartbeat from the new source in 30 s: not ready").isFalse();
+    }
+
+    /// A re-based replica (the position was discarded, a snapshot follows) does not keep the old source's heartbeats. Mutation: drop
+    /// `readiness.sourceChanged()` in the non-resume branch of `subscribeTo`.
+    @Test
+    void afterAnAbandonedPosition_theOldHeartbeats_doNotCount() {
+        var net = joinedOnTwoCores();
+
+        net.applier.discardPosition();
+        failOver(net);
+        net.client.tick();
+        net.pump();
+
+        assertThat(net.readiness.ready()).as("a snapshot is coming: the old source's heartbeats say nothing about it").isFalse();
     }
 
     /// An AHEAD heartbeat (behind the replica under an equal tag) makes the position unusable. Mutation: drop the `readiness.isAhead` branch in `heartbeat`.

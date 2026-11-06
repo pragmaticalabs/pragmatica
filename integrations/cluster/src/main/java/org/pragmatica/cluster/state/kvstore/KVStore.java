@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
@@ -20,12 +21,16 @@ import org.pragmatica.cluster.state.kvstore.KVStoreLocalIO.Response.FoundEntries
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueGet;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.cluster.state.kvstore.NotificationDispatcher.DeliveryBatch;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.TerminalOperation;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
@@ -50,15 +55,15 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
                                                                                       REFUSAL_SUMMARY_INTERVAL_NANOS,
                                                                                       "stale-epoch write refusals");
 
-    /// Serializes writers and notification delivery without blocking read-only store captures.
+    /// Serializes writers and the append of their batches, so batches enter the delivery FIFO in commit order (design
+    /// §3.1 step 3), without blocking read-only store captures. Inline delivery also runs under it.
     private final Object mutationLock = new Object();
-    private final java.util.ArrayDeque<PendingNotification> notifications = new java.util.ArrayDeque<>();
-
-    private record PendingNotification(org.pragmatica.messaging.Message message, boolean replay) {}
-
-    private boolean dispatching;
-    private boolean collectingReplay;
-    private int pendingNotifications;
+    /// The delivery side (design §3.1-§3.7): sequence numbers, the FIFO, the delivery loop, waits and the fence.
+    private final NotificationDispatcher dispatcher;
+    /// Monitor: the notifications of the batch being applied.
+    private List<Message> batchNotifications = new ArrayList<>();
+    /// Monitor: the `deliverySeq` of the batch being applied ([NotificationDispatcher#NO_SEQ] outside one, or once closed).
+    private long currentSeq = NotificationDispatcher.NO_SEQ;
     private long committedRevision;
     private final Map<K, V> storage = new ConcurrentHashMap<>();
     private final Serializer serializer;
@@ -71,25 +76,29 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private final IncarnationSource incarnation;
     /// The plain `Put`/`Remove` effects of the committed batch being applied; null outside a committed batch, so uncommitted writes record nothing.
     private List<KVCommand<?>> batchEffects;
-    /// The view that was last DELIVERED to subscribers via [#replayNotifications()]. Used to
-    /// compute the DIFF-replay on a mid-life snapshot install (cluster-topology-overhaul §5.8,
-    /// AMENDED 2026-06-11): only keys that are new/changed/vanished relative to this view emit a
-    /// notification. Empty until the first replay (cold boot fires one put per restored key).
+    /// The DELIVERED view: what subscribers have been told, updated by the delivering thread for every delivered
+    /// `ValuePut`/`ValueRemove`, replay bursts included, and by nothing else (design §3.7 "Delivered view", R2.4, R3 N5).
+    /// The baseline of the DIFF-replay on a mid-life snapshot install (cluster-topology-overhaul §5.8, AMENDED
+    /// 2026-06-11): only keys new/changed/vanished relative to it emit a notification, so a key put live and absent from
+    /// a later snapshot gets its remove, and a cold boot followed by a mid-life install diffs against the booted view.
     private final Map<K, V> lastReplayedView = new ConcurrentHashMap<>();
-    /// Per-thread flag, true only while [#replayNotifications()] is firing the synthetic
-    /// notification burst on THIS thread. Subscribers invoked synchronously during the burst can
-    /// query [#isReplaying()] to distinguish a replayed (historical-as-of-sync) notification from
-    /// a live apply — e.g. the cluster-event aggregator suppresses re-publishing historical events
-    /// during replay. Thread-scoped: a concurrent live apply on another thread reads false.
-    private final ThreadLocal<Boolean> replaying = ThreadLocal.withInitial(() -> Boolean.FALSE);
 
     public KVStore(MessageRouter router, Serializer serializer, Deserializer deserializer) {
+        this(router, serializer, deserializer, NotificationDelivery.inline());
+    }
+
+    /// A standalone store delivering as `delivery` says.
+    public KVStore(MessageRouter router,
+                   Serializer serializer,
+                   Deserializer deserializer,
+                   NotificationDelivery delivery) {
         this(router,
              serializer,
              deserializer,
              ReplicaKeyFilter.includeAll(),
              IncarnationSource.none(),
-             CommitRing.DEFAULT_BUDGET_BYTES);
+             CommitRing.DEFAULT_BUDGET_BYTES,
+             delivery);
     }
 
     /// A store that feeds a worker replica: `replicaFilter` is the exclusion set of the ring and the replica snapshot, `incarnation` tells the
@@ -101,14 +110,24 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
                    ReplicaKeyFilter replicaFilter,
                    IncarnationSource incarnation,
                    long ringBytes) {
+        this(router, serializer, deserializer, replicaFilter, incarnation, ringBytes, NotificationDelivery.inline());
+    }
+
+    /// As above, delivering as `delivery` says: a node's store passes [NotificationDelivery#dispatched].
+    public KVStore(MessageRouter router,
+                   Serializer serializer,
+                   Deserializer deserializer,
+                   ReplicaKeyFilter replicaFilter,
+                   IncarnationSource incarnation,
+                   long ringBytes,
+                   NotificationDelivery delivery) {
         this(router,
              serializer,
              deserializer,
              replicaFilter,
              incarnation,
-             ringBytes,
-             ValueSizeTable.valueSizeTable(),
-             CommitRing.asyncCloser());
+             CommitRing.commitRing(ringBytes, ValueSizeTable.valueSizeTable()::estimate, CommitRing.asyncCloser()),
+             delivery);
     }
 
     /// As above, with the ring's value-size table and the executor that runs a subscriber's transport close after the ring lock is released.
@@ -137,6 +156,17 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
             ReplicaKeyFilter replicaFilter,
             IncarnationSource incarnation,
             CommitRing ring) {
+        this(router, serializer, deserializer, replicaFilter, incarnation, ring, NotificationDelivery.inline());
+    }
+
+    KVStore(MessageRouter router,
+            Serializer serializer,
+            Deserializer deserializer,
+            ReplicaKeyFilter replicaFilter,
+            IncarnationSource incarnation,
+            CommitRing ring,
+            NotificationDelivery delivery) {
+        this.dispatcher = new NotificationDispatcher(this, router, delivery);
         this.router = router;
         this.serializer = serializer;
         this.deserializer = deserializer;
@@ -154,11 +184,17 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         return committedRevision;
     }
 
-    /// True until all notifications for the committed view have reached synchronous subscribers.
-    /// Read this with committedRevision and snapshot under the same store monitor when capturing
-    /// a projection maintained by subscribers. Never acquire the mutation guard from that reader.
+    /// True until every applied batch has been delivered (`enqueuedSeq != deliveredSeq`, read under the store monitor).
+    /// Read this with committedRevision and snapshot under the same store monitor when capturing a projection maintained
+    /// by subscribers: a holder of the monitor that reads `false` sees every applied batch delivered (design §3.7). Never
+    /// acquire the mutation guard from that reader.
     public synchronized boolean hasPendingNotifications() {
-        return pendingNotifications != 0;
+        return dispatcher.hasPending();
+    }
+
+    /// The committed revision without the monitor, for the failure path's diagnostics only.
+    long committedRevisionUnlocked() {
+        return committedRevision;
     }
 
     @Override
@@ -240,6 +276,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         var stored = (V) put.value();
         var old = Option.option(storage.put(put.key(), stored));
 
+        dispatcher.recordWrite(put.key(), currentSeq);
         recordPut(put.key(), stored);
         publish(new ValuePut<>(new Put<>(put.key(), stored), old));
     }
@@ -247,6 +284,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private void applyPlainRemove(Remove<K> remove) {
         var old = Option.option(storage.remove(remove.key()));
 
+        dispatcher.recordRemoval(remove.key(), currentSeq);
         recordRemove(remove.key());
         publish(new ValueRemove<>(new Remove<>(remove.key()), old));
     }
@@ -336,51 +374,51 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     private <T> T mutate(java.util.function.Supplier<T> mutation) {
+        return mutate(mutation, false);
+    }
+
+    private record Applied<T>(T result, Option<DeliveryBatch> batch) {}
+
+    /// The order of design §3.1: under the mutation guard, apply under the monitor (allocating the batch's `deliverySeq`
+    /// and recording last-modified seqs there), release the monitor, append the batch, release the guard. An `Error`
+    /// between the storage change and a completed append means a batch that can never be delivered (amendment 15): the
+    /// store closes and the failure sink stops the node, and the `Throwable` still reaches the caller, so the engine
+    /// never takes the batch as applied normally. Inline delivery keeps the pre-D1 behaviour: it just propagates.
+    /// The rethrow is design-mandated (amendment 15): the applying thread must not return as if the batch applied.
+    @SuppressWarnings("JBCT-EX-01")
+    private <T> T mutate(java.util.function.Supplier<T> mutation, boolean replay) {
         synchronized (mutationLock) {
-            T result;
+            try {
+                var applied = applyUnderMonitor(mutation, replay);
 
-            synchronized (this) {
-                result = mutation.get();
+                applied.batch().onPresent(dispatcher::append);
+
+                return applied.result();
+            } catch (Throwable t) {
+                if (dispatcher.threaded()) {
+                    dispatcher.fail("apply", t);
+                }
+
+                throw t;
             }
-
-            drainNotifications();
-
-            return result;
         }
     }
 
-    private <T extends org.pragmatica.messaging.Message> void publish(T message) {
-        notifications.addLast(new PendingNotification(message, collectingReplay));
-        pendingNotifications++;
-    }
-
-    private void drainNotifications() {
-        if (dispatching) {
-            return;
-        }
-
-        dispatching = true;
+    private synchronized <T> Applied<T> applyUnderMonitor(java.util.function.Supplier<T> mutation, boolean replay) {
+        currentSeq = dispatcher.allocate();
+        batchNotifications = new ArrayList<>();
         try {
-            while (!notifications.isEmpty()) {
-                dispatchNotification(notifications.removeFirst());
-            }
+            var result = mutation.get();
+
+            return new Applied<>(result, dispatcher.batch(currentSeq, committedRevision, batchNotifications, replay));
         } finally {
-            dispatching = false;
+            currentSeq = NotificationDispatcher.NO_SEQ;
+            batchNotifications = new ArrayList<>();
         }
     }
 
-    private void dispatchNotification(PendingNotification notification) {
-        var previous = replaying.get();
-
-        replaying.set(notification.replay());
-        try {
-            router.route(notification.message());
-        } finally {
-            replaying.set(previous);
-            synchronized (this) {
-                pendingNotifications--;
-            }
-        }
+    private <T extends Message> void publish(T message) {
+        batchNotifications.add(message);
     }
 
     @Override
@@ -470,6 +508,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private V putRecorded(K key, V value) {
         var old = storage.put(key, value);
 
+        dispatcher.recordWrite(key, currentSeq);
         recordPut(key, value);
 
         return old;
@@ -478,6 +517,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private V removeRecorded(K key) {
         var old = storage.remove(key);
 
+        dispatcher.recordRemoval(key, currentSeq);
         recordRemove(key);
 
         return old;
@@ -531,9 +571,8 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     /// The committed-state fence, shared by [#handlePut] and [#handleRemove] (#345 piece 1a, #379):
-    /// a mutation (a `Put` value or a `Remove` witness) is rejected when it is either a stale
-    /// `LeaderKey` write (H4 leader fence), a stale-epoch write to any [EpochBearing] value
-    /// (ownership fence), a non-successor write to a [VersionFenced] value (lost-update fence,
+    /// a mutation (a `Put` value or a `Remove` witness) is rejected when it is either a stale-epoch write
+    /// to any [EpochBearing] value (ownership fence, and the H4 leader fence through [LeaderValue]), a non-successor write to a [VersionFenced] value (lost-update fence,
     /// RFC-0018 #570), a regressive write to a [MonotonicFenced] value (running-max fence,
     /// #700), a write to an [AssignmentGuarded] key by anything but its committed assignee (#1271), or a write that would erase a committed
     /// [LeaderAuthorized] or [OwnerFenced] marker (fence-drop arms), or a write that would change the committed non-empty community of a [CommunityFenced] value (#1840), or a write that would replace the committed life of an [IncarnationFenced] value (#1278), or a release of a [HolderFenced] hold by anyone but its committed holder, or a holder-bound write to a [HolderGuarded] key made after that holder was superseded (#1155). All arms are pure functions of the committed storage content and the
@@ -541,16 +580,15 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// Snapshot restore ([#restoreSnapshot]) intentionally bypasses all fences: a restored snapshot
     /// is the authoritative committed state, not a competing write.
     private boolean staleWrite(K key, Object incoming) {
-        return dropsOwnerFence(key, incoming) || dropsLeaderAuthorization(key, incoming) || staleLeaderWrite(key,
-                                                                                                             incoming) || staleEpochWrite(key,
-                                                                                                                                          incoming) || staleSuccessorWrite(key,
-                                                                                                                                                                           incoming) || regressiveWatermarkWrite(key,
-                                                                                                                                                                                                                 incoming) || unassignedWrite(key,
-                                                                                                                                                                                                                                              incoming) || reassignsCommunity(key,
-                                                                                                                                                                                                                                                                              incoming) || reincarnates(key,
-                                                                                                                                                                                                                                                                                                        incoming) || releasesUnheld(key,
-                                                                                                                                                                                                                                                                                                                                    incoming) || writesUnheld(key,
-                                                                                                                                                                                                                                                                                                                                                              incoming);
+        return dropsOwnerFence(key, incoming) || dropsLeaderAuthorization(key, incoming) || staleEpochWrite(key,
+                                                                                                            incoming) || staleSuccessorWrite(key,
+                                                                                                                                             incoming) || regressiveWatermarkWrite(key,
+                                                                                                                                                                                   incoming) || unassignedWrite(key,
+                                                                                                                                                                                                                incoming) || reassignsCommunity(key,
+                                                                                                                                                                                                                                                incoming) || reincarnates(key,
+                                                                                                                                                                                                                                                                          incoming) || releasesUnheld(key,
+                                                                                                                                                                                                                                                                                                      incoming) || writesUnheld(key,
+                                                                                                                                                                                                                                                                                                                                incoming);
     }
 
     /// #1155: a release of a [HolderFenced] hold by anyone but the holder of the committed hold; see that type.
@@ -601,21 +639,11 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         return storage.get(key) instanceof LeaderAuthorized && !(incoming instanceof LeaderAuthorized);
     }
 
-    /// H4 leader fence (cluster-topology-overhaul §Wave 8.2): `LeaderKey` writes are
-    /// compare-and-put — applied only when the incoming [LeaderValue#viewSequence()] is strictly
-    /// greater than the stored one. The check is deterministic (it depends only on the replicated
-    /// storage content and the incoming value), so every replica accepts or rejects identically
-    /// inside the consensus applier. A rejected write mutates nothing and emits NO notification — a
-    /// stale leader must never be observed by the election FSMs.
-    private boolean staleLeaderWrite(K key, Object incoming) {
-        return key instanceof LeaderKey
-               && incoming instanceof LeaderValue in
-               && storage.get(key) instanceof LeaderValue stored
-               && in.viewSequence() <= stored.viewSequence();
-    }
-
-    /// Ownership/governance epoch fence (#345 piece 1a): generalizes the leader fence to ANY
-    /// [EpochBearing] value (governor announcement, DHT partition ownership). When BOTH the incoming
+    /// Ownership/governance epoch fence (#345 piece 1a) over ANY [EpochBearing] value (governor announcement,
+    /// DHT partition ownership, and the H4 leader fence: a [LeaderValue] mints its `viewSequence`, so a stale
+    /// or equal election is refused, mutates nothing and emits NO notification — a stale leader is never
+    /// observed by the election FSMs). Values of different kinds ([EpochBearing#fenceKind]) are never compared: a mismatched kind is not
+    /// stale ([#sameEpochKind]). When BOTH the incoming
     /// and the currently-committed value under the key are `EpochBearing`, the write is rejected iff
     /// its epoch is STRICTLY older than the committed one — a deposed governor/owner cannot commit an
     /// OLD epoch over a newer one. A first write (no committed value) and any non-`EpochBearing`
@@ -632,9 +660,10 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// is throttled: after a failover every in-flight write of the deposed writer is a refusal on every replica,
     /// which is normal, so the first refusal of each (incoming, committed) epoch pair is logged in full and the
     /// repeats are summarised at most once per interval.
+    /// A write that opts out ([EpochBearing#reportsStaleRefusal], a lost leader election) is refused silently.
     private void reportStaleEpochRefusal(K key, Object incoming) {
-        if (incoming instanceof EpochBearing<?> in && storage.get(key) instanceof EpochBearing<?> stored && incomingEpochIsStale(in,
-                                                                                                                                 stored)) {
+        if (incoming instanceof EpochBearing<?> in && in.reportsStaleRefusal() && storage.get(key) instanceof EpochBearing<?> stored && staleEpochWrite(key,
+                                                                                                                                                        in)) {
             var refusals = staleEpochRefusals.incrementAndGet();
 
             refusalWarning.report(List.of(in.fenceEpoch(), stored.fenceEpoch()),
@@ -659,12 +688,22 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private boolean staleEpochWrite(K key, Object incoming) {
         return incoming instanceof EpochBearing<?> in
                && storage.get(key) instanceof EpochBearing<?> stored
+               && sameEpochKind(in, stored)
                && incomingEpochIsStale(in, stored);
     }
 
+    /// Two values are compared only when their [EpochBearing#fenceKind] match: by default the epoch's class, and a
+    /// [LeaderValue] is its own kind, so a non-leader value whose epoch is also a `Long` is never taken for a leader.
+    /// Every caller of [#incomingEpochIsStale] and [#newerOwnerWitness] checks this first, which is what makes
+    /// their epoch casts safe: a mismatched kind never fences a `Put` and never authorizes a `Remove`, and no
+    /// comparison can throw inside the applier.
+    private static boolean sameEpochKind(EpochBearing<?> incoming, EpochBearing<?> stored) {
+        return incoming.fenceKind() == stored.fenceKind();
+    }
+
     /// Captures the recursive epoch type variable so the [Comparable#compareTo] is fully type-checked
-    /// (never reflective). The cast of the stored epoch is safe: a single key only ever holds one
-    /// `EpochBearing` value type (governor or ownership), so its epoch type matches the incoming one.
+    /// (never reflective). The cast of the stored epoch is safe only after [#sameEpochKind], which every
+    /// caller checks first.
     @SuppressWarnings("unchecked")
     private static <E extends Comparable<E>> boolean incomingEpochIsStale(EpochBearing<E> incoming,
                                                                           EpochBearing<?> stored) {
@@ -754,10 +793,11 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     /// The delete-side committed-state fence (#379) — STRICTER than the `Put` fence by design. A
-    /// `Remove` of a key whose COMMITTED value is fenced (any [EpochBearing] value, or the `LeaderKey`'s
-    /// [LeaderValue]) is rejected — applied to nothing, NO `ValueRemove` emitted — UNLESS it carries a
-    /// witness that is (a) present, (b) the SAME fenced kind as the committed value (an `EpochBearing`
-    /// witness for an `EpochBearing`-valued key, a `LeaderValue` for the `LeaderKey`), and (c) current
+    /// `Remove` of a key whose COMMITTED value is fenced (any [EpochBearing] value, the [LeaderValue]
+    /// included) is rejected — applied to nothing, NO
+    /// `ValueRemove` emitted — UNLESS it carries a witness that is (a) present, (b) the SAME fenced kind as
+    /// the committed value (an `EpochBearing` witness of the same [EpochBearing#fenceKind], so a `LeaderValue`
+    /// for the `LeaderKey`; see [#sameEpochKind]), and (c) current
     /// (equal-or-newer ordinary epoch, strictly-newer OwnerFenced epoch, or strictly-greater `viewSequence`). A missing, wrong-typed, or stale
     /// witness fails, so a deposed owner cannot delete a fenced key even with a bare `Remove(key)` —
     /// closing the witnessless-delete gap. A non-fenced committed value, or an absent key, deletes
@@ -775,8 +815,6 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         }
 
         return switch (storage.get(key)) {
-            case LeaderValue committed when key instanceof LeaderKey -> !currentLeaderWitness(committed,
-                                                                                              remove.witness());
             case OwnerFenced<?, ?> committed -> !newerOwnerWitness(committed, remove.witness());
             case EpochBearing<?> committed -> !currentEpochWitness(committed, remove.witness());
             case WitnessedRemoval committed -> !remove.witness().map(committed::equals).or(false);
@@ -787,7 +825,9 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     @SuppressWarnings("unchecked")
     private static <E extends Comparable<E>> boolean newerOwnerWitness(OwnerFenced<E, ?> committed,
                                                                        Option<Object> witness) {
-        return witness.map(value -> value instanceof OwnerFenced<?, ?> owner && ((E) owner.fenceEpoch()).compareTo(committed.fenceEpoch()) > 0)
+        return witness.map(value -> value instanceof OwnerFenced<?, ?> owner
+                                    && sameEpochKind(owner, committed)
+                                    && ((E) owner.fenceEpoch()).compareTo(committed.fenceEpoch()) > 0)
                       .or(false);
     }
 
@@ -795,15 +835,9 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// `EpochBearing` (matching kind), and NOT strictly-older than the committed epoch — the current
     /// owner or a newer one. Reuses the same [#incomingEpochIsStale] comparator as the `Put` fence.
     private boolean currentEpochWitness(EpochBearing<?> committed, Option<Object> witness) {
-        return witness.map(w -> w instanceof EpochBearing<?> incoming && !incomingEpochIsStale(incoming, committed))
-                      .or(false);
-    }
-
-    /// A witness authorizes deleting the `LeaderKey` iff it is present, itself a `LeaderValue`
-    /// (matching kind), and its `viewSequence` is strictly greater than the committed one — the exact
-    /// inverse of the `Put` leader fence's stale-OR-EQUAL (`<=`) rejection.
-    private boolean currentLeaderWitness(LeaderValue committed, Option<Object> witness) {
-        return witness.map(w -> w instanceof LeaderValue incoming && incoming.viewSequence() > committed.viewSequence())
+        return witness.map(w -> w instanceof EpochBearing<?> incoming
+                                && sameEpochKind(incoming, committed)
+                                && !incomingEpochIsStale(incoming, committed))
                       .or(false);
     }
 
@@ -849,8 +883,18 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// must never observe an EMPTY store mid-install: between the two steps here it sees the union of
     /// old and new, never less than either.
     private void installSilently(Map<K, V> restored) {
+        recordInstall(restored);
         storage.putAll(restored);
         storage.keySet().retainAll(restored.keySet());
+    }
+
+    /// Every key the install writes or drops is recorded for the fence (design §3.1): O(store), trimmed on delivery.
+    private void recordInstall(Map<K, V> restored) {
+        restored.keySet().forEach(key -> dispatcher.recordWrite(key, currentSeq));
+        storage.keySet()
+               .stream()
+               .filter(key -> !restored.containsKey(key))
+               .forEach(key -> dispatcher.recordRemoval(key, currentSeq));
     }
 
     /// Notification replay — the `sync → activate → replay` step (cluster-topology-overhaul §5.8,
@@ -861,52 +905,208 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// already-ACTIVE lagging node fires only the delta. MUTATION-FREE: it reads `storage` and
     /// routes notifications, never touching `storage` itself (the H4 `LeaderKey` fence in
     /// [#handlePut] is never exercised — replay does not go through the apply path). The
-    /// last-replayed view is advanced to the current storage afterwards so the next install
-    /// diffs correctly.
+    /// delivered view follows every delivered notification, so the next install diffs correctly.
+    ///
+    /// **Synchronous for its caller** (design §3.7, ruling 9): with a dispatcher, the replay item is enqueued under the
+    /// mutation guard like any batch, and the caller then waits, holding neither the guard nor the monitor, until the
+    /// burst and everything queued before it is delivered. A caller that holds the store monitor or the mutation guard,
+    /// or is the dispatcher thread, would wait for itself: the replay is refused through the failure path
+    /// (`replay-refused`) instead of hanging (R3.1). A closed store fails the wait, and this call then throws: the
+    /// engine's `runIsolated` logs it (R3 N3).
     @Override
     public Unit replayNotifications() {
-        return mutate(this::queueReplay);
+        return dispatcher.replayRefusal(mutationLock)
+                         .map(this::refuseReplay)
+                         .or(this::replayAndWait);
     }
 
-    private Unit queueReplay() {
-        collectingReplay = true;
-        replayRemovedKeys();
-        replayPutKeys();
-        collectingReplay = false;
-        lastReplayedView.clear();
-        lastReplayedView.putAll(storage);
+    private Unit refuseReplay(String reason) {
+        return dispatcher.fail("replay-refused", new IllegalStateException("replayNotifications() refused: " + reason));
+    }
+
+    @TerminalOperation
+    private Unit replayAndWait() {
+        var seq = mutate(this::enqueueReplay, true);
+
+        return dispatcher.threaded()
+               ? awaitDelivered(seq).await()
+                               .unwrap()
+               : Unit.unit();
+    }
+
+    /// The replay item carries no notifications: its burst is computed when the delivery loop dequeues it (§3.7).
+    private long enqueueReplay() {
+        return currentSeq;
+    }
+
+    /// True while THIS thread is delivering a replay burst. Subscribers use this to suppress side-effects that must fire
+    /// only on a live apply (e.g. re-publishing historical cluster events). Set per batch by the delivering thread
+    /// (design §3.2), so a reader on any other thread (the 1 s tick, a reaction) reads false.
+    public boolean isReplaying() {
+        return dispatcher.isReplaying();
+    }
+
+    /// The burst of a replay item, computed on the delivering thread at dequeue, under the monitor: a `ValueRemove` per
+    /// key of the delivered view absent from storage and a `ValuePut` per key new or changed, emitted **rank-major**
+    /// (design §3.7 exit (z)): for each [NotificationDelivery.ReplayRank] ascending, that rank's removals, then its puts,
+    /// each in iteration order. The flat rank reproduces the pre-D1 order.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    synchronized List<Message> replayBurst() {
+        var rank = dispatcher.replayRank();
+        var removals = new TreeMap<Integer, List<Message>>();
+        var puts = new TreeMap<Integer, List<Message>>();
+
+        for (var entry : lastReplayedView.entrySet()) {
+            if (!storage.containsKey(entry.getKey())) {
+                removals.computeIfAbsent(rank.rank(entry.getKey()),
+                                         _ -> new ArrayList<>())
+                        .add(new ValueRemove<>(new Remove<>(entry.getKey()),
+                                               Option.some(entry.getValue())));
+            }
+        }
+
+        for (var entry : storage.entrySet()) {
+            var delivered = lastReplayedView.get(entry.getKey());
+
+            if (!entry.getValue().equals(delivered)) {
+                puts.computeIfAbsent(rank.rank(entry.getKey()),
+                                     _ -> new ArrayList<>())
+                    .add(new ValuePut<>(new Put<>(entry.getKey(),
+                                                  entry.getValue()),
+                                        Option.option(delivered)));
+            }
+        }
+
+        return rankMajor(removals, puts);
+    }
+
+    private static List<Message> rankMajor(TreeMap<Integer, List<Message>> removals,
+                                           TreeMap<Integer, List<Message>> puts) {
+        var ranks = new TreeMap<Integer, Boolean>();
+        var burst = new ArrayList<Message>();
+
+        removals.keySet().forEach(rank -> ranks.put(rank, true));
+        puts.keySet().forEach(rank -> ranks.put(rank, true));
+        for (var rank : ranks.keySet()) {
+            burst.addAll(removals.getOrDefault(rank, List.of()));
+            burst.addAll(puts.getOrDefault(rank, List.of()));
+        }
+
+        return burst;
+    }
+
+    /// The delivered view's only writer (R3 N5): called by the delivering thread after each delivered notification.
+    @SuppressWarnings("unchecked")
+    Unit trackDelivered(Message message) {
+        switch (message) {
+            case ValuePut<?, ?> put -> lastReplayedView.put((K) put.cause().key(),
+                                                            (V) put.cause().value());
+            case ValueRemove<?, ?> remove -> lastReplayedView.remove(remove.cause().key());
+            default -> {}
+        }
 
         return Unit.unit();
     }
 
-    /// True while THIS thread is firing the [#replayNotifications()] synthetic burst. Subscribers
-    /// invoked synchronously during the burst use this to suppress side-effects that must fire
-    /// only on a live apply (e.g. re-publishing historical cluster events). Thread-scoped: a
-    /// concurrent live apply on another thread reads false.
-    public boolean isReplaying() {
-        return replaying.get();
+    /// Resolves when every batch up to `deliverySeq` has been delivered; fails with
+    /// [KVDeliveryError.DeliveryOutcomeUnknown] once the store is closed, including for a wait registered after the
+    /// close (design §3.2). An engine stop does not fail it: the store stays open across a stop.
+    public Promise<Unit> awaitDelivered(long deliverySeq) {
+        return dispatcher.awaitDelivered(deliverySeq);
     }
 
-    /// Fire a synthetic `ValueRemove` for every key present in the last-replayed view but absent
-    /// from current storage (vanished on a mid-life install).
-    private void replayRemovedKeys() {
-        lastReplayedView.forEach((key, value) -> {
-            if (!storage.containsKey(key)) {
-                publish(new ValueRemove<>(new Remove<>(key), Option.some(value)));
-            }
-        });
+    /// Completes an apply promise after the notifications of its batch are delivered, never at apply (P3, design §3.3),
+    /// on a store-owned virtual thread with every escaping `Throwable` sent to the failure path. Fails with an
+    /// outcome-unknown cause once the store is closed: the write committed.
+    @Override
+    public <T> Unit completeAfterDelivery(Promise<T> promise, T value) {
+        return dispatcher.completeAfterDelivery(promise, value);
     }
 
-    /// Fire a synthetic `ValuePut` for every key whose current value differs from (or is absent
-    /// in) the last-replayed view — new and changed keys. Unchanged keys are skipped so a mid-life
-    /// install delivers only the delta.
-    private void replayPutKeys() {
-        storage.forEach((key, value) -> {
-            if (!value.equals(lastReplayedView.get(key))) {
-                publish(new ValuePut<>(new Put<>(key, value),
-                                       Option.option(lastReplayedView.get(key))));
-            }
-        });
+    /// Node teardown, outside the `StateMachine` contract (design §3.2 Lifecycle): closes the store, fails every pending
+    /// wait with outcome-unknown, drops the undelivered queue (one INFO line with the count) and joins the delivery thread
+    /// with a bound. An engine stop must NOT call this: the store stays open across an engine stop/start.
+    public Unit close() {
+        return dispatcher.close();
+    }
+
+    /// The revision of the batch being delivered on this thread: its COMMIT revision, the [#committedRevision()] read under
+    /// the monitor right after the batch applied, in the same space as a snapshot's revision (CTO ruling 2026-11-05,
+    /// amending D1's monotone revision). A batch applied through [#processCommitted] carries its `nextSlot`, a replica
+    /// entry its `slot + 1`, a mutation without a slot ([#process]) the unchanged committed revision, a replay burst the
+    /// revision of the state it replays, and the reset's remove burst 0. FSM2 uses it only as the snapshot dedupe
+    /// watermark (`FsmRuntime` drops `revision <= watermark`, the watermark being `KvSnapshotter`'s committed revision of
+    /// the cut), so "the batch is in the snapshot" iff "its stamp <= the watermark"; a synthetic floor above the commit
+    /// revision would make a batch already in the snapshot step again. Empty outside a delivery.
+    public Option<Long> notificationRevision() {
+        return dispatcher.deliveringBatch()
+                         .map(DeliveryBatch::revision);
+    }
+
+    /// The `deliverySeq` of the batch being delivered on this thread (R3: a reaction captures it at absorb).
+    public Option<Long> deliveringSeq() {
+        return dispatcher.deliveringBatch()
+                         .map(DeliveryBatch::seq);
+    }
+
+    /// The last allocated `deliverySeq`.
+    public long enqueuedSeq() {
+        return dispatcher.enqueuedSeq();
+    }
+
+    /// The last delivered `deliverySeq`.
+    public long deliveredSeq() {
+        return dispatcher.deliveredSeq();
+    }
+
+    /// Delivery metrics (design §3.6), for the node metrics surface.
+    public DeliveryMetrics deliveryMetrics() {
+        return new DeliveryMetrics(dispatcher.lagBatches(),
+                                   dispatcher.oldestAgeMillis(),
+                                   dispatcher.queueDepth(),
+                                   dispatcher.highWater(NotificationDispatcher.PHASE_LIVE),
+                                   dispatcher.highWater(NotificationDispatcher.PHASE_REPLAY),
+                                   dispatcher.queueBytes(),
+                                   dispatcher.counter("readahead.reads", NotificationDispatcher.PHASE_LIVE),
+                                   dispatcher.counter("readahead.reads", NotificationDispatcher.PHASE_REPLAY),
+                                   dispatcher.counter("readahead.snapshotReads", NotificationDispatcher.PHASE_LIVE),
+                                   dispatcher.counter("readahead.snapshotReads", NotificationDispatcher.PHASE_REPLAY),
+                                   dispatcher.slowHandlerCount(),
+                                   dispatcher.slowHandlerMaxNanos(),
+                                   dispatcher.closed());
+    }
+
+    /// `kv.dispatch.readahead.reads` for one phase and one tag (the delivering notification's key class).
+    public long readAheadReads(String phase, String tag) {
+        return dispatcher.counter("readahead.reads", phase, tag);
+    }
+
+    /// A store's delivery metrics: `lag.batches` and `lag.oldestAgeMs` (seq-based), `queue.depth` with its high-water
+    /// per phase, `queue.bytes` (an estimate), the read-ahead counters per phase, the slow-handler count and max, and
+    /// whether the store is closed.
+    public record DeliveryMetrics(long lagBatches,
+                                  long lagOldestAgeMillis,
+                                  long queueDepth,
+                                  long queueHighWaterLive,
+                                  long queueHighWaterReplay,
+                                  long queueBytesEstimate,
+                                  long readAheadReadsLive,
+                                  long readAheadReadsReplay,
+                                  long snapshotReadAheadsLive,
+                                  long snapshotReadAheadsReplay,
+                                  long slowHandlers,
+                                  long slowHandlerMaxNanos,
+                                  boolean closed) {}
+
+    /// True when this store delivers its notifications on its own dispatcher thread ([NotificationDelivery.Dispatched]),
+    /// false for inline delivery. A node's store must be dispatched (AetherNodeKvDispatcherWiringBootTest pins it).
+    public boolean deliversOnDispatcherThread() {
+        return dispatcher.threaded();
+    }
+
+    /// The name of this store's delivery thread (the teardown probe looks for it).
+    public String dispatcherThreadName() {
+        return dispatcher.threadName();
     }
 
     @Override
@@ -914,11 +1114,14 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         return mutate(this::resetStorage);
     }
 
+    /// The reset's remove burst, once delivered, empties the delivered view; this applying thread never writes the
+    /// view (R3 N5). `deliverySeq` is not reset (design §3.1). The committed revision returns to 0, and the burst carries
+    /// revision 0 ([#notificationRevision()]): FSM2 drops it and re-snapshots on the restore.
     private Unit resetStorage() {
         committedRevision = 0;
         notifyRemoveAll();
+        storage.keySet().forEach(key -> dispatcher.recordRemoval(key, currentSeq));
         storage.clear();
-        lastReplayedView.clear();
         ring.invalidate(IncarnationTag.NONE, 0);
 
         return Unit.unit();
@@ -928,11 +1131,19 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         storage.forEach((key, value) -> publish(new ValueRemove<>(new Remove<>(key), Option.some(value))));
     }
 
+    /// A whole-store read; on the delivering thread while later batches are applied it counts a snapshot read-ahead
+    /// (design §3.4).
     public synchronized Map<K, V> snapshot() {
+        dispatcher.onSnapshotRead();
+
         return Map.copyOf(storage);
     }
 
+    /// A point read; on the delivering thread, a read of a key some later applied batch wrote counts a read-ahead
+    /// (design §3.4, the fence).
     public synchronized Option<V> get(K key) {
+        dispatcher.onPointRead(key);
+
         return Option.option(storage.get(key));
     }
 
@@ -944,6 +1155,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// `valueClass`.
     @SuppressWarnings({"unchecked", "rawtypes"})
     public synchronized <VV> Option<VV> getTyped(StructuredKey key, Class<VV> valueClass) {
+        dispatcher.onPointRead(key);
         var raw = ((Map) storage).get(key);
 
         if (raw == null || !valueClass.isInstance(raw)) {

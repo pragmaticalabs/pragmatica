@@ -5,8 +5,11 @@ package org.pragmatica.aether.slice;
 
 import java.util.List;
 
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 
 /// A slice's view of its configuration section. `require*` fails on an absent key; `get*` is the
@@ -18,6 +21,17 @@ public interface ConfigFacade {
     /// Bind configuration for an explicitly assembled slice, including non-Aether runtimes.
     static ConfigFacade configFacade(String sliceId, org.pragmatica.config.ConfigurationProvider provider) {
         return ConfigProviderFacade.configProviderFacade(sliceId, provider);
+    }
+
+    /// Refusal of [#watched] by a facade that cannot deliver changes. A success-shaped no-op would let a slice
+    /// believe it is watching: `Watched` would deliver the registration value and never change (#892).
+    Cause WATCHED_UNAVAILABLE = Causes.cause("This ConfigFacade cannot deliver Watched/Live configuration: it has no change feed");
+
+    /// The `section` as a [Watched] record. `binder` builds the record from a facade over the current
+    /// configuration; it runs at registration and again for each delivery. Facades that cannot deliver changes
+    /// refuse, they do not pretend.
+    default <T> Result<Watched<T>> watched(String section, Fn1<Result<T>, ConfigFacade> binder) {
+        return WATCHED_UNAVAILABLE.result();
     }
 
     Result<String> requireString(String section, String key);

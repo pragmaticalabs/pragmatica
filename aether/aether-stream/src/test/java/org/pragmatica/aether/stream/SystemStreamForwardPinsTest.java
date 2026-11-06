@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.aether.stream.forward.AcceptingStreamForwardTransport;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -56,13 +57,13 @@ class SystemStreamForwardPinsTest {
         var holder = new StreamForwardClient[1];
         var handlerB = StreamForwardHandler.streamForwardHandler(B,
                                                                  mgrB,
-                                                                 (_, message) -> holder[0].onPublishForwardResponse((PublishForwardResponse) message));
-        clientA = StreamForwardClient.streamForwardClient(A, (_, message) -> {
+                                                                 AcceptingStreamForwardTransport.accepting((_, message) -> holder[0].onPublishForwardResponse((PublishForwardResponse) message)));
+        clientA = StreamForwardClient.streamForwardClient(A, AcceptingStreamForwardTransport.accepting((_, message) -> {
             if (message instanceof PublishForward pf) {
                 wire.add(pf);
                 handlerB.onPublishForward(pf);
             }
-        });
+        }));
         holder[0] = clientA;
     }
 

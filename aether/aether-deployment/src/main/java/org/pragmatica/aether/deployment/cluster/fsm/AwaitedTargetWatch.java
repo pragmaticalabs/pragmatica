@@ -4,15 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm;
 
-import java.util.List;
-
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.CommittedSliceTarget;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentContext.AwaitedTarget;
-import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
-import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarnings;
@@ -27,8 +23,9 @@ import org.slf4j.LoggerFactory;
 /// that was lost (a consensus batch that failed, a leader that changed) leaves the mirror holding a blueprint whose target never commits: nothing
 /// would ever allocate it. Once a slice has been refused for the bound, the leader (1) raises `slice-start-awaiting-target`, naming the slice,
 /// version and duration, and (2) re-submits the target put while the blueprint is still desired and no committed target names the version. Both
-/// repeat at most once per bound, so a lost put costs one extra put per bound, never a storm. The re-submission is a plain put of the value the
-/// leader last submitted; it is idempotent. `slice-start-deferral-ended` follows when the target commits or the blueprint is no longer desired.
+/// repeat at most once per bound, so a lost put costs one extra put per bound, never a storm. The re-submission of a slice that a blueprint owns goes
+/// through the blueprint fence of `Active#resubmitTarget` (#2628), so a deleted blueprint's target is never put back; an unowned slice is a
+/// plain put of the value the leader last submitted. It is idempotent. `slice-start-deferral-ended` follows when the target commits or the blueprint is no longer desired.
 /// Time is the context clock, never counted ticks.
 final class AwaitedTargetWatch {
     private static final Logger log = LoggerFactory.getLogger(AwaitedTargetWatch.class);
@@ -150,8 +147,7 @@ final class AwaitedTargetWatch {
         log.info("Leader re-submits the SliceTarget put for {}: not committed after {} ms (#1109)",
                  artifact,
                  active.ctx().awaitedTargetBound().millis());
-        active.submitBatch(List.of(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
-                                                       value)));
+        active.resubmitTarget(artifact, blueprint, value);
     }
 
     /// The value the leader last submitted for this base when it names the version, else one rebuilt from the mirror (a new leader's case).

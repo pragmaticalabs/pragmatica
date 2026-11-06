@@ -40,6 +40,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.testlogging.LogCapture;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Unit.unit;
@@ -70,18 +71,18 @@ class CrossNodeCauseChainLeakTest {
         private volatile SliceInvoker invokerA;
 
         @Override
-        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             switch (message) {
                 case InvokeRequest request -> handlers.get(nodeId).onInvokeRequest(request);
                 case InvokeResponse response -> invokerA.onInvokeResponse(response);
                 default -> {}
             }
 
-            return unit();
+            return Promise.success(new WriteOutcome.Sent(nodeId));
         }
 
         @Override
-        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
             return send(nodeId, message);
         }
     }

@@ -22,23 +22,33 @@ class AetherNodeBackupCoordinatorStopWiringTest {
         var source = AssemblySource.spaced();
 
         assertThat(source).containsOnlyOnce("backupCoordinatorStop.run();")
-                          .containsOnlyOnce("service.stopFlushed(BACKUP_STOP_FLUSH_BOUND)");
+                          .containsOnlyOnce("service.stopFlushed(BACKUP_STOP_FLUSH_BOUND, backupReplica())");
 
         // Offsets are comparable because `stop()` is one method in one file; the joined text puts `AetherNode.java` first.
         var stopsCoordinator = source.indexOf("backupCoordinatorStop.run();");
-        var stopsService = source.indexOf("service.stopFlushed(BACKUP_STOP_FLUSH_BOUND)");
+        var stopsService = source.indexOf("service.stopFlushed(BACKUP_STOP_FLUSH_BOUND, backupReplica())");
 
         assertThat(stopsCoordinator).as("stop() runs the coordinator's stop").isPositive();
         assertThat(stopsCoordinator).as("and does so before the backup service stops").isLessThan(stopsService);
     }
 
     /// Know 3b01e624f1: the flush is started before the teardown and the stop sequence runs only after it resolves, so a graceful stop
-    /// completes after the backup flush (bounded by the deadline), not beside it.
+    /// completes after the backup flush (bounded by the deadline), not beside it. Know 73fd8d9759 puts the stream stop seal, which
+    /// runs beside the backup flush, between them.
     @Test
     void stop_runsTheStopSequence_onlyAfterTheBackupFlush() {
         var source = AssemblySource.spaced();
 
-        assertThat(source).containsOnlyOnce("backupFlushed.flatMap(() -> NodeStopSequence.run(");
+        assertThat(source).containsOnlyOnce("backupFlushed.flatMap(() -> streamsStopped) .flatMap(() -> NodeStopSequence.run(");
+    }
+
+    /// Know 6ee3dc3f0d (P-C): a worker holds a partial replica and must not stop-flush; the role is the node's own worker role (configuration or label,
+    /// pinned by `AetherNodeBackupReplicaRoleTest`).
+    @Test
+    void stop_flushesAsAPartialReplica_onlyForAWorker() {
+        assertThat(AetherNode.backupReplica(true)).isEqualTo(KvBackupService.Replica.PARTIAL);
+        assertThat(AetherNode.backupReplica(false)).isEqualTo(KvBackupService.Replica.FULL);
+        assertThat(AssemblySource.spaced()).containsOnlyOnce("AetherNode.backupReplica(configuredWorker(config))");
     }
 
     @Test

@@ -22,11 +22,13 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
@@ -43,6 +45,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.statemachine.Fsm;
+import org.pragmatica.utility.react.ReactExecutor;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -96,6 +99,13 @@ public interface ControlLoop {
         return Unit.unit();
     }
 
+    /// D1-react (KVStore dispatcher design §3.5.1 row 39): the executor the slice cooldown request of
+    /// [#onNodeArtifactPut] runs on. A node installs its gated executor once, at assembly; until then (and in a host
+    /// that installs none) the request runs inline, as before D1-react. Default no-op so stubs stay compilable.
+    default Unit installReactExecutor(ReactExecutor executor) {
+        return Unit.unit();
+    }
+
     void onCommunityMetricsSnapshot(CommunityMetricsSnapshot snapshot);
     Map<String, CommunityMetricsSnapshot> communitySnapshots();
     /// Bounded snapshot of the latest per-artifact scaling decision (#425). Leader-only observability
@@ -110,6 +120,7 @@ public interface ControlLoop {
                                    ClusterSyncCollector metricsCollector,
                                    Option<InvocationMetricsCollector> invocationMetricsCollector,
                                    ClusterNode<KVCommand<AetherKey>> cluster,
+                                   KVStore<AetherKey, AetherValue> kvStore,
                                    TimeSpan interval,
                                    ControllerConfig config,
                                    Consumer<ScalingEvent> eventPublisher) {
@@ -121,6 +132,7 @@ public interface ControlLoop {
                                                                                                                      metricsCollector,
                                                                                                                      invocationMetricsCollector,
                                                                                                                      cluster,
+                                                                                                                     kvStore,
                                                                                                                      interval,
                                                                                                                      config,
                                                                                                                      eventPublisher);
@@ -136,6 +148,7 @@ public interface ControlLoop {
                                                  ClusterSyncCollector metricsCollector,
                                                  Option<InvocationMetricsCollector> invocationMetricsCollector,
                                                  ClusterNode<KVCommand<AetherKey>> cluster,
+                                                 KVStore<AetherKey, AetherValue> kvStore,
                                                  TimeSpan interval,
                                                  ControllerConfig config,
                                                  Consumer<ScalingEvent> eventPublisher) {
@@ -145,6 +158,7 @@ public interface ControlLoop {
                                          metricsCollector,
                                          invocationMetricsCollector,
                                          cluster,
+                                         kvStore,
                                          interval,
                                          config,
                                          eventPublisher);
@@ -279,6 +293,11 @@ public interface ControlLoop {
         @Override
         public Unit setMetricsProducerEligibility(Predicate<NodeId> isEligible) {
             return ctx.setMetricsProducerEligibility(isEligible);
+        }
+
+        @Override
+        public Unit installReactExecutor(ReactExecutor executor) {
+            return ctx.installReactExecutor(executor);
         }
 
         @Override

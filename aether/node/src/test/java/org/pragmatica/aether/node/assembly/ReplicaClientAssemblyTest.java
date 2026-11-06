@@ -22,6 +22,7 @@ import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -38,11 +39,13 @@ class ReplicaClientAssemblyTest {
     private final List<List<NodeInfo>> peersInstalled = new ArrayList<>();
     private final List<List<NodeInfo>> endpointsInstalled = new ArrayList<>();
     private final AtomicInteger dhtInstalled = new AtomicInteger();
+    private final List<VoterConfiguration> votersInstalled = new ArrayList<>();
     private final AtomicReference<Result<Unit>> peersResult = new AtomicReference<>(Result.success(Unit.unit()));
     private final DirectoryInstaller installer = DirectoryInstaller.directoryInstaller(held::get,
                                                                                       new DirectoryInstall(peers -> record(peers),
                                                                                                            endpointsInstalled::add,
-                                                                                                           _ -> dhtInstalled.incrementAndGet()));
+                                                                                                           _ -> dhtInstalled.incrementAndGet(),
+                                                                                                           votersInstalled::add));
 
     private Result<Unit> record(List<NodeInfo> peers) {
         peersInstalled.add(peers);
@@ -51,7 +54,7 @@ class ReplicaClientAssemblyTest {
     }
 
     private static ClusterDirectory directory(long incarnation, long term, long counter, long generation) {
-        return ClusterDirectory.clusterDirectory(DirectoryVersion.directoryVersion(incarnation, term, counter, generation), List.of(), DHT);
+        return ClusterDirectory.clusterDirectory(DirectoryVersion.directoryVersion(incarnation, term, counter, generation), List.of(), DHT, Option.none());
     }
 
     @Test
@@ -65,6 +68,59 @@ class ReplicaClientAssemblyTest {
         assertThat(endpointsInstalled).hasSize(1);
         assertThat(dhtInstalled.get()).isEqualTo(1);
         assertThat(installer.isInstalled()).isTrue();
+    }
+
+    private static VoterConfiguration voters(long epoch) {
+        return VoterConfiguration.voterConfiguration(epoch, List.of(NodeId.nodeId("core-1").unwrap(), NodeId.nodeId("core-2").unwrap())).unwrap();
+    }
+
+    /// #2543. The leader's electorate reaches the engine door with the rest of the directory. Mutation: drop the `voters` line of `installRest`.
+    @Test
+    void tick_installsTheDirectoryVoters_whenItCarriesThem() {
+        var carried = voters(3);
+
+        held.set(Option.some(new ClusterDirectory(1L, 1L, 1L, 1L, List.of(), DHT, Option.some(carried))));
+        installer.tick();
+
+        assertThat(votersInstalled).containsExactly(carried);
+    }
+
+    /// A governor's relay is installed by the same installer, so a strictly newer DIRECTORY can carry an OLDER electorate. The installer
+    /// filters nothing by voter epoch: it hands every carried electorate to the engine door, whose own epoch guard (RabiaEnginePassiveVotersTest
+    /// `_olderConfigInsideANewerRelayedDirectory_ignored`) decides. Mutation: compare voter epochs here instead (the guard would then live in two places).
+    @Test
+    void tick_aNewerDirectoryCarryingAnOlderElectorate_stillReachesTheEngineDoor() {
+        held.set(Option.some(new ClusterDirectory(1L, 1L, 1L, 2L, List.of(), DHT, Option.some(voters(3)))));
+        installer.tick();
+        held.set(Option.some(new ClusterDirectory(1L, 1L, 1L, 3L, List.of(), DHT, Option.some(voters(1)))));
+        installer.tick();
+
+        assertThat(votersInstalled).extracting(VoterConfiguration::epoch).containsExactly(3L, 1L);
+    }
+
+    /// A directory from a leader with no installed electorate installs none: the worker keeps the one it holds.
+    @Test
+    void tick_aDirectoryWithoutVoters_installsNoVoters() {
+        held.set(Option.some(directory(1, 1, 1, 1)));
+        installer.tick();
+
+        assertThat(votersInstalled).isEmpty();
+        assertThat(installer.isInstalled()).isTrue();
+    }
+
+    /// #2543: a newer directory with no electorate (a leader whose genesis is pending) never reaches the engine door, so it can never clear
+    /// or replace the electorate a worker holds. Mutation: hand `voters().or(null)` to the door.
+    @Test
+    void tick_aNewerDirectoryWithoutVoters_afterOneWithVoters_leavesTheDoorUntouched() {
+        var carried = voters(3);
+
+        held.set(Option.some(new ClusterDirectory(1L, 1L, 1L, 1L, List.of(), DHT, Option.some(carried))));
+        installer.tick();
+        held.set(Option.some(new ClusterDirectory(2L, 1L, 1L, 1L, List.of(), DHT, Option.none())));
+        installer.tick();
+
+        assertThat(votersInstalled).containsExactly(carried);
+        assertThat(endpointsInstalled).as("the newer directory itself was installed").hasSize(2);
     }
 
     /// Mutation: install on `!equals` instead of `isStrictlyAfter` (an older directory would replace a newer one).
@@ -129,18 +185,18 @@ class ReplicaClientAssemblyTest {
         assertThat(ran.get()).isEqualTo(1);
     }
 
-    /// Mutation: drop the `worker` test in `replicaClient` (a LIVE core would build a client).
+    /// Mutation: drop the `worker` test in `replicaClient` (a core would build a client).
     @Test
-    void replicaClient_onALiveNodeThatIsNotAWorker_buildsNothing() {
-        assertThat(ReplicaClientAssembly.replicaClient(org.pragmatica.aether.node.ReplicaCutover.LIVE, false, null).isPresent()).isFalse();
+    void replicaClient_onANodeThatIsNotAWorker_buildsNothing() {
+        assertThat(ReplicaClientAssembly.replicaClient(false, null).isPresent()).isFalse();
     }
 
-    /// LIVE on a worker: the freshness gate is replaced by the readiness (not ready yet), the four messages a worker receives are routed and the two
-    /// ticks (client, directory install) are scheduled. Mutations: drop `workerProjectionFreshRef.set(readiness::ready)`; drop a route; drop either
-    /// `defer.accept`.
+    /// On a worker: the freshness gate is replaced by the readiness (not ready yet), the four messages a worker receives are routed and the two
+    /// ticks (client, directory install) are scheduled, and the serve gate is closed while the node is not a governor. Mutations: drop
+    /// `workerProjectionFreshRef.set(readiness::ready)`; drop a route; drop either `defer.accept`; build the gate over `() -> true`.
     @Test
     @SuppressWarnings("unchecked")
-    void replicaClient_onALiveWorker_replacesTheFreshnessGate_routesFourMessages_andSchedulesTwoTicks() {
+    void replicaClient_onAWorker_replacesTheFreshnessGate_routesFourMessages_andSchedulesTwoTicks() {
         RabiaNode<KVCommand<AetherKey>> cluster = Mockito.mock(RabiaNode.class);
         var network = Mockito.mock(org.pragmatica.consensus.net.ClusterNetwork.class);
 
@@ -157,13 +213,17 @@ class ReplicaClientAssemblyTest {
                                                       cluster,
                                                       Option::none,
                                                       Set::of,
-                                                      new DirectoryInstall(_ -> Result.success(Unit.unit()), _ -> {}, _ -> {}),
+                                                      new org.pragmatica.cluster.replica.ReplicaFeedClient.GovernorArm(() -> false, Option::none),
+                                                      new DirectoryInstall(_ -> Result.success(Unit.unit()), _ -> {}, _ -> {}, _ -> {}),
                                                       () -> {},
                                                       freshness,
                                                       routes,
                                                       _ -> deferred.incrementAndGet());
 
-        assertThat(ReplicaClientAssembly.replicaClient(org.pragmatica.aether.node.ReplicaCutover.LIVE, true, inputs).isPresent()).isTrue();
+        var started = ReplicaClientAssembly.replicaClient(true, inputs);
+
+        assertThat(started.isPresent()).isTrue();
+        assertThat(started.unwrap().serveGate().mayServeMembers()).as("not a governor: members are not served").isFalse();
 
         assertThat(freshness.get()).isNotSameAs(original);
         assertThat(freshness.get().getAsBoolean()).as("a fresh replica is not ready").isFalse();
@@ -207,5 +267,68 @@ class ReplicaClientAssemblyTest {
 
         assertThat(uplinks).hasSize(2).isSorted().isSubsetOf(cores);
         assertThat(ReplicaClientAssembly.uplinks(self, cores)).isEqualTo(uplinks);
+    }
+
+    private static final org.pragmatica.cluster.state.kvstore.IncarnationTag TAG = org.pragmatica.cluster.state.kvstore.IncarnationTag.incarnationTag(1, "A");
+
+    /// A replica that is current against its source (readiness `servable`), or one that never heard a heartbeat.
+    private static org.pragmatica.cluster.replica.ReplicaReadiness readiness(boolean current) {
+        var position = org.pragmatica.cluster.replica.ReplicaPosition.replicaPosition(TAG,
+                                                                                       10,
+                                                                                       List.of(new org.pragmatica.cluster.state.kvstore.AnchorPair(9, "x")));
+        var readiness = org.pragmatica.cluster.replica.ReplicaReadiness.replicaReadiness(System::nanoTime,
+                                                                                         () -> position,
+                                                                                         () -> true,
+                                                                                         () -> true,
+                                                                                         _ -> {},
+                                                                                         org.pragmatica.cluster.replica.ReplicaClientLimits.DEFAULT);
+
+        if (current) {
+            readiness.caughtUp(true);
+            readiness.onHeartbeat(TAG, 10, true);
+        }
+
+        return readiness;
+    }
+
+    /// A client that has chosen a core uplink (`followsCore` true), or one that has chosen nothing.
+    private static org.pragmatica.cluster.replica.ReplicaFeedClient<AetherKey, org.pragmatica.aether.slice.kvstore.AetherValue> client(boolean followingACore) {
+        var store = new org.pragmatica.cluster.state.kvstore.KVStore<AetherKey, org.pragmatica.aether.slice.kvstore.AetherValue>(org.pragmatica.messaging.MessageRouter.mutable(),
+                                                                                                                                  null,
+                                                                                                                                  null);
+        var limits = org.pragmatica.cluster.replica.ReplicaClientLimits.DEFAULT;
+        var core = NodeId.nodeId("core-1").unwrap();
+        var client = org.pragmatica.cluster.replica.ReplicaFeedClient.replicaFeedClient(NodeId.nodeId("worker-1").unwrap(),
+                                                                                         org.pragmatica.cluster.replica.ReplicaApplier.replicaApplier(store, limits.bufferBytes()),
+                                                                                         readiness(true),
+                                                                                         (_, _) -> {},
+                                                                                         () -> followingACore
+                                                                                               ? List.of(core)
+                                                                                               : List.<NodeId> of(),
+                                                                                         Runnable::run,
+                                                                                         System::nanoTime,
+                                                                                         limits,
+                                                                                         () -> {},
+                                                                                         new org.pragmatica.cluster.replica.ReplicaFeedClient.GovernorArm(() -> false, Option::none));
+
+        client.tick();
+
+        return client;
+    }
+
+    /// I-W5 wiring: each of the three terms of the serve gate comes from its own object; with the other two held true, one false closes the gate.
+    /// Mutations: replace the governor term, the `followsCore` term or the `servable` term in `serveGate` by `() -> true`.
+    @Test
+    void serveGate_needsEachOfItsThreeTerms_wiredFromTheirOwnObjects() {
+        var governor = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var arm = new org.pragmatica.cluster.replica.ReplicaFeedClient.GovernorArm(governor::get, Option::none);
+        var following = client(true);
+        var idle = client(false);
+
+        assertThat(ReplicaClientAssembly.serveGate(arm, following, readiness(true)).mayServeMembers()).as("control: all three hold").isTrue();
+        assertThat(ReplicaClientAssembly.serveGate(arm, idle, readiness(true)).mayServeMembers()).as("its upstream is not a core").isFalse();
+        assertThat(ReplicaClientAssembly.serveGate(arm, following, readiness(false)).mayServeMembers()).as("its replica is not current").isFalse();
+        governor.set(false);
+        assertThat(ReplicaClientAssembly.serveGate(arm, following, readiness(true)).mayServeMembers()).as("it is not the governor").isFalse();
     }
 }

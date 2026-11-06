@@ -13,8 +13,8 @@ import static org.pragmatica.lang.Unit.unit;
 /// This interface provides the collection logic only. Scheduling is the caller's responsibility.
 ///
 /// Local refcount GC deletes only from node-private tiers and a node's refcounts describe its own holdings, so it
-/// runs on EVERY node over that node's own disk: nothing about it is leader-only. Reclaiming a block on a SHARED tier
-/// is a different, cluster-wide operation and is not this collector's.
+/// runs on EVERY node over that node's own disk: nothing about it is leader-only. A block on a SHARED tier is deleted only
+/// on the authority its last released reference carried ([SharedDelete], #2258), by [#collectSharedDeletes].
 public interface StorageGarbageCollector {
     /// Run one GC cycle. Returns the number of blocks collected.
     /// No-ops when not active.
@@ -43,6 +43,31 @@ public interface StorageGarbageCollector {
     /// an instance using this method breaks the condition and must check the snapshot's refs as well.
     default int collectOrphansDurableIn(MetadataSnapshot durable) {
         return 0;
+    }
+
+    /// The orphans whose last released reference carried shared-delete authority (#2258, [SharedDelete]), collected from
+    /// EVERY tier, the shared tier first ([StorageInstance#deleteEverywhere]). An authority is acted on only once it is
+    /// durable: the run forces a metadata snapshot through `snapshots` and deletes only orphans whose record in THAT
+    /// snapshot carries the same authority, and that were orphaned at least `limits.graceMs()` ago. Before the snapshot a
+    /// restart restores the reference with its block intact; after it the authority survives the restart and the next run
+    /// completes the delete. The tick ([#collectGarbage]) leaves these orphans alone, so a DHT outage stalls only this run,
+    /// which is bounded by `limits`. No snapshot is forced when there is nothing to collect. No-ops when not active.
+    default SharedDeleteRun collectSharedDeletes(SnapshotManager snapshots, SharedDeleteLimits limits) {
+        return SharedDeleteRun.NOTHING;
+    }
+
+    /// The bounds of one [#collectSharedDeletes] run: the grace after the release, the deletes in flight at once, and the
+    /// blocks and time after which the run stops and leaves the rest to the next.
+    record SharedDeleteLimits(long graceMs, int concurrency, int maxBlocks, long maxDurationMs) {
+        /// 2 min of grace (above the 30 s metadata snapshot interval), 8 at a time, at most 10,000 blocks or 60 s a run.
+        public static final SharedDeleteLimits DEFAULT = new SharedDeleteLimits(120_000L, 8, 10_000, 60_000L);
+    }
+
+    /// What one [#collectSharedDeletes] run did: blocks deleted from every tier, deletes that failed (their record is back
+    /// for the next run), and the flagged orphans it left for a later run (not yet durable, not past the grace, or past
+    /// the run's bounds).
+    record SharedDeleteRun(int deleted, int failed, int deferred) {
+        public static final SharedDeleteRun NOTHING = new SharedDeleteRun(0, 0, 0);
     }
 
     /// Statistics for garbage collection activity.

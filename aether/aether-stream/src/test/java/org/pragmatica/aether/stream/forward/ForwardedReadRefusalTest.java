@@ -112,7 +112,7 @@ class ForwardedReadRefusalTest {
         caller = streamPartitionManager(Long.MAX_VALUE);
         caller.placementRoleSupplier((_, _) -> Role.NONE);
         client = streamForwardClient(CALLER_ID,
-                                     (_, message) -> handler.onReadForward((ReadForward) overTheWire(message)),
+                                     AcceptingStreamForwardTransport.accepting((_, message) -> handler.onReadForward((ReadForward) overTheWire(message))),
                                      TimeSpan.timeSpan(5).seconds());
     }
 
@@ -127,7 +127,7 @@ class ForwardedReadRefusalTest {
                          Option<CommittedStreamOwnerSource> committedOwner) {
         handler = streamForwardHandler(OWNER_ID,
                                        owner,
-                                       (_, message) -> deliverToCaller(overTheWire(message)),
+                                       AcceptingStreamForwardTransport.accepting((_, message) -> deliverToCaller(overTheWire(message))),
                                        Long.MAX_VALUE,
                                        StreamReadForwardMetrics.NOOP,
                                        ownerServe);
@@ -398,7 +398,7 @@ class ForwardedReadRefusalTest {
             callerHoldsOnlyTheConfig(config(STREAM, 1, 2));
             handler = streamForwardHandler(OWNER_ID,
                                            owner,
-                                           (_, message) -> deliverToCaller(overTheWire(message)),
+                                           AcceptingStreamForwardTransport.accepting((_, message) -> deliverToCaller(overTheWire(message))),
                                            Long.MAX_VALUE,
                                            StreamReadForwardMetrics.NOOP,
                                            Option.none(),
@@ -491,7 +491,7 @@ class ForwardedReadRefusalTest {
     void nearestRead_whenTheOwnerDoesNotAnswer_stillServesTheLocalRing() {
         caller.placementRoleSupplier((_, _) -> Role.REPLICA);
         callerHoldsOnlyTheConfig(config(STREAM, 1));
-        var silent = streamForwardClient(CALLER_ID, (_, _) -> {}, TimeSpan.timeSpan(100).millis());
+        var silent = streamForwardClient(CALLER_ID, AcceptingStreamForwardTransport.accepting((_, _) -> {}), TimeSpan.timeSpan(100).millis());
 
         assertThat(routerWithRegistry(silent).read(STREAM, PARTITION, 0, 10, ReadPreference.NEAREST).await().isSuccess()).isTrue();
     }

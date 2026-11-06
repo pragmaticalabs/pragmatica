@@ -22,6 +22,7 @@ import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.dht.storage.MemoryStorageEngine;
 import org.pragmatica.lang.Option;
+import org.junit.jupiter.api.Timeout;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -30,6 +31,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.dht.DHTAntiEntropy.dhtAntiEntropy;
@@ -50,6 +53,7 @@ import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine
 ///     chunk to the node that newly becomes responsible, so it survives.
 class DHTChurnSurvivalTest {
     private static final DHTConfig CONFIG = new DHTConfig(3, 2, 2, DHTConfig.DEFAULT_TIMEOUT);
+    private static final DHTConfig RF1 = new DHTConfig(1, 1, 1, DHTConfig.DEFAULT_TIMEOUT);
     /// Keyspace of the production-shaped join pin. Large enough that an over-pulling round strands
     /// hundreds of keys (~90% of the keyspace at RF 3 on 5 nodes), small enough to stay in-JVM cheap.
     private static final int SEEDED_KEYS = 400;
@@ -91,6 +95,56 @@ class DHTChurnSurvivalTest {
         cluster.remove(departing);
 
         assertThat(cluster.resolve(uniqueKey)).as("uniquely-held key survives the departure via the ack-gated push").isTrue();
+    }
+
+    /// #2034 T2: an RF-1 sole copy whose first departure push is lost is RESENT, so the key is on the node responsible for it
+    /// after the departure. Asserted with `holds(responsible, ...)`, never `resolve` (which would accept any holder).
+    @Test
+    @Timeout(30)
+    void departingNode_rf1_firstPushDropped_keyOnResponsibleNode() {
+        var cluster = fiveNodeCluster(RF1);
+        var departing = new NodeId("node-3");
+        var soleKey = cluster.findUniquelyHeldKeyWithNewcomer(departing, "rf1-dropped");
+        cluster.seedOnly(departing, soleKey, value("payload"));
+
+        cluster.markDeparting(departing);
+        cluster.dropNextDeparturePush(_ -> {});
+        cluster.member(departing).rebalancer().pushOnDeparture(DeparturePushObserver.noop()).await();
+        cluster.remove(departing);
+
+        var responsible = cluster.responsibleFor(soleKey).getFirst();
+        assertThat(cluster.holds(responsible, soleKey))
+            .as("the dropped push was resent, so the responsible node %s holds the sole copy", responsible.id())
+            .isTrue();
+    }
+
+    /// #2034 T8b: the newcomer loses the first push and then leaves the ring; the page is re-planned to the NEXT responsible node.
+    @Test
+    @Timeout(30)
+    void departingNode_newcomerRemovedMidPush_keyOnNextResponsible() {
+        var cluster = fiveNodeCluster(RF1);
+        var departing = new NodeId("node-3");
+        var soleKey = cluster.findUniquelyHeldKeyWithNewcomer(departing, "rf1-retarget");
+        cluster.seedOnly(departing, soleKey, value("payload"));
+        var newcomer = new AtomicReference<NodeId>();
+
+        cluster.markDeparting(departing);
+        cluster.dropNextDeparturePush(target -> removeOnce(cluster, newcomer, target));
+        cluster.member(departing).rebalancer().pushOnDeparture(DeparturePushObserver.noop()).await();
+        cluster.remove(departing);
+
+        var nextResponsible = cluster.responsibleFor(soleKey).getFirst();
+        assertThat(newcomer.get()).isNotNull();
+        assertThat(cluster.member(newcomer.get())).as("the newcomer left the ring").isNull();
+        assertThat(nextResponsible).isNotEqualTo(newcomer.get());
+        assertThat(cluster.holds(nextResponsible, soleKey))
+            .as("the page was retargeted to the next responsible node %s", nextResponsible.id())
+            .isTrue();
+    }
+
+    private static void removeOnce(DhtCluster cluster, AtomicReference<NodeId> removed, NodeId target) {
+        removed.set(target);
+        cluster.remove(target);
     }
 
     @Test
@@ -413,7 +467,11 @@ class DHTChurnSurvivalTest {
     }
 
     private DhtCluster fiveNodeCluster() {
-        var cluster = new DhtCluster();
+        return fiveNodeCluster(CONFIG);
+    }
+
+    private DhtCluster fiveNodeCluster(DHTConfig config) {
+        var cluster = new DhtCluster(config);
         for (int i = 0; i < 5; i++) {
             cluster.add(new NodeId("node-" + i));
         }
@@ -434,6 +492,22 @@ class DHTChurnSurvivalTest {
         private final Map<NodeId, Member> members = new LinkedHashMap<>();
         /// The nodes every member knows to be draining — what the leader's drain set tells the receivers.
         private final Set<NodeId> departing = new HashSet<>();
+        private final DHTConfig config;
+        /// When set, the next departure push (an ack-requested `MigrationDataResponse`) is dropped and the hook runs with its target.
+        private final AtomicReference<Option<Consumer<NodeId>>> dropNextPush = new AtomicReference<>(Option.none());
+
+        DhtCluster() {
+            this(CONFIG);
+        }
+
+        DhtCluster(DHTConfig config) {
+            this.config = config;
+        }
+
+        void dropNextDeparturePush(Consumer<NodeId> thenRun) {
+            dropNextPush.set(Option.some(thenRun));
+        }
+
 
         void markDeparting(NodeId id) {
             departing.add(id);
@@ -445,10 +519,10 @@ class DHTChurnSurvivalTest {
             members.keySet().forEach(ring::addNode);
             ring.addNode(id);
             var storage = memoryStorageEngine();
-            var node = dhtNode(id, storage, ring, CONFIG);
-            DHTNetwork network = this::deliver;
-            var rebalancer = dhtRebalancer(node, network, CONFIG);
-            var antiEntropy = dhtAntiEntropy(node, network, CONFIG, departing::contains);
+            var node = dhtNode(id, storage, ring, config);
+            DHTNetwork network = AcceptingNetwork.accepting(this::deliver);
+            var rebalancer = dhtRebalancer(node, network, config);
+            var antiEntropy = dhtAntiEntropy(node, network, config, departing::contains);
             var member = new Member(id,
                                     node,
                                     rebalancer,
@@ -489,10 +563,10 @@ class DHTChurnSurvivalTest {
         void joinIncrementally(NodeId id, int selfAnnouncedAt) {
             var ring = ConsistentHashRing.<NodeId>consistentHashRing();
             var storage = memoryStorageEngine();
-            var node = dhtNode(id, storage, ring, CONFIG);
-            DHTNetwork network = this::deliver;
-            var rebalancer = dhtRebalancer(node, network, CONFIG);
-            var antiEntropy = dhtAntiEntropy(node, network, CONFIG, departing::contains);
+            var node = dhtNode(id, storage, ring, config);
+            DHTNetwork network = AcceptingNetwork.accepting(this::deliver);
+            var rebalancer = dhtRebalancer(node, network, config);
+            var antiEntropy = dhtAntiEntropy(node, network, config, departing::contains);
             var existing = List.copyOf(members.keySet());
             var wholeCluster = new ArrayList<>(existing);
 
@@ -534,7 +608,7 @@ class DHTChurnSurvivalTest {
 
         List<NodeId> responsibleFor(byte[] key) {
             var any = members.values().iterator().next();
-            return any.ring().nodesFor(key, CONFIG.effectiveReplicationFactor(members.size()));
+            return any.ring().nodesFor(key, config.effectiveReplicationFactor(members.size()));
         }
 
         long inSetCopies(byte[] key) {
@@ -553,7 +627,7 @@ class DHTChurnSurvivalTest {
         /// once `node` is back in the ring.
         byte[] findKeyGainedByRejoin(NodeId node, String prefix) {
             var pruned = members.values().iterator().next().ring();
-            var rf = CONFIG.effectiveReplicationFactor(members.size());
+            var rf = config.effectiveReplicationFactor(members.size());
             var whole = ConsistentHashRing.<NodeId>consistentHashRing();
             members.keySet().forEach(whole::addNode);
             for (int i = 0; i < 20_000; i++) {
@@ -569,7 +643,7 @@ class DHTChurnSurvivalTest {
         byte[] findKeyGainedByJoiner(NodeId joiner, String prefix) {
             var ring = ConsistentHashRing.<NodeId>consistentHashRing();
             members.keySet().forEach(ring::addNode);
-            var rf = CONFIG.effectiveReplicationFactor(members.size());
+            var rf = config.effectiveReplicationFactor(members.size());
             var after = ConsistentHashRing.<NodeId>consistentHashRing();
             members.keySet().forEach(after::addNode);
             after.addNode(joiner);
@@ -587,7 +661,7 @@ class DHTChurnSurvivalTest {
         /// A key currently owned by `crashing` whose post-crash responsible set gains EXACTLY ONE node
         /// that is not already a holder — the single newcomer the survivor rebalance must stock.
         GainedOnCrash findKeyGainedByExactlyOneNewcomerOnCrash(NodeId crashing, String prefix) {
-            var rf = CONFIG.effectiveReplicationFactor(members.size());
+            var rf = config.effectiveReplicationFactor(members.size());
             var afterCrash = ConsistentHashRing.<NodeId>consistentHashRing();
 
             members.keySet().stream().filter(id -> !id.equals(crashing)).forEach(afterCrash::addNode);
@@ -617,7 +691,7 @@ class DHTChurnSurvivalTest {
         /// so the true post-departure newcomer is the next live node on the ring.
         CoDepartureShape findKeyWhoseNewcomerIsAlsoLeaving(String prefix) {
             var ring = members.values().iterator().next().ring();
-            var rf = CONFIG.effectiveReplicationFactor(members.size());
+            var rf = config.effectiveReplicationFactor(members.size());
 
             for (int i = 0; i < 20_000; i++) {
                 var candidate = key(prefix + "-probe-" + i);
@@ -672,7 +746,7 @@ class DHTChurnSurvivalTest {
 
         byte[] findUniquelyHeldKeyWithNewcomer(NodeId holder, String prefix) {
             var ring = members.get(holder).ring();
-            var replicationFactor = CONFIG.effectiveReplicationFactor(members.size());
+            var replicationFactor = config.effectiveReplicationFactor(members.size());
             for (int i = 0; i < 20_000; i++) {
                 var candidate = key(prefix + "-probe-" + i);
                 if (ring.nodesFor(candidate, replicationFactor).contains(holder)
@@ -698,6 +772,13 @@ class DHTChurnSurvivalTest {
             var member = members.get(target);
             if (member == null) {
                 return;  // target has departed — message dropped, as on a real halted node
+            }
+            if (message instanceof DHTMessage.MigrationDataResponse response && response.ackRequested()) {
+                var hook = dropNextPush.getAndSet(Option.none());
+                if (hook.isPresent()) {
+                    hook.onPresent(run -> run.accept(target));
+                    return;
+                }
             }
             route(member, message);
         }

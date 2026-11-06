@@ -18,6 +18,8 @@ import java.util.function.LongSupplier;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
+import org.pragmatica.aether.stream.forward.RefusalBackoff;
+import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
@@ -130,9 +132,12 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// scheduled. Seams so the backoff's growth is pinned without waiting for it.
     private final LongSupplier clockMs;
     private final DelayedTask escapeScheduler;
+    /// #2574: the refused-read hold of each consumer loop ([#parkAfterRefusal]).
+    private final RefusalBackoff<ConsumerKey> refusalBackoff = RefusalBackoff.refusalBackoff();
     private final ConcurrentHashMap<ConsumerKey, ConsumerState> consumers = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final ScheduledFuture<?> idleConsumerChecker;
+    private final AtomicLong trailingCommitTimersArmed = new AtomicLong(0);
     /// #654: node-wide count of cursor commits (final flush or periodic checkpoint) that resolved
     /// with a failure or never settled at all ([#reportIfUnsettled]). One counted incident per commit:
     /// whichever of [#reportIfUnsettled], [#onCursorCommitFailure], or [#reportIfLocalOnly] first wins
@@ -1195,6 +1200,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// and left the work to this pass.
     @Contract
     private void afterCompletedPass(ConsumerKey key, ConsumerState state, boolean batchFull) {
+        refusalBackoff.sent(key);
         if (batchFull) {
             continueDrain(key, state);
 
@@ -1216,6 +1222,13 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         }
 
         logPollFailure(key, cause);
+        if (StreamForwardError.isRefusal(cause)) {
+            parkAfterRefusal(key, state, refusalBackoff.refused(key));
+
+            return;
+        }
+
+        refusalBackoff.sent(key);
         releaseDrain(key, state);
         if (state.pushBuffer().isPresent() && !state.isCancelled() && !closed.get()) {
             SharedScheduler.schedule(() -> requestDrain(key, state),
@@ -1240,6 +1253,32 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         if (!state.isCancelled() && !closed.get()) {
             escapeScheduler.schedule(() -> resumeAfterEscapeBackoff(key, state),
                                      TimeSpan.timeSpan(delayMs).millis());
+        }
+    }
+
+    /// #2574 (CTO, know 89e17399a9): a read the transport did not send (FORWARD-lane backpressure) fails at once, where it
+    /// used to wait out the 2 s read timeout, and the poll tick (50 ms at most) or the next append would re-read at once
+    /// on the congested lane. The loop is parked instead for the consumer's [RefusalBackoff] hold -- 250 ms doubling to
+    /// 4 s, jittered, per (group, partition) because each consumer loop re-reads on its own; reset once a pass is not
+    /// refused -- exactly as an escaped pass parks it: triggers meanwhile only mark it dirty, and the park's end re-drives it.
+    @Contract
+    private void parkAfterRefusal(ConsumerKey key, ConsumerState state, TimeSpan hold) {
+        var untilMs = clockMs.getAsLong() + hold.millis();
+
+        state.adjustPollInterval(false);
+        state.escapeBackoffUntil(untilMs);
+        state.finishDrain();
+        if (!state.isCancelled() && !closed.get()) {
+            escapeScheduler.schedule(() -> resumeAfterRefusalPark(key, state, untilMs), hold);
+        }
+    }
+
+    /// Ends THIS park only. A scheduler that wakes late finds that a poll tick already ran a pass once the park expired by
+    /// the clock, and that the pass may have parked again; clearing that newer park would let the next pass re-read at once.
+    @Contract
+    private void resumeAfterRefusalPark(ConsumerKey key, ConsumerState state, long untilMs) {
+        if (state.endEscapeBackoff(untilMs)) {
+            requestDrain(key, state);
         }
     }
 
@@ -1432,7 +1471,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         state.adoptOwnerEpoch(read.ownerEpoch());
         endHoleEpisode(key, state, HoleEnd.READ);
         endExpiryEpisode(key, state, ExpiryEnd.READ);
-        trackBehindRing(key, state, read.fromTier());
+        trackBehindRing(key, state, read.position());
 
         return pollSucceeded(key, state, read.events(), moreBehindTheRing(read));
     }
@@ -1695,11 +1734,30 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// because the cursor is below the ring tail. One WARNING per `(group, partition)` episode, at the first read served from
     /// the tier, and one INFO recovery at the first read served from the ring again. A new `earliest` group on a stream with
     /// sealed history raises one pair by design. Nothing is raised per poll.
+    ///
+    /// #2223: a read whose ring tail was not known (the owner's ring was closing) names neither side, so it leaves the
+    /// episode as it was.
     @Contract
-    private void trackBehindRing(ConsumerKey key, ConsumerState state, boolean fromTier) {
-        if (fromTier && state.claimBehindRing()) {
+    private void trackBehindRing(ConsumerKey key,
+                                 ConsumerState state,
+                                 StreamPartitionManager.EpochRead.Position position) {
+        switch (position) {
+            case TIER -> openBehindRingIfClaimed(key, state);
+            case RING -> closeBehindRingIfLeft(key, state);
+            case UNKNOWN -> {}
+        }
+    }
+
+    @Contract
+    private void openBehindRingIfClaimed(ConsumerKey key, ConsumerState state) {
+        if (state.claimBehindRing()) {
             openBehindRingEpisode(key, state);
-        } else if (!fromTier && state.leaveBehindRing()) {
+        }
+    }
+
+    @Contract
+    private void closeBehindRingIfLeft(ConsumerKey key, ConsumerState state) {
+        if (state.leaveBehindRing()) {
             raiseBackInRing(key, "a read was served from the ring again");
         }
     }
@@ -1927,6 +1985,33 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         state.resetRetryCount();
         state.incrementEventsSinceCheckpoint();
         checkpointIfNeeded(key, state);
+        armTrailingCommit(key, state);
+    }
+
+    /// #1385 (I-31): [#checkpointIfNeeded] runs only from a delivery, so a burst that ends inside the cadence was never
+    /// committed and an ungraceful move replayed it from the start. The first ack after a commit arms one timer for one
+    /// cadence; when it fires, a cursor still ahead of the last commit has its commit REQUESTED (the store's verdict is the
+    /// outcome). Armed once and released when it fires, so a busy consumer holds one timer, never one per ack.
+    @Contract
+    private void armTrailingCommit(ConsumerKey key, ConsumerState state) {
+        if (state.claimTrailingCommit()) {
+            trailingCommitTimersArmed.incrementAndGet();
+            SharedScheduler.schedule(() -> trailingCommit(key, state), state.checkpointInterval());
+        }
+    }
+
+    /// Test seam (#1385): how many trailing-commit timers were scheduled over this runtime's life. One per burst, never one
+    /// per ack.
+    long trailingCommitTimersArmed() {
+        return trailingCommitTimersArmed.get();
+    }
+
+    @Contract
+    private void trailingCommit(ConsumerKey key, ConsumerState state) {
+        state.releaseTrailingCommit();
+        if (state.hasUncommittedEvents()) {
+            requestCheckpoint(key, state);
+        }
     }
 
     private void handleDeliveryFailure(ConsumerKey key,
@@ -2190,6 +2275,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         private final IdlePolicy idlePolicy;
         private final AtomicLong cursor;
         private final AtomicLong eventsSinceCheckpoint = new AtomicLong(0);
+        /// #1385: the trailing-commit timer is armed.
+        private final AtomicBoolean trailingCommitArmed = new AtomicBoolean(false);
         private final AtomicInteger retryCount = new AtomicInteger(0);
         private final AtomicBoolean stalled = new AtomicBoolean(false);
         private final AtomicBoolean cancelled = new AtomicBoolean(false);
@@ -2514,6 +2601,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             escapeBackoffUntilMs.set(untilMs);
         }
 
+        /// Ends the backoff that runs until `untilMs`; false when a newer one replaced it.
+        boolean endEscapeBackoff(long untilMs) {
+            return escapeBackoffUntilMs.compareAndSet(untilMs, 0L);
+        }
+
         boolean inEscapeBackoff(long nowMs) {
             return nowMs < escapeBackoffUntilMs.get();
         }
@@ -2624,6 +2716,19 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         void resetCheckpointCounters() {
             eventsSinceCheckpoint.set(0);
             lastCheckpointTime.set(System.currentTimeMillis());
+        }
+
+        boolean hasUncommittedEvents() {
+            return eventsSinceCheckpoint.get() > 0;
+        }
+
+        boolean claimTrailingCommit() {
+            return trailingCommitArmed.compareAndSet(false, true);
+        }
+
+        @Contract
+        void releaseTrailingCommit() {
+            trailingCommitArmed.set(false);
         }
 
         boolean isStalled() {

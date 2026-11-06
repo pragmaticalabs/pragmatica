@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm;
 
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
@@ -49,6 +50,7 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmTestHarness;
+import org.pragmatica.testlogging.LogCapture;
 
 import java.net.SocketAddress;
 import java.util.ArrayList;
@@ -243,20 +245,86 @@ class AttemptBoundOutcomeTest {
                 .isEqualTo(Option.some(SECOND_ATTEMPT));
     }
 
-    /// Without a committed leader record the rollback cannot be fenced; it still applies, unfenced, as
-    /// it did before #972 — a missing leader record must not strand an apply outstanding.
+    /// #2584 P0: without a committed leader record no write is issued at all, the unfenced rollback included. Before
+    /// P0 it applied unfenced, as it did before #972; now it is abandoned (WARN), and the apply stays outstanding for a
+    /// leader that holds the record. P2 removes the unfenced branch.
     @Test
-    void withoutACommittedLeaderRecord_theRollbackStillApplies_unfenced() {
+    void withoutACommittedLeaderRecord_theRollbackIsAbandoned_notApplied() {
         var store = freshStore();
         var harness = leaderHarness(new HoldingClusterNode(SELF, store), store, DeploymentAtomicity.ALL_OR_NOTHING);
+        var expanded = blueprint(3);
+
+        try (var log = LogCapture.capture(ClusterDeploymentState.Active.class, Level.WARN, false)) {
+            applyBlueprint(harness, store, expanded, FIRST_ATTEMPT, 1L);
+            exhaustRetryBudgetOn(harness, SELF, SLICE);
+
+            assertThat(log.messages(Level.WARN)).as("D19 is logged at WARN, naming the missing record")
+                                                .anyMatch(message -> message.contains("rollback of blueprint " + expanded.id().asString() + " not issued")
+                                                                     && message.contains("no committed leader record"));
+        }
+        assertThat(activeState(harness).permanentlyFailed()).as("precondition: the failure reached the rollback").contains(SLICE);
+        assertThat(committedBlueprint(store, expanded.id())).as("no unfenced rollback removed the blueprint").isEqualTo(Option.some(expanded));
+        assertThat(outcomeStatusName(store, expanded.id())).isEqualTo(DeploymentOutcomeStatus.IN_PROGRESS.name());
+    }
+
+    /// #2592: a deposed leader has applied the NEW leader's `LeaderValue` but not yet run `onExit`. Its rollback
+    /// would carry the new leader's value, which the applier's equality fence accepts, so it must not be built at all.
+    @Test
+    void committedLeaderRecordNamesAnotherNode_noRollbackIsSubmitted() {
+        var store = freshStore();
+
+        store.process(store.createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(NODE_A, 2)))));
+        var node = new InterferingClusterNode(SELF, store);
+        var harness = leaderHarness(node, store, DeploymentAtomicity.ALL_OR_NOTHING);
         var expanded = blueprint(3);
 
         applyBlueprint(harness, store, expanded, FIRST_ATTEMPT, 1L);
         exhaustRetryBudgetOn(harness, SELF, SLICE);
 
-        assertThat(committedBlueprint(store, expanded.id())).isEqualTo(Option.none());
-        assertThat(outcomeStatusName(store, expanded.id())).isEqualTo(DeploymentOutcomeStatus.FAILED.name());
-        assertThat(outcomeAttempt(store, expanded.id())).isEqualTo(FIRST_ATTEMPT);
+        assertThat(node.transactions()).as("no fenced rollback carrying another node's leader record").isZero();
+        assertThat(committedBlueprint(store, expanded.id())).as("and no unfenced one either").isEqualTo(Option.some(expanded));
+        assertThat(outcomeStatusName(store, expanded.id())).isEqualTo(DeploymentOutcomeStatus.IN_PROGRESS.name());
+    }
+
+    /// #2592 on the restore path: the abandoned rollback must run `onAbandoned`, which releases this node's
+    /// restore bookkeeping, and not `onLanded`, which would deallocate the slices it never rolled back.
+    @Test
+    void committedLeaderRecordNamesAnotherNode_abandonedRestoreReleasesItsBookkeeping() {
+        var store = freshStore();
+
+        store.process(store.createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(NODE_A, 2)))));
+        var node = new InterferingClusterNode(SELF, store);
+        var harness = leaderHarness(node, store, DeploymentAtomicity.ALL_OR_NOTHING);
+        var first = blueprint(3);
+        var second = blueprint(2);
+
+        applyBlueprint(harness, store, first, FIRST_ATTEMPT, 1L);
+        applyBlueprint(harness, store, second, SECOND_ATTEMPT, 2L);
+        exhaustRetryBudgetOn(harness, SELF, SLICE);
+
+        assertThat(activeState(harness).permanentlyFailed()).as("precondition: the failure reached the rollback").contains(SLICE);
+        assertThat(node.transactions()).as("no fenced restore carrying another node's leader record").isZero();
+        assertThat(committedAttempt(store, second.id())).as("the republish is left committed").isEqualTo(Option.some(SECOND_ATTEMPT));
+        assertThat(activeState(harness).restoringBlueprints()).as("onAbandoned released the restore marker").doesNotContain(first.id());
+    }
+
+    /// #2592, the guard's second clause: the committed `LeaderValue` still names this node, but its term has
+    /// ended (`onExit` ran) while a failure was still on its way to the rollback. The record passes the
+    /// applier's fence until the new leader's record commits, so the ended term must not build the transaction.
+    @Test
+    void committedLeaderRecordNamesSelfButTermHasEnded_noRollbackIsSubmitted() {
+        var store = storeWithLeader();
+        var node = new InterferingClusterNode(SELF, store);
+        var harness = leaderHarness(node, store, DeploymentAtomicity.ALL_OR_NOTHING);
+        var expanded = blueprint(3);
+
+        applyBlueprint(harness, store, expanded, FIRST_ATTEMPT, 1L);
+        activeState(harness).onExit();
+        exhaustRetryBudgetOn(harness, SELF, SLICE);
+
+        assertThat(activeState(harness).permanentlyFailed()).as("precondition: the failure reached the rollback").contains(SLICE);
+        assertThat(node.transactions()).as("no fenced rollback from an ended term").isZero();
+        assertThat(committedBlueprint(store, expanded.id())).as("and no unfenced one either").isEqualTo(Option.some(expanded));
     }
 
     /// BEST_EFFORT merge: a FAILED left by an EARLIER attempt must not lend its failing slices to this
@@ -876,7 +944,7 @@ class AttemptBoundOutcomeTest {
         @Override public Promise<Unit> stop() {return Promise.unitPromise();}
 
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
-            if (batch.stream().anyMatch(KVCommand.LeaderTransaction.class::isInstance)) {
+            if (batch.stream().anyMatch(AttemptBoundOutcomeTest::isRollbackTransaction)) {
                 transactions++;
                 var once = interference;
                 interference = repeating ? once : () -> {};
@@ -1069,6 +1137,13 @@ class AttemptBoundOutcomeTest {
         return harness;
     }
 
+    /// A rollback is a transaction that mutates more than slice targets: it carries the blueprint and the outcome. The
+    /// blueprint-fenced slice-target transactions of #2628 are transactions too, and are not rollbacks.
+    private static boolean isRollbackTransaction(KVCommand<AetherKey> command) {
+        return command instanceof KVCommand.LeaderTransaction<AetherKey, ?> transaction
+               && transaction.mutations().stream().anyMatch(mutation -> !(mutation.key() instanceof AetherKey.SliceTargetKey));
+    }
+
     /// Applies what the leader submits into the store, as consensus does — unless HELD, in which case
     /// batches queue until [#release], so a test can order another writer's batch before them.
     private static final class HoldingClusterNode implements ClusterNode<KVCommand<AetherKey>> {
@@ -1125,7 +1200,7 @@ class AttemptBoundOutcomeTest {
         @Override public Promise<Unit> stop() {return Promise.unitPromise();}
 
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
-            if (batch.stream().anyMatch(KVCommand.LeaderTransaction.class::isInstance) && ++transactions > RUNAWAY) {
+            if (batch.stream().anyMatch(AttemptBoundOutcomeTest::isRollbackTransaction) && ++transactions > RUNAWAY) {
                 // A rollback that keeps resubmitting is cut off by failing the promise, so the test's count assertion
                 // reports it; throwing here would be swallowed by the promise chain.
                 return Promise.failure(org.pragmatica.lang.utils.Causes.cause("runaway rollback retry"));

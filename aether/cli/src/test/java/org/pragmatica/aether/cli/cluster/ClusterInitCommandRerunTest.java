@@ -86,7 +86,7 @@ class ClusterInitCommandRerunTest {
     private static int initCloud(Path output, String... extra) {
         var args = new ArrayList<>(List.of("init",
                                            "--name",
-                                           "test-cluster",
+                                           "testclust",
                                            "--target",
                                            "cloud",
                                            "--provider",

@@ -11,6 +11,7 @@ import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.List;
 import java.util.Map;
 
 import org.pragmatica.aether.node.backup.GitBackupRepository.BackupRepositoryError;
@@ -21,6 +22,8 @@ import org.pragmatica.lang.io.TimeSpan;
 import com.sun.net.httpserver.HttpServer;
 
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -36,6 +39,11 @@ class GitBackupRepositoryTest {
 
     @TempDir
     Path temp;
+
+    @BeforeAll
+    static void reportTheGitUnderTest() {
+        System.out.println("GIT-UNDER-TEST " + GitFixtures.gitUnderTest());
+    }
 
     @Test
     void prepare_configuresTheRemote_soAPushReachesIt() {
@@ -123,6 +131,112 @@ class GitBackupRepositoryTest {
         assertThat(git(Path.of(remote), "show", "backup:" + GitBackupRepository.FILE)).isEqualTo("first\n");
     }
 
+    /// A rejection is git's own status line: `[rejected]` (the client saw the remote move) or `[remote rejected] (failed to update ref)` (the server
+    /// found the ref changed under the push). A hook's message that merely contains the words is a refusal.
+    @Test
+    void push_serverSideRefRace_isARejection_butAHookMessageWithTheWordsIsNot() throws IOException {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var seed = repository("seed", Option.some(remote));
+
+        seed.prepare();
+        seed.commit("seed\n", "seed").flatMap(_ -> seed.push());
+        var locked = repository("locked", Option.some(remote));
+
+        locked.prepare();
+        locked.fetchRemoteHead();
+        locked.resetToRemoteHead();
+        locked.commit("locked\n", "locked");
+        Files.writeString(Path.of(remote).resolve("refs/heads/backup.lock"), "");
+
+        boolean lockRace = locked.push().fold(cause -> cause instanceof BackupRepositoryError.PushRejected, _ -> false);
+
+        assertThat(lockRace).as("a stale ref lock is a lost race").isTrue();
+
+        Files.delete(Path.of(remote).resolve("refs/heads/backup.lock"));
+        var hook = Path.of(remote).resolve("hooks").resolve("pre-receive");
+
+        Files.writeString(hook, "#!/bin/sh\necho 'policy: failed to update ref [rejected] non-fast-forward fetch first'\nexit 1\n");
+        Files.setPosixFilePermissions(hook, PosixFilePermissions.fromString("rwxr-xr-x"));
+
+        boolean refusal = locked.push().fold(cause -> cause instanceof BackupRepositoryError.GitFailed, _ -> false);
+
+        assertThat(refusal).as("a hook refusal is a failure, not a race").isTrue();
+    }
+
+    private static String porcelain(String statusLine) {
+        return "remote: error: cannot lock ref 'refs/heads/backup': Unable to create '/srv/remote.git/refs/heads/backup.lock': File exists.\n"
+               + "remote: \nTo git://127.0.0.1:9418/remote.git\n" + statusLine + "\nDone\n";
+    }
+
+    /// The lost-race reasons of every git server version, as literal porcelain lines (see `isRejection` for the sources): git 2.43 to 2.50 answer
+    /// `(failed to update ref)` to any failed ref transaction; git 2.51 and later answer the per-ref reason.
+    @Test
+    void isRejection_isTrue_forEveryLostRaceReason_ofEveryGitServerVersion() {
+        for (var line : List.of("!\tHEAD:refs/heads/backup\t[remote rejected] (failed to update ref)",          // git 2.43 to 2.50
+                                "!\tHEAD:refs/heads/backup\t[remote rejected] (reference already exists)",       // git 2.51 and later: created / lock held
+                                "!\tHEAD:refs/heads/backup\t[remote rejected] (incorrect old value provided)",   // git 2.51 and later: the ref moved
+                                "!\tHEAD:refs/heads/backup\t[remote rejected] (reference does not exist)",       // git 2.51 and later: the ref was deleted
+                                "!\tHEAD:refs/heads/backup\t[rejected] (fetch first)",                           // the client's own check
+                                "!\tHEAD:refs/heads/backup\t[rejected] (non-fast-forward)")) {
+            assertThat(GitBackupRepository.isRejection(porcelain(line))).as(line).isTrue();
+        }
+    }
+
+    /// Everything else is a refusal: hook and policy reasons, the reasons that are not races, the whole-commit failure of git 2.51+, and the same
+    /// words anywhere but the status line.
+    @Test
+    void isRejection_isFalse_forRefusalsAndForWordsOutsideTheStatusLine() {
+        for (var reason : List.of("pre-receive hook declined", "hook declined", "refname conflict", "invalid new value provided",
+                                  "expected symref but found regular ref", "reference conflict due to case-insensitive filesystem", "unknown failure",
+                                  "failed to update refs", "atomic transaction failed", "deny updating a hidden ref", "missing necessary objects")) {
+            var line = "!\tHEAD:refs/heads/backup\t[remote rejected] (" + reason + ")";
+
+            assertThat(GitBackupRepository.isRejection(porcelain(line))).as(line).isFalse();
+        }
+        for (var line : List.of("remote: ! HEAD:refs/heads/backup [remote rejected] (reference already exists)",
+                                "remote: !\tHEAD:refs/heads/backup\t[rejected] (fetch first)",
+                                "remote: error: cannot lock ref 'refs/heads/backup': reference already exists",
+                                "remote: error: policy: failed to update ref, incorrect old value provided, [rejected] non-fast-forward",
+                                "!\tHEAD:refs/heads/backup\t[remote rejected] (pre-receive hook declined) failed to update ref")) {
+            assertThat(GitBackupRepository.isRejection(porcelain(line))).as(line).isFalse();
+        }
+        assertThat(GitBackupRepository.isRejection("")).isFalse();
+    }
+
+    /// A git push interrupted by its owner (the stop's deadline) is killed with it: nothing reaches the remote afterwards.
+    @Test
+    @Timeout(60)
+    void push_interrupted_isKilled_soNothingReachesTheRemoteAfterwards() throws Exception {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var seed = repository("seed", Option.some(remote));
+
+        seed.prepare();
+        seed.commit("seed\n", "seed").flatMap(_ -> seed.push());
+        var before = git(Path.of(remote), "rev-parse", "backup").strip();
+        var slow = repository("slow", Option.some(remote));
+
+        slow.prepare();
+        slow.fetchRemoteHead();
+        slow.resetToRemoteHead();
+        slow.commit("slow\n", "slow");
+        var started = temp.resolve("hook.started");
+        var hook = Path.of(remote).resolve("hooks").resolve("pre-receive");
+
+        Files.writeString(hook, "#!/bin/sh\ntouch '" + started + "'\nsleep 4\nexit 0\n");
+        Files.setPosixFilePermissions(hook, PosixFilePermissions.fromString("rwxr-xr-x"));
+        var pusher = new Thread(slow::push);
+
+        pusher.start();
+        while (!Files.exists(started)) {
+            Thread.sleep(20);
+        }
+        pusher.interrupt();
+        pusher.join(10_000);
+        Thread.sleep(6_000);
+
+        assertThat(git(Path.of(remote), "rev-parse", "backup").strip()).as("the interrupted push did not land").isEqualTo(before);
+    }
+
     @Test
     void resetToRemoteHead_thenCommit_isAFastForward() {
         var remote = bareRemote(temp.resolve("remote.git"));
@@ -188,6 +302,7 @@ class GitBackupRepositoryTest {
     @Test
     @Timeout(60)
     void anHttpsRemoteDemandingCredentials_failsWithoutPrompting() throws IOException {
+        Assumptions.assumeTrue(GitFixtures.gitHasHttpTransport(), "this git was built without git-remote-http");
         var server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
 
         server.createContext("/", exchange -> {

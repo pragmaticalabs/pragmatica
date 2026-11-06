@@ -4,7 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge;
 
+import java.lang.ref.Reference;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -97,12 +99,24 @@ class ForgeProxyApiKeyForgeTest {
     ///
     /// Two in-run controls keep the bound from passing vacuously: the poller's own client must appear (the count can
     /// see a client at all), and a client per fetch, exactly the regression, must raise the count past the bound
-    /// in this same JVM (its threads survive long enough to be counted).
+    /// in this same JVM.
+    ///
+    /// #1881: a JDK client's selector thread ends once its client is unreachable and collected, so a count of threads
+    /// whose clients nothing references races the GC. Every counted client is therefore held strongly until it is
+    /// counted: the poller under test by a reachability fence, the per-fetch control pollers in a list. The poller is
+    /// also awaited until it can poll at all, as [#forgeEventPoll_carriesTheOperatorKey_andReadsTheTimeline] does:
+    /// right after leader election the management server answers, but the event stream behind `/api/v1/events` can
+    /// still be promoting, so the first read may fail transiently.
     @Test
     void forgeEventPoll_reusesOneClient_acrossPolls() {
         var port = cluster.getLeaderManagementPort().unwrap();
         var before = selectorThreads();
         var poll = NodeEventPoll.nodeEventPoll(() -> Option.some(OPERATOR_KEY));
+
+        await().alias("the keyed poller can poll")
+               .atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> poll.fetch(port, "").isSuccess());
 
         for (int i = 0; i < POLLS; i++) {
             assertThat(poll.fetch(port, "").isSuccess()).as("keyed poll %d succeeds", i).isTrue();
@@ -113,15 +127,19 @@ class ForgeProxyApiKeyForgeTest {
         assertThat(created).as("control: the poller's own client selector thread is visible").isNotEmpty();
         assertThat(created).as("one poller, one client across %d polls (other JVM clients allowed)", POLLS)
                            .hasSizeLessThanOrEqualTo(CLIENT_SLACK);
+        Reference.reachabilityFence(poll);
 
         var beforeControl = selectorThreads();
+        var perFetch = new ArrayList<NodeEventPoll>();
 
         for (int i = 0; i < POLLS; i++) {
-            NodeEventPoll.nodeEventPoll(() -> Option.some(OPERATOR_KEY)).fetch(port, "");
+            perFetch.add(NodeEventPoll.nodeEventPoll(() -> Option.some(OPERATOR_KEY)));
+            perFetch.getLast().fetch(port, "");
         }
 
         assertThat(newSince(beforeControl)).as("control: a client per fetch is visible above the bound")
                                            .hasSizeGreaterThan(CLIENT_SLACK);
+        Reference.reachabilityFence(perFetch);
     }
 
     private static Set<Thread> selectorThreads() {

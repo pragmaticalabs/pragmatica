@@ -21,6 +21,9 @@ import org.pragmatica.lang.io.TimeSpan;
 /// A movement drain closes admission first, then waits for the core to commit its completion.
 /// The ordinary drain grace deadline remains the hard bound; expiry produces no success evidence.
 public interface CommunityDrainCoordinator {
+    /// How long [#onQuiesced] waits for the core to acknowledge the movement completion. The departure composite reserves it
+    /// out of the drain window for the movement leg (#2034), so the two cannot drift.
+    TimeSpan ACK_BUDGET = TimeSpan.timeSpan(10).seconds();
     Unit onRequest(CommunityPlacementMessage.DrainRequested request);
     Unit onAccepted(CommunityPlacementMessage.DrainAccepted response);
     Promise<Unit> onQuiesced();
@@ -92,7 +95,7 @@ public interface CommunityDrainCoordinator {
                 sendCompletion(entry);
 
                 return entry.acknowledged()
-                            .timeout(TimeSpan.timeSpan(10).seconds());
+                            .timeout(ACK_BUDGET);
             }
 
             @Override

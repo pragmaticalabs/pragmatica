@@ -6,6 +6,8 @@ package org.pragmatica.aether.storage;
 import java.nio.charset.StandardCharsets;
 
 import org.pragmatica.dht.DHTClient;
+import org.pragmatica.dht.DHTError;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -41,6 +43,7 @@ public final class DhtStorageTier implements StorageTier {
     }
 
     private final DHTClient dhtClient;
+    private final String keyPrefix;
     private final byte[] keyPrefixBytes;
     private final String instanceName;
     private final Promise<Unit> readGate;
@@ -54,6 +57,7 @@ public final class DhtStorageTier implements StorageTier {
                            TimeSpan admissionTimeout,
                            Addressing addressing) {
         this.dhtClient = dhtClient;
+        this.keyPrefix = keyPrefix;
         this.keyPrefixBytes = (keyPrefix + "/").getBytes(StandardCharsets.UTF_8);
         this.instanceName = instanceName;
         this.readGate = readGate;
@@ -164,7 +168,17 @@ public final class DhtStorageTier implements StorageTier {
 
     @Override
     public Promise<Unit> put(BlockId id, byte[] content) {
-        return admission().flatMap(_ -> dhtClient.put(buildKey(id), content));
+        return admission().flatMap(_ -> dhtClient.put(buildKey(id),
+                                                      content))
+                        .mapError(DhtStorageTier::tierFullOnCapacity);
+    }
+
+    /// A put the DHT refused for capacity is the tier being full (#2258, spec 3.2 item 7): the instance treats it as it does a
+    /// full disk tier, so the write fails and its local-disk copy is undone. Any other cause stays as it was.
+    private static Cause tierFullOnCapacity(Cause cause) {
+        return cause instanceof DHTError.ReplicaFull full
+               ? new StorageError.TierFull(TierLevel.REMOTE, full.usedBytes(), full.maxBytes())
+               : cause;
     }
 
     @Override
@@ -193,12 +207,14 @@ public final class DhtStorageTier implements StorageTier {
 
     @Override
     public long usedBytes() {
-        return 0;
+        return dhtClient.localUsage(keyPrefix)
+                        .usedBytes();
     }
 
     @Override
     public long maxBytes() {
-        return Long.MAX_VALUE;
+        return dhtClient.localUsage(keyPrefix)
+                        .maxBytes();
     }
 
     /// #250: the DHT is a cluster-wide shared store -- a block orphaned by THIS node's

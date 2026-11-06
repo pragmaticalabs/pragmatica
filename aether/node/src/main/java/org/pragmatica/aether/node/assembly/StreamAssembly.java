@@ -49,12 +49,14 @@ import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.node.StreamFailoverAnnouncer;
 import org.pragmatica.aether.node.StreamIsrAnnouncer;
 import org.pragmatica.aether.node.StreamLineageAnnouncer;
+import org.pragmatica.aether.node.StreamMemoryBudget;
 import org.pragmatica.aether.node.projection.CommitWitness;
 import org.pragmatica.aether.node.projection.PartitionBounds;
 import org.pragmatica.aether.node.projection.ProjectionAwareCursorStore;
 import org.pragmatica.aether.node.projection.ProjectionNodeSupport;
 import org.pragmatica.aether.node.projection.ProjectionRegistry;
 import org.pragmatica.aether.node.stream.ClusterCursorStore;
+import org.pragmatica.aether.node.stream.ConsensusBatchCounters;
 import org.pragmatica.aether.node.stream.ConsumerAssignmentWriter;
 import org.pragmatica.aether.node.stream.StreamConsumerManager;
 import org.pragmatica.aether.node.stream.StreamConsumerRegistry;
@@ -121,9 +123,11 @@ import org.pragmatica.aether.stream.replication.WatermarkTracker;
 import org.pragmatica.aether.stream.segment.CursorStore;
 import org.pragmatica.aether.stream.segment.RefDurability;
 import org.pragmatica.aether.stream.segment.RetentionEnforcer;
+import org.pragmatica.aether.stream.segment.SealerThresholds;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentReader;
 import org.pragmatica.aether.stream.segment.SegmentSealer;
+import org.pragmatica.aether.stream.segment.SharedSegmentCollection;
 import org.pragmatica.aether.stream.segment.StorageSegmentSink;
 import org.pragmatica.aether.stream.segment.StreamFootprint;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
@@ -144,6 +148,7 @@ import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.hlc.HlcClock;
@@ -162,6 +167,8 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.storage.AppendLog;
+import org.pragmatica.storage.SharedDelete;
+import org.pragmatica.storage.StorageGarbageCollector;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
@@ -197,6 +204,7 @@ public sealed interface StreamAssembly {
                                    SliceCodec nodeCodec,
                                    OwnershipEpochHighWater ownershipEpochHighWater,
                                    ClusterEventsLimits clusterEventsLimits,
+                                   StreamMemoryBudget streamMemoryBudget,
                                    StorageFactory.StorageSetup streamStorageSetup,
                                    AtomicReference<ReplicaSetController> clusterEventsControllerRef,
                                    String clusterEventsStreamName,
@@ -227,7 +235,51 @@ public sealed interface StreamAssembly {
                                     StreamReadForwardMetrics streamReadForwardMetrics,
                                     StreamForwardClient streamForwardClient) {}
 
+    /// #2682: the route that hands every committed ownership record to the owner-activation hook, which starts the promotion
+    /// gate when the record newly names this node.
+    static List<MessageRouter.Entry<?>> committedOwnershipRoutes(OwnerActivation ownerActivation) {
+        return KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                   .onPut(StreamPartitionOwnershipKey.class,
+                                          (ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> put) -> committedOwnership(ownerActivation,
+                                                                                                                                           put))
+                                   .build()
+                                   .asRouteEntries();
+    }
+
+    @Contract
+    private static void committedOwnership(OwnerActivation ownerActivation,
+                                           ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> put) {
+        ownerActivation.onCommittedOwnership(put.cause().key().stream(),
+                                             put.cause().key().partition(),
+                                             put.oldValue(),
+                                             put.cause().value());
+    }
+
     /// The replica registry, the replication manager and transport, the partition manager with its segment index and stores, the ISR announcer and the forward client.
+    /// The run-forming sealer's thresholds, as the node's `[streaming] seal_*` keys set them (#2201 C-02).
+    static SealerThresholds sealerThresholds(StreamingConfig streaming) {
+        return SealerThresholds.sealerThresholds(streaming.sealRunBytes(),
+                                                 streaming.sealRunEvents(),
+                                                 streaming.sealRunAge(),
+                                                 streaming.sealMergeBytes());
+    }
+
+    /// The network-backed replication transport: each send returns the cluster network's own outcome, and the
+    /// caller-wait overload reaches the network's TTL-bounded send (#1996, #2583 P1).
+    static ReplicationTransport replicationTransport(ClusterNetwork replicationNetwork) {
+        return new ReplicationTransport() {
+            @Override
+            public Promise<WriteOutcome> send(NodeId target, ReplicationMessage message) {
+                return replicationNetwork.send(target, message);
+            }
+
+            @Override
+            public Promise<WriteOutcome> send(NodeId target, ReplicationMessage message, TimeSpan callerWait) {
+                return replicationNetwork.send(target, message, callerWait);
+            }
+        };
+    }
+
     static StreamReplicationOutputs streamReplication(StreamReplicationInputs in) {
         var config = in.config();
         var delegateRouter = in.delegateRouter();
@@ -242,7 +294,7 @@ public sealed interface StreamAssembly {
         var eventAggregator = in.eventAggregator();
         var operatorWarningSink = in.operatorWarningSink();
         var allEntries = in.allEntries();
-        var streamMaxMemoryBytes = resolveStreamMaxMemoryBytes();
+        var streamMaxMemoryBytes = in.streamMemoryBudget().maxMemoryBytes();
         // A6: activate replication. The replica registry (populated by the A2 ReplicaSetController from
         // HRW placement) and a network-backed ReplicationTransport are constructed here — ahead of the
         // StreamPartitionManager — so SPM can be given a REAL DefaultReplicationManager instead of
@@ -250,22 +302,7 @@ public sealed interface StreamAssembly {
         // registered replica set; the receive/apply side (streamReplicationReceiveHandler, wired below)
         // lands replicated events offset-preserving WITHOUT re-replicating (appendRecovered).
         var streamReplicaRegistry = ReplicaRegistry.replicaRegistry(config.streaming().caughtUpMaxLagOffsets());
-        var replicationNetwork = clusterNode.network();
-        org.pragmatica.aether.stream.replication.ReplicationTransport streamReplicationTransport = new org.pragmatica.aether.stream.replication.ReplicationTransport() {
-            @Contract
-            @Override
-            public void send(NodeId target, org.pragmatica.aether.stream.replication.ReplicationMessage message) {
-                replicationNetwork.send(target, message);
-            }
-
-            @Contract
-            @Override
-            public void send(NodeId target,
-                             org.pragmatica.aether.stream.replication.ReplicationMessage message,
-                             TimeSpan callerWait) {
-                replicationNetwork.send(target, message, callerWait);
-            }
-        };
+        var streamReplicationTransport = replicationTransport(clusterNode.network());
         // #261: the live-ack path promotes a replica to CAUGHT_UP only when its confirmed offset
         // reaches back to the owner's earliest retained offset. The partition manager is constructed
         // just below (it needs this manager), so the earliest-retained seam reads through a holder set
@@ -286,6 +323,10 @@ public sealed interface StreamAssembly {
         // append re-populates the index.
         streamSegmentIndex.rebuildFromRefs(streamStorageSetup.metadataStore());
         var streamStorage = streamStorageSetup.instance();
+        // #2258 (spec 3.2 item 6): the refs a crash left at or below a durable reclaim floor are released now (rebuild did not
+        // install them); StorageFactory gave the instance its identification predicate.
+        streamSegmentIndex.drainReclaimedBelowFloor()
+                          .forEach(refName -> streamStorage.deleteRef(refName, SharedDelete.IF_IDENTIFIED));
         // A4/A5: per-node durable cursor store + tiered reader over the same disk-backed stream storage;
         // registered as SPI extensions below so StreamAccessFactory persists consumer offsets and serves
         // post-restart reads from sealed cold segments.
@@ -299,18 +340,21 @@ public sealed interface StreamAssembly {
         var streamOwnerEpochSource = KvStreamOwnerEpochSource.kvStreamOwnerEpochSource(kvStore);
         // #1730 phase 2 (B11): the owner counts a replica's confirmation only under the committed epoch now in force.
         streamReplicationManager.ownerEpochs(streamOwnerEpochSource);
-        // #1234: the sealer retains each evicted segment until storage has it; those copies are capped at the
-        // node's stream memory budget, and only past that cap are appends refused (SEALING_BEHIND).
+        // #1234: the sealer retains each evicted segment until storage has it; those copies are capped (#2201 C-03: at
+        // `[streaming] seal_pending_cap_bytes`, by default the smaller of the stream memory budget and 256 MiB), and only past
+        // that cap are appends refused (SEALING_BEHIND).
         // #1345: WAL truncation is bounded by the refs in the latest metadata snapshot ON DISK — the watermark
         // the `rebuildFromRefs` above would compute at the next boot — never by the live index, which runs
         // ahead of disk by every seal since that snapshot (STREAM_SNAPSHOT_* in StorageFactory bound the lag).
         // #1240: the entity log substrate asks the same sealer which evicted offsets are still in flight.
         // #1441: a partition WITHOUT a WAL has nothing above that snapshot but the refs, so its seals force a
         // snapshot before they resolve; boot's rebuilt floor then covers every completed seal on both paths.
+        // #2201 C-02: evictions are sealed in runs, by the `[streaming] seal_*` thresholds.
         var streamSegmentSealer = SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(streamStorage,
                                                                                                     streamSegmentIndex,
                                                                                                     RefDurability.snapshotted(streamStorageSetup.snapshotManager())),
-                                                              streamMaxMemoryBytes);
+                                                              in.streamMemoryBudget().sealPendingCapBytes(),
+                                                              sealerThresholds(config.streaming()));
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes,
                                                                                    streamSegmentSealer,
                                                                                    streamReplicationManager,
@@ -334,6 +378,9 @@ public sealed interface StreamAssembly {
         // gate and cold-restart detection raise and read.
         streamPartitionManager.partitionFlags(PartitionFlags.kvPartitionFlags(clusterNode, kvStore, nodeCodec));
         streamPartitionManager.operatorWarnings(operatorWarningSink);
+        // Know 73fd8d9759: a graceful stop that cannot seal what the sealer holds within its bound is reported to this node's sink.
+        streamSegmentSealer.operatorWarnings(operatorWarningSink,
+                                             config.self().id());
         // #1730 phase 2: a durable cut whose repair is not settled within twelve backfill redrive ticks is reported anyway.
         streamPartitionManager.repairReportBound(TimeSpan.timeSpan(STREAM_BACKFILL_REDRIVE_INTERVAL.millis() * 12L).millis());
         // `[streaming] reshuffle_concurrency` — set BEFORE any materialization, since it replaces the permit
@@ -442,6 +489,11 @@ public sealed interface StreamAssembly {
                                                                           streamSegmentTierPressure);
         // #2201 3.2 item 6: every node runs its own retention over its own segments, from node start to node stop
         // (AetherNode's stop path closes it); it is no longer pinned to the leader by StreamingCoordinator.
+        // #2258: the released segments' blocks are deleted from every tier by their own bounded run, started and closed
+        // with the enforcer.
+        streamRetentionEnforcer.sharedCollection(SharedSegmentCollection.sharedSegmentCollection(streamStorageSetup.garbageCollector(),
+                                                                                                 streamStorageSetup.snapshotManager(),
+                                                                                                 StorageGarbageCollector.SharedDeleteLimits.DEFAULT));
         streamRetentionEnforcer.operatorWarnings(operatorWarningSink,
                                                  config.self().id());
         streamRetentionEnforcer.start();
@@ -666,8 +718,10 @@ public sealed interface StreamAssembly {
                                                                                                   (stream, partition) -> Option.option(clusterEventsControllerRef.get()).flatMap(ownershipController -> ownershipController.desiredOwner(stream,
                                                                                                                                                                                                                                          partition)),
                                                                                                   streamIsrInputs(clusterEventsControllerRef),
-                                                                                                  () -> kvStore.getTyped(LeaderKey.INSTANCE,
-                                                                                                                         LeaderValue.class));
+                                                                                                  StreamPartitionOwnershipWriter.ownCommittedLeader(() -> kvStore.getTyped(LeaderKey.INSTANCE,
+                                                                                                                                                                           LeaderValue.class),
+                                                                                                                                                    config.self(),
+                                                                                                                                                    isLeaderSupplier));
         // #1339 residual: a failed ownership write re-arms the reconcile through the same coalescing entry, backed off.
         var streamOwnershipRetry = StreamOwnershipRetry.streamOwnershipRetry(SharedScheduler::schedule,
                                                                              () -> reconcileReplicaSet(clusterEventsControllerRef));
@@ -875,6 +929,10 @@ public sealed interface StreamAssembly {
         defer.accept(() -> SharedScheduler.scheduleAtFixedRate(streamPartitionManager::repeatVisible,
                                                                ISR_MONITOR_INTERVAL));
         allEntries.add(MessageRouter.Entry.route(ClusterStateNotification.class, ownerActivation::onQuorumStateChange));
+        // #2682: a committed ownership record that newly names this node starts the promotion gate at once, so a new owner pulls
+        // the tail a live peer holds beyond its head even when nothing demands the partition; at most reshuffle_concurrency at once.
+        ownerActivation.eagerConcurrency(streamingConfig.reshuffleConcurrency());
+        allEntries.addAll(committedOwnershipRoutes(ownerActivation));
         // Reconcile on every membership decision (all variants via the tail helper) and on
         // ClusterStateNotification edges (PASSIVE suppresses; PASSIVE->ACTIVE re-reconciles).
         wireMembershipDecisionTail(allEntries, streamReplicaSetController::onMembershipDecision);
@@ -886,6 +944,9 @@ public sealed interface StreamAssembly {
         // Initial reconcile once membership is available; serialized on the controller executor, so
         // this is a safe no-op until the topology observer reports core members.
         streamReplicaSetController.reconcile();
+        // #2201 A-14: every seam of the manager is bound by now (the last ones above); a safety-relevant seam still at its
+        // permissive default on a node with a WAL is named at ERROR (and counted by `aether.streams.seams.unbound.safety`).
+        streamPartitionManager.reportUnboundSafetySeams();
         // #932: one thread each per node, both daemon and neither closed on stop — nine of each survived a
         // nine-node stop. The controller's close() is shutdownNow on the executor it owns; the backfill
         // executor is this method's own. Controller first: its reconcile is what submits to the backfill.
@@ -1002,7 +1063,8 @@ public sealed interface StreamAssembly {
                                 StreamReadRouter streamReadRouter,
                                 StreamConsumerRuntime streamConsumerRuntime,
                                 StreamConsumerManager streamConsumerManager,
-                                ProjectionNodeSupport projectionNodeSupport) {}
+                                ProjectionNodeSupport projectionNodeSupport,
+                                ConsensusBatchCounters consensusBatchCounters) {}
 
     /// The committed owner source, the linearizable owner serve pipeline, the forward handler and read router, the consumer and projection machinery and the streaming coordinator.
     static StreamServingOutputs streamServing(StreamServingInputs in) {
@@ -1122,8 +1184,10 @@ public sealed interface StreamAssembly {
         var projectionRegistry = ProjectionRegistry.projectionRegistry(topicSubscriptionRegistry::allSubscriptions);
         Fn1<Option<AetherValue.StreamCursorCheckpointValue>, AetherKey.StreamCursorCheckpointKey> committedCursorReader = cursorKey -> kvStore.getTyped(cursorKey,
                                                                                                                                                         AetherValue.StreamCursorCheckpointValue.class);
-        Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> cursorCommandWriter = commands -> switchableCluster.apply(commands)
-                                                                                                          .mapToUnit();
+        // #2590 (P0.4 instrument, moved to P1): the consensus load of consumer progress by key class, read by the S7 arms.
+        var consensusBatchCounters = ConsensusBatchCounters.consensusBatchCounters();
+        Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> cursorCommandWriter = consensusBatchCounters.counting(commands -> switchableCluster.apply(commands)
+                                                                                                                                          .mapToUnit());
         var streamClusterCursorStore = ProjectionAwareCursorStore.projectionAwareCursorStore(ClusterCursorStore.clusterCursorStore(streamCursorStore,
                                                                                                                                    config.self(),
                                                                                                                                    committedCursorReader,
@@ -1247,7 +1311,8 @@ public sealed interface StreamAssembly {
                                         streamReadRouter,
                                         streamConsumerRuntime,
                                         streamConsumerManager,
-                                        projectionNodeSupport);
+                                        projectionNodeSupport,
+                                        consensusBatchCounters);
     }
 
     /// What `streamWriteRouter` reads from the assembly built so far.
@@ -1927,25 +1992,18 @@ public sealed interface StreamAssembly {
         }
     }
 
-    private static long resolveStreamMaxMemoryBytes() {
-        return Option.option(System.getenv("STREAM_MAX_MEMORY_BYTES"))
-                     .filter(s -> !s.isBlank())
-                     .flatMap(s -> Result.lift(() -> Long.parseLong(s)).option())
-                     .or(128 * 1024 * 1024L);
-    }
-
-    private static StreamForwardTransport createStreamForwardTransport(ClusterNetwork network) {
+    /// Package-private so the wiring is pinnable (#2574, #2583 P1): `send` must return the network's tracked write, or a
+    /// refused forward silently waits out its timeout again.
+    static StreamForwardTransport createStreamForwardTransport(ClusterNetwork network) {
         return new StreamForwardTransport() {
-            @Contract
             @Override
-            public void send(NodeId target, StreamForwardMessage message) {
-                network.send(target, message);
+            public Promise<WriteOutcome> send(NodeId target, StreamForwardMessage message) {
+                return network.send(target, message);
             }
 
-            @Contract
             @Override
-            public void send(NodeId target, StreamForwardMessage message, TimeSpan callerWait) {
-                network.send(target, message, callerWait);
+            public Promise<WriteOutcome> send(NodeId target, StreamForwardMessage message, TimeSpan callerWait) {
+                return network.send(target, message, callerWait);
             }
         };
     }

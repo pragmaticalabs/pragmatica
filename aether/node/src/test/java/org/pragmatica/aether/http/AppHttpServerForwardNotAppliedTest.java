@@ -19,6 +19,7 @@ import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
@@ -29,7 +30,6 @@ import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardNotAppli
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.NotAppliedReason;
 import org.pragmatica.aether.http.handler.HttpRequestHandler;
-import org.pragmatica.aether.node.ClusterTestPorts;
 import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.blueprint.SecurityOverrides;
@@ -52,6 +52,8 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.net.tcp.Server;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Unit.unit;
@@ -60,6 +62,10 @@ import static org.pragmatica.lang.Unit.unit;
 /// the attempt as provably not applied. A POST refused that way answers "nothing was applied; safe to retry". If the
 /// app server dropped the answer, the attempt would wait out its hop timeout and the POST would answer "may have been
 /// applied" instead.
+///
+/// #2565: the listener binds port 0 and the test reads back the port it really bound, so no other socket can take it
+/// between a probe and the bind, and a failed start fails the test with its cause.
+@Timeout(60)
 class AppHttpServerForwardNotAppliedTest {
     private static final NodeId SELF_NODE = NodeId.nodeId("forwarding-node").unwrap();
     private static final NodeId REMOTE_NODE = NodeId.nodeId("refusing-node").unwrap();
@@ -72,13 +78,12 @@ class AppHttpServerForwardNotAppliedTest {
 
     @BeforeEach
     void setUp() {
-        port = ClusterTestPorts.freeTcpAndUdpPort();
         var registry = HttpRouteRegistry.httpRouteRegistry();
 
         httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
         network = new RefusingNetwork();
         registerNodeRoute(registry, "POST", "/remote/", REMOTE_NODE);
-        server = AppHttpServer.appHttpServer(AppHttpConfig.insecureAppHttpConfig(port),
+        server = AppHttpServer.appHttpServer(AppHttpConfig.insecureAppHttpConfig(0),
                                              ForwardingTimeouts.forwardingTimeouts(),
                                              SELF_NODE,
                                              registry,
@@ -92,7 +97,8 @@ class AppHttpServerForwardNotAppliedTest {
                                              Option.none(),
                                              Option.<org.pragmatica.aether.update.DeploymentManager>none());
         network.respondTo(server);
-        server.start().await();
+        TlsProbe.requireStarted(server.start().await(), "app listener");
+        port = TlsProbe.requireBoundPort(server.boundPort(), "app listener");
         server.onQuorumStateChange(ClusterStateNotification.active());
     }
 
@@ -134,7 +140,7 @@ class AppHttpServerForwardNotAppliedTest {
         }
 
         @Override
-        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             if (message instanceof HttpForwardRequest request) {
                 forwards.incrementAndGet();
                 responder.get()
@@ -145,7 +151,12 @@ class AppHttpServerForwardNotAppliedTest {
                                                                             request.pipeline()));
             }
 
-            return unit();
+            return Promise.success(new WriteOutcome.Sent(nodeId));
+        }
+
+        @Override
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            return send(nodeId, message);
         }
 
         @Override public <M extends ProtocolMessage> Unit broadcast(M message) {return unit();}

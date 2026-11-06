@@ -94,7 +94,14 @@ class KVStoreCommittedNotificationTest {
     @Test
     void liveReentrantCommitDuringReplayDoesNotInheritReplayFlag() {
         var delivered = new ArrayList<String>();
-        store.processCommitted(store.createBatch(List.of(new KVCommand.Put<>(FIRST, "one"))), 21);
+        // FIRST is installed silently (not delivered live), so the replay burst carries it (design §3.7, R2.4).
+        var store = new KVStore<Key, String>(router, new Serializer() {
+            @Override public <T> void write(ByteBuf buffer, T value) {}
+        }, new Deserializer() {
+            @SuppressWarnings("unchecked")
+            @Override public <T> T read(ByteBuf buffer) { return (T) java.util.Map.of(FIRST, "one"); }
+        });
+        store.restoreCommittedSnapshot(new byte[0], 21);
         router.addRoute(KVStoreNotification.ValuePut.class, (KVStoreNotification.ValuePut<Key, String> put) -> {
             delivered.add(put.cause().key().id() + ":" + store.isReplaying());
             if (put.cause().key().equals(FIRST)) {

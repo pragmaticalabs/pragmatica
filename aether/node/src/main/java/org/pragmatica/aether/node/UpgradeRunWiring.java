@@ -34,6 +34,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeRunValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeStop;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
@@ -74,21 +75,34 @@ public final class UpgradeRunWiring {
     }
 
     /// The listener that turns each committed transition into its operator events, on the cluster-events owner ONLY: every node applies
-    /// every commit, and the events of one transition must be raised exactly once.
+    /// every commit, and the events of one transition must be raised exactly once. A replayed run announces nothing (KVStore dispatcher
+    /// design §3.5 R4): it is committed history, not a transition.
     public static UpgradeRunIndex.TransitionListener announcer(BooleanSupplier ownsClusterEvents,
                                                                OperatorWarningSink warnings) {
-        return (before, after) -> {
-            if (ownsClusterEvents.getAsBoolean()) {
-                UpgradeRunAnnouncements.of(before, after).forEach(a -> OperatorWarnings.raise(LOG,
-                                                                                              warnings,
-                                                                                              a.code(),
-                                                                                              a.subject(),
-                                                                                              "{}",
-                                                                                              a.message()));
-            }
+        return (before, after, replayed) -> !replayed && ownsClusterEvents.getAsBoolean()
+                                            ? announce(warnings, before, after)
+                                            : Unit.unit();
+    }
 
-            return Unit.unit();
-        };
+    /// The operator events of one committed run transition.
+    static Unit announce(OperatorWarningSink warnings, Option<UpgradeRunValue> before, UpgradeRunValue after) {
+        UpgradeRunAnnouncements.of(before, after).forEach(a -> OperatorWarnings.raise(LOG,
+                                                                                      warnings,
+                                                                                      a.code(),
+                                                                                      a.subject(),
+                                                                                      "{}",
+                                                                                      a.message()));
+
+        return Unit.unit();
+    }
+
+    /// The KV handler of a committed run (the WorkerHierarchyAssembly route): captures the replay bit at absorb, on the delivering
+    /// thread, and passes it with the run (design §3.5 R4); `isReplaying()` read anywhere else reads false.
+    public static Unit absorbPut(UpgradeRunIndex index,
+                                 BooleanSupplier replaying,
+                                 ValuePut<UpgradeRunKey, UpgradeRunValue> put) {
+        return index.put(put.cause().value(),
+                         replaying.getAsBoolean());
     }
 
     /// The run's order: cores first with the leader LAST (the replacement of the leader hands leadership over once, at the end), then

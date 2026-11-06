@@ -7,6 +7,7 @@ package org.pragmatica.aether.worker.governor;
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -21,6 +22,7 @@ import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -31,6 +33,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Timeout(value = 10, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
 class GovernorAuthorityRaceTest {
     private static final NodeId CORE = new NodeId("core");
     private static final NodeId A = new NodeId("worker-a");
@@ -57,7 +60,7 @@ class GovernorAuthorityRaceTest {
 
     private GovernorAuthority authority() {
         return GovernorAuthority.governorAuthority(CORE, cluster, store,
-            activeLeader::get, _ -> members.get(), _ -> true, () -> Epoch.ZERO, HlcClock.hlcClock(CORE));
+            activeLeader::get, _ -> members.get(), _ -> true, () -> Epoch.ZERO, HlcClock.hlcClock(CORE), TimeSpan.timeSpan(60).seconds(), 1);
     }
 
     @BeforeEach
@@ -71,7 +74,7 @@ class GovernorAuthorityRaceTest {
     }
 
     private GovernorAuthorityMessage.Response request(GovernorAuthority authority, NodeId worker, long expected) {
-        return authority.handle(new GovernorAuthorityMessage.Request(worker, "c", 1, expected, "host:9000")).await().unwrap();
+        return authority.handle(new GovernorAuthorityMessage.Request(worker, "c", 1, expected, "host:9000", false)).await().unwrap();
     }
 
     /// Two grantable nominations built from the same empty base: A reads previous=none as the
@@ -136,7 +139,7 @@ class GovernorAuthorityRaceTest {
     @Test
     void storeLeaderButInactiveEngine_refusesWithFailureAndWritesNothing() {
         activeLeader.set(false);
-        var result = authority().handle(new GovernorAuthorityMessage.Request(A, "c", 1, 0, "host:9000")).await();
+        var result = authority().handle(new GovernorAuthorityMessage.Request(A, "c", 1, 0, "host:9000", false)).await();
         assertThat(result.isFailure()).isTrue();
         assertThat(store.get(KEY).isEmpty()).isTrue();
     }

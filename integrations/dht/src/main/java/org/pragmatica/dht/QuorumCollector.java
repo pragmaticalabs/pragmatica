@@ -41,6 +41,7 @@ public final class QuorumCollector<T> {
     private final AtomicInteger fenced = new AtomicInteger(0);
     private final AtomicInteger replicationStale = new AtomicInteger(0);
     private final AtomicInteger fenceUnknown = new AtomicInteger(0);
+    private final AtomicReference<DHTError.ReplicaFull> capacityRefusal = new AtomicReference<>();
     private final AtomicReference<T> bestValue = new AtomicReference<>();
     private final UnaryOperator<T> valueMerger;
     /// Picks the answer kept when two replicas answered: a present value over an absent one, or — for stamped
@@ -209,6 +210,10 @@ public final class QuorumCollector<T> {
             fenceUnknown.incrementAndGet();
         }
 
+        if (cause instanceof DHTError.ReplicaFull full) {
+            capacityRefusal.set(full);
+        }
+
         var failures = failureCount.incrementAndGet();
 
         if (total - failures < quorum) {
@@ -243,6 +248,12 @@ public final class QuorumCollector<T> {
     }
 
     private Cause quorumFailure() {
+        var full = capacityRefusal.get();
+        // a refusal for capacity is told to the writer whatever the other answers were (#2258, spec 3.2 item 7)
+        if (full != null) {
+            return full;
+        }
+
         if (fenced.get() > 0) {
             return DHTError.writeIndeterminate(quorum, successCount.get(), fenced.get());
         }
@@ -302,6 +313,11 @@ public final class QuorumCollector<T> {
     /// Owner-epoch fence refusals recorded so far, including those arriving after the promise settled.
     public int fencedCount() {
         return fenced.get();
+    }
+
+    /// A refusal for capacity a replica answered, the latest if several did (#2258): it carries that replica's numbers.
+    public Option<DHTError.ReplicaFull> capacityRefusal() {
+        return Option.option(capacityRefusal.get());
     }
 
     /// `existing` is the accumulator's value, absent until the first answer.

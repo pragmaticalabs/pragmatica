@@ -56,8 +56,14 @@ public final class SliceLoadingContext implements SliceCreationContext {
     /// Late-bound holder for the deployed slice's codec, handed to every resource this slice
     /// provisions. Present exactly when `nodeCodec` is (see [#bindSliceCodec]).
     private final Option<DeferredSliceCodec> sliceCodec;
+    /// The node's config change feed and this slice's owner key, when the loader supplied them. Absent on the
+    /// legacy / test paths, whose `config()` then REFUSES `watched`: a `Watched` that never changed would be a refusal hiding as a success.
+    private final Option<ConfigWatch> configWatch;
 
-    private SliceLoadingContext(SliceCreationContext delegate, Option<SliceCodec> nodeCodec) {
+    private SliceLoadingContext(SliceCreationContext delegate,
+                                Option<SliceCodec> nodeCodec,
+                                Option<ConfigWatch> configWatch) {
+        this.configWatch = configWatch;
         this.delegate = delegate;
         this.bufferingInvoker = new BufferingInvokerFacade(delegate.invoker());
         this.nodeCodec = nodeCodec;
@@ -65,12 +71,13 @@ public final class SliceLoadingContext implements SliceCreationContext {
     }
 
     public static SliceLoadingContext sliceLoadingContext(SliceCreationContext delegate) {
-        return new SliceLoadingContext(delegate, Option.none());
+        return new SliceLoadingContext(delegate, Option.none(), Option.none());
     }
 
     public static SliceLoadingContext sliceLoadingContext(SliceInvokerFacade invokerFacade,
                                                           ResourceProviderFacade resourceFacade) {
         return new SliceLoadingContext(SliceCreationContext.sliceCreationContext(invokerFacade, resourceFacade),
+                                       Option.none(),
                                        Option.none());
     }
 
@@ -78,6 +85,7 @@ public final class SliceLoadingContext implements SliceCreationContext {
                                                           ResourceProviderFacade resourceFacade,
                                                           String sliceId) {
         return new SliceLoadingContext(SliceCreationContext.sliceCreationContext(invokerFacade, resourceFacade, sliceId),
+                                       Option.none(),
                                        Option.none());
     }
 
@@ -94,11 +102,24 @@ public final class SliceLoadingContext implements SliceCreationContext {
                                                           String sliceId,
                                                           Option<SliceCodec> nodeCodec) {
         return new SliceLoadingContext(SliceCreationContext.sliceCreationContext(invokerFacade, resourceFacade, sliceId),
-                                       nodeCodec);
+                                       nodeCodec,
+                                       Option.none());
+    }
+
+    /// Loading context of a deployed slice whose `config()` can register [Watched] subscriptions on `configWatch`.
+    public static SliceLoadingContext sliceLoadingContext(SliceInvokerFacade invokerFacade,
+                                                          ResourceProviderFacade resourceFacade,
+                                                          String sliceId,
+                                                          Option<SliceCodec> nodeCodec,
+                                                          Option<ConfigWatch> configWatch) {
+        return new SliceLoadingContext(SliceCreationContext.sliceCreationContext(invokerFacade, resourceFacade, sliceId),
+                                       nodeCodec,
+                                       configWatch);
     }
 
     public static SliceLoadingContext sliceLoadingContext(SliceInvokerFacade invokerFacade) {
         return new SliceLoadingContext(SliceCreationContext.sliceCreationContext(invokerFacade, noOpResourceProvider()),
+                                       Option.none(),
                                        Option.none());
     }
 
@@ -142,9 +163,24 @@ public final class SliceLoadingContext implements SliceCreationContext {
     @Override
     public ConfigFacade config() {
         return sliceComposite.get()
-                             .<ConfigFacade> map(composite -> ConfigProviderFacade.configProviderFacade(sliceName(),
-                                                                                                        composite))
+                             .<ConfigFacade> map(this::facadeOver)
                              .or(this::configWithoutComposite);
+    }
+
+    private ConfigFacade facadeOver(ConfigurationProvider composite) {
+        return configWatch.map(watch -> ConfigProviderFacade.configProviderFacade(sliceName(),
+                                                                                  composite,
+                                                                                  watch))
+                          .or(() -> ConfigProviderFacade.watchRefusingConfigProviderFacade(sliceName(),
+                                                                                           composite));
+    }
+
+    /// Releases this slice's `Watched` subscriptions: called when its creation failed, so the factory's partial
+    /// work (a subscription taken before a later step failed) does not outlive a slice that was never registered.
+    public Promise<Unit> releaseConfigWatches() {
+        return configWatch.map(watch -> watch.feed()
+                                             .releaseAll(watch.owner()))
+                          .or(Promise::unitPromise);
     }
 
     private String sliceName() {

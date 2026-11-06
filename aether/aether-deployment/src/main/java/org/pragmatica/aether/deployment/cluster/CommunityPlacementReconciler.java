@@ -702,15 +702,19 @@ record PlacementReconciler(NodeId self,
         };
     }
 
+    /// What the placement reads of capacity (O3-3): the reservation of a node, through the view over the live store.
+    private CapacityView capacity() {
+        return CapacityView.overStore(store);
+    }
+
     private boolean refusedTarget(CommunityPlacementOperationValue operation) {
-        return store.getTyped(new AetherKey.CapacityReservationKey(operation.targetNode()),
-                              AetherValue.CapacityReservationValue.class)
-                    .filter(value -> value.phase() == AetherValue.CapacityReservationPhase.RELEASED
-                                     && value.sourceName()
-                                             .equals(operation.targetSource())
-                                     && value.sourceBinding()
-                                             .equals(operation.sourceBinding()))
-                    .isPresent();
+        return capacity().reservation(operation.targetNode())
+                       .filter(value -> value.phase() == AetherValue.CapacityReservationPhase.RELEASED
+                                        && value.sourceName()
+                                                .equals(operation.targetSource())
+                                        && value.sourceBinding()
+                                                .equals(operation.sourceBinding()))
+                       .isPresent();
     }
 
     private boolean readinessExpired(ClusterBootstrapConfig config, CommunityPlacementOperationValue operation) {
@@ -792,15 +796,15 @@ record PlacementReconciler(NodeId self,
     private static boolean releasedRefusal(AetherValue.CommunityPlacementAvailabilityValue refusal,
                                            String source,
                                            Map<AetherKey, AetherValue> snapshot) {
-        var reservation = Option.option(snapshot.get(new AetherKey.CapacityReservationKey(refusal.refusedNode())));
+        var capacity = CapacityView.overSnapshot(snapshot);
 
-        return reservation.isEmpty() || reservation.filter(value -> value instanceof AetherValue.CapacityReservationValue allocation
-                                                                    && allocation.phase() == AetherValue.CapacityReservationPhase.RELEASED
-                                                                    && allocation.sourceName()
-                                                                                 .equals(source)
-                                                                    && allocation.sourceBinding()
-                                                                                 .equals(refusal.sourceBinding()))
-                                                   .isPresent();
+        return capacity.isAbsent(refusal.refusedNode()) || capacity.reservation(refusal.refusedNode())
+                                                                   .filter(allocation -> allocation.phase() == AetherValue.CapacityReservationPhase.RELEASED
+                                                                                         && allocation.sourceName()
+                                                                                                      .equals(source)
+                                                                                         && allocation.sourceBinding()
+                                                                                                      .equals(refusal.sourceBinding()))
+                                                                   .isPresent();
     }
 
     private static boolean unavailable(CommunityPlacement policy,
@@ -830,8 +834,7 @@ record PlacementReconciler(NodeId self,
     private Promise<Unit> capacityRefused(ClusterBootstrapConfig config,
                                           CommunityPlacementOperationValue operation,
                                           LeaderValue leader) {
-        var reservationKey = new AetherKey.CapacityReservationKey(operation.targetNode());
-        var reservation = store.getTyped(reservationKey, AetherValue.CapacityReservationValue.class);
+        var reservation = capacity().reservation(operation.targetNode());
 
         if (reservation.filter(value -> value.phase() != AetherValue.CapacityReservationPhase.RELEASED || !value.sourceName()
                                                                                                                 .equals(operation.targetSource()) || !value.sourceBinding()
@@ -871,8 +874,8 @@ record PlacementReconciler(NodeId self,
                                   key,
                                   before,
                                   Option.some(refused),
-                                  List.of(new KVCommand.ReadWitness<AetherKey>(reservationKey,
-                                                                               reservation.map(value -> (Object) value)),
+                                  List.of(capacity().witness(operation.targetNode(),
+                                                             reservation),
                                           new KVCommand.ReadWitness<AetherKey>(AetherKey.ClusterConfigKey.CURRENT,
                                                                                store.get(AetherKey.ClusterConfigKey.CURRENT)
                                                                                     .map(value -> (Object) value)))).onSuccess(accepted -> {
@@ -900,15 +903,12 @@ record PlacementReconciler(NodeId self,
                              "Earlier refused attempt has unresolved capacity accounting");
         }
 
-        var reservationKey = new AetherKey.CapacityReservationKey(before.unwrap().refusedNode());
-
         return commitAvailability(operation,
                                   next,
                                   key,
                                   before,
                                   Option.none(),
-                                  List.of(new KVCommand.ReadWitness<AetherKey>(reservationKey,
-                                                                               Option.option(snapshot.get(reservationKey)).map(value -> (Object) value)))).mapToUnit();
+                                  List.of(CapacityView.overSnapshot(snapshot).witness(before.unwrap().refusedNode()))).mapToUnit();
     }
 
     private Promise<Boolean> commitAvailability(CommunityPlacementOperationValue before,
@@ -1235,19 +1235,39 @@ record PlacementReconciler(NodeId self,
 
         mutations.add(mutation);
         if (value.phase() == PlacementOperationPhase.COMPLETE) {
-            value.previousNode()
-                 .onPresent(node -> {
-                                addRemoval(mutations,
-                                           new AetherKey.ActivationDirectiveKey(node));
-                                addRemoval(mutations,
-                                           new AetherKey.NodePlacementKey(node));
-                            });
+            value.previousNode().onPresent(node -> addCompletionRemovals(mutations, node));
         }
 
         var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key, id, value.issuer(), guards, mutations);
 
         return apply.apply(List.of(command))
                     .map(results -> accepted(results, id));
+    }
+
+    /// 12 item 4b: the departure record leaves in the same transaction as the directive (absent under LEGACY), and before it, so the cluster FSM
+    /// never sees a directive removed under a still-mirrored DEPARTED record. A COMPLETE refused once is retried by the next pass; it retires
+    /// the directive and the record only while the record is DEPARTED or absent (CTO rulings `4c533461f`, `5ca85aa4e`): an ADMITTED record
+    /// belongs to a process that came back after the decision, so the directive and the record stay. The placement row leaves either way.
+    ///
+    /// State alone, not the first-read identity the B18/B19 retirement compares: the operation carries no read of the departure record to
+    /// compare against, and the property protected is that no live identity is retired. A DEPARTED record of a newer epoch is still a departed
+    /// identity (a process re-admitted and departed again between two passes), so retiring it removes nothing live, and its own authority
+    /// stops once both keys are gone.
+    @Contract
+    private void addCompletionRemovals(List<KVCommand.Mutation<AetherKey, AetherValue>> mutations, NodeId node) {
+        if (isRetirable(node)) {
+            addRemoval(mutations, new AetherKey.NodeDepartureKey(node));
+            addRemoval(mutations, new AetherKey.ActivationDirectiveKey(node));
+        }
+
+        addRemoval(mutations, new AetherKey.NodePlacementKey(node));
+    }
+
+    private boolean isRetirable(NodeId node) {
+        return store.getTyped(new AetherKey.NodeDepartureKey(node),
+                              AetherValue.NodeDepartureValue.class)
+                    .map(record -> record.state() == AetherValue.DepartureState.DEPARTED)
+                    .or(true);
     }
 
     @Contract
@@ -1544,10 +1564,7 @@ record PlacementReconciler(NodeId self,
                 guards.add(new KVCommand.ReadWitness<>(availabilityKey,
                                                        Option.option(snapshot.get(availabilityKey)).map(value -> (Object) value)));
                 if (snapshot.get(availabilityKey) instanceof AetherValue.CommunityPlacementAvailabilityValue refusal) {
-                    var reservationKey = new AetherKey.CapacityReservationKey(refusal.refusedNode());
-
-                    guards.add(new KVCommand.ReadWitness<>(reservationKey,
-                                                           Option.option(snapshot.get(reservationKey)).map(value -> (Object) value)));
+                    guards.add(CapacityView.overSnapshot(snapshot).witness(refusal.refusedNode()));
                 }
             }
         }
@@ -1557,20 +1574,16 @@ record PlacementReconciler(NodeId self,
 
     private boolean hasCapacity(ClusterBootstrapConfig config, Map<AetherKey, AetherValue> snapshot) {
         var nodes = new HashSet<>(admittedNodes.get());
+        var capacity = CapacityView.overSnapshot(snapshot);
 
         snapshot.keySet()
                 .stream()
-                .filter(_ -> !snapshot.containsKey(AetherKey.CapacityLedgerKey.INSTANCE))
+                .filter(_ -> !capacity.hasLedger())
                 .filter(AetherKey.NodePlacementKey.class::isInstance)
                 .map(AetherKey.NodePlacementKey.class::cast)
                 .map(AetherKey.NodePlacementKey::nodeId)
                 .forEach(nodes::add);
-        snapshot.keySet()
-                .stream()
-                .filter(AetherKey.CapacityReservationKey.class::isInstance)
-                .map(AetherKey.CapacityReservationKey.class::cast)
-                .map(AetherKey.CapacityReservationKey::nodeId)
-                .forEach(nodes::add);
+        capacity.reservedNodes().forEach(nodes::add);
         snapshot.values()
                 .stream()
                 .filter(CommunityPlacementOperationValue.class::isInstance)

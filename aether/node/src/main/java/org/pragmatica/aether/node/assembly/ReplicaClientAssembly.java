@@ -17,7 +17,6 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
-import org.pragmatica.aether.node.ReplicaCutover;
 import org.pragmatica.aether.node.health.HierarchyPeerPolicy;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -33,10 +32,12 @@ import org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaHeartbeat;
 import org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaRefused;
 import org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaSnapshotChunk;
 import org.pragmatica.cluster.replica.ReplicaReadiness;
+import org.pragmatica.cluster.replica.ReplicaServeGate;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -46,18 +47,20 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageRouter;
 
 
-/// W-OBS W3 wiring of the replica feed client on a worker, DARK: [#replicaClient] builds and starts nothing unless the node was constructed
-/// with [ReplicaCutover#LIVE], which production never is (`ReplicaCutover.production()` is `DARK`, pinned by `ReplicaCutoverGateTest`). When LIVE
-/// the client follows a core uplink, installs the cluster directory it caches from ClusterSync into the three consumers the projection fed, and
-/// drives the engine's readiness flag and the node's freshness gate from the one [ReplicaReadiness] computation (I-W6).
+/// W-OBS wiring of the replica feed client on a worker: [#replicaClient] builds and starts it. The client follows its community's governor when it
+/// has one and a core uplink otherwise, installs the cluster directory it caches from ClusterSync into the three consumers the projection used to
+/// feed, and drives the engine's readiness flag and the node's freshness gate from the one [ReplicaReadiness] computation (I-W6). A governor's
+/// member serving is gated by the [ReplicaServeGate] built here.
 public sealed interface ReplicaClientAssembly {
     TimeSpan TICK = TimeSpan.timeSpan(100).millis();
     int QUEUE_CAPACITY = 1024;
 
-    /// The three consumers a worker's cluster directory fed through the projection, now fed from the ClusterSync directory.
+    /// The consumers a worker's cluster directory fed through the projection, now fed from the ClusterSync directory. `voters` is the
+    /// leader's installed electorate (#2543): the only way a passive client learns a roster change.
     record DirectoryInstall(Function<List<NodeInfo>, Result<Unit>> peers,
                             Consumer<List<NodeInfo>> endpoints,
-                            Consumer<WorkerMetadataMessage.DhtReplication> dhtReplication) {}
+                            Consumer<WorkerMetadataMessage.DhtReplication> dhtReplication,
+                            Consumer<VoterConfiguration> voters) {}
 
     /// What `replicaClient` reads from the assembly built so far.
     record Inputs(NodeId self,
@@ -65,22 +68,24 @@ public sealed interface ReplicaClientAssembly {
                   RabiaNode<KVCommand<AetherKey>> clusterNode,
                   Supplier<Option<ClusterDirectory>> heldDirectory,
                   Supplier<java.util.Set<NodeId>> coreIds,
+                  ReplicaFeedClient.GovernorArm governorArm,
                   DirectoryInstall directoryInstall,
                   Runnable workerReady,
                   AtomicReference<BooleanSupplier> workerProjectionFreshRef,
                   List<MessageRouter.Entry<?>> routes,
                   Consumer<Supplier<ScheduledFuture<?>>> defer) {}
 
-    /// The client, when the node is a worker built LIVE; empty otherwise (nothing is constructed, nothing is routed, nothing is scheduled).
-    static Option<ReplicaFeedClient<AetherKey, AetherValue>> replicaClient(ReplicaCutover cutover,
-                                                                           boolean worker,
-                                                                           Inputs in) {
-        return cutover.isLive() && worker
+    /// The client and the gate of its member serving, when the node is a worker; empty otherwise (nothing is constructed, nothing is routed,
+    /// nothing is scheduled).
+    record Started(ReplicaFeedClient<AetherKey, AetherValue> client, ReplicaServeGate serveGate) {}
+
+    static Option<Started> replicaClient(boolean worker, Inputs in) {
+        return worker
                ? Option.some(startClient(in))
                : Option.none();
     }
 
-    private static ReplicaFeedClient<AetherKey, AetherValue> startClient(Inputs in) {
+    private static Started startClient(Inputs in) {
         var limits = ReplicaClientLimits.DEFAULT;
         var serial = serialExecutor();
         var installer = DirectoryInstaller.directoryInstaller(in.heldDirectory(), in.directoryInstall());
@@ -103,7 +108,8 @@ public sealed interface ReplicaClientAssembly {
                                                          System::nanoTime,
                                                          limits,
                                                          () -> in.clusterNode()
-                                                                 .completePassiveRestore());
+                                                                 .completePassiveRestore(),
+                                                         in.governorArm());
 
         in.workerProjectionFreshRef().set(readiness::ready);
         in.routes().add(MessageRouter.Entry.route(ReplicaEntries.class, client::onEntries));
@@ -113,7 +119,15 @@ public sealed interface ReplicaClientAssembly {
         in.defer().accept(() -> SharedScheduler.scheduleAtFixedRate(client::tick, TICK));
         in.defer().accept(() -> SharedScheduler.scheduleAtFixedRate(() -> serial.execute(installer::tick), TICK));
 
-        return client;
+        return new Started(client, serveGate(in.governorArm(), client, readiness));
+    }
+
+    /// The gate of a governor's member serving (I-W5): the node is the governor, its own upstream is a core, and its replica is current against it.
+    /// Each term is wired from a different object, so each is pinned on its own by `ReplicaClientAssemblyTest`.
+    static ReplicaServeGate serveGate(ReplicaFeedClient.GovernorArm arm,
+                                      ReplicaFeedClient<?, ?> client,
+                                      ReplicaReadiness readiness) {
+        return ReplicaServeGate.replicaServeGate(arm.selfIsGovernor(), client::followsCore, readiness::servable);
     }
 
     /// One thread, so the client's state and the directory installs never race; it dies when idle.
@@ -192,6 +206,7 @@ public sealed interface ReplicaClientAssembly {
         private void installRest(ClusterDirectory directory) {
             install.endpoints().accept(directory.nodes());
             install.dhtReplication().accept(workerReplication(directory.dhtReplication()));
+            directory.voters().onPresent(install.voters());
             installed.set(directory.version());
         }
 

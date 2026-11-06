@@ -187,7 +187,7 @@ public final class ProviderResolver {
                                                                                               firewallIds)));
     }
 
-    /// Test seam (package-private): a factory that replaces the SERVICE-LOADED Docker one, so a test can read the [CloudConfig] a
+    /// Test seam (package-private): a factory that replaces the SERVICE-LOADED one of the provider it names (docker, or a cloud provider), so a test can read the [CloudConfig] a
     /// caller hands the provider without a Docker daemon. Null in production.
     static volatile EnvironmentIntegrationFactory dockerFactoryOverride;
     /// Test seam (package-private, #2149): the ambient environment the bootstrap hands a Docker provider (`withClusterSecret`).
@@ -205,7 +205,7 @@ public final class ProviderResolver {
     private static Result<EnvironmentIntegrationFactory> lookupFactory(String providerName) {
         var override = dockerFactoryOverride;
 
-        if (override != null && "docker".equals(providerName)) {
+        if (override != null && override.providerName().equals(providerName)) {
             return Result.success(override);
         }
 

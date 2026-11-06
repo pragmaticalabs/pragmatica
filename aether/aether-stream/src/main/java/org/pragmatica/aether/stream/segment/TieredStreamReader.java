@@ -69,7 +69,36 @@ final class TieredReader implements TieredStreamReader {
 
     private Promise<List<RawEvent>> readContiguous(String streamName, int partition, long fromOffset, int maxEvents) {
         return reader.readEvents(streamName, partition, fromOffset, maxEvents)
+                     .flatMap(events -> startingAt(streamName, partition, fromOffset, events))
                      .onSuccess(events -> triggerPrefetchIfNearEnd(streamName, partition, fromOffset, maxEvents, events));
+    }
+
+    /// #2224 (I-32): the index answered `contiguousSealedEnd` and `segmentRange` in two calls, and retention may remove segments
+    /// between them. The answer is events starting at `fromOffset`, or the expiry:
+    ///   - nothing came back: the cursor's segment was removed under the read, so it is answered like any unheld offset
+    ///     ([#holeOrNothingSealed]: `CursorExpired` naming the next sealed offset);
+    ///   - the first event is above `fromOffset`: the cursor's segment was removed and the range started at the next one, so
+    ///     `CursorExpired(fromOffset, firstOffset)`;
+    ///   - otherwise the events [SegmentReader] returned, which stop at the first gap between segments (a segment removed
+    ///     from the middle): that prefix starts at `fromOffset`, and the next read starts inside the gap and is answered as the
+    ///     expiry it is. Events missing INSIDE one segment are passed through as read: only the entity-log fold refuses them
+    ///     (`SealedHistoryRecoveryTest`); a plain stream consumer (`ConsumerRuntimeState`) has no contiguity check and skips them
+    ///     silently (#2497, rc6).
+    private Promise<List<RawEvent>> startingAt(String streamName,
+                                               int partition,
+                                               long fromOffset,
+                                               List<RawEvent> events) {
+        return events.isEmpty()
+               ? holeOrNothingSealed(streamName, partition, fromOffset)
+               : startingAtFirst(fromOffset, events);
+    }
+
+    private static Promise<List<RawEvent>> startingAtFirst(long fromOffset, List<RawEvent> events) {
+        var first = events.getFirst().offset();
+
+        return first == fromOffset
+               ? Promise.success(events)
+               : new StreamError.CursorExpired(fromOffset, first).promise();
     }
 
     private static int boundedCount(long fromOffset, long contiguousEnd, int maxEvents) {

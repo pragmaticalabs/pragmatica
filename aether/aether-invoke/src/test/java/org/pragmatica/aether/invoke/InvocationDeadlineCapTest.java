@@ -25,6 +25,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Deadline;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -247,21 +248,21 @@ class InvocationDeadlineCapTest {
         private final List<ProtocolMessage> plain = new java.util.concurrent.CopyOnWriteArrayList<>();
 
         @Override
-        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
             if (message instanceof InvokeRequest) {
                 bounded.add(new Bounded(message, offlineTtl));
             }
 
-            return unit();
+            return Promise.success(new WriteOutcome.Sent(nodeId));
         }
 
         @Override
-        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             if (message instanceof InvokeRequest) {
                 plain.add(message);
             }
 
-            return unit();
+            return Promise.success(new WriteOutcome.Sent(nodeId));
         }
 
         List<Bounded> boundedRequests() {
@@ -280,13 +281,13 @@ class InvocationDeadlineCapTest {
         private final AtomicReference<InvokeResponse> captured = new AtomicReference<>();
 
         @Override
-        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             if (message instanceof InvokeResponse response) {
                 captured.set(response);
                 answered.countDown();
             }
 
-            return unit();
+            return Promise.success(new WriteOutcome.Sent(nodeId));
         }
 
         boolean awaitResponse(TimeSpan within) {

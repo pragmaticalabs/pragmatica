@@ -206,7 +206,7 @@ class ReplicaWalGroupCommitTest {
     }
 
     private static ReplicationTransport recordingAcks(ConcurrentLinkedQueue<ReplicationMessage.ReplicateAck> acks) {
-        return (_, message) -> recordAck(acks, message);
+        return AcceptingReplicationTransport.accepting((_, message) -> recordAck(acks, message));
     }
 
     private static void recordAck(ConcurrentLinkedQueue<ReplicationMessage.ReplicateAck> acks,

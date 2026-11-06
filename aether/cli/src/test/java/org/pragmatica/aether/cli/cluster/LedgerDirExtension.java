@@ -7,12 +7,16 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
 import java.util.List;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 import org.junit.jupiter.api.extension.AfterEachCallback;
 import org.junit.jupiter.api.extension.BeforeEachCallback;
 import org.junit.jupiter.api.extension.ExtensionContext;
+import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 /// Gives each test its own ledger directory (so no test writes a real `~/.aether` ledger and two tests never share
 /// one) and a recorder over a RUNNING ledger for the cluster the test names. Register with
@@ -20,6 +24,7 @@ import org.pragmatica.aether.environment.ClusterName;
 final class LedgerDirExtension implements BeforeEachCallback, AfterEachCallback {
     private Path root;
     private Function<ClusterName, Path> originalResolver;
+    private PoolAuthority originalAuthority;
 
     @Override
     @SuppressWarnings("JBCT-EX-01")
@@ -29,6 +34,24 @@ final class LedgerDirExtension implements BeforeEachCallback, AfterEachCallback 
         ApplyState.stateDirResolver = name -> root.resolve(name.value());
         ApplyLedger.trace = _ -> {};
         ApplyRecorder.stepHook = _ -> {};
+        originalAuthority = WaveExecutor.poolAuthority;
+        WaveExecutor.poolAuthority = applyDecides();
+    }
+
+    /// G1-g: a test that drives the creating path without naming a cluster is one where apply is the decider; the production authority
+    /// would ask a cluster that is not there. A test of the gate itself installs its own.
+    private static PoolAuthority applyDecides() {
+        return new PoolAuthority() {
+            @Override
+            public Result<Actor> actorFor(String source, NodeRole role, int wanted) {
+                return Result.success(Actor.APPLY);
+            }
+
+            @Override
+            public Result<Unit> awaitLeader(NodeRole role, int wantedInRole, Consumer<String> progress) {
+                throw new AssertionError("apply is the decider in this test: there is no leader to wait for");
+            }
+        };
     }
 
     @Override
@@ -36,6 +59,7 @@ final class LedgerDirExtension implements BeforeEachCallback, AfterEachCallback 
     public void afterEach(ExtensionContext context) throws Exception {
         ApplyState.stateDirResolver = originalResolver;
         ApplyRecorder.stepHook = _ -> {};
+        WaveExecutor.poolAuthority = originalAuthority;
 
         try (var paths = Files.walk(root)) {
             for (var path : paths.sorted(Comparator.reverseOrder()).toList()) {
@@ -49,6 +73,22 @@ final class LedgerDirExtension implements BeforeEachCallback, AfterEachCallback 
     /// A recorder over a fresh RUNNING ledger for `clusterName`, written to disk, with the action [#TEST_ACTION] started.
     ApplyRecorder recorder(ClusterName clusterName) {
         return recorder(clusterName, List.of(TEST_ACTION));
+    }
+
+    /// The same with `applyId` (the paid run mints a real one).
+    ApplyRecorder recorder(ClusterName clusterName, List<String> keys, String applyId) {
+        var base = ApplyStateFixtures.state(clusterName);
+        var state = ApplyState.applyState(applyId, clusterName, base.configHash(), base.storedVersion(), base.startedAt(), base.phase(),
+                                          keys.stream().map(key -> ApplyAction.applyAction(key, 0, ApplyAction.Status.PENDING)).toList(),
+                                          List.of(), List.of(), List.of(), List.of());
+
+        ApplyState.save(state).unwrap();
+
+        var recorder = ApplyRecorder.applyRecorder(state);
+
+        recorder.beginAction(keys.getFirst()).unwrap();
+
+        return recorder;
     }
 
     /// The recorder over a RUNNING ledger whose actions are `keys`, PENDING, the first one started.

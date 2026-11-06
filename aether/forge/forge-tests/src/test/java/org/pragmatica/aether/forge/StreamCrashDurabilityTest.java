@@ -78,7 +78,8 @@ import org.pragmatica.aether.ember.EmberCluster;
 ///
 /// Consequently the ticket's "hard owner kill (SIGKILL, no graceful hooks)" is NOT reproducible — and
 /// adds nothing — in the in-JVM Ember harness: every stop routes through `AetherNode.stop()` (close()
-/// runs synchronously before the async tail), and `EmberCluster.killNode(graceful=false)` only shortens
+/// runs before the stop sequence, once the sealer's bounded stop seal lands), and
+/// `EmberCluster.killNode(graceful=false)` only shortens
 /// the timeout on the async cluster/network teardown, leaving zombie consensus state that destabilises
 /// the fresh cluster's blueprint commit. The residual crash-mid-fsync boundary (killed in the
 /// ring-append→fsync window, where the caller is never acked), the "acks concurrent with a restart"

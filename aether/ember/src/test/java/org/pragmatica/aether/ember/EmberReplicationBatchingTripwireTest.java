@@ -37,10 +37,14 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.sleepQuietly;
 /// `publishBatch` of 100 events, the path 1b-perf found already batched (#1245): its replicas receive a handful of messages,
 /// which shows the counter can see batching.
 ///
-/// **No data directory, on purpose.** With a WAL the ordered append section waits on the fsync of every event
-/// (about 15 ms on this Mac's APFS), so events reach the replication manager further apart than the batcher's 1 ms window and
-/// even a wired default batcher coalesces almost nothing (measured in the mutation run: 182 messages for 192 events). The
-/// wiring gap does not depend on the WAL, so it is measured on the ephemeral-storage node, where appends are microseconds apart.
+/// **No data directory, on purpose.** With a WAL the ordered append section does not wait on the fsync: it writes the frame
+/// and only requests the group commit (`StreamPartitionManager.writeWalFrame` -> `wal.commit(writeSeq)`, StreamPartitionManager.java:3416-3422),
+/// which is awaited after the section (`awaitDurable`, :3545); the fsync is `AppendLog.commit` (AppendLog.java:375) ->
+/// `groupCommit` (:734) -> one `force(false)` (:760) under `syncLock` (:745). On macOS/APFS, though, the in-section frame
+/// `pwrite` stalls behind the group-commit `force` already in flight, so the per-event section time exceeds the batcher's 1 ms
+/// window (`ReplicationBatcher.DEFAULT_MAX_DELAY`, ReplicationBatcher.java:63) and even a wired default batcher coalesced
+/// almost nothing (one mutation run: 182 messages for 192 events); on ZFS (bigboy) the same run gives 0.2-0.3. The wiring gap
+/// does not depend on the WAL, so it is measured on the ephemeral-storage node, where appends are microseconds apart.
 /// - Tripwire: messages per event per replica is at least 0.9.
 /// - `@Disabled` acceptance: at most 0.5 (the overhaul's batching must at least halve the frames under this load).
 @PortBudget

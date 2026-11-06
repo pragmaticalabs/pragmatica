@@ -234,6 +234,58 @@ public sealed interface EnvironmentError extends Cause {
         }
     }
 
+    /// G1-a: the provider refused a create because the server name is held, and the holder IS this create's own server: it carries
+    /// the cluster and node-id labels of the request. The create therefore already happened (an earlier attempt whose reply was
+    /// lost, or a racing resume); nothing new was made. `existing` is the server that holds the name, as the provider lists it.
+    ///
+    /// Typed so a caller can adopt it instead of retrying: the two callers that may (the core `dispatchBound` and the apply's
+    /// `createRecorded`) adopt `existing`; every other caller sees a failed create, which is the safe reading. It travels on the
+    /// failure channel only because [ComputeProvider#createFrom] answers `Promise<InstanceInfo>`; it is never a reason to create again.
+    record AlreadyExists(OperationId name, InstanceInfo existing) implements EnvironmentError {
+        public static Result<AlreadyExists> alreadyExists(OperationId name, InstanceInfo existing) {
+            return success(new AlreadyExists(name, existing));
+        }
+
+        @Override
+        public String message() {
+            return "A server named '" + name.value()
+                 + "' already exists (instance " + existing.id()
+                                                           .value()
+                 + "); the create was not repeated and the existing server is the answer.";
+        }
+    }
+
+    /// G1-a: the provider refused a create because the server name is held by a server that is NOT this create's own (it carries
+    /// another cluster's labels, or another apply's). It is never adopted: taking it over would hand this cluster a server it does
+    /// not own, and terminating it later would delete someone else's.
+    record NameHeldByOther(OperationId name, InstanceId holder) implements EnvironmentError {
+        public static Result<NameHeldByOther> nameHeldByOther(OperationId name, InstanceId holder) {
+            return success(new NameHeldByOther(name, holder));
+        }
+
+        @Override
+        public String message() {
+            return "The server name '" + name.value()
+                 + "' is held by instance " + holder.value()
+                 + ", which does not belong to this create; it was neither adopted nor replaced.";
+        }
+    }
+
+    /// G1-a: a request names its create with an [OperationId] and this provider cannot honour it (no unique server name to deduplicate
+    /// on). Refused instead of ignored, because ignoring it would let the caller believe a repeated create is harmless.
+    record OperationIdUnsupported(String provider, OperationId name) implements EnvironmentError {
+        public static Result<OperationIdUnsupported> operationIdUnsupported(String provider, OperationId name) {
+            return success(new OperationIdUnsupported(provider, name));
+        }
+
+        @Override
+        public String message() {
+            return "Provider '" + provider
+                 + "' cannot honour operation id '" + name.value()
+                 + "': it has no server name that refuses a duplicate create, so the request was refused.";
+        }
+    }
+
     record unused() implements EnvironmentError {
         public static Result<unused > unused() {
             return success(new unused());
@@ -295,6 +347,18 @@ public sealed interface EnvironmentError extends Cause {
 
     static EnvironmentError operationNotSupported(String operation) {
         return OperationNotSupported.operationNotSupported(operation).unwrap();
+    }
+
+    static EnvironmentError alreadyExists(OperationId name, InstanceInfo existing) {
+        return AlreadyExists.alreadyExists(name, existing).unwrap();
+    }
+
+    static EnvironmentError nameHeldByOther(OperationId name, InstanceId holder) {
+        return NameHeldByOther.nameHeldByOther(name, holder).unwrap();
+    }
+
+    static EnvironmentError operationIdUnsupported(String provider, OperationId name) {
+        return OperationIdUnsupported.operationIdUnsupported(provider, name).unwrap();
     }
 
     static EnvironmentError nodeCapExceeded(ClusterName clusterName, int cap, int observed) {

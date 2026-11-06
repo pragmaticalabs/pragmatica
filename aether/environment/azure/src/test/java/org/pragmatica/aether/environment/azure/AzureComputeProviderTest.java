@@ -175,6 +175,25 @@ class AzureComputeProviderTest {
                 .isEqualTo(new ImageReference("Canonical", "0001-com-ubuntu-server-jammy", "22_04-lts", "latest"));
         }
 
+        /// G1-a: Azure has no server name that refuses a duplicate create, so an operation id it is handed is refused, typed, before any call.
+        @Test
+        void createFrom_operationId_refusedTypedBeforeAnyCall() {
+            var request = new ProvisionRequest(InstanceType.ON_DEMAND,
+                                               "Standard_D8s_v5",
+                                               "Canonical:0001-com-ubuntu-server-jammy:22_04-lts:latest",
+                                               "",
+                                               Option.empty(),
+                                               MarketOptions.ON_DEMAND,
+                                               ProvisionContext.forBootstrap(clusterName("c").unwrap(), "core", sourceNameOrDefault("s"), "n0")).named();
+
+            provider.createFrom(request)
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(EnvironmentError.OperationIdUnsupported.class));
+
+            assertThat(testClient.lastCreateRequest).isNull();
+        }
+
         @Test
         void createFrom_spotRequest_rejectedLoud() {
             var request = new ProvisionRequest(InstanceType.SPOT,

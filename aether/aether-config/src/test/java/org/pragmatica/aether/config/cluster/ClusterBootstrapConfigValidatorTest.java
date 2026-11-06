@@ -157,6 +157,101 @@ class ClusterBootstrapConfigValidatorTest {
                                       infrastructureConfig(), defaultOperationsConfig(), java.util.Map.of());
     }
 
+    private static ClusterBootstrapConfig cloudConfigNamed(CloudProviderName provider, String cluster) {
+        return cloudConfigNamed(provider, cluster, "cloud-src");
+    }
+
+    private static ClusterBootstrapConfig cloudConfigNamed(CloudProviderName provider, String cluster, String sourceName) {
+        var runtime = runtimeProfile(RuntimeType.CONTAINER, some("aether:latest"), none());
+        var coreRole = roleSubTable(some(3), none(), some("cx41"), "prod");
+        var source = sourceProfile(sourceNameOrDefault(sourceName), SourceType.CLOUD, some(provider),
+                                   some("key"), some("eu-central"), none(), none(), none(), none(),
+                                   LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
+                                   Map.of(NodeRole.CORE, coreRole), List.of(), awsCredentials(provider));
+
+        return clusterBootstrapConfig(clusterIdentity(cluster, "1.0.0").unwrap(),
+                                      defaultCoreTopology(), Map.of(sourceName, source),
+                                      Map.of("prod", runtime),
+                                      infrastructureConfig(), defaultOperationsConfig(), java.util.Map.of());
+    }
+
+    /// A Docker core and a Hetzner worker pool in one cluster: the worker pool is budgeted with the cloud shape (the shape a worker replacement is
+    /// minted in, by the source of the node being replaced), whatever backs the core.
+    private static ClusterBootstrapConfig dockerCoreHetznerWorker(String cluster) {
+        var dockerRuntime = runtimeProfile(RuntimeType.DOCKER, some("aether:latest"), none());
+        var cloudRuntime = runtimeProfile(RuntimeType.CONTAINER, some("aether:latest"), none());
+        var docker = sourceProfile(sourceNameOrDefault("local"), SourceType.DOCKER, none(), none(), none(), none(), none(), none(), none(),
+                                   LoadBalancerMode.EXTERNAL, List.of(), none(), Map.of(),
+                                   Map.of(NodeRole.CORE, roleSubTable(some(3), none(), none(), "dock")), List.of(), none());
+        var hetzner = sourceProfile(sourceNameOrDefault("hz"), SourceType.CLOUD, some(CloudProviderName.HETZNER),
+                                    some("key"), some("eu-central"), none(), none(), none(), none(),
+                                    LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
+                                    Map.of(NodeRole.WORKER, roleSubTable(some(2), none(), some("cx41"), "prod")), List.of(), none());
+
+        return clusterBootstrapConfig(clusterIdentity(cluster, "1.0.0").unwrap(),
+                                      defaultCoreTopology(), Map.of("local", docker, "hz", hetzner),
+                                      Map.of("prod", cloudRuntime, "dock", dockerRuntime),
+                                      infrastructureConfig(), defaultOperationsConfig(), java.util.Map.of());
+    }
+
+    /// G1-a: a Hetzner server is named `<cluster>-<node id>`, at most 63 characters, so a cluster name over 24 characters cannot name
+    /// the servers of its own minted ids. Refused at validation, never truncated.
+    @Nested
+    class ServerNameFit {
+        @Test
+        void validate_hetznerClusterNameOverTheLongestFit_returnsPf36NamingTheLimit() {
+            validate(cloudConfigNamed(CloudProviderName.HETZNER, "a".repeat(25)))
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-36").contains("(25 characters)").contains("is 64 characters, over the limit of 63")
+                                                              .contains("allows is 24 characters"));
+        }
+
+        @Test
+        void validate_hetznerClusterNameAtTheLongestFit_succeeds() {
+            validate(cloudConfigNamed(CloudProviderName.HETZNER, "a".repeat(24)))
+                .onFailure(cause -> Assertions.fail(cause.message()));
+        }
+
+        /// The budget is computed from the configuration: cluster + 1 + the longest id the pool can be given. With a 3-character cluster the
+        /// minted core id is 42 characters, and a 39-character source name makes the bootstrap/CTM id 59 (`<source>-core-r<9>-<3>`): 3+1+59 = 63.
+        @Test
+        void validate_theComputedNameIsExactly63Characters_succeeds() {
+            validate(cloudConfigNamed(CloudProviderName.HETZNER, "abc", "s".repeat(39)))
+                .onFailure(cause -> Assertions.fail(cause.message()));
+        }
+
+        @Test
+        void validate_theComputedNameIs64Characters_returnsPf36WithTheNumbers() {
+            validate(cloudConfigNamed(CloudProviderName.HETZNER, "abc", "s".repeat(40)))
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-36")
+                                                              .contains("(3 characters)")
+                                                              .contains("is 60 characters")
+                                                              .contains("is 64 characters, over the limit of 63"));
+        }
+
+        @Test
+        void validate_productionEu_passes_atAComputedTotalOf52() {
+            validate(cloudConfigNamed(CloudProviderName.HETZNER, "production-eu"))
+                .onFailure(cause -> Assertions.fail(cause.message()));
+        }
+
+        @Test
+        void validate_dockerCoreWithAHetznerWorkerPool_budgetsTheWorkerPoolWithTheCloudShape() {
+            validate(dockerCoreHetznerWorker("production-eu")).onFailure(cause -> Assertions.fail(cause.message()));
+            validate(dockerCoreHetznerWorker("a".repeat(24))).onFailure(cause -> Assertions.fail(cause.message()));
+            validate(dockerCoreHetznerWorker("a".repeat(25)))
+                .onSuccess(v -> Assertions.fail("the Hetzner worker pool must still be budgeted when the core is Docker"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-36").contains("source 'hz'").contains("role 'worker'"));
+        }
+
+        @Test
+        void validate_longClusterNameOnAnotherProvider_isNotLimited() {
+            validate(cloudConfigNamed(CloudProviderName.AWS, "a".repeat(24)))
+                .onFailure(cause -> Assertions.fail(cause.message()));
+        }
+    }
+
     @Nested
     class HappyPath {
 

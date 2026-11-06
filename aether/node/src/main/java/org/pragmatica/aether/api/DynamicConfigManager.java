@@ -33,12 +33,21 @@ import org.slf4j.LoggerFactory;
 @SuppressWarnings("JBCT-RET-01")
 public class DynamicConfigManager {
     private static final Logger log = LoggerFactory.getLogger(DynamicConfigManager.class);
+    /// The name of a listener registered without one.
+    private static final String UNNAMED_LISTENER = "unnamed";
 
     private final RabiaNode<KVCommand<AetherKey>> clusterNode;
     private final KVStore<AetherKey, AetherValue> kvStore;
     private final DynamicConfigurationProvider provider;
     private final NodeId self;
-    private final List<Consumer<String>> appliedListeners = new CopyOnWriteArrayList<>();
+    private final List<AppliedListener> appliedListeners = new CopyOnWriteArrayList<>();
+
+    /// A registered applied-listener, under the name its registration gave it.
+    private record AppliedListener(String name, Consumer<String> listener) {
+        static AppliedListener appliedListener(String name, Consumer<String> listener) {
+            return new AppliedListener(name, listener);
+        }
+    }
 
     private DynamicConfigManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
                                  KVStore<AetherKey, AetherValue> kvStore,
@@ -114,16 +123,30 @@ public class DynamicConfigManager {
     /// value. The node registers `NodeDeploymentManager::onConfigChanged` here; the initial KV load at
     /// construction does not notify (no slice is registered before activation).
     public void onApplied(Consumer<String> listener) {
-        appliedListeners.add(listener);
+        onApplied(UNNAMED_LISTENER, listener);
+    }
+
+    /// As [#onApplied(Consumer)], under `name`: the registration is recorded, so the order the listeners run in can be read at runtime
+    /// ([#appliedListenerNames]) instead of inferred from the order of the source text that registers them (v-2643 finding 3).
+    public void onApplied(String name, Consumer<String> listener) {
+        appliedListeners.add(AppliedListener.appliedListener(name, listener));
+    }
+
+    /// The names of the applied-listeners in the order they run: the order they were registered in.
+    public List<String> appliedListenerNames() {
+        return appliedListeners.stream()
+                               .map(AppliedListener::name)
+                               .toList();
     }
 
     /// Runs on the KV applier thread, which holds `KVStore.mutationLock`. Every listener call is total: a listener
     /// that throws is logged and the next one still runs, and nothing surfaces in the KV router's dispatch (the
     /// overlay write this follows has already happened). A `VirtualMachineError` is rethrown by `Result.lift`.
     private void notifyApplied(String key) {
-        for (var listener : appliedListeners) {
+        for (var applied : appliedListeners) {
             Result.lift(Causes::fromThrowable,
-                        () -> listener.accept(key))
+                        () -> applied.listener()
+                                     .accept(key))
                   .onFailure(cause -> log.error("Config applied-listener failed for {}: {}",
                                                 key,
                                                 cause.message()));

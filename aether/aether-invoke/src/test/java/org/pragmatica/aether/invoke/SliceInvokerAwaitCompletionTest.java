@@ -25,6 +25,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Unit.unit;
@@ -353,13 +356,13 @@ class SliceInvokerAwaitCompletionTest {
         private final CopyOnWriteArrayList<InvokeRequest> all = new CopyOnWriteArrayList<>();
 
         @Override
-        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             if (message instanceof InvokeRequest request) {
                 sent.set(request);
                 all.add(request);
             }
 
-            return unit();
+            return Promise.success(new WriteOutcome.Sent(nodeId));
         }
     }
 }

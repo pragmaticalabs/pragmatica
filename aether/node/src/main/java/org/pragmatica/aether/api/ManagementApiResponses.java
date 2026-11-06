@@ -281,7 +281,10 @@ public sealed interface ManagementApiResponses {
     /// its own window, the same contract `/metrics/transport` serves. NODE-LOCAL scope — each core
     /// answers for itself. `pendingBatches` and `oldestPendingBatchAgeMs` are levels (the age is 0 when
     /// nothing is pending, #1117); `applyTimeoutCount` is the monotonic total of applies never answered
-    /// within the apply timeout; `avgDecisionLatencyMs` is derived over the cumulative counts.
+    /// within the apply timeout; `avgDecisionLatencyMs` is derived over the cumulative counts. #2045:
+    /// `consecutiveEmptySlotsWithPending` is a level, the slots decided in a row without applying a batch while this node
+    /// held pending batches (one that keeps climbing is the empty-slot livelock), and `firstChoiceBatchId` is the batch
+    /// this node proposes first, absent when nothing is pending (voters that disagree on it name the split).
     record ConsensusMetricsResponse(String role,
                                     Option<String> leaderId,
                                     int pendingBatches,
@@ -289,12 +292,13 @@ public sealed interface ManagementApiResponses {
                                     long proposalsCount,
                                     long voteRound1Count,
                                     long voteRound2Count,
-                                    long fastPathCount,
                                     long syncSuccessCount,
                                     long syncFailureCount,
                                     double avgDecisionLatencyMs,
                                     long oldestPendingBatchAgeMs,
-                                    long applyTimeoutCount) {}
+                                    long applyTimeoutCount,
+                                    long consecutiveEmptySlotsWithPending,
+                                    Option<String> firstChoiceBatchId) {}
 
     record DerivedMetricsResponse(double requestRate,
                                   double errorRate,

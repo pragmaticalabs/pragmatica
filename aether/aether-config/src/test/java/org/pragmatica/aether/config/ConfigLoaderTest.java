@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -755,6 +756,38 @@ class ConfigLoaderTest {
                                      .isEqualTo(StreamingConfig.DERIVE_SEGMENT_DISK_MAX_BYTES));
     }
 
+    /// #2258: the cap on this node's DHT bytes of `stream-segments` is a per-node knob; unset derives max(64 MiB, max heap / 4).
+    @Test
+    void loadFromString_dhtSegmentMaxBytes_parsedAsDataSize_andDefaultsToDeriveFromTheHeap() {
+        var withCap = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            dht_segment_max_bytes = "256MB"
+            """;
+        var withoutCap = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            reshuffle_concurrency = 2
+            """;
+
+        ConfigLoader.loadFromString(withCap)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.streaming().effectiveDhtSegmentMaxBytes(512L << 20)).isEqualTo(256L << 20));
+        ConfigLoader.loadFromString(withoutCap)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.streaming().dhtSegmentMaxBytes()).isEqualTo(StreamingConfig.DERIVE_DHT_SEGMENT_MAX_BYTES);
+                assertThat(config.streaming().effectiveDhtSegmentMaxBytes(512L << 20)).as("-Xmx512m: a quarter is 128 MiB").isEqualTo(128L << 20);
+                assertThat(config.streaming().effectiveDhtSegmentMaxBytes(128L << 20)).as("the 64 MiB floor").isEqualTo(64L << 20);
+            });
+    }
+
     /// #1730: the ISR lag bound is configurable; unset keeps the 30 s default.
     @Test
     void loadFromString_isrLagMax_parsedAsDuration_andDefaultsTo30Seconds() {
@@ -781,6 +814,145 @@ class ConfigLoaderTest {
         ConfigLoader.loadFromString(withoutBound)
             .onFailure(cause -> Assertions.fail(cause.message()))
             .onSuccess(config -> assertThat(config.streaming().isrLagMax()).isEqualTo(StreamingConfig.DEFAULT_ISR_LAG_MAX));
+    }
+
+    /// #2201 C-02 (spec 4.2): the four run-forming sealer thresholds are `[streaming]` keys; unset, each keeps its default (all four
+    /// are guesses, see the constants); a malformed value is refused by name, never defaulted (#1455).
+    @Test
+    void loadFromString_sealRunThresholds_parsed_defaultToTheGuesses_andAMalformedValueIsRefused() {
+        var header = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            """;
+
+        ConfigLoader.loadFromString(header + """
+                                             seal_run_bytes = "2MB"
+                                             seal_run_events = 100
+                                             seal_run_age = "2s"
+                                             seal_merge_bytes = "8MB"
+                                             """)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.streaming().sealRunBytes()).isEqualTo(2L << 20);
+                assertThat(config.streaming().sealRunEvents()).isEqualTo(100);
+                assertThat(config.streaming().sealRunAge().millis()).isEqualTo(2_000L);
+                assertThat(config.streaming().sealMergeBytes()).isEqualTo(8L << 20);
+            });
+        ConfigLoader.loadFromString(header + "reshuffle_concurrency = 2\n")
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.streaming().sealRunBytes()).isEqualTo(StreamingConfig.DEFAULT_SEAL_RUN_BYTES);
+                assertThat(config.streaming().sealRunEvents()).isEqualTo(StreamingConfig.DEFAULT_SEAL_RUN_EVENTS);
+                assertThat(config.streaming().sealRunAge()).isEqualTo(StreamingConfig.DEFAULT_SEAL_RUN_AGE);
+                assertThat(config.streaming().sealMergeBytes()).isEqualTo(StreamingConfig.DEFAULT_SEAL_MERGE_BYTES);
+            });
+        assertThat(StreamingConfig.DEFAULT_SEAL_RUN_BYTES).isEqualTo(1L << 20);
+        assertThat(StreamingConfig.DEFAULT_SEAL_RUN_EVENTS).isEqualTo(4096);
+        assertThat(StreamingConfig.DEFAULT_SEAL_RUN_AGE.millis()).isEqualTo(5_000L);
+        assertThat(StreamingConfig.DEFAULT_SEAL_MERGE_BYTES).isEqualTo(4L << 20);
+        for (var bad : List.of("seal_run_bytes = \"lots\"", "seal_run_events = \"many\"", "seal_run_age = \"soon\"", "seal_merge_bytes = \"big\"")) {
+            assertThat(ConfigLoader.loadFromString(header + bad + "\n").isFailure()).as("%s is refused, never defaulted (#1455)", bad).isTrue();
+        }
+    }
+
+    /// Know 73fd8d9759: `seal_merge_bytes` is bounded below 2 GiB (a merged block is one array), at 256 MiB; `seal_run_age` at one
+    /// day, far below the overflow of the age timer's deadline. Each bound itself loads, and a value past it is refused at load by
+    /// name. Red under "no bound" and under "the bound itself is refused".
+    @Test
+    void loadFromString_sealMergeBytesAndSealRunAge_areBounded_theBoundLoads_andAValuePastItIsRefused() {
+        var header = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            """;
+
+        ConfigLoader.loadFromString(header + "seal_merge_bytes = \"256MB\"\nseal_run_age = \"1d\"\n")
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.streaming().sealMergeBytes()).isEqualTo(256L << 20);
+                assertThat(config.streaming().sealRunAge().millis()).isEqualTo(86_400_000L);
+            });
+        for (var past : List.of("seal_merge_bytes = \"100GB\"", "seal_merge_bytes = \"257MB\"")) {
+            ConfigLoader.loadFromString(header + past + "\n")
+                .onSuccess(_ -> Assertions.fail(past + " must be refused"))
+                .onFailure(cause -> assertThat(cause.message()).as(past).contains("streaming.seal_merge_bytes"));
+        }
+        for (var past : List.of("seal_run_age = \"2d\"", "seal_run_age = \"25h\"")) {
+            ConfigLoader.loadFromString(header + past + "\n")
+                .onSuccess(_ -> Assertions.fail(past + " must be refused"))
+                .onFailure(cause -> assertThat(cause.message()).as(past).contains("streaming.seal_run_age"));
+        }
+    }
+
+    /// NT-22 (#2201 C-03, spec 4.4 items 1 and 3): the off-heap stream memory budget and the sealer's pending-seal heap cap are
+    /// `[streaming]` data sizes; unset, each is DERIVE (the node derives it at boot). Present but malformed, zero or negative
+    /// refuses the load naming the key: there is no silent fallback (D-12), so `0` cannot be written to mean "derive". The four
+    /// `seal_*` keys parse beside them.
+    @Test
+    void loadFromString_maxMemoryBytesAndSealPendingCapBytes_parsed_unsetDerives_andAMalformedOrNonPositiveValueIsRefused() {
+        var header = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            """;
+
+        ConfigLoader.loadFromString(header + """
+                                             max_memory_bytes = "512MB"
+                                             seal_pending_cap_bytes = 1048576
+                                             seal_run_bytes = "2MB"
+                                             seal_run_events = 100
+                                             seal_run_age = "2s"
+                                             seal_merge_bytes = "8MB"
+                                             """)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.streaming().maxMemoryBytes()).isEqualTo(512L << 20);
+                assertThat(config.streaming().sealPendingCapBytes()).isEqualTo(1L << 20);
+                assertThat(config.streaming().sealRunBytes()).isEqualTo(2L << 20);
+                assertThat(config.streaming().sealRunEvents()).isEqualTo(100);
+                assertThat(config.streaming().sealRunAge().millis()).isEqualTo(2_000L);
+                assertThat(config.streaming().sealMergeBytes()).isEqualTo(8L << 20);
+            });
+        ConfigLoader.loadFromString(header + "reshuffle_concurrency = 2\n")
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.streaming().maxMemoryBytes()).isEqualTo(StreamingConfig.DERIVE_MAX_MEMORY_BYTES);
+                assertThat(config.streaming().sealPendingCapBytes()).isEqualTo(StreamingConfig.DERIVE_SEAL_PENDING_CAP_BYTES);
+            });
+        for (var key : List.of("max_memory_bytes", "seal_pending_cap_bytes")) {
+            for (var bad : List.of("\"lots\"", "\"12XB\"", "0", "\"0MB\"", "-1")) {
+                ConfigLoader.loadFromString(header + key + " = " + bad + "\n")
+                    .onSuccess(_ -> Assertions.fail(key + " = " + bad + " must be refused, never defaulted"))
+                    .onFailure(cause -> assertThat(cause.message()).as("%s = %s", key, bad).contains(key));
+            }
+        }
+    }
+
+    /// NT-22 (spec 4.4 items 2 and 3): the derived budget is one eighth of physical memory clamped to [128 MiB, 1 GiB] (a guess),
+    /// and the derived pending cap is the smaller of the budget and 256 MiB (a guess), so raising the off-heap budget does not
+    /// raise the sealer's heap exposure past 256 MiB. A configured cap is kept whatever the budget.
+    @Test
+    void derivedMemoryBudget_isAnEighthOfPhysicalMemoryClamped_andThePendingCapIsDecoupledFromIt() {
+        assertThat(StreamingConfig.derivedMaxMemoryBytes(0L)).isEqualTo(128L << 20);
+        assertThat(StreamingConfig.derivedMaxMemoryBytes(512L << 20)).as("an eighth is 64 MiB: the 128 MiB floor").isEqualTo(128L << 20);
+        assertThat(StreamingConfig.derivedMaxMemoryBytes(4L << 30)).as("4 GiB: an eighth").isEqualTo(512L << 20);
+        assertThat(StreamingConfig.derivedMaxMemoryBytes(5L << 30)).as("5 GiB: an eighth").isEqualTo(640L << 20);
+        assertThat(StreamingConfig.derivedMaxMemoryBytes(8L << 30)).as("8 GiB: an eighth is the 1 GiB ceiling").isEqualTo(1L << 30);
+        assertThat(StreamingConfig.derivedMaxMemoryBytes(64L << 30)).as("64 GiB: the 1 GiB ceiling").isEqualTo(1L << 30);
+
+        var derived = StreamingConfig.streamingConfig();
+
+        assertThat(derived.effectiveSealPendingCapBytes(128L << 20)).isEqualTo(128L << 20);
+        assertThat(derived.effectiveSealPendingCapBytes(1L << 30)).as("decoupled: a 1 GiB budget caps the heap copies at 256 MiB").isEqualTo(256L << 20);
+        assertThat(derived.withMemoryBudget(StreamingConfig.DERIVE_MAX_MEMORY_BYTES, 64L << 20).effectiveSealPendingCapBytes(1L << 30))
+            .as("a configured cap is kept").isEqualTo(64L << 20);
     }
 
     /// #2080: the promotion escape bound is configurable, defaults to 120 s (a guess, see the default's doc) and may not be below the

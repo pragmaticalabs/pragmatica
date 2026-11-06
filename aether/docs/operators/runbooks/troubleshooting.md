@@ -6,26 +6,26 @@
 
 ```bash
 # Overall health
-curl http://node:8080/health
+curl http://node:8080/api/v1/health
 
 # Detailed cluster status
-curl http://node:8080/cluster/status
+curl http://node:8080/api/v1/cluster/status
 
 # Node-specific metrics
-curl http://node:8080/metrics
+curl http://node:8080/api/v1/metrics
 ```
 
 ### Slice Status
 
 ```bash
 # List all slices
-curl http://node:8080/slices
+curl http://node:8080/api/v1/slices
 
-# Slice details
-curl http://node:8080/slices/org.example:my-slice:1.0.0
+# Slice instance states
+curl http://node:8080/api/v1/slices/status
 
 # Active routes
-curl http://node:8080/routes
+curl http://node:8080/api/v1/routes
 ```
 
 ### Log Analysis
@@ -147,7 +147,7 @@ grep -i "load\|activate\|deactivate" /var/log/aether/aether.log | tail -50
 **Checklist:**
 1. Check current heap usage
    ```bash
-   curl http://node:8080/metrics | jq '.["heap.used"], .["heap.max"]'
+   curl http://node:8080/api/v1/metrics | jq '.["heap.used"], .["heap.max"]'
    ```
 
 2. Generate heap dump
@@ -170,12 +170,12 @@ grep -i "load\|activate\|deactivate" /var/log/aether/aether.log | tail -50
 **Checklist:**
 1. Identify slow methods
    ```bash
-   curl http://node:8080/metrics | jq 'to_entries | .[] | select(.key | contains("duration.avg")) | select(.value > 100)'
+   curl http://node:8080/api/v1/metrics | jq 'to_entries | .[] | select(.key | contains("duration.avg")) | select(.value > 100)'
    ```
 
 2. Check CPU usage
    ```bash
-   curl http://node:8080/metrics | jq '.["cpu.usage"]'
+   curl http://node:8080/api/v1/metrics | jq '.["cpu.usage"]'
    ```
 
 3. Check for GC pressure
@@ -190,7 +190,7 @@ grep -i "load\|activate\|deactivate" /var/log/aether/aether.log | tail -50
 
 ### Issue: `cluster apply --resume` Failed Part-Way
 
-The wave rollout behind `--resume` is dormant in rc4 and `--rollback` is refused as not implemented (#686); plain `cluster apply` performs scale-only writes and never reaches this.
+The wave rollout behind `--resume` is not yet started by plain `cluster apply` (#686), which performs scale-only writes; this applies to a halted wave rollout. `--resume` continues from the apply ledger (it looks up every node the ledger intended before creating anything), and `--rollback` terminates what the ledger recorded, newest first.
 
 The failing step's VMs are destroyed. The error names any VM still running and billed (a failed destroy, or one kept from an earlier step), each with its removal steps: remove each `STILL RUNNING AND BILLED` VM as printed, and keep or remove each `kept` one (see `aether cluster apply` in `reference/cli.md`).
 
@@ -203,7 +203,7 @@ The failing step's VMs are destroyed. The error names any VM still running and b
    ```bash
    for node in node1 node2 node3; do
      echo "=== $node ==="
-     curl -s http://$node:8080/cluster/status | jq '.nodes'
+     curl -s http://$node:8080/api/v1/cluster/status | jq '.nodes'
    done
    ```
 
@@ -231,11 +231,12 @@ The failing step's VMs are destroyed. The error names any VM still running and b
 To increase logging temporarily:
 
 ```bash
-# Via management API
-curl -X POST http://node:8080/admin/logging -d 'level=DEBUG&logger=org.pragmatica.aether'
+# Via management API (applies to the node you call; needs the ADMIN role, so add -H "X-API-Key: <key>" when API keys are on)
+curl -X POST http://node:8080/api/v1/logging/levels -H "Content-Type: application/json" \
+  -d '{"logger": "org.pragmatica.aether", "level": "DEBUG"}'
 
-# Reset to normal
-curl -X POST http://node:8080/admin/logging -d 'level=INFO&logger=org.pragmatica.aether'
+# Reset to normal (drops the override for that logger)
+curl -X DELETE http://node:8080/api/v1/logging/levels/org.pragmatica.aether
 ```
 
 ## Getting Help

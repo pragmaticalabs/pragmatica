@@ -19,7 +19,7 @@ import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.worker.metadata.WorkerMetadataMessage;
+import org.pragmatica.cluster.replica.ReplicaFeedMessage;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Option;
@@ -27,7 +27,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
-/// Four clients recover scoped projections together after metadata-only response loss. This is
+/// Four workers recover their replicas together after replica-feed-only response loss (W4: the feed replaced the metadata projection). This is
 /// bounded local runtime evidence, not a physical socket reconnect or a 10K throughput benchmark.
 @Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
@@ -49,7 +49,7 @@ class HierarchicalMetadataRecoveryTest {
         });
     }
 
-    @Test void twoCommunitiesRepairTheirScopedMetadataAfterSimultaneousResponseBlackout() {
+    @Test void twoCommunitiesRepairTheirFullReplicaMetadataAfterSimultaneousResponseBlackout() {
         var workers = new ArrayList<NodeId>();
         for (var source : java.util.List.of("east", "west")) {
             for (int index = 0; index < 2; index++) {
@@ -66,7 +66,8 @@ class HierarchicalMetadataRecoveryTest {
         await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS).until(() -> sampleReadiness(workers, org.pragmatica.aether.metrics.NodeReportedState.READY));
         var dropped = new AtomicInteger();
         nodes.forEach(node -> node.setInboundFaultFilter((_, message) -> {
-            if (message instanceof WorkerMetadataMessage.Manifest || message instanceof WorkerMetadataMessage.Chunk) {
+            if (message instanceof ReplicaFeedMessage.ReplicaEntries || message instanceof ReplicaFeedMessage.ReplicaHeartbeat
+                || message instanceof ReplicaFeedMessage.ReplicaSnapshotChunk) {
                 dropped.incrementAndGet();
                 return false;
             }
@@ -82,9 +83,12 @@ class HierarchicalMetadataRecoveryTest {
             assertThat(node.kvStore().getTyped(new AetherKey.ActivationDirectiveKey(node.self()),
                 AetherValue.ActivationDirectiveValue.class).map(AetherValue.ActivationDirectiveValue::communityId).unwrap())
                 .isEqualTo(assignments.get(node.self()));
+            // Since W4 (#2494, 7301880a2b) workers are Rabia observers holding the full KV replica (owner ruling QJ-7, know 844600a608 + e79b0ea8e4);
+            // the scoped metadata projection is gone, so the OTHER community's directive must be present too (ReplicaFilter INCLUDEs ActivationDirectiveKey).
             workers.stream().filter(worker -> !assignments.get(worker).equals(assignments.get(node.self())))
                 .forEach(foreign -> assertThat(node.kvStore().getTyped(new AetherKey.ActivationDirectiveKey(foreign),
-                    AetherValue.ActivationDirectiveValue.class).isEmpty()).as("foreign assignment absent on %s", node.self()).isTrue());
+                    AetherValue.ActivationDirectiveValue.class).map(AetherValue.ActivationDirectiveValue::communityId).unwrap())
+                    .as("foreign assignment present in full replica on %s", node.self()).isEqualTo(assignments.get(foreign)));
         });
         assertThat(leader().membershipFsm().coreCountedMembers()).hasSize(5).doesNotContainAnyElementsOf(workers);
     }

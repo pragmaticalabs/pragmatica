@@ -9,7 +9,7 @@ import org.pragmatica.aether.environment.ClusterName;
 
 /// Schema-2 apply-ledger fixtures shared by the tests that write a ledger by hand.
 final class ApplyStateFixtures {
-    static final String APPLY_ID = "0123456789abcdefghijklmnop";
+    static final String APPLY_ID = "0123456789abcdefghjkmnpqrs";
 
     private ApplyStateFixtures() {}
 

@@ -27,6 +27,12 @@ public interface EvictionListener {
         return false;
     }
 
+    /// [#holdsUnsealed] for a READER of `offset`, which also asks the listener to persist the range holding it soon, so
+    /// the read waits for one persist rather than for whatever the listener would otherwise wait for.
+    default boolean holdsUnsealedForRead(String streamName, int partition, long offset) {
+        return holdsUnsealed(streamName, partition, offset);
+    }
+
     /// `streamName` was deleted: drop whatever of it is still waiting to be made durable. Its WAL is deleted
     /// with it, so nothing is left to protect, and retained copies must not keep holding shared capacity.
     default Unit onStreamDeleted(String streamName) {

@@ -8,6 +8,7 @@ package org.pragmatica.aether.stream.consumer;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerGroupKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerGroupValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -160,7 +161,7 @@ class ConsumerGroupRegistryTest {
                                                                            NodeId nodeId,
                                                                            String consumerId) {
         var key = ConsumerGroupKey.consumerGroupKey(groupId, streamName, partition);
-        var value = ConsumerGroupValue.consumerGroupValue(nodeId, consumerId);
+        var value = ConsumerGroupValue.consumerGroupValue(nodeId, consumerId, Epoch.epoch(1L, 1L, 1L));
         return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
     }
 

@@ -11,9 +11,11 @@
 package org.pragmatica.consensus.net.quic;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.net.quic.TransportTripwireFixtures.TripwireTopology;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
@@ -32,6 +34,12 @@ import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.starte
 
 /// #1535 item 2: each inbound refusal predicate (origin binding, inbound message policy, fault filter)
 /// increments its own counter, and a refused message is not routed. Two real [QuicClusterNetwork]s on loopback.
+///
+/// #2574: the outbound counterpart, the test-only refusal filter ([OutboundRefusalFilter]), lives here too: it refuses a
+/// matching unicast send before it is written, as a backpressured fast-fail lane does -- not delivered, and
+/// `BackpressureRefused` to a caller asking for the outcome -- on every unicast entry (`send`, `send` with a TTL,
+/// and the outcome read back from each), and leaves an unmatched send untouched. (A nested class rather than a class of
+/// its own: a new consensus test class needs a CI-generated shard weight, which no pre-push run can produce.)
 @Timeout(120)
 class QuicInboundRefusalCounterTest {
     private static final NodeId A = new NodeId("aaa-refuse");
@@ -121,5 +129,52 @@ class QuicInboundRefusalCounterTest {
                        .filter(QuicClusterNetwork::isLoggedRefusal)
                        .boxed()
                        .toList()).containsExactly(1L, 2L, 4L, 8L);
+    }
+
+    @Nested
+    class OutboundRefusalFilter {
+        private static final TimeSpan TTL = TimeSpan.timeSpan(5).seconds();
+        private static final String REFUSED = "refused";
+
+        private QuicClusterNetwork connectedSenderRefusingMarked() {
+            var pair = connectedPair();
+
+            pair[0].setOutboundRefusalFilter((peer, message) -> peer.equals(B)
+                                                                && message instanceof LaneProbe probe
+                                                                && probe.marker().startsWith(REFUSED));
+
+            return pair[0];
+        }
+
+        private static LaneProbe probe(String marker) {
+            return LaneProbe.laneProbe(A, StreamType.FORWARD, marker);
+        }
+
+        @Test
+        void send_matched_reportsBackpressureRefused_andNotDelivered_unmatchedIsSentAndDelivered() {
+            var a = connectedSenderRefusingMarked();
+
+            assertThat(a.send(B, probe(REFUSED + "-outcome")).await(AWAIT).unwrap())
+                .isEqualTo(new WriteOutcome.BackpressureRefused(B));
+            assertThat(a.send(B, probe(REFUSED + "-outcome-ttl"), TTL).await(AWAIT).unwrap())
+                .isEqualTo(new WriteOutcome.BackpressureRefused(B));
+            assertThat(a.send(B, probe("passed-outcome"), TTL).await(AWAIT).unwrap())
+                .isEqualTo(new WriteOutcome.Sent(B));
+            awaitTrue(() -> delivered.contains("passed-outcome"), AWAIT, "control: an unmatched send is delivered");
+
+            assertThat(delivered).noneMatch(marker -> marker.startsWith(REFUSED));
+        }
+
+        @Test
+        void send_matched_isNotDelivered_withOrWithoutATtl() {
+            var a = connectedSenderRefusingMarked();
+
+            a.send(B, probe(REFUSED + "-send"));
+            a.send(B, probe(REFUSED + "-send-ttl"), TTL);
+            a.send(B, probe("passed-send"));
+            awaitTrue(() -> delivered.contains("passed-send"), AWAIT, "control: an unmatched send is delivered");
+
+            assertThat(delivered).noneMatch(marker -> marker.startsWith(REFUSED));
+        }
     }
 }

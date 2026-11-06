@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.node.assembly.DhtAssembly;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTAntiEntropy;
 import org.pragmatica.dht.DHTConfig;
@@ -22,6 +23,7 @@ import org.pragmatica.dht.DHTMessage;
 import org.pragmatica.dht.DHTNetwork;
 import org.pragmatica.dht.DHTNode;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 
@@ -49,7 +51,7 @@ class AetherNodeDhtRepairPlaneRoutesTest {
 
         var config = new DHTConfig(2, 1, 1, timeSpan(2).seconds());
         var node = DHTNode.dhtNode(SELF, memoryStorageEngine(), ring, config);
-        DHTNetwork network = (target, message) -> sent.add(Map.entry(target, message));
+        DHTNetwork network = this::capture;
 
         DhtAssembly.routeDhtRepairPlane(entries, node, network, DHTAntiEntropy.dhtAntiEntropy(node, network, config));
     }
@@ -116,5 +118,11 @@ class AetherNodeDhtRepairPlaneRoutesTest {
                                 DHTMessage.VerifiedReadRequest.class)) {
             assertThat(routesFor(type)).as(type.getSimpleName()).isEqualTo(1);
         }
+    }
+
+    private Promise<WriteOutcome> capture(NodeId target, ProtocolMessage message) {
+        sent.add(Map.entry(target, message));
+
+        return Promise.success(new WriteOutcome.Sent(target));
     }
 }

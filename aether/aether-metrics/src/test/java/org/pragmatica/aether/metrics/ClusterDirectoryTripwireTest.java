@@ -36,6 +36,7 @@ import org.pragmatica.net.tcp.Server;
 import org.pragmatica.statemachine.Fsm;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -123,12 +124,17 @@ class ClusterDirectoryTripwireTest {
         }
 
         @Override
-        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             if (message instanceof ClusterSyncPing ping) {
                 sent.merge(nodeId, List.of(ping), (a, b) -> java.util.stream.Stream.concat(a.stream(), b.stream()).toList());
             }
 
-            return Unit.unit();
+            return Promise.success(new WriteOutcome.Sent(nodeId));
+        }
+
+        @Override
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            return send(nodeId, message);
         }
 
         @Override

@@ -608,16 +608,16 @@ class QuicClusterNetworkTest {
         }
 
         @Test
-        void sendOutcome_toSelf_deliversAndResolvesSent() {
+        void send_toSelf_deliversAndResolvesSent() {
             var self = NodeId.randomNodeId();
             var received = new CopyOnWriteArrayList<StubProtocolMessage>();
             var router = MessageRouter.mutable();
             router.addRoute(StubProtocolMessage.class, received::add);
             var network = createAndStartNetwork(self, List.of(), router);
 
-            var outcome = network.sendOutcome(self, stubProtocolMessage(self)).await(AWAIT_TIMEOUT);
+            var outcome = network.send(self, stubProtocolMessage(self)).await(AWAIT_TIMEOUT);
 
-            outcome.onFailure(cause -> fail("sendOutcome to self failed: " + cause.message()))
+            outcome.onFailure(cause -> fail("send to self failed: " + cause.message()))
                    .onSuccess(result -> assertThat(result)
                        .as("a tracked send to self resolves as delivered (Sent), not NoPeerState")
                        .isInstanceOf(WriteOutcome.Sent.class));
@@ -663,14 +663,14 @@ class QuicClusterNetworkTest {
         }
 
         @Test
-        void sendOutcome_toSelf_beforeStart_reportsDrop_notFalseSent() {
+        void send_toSelf_beforeStart_reportsDrop_notFalseSent() {
             var self = NodeId.randomNodeId();
             // Built but NOT started → no pinned loopback loop (the pre-start / cert-rotation window).
             var network = createNetworkWithStubTopology(self, MessageRouter.mutable());
 
-            var outcome = network.sendOutcome(self, stubProtocolMessage(self)).await(AWAIT_TIMEOUT);
+            var outcome = network.send(self, stubProtocolMessage(self)).await(AWAIT_TIMEOUT);
 
-            outcome.onFailure(cause -> fail("sendOutcome should resolve, not fail: " + cause.message()))
+            outcome.onFailure(cause -> fail("send should resolve, not fail: " + cause.message()))
                    .onSuccess(result -> assertThat(result)
                        .as("a self-send with no pinned loop must report the drop (NoPeerState), not a false Sent")
                        .isInstanceOf(WriteOutcome.NoPeerState.class));
@@ -703,7 +703,7 @@ class QuicClusterNetworkTest {
             // Cert rotation stops+rebuilds the server (new event loop group); the loopback loop is cleared
             // then re-pinned. A self-send after rotation must deliver on the NEW pinned loop. (The
             // clear-during-window itself takes the same empty-loop drop path proven by
-            // sendOutcome_toSelf_beforeStart_reportsDrop_notFalseSent — no RejectedExecutionException.)
+            // send_toSelf_beforeStart_reportsDrop_notFalseSent — no RejectedExecutionException.)
             network.rotateCertificate(serverSsl, clientSsl).await(AWAIT_TIMEOUT)
                    .onFailure(cause -> fail("cert rotation failed: " + cause.message()));
 

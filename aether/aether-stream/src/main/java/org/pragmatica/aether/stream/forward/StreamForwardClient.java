@@ -4,10 +4,16 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.forward;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.pragmatica.aether.stream.control.ControlLogError;
+import org.pragmatica.aether.stream.control.ControlOutcome;
+import org.pragmatica.aether.stream.control.ControlRecord;
+import org.pragmatica.aether.stream.forward.StreamForwardMessage.ControlAppendForward;
+import org.pragmatica.aether.stream.forward.StreamForwardMessage.ControlAppendForwardResponse;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardResponse;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
@@ -18,7 +24,9 @@ import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.VisibleBounds;
 import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
@@ -106,6 +114,22 @@ public interface StreamForwardClient {
     @MessageReceiver
     @SuppressWarnings("JBCT-RET-01")
     void onReadForwardResponse(ReadForwardResponse response);
+
+    /// #2590 P1: forward a control-log batch to the partition's owner as ONE message; one outcome per record, in order.
+    /// The default sends nothing and refuses every record ([ControlLogError.General#FORWARD_UNSUPPORTED]): nothing was
+    /// appended. Only the production transport ([DefaultStreamForwardClient]) forwards.
+    default Promise<List<ControlOutcome>> appendControlRemote(NodeId owner,
+                                                              String streamName,
+                                                              int partition,
+                                                              List<ControlRecord> records) {
+        return Promise.success(Collections.nCopies(records.size(),
+                                                   new ControlOutcome.Refused(ControlLogError.General.FORWARD_UNSUPPORTED)));
+    }
+
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
+    @Contract
+    default void onControlAppendForwardResponse(ControlAppendForwardResponse response) {}
 
     StreamForwardClient NOOP = noOpClient();
 
@@ -249,6 +273,11 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
 
     private final ConcurrentHashMap<String, Promise<ReadForwardResult>> pendingReads = new ConcurrentHashMap<>();
 
+    private final ConcurrentHashMap<String, PendingControl> pendingControl = new ConcurrentHashMap<>();
+
+    /// A forwarded control batch awaiting its answer, and how many records it carried.
+    private record PendingControl(Promise<List<ControlOutcome>> promise, int count) {}
+
     DefaultStreamForwardClient(NodeId selfNodeId,
                                StreamForwardTransport transport,
                                TimeSpan publishTimeout,
@@ -371,7 +400,12 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
         var readWait = Deadline.current().bounded(readTimeout);
 
         SharedScheduler.schedule(() -> timeoutRead(message.correlationId()), readWait);
-        transport.send(target, message, readWait);
+        // #2574: a read the transport did not send fails at once; its scheduled timeout then finds no pending entry.
+        // detached: nothing chains on the outcome; the failure resolves the caller's promise through the pending-entry
+        // removal, which races the response and the timeout safely (whichever removes the entry resolves it).
+        transport.send(target, message, readWait)
+                 .onSuccess(outcome -> failReadIfNotSent(outcome,
+                                                         message.correlationId()));
         log.trace("Sent ReadForward to {} for {}[{}] fromOffset={} maxEvents={} correlationId={} preference={}",
                   target,
                   message.streamName(),
@@ -382,6 +416,68 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
                   readClass);
 
         return promise;
+    }
+
+    /// #2590 P1: one [ControlAppendForward] for the whole batch. The wait is bounded like a publish's (#1996: the frame
+    /// does not outlive it); a batch not answered in time, or answered with the wrong number of outcomes, is an unknown
+    /// outcome for every record, never a refusal: the owner may have appended it.
+    @Override
+    public Promise<List<ControlOutcome>> appendControlRemote(NodeId owner,
+                                                             String streamName,
+                                                             int partition,
+                                                             List<ControlRecord> records) {
+        var correlationId = UUID.randomUUID().toString();
+        Promise<List<ControlOutcome>> promise = Promise.promise();
+
+        pendingControl.put(correlationId, new PendingControl(promise, records.size()));
+        var wait = Deadline.current().bounded(publishTimeout);
+
+        SharedScheduler.schedule(() -> timeoutControl(correlationId), wait);
+        transport.send(owner,
+                       ControlAppendForward.controlAppendForward(selfNodeId,
+                                                                 correlationId,
+                                                                 streamName,
+                                                                 partition,
+                                                                 records.stream()
+                                                                        .map(ControlRecordDto::fromRecord)
+                                                                        .toList()),
+                       wait);
+
+        return promise;
+    }
+
+    @Override
+    @SuppressWarnings("JBCT-RET-01")
+    @Contract
+    public void onControlAppendForwardResponse(ControlAppendForwardResponse response) {
+        option(pendingControl.remove(response.correlationId())).onEmpty(() -> log.debug("Received ControlAppendForwardResponse for unknown correlationId: {}",
+                                                                                        response.correlationId()))
+              .onPresent(pending -> pending.promise()
+                                           .succeed(controlOutcomes(pending, response)));
+    }
+
+    private static List<ControlOutcome> controlOutcomes(PendingControl pending, ControlAppendForwardResponse response) {
+        return response.outcomes()
+                       .size() == pending.count()
+               ? response.outcomes()
+                         .stream()
+                         .map(ControlOutcomeDto::toOutcome)
+                         .toList()
+               : unknownControlOutcomes(pending.count(),
+                                        new StreamForwardError.RemotePublishFailed("answered " + response.outcomes()
+                                                                                                         .size()
+                                                                                  + " outcomes for " + pending.count()
+                                                                                  + " records"));
+    }
+
+    private static List<ControlOutcome> unknownControlOutcomes(int count, Cause cause) {
+        return Collections.nCopies(count, new ControlOutcome.OutcomeUnknown(cause));
+    }
+
+    private void timeoutControl(String correlationId) {
+        option(pendingControl.remove(correlationId)).onPresent(pending -> pending.promise()
+                                                                                 .succeed(unknownControlOutcomes(pending.count(),
+                                                                                                                 ControlLogError.General.FORWARD_TIMEOUT)));
     }
 
     @Override
@@ -460,6 +556,32 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
             metrics.recordTimeout();
             promise.resolve(READ_FORWARD_TIMEOUT.result());
         });
+    }
+
+    /// #2574 (CTO, know de7d2783de): a read whose frame was not sent fails at once. Refused under backpressure, a dead
+    /// connection or no peer state is the transient [StreamForwardError.ForwardNotSent] every re-reading caller backs off
+    /// on; an encode failure is the hard [StreamForwardError.ForwardNotEncoded], which no retry can change. `Sent` keeps the
+    /// read waiting for its answer. (A read is safe to fail on `ConnectionDead` even if the offline buffer later delivers
+    /// the frame: its late answer is orphaned.)
+    private static Option<Cause> notSentCause(WriteOutcome outcome) {
+        return switch (outcome) {
+            case WriteOutcome.Sent _ -> Option.none();
+            case WriteOutcome.BackpressureRefused _, WriteOutcome.ConnectionDead _, WriteOutcome.NoPeerState _ -> Option.some(StreamForwardError.ForwardNotSent.FACTORY.apply(outcome));
+            case WriteOutcome.EncodeFailed _ -> Option.some(StreamForwardError.ForwardNotEncoded.FACTORY.apply(outcome));
+        };
+    }
+
+    private void failReadIfNotSent(WriteOutcome outcome, String correlationId) {
+        notSentCause(outcome).onPresent(cause -> failRead(correlationId, cause));
+    }
+
+    private void failRead(String correlationId, Cause cause) {
+        option(pendingReads.remove(correlationId)).onPresent(promise -> notSent(promise, cause));
+    }
+
+    private static void notSent(Promise<ReadForwardResult> promise, Cause cause) {
+        log.debug("Stream forward read not sent: {}", cause.message());
+        promise.resolve(cause.result());
     }
 
     private static void logOrphanedPublishResponse(PublishForwardResponse response) {

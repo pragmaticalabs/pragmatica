@@ -208,6 +208,17 @@ class AwsComputeProviderTest {
                                                                    .contains("zz-sentinel-zone-99"));
         }
 
+        /// G1-a: AWS has no server name that refuses a duplicate create, so an operation id it is handed is refused, typed, before any call.
+        @Test
+        void createFrom_operationId_refusedTypedBeforeAnyCall() {
+            provider.createFrom(onDemandRequest("ami-1", "c5.large").named())
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(EnvironmentError.OperationIdUnsupported.class));
+
+            assertThat(testClient.lastRunInstancesRequest).isNull();
+        }
+
         private ProvisionRequest onDemandRequest(String image, String instanceSize) {
             return new ProvisionRequest(InstanceType.ON_DEMAND, instanceSize, image, "",
                                         Option.empty(), MarketOptions.ON_DEMAND,

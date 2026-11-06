@@ -154,12 +154,12 @@ class HttpForwarderFrameLimitTest {
             return OutboundMessageLimit.validate(new FrameSerializer(frameBytes, frameUnencodable), message);
         }
 
-        @Override public <M extends ProtocolMessage> Promise<WriteOutcome> sendOutcome(NodeId nodeId, M message, TimeSpan offlineTtl) {
+        @Override public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
             sends.incrementAndGet();
             return Promise.success(new WriteOutcome.Sent(nodeId));
         }
 
-        @Override public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {return unit();}
+        @Override public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {return Promise.success(new WriteOutcome.Sent(nodeId));}
         @Override public <M extends ProtocolMessage> Unit broadcast(M message) {return unit();}
         @Override public void connect(NetworkServiceMessage.ConnectNode connectNode) {}
         @Override public void disconnect(NetworkServiceMessage.DisconnectNode disconnectNode) {}

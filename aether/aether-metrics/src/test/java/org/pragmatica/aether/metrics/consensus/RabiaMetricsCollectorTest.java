@@ -6,13 +6,14 @@ package org.pragmatica.aether.metrics.consensus;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.rabia.Phase;
 import org.pragmatica.consensus.rabia.StateValue;
+import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// The #674 pins. The three vote-traffic recorders were EMPTY BODIES — the engine called them all
-/// along (`RabiaEngine` vote/fast-path handlers), and every call vanished, so round-1/round-2 vote
+/// along (`RabiaEngine` vote handlers), and every call vanished, so round-1/round-2 vote
 /// volume — the quantity that grows with coordination load — was never counted anywhere. These
 /// tests pin the counting, the snapshot/reset split, and the wire vocabulary the Prometheus gauges
 /// and the HTTP consensus block share.
@@ -34,7 +35,6 @@ class RabiaMetricsCollectorTest {
 
         assertThat(snapshot.voteRound1Count()).isEqualTo(2);
         assertThat(snapshot.voteRound2Count()).isEqualTo(1);
-        assertThat(snapshot.fastPathCount()).as("no fast path since #1390").isZero();
     }
 
     /// `snapshot()` must not consume: a differencing consumer (the coordination-slope shape) reads
@@ -66,7 +66,6 @@ class RabiaMetricsCollectorTest {
 
         assertThat(second.voteRound1Count()).isZero();
         assertThat(second.voteRound2Count()).isZero();
-        assertThat(second.fastPathCount()).isZero();
     }
 
     /// The wire vocabulary: `counterMap()`'s keys ARE the Prometheus gauge names
@@ -90,12 +89,12 @@ class RabiaMetricsCollectorTest {
                                          "consensus_proposals_total",
                                          "consensus_vote_round1_total",
                                          "consensus_vote_round2_total",
-                                         "consensus_fast_path_total",
                                          "consensus_sync_success_total",
                                          "consensus_sync_failure_total",
                                          "consensus_pending_batches",
                                          "consensus_oldest_pending_batch_age_ms",
-                                         "consensus_apply_timeouts_total");
+                                         "consensus_apply_timeouts_total",
+                                         "consensus_consecutive_empty_slots_with_pending");
         assertThat(map.get("consensus_vote_round1_total").longValue()).isEqualTo(1);
         assertThat(map.get("consensus_pending_batches").intValue()).isEqualTo(3);
     }
@@ -123,6 +122,30 @@ class RabiaMetricsCollectorTest {
             .as("a level is read, never reset")
             .isEqualTo(20_000L);
         assertThat(collector.snapshot().oldestPendingBatchAgeMs()).isEqualTo(20_000L);
+    }
+
+    /// #2045: both convergence probes are read when the snapshot is taken, and are levels that a reset never touches; the
+    /// sink starts with probes that read 0 and none.
+    @Test
+    void proposalConvergenceProbes_areReadAtSnapshotTime_andNeverReset() {
+        var collector = RabiaMetricsCollector.rabiaMetricsCollector();
+        var emptySlots = new java.util.concurrent.atomic.AtomicLong(0L);
+
+        assertThat(collector.snapshot().consecutiveEmptySlotsWithPending()).as("no probe registered yet").isZero();
+        assertThat(collector.snapshot().firstChoiceBatchId()).isEqualTo(Option.none());
+
+        collector.registerProposalConvergenceProbes(NODE, emptySlots::get, () -> Option.some("batch-x"));
+        emptySlots.set(1_867L);
+
+        assertThat(collector.snapshot().consecutiveEmptySlotsWithPending()).isEqualTo(1_867L);
+        assertThat(collector.snapshot().firstChoiceBatchId()).isEqualTo(Option.some("batch-x"));
+        assertThat(collector.snapshot().counterMap().get("consensus_consecutive_empty_slots_with_pending").longValue())
+            .as("the Prometheus vocabulary carries the same level")
+            .isEqualTo(1_867L);
+        var reset = collector.snapshotAndReset();
+        assertThat(reset.consecutiveEmptySlotsWithPending()).isEqualTo(1_867L);
+        assertThat(reset.firstChoiceBatchId()).isEqualTo(Option.some("batch-x"));
+        assertThat(collector.snapshot().consecutiveEmptySlotsWithPending()).as("a level is read, never reset").isEqualTo(1_867L);
     }
 
     @Test

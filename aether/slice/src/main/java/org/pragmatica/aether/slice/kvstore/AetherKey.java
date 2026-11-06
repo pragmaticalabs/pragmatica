@@ -1645,6 +1645,35 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// The lifecycle record of one node id (O3, owner ruling c37a7c11e2): its identity facet (the admitted process) and its capacity facet (the
+    /// reservation) under one key, never deleted. A [RuntimeKey], classified as [CapacityReservationKey] is, which this record replaces at the O3-4 flip;
+    /// the identity LEDGER on each core's disk, not the KV, is what survives the loss of every holder.
+    record NodeIdentityKey(NodeId nodeId) implements RuntimeKey {
+        private static final String PREFIX = "node-identity/";
+
+        @Override
+        public String asString() {
+            return PREFIX + nodeId.id();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static NodeIdentityKey nodeIdentityKey(NodeId nodeId) {
+            return new NodeIdentityKey(nodeId);
+        }
+
+        public static Result<NodeIdentityKey> nodeIdentityKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return NODE_IDENTITY_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return NodeId.nodeId(key.substring(PREFIX.length())).map(NodeIdentityKey::new);
+        }
+    }
+
     Fn1<Cause, String> SLICE_DESIRED_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice-desired key format: %s");
 
     Fn1<Cause, String> SLICE_OBSERVED_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice-observed key format: %s");
@@ -1654,6 +1683,8 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     Fn1<Cause, String> ARTIFACT_JUDGMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid artifact-judgment key format: %s");
 
     Fn1<Cause, String> NODE_DEPARTURE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-departure key format: %s");
+
+    Fn1<Cause, String> NODE_IDENTITY_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-identity key format: %s");
 
     Fn1<Cause, String> NODE_ARTIFACT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-artifact key format: %s");
 
@@ -2406,6 +2437,42 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     }
 
     Fn1<Cause, String> CLUSTER_INCARNATION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid cluster-incarnation key format: %s");
+
+    /// Cluster state (deployment rewrite phase 3, design 8.2): which deployment engine the cluster runs. Minted in the same
+    /// transaction as the lineage ([ClusterIncarnationKey]), once per lineage, and read by every node's `EngineMarkerGuard`, which
+    /// refuses a node whose configured engine disagrees. **Durable, not a [RuntimeKey]:** a [RuntimeKey] is excluded from backups, so no
+    /// backup could carry the marker and every restore would turn an FSM2 cluster into LEGACY (P3-Q29).
+    record DeploymentEngineKey() implements ClusterStateKey {
+        private static final String KEY = "deployment-engine";
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static final DeploymentEngineKey SINGLETON = new DeploymentEngineKey();
+
+        @Override
+        public String asString() {
+            return KEY;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static DeploymentEngineKey deploymentEngineKey() {
+            return SINGLETON;
+        }
+
+        public static Result<DeploymentEngineKey> deploymentEngineKey(String key) {
+            if (!KEY.equals(key)) {
+                return DEPLOYMENT_ENGINE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return success(SINGLETON);
+        }
+    }
+
+    Fn1<Cause, String> DEPLOYMENT_ENGINE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid deployment-engine key format: %s");
 
     /// Runtime (#1777, CTO ruling R1b): the cluster's latest DHT replication change and how far it has settled. The
     /// leader commits it; every node derives its DHT quorums from it. Runtime, so never backed up: the DHT store is in

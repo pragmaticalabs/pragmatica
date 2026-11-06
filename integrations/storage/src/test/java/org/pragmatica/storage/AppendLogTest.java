@@ -90,6 +90,174 @@ class AppendLogTest {
             assertThat(wal.lastOffset()).isEqualTo(99L);
             wal.close();
         }
+
+        /// NT-21 (#2201 C-02): a spilled seal reads its range through `replay`, which used to read the whole file into one
+        /// array (O(file) memory, and a 2 GiB limit). On a ~32 MiB log a replay of its last record allocates a small
+        /// constant -- a bounded scan buffer and the one delivered payload -- not the file; and a full replay still
+        /// delivers every record in order with its fields.
+        @Test
+        void replay_ofALargeLog_allocatesABoundedBuffer_notTheFile() throws Exception {
+            var file = dir.resolve("large.wal");
+            var wal = AppendLog.open(file).unwrap();
+            var big = new byte[4096];
+
+            for (var offset = 0L; offset < 8_192; offset++) {
+                wal.write(offset, big, 1L + offset).unwrap();
+            }
+            wal.commit(0).await();
+
+            var threads = (com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean();
+            var thread = Thread.currentThread().threadId();
+            var before = threads.getThreadAllocatedBytes(thread);
+            var tail = replayAll(wal, 8_190L);
+            var allocated = threads.getThreadAllocatedBytes(thread) - before;
+
+            assertThat(Files.size(file)).isGreaterThan(32L * 1024 * 1024);
+            assertThat(offsetsOf(tail)).containsExactly(8_191L);
+            assertThat(allocated).as("bytes allocated by a replay of the last record of a %d byte log", Files.size(file))
+                                 .isLessThan(1024L * 1024);
+
+            var all = replayAll(wal, -1L);
+
+            assertThat(offsetsOf(all)).containsExactlyElementsOf(LongStream.range(0, 8_192).boxed().toList());
+            assertThat(all.get(4_000).timestampMillis()).isEqualTo(4_001L);
+            assertThat(all.get(4_000).payload()).hasSize(4096);
+            wal.close();
+        }
+    }
+
+    /// The bounded `replay` scan keeps recovery's validity rules (#2201 C-02): it stops cleanly at the first record whose
+    /// CRC or length frame is wrong, whether that record is delivered or skipped, returns the valid prefix, and never
+    /// buffers the rest of the file for a length that runs past it. The file is corrupted under the open log, as a bad
+    /// sector or a torn write would leave it. Each test names the mutation that reddens it.
+    @Nested
+    class ReplayValidity {
+        private static final int PAYLOAD = 1024;
+        private static final int FRAME = 24 + PAYLOAD;
+
+        /// Red under "a delivered record's CRC is not checked".
+        @Test
+        void replay_stopsBeforeADeliveredRecordWhoseCrcIsWrong() throws IOException {
+            var wal = logOf("crc-delivered.wal", 5);
+
+            corrupt("crc-delivered.wal", 2L * FRAME + 24, (byte) 0x5A);
+
+            assertThat(offsetsOf(replayAll(wal, -1L))).containsExactly(0L, 1L);
+            wal.close();
+        }
+
+        /// A skipped record is still validated: the scan stops at it, so nothing after it is delivered. Red under "a
+        /// skipped record's CRC is not checked".
+        @Test
+        void replay_stopsAtASkippedRecordWhoseCrcIsWrong() throws IOException {
+            var wal = logOf("crc-skipped.wal", 5);
+
+            corrupt("crc-skipped.wal", 1L * FRAME + 24, (byte) 0x5A);
+
+            assertThat(replayAll(wal, 2L)).isEmpty();
+            wal.close();
+        }
+
+        /// A negative length ends the valid prefix; the replay succeeds with it. Red under "a negative length is not
+        /// refused" (the scan then fails instead of returning the prefix).
+        @Test
+        void replay_stopsAtANegativeLength_andReturnsThePrefix() throws IOException {
+            var wal = logOf("negative.wal", 5);
+
+            writeLength("negative.wal", 3L * FRAME, -1);
+
+            assertThat(offsetsOf(replayAll(wal, -1L))).containsExactly(0L, 1L, 2L);
+            wal.close();
+        }
+
+        /// A delivered record whose length runs past the end of the file stops the scan without buffering what remains:
+        /// a replay of the second half of a ~4 MiB log, whose first delivered record claims one byte more than the file
+        /// holds after its header, allocates far less than the 2 MiB after it. Red under "no length bound" and under "the
+        /// bound does not advance with the scan".
+        @Test
+        void replay_aLengthPastTheEnd_stopsWithoutBufferingTheRest() throws IOException {
+            var wal = logOf("past-end.wal", 4_096);
+            var size = Files.size(dir.resolve("past-end.wal"));
+
+            writeLength("past-end.wal", 2_048L * FRAME, (int) (size - 2_048L * FRAME - 24 + 1));
+
+            var threads = (com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean();
+            var thread = Thread.currentThread().threadId();
+            var before = threads.getThreadAllocatedBytes(thread);
+            var records = replayAll(wal, 2_047L);
+            var allocated = threads.getThreadAllocatedBytes(thread) - before;
+
+            assertThat(records).isEmpty();
+            assertThat(allocated).as("bytes allocated by a replay stopped at a length past the end").isLessThan(1024L * 1024);
+            wal.close();
+        }
+
+        /// A length that FITS the file but is corrupt (a flipped header: record 0 of a ~34 MiB log claims the rest of the
+        /// file, so its CRC is wrong) ends the valid prefix as recovery's rules do, without buffering what it claims: the
+        /// replay succeeds with nothing delivered and allocates far less than the file (v-2520 H3, know 73fd8d9759). Red
+        /// under "a delivered record is read whole before its CRC is checked", which allocates the claimed length and on a
+        /// small heap dies with `OutOfMemoryError`.
+        @Test
+        void replay_aCorruptLengthThatFitsTheFile_stopsWithoutBufferingIt() throws IOException {
+            var wal = logOf("in-bounds.wal", 32_768);
+            var size = Files.size(dir.resolve("in-bounds.wal"));
+
+            writeLength("in-bounds.wal", 0L, (int) (size - 24));
+
+            var threads = (com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean();
+            var thread = Thread.currentThread().threadId();
+            var before = threads.getThreadAllocatedBytes(thread);
+            var records = replayAll(wal, -1L);
+            var allocated = threads.getThreadAllocatedBytes(thread) - before;
+
+            assertThat(size).isGreaterThan(32L * 1024 * 1024);
+            assertThat(records).isEmpty();
+            assertThat(allocated).as("bytes allocated by a replay stopped at a corrupt length inside a %d byte log", size)
+                                 .isLessThan(1024L * 1024);
+            wal.close();
+        }
+
+        /// A record larger than the scan buffer is CRC-checked in several chunks and delivered whole, and so is the record
+        /// after it. Red under "the CRC covers only the first chunk" and under "a chunk is not capped at the buffer".
+        @Test
+        void replay_aRecordLargerThanTheScanBuffer_isDeliveredWhole() {
+            var wal = open("large-record.wal");
+            var big = new byte[3 * AppendLog.REPLAY_BUFFER_BYTES + 17];
+
+            new java.util.Random(7).nextBytes(big);
+            wal.write(0L, big, 1L).unwrap();
+            wal.write(1L, new byte[PAYLOAD], 2L).unwrap();
+            wal.commit(0).await();
+
+            var records = replayAll(wal, -1L);
+
+            assertThat(offsetsOf(records)).containsExactly(0L, 1L);
+            assertThat(records.getFirst().payload()).isEqualTo(big);
+            wal.close();
+        }
+
+        private AppendLog logOf(String name, int records) {
+            var wal = open(name);
+
+            for (var offset = 0L; offset < records; offset++) {
+                wal.write(offset, new byte[PAYLOAD], 1L + offset).unwrap();
+            }
+            wal.commit(0).await();
+
+            return wal;
+        }
+
+        private void corrupt(String name, long position, byte value) throws IOException {
+            try (var channel = FileChannel.open(dir.resolve(name), StandardOpenOption.WRITE)) {
+                channel.write(ByteBuffer.wrap(new byte[]{value}), position);
+            }
+        }
+
+        private void writeLength(String name, long position, int length) throws IOException {
+            try (var channel = FileChannel.open(dir.resolve(name), StandardOpenOption.WRITE)) {
+                channel.write(ByteBuffer.allocate(4).putInt(0, length), position);
+            }
+        }
     }
 
     @Nested

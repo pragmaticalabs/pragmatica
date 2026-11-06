@@ -34,6 +34,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
@@ -113,7 +115,7 @@ class ActivationRaceNotFatalTest {
         nodeSideCluster = new RecordingClusterNode(SELF);
         leaderSideCluster = new RecordingClusterNode(SELF);
         nodeHarness = nodeHarness(nodeSideCluster);
-        leaderStore = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+        leaderStore = withSelfLeader(new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), stubSerializer(), stubDeserializer()));
         leaderHarness = leaderHarness(leaderSideCluster, leaderStore);
     }
 
@@ -301,7 +303,7 @@ class ActivationRaceNotFatalTest {
     private static FsmTestHarness<NodeDeploymentState, ClusterFsmEvent> nodeHarness(ClusterNode<KVCommand<AetherKey>> cluster,
                                                                                     SliceStore sliceStore) {
         var router = MessageRouter.mutable();
-        var kvStore = new KVStore<AetherKey, AetherValue>(router, stubSerializer(), stubDeserializer());
+        var kvStore = withSelfLeader(new KVStore<AetherKey, AetherValue>(router, stubSerializer(), stubDeserializer()));
 
         // #1068: the crossing happens under a LIVE blueprint, so the node's store carries the committed
         // SliceTarget the ACTIVATE was issued against; without it the node now refuses to activate at
@@ -495,7 +497,7 @@ class ActivationRaceNotFatalTest {
         @Override public Promise<Unit> stop() {return Promise.unitPromise();}
 
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
-            commands.addAll(batch);
+            commands.addAll(TransactionEffects.effective(batch));
 
             return Promise.success(Collections.emptyList());
         }
@@ -606,5 +608,13 @@ class ActivationRaceNotFatalTest {
                 return null;
             }
         };
+    }
+    /// #2584 P0: the leader FSM writes only under a committed leader record naming this node, as in production,
+    /// where `Active` is entered on that record's commit.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static KVStore<AetherKey, AetherValue> withSelfLeader(KVStore<AetherKey, AetherValue> store) {
+        store.process(store.createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(SELF, 1)))));
+
+        return store;
     }
 }

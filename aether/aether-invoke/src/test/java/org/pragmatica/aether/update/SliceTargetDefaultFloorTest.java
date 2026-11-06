@@ -23,39 +23,38 @@ import static org.pragmatica.aether.update.SliceTargetOverridePreservationTest.s
 import static org.pragmatica.aether.update.SliceTargetOverridePreservationTest.stubDeserializer;
 import static org.pragmatica.aether.update.SliceTargetOverridePreservationTest.stubSerializer;
 
-/// #1497 — `DeploymentManagerImpl.addSliceTargetCommand` writes a slice target through the creation
-/// factory when none exists yet, and it used to write `minInstances == instances`. The #1488 drain guard
-/// then could never drain an owner of that slice. Owner ruling (2026-09-25): the default is the blueprint
-/// floor, `ceil(instances/2)`.
+/// #1497 — `DeploymentManagerImpl.addSliceTargetCommand` used to write a slice target through the creation
+/// factory when none existed, and the floor of that first write was ruled `ceil(instances/2)` (owner
+/// ruling 2026-09-25). A rollback whose slice had no committed target was the path that reached it.
 ///
-/// A rollback whose slice has no current target is the path that reaches that first write: the manager
-/// restores the old version at the deployment's instance count (4 here, so the default 2 is
-/// distinguishable from the count).
+/// #2662 removed that write: the target of a rolled-out blueprint slice is absent only once its blueprint
+/// was deleted (or before it committed one), and an unowned target the rollback created then would outlive
+/// the blueprint, because a blueprint delete removes only the targets it owns. The rollback restores
+/// nothing for such a slice and still ends. The #1497 floor stays pinned where a target is still created:
+/// `SliceRoutesScaleFloorTest` and `SliceTargetValueTest`.
 class SliceTargetDefaultFloorTest {
     private static final String DEPLOYMENT_ID = "deployment-1497";
     private static final int INSTANCES = 4;
 
     @Test
-    void rollback_firstTargetWrite_takesTheDefaultFloor_notTheInstanceCount() {
+    void rollback_targetNotCommitted_writesNoTarget_andTheDeploymentEnds() {
         var rabiaNode = new SliceTargetOverridePreservationTest.CapturingRabiaNode(SELF);
         var kvStore = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
 
+        SliceTargetOverridePreservationTest.seedLeaderAndOwner(kvStore);
         seed(kvStore, DeploymentKey.deploymentKey(DEPLOYMENT_ID), deployedValue());
 
         var manager = DeploymentManager.deploymentManager(rabiaNode, kvStore);
 
         manager.activate().await().onFailure(cause -> Assertions.fail(cause.message()));
-        manager.rollback(DEPLOYMENT_ID).onFailure(cause -> Assertions.fail(cause.message()));
 
-        var written = capturedSliceTargets(rabiaNode.appliedCommands).stream()
-                                                                     .filter(target -> target.currentVersion()
-                                                                                             .equals(V1))
-                                                                     .toList();
+        var rolledBack = manager.rollback(DEPLOYMENT_ID)
+                                .fold(cause -> Assertions.<Deployment>fail(cause.message()), deployment -> deployment);
 
-        assertThat(written).as("the rollback must write the restored target").hasSize(1);
-        assertThat(written.getFirst().targetInstances()).isEqualTo(INSTANCES);
-        assertThat(written.getFirst().minInstances()).as("#1497: ceil(4/2), not the instance count")
-                                                     .isEqualTo(2);
+        assertThat(capturedSliceTargets(rabiaNode.appliedCommands)).as("no target is created for a slice that has none")
+                                                                   .isEmpty();
+        assertThat(rolledBack.state()).as("the rollback still ends the deployment")
+                                      .isEqualTo(DeploymentState.ROLLED_BACK);
     }
 
     private static DeploymentValue deployedValue() {

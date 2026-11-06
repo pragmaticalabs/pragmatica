@@ -12,13 +12,14 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.AppHttpConfig;
-import org.pragmatica.aether.node.assembly.WorkerHierarchyAssembly;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.replica.ReplicaFeedClient;
 import org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaEntries;
 import org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaHeartbeat;
 import org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaRefused;
 import org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaSnapshotChunk;
+import org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaSnapshotRequest;
+import org.pragmatica.cluster.replica.ReplicaFeedMessage.ReplicaSubscribe;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.config.ConfigService;
@@ -36,10 +37,11 @@ import org.pragmatica.serialization.FrameworkCodecs;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/// D9 / N-6: W3 lands DARK. The production factory returns `DARK`; an assembled DARK worker holds no replica client and routes none of the feed's
-/// messages, so it never subscribes, and its readiness is still driven only by the engine latch (`authorizePassiveClient`). A node built `LIVE`
-/// through the same factory seam (test code only) holds the client and routes the four messages it receives. W4 deletes the type and the
-/// factory and flips this test (dark assertions `@Disabled`, cutover assertions enabled).
+/// D9 / N-6, flipped by W4 (the cutover): `ReplicaCutover` and its factory are deleted, so every assembled worker holds the replica client and
+/// routes the four messages it receives, the engine's passive-client latch (`authorizePassiveClient`) is gone, and the metadata projection no
+/// longer drives readiness. The W3 dark assertions (production factory is `DARK`, no client, the latch is the live setter) are removed with the
+/// type they asserted; the governor-first rule ("no worker subscribes to a core while an announced, serving governor exists") is
+/// `ReplicaFeedClientRelayTest.aMemberWithAnAnnouncedServingGovernor_neverSubscribesToACore`.
 class ReplicaCutoverGateTest {
     private static final List<Class<?>> CLIENT_ROUTES = List.of(ReplicaEntries.class,
                                                                 ReplicaHeartbeat.class,
@@ -58,62 +60,41 @@ class ReplicaCutoverGateTest {
         ResourceProvider.clear();
     }
 
-    /// Mutation: make `ReplicaCutover.production()` return `LIVE`.
-    @Test
-    void production_isDark() {
-        assertThat(ReplicaCutover.production()).isEqualTo(ReplicaCutover.DARK);
-        assertThat(ReplicaCutover.production().isLive()).isFalse();
-    }
-
-    /// Mutation: construct the client regardless of the cutover (drop the `cutover.isLive()` test in `ReplicaClientAssembly.replicaClient`); or
-    /// route the four client messages unconditionally.
+    /// Mutation: construct no client (`ReplicaClientAssembly.replicaClient` returns empty for a worker), or drop a route.
     @Test
     @SuppressWarnings("unchecked")
-    void aDarkWorker_holdsNoReplicaClient_routesNoFeedMessage_andKeepsTheLatch() throws ReflectiveOperationException {
+    void aWorker_holdsTheClient_andRoutesTheFourMessagesItReceives_andTheTwoItServes() throws ReflectiveOperationException {
         var router = MessageRouter.DelegateRouter.delegate();
 
-        node = boot(router, ReplicaCutover.production());
-
-        assertThat(component(node, "replicaClient")).as("no client is constructed, so no ReplicaSubscribe can ever be sent").isEqualTo(Option.none());
-        assertThat(routed(router)).as("none of the messages a subscriber receives has a route").doesNotContainAnyElementsOf(CLIENT_ROUTES);
-
-        var cluster = (RabiaNode<KVCommand<AetherKey>>) component(node, "clusterNode");
-
-        assertThat(cluster.isPassiveClientReady()).as("before the latch").isFalse();
-        cluster.authorizePassiveClient();
-        assertThat(cluster.isPassiveClientReady()).as("DARK: the latch is still the live setter").isTrue();
-    }
-
-    /// Mutation: ignore the cutover in `ReplicaClientAssembly.replicaClient` (never construct), or drop a route.
-    @Test
-    @SuppressWarnings("unchecked")
-    void aLiveWorker_holdsTheClient_andRoutesTheFourMessagesItReceives() throws ReflectiveOperationException {
-        var router = MessageRouter.DelegateRouter.delegate();
-
-        node = boot(router, ReplicaCutover.LIVE);
+        node = boot(router);
 
         var client = (Option<ReplicaFeedClient<?, ?>>) component(node, "replicaClient");
 
         assertThat(client.isPresent()).isTrue();
         assertThat(routed(router)).contains(CLIENT_ROUTES.toArray(new Class<?>[0]));
+        assertThat(routed(router)).as("a governor serves members on a worker too").contains(ReplicaSubscribe.class, ReplicaSnapshotRequest.class);
     }
 
-    /// The two DARK-only behaviors, as values: DARK keeps the latch and the projection tick, LIVE has neither.
-    /// Mutation: ignore the cutover in `WorkerHierarchyAssembly.passiveLatch` or `projectionTick`.
+    /// I-W6 / the latch is gone. Mutation: restore `authorizePassiveClient` on `RabiaNode`.
+    @Test
+    void theEngineLatch_isGone() {
+        assertThat(java.util.Arrays.stream(RabiaNode.class.getMethods()).map(java.lang.reflect.Method::getName)).doesNotContain("authorizePassiveClient");
+    }
+
+    /// The projection client's fresh callback no longer sets the engine flag. Mutation: restore the latch call at the `workerMetadataChannel(...)`
+    /// call site.
     @Test
     @SuppressWarnings("unchecked")
-    void passiveLatchAndProjectionTick_runOnlyWhenDark() {
-        RabiaNode<KVCommand<AetherKey>> cluster = org.mockito.Mockito.mock(RabiaNode.class);
-        var channel = org.mockito.Mockito.mock(org.pragmatica.aether.worker.metadata.WorkerMetadataChannel.class);
+    void theProjectionClient_noLongerDrivesTheEngineReadiness() throws ReflectiveOperationException {
+        node = boot(MessageRouter.DelegateRouter.delegate());
 
-        WorkerHierarchyAssembly.passiveLatch(ReplicaCutover.LIVE, cluster).run();
-        WorkerHierarchyAssembly.projectionTick(ReplicaCutover.LIVE, channel).run();
-        org.mockito.Mockito.verifyNoInteractions(cluster, channel);
+        var channel = (org.pragmatica.aether.worker.metadata.WorkerMetadataChannel) component(node, "workerMetadataChannel");
+        var cluster = (RabiaNode<KVCommand<AetherKey>>) component(node, "clusterNode");
+        var callback = (Runnable) field(channel.client(), "projectionReady");
 
-        WorkerHierarchyAssembly.passiveLatch(ReplicaCutover.DARK, cluster).run();
-        WorkerHierarchyAssembly.projectionTick(ReplicaCutover.DARK, channel).run();
-        org.mockito.Mockito.verify(cluster).authorizePassiveClient();
-        org.mockito.Mockito.verify(channel).tick();
+        callback.run();
+
+        assertThat(cluster.isPassiveClientReady()).isFalse();
     }
 
     /// The engine seams, through the real forwarding `RabiaNode` of an assembled worker: `setPassiveClientReady` sets and clears the flag and
@@ -122,7 +103,7 @@ class ReplicaCutoverGateTest {
     @Test
     @SuppressWarnings("unchecked")
     void rabiaNode_forwardsTheTwoEngineSeams() throws ReflectiveOperationException {
-        node = boot(MessageRouter.DelegateRouter.delegate(), ReplicaCutover.production());
+        node = boot(MessageRouter.DelegateRouter.delegate());
 
         var cluster = (RabiaNode<KVCommand<AetherKey>>) component(node, "clusterNode");
         var fired = new java.util.concurrent.atomic.AtomicInteger();
@@ -136,23 +117,7 @@ class ReplicaCutoverGateTest {
         assertThat(fired.get()).as("the post-restore listeners fire once per install").isEqualTo(1);
     }
 
-    /// The call site (N17): the callback an assembled DARK worker hands its projection client is `projectionReady`, so a fresh projection sets the
-    /// engine latch. Mutation: replace the argument at the `workerMetadataChannel(...)` call with `() -> {}`, or with the worker-ready step alone.
-    @Test
-    @SuppressWarnings("unchecked")
-    void aDarkWorkersProjectionClient_setsTheLatch_whenItsProjectionBecomesReady() throws ReflectiveOperationException {
-        node = boot(MessageRouter.DelegateRouter.delegate(), ReplicaCutover.production());
-
-        var channel = (org.pragmatica.aether.worker.metadata.WorkerMetadataChannel) component(node, "workerMetadataChannel");
-        var cluster = (RabiaNode<KVCommand<AetherKey>>) component(node, "clusterNode");
-        var callback = (Runnable) field(channel.client(), "projectionReady");
-
-        assertThat(cluster.isPassiveClientReady()).as("precondition").isFalse();
-        callback.run();
-        assertThat(cluster.isPassiveClientReady()).isTrue();
-    }
-
-    private AetherNode boot(MessageRouter.DelegateRouter router, ReplicaCutover cutover) {
+    private AetherNode boot(MessageRouter.DelegateRouter router) {
         return AetherNode.aetherNode(workerConfig(new NodeId("worker-gate-" + UUID.randomUUID())),
                                      router,
                                      NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs()),
@@ -160,8 +125,7 @@ class ReplicaCutoverGateTest {
                                      () -> {},
                                      () -> {},
                                      variable -> Option.none(),
-                                     () -> Result.success(Unit.unit()),
-                                     cutover)
+                                     () -> Result.success(Unit.unit()))
                        .unwrap();
     }
 

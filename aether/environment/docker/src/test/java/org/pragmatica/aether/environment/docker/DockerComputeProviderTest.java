@@ -56,6 +56,21 @@ class DockerComputeProviderTest {
     @Nested
     class CreateFromTests {
 
+        /// G1-a: Docker is handed no operation id by `provision` and refuses one it is handed anyway, typed, before any docker command.
+        @Test
+        void createFrom_operationId_refusedTypedBeforeDockerRun() {
+            var context = ProvisionContext.forBootstrap(clusterName("c").unwrap(), "core", sourceNameOrDefault("s"), "n0");
+            var request = new ProvisionRequest(InstanceType.ON_DEMAND, "docker", "", "",
+                                               Option.empty(), MarketOptions.ON_DEMAND, context).named();
+
+            provider.createFrom(request)
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(cause -> assertThat(cause).isInstanceOf(EnvironmentError.OperationIdUnsupported.class));
+
+            assertThat(testRunner.allCommands).as("a refused operation id must not issue any docker command").isEmpty();
+        }
+
         @Test
         void createFrom_spotRequest_rejectedLoudBeforeDockerRun() {
             // Docker has no spot concept; a SPOT request must fail loud, never issue a docker run.
@@ -960,6 +975,16 @@ class DockerComputeProviderTest {
 
             assertThat(testRunner.lastCommand).containsSequence("--filter", "label=aether.cluster=prod");
             assertThat(testRunner.lastCommand).doesNotContain("label=aether.cluster");
+        }
+
+        /// Server ids are compared exactly by the apply ledger: the list asks for FULL container ids, the form `docker run -d` answers with.
+        @Test
+        void listInstances_asksForFullContainerIds() {
+            testRunner.nextResponse = Promise.success("");
+
+            scoped().listInstances().await().onFailure(cause -> fail(cause.message()));
+
+            assertThat(testRunner.lastCommand).contains("--no-trunc");
         }
 
         @Test

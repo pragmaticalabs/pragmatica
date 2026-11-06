@@ -289,7 +289,7 @@ class DHTResolveFallbackTest {
             members.keySet().forEach(ring::addNode);
             ring.addNode(id);
             var node = dhtNode(id, memoryStorageEngine(), ring, config);
-            DHTNetwork network = this::deliver;
+            DHTNetwork network = AcceptingNetwork.accepting(this::deliver);
             var client = distributedDHTClient(node, network, config).withResolveFallbackObserver(observer);
             members.put(id, new Member(id, node, client, ring));
         }

@@ -5,6 +5,7 @@
 
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.aether.stream.forward.AcceptingStreamForwardTransport;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
@@ -93,7 +94,7 @@ class HeldNotMaterializedProbeTest {
         manager.materializePartition("restarted", 0).onSuccess(_ -> fail("restarted[0] must be paced"));
         handler = StreamForwardHandler.streamForwardHandler(SELF,
                                                             manager,
-                                                            (_, message) -> record(message));
+                                                            AcceptingStreamForwardTransport.accepting((_, message) -> record(message)));
     }
 
     private void writeThreeEventsInAPreviousRun() {
@@ -270,7 +271,7 @@ class HeldNotMaterializedProbeTest {
             registered.materializePartition("busy", 0).onFailure(_ -> fail("first slot should materialize"));
             registered.materializePartition("busy", 1).onFailure(_ -> fail("second slot should materialize"));
             registered.materializePartition("fresh", 0).onSuccess(_ -> fail("fresh[0] must be paced"));
-            var registeredHandler = StreamForwardHandler.streamForwardHandler(SELF, registered, (_, message) -> record(message));
+            var registeredHandler = StreamForwardHandler.streamForwardHandler(SELF, registered, AcceptingStreamForwardTransport.accepting((_, message) -> record(message)));
 
             registeredHandler.onReadForward(readForward(PEER, "corr", "fresh", 0, 0L, PAGE, false, true));
 
@@ -364,7 +365,7 @@ class HeldNotMaterializedProbeTest {
             roles.put("b2", Role.REPLICA);
             tight.materializePartition("b1", 0).onFailure(_ -> fail("b1 fits the budget"));
             tight.materializePartition("b2", 0).onSuccess(_ -> fail("b2 must be budget-deferred"));
-            var tightHandler = StreamForwardHandler.streamForwardHandler(SELF, tight, (_, message) -> record(message));
+            var tightHandler = StreamForwardHandler.streamForwardHandler(SELF, tight, AcceptingStreamForwardTransport.accepting((_, message) -> record(message)));
 
             tightHandler.onReadForward(readForward(PEER, "corr", "b2", 0, 0L, PAGE, false, true));
 

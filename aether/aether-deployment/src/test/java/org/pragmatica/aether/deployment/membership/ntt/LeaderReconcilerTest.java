@@ -559,6 +559,137 @@ class LeaderReconcilerTest {
         assertThat(ctm.provisionReplacementCalls()).isEmpty();
     }
 
+    /// #2115: a replacement is made in the source of the node it replaces, so the reconciler must name the departed node. The departed
+    /// nodes are the installed voters that are not members; each placeholder is paired with a different one.
+    @Test
+    void provisionNamesTheDepartedInstalledVoterForEveryPlaceholder() {
+        configuredCoreCount.set(5);
+        leaderTerm.set(2L);
+        seedClusterWithPeers(PEER_A, PEER_B);
+        reconciler.setInstalledVotersSupplier(() -> Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(ctm.provisionReplacementCalls()).hasSize(2);
+        assertThat(ctm.provisionReplacementFailedPeers()).containsExactlyInAnyOrder(Option.some(PEER_C), Option.some(PEER_D));
+    }
+
+    /// #2115: fewer placeholders than departed voters pairs the placeholder with the same departed node on every pass (smallest id first), so
+    /// the choice of source never depends on set iteration order.
+    @Test
+    void provisionPairsAPlaceholderWithTheSmallestIdDepartedVoter() {
+        var firstDeparted = new NodeId("departed-1");
+        var secondDeparted = new NodeId("departed-2");
+
+        configuredCoreCount.set(5);
+        leaderTerm.set(2L);
+        seedClusterWithPeers(PEER_A, PEER_B, PEER_C);
+        reconciler.setInstalledVotersSupplier(() -> new java.util.LinkedHashSet<>(List.of(SELF, PEER_A, PEER_B, PEER_C, secondDeparted, firstDeparted)));
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(ctm.provisionReplacementFailedPeers()).containsExactly(Option.some(firstDeparted));
+    }
+
+    /// #2115 (two failures): C departs and its replacement is in flight; C is still an installed voter. When D then departs, D's placeholder must
+    /// be paired with D, never with C again, or D is healed in C's source (the wrong provider is billed).
+    @Test
+    void aSecondFailureWhileTheFirstReplacementIsInFlight_isPairedWithItsOwnDepartedNode() {
+        var departedC = new NodeId("heal-c");
+        var departedD = new NodeId("heal-d");
+
+        configuredCoreCount.set(5);
+        leaderTerm.set(2L);
+        seedClusterWithPeers(PEER_A, PEER_B, departedD);
+        reconciler.setInstalledVotersSupplier(() -> Set.of(SELF, PEER_A, PEER_B, departedC, departedD));
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(ctm.provisionReplacementFailedPeers()).containsExactly(Option.some(departedC));
+
+        removePeers(departedD);
+        triggerAndFireReconcile();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(ctm.provisionReplacementFailedPeers()).containsExactly(Option.some(departedC), Option.some(departedD));
+    }
+
+    private void probeStart(NodeId c, int configured, Set<NodeId> voters, NodeId... members) {
+        configuredCoreCount.set(configured);
+        leaderTerm.set(2L);
+        seedClusterWithPeers(members);
+        reconciler.setInstalledVotersSupplier(() -> voters);
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+    }
+
+    @Test
+    void aSecondFailureAfterTheFirstReplacementIsConfirmed_isPairedWithItsOwnDeparted() {
+        var c = new NodeId("heal-c");
+        var d = new NodeId("heal-d");
+        probeStart(c, 5, Set.of(SELF, PEER_A, PEER_B, c, d), PEER_A, PEER_B, d);
+        var ph = ctm.provisionReplacementCalls().getFirst();
+        ctm.reportInstanceState(ph, ReplacementInstanceState.PRESENT);
+        advanceOnePollInterval();
+        removePeers(d);
+        triggerAndFireReconcile();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(ctm.provisionReplacementFailedPeers()).containsExactly(Option.some(c), Option.some(d));
+    }
+
+    @Test
+    void aSecondFailureAfterAbsentListingsBelowTheThreshold_isPairedWithItsOwnDeparted() {
+        var c = new NodeId("heal-c");
+        var d = new NodeId("heal-d");
+        probeStart(c, 5, Set.of(SELF, PEER_A, PEER_B, c, d), PEER_A, PEER_B, d);
+        var ph = ctm.provisionReplacementCalls().getFirst();
+        ctm.reportInstanceState(ph, ReplacementInstanceState.ABSENT);
+        advanceOnePollInterval();
+        advanceOnePollInterval();
+        removePeers(d);
+        triggerAndFireReconcile();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(ctm.provisionReplacementFailedPeers()).containsExactly(Option.some(c), Option.some(d));
+    }
+
+    @Test
+    void aSecondFailureAfterTheFirstReplacementJoinedBeforeTheVoterSwap_isPairedWithItsOwnDeparted() {
+        var c = new NodeId("heal-c");
+        var d = new NodeId("heal-d");
+        probeStart(c, 5, Set.of(SELF, PEER_A, PEER_B, c, d), PEER_A, PEER_B, d);
+        assertThat(ctm.provisionReplacementFailedPeers()).containsExactly(Option.some(c));
+        var placeholder = ctm.provisionReplacementCalls().getFirst();
+        seedClusterWithPeers(placeholder);
+        triggerAndFireReconcile();
+        removePeers(d);
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(ctm.provisionReplacementFailedPeers()).containsExactly(Option.some(c), Option.some(d));
+    }
+
+    /// #2115: with no verified electorate wired there is no departed node to name; the manager resolves the source as for a node that
+    /// carries none.
+    @Test
+    void provisionNamesNoDepartedNodeWhenNoElectorateIsWired() {
+        configuredCoreCount.set(5);
+        leaderTerm.set(2L);
+        seedClusterWithPeers(PEER_A, PEER_B);
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+        assertThat(ctm.provisionReplacementFailedPeers()).isNotEmpty().allMatch(Option::isEmpty);
+    }
+
     @Test
     void desiredSevenUsesInstalledThreeQuorumAndProvisionsFourAfterDelay() {
         configuredCoreCount.set(7);
@@ -1402,23 +1533,43 @@ class LeaderReconcilerTest {
         }
 
         @Test
-        void surplusDrain_partialMaturePool_drainsMatureAndDefersShortfall() {
+        void surplusDrain_partialMaturePool_leaderNotDrained_shortfallDeferred() {
             configuredCoreCount.set(1);
-            // SELF (tracked in setUp at clock 0) matures and is ephemeral → an eligible victim;
-            // the two CONFIGURED seeds seeded afterwards stay young → deferred. Surplus = 2, only
-            // the one mature (SELF) is drainable now.
+            // SELF (the leader) matures but is never a victim; the two CONFIGURED seeds seeded
+            // afterwards stay young -> deferred. Surplus = 2, nothing is drainable now.
             agePastDrainSafetyGrace();
             seedYoungPeers(youngSeed1, youngSeed2);
 
             reconciler.activate();
             scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
 
-            // Surplus = 2; eligible pool = {SELF} → one mature victim drained, the shortfall deferred.
             assertThat(ctm.drainNodeCalls())
-                .as("the mature part of the surplus is drained immediately")
-                .containsExactly(SELF);
+                .as("the mature leader is never drained; the young seeds are held by the grace")
+                .isEmpty();
             assertThat(scheduler.tasksByDelay(FULL_GRACE_FOLLOW_UP_DELAY))
                 .as("the young configured shortfall arms one re-evaluation follow-up")
+                .hasSize(1);
+        }
+
+        /// #1089 — the leader is never a victim, even as the ONLY eligible candidate (the other member
+        /// is a young configured seed held back by the grace): its DRAIN would never be delivered
+        /// (ClusterSyncState skips self). The scale-down stops short and arms the deferral follow-up.
+        @Test
+        void surplusDrain_leaderSoleCandidate_leaderNeverChosen_scaleDownStopsShort() {
+            configuredCoreCount.set(1);
+            // Members = SELF + young youngSeed1 = 2; surplus 1. seed1 is inside the drain-safety grace.
+            health.markHealthy(youngSeed1);
+            observeCoreHealthy(youngSeed1);
+            sampler.sample();
+
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertThat(ctm.drainNodeCalls())
+                .as("the leader is never drained, even when it is the sole eligible candidate")
+                .isEmpty();
+            assertThat(scheduler.tasksByDelay(FULL_GRACE_FOLLOW_UP_DELAY))
+                .as("the shortfall is deferred with a follow-up, not silently dropped")
                 .hasSize(1);
         }
 
@@ -1767,8 +1918,8 @@ class LeaderReconcilerTest {
             membershipFsm.onDrainRequested(victim);
         }
 
-        /// #1089 option B (d) — the leader is ordered LAST: with another eligible candidate present it
-        /// is not chosen, even though its id sorts first and it is an ephemeral non-owner.
+        /// #1089 (d) — with another eligible candidate present the leader is not chosen, even though
+        /// its id sorts first and it is an ephemeral non-owner.
         @Test
         void surplusDrain_leaderAndAnotherCandidate_leaderNotChosen() {
             configuredCoreCount.set(2);
@@ -1778,25 +1929,8 @@ class LeaderReconcilerTest {
             runActivationPass();
 
             assertThat(ctm.drainNodeCalls())
-                .as("the leader is a victim only when nothing else can cover the surplus")
+                .as("the leader is never a victim")
                 .containsExactly(ctm1);
-        }
-
-        /// #1089 option B (d) — a tie-break, never an exclusion: when the leader is the ONLY eligible
-        /// candidate (the other member is a young configured seed held back by the grace), it is chosen.
-        @Test
-        void surplusDrain_leaderSoleCandidate_leaderChosen() {
-            configuredCoreCount.set(1);
-            // Members = SELF + young seed1 = 2; surplus 1. seed1 is inside the drain-safety grace.
-            health.markHealthy(seed1);
-            observeCoreHealthy(seed1);
-            sampler.sample();
-
-            runActivationPass();
-
-            assertThat(ctm.drainNodeCalls())
-                .as("the leader is drained when it is the sole eligible candidate")
-                .containsExactly(SELF);
         }
 
         /// The owner tier keeps the drain-safety grace for EPHEMERAL owners too: the "owns nothing"
@@ -4475,6 +4609,7 @@ class LeaderReconcilerTest {
         private final List<NodeId> drainNodeCalls = new CopyOnWriteArrayList<>();
         private final List<NodeId> provisionReplacementCalls = new CopyOnWriteArrayList<>();
         private final List<NodeRole> provisionReplacementRoles = new CopyOnWriteArrayList<>();
+        private final List<Option<NodeId>> provisionReplacementFailedPeers = new CopyOnWriteArrayList<>();
         private final List<DrainReason> drainReasons = new CopyOnWriteArrayList<>();
         private final AtomicInteger reconcileCount = new AtomicInteger(0);
         // Auto-heal-wedge fix: the disposition the next provisionReplacement resolves to. Defaults
@@ -4549,6 +4684,7 @@ class LeaderReconcilerTest {
             drainNodeCalls.clear();
             provisionReplacementCalls.clear();
             provisionReplacementRoles.clear();
+            provisionReplacementFailedPeers.clear();
             drainReasons.clear();
         }
 
@@ -4570,6 +4706,10 @@ class LeaderReconcilerTest {
             return List.copyOf(provisionReplacementRoles);
         }
 
+        List<Option<NodeId>> provisionReplacementFailedPeers() {
+            return List.copyOf(provisionReplacementFailedPeers);
+        }
+
         List<DrainReason> drainReasons() {
             return List.copyOf(drainReasons);
         }
@@ -4585,6 +4725,7 @@ class LeaderReconcilerTest {
                                                                   NodeRole intendedRole) {
             provisionReplacementCalls.add(newNodeId);
             provisionReplacementRoles.add(intendedRole);
+            provisionReplacementFailedPeers.add(failedPeer);
             if (real != null) {
                 return real.provisionReplacement(newNodeId, failedPeer, clusterMembers, intendedRole);
             }

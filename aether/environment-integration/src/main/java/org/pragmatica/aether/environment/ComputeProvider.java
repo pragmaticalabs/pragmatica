@@ -103,8 +103,23 @@ public interface ComputeProvider {
     default Promise<InstanceInfo> provision(ProvisionSpec spec) {
         return ProvisionRequest.resolve(spec,
                                         providerDefaults())
+                               .map(this::nameIfHonoured)
                                .async()
                                .flatMap(this::createFrom);
+    }
+
+    /// Whether this provider gives the server it creates the request's [OperationId] as its NAME and relies on the provider
+    /// refusing a second server with that name (G1-a). Only such a provider is handed an operation id by
+    /// [#provision(ProvisionSpec)]; every other provider receives none, and refuses one it is handed anyway
+    /// ([EnvironmentError.OperationIdUnsupported]) rather than ignoring it.
+    default boolean honoursOperationId() {
+        return false;
+    }
+
+    private ProvisionRequest nameIfHonoured(ProvisionRequest request) {
+        return honoursOperationId()
+               ? request.named()
+               : request;
     }
 
     /// Convenience seed entry (bootstrap primitive / tests): provision a core-role node from the

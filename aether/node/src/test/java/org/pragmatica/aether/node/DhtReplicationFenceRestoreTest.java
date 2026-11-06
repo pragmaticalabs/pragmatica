@@ -150,7 +150,8 @@ class DhtReplicationFenceRestoreTest {
                                                                                                     _ -> false,
                                                                                                     _ -> {},
                                                                                                     System::currentTimeMillis,
-                                                                                                    caughtUp::get));
+                                                                                                    caughtUp::get,
+                                                                                                    () -> true));
     }
 
     private static DhtReplicationChangeValue settled(long version, int rf, int cf) {

@@ -164,6 +164,11 @@ final class ApplyChaosHarness {
         private int serverSeq;
         private int failCreateNumber;
 
+        /// The next created server gets the id `srv-<n>` (so a test can make one id a prefix of another).
+        void nextServerNumber(int n) {
+            serverSeq = n - 1;
+        }
+
         /// The `n`th create (1-based, counting every attempt) is refused by the provider: counted, no VM exists.
         void failNthCreate(int n) {
             failCreateNumber = n;

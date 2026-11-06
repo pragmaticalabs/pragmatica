@@ -46,7 +46,7 @@ class DHTCatchUpEpochReadbackTest {
             ids.forEach(ring::addNode);
             nodes.put(id, dhtNode(id, memoryStorageEngine(ORDERED), ring, CONFIG));
         });
-        ids.forEach(id -> antiEntropies.put(id, dhtAntiEntropy(nodes.get(id), (target, message) -> route(nodes, antiEntropies, target, message), CONFIG)));
+        ids.forEach(id -> antiEntropies.put(id, dhtAntiEntropy(nodes.get(id), AcceptingNetwork.accepting((target, message) -> route(nodes, antiEntropies, target, message)), CONFIG)));
 
         var booter = ids.getFirst();
         var key = "epoch-readback".getBytes(StandardCharsets.UTF_8);

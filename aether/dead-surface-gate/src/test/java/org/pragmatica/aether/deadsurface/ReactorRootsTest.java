@@ -15,6 +15,7 @@ import org.w3c.dom.Node;
 
 import javax.xml.parsers.DocumentBuilderFactory;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -88,7 +89,7 @@ class ReactorRootsTest {
     }
 
     /// The non-vacuity guard: every corpus module with production sources is BUILT (has
-    /// `target/classes`) by the time the gate runs, and contributes a root (resources-only
+    /// `target/classes` holding at least one class) by the time the gate runs, and contributes a root (resources-only
     /// `pg-test-corpus` also has one, so roots may outnumber source modules). Nested modules are built
     /// before the gate only because the gate's pom depends on them — see the next test.
     @Test
@@ -102,6 +103,23 @@ class ReactorRootsTest {
         assertTrue(withSources.size() >= 54, "modules with src/main/java collapsed below their floor of 54");
         assertTrue(ReactorRoots.productionRoots().containsAll(withSources.stream().map(module -> module.resolve("target/classes")).toList()),
                    "a module with sources contributes no root");
+
+        var empty = withSources.stream()
+                               .map(module -> module.resolve("target/classes"))
+                               .filter(ReactorRootsTest::holdsNoClassFile)
+                               .toList();
+
+        assertTrue(empty.isEmpty(), "corpus modules whose target/classes holds no .class file: " + empty);
+    }
+
+    /// An existing but empty `target/classes` (a CI job that created the directory and compiled nothing into it) would
+    /// pass the existence check above and still scan nothing.
+    private static boolean holdsNoClassFile(Path root) {
+        try (var files = Files.walk(root)) {
+            return files.noneMatch(file -> file.toString().endsWith(".class"));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     /// Reactor order by construction: Maven schedules this gate after every module it declares as a

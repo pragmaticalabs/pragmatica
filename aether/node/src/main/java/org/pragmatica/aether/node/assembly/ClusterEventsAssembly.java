@@ -12,6 +12,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.api.AlertManager;
@@ -24,6 +25,8 @@ import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.membership.ntt.DrainProcedure;
 import org.pragmatica.aether.invoke.InvocationTraceStore;
 import org.pragmatica.aether.node.AetherNodeConfig;
+import org.pragmatica.aether.node.DhtDeparturePush;
+import org.pragmatica.aether.node.KvDispatchLagWatch;
 import org.pragmatica.aether.node.SystemStreamRegistrar;
 import org.pragmatica.aether.slice.*;
 import org.pragmatica.aether.slice.StreamConfig;
@@ -42,6 +45,8 @@ import org.pragmatica.cluster.state.kvstore.*;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.rabia.VoterConfiguration;
@@ -155,7 +160,7 @@ public sealed interface ClusterEventsAssembly {
         // #1574 / #1617: ONE operator-warning sink per node, bound to THIS node's aggregator (never another
         // Ember node's). It hands each warning off to a bounded queue, so a raise from SWIM, replication or the
         // core-absence fence never waits on the event log. Idle throttle keys are evicted once per minute.
-        var operatorWarningSink = OperatorWarningSink.handingOffTo(eventAggregator::onOperatorWarning);
+        var operatorWarningSink = operatorWarningSink(eventAggregator, kvStore::isReplaying);
         // #2062: an instance whose termination the CTM cannot confirm after its bounded retries is an operator event.
         clusterTopologyManager.setOperatorWarningSink(operatorWarningSink);
         // #1109: the leader's committed-target gate reports a LOAD it has refused past the bound to THIS node's event log.
@@ -173,6 +178,10 @@ public sealed interface ClusterEventsAssembly {
         defer.accept(() -> SharedScheduler.scheduleAtFixedRate(eventAggregator::evictIdleThrottleWindows,
                                                                OPERATOR_WARNING_EVICTION_INTERVAL,
                                                                OPERATOR_WARNING_EVICTION_INTERVAL));
+        // D1 (KVStore dispatcher design §3.6): the slope warning over THIS node's store's delivery lag, on this node's sink.
+        var kvDispatchLagWatch = KvDispatchLagWatch.kvDispatchLagWatch(kvStore::deliveryMetrics, operatorWarningSink);
+
+        defer.accept(() -> SharedScheduler.scheduleAtFixedRate(kvDispatchLagWatch::tick, KvDispatchLagWatch.TICK));
 
         return new EventAggregatorOutputs(clusterEventsHlcClock,
                                           clusterEventsPublisherRef,
@@ -182,6 +191,13 @@ public sealed interface ClusterEventsAssembly {
                                           clusterEventsOwnerCheck,
                                           eventAggregator,
                                           operatorWarningSink);
+    }
+
+    /// The node's ONE operator-warning sink, bound to `aggregator`. Each warning crosses with the replay bit read on the raising
+    /// thread (KVStore dispatcher design §3.5 R4): a warning a KV handler raises in a replay burst is suppressed like any replayed emit,
+    /// though the hand-off thread itself always reads `isReplaying()` false.
+    static OperatorWarningSink operatorWarningSink(ClusterEventAggregator aggregator, BooleanSupplier replaying) {
+        return OperatorWarningSink.handingOffTo(replaying, aggregator::onHandedOffWarning);
     }
 
     /// What `eventTick` reads from the assembly built so far.
@@ -205,11 +221,13 @@ public sealed interface ClusterEventsAssembly {
                             RabiaNode<KVCommand<AetherKey>> clusterNode,
                             InvocationTraceStore traceStore,
                             AtomicReference<Consumer<DrainReason>> clusterEventDrainEmitterRef,
-                            AtomicReference<DeparturePushObserver> departurePushObserverRef,
+                            AtomicReference<Function<String, DeparturePushObserver>> departurePushObserverRef,
                             DrainProcedure drainProcedure,
                             AlertManager alertManager,
                             HlcClock clusterEventsHlcClock,
-                            ClusterEventAggregator eventAggregator) {}
+                            ClusterEventAggregator eventAggregator,
+                            KVStore<AetherKey, AetherValue> kvStore,
+                            String clusterEventsStreamName) {}
 
     /// Binds the drain, departure, voter and alert sinks and the trace store to the aggregator.
     static Unit eventSinks(EventSinksInputs in) {
@@ -222,6 +240,8 @@ public sealed interface ClusterEventsAssembly {
         var alertManager = in.alertManager();
         var clusterEventsHlcClock = in.clusterEventsHlcClock();
         var eventAggregator = in.eventAggregator();
+        var kvStore = in.kvStore();
+        var clusterEventsStreamName = in.clusterEventsStreamName();
         // Item-8 graft: best-effort SelfDrainInitiated emit on drain initiation. The aggregator is
         // forward-declared to DrainProcedure (constructed earlier) via this ref; the emitter lambda
         // resolves it lazily and no-ops until bound. NOT leader-gated — the draining node is the only
@@ -244,11 +264,10 @@ public sealed interface ClusterEventsAssembly {
                                                                                                                              .id(),
                                                                                                                        "reason",
                                                                                                                        String.valueOf(reason)))));
-        // #427: resolve the departure-push observer now the aggregator is bound — a budget overrun
-        // during graceful departure emits DeparturePushIncomplete (per-node fact, un-gated emitLocal).
-        departurePushObserverRef.set((keysAtRisk, sampleKeys) -> eventAggregator.onDeparturePushIncomplete(config.self(),
-                                                                                                           keysAtRisk,
-                                                                                                           sampleKeys));
+        // #427, #2034: resolve the departure-push observer factory now the aggregator is bound — each drain episode's
+        // observer raises the sole-copy at-risk / delivered operator warnings for its subject and the final
+        // DeparturePushIncomplete (per-node facts, un-gated), every one awaited by the push before the node halts.
+        departurePushObserverRef.set(subject -> DhtDeparturePush.departureEvents(eventAggregator, config.self(), subject));
         // Operator-driven inject endpoints replicate via the events stream so peer nodes return
         // injected items on cross-node reads. AlertManager emits AlertInjected; InvocationTraceStore
         // emits TraceInjected through a thin sink that keeps the aether-invoke module free of any
@@ -256,6 +275,11 @@ public sealed interface ClusterEventsAssembly {
         eventAggregator.bindSelfCommandedDrain(drainProcedure::isCommandedDrain);
         eventAggregator.bindSelfCoreAbsenceDrain(drainProcedure::isCoreAbsenceDrain);
         eventAggregator.bindSelfIsVoter(() -> isInstalledVoterOrUnknown(clusterNode.voterConfiguration(), config.self()));
+        // #1671 (I-35): the facts raised from a committed KV notification are gated on the committed ownership record of the
+        // cluster-events partition (read from the store only until this node has seen an ownership notification), and with no
+        // record on the committed leader (the same).
+        eventAggregator.bindCommittedOwnerSources(() -> committedClusterEventsOwner(kvStore, clusterEventsStreamName),
+                                                  () -> committedLeader(kvStore));
         alertManager.bindEventSink(eventAggregator::emit, clusterEventsHlcClock);
         alertManager.bindClusterEventsSource(eventAggregator::events);
         // #957: AlertForwarder was never constructed anywhere in src/main, so no alert left this
@@ -426,6 +450,19 @@ public sealed interface ClusterEventsAssembly {
                                 + " — correct [replication.cluster_events] and re-apply the cluster config")
                     .onFailure(failure -> LOG.warn("Cluster-events refusal alert injection failed: {}",
                                                    failure.message()));
+    }
+
+    private static Option<NodeId> committedClusterEventsOwner(KVStore<AetherKey, AetherValue> kvStore,
+                                                              String clusterEventsStreamName) {
+        return kvStore.getTyped(AetherKey.StreamPartitionOwnershipKey.streamPartitionOwnershipKey(clusterEventsStreamName,
+                                                                                                  0),
+                                AetherValue.StreamPartitionOwnershipValue.class)
+                      .map(AetherValue.StreamPartitionOwnershipValue::owner);
+    }
+
+    private static Option<NodeId> committedLeader(KVStore<AetherKey, AetherValue> kvStore) {
+        return kvStore.getTyped(LeaderKey.INSTANCE, LeaderValue.class)
+                      .map(LeaderValue::leader);
     }
 
     /// #2306: a node counts as a voter unless an installed configuration excludes it. No configuration yet (genesis pending)

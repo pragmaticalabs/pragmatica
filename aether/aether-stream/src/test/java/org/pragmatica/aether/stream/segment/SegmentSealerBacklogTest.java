@@ -39,7 +39,8 @@ class SegmentSealerBacklogTest {
 
     @Test
     void backlogReleasedToSynchronousSink_sealsEverySegmentInOrder_pendingBytesReachZero() {
-        var sealer = segmentSealer((segment, _) -> seal(segment));
+        // One segment per hand-over (T-126's re-seat): a backlog of 5,000 single-event runs is the deep drain this pins.
+        var sealer = segmentSealer((segment, _) -> seal(segment), SegmentSealer.DEFAULT_PENDING_CAP_BYTES, SealerThresholds.immediate());
 
         LongStream.range(0, BACKLOG)
                   .forEach(offset -> sealer.onEviction(STREAM,

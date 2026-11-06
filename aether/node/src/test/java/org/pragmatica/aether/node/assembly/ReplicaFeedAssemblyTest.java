@@ -92,13 +92,45 @@ class ReplicaFeedAssemblyTest {
         assertThat(ReplicaFeedAssembly.HEARTBEAT_INTERVAL.nanos()).as("1 s heartbeat").isEqualTo(1_000_000_000L);
     }
 
-    /// Mutation: drop the `!worker` term, the `active` term or the `!pendingCatchUp` term.
+    /// A core serves iff active and not behind; a worker serves iff its governor gate says so (W4). Mutation: drop the `active` term, the
+    /// `!pendingCatchUp` term, or the worker branch (a worker serves unconditionally, or never).
     @Test
-    void servesReplicaFeed_isTrueOnlyForAnActiveCoreThatIsNotBehind() {
-        assertThat(ReplicaFeedAssembly.servesReplicaFeed(false, true, false)).isTrue();
-        assertThat(ReplicaFeedAssembly.servesReplicaFeed(true, true, false)).as("a worker never serves").isFalse();
-        assertThat(ReplicaFeedAssembly.servesReplicaFeed(false, false, false)).as("a core out of consensus does not").isFalse();
-        assertThat(ReplicaFeedAssembly.servesReplicaFeed(false, true, true)).as("nor a core still catching up").isFalse();
+    void servesReplicaFeed_isTrueForAnActiveCoreThatIsNotBehind_andForAWorkerOnlyThroughItsGate() {
+        assertThat(ReplicaFeedAssembly.servesReplicaFeed(false, true, false, false)).isTrue();
+        assertThat(ReplicaFeedAssembly.servesReplicaFeed(false, false, false, true)).as("a core out of consensus does not").isFalse();
+        assertThat(ReplicaFeedAssembly.servesReplicaFeed(false, true, true, true)).as("nor a core still catching up").isFalse();
+        assertThat(ReplicaFeedAssembly.servesReplicaFeed(true, false, false, true)).as("a worker whose gate is open serves").isTrue();
+        assertThat(ReplicaFeedAssembly.servesReplicaFeed(true, true, false, false)).as("a worker whose gate is closed does not").isFalse();
+    }
+
+    /// A governor feeds only its own community's members; a core feeds any tracked live member. Mutation: drop the community test, or
+    /// the `selfCommunity.isPresent()` test (two nodes without a community would match).
+    @Test
+    void mayFeed_isConfinedToTheGovernorsOwnCommunity() {
+        assertThat(ReplicaFeedAssembly.mayFeed(true, true, Option.some("c-0"), Option.some("c-0"))).isTrue();
+        assertThat(ReplicaFeedAssembly.mayFeed(true, true, Option.some("c-0"), Option.some("c-1"))).as("another community").isFalse();
+        assertThat(ReplicaFeedAssembly.mayFeed(true, true, Option.some("c-0"), Option.none())).as("a peer with no community").isFalse();
+        assertThat(ReplicaFeedAssembly.mayFeed(true, true, Option.none(), Option.none())).as("a governor with no community feeds nobody").isFalse();
+        assertThat(ReplicaFeedAssembly.mayFeed(true, false, Option.some("c-0"), Option.some("c-0"))).as("a dead peer").isFalse();
+        assertThat(ReplicaFeedAssembly.mayFeed(false, true, Option.none(), Option.none())).as("a core feeds any tracked live member").isTrue();
+        assertThat(ReplicaFeedAssembly.mayFeed(false, false, Option.none(), Option.none())).isFalse();
+    }
+
+    /// The governor a member follows is the announced, undissolved one of its own community that it has a link to. Mutation: ignore `dissolved`, look up
+    /// another community, or drop the `connected` filter (a subscribe over a link that is not up is lost and costs the silence timeout).
+    @Test
+    void announcedGovernor_isTheUndissolvedAnnouncementOfTheNodesOwnCommunity_thatTheNodeIsConnectedTo() {
+        var live = GovernorAnnouncementValue.governorAnnouncementValue(GOVERNOR, 3);
+        var dissolved = live.withDissolved();
+
+        assertThat(ReplicaFeedAssembly.announcedGovernor(PEER, _ -> Option.some("c-0"), community -> community.equals("c-0") ? Option.some(live) : Option.none(), _ -> true))
+            .isEqualTo(Option.some(GOVERNOR));
+        assertThat(ReplicaFeedAssembly.announcedGovernor(PEER, _ -> Option.some("c-0"), _ -> Option.some(dissolved), _ -> true).isPresent()).as("dissolved").isFalse();
+        assertThat(ReplicaFeedAssembly.announcedGovernor(PEER, _ -> Option.none(), _ -> Option.some(live), _ -> true).isPresent()).as("no community").isFalse();
+        assertThat(ReplicaFeedAssembly.announcedGovernor(PEER, _ -> Option.some("c-1"), community -> community.equals("c-0") ? Option.some(live) : Option.none(), _ -> true).isPresent())
+            .as("announced for another community").isFalse();
+        assertThat(ReplicaFeedAssembly.announcedGovernor(PEER, _ -> Option.some("c-0"), _ -> Option.some(live), governor -> !governor.equals(GOVERNOR)).isPresent())
+            .as("no link to the governor yet: not followed").isFalse();
     }
 
     /// The two inbound routes reach the server, and the server answers from the dedicated serve pool, not from the thread that delivered the

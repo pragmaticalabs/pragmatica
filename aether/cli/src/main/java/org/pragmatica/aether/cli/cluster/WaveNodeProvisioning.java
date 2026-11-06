@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -20,6 +21,7 @@ import org.pragmatica.aether.environment.CloudProviderSupport;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ClusterSecretSource;
 import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceType;
@@ -51,7 +53,7 @@ import static org.pragmatica.lang.Result.success;
 ///
 /// #1695: this path used to hand the provider a spec with NO user-data, so an apply-minted cloud node booted with no
 /// identity and no runtime and could never join; and it asked for a location literally named `default` when the source
-/// declared no zone. #1027: the node id is minted HERE, in the CTM scheme (`aether-<cluster>-node-<ulid>`, unique per
+/// declared no zone. #1027: the node id is minted HERE, in the CTM scheme (`aether-node-<ulid>` for a cloud source, `aether-<cluster>-node-<ulid>` for Docker; unique per
 /// call), and the same id goes into the provisioning context and the rendered user-data. The old per-call
 /// `<source>-<role>-<i>` index restarted at 0 on every wave, so threading it would have handed a scale-up node the id of a
 /// live member. Known limitation: a minted id does not parse as `<source>-<role>-<i>`, exactly as a CTM replacement's
@@ -128,6 +130,7 @@ sealed interface WaveNodeProvisioning {
         return recorder.intend(nodeId, provider)
                        .flatMap(_ -> answered(compute.provision(spec).await(),
                                               nodeId,
+                                              provider,
                                               recorder))
                        .flatMap(info -> recordCreated(compute, info, nodeId, provider, recorder, labelCheck));
     }
@@ -150,27 +153,76 @@ sealed interface WaveNodeProvisioning {
         return compute.listInstances(Map.of(APPLY_LABEL, applyId))
                       .await()
                       .flatMap(listed -> listed.stream()
-                                               .anyMatch(item -> sameContainer(item.id().value(),
-                                                                               serverId)) && info.nodeId()
-                                                                                                 .equals(Option.some(nodeId))
+                                               .anyMatch(item -> item.id()
+                                                                     .value()
+                                                                     .equals(serverId)) && info.nodeId()
+                                                                                               .equals(Option.some(nodeId))
                                          ? Result.unitResult()
                                          : new LabelsMissing(nodeId, serverId).result());
     }
 
-    /// `docker run -d` answers with the full container id, `docker ps` lists the short one.
-    private static boolean sameContainer(String listed, String created) {
-        return ! listed.isEmpty() && (created.startsWith(listed) || listed.startsWith(created));
+    /// Whether `info`, as a provider LISTED it, carries this cluster's label and this apply's label. Cloud providers report
+    /// custom labels on the instance; the Docker provider reports `aether.cluster` and never custom labels, so for Docker the
+    /// apply label is what the daemon's own label filter already proved. A listing the server-side selector got wrong (or
+    /// ignored) therefore never makes a server "ours" by itself.
+    static boolean ownedBy(String provider, InstanceInfo info, String cluster, String applyId) {
+        return "docker".equals(provider)
+               ? cluster.equals(info.tags().get("aether.cluster"))
+               : cluster.equals(info.tags().get("aether-cluster")) && applyId.equals(info.tags().get(APPLY_LABEL));
     }
 
-    private static Result<InstanceInfo> answered(Result<InstanceInfo> answer, String nodeId, ApplyRecorder recorder) {
+    private static Result<InstanceInfo> answered(Result<InstanceInfo> answer,
+                                                 String nodeId,
+                                                 String provider,
+                                                 ApplyRecorder recorder) {
         recorder.providerAnswered();
 
-        return answer.mapError(cause -> new CreateUnconfirmed(nodeId, cause));
+        return answer.fold(cause -> unanswered(cause, nodeId, provider, recorder), Result::success);
+    }
+
+    /// G1-f: a create the provider refused, read by what it says. A refused NAME is not a failed create: the provider names the server
+    /// after the node id and refuses a second server with that name, so `AlreadyExists` means the earlier attempt (a lost reply, a racing
+    /// resume) made the server, and it is the answer, but only if it is OURS: the cluster and apply labels are checked here, whatever the
+    /// provider checked. A name held by anything else is refused, typed, and never adopted. Every other failure keeps the row INTENDED.
+    private static Result<InstanceInfo> unanswered(Cause cause,
+                                                   String nodeId,
+                                                   String provider,
+                                                   ApplyRecorder recorder) {
+        return switch (cause) {
+            case EnvironmentError.AlreadyExists existing -> adoptIfOwned(existing.existing(), nodeId, provider, recorder);
+            case EnvironmentError.NameHeldByOther held -> new NameHeld(nodeId,
+                                                                       held.holder().value()).result();
+            default -> new CreateUnconfirmed(nodeId, cause).result();
+        };
+    }
+
+    private static Result<InstanceInfo> adoptIfOwned(InstanceInfo existing,
+                                                     String nodeId,
+                                                     String provider,
+                                                     ApplyRecorder recorder) {
+        return ownedBy(provider,
+                       existing,
+                       recorder.snapshot().clusterName().value(),
+                       recorder.applyId())
+               ? success(existing)
+               : new NameHeld(nodeId,
+                              existing.id().value()).result();
+    }
+
+    /// The server name of a node's create is held by a server that is not this apply's (another cluster's, another apply's, or one
+    /// without the labels). Nothing was adopted and nothing was created; the row stays INTENDED. Resolve the holder, then `--resume`.
+    record NameHeld(String nodeId, String holder) implements Cause {
+        @Override
+        public String message() {
+            return "The provider refused the create for node " + nodeId
+                 + ": its server name is held by instance " + holder
+                 + ", which does not carry this cluster's and this apply's labels. It was not adopted and no second server was created;"
+                 + " the ledger keeps the node INTENDED. Remove or relabel the holder, then run `aether cluster apply --resume`.";
+        }
     }
 
     /// A create that failed or whose reply was lost (timeout, 5xx) may nevertheless have created the VM. The row stays
-    /// INTENDED. The text says what is true today: `--resume` does not yet look the node up (P3 adds the lookup by label
-    /// and changes this text with it).
+    /// INTENDED. `--resume` looks the node up by label (ApplyReconciler), adopts it if it exists, and never creates an id twice.
     record CreateUnconfirmed(String nodeId, Cause origin) implements Cause.Wrapped {
         @Override
         public String message() {
@@ -179,8 +231,8 @@ sealed interface WaveNodeProvisioning {
                  + ". The node may nevertheless exist at the provider"
                  + " (look for the label " + NODE_LABEL
                  + "=" + nodeId
-                 + "); check the provider for that label before re-running."
-                 + " `aether cluster apply --resume` does not look it up yet and would create the node again.";
+                 + "); the ledger keeps it as INTENDED. Run `aether cluster apply --resume`, not a fresh apply:"
+                 + " it looks the node up by that label, adopts it if it exists and creates a node only for an id that is absent.";
         }
     }
 
@@ -248,13 +300,26 @@ sealed interface WaveNodeProvisioning {
         }
     }
 
-    /// A fresh node id in the CTM scheme, unique per call.
+    /// The ids a resumed action asks for: first the ids of its rows the resume lookup found NEVER created (ABSENT), re-issued under the
+    /// same name, then freshly minted ones. A re-issue is safe because the provider refuses a second server with that name, so a create
+    /// that landed after the lookup window answers `AlreadyExists` and is adopted, not duplicated. Only ABSENT rows qualify: a CREATED
+    /// row whose VM vanished ends GONE and is never re-created (P-G1 A5: a name is free again once its server is deleted, so a re-create
+    /// would bring back a server somebody deleted).
+    static Supplier<String> reissuedThenMinted(ApplyRecorder recorder, Supplier<String> minted) {
+        var pending = new ArrayDeque<>(recorder.absentNodeIds());
+
+        return () -> option(pending.poll()).or(minted);
+    }
+
+    /// A fresh DOCKER node id (`aether-<cluster>-node-<ulid>`, cluster-scoped: a container name is unique per daemon and several clusters
+    /// share one), unique per call.
     static Supplier<String> mintedIds(ClusterName clusterName) {
-        return () -> ProvisionContext.provisionContext(Option.some(clusterName),
-                                                       "",
-                                                       SourceName.DEFAULT,
-                                                       ProvisionContext.PROVISIONED_BY_BOOTSTRAP)
-                                     .resolveNodeId();
+        return () -> ProvisionContext.mintNodeId(Option.some(clusterName));
+    }
+
+    /// A fresh CLOUD node id (`aether-node-<ulid>`, no cluster: the server name `<cluster>-<nodeId>` carries it), unique per call.
+    static Supplier<String> cloudMintedIds() {
+        return ProvisionContext::mintCloudNodeId;
     }
 
     /// The node's spec: its id and live peers in the context, rendered user-data, its role image, and a zone

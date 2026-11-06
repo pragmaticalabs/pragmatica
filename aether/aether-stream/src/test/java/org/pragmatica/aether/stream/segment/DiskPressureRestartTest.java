@@ -39,7 +39,15 @@ class DiskPressureRestartTest {
     private static final long WINDOW_MS = 60 * 60 * 1000L;
     private static final int SEGMENTS = 24;
     private static final int PAYLOAD = 1000;
-    private static final long CAP = 25_000L;
+    /// One segment block: the identity header (#2258) in front of one 20-byte frame and its payload.
+    private static final long BLOCK = SegmentProvenance.withIdentity("orders",
+                                                                     0,
+                                                                     0,
+                                                                     0,
+                                                                     org.pragmatica.lang.Option.none(),
+                                                                     new byte[20 + PAYLOAD]).length;
+    /// Room for exactly SEGMENTS blocks: the next seal does not fit.
+    private static final long CAP = SEGMENTS * BLOCK + BLOCK / 2;
 
     @TempDir
     Path dir;

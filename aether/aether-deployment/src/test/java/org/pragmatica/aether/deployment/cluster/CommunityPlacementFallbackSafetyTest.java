@@ -301,4 +301,65 @@ class CommunityPlacementFallbackSafetyTest {
         assertThat(store.get(preferredAvailabilityKey()).isPresent()).isTrue();
     }
 
+
+    // ---- v-2541: the capacity reads of the placement, pinned with a reservation that is PRESENT (a RELEASED one), so that the three guards below are
+    // told apart from "expects absent". Each fails if the reader stops taking the exact committed value.
+
+    private void seedReleasedReservation(NodeId node, String source, String bindingOfReservation) {
+        var key = new AetherKey.CapacityReservationKey(node);
+        var authority = store.getTyped(LeaderKey.INSTANCE, LeaderValue.class).unwrap();
+
+        seed(new KVCommand.LeaderTransaction<>(key, java.util.UUID.randomUUID().toString(), authority, List.of(),
+            List.of(new KVCommand.Mutation<AetherKey, AetherValue>(key, Option.none(),
+                Option.some(new AetherValue.CapacityReservationValue(source, bindingOfReservation, "worker", AetherValue.CapacityReservationPhase.RELEASED))))));
+    }
+
+    @Test
+    void retryAfterARefusal_commitsWhileTheRefusedReservationIsReleasedButStillThere() {
+        createRefused();
+        var refused = providerOperations.getFirst();
+
+        seedReleasedReservation(refused.targetNode(), refused.targetSource(), refused.sourceBinding());
+        binding = "new-provider-account";
+        createOutcome = Promise.unitPromise();
+        for (int pass = 0; pass < 4 && providerOperations.size() < 2; pass++) {
+            controller(10, 60_000).reconcile().await().unwrap();
+        }
+        assertThat(providerOperations).as("the retry is committed under a guard on the exact RELEASED value").hasSize(2);
+        assertThat(providerOperations.getLast().targetSource()).isEqualTo("pool");
+        assertThat(store.get(preferredAvailabilityKey()).isEmpty()).as("and the old refusal is cleared by that commit").isTrue();
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.AWAITING_READY);
+    }
+
+    @Test
+    void fallbackAfterARefusal_isSelectedWhileTheRefusedReservationIsReleasedButStillThere() {
+        createRefused();
+        var refused = providerOperations.getFirst();
+
+        seedReleasedReservation(refused.targetNode(), refused.targetSource(), refused.sourceBinding());
+        createOutcome = Promise.unitPromise();
+        var successor = new NodeId("successor");
+        seed(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(successor, 2)));
+        for (int pass = 0; pass < 4 && providerOperations.size() < 2; pass++) {
+            controller(successor, 10, 60_000).reconcile().await().unwrap();
+        }
+        assertThat(providerOperations).as("the selection is committed under a guard on the exact RELEASED value").hasSize(2);
+        assertThat(providerOperations.getLast().targetSource()).isEqualTo("backup");
+    }
+
+    @Test
+    void aReleasedReservationOfAnotherBinding_isNotARefusalOfThisCreate() {
+        initialize();
+        reconciler.reconcile().await().unwrap();
+        createOutcome = Promise.promise();
+        reconciler.reconcile();
+        var inFlight = current();
+
+        assertThat(inFlight.phase()).isEqualTo(PlacementOperationPhase.CREATE_REQUESTED);
+        seedReleasedReservation(inFlight.targetNode(), inFlight.targetSource(), "another-binding");
+        controller(10, 60_000).reconcile().await().unwrap();
+        assertThat(current().phase()).isEqualTo(PlacementOperationPhase.CREATE_UNCERTAIN);
+        assertThat(current().detail()).as("not read as a refusal, so not the refusal's own accounting message")
+                                      .isEqualTo("Create outcome was not committed; reconcile provider inventory before resuming");
+    }
 }

@@ -20,7 +20,7 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 public class CstNestedWrapperRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-02";
 
-    private static final String DOC_LINK = "https://github.com/siy/coding-technology/blob/main/series/part-2-four-return-types.md";
+    private static final String DOC_LINK = "https://pragmatica.dev/java/jbct/rules/#jbct-ret-02";
 
     private static final Set<String> WRAPPER_TYPES = Set.of("Option", "Result", "Promise");
 

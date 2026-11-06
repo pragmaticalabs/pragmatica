@@ -1,0 +1,2 @@
+### Added
+- Test harness for the arm X / arm K cloud run of the M-1 scale measurement (#2512): `aether/tests/cloud/armxk/`. A `-javaagent` built from the M-1 instrument's own source counts KV mutations by family, transactions and slots inside each core process; a closed-loop `POST /api/v1/config` driver measures core capacity; a dry-run mode exercises the whole run on one host without the provider. Test scope only.

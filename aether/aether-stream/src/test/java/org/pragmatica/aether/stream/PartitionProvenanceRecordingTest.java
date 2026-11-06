@@ -452,6 +452,29 @@ class PartitionProvenanceRecordingTest {
             assertThat(raised.getFirst().evidence()).contains("above head 0");
         }
 
+        /// Know `f7bc44d170` item 3: the raise of a failed trim at open is recorded in the state of the life the hydrate builds
+        /// (the entry is not in the registry yet), so an open retried for the same life raises it once, not once per attempt.
+        /// Red under "the hydrate's trim failure records through the live-life accessor" (a dead bucket: no life is live yet).
+        @Test
+        void failedTrimAtOpen_retriedForTheSameLife_raisesLocalMismatchOnce() throws IOException {
+            live(0, E1);
+            install(3, 9, at(E1, 0), at(E3, 6)).onFailure(cause -> fail(cause.message()));
+            manager.close();
+            blockHistoryWrites();
+
+            var reopened = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+
+            reopened.partitionFlags(recordingFlags(raised));
+            manager = reopened;
+            assertThat(reopened.ensureStreamMaterialized(StreamConfig.streamConfig(STREAM)).isFailure()).as("fixture: fail closed")
+                                                                                                         .isTrue();
+            assertThat(reopened.ensureStreamMaterialized(StreamConfig.streamConfig(STREAM)).isFailure()).as("fixture: the retry fails closed")
+                                                                                                         .isTrue();
+
+            assertThat(raised).extracting(AetherValue.PartitionRecoveryReason::kind)
+                              .containsExactly(AetherValue.PartitionRecoveryReasonKind.LOCAL_MISMATCH);
+        }
+
         /// A page from a source that VOUCHED for an empty history (it keeps no log: non-durable, Forge) is applied, as before the
         /// #1730 phase 2 vouched-flag redesign: the receiver cannot tell it from any other empty slice here, and refusing it
         /// would keep a WAL replica of a log-less owner from ever catching up. Related to #1938 (such a copy is later quarantined

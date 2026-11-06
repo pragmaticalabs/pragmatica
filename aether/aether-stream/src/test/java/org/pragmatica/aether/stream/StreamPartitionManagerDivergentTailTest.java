@@ -224,6 +224,35 @@ class StreamPartitionManagerDivergentTailTest {
         one.close();
     }
 
+    /// #2201 PR-2a author pre-check: the bound of a repair that never settles counts from its FIRST cut. A second cut of the same
+    /// unsettled repair, 300 ms in, neither restarts the clock nor delays the report: it comes at ~600 ms, not ~900 ms. Mutation:
+    /// treating every cut as the repair's first (`reportCut`'s `first`) re-arms the timer under a new generation and turns this red.
+    @Test
+    void repairDivergence_neverSettling_inTwoCuts_isReportedWithinTheBoundOfTheFirstCut() throws InterruptedException {
+        var one = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir.resolve("cf1-two-cuts")));
+        var epoch = org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L);
+
+        one.createStream(StreamConfig.streamConfig("single").withReplication(ReplicationFactors.replicationFactors(1, 1).unwrap()))
+           .onFailure(cause -> fail(cause.message()));
+        one.operatorWarnings(lossWarningsOnly());
+        one.repairReportBound(org.pragmatica.lang.io.TimeSpan.timeSpan(600).millis());
+        for (var i = 0; i < 12; i++) {
+            one.appendRecovered("single", PARTITION, i, ("r" + i).getBytes(UTF_8), 1000L + i, epoch).unwrap();
+        }
+        one.syncReplicated("single", PARTITION).await();
+        one.appendRecovered("single", PARTITION, 9, "different".getBytes(UTF_8), 1009L, epoch);
+        one.repairDivergence("single", PARTITION, _ -> true).unwrap();
+        Thread.sleep(300);
+        one.appendRecovered("single", PARTITION, 5, "different".getBytes(UTF_8), 1005L, epoch);
+        one.repairDivergence("single", PARTITION, _ -> true).unwrap();
+        Thread.sleep(450);
+
+        assertThat(warnings).as("750 ms after the first cut, 150 ms past its bound and 150 ms before a bound counted from the second")
+                            .singleElement()
+                            .satisfies(warning -> assertThat(warning.message()).contains("repairSettled=false"));
+        one.close();
+    }
+
     /// Control: the same range already reported while unsettled is not repeated on settle.
     @Test
     void repairDivergence_reportedUnsettled_thenSettledWithTheSameRange_isNotRepeated() {
@@ -666,6 +695,54 @@ class StreamPartitionManagerDivergentTailTest {
         assertThat(refusals).extracting(OperatorWarning::code)
                             .containsExactly(OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_REFUSED, OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED);
         assertThat(refusals.getLast().message()).contains("no longer hosts");
+        one.close();
+    }
+
+    /// #2201 PR-2a author pre-check: releasing ONE partition's replica closes that partition's standing refusal only; another
+    /// partition of the same stream keeps its own open. Mutation: widening the release-path close to every partition of the stream
+    /// (`closeRefusedCuts(stream, _ -> true, ...)` in `completeRelease`) turns this red.
+    @Test
+    void releasingOnePartitionsReplica_leavesAnotherPartitionsStandingRefusalOpen() throws Exception {
+        var path = walDir.resolve("two-partitions");
+        var one = streamPartitionManager(Long.MAX_VALUE, Option.some(path));
+        var epoch = org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L);
+        var released = new java.util.concurrent.atomic.AtomicBoolean(false);
+
+        one.createStream(StreamConfig.streamConfig("pair",
+                                                   2,
+                                                   org.pragmatica.aether.slice.RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 3_600_000L),
+                                                   "earliest"))
+           .onFailure(cause -> fail(cause.message()));
+        one.operatorWarnings(lossWarningsOnly());
+        for (var partition = 0; partition < 2; partition++) {
+            for (var i = 0; i < 8; i++) {
+                one.appendRecovered("pair", partition, i, ("r" + i).getBytes(UTF_8), 1000L + i, epoch).unwrap();
+            }
+            one.syncReplicated("pair", partition).await();
+            one.appendRecovered("pair", partition, 3, "different".getBytes(UTF_8), 1003L, epoch);
+        }
+        blockRecoverySegments(path);
+        assertThat(one.repairDivergence("pair", 0, _ -> true).isFailure()).isTrue();
+        assertThat(one.repairDivergence("pair", 1, _ -> true).isFailure()).isTrue();
+        awaitRefusals(2);
+        assertThat(refusals).as("fixture: both partitions hold a standing refusal").hasSize(2);
+
+        one.placementRoleSupplier((_, partition) -> partition == 0 && released.get()
+                                                    ? org.pragmatica.aether.stream.replication.ReplicaSetController.Role.NONE
+                                                    : org.pragmatica.aether.stream.replication.ReplicaSetController.Role.REPLICA);
+        one.clusterSizeSupplier(() -> 3);
+        one.replicaCatchupSource((_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(3, true));
+        one.ownerReleaseGuard((_, _) -> true);
+        released.set(true);
+        for (var tick = 0; tick < 5; tick++) {
+            one.reconcileReshuffle();
+        }
+        awaitRefusals(3);
+        quietPeriod();
+
+        assertThat(one.partitionBuffer("pair", 0).isEmpty()).as("fixture: partition 0's replica was released").isTrue();
+        assertThat(refusals.stream().filter(event -> event.code() == OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED).map(OperatorWarning::subject))
+            .as("only the released partition's refusal was closed").containsExactly("pair[0]");
         one.close();
     }
 

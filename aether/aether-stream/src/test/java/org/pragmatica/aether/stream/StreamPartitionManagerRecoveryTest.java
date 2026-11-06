@@ -186,6 +186,9 @@ class StreamPartitionManagerRecoveryTest {
         assertThat(tail).hasSize(SMALL_RING_EVENTS);
         IntStream.range(0, tail.size()).forEach(i -> assertEvent(tail.get(i), RECOVERY_EVENTS - SMALL_RING_EVENTS + i));
 
+        // #1875: a spilled seal rebuilds from the WAL, which closes with the manager, so even with storage back its retry
+        // would fail for the rest of the test JVM; the sealer is closed first.
+        sealer.close();
         recovered.close();
         storageDown.set(false);
     }

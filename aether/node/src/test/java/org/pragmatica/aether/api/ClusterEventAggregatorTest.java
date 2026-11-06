@@ -4,7 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.controller.RollbackEvent;
@@ -24,6 +26,7 @@ import org.pragmatica.aether.slice.stream.SystemStreams;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamPartitionManager.Exhaustion;
 import org.pragmatica.aether.stream.SystemStreamFactories;
+import org.pragmatica.aether.node.DhtDeparturePush;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.leader.LeaderNotification;
@@ -45,12 +48,16 @@ import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import java.time.Instant;
+import java.util.concurrent.TimeUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
@@ -66,6 +73,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// generated `ApiCodecsNode.CODECS`, B5a), and wired via {@link SystemStreamFactories}. This drives
 /// the full create -> publish -> codec -> store -> fetch path, plus the owner-gated emit (folds B3)
 /// and the production count/byte/age retention.
+@Timeout(value = 60, unit = TimeUnit.SECONDS)
 class ClusterEventAggregatorTest {
 
     private static final NodeId SELF = new NodeId("self-node");
@@ -661,6 +669,48 @@ class ClusterEventAggregatorTest {
         var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, NOT_LEADER);
         h.aggregator().onLeaderChange(LeaderNotification.leaderChange(Option.some(new NodeId("other")), false));
         assertThat(h.events()).isEmpty();
+    }
+
+    /// R5.8 (D1-react G2b): the LEADER_ELECTED verdict is the notification's `localNodeIsLeader`, not a re-read of the
+    /// leader check. The check is stale (says not leader); the fresh payload says this node leads: the event is emitted.
+    /// Reverting `emitAsLeader(event, localNodeIsLeader)` to the `leaderCheck` form turns this red.
+    @Test
+    void onLeaderChange_emitsLeaderElected_whenPayloadSaysLocalLeaderButCheckIsStale() {
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, NOT_LEADER);
+        h.aggregator().onLeaderChange(LeaderNotification.leaderChange(Option.some(SELF), true));
+
+        assertThat(h.events()).hasSize(1);
+        assertThat(h.events().getFirst()).isInstanceOf(ClusterEvent.LeaderElected.class);
+    }
+
+    /// The mirror: the check is stale the other way (still says leader) while the payload says another node leads.
+    @Test
+    void onLeaderChange_suppressesLeaderElected_whenPayloadSaysNotLeaderButCheckIsStale() {
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER);
+        h.aggregator().onLeaderChange(LeaderNotification.leaderChange(Option.some(new NodeId("other")), false));
+
+        assertThat(h.events()).isEmpty();
+    }
+
+    /// R3 (v-2653 F3): a LeaderChange raised inside a replay burst reaches this receiver on the react executor, where
+    /// `replayingCheck` reads false; the change's own `replayed` bit suppresses the historical LEADER_ELECTED. The live
+    /// control is [#onLeaderChange_emitsLeaderElected_whenPayloadSaysLocalLeaderButCheckIsStale].
+    @Test
+    void onLeaderChange_replayedSelfElection_announcesNothing() {
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER);
+        h.aggregator().onLeaderChange(LeaderNotification.leaderChange(Option.some(SELF), true, true));
+
+        assertThat(h.events()).as("a replayed election is history: no LEADER_ELECTED").isEmpty();
+    }
+
+    /// R3 (v-2653 F3): the same for LEADER_LOST, which is not leader-gated, so only the replay bit can suppress it. The
+    /// live control is [#noLeader_stillEmitsLeaderLost].
+    @Test
+    void onLeaderChange_replayedLeaderLoss_announcesNothing() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().onLeaderChange(LeaderNotification.leaderChange(Option.none(), false, true));
+
+        assertThat(h.events()).as("a replayed leader loss is history: no LEADER_LOST").isEmpty();
     }
 
     /// #926 — `QUORUM_LOST` is the most severe event this class emits and was the least emittable: a
@@ -2575,6 +2625,28 @@ class ClusterEventAggregatorTest {
         assertThat(codes(h)).containsExactly("topic-tier-mismatch", "topic-tier-mismatch-resolved");
     }
 
+    /// FDB-2a (#2591): each schema-migration fence warning is followed by its recovery once, on the same datasource only; a recovery for a
+    /// datasource that never raised the warning, or a second one, publishes nothing.
+    @Test
+    void onOperatorWarning_schemaMigrationFenceWarnings_areFollowedByTheirRecoveriesOnce_forTheSameDatasourceOnly() {
+        var t = new AtomicLong(1_000_000L);
+        var h = clocked(t);
+
+        for (var pair : List.of(List.of(OperatorWarningCode.SCHEMA_MIGRATION_FENCE_HELD, OperatorWarningCode.SCHEMA_MIGRATION_FENCE_RELEASED),
+                                List.of(OperatorWarningCode.SCHEMA_MIGRATION_UNFENCED, OperatorWarningCode.SCHEMA_MIGRATION_FENCED))) {
+            h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(pair.get(1), "database.billing", "stray"));
+            h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(pair.get(0), "database.orders", "raised"));
+            h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(pair.get(1), "database.billing", "other datasource"));
+            h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(pair.get(1), "database.orders", "closed"));
+            h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(pair.get(1), "database.orders", "closed twice"));
+        }
+
+        assertThat(codes(h)).containsExactly("schema-migration-fence-held",
+                                             "schema-migration-fence-released",
+                                             "schema-migration-unfenced",
+                                             "schema-migration-fenced");
+    }
+
     /// PA4: the recovery arrives after the warning's throttle window was evicted as idle: still published.
     @Test
     void onOperatorWarning_repairAfterTheThrottleKeyWasEvicted_isPublished() {
@@ -2629,7 +2701,8 @@ class ClusterEventAggregatorTest {
 
     /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the three consumer pairs of #2201
     /// C-16 (behind the ring, the hole, and the cursor expiry), the oversized-event refusal and the
-    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450); every other code keeps the plain 60 s throttle.
+    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the departure sole-copy pair of #2034); every other code keeps the plain 60 s throttle.
+    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the refused consensus restore of #2316); every other code keeps the plain 60 s throttle.
     @Test
     void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).toList())
@@ -2654,6 +2727,10 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_CONSUMER_CURSOR_RESUMED,
                 OperatorWarningCode.STREAM_RETENTION_RESUMED,
                 OperatorWarningCode.STREAM_SEGMENT_UNREADABLE_RECLAIMED,
+                OperatorWarningCode.STREAM_SEGMENT_DELETE_RECOVERED,
+                OperatorWarningCode.STREAM_SEGMENT_DHT_NEAR_FULL_CLEARED,
+                OperatorWarningCode.STREAM_SEGMENT_DHT_FULL_CLEARED,
+                OperatorWarningCode.STREAM_SEGMENT_DISK_PRESSURE_RELIEVED,
                 OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED,
                 OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING,
                 OperatorWarningCode.STREAM_OWNER_LINEAGE_COMMITTED,
@@ -2663,14 +2740,17 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.CLUSTER_TLS_RENEWAL_RESTORED,
                 OperatorWarningCode.IDENTITY_LEDGER_DURABLE,
                 OperatorWarningCode.BACKUP_CONFIG_RESTORED,
+                OperatorWarningCode.GENESIS_SEAT_REACHABLE,
                 OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED,
                 OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED,
+                OperatorWarningCode.TERMINATION_RETIREMENT_RESOLVED,
                 OperatorWarningCode.INSTANCE_TERMINATION_REJOINED,
                 OperatorWarningCode.INSTANCE_TERMINATION_CLEARED,
                 OperatorWarningCode.INSTANCE_REAP_RELEASED,
                 OperatorWarningCode.SLICE_START_DEFERRAL_ENDED,
                 OperatorWarningCode.PROVISION_ADMISSION_RESUMED,
                 OperatorWarningCode.CORE_CAPACITY_DURABLE_RESOLVED,
+                OperatorWarningCode.CORE_REPLACEMENT_SOURCE_RESOLVED,
                 OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED,
                 OperatorWarningCode.COMMUNITY_GROWTH_RESUMED,
                 OperatorWarningCode.COMMUNITY_PLACEMENT_RESUMED,
@@ -2691,6 +2771,15 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.UPLOAD_NODE_CAP_RESTORED,
                 OperatorWarningCode.UPLOAD_BYTE_BUDGET_RESTORED,
                 OperatorWarningCode.JSON_CONFIG_APPLIED,
+                OperatorWarningCode.CONFIG_WATCH_CALLBACK_RECOVERED,
+                OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG_CLEARED,
+                OperatorWarningCode.ROLLBACK_RECORD_RECONCILED,
+                OperatorWarningCode.CONSENSUS_RESTORE_RECOVERED,
+                OperatorWarningCode.SCHEMA_MIGRATION_FENCE_RELEASED,
+                OperatorWarningCode.SCHEMA_MIGRATION_FENCED,
+                OperatorWarningCode.KV_DISPATCH_CAUGHT_UP,
+                OperatorWarningCode.KV_DISPATCH_SLOW_HANDLER_RETURNED,
+                OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED,
             });
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(new OperatorWarningCode[]{
@@ -2703,6 +2792,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.NODE_REPLACEMENT_FAILED_KEPT_BOTH,
                 OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED,
                 OperatorWarningCode.INSTANCE_REAP_HELD,
+                OperatorWarningCode.TERMINATION_RETIREMENT_OVERDUE,
                 OperatorWarningCode.UPGRADE_STARTED,
                 OperatorWarningCode.UPGRADE_PAUSED,
                 OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
@@ -2714,8 +2804,13 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED,
                 OperatorWarningCode.STREAM_RETENTION_WITHHELD,
                 OperatorWarningCode.STREAM_SEGMENT_UNREADABLE,
+                OperatorWarningCode.STREAM_SEGMENT_DELETE_FAILING,
+                OperatorWarningCode.STREAM_SEGMENT_DHT_NEAR_FULL,
+                OperatorWarningCode.STREAM_SEGMENT_DHT_FULL,
+                OperatorWarningCode.STREAM_SEGMENT_DISK_PRESSURE,
                 OperatorWarningCode.PROVISION_ADMISSION_DEFERRED,
                 OperatorWarningCode.CORE_CAPACITY_AWAITING_DURABLE,
+                OperatorWarningCode.CORE_REPLACEMENT_SOURCE_UNRESOLVED,
                 OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
                 OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE,
                 OperatorWarningCode.STREAM_OWNER_LINEAGE_REFUSED,
@@ -2726,6 +2821,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE,
                 OperatorWarningCode.BACKUP_CONFIG_MISSING,
                 OperatorWarningCode.BACKUP_RESTORE_BLOCKED,
+                OperatorWarningCode.GENESIS_SEAT_UNREACHABLE,
                 OperatorWarningCode.SLICE_START_AWAITING_TARGET,
                 OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING,
                 OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED,
@@ -2745,6 +2841,15 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.JSON_CONFIG_REJECTED,
                 OperatorWarningCode.UPLOAD_NODE_CAP_SATURATED,
                 OperatorWarningCode.UPLOAD_BYTE_BUDGET_EXHAUSTED,
+                OperatorWarningCode.CONFIG_WATCH_CALLBACK_FAILED,
+                OperatorWarningCode.DEPLOYMENT_FSM_BACKLOG,
+                OperatorWarningCode.ROLLBACK_RECORD_RECONCILE_EXHAUSTED,
+                OperatorWarningCode.CONSENSUS_RESTORE_REFUSED,
+                OperatorWarningCode.SCHEMA_MIGRATION_FENCE_HELD,
+                OperatorWarningCode.SCHEMA_MIGRATION_UNFENCED,
+                OperatorWarningCode.KV_DISPATCH_LAGGING,
+                OperatorWarningCode.KV_DISPATCH_SLOW_HANDLER,
+                OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK,
             });
         var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);
@@ -2981,5 +3086,249 @@ class ClusterEventAggregatorTest {
         assertThat(codes(h)).containsExactly("stream-catchup-source-not-answering", "stream-catchup-source-answering-restored");
         assertThat(h.events().stream().map(ClusterEvent::severity).toList())
             .containsExactly(ClusterEvent.Severity.WARNING, ClusterEvent.Severity.INFO);
+    }
+
+    /// #2034 T20: [ClusterEventAggregator#raiseAwaited] completes when the event's life ends — landed, given up, throttled,
+    /// suppressed by replay, or after a synchronous throw — never at the call while a publish is still in flight. A draining node
+    /// waits on these before it halts, so a promise that never completes, or completes early, breaks that wait.
+    @Nested
+    class RaiseAwaited {
+        private static final TimeSpan SETTLE = TimeSpan.timeSpan(2).seconds();
+
+        @Test
+        @Timeout(10)
+        void heldDelivery_completesOnlyOnceTheEventLands() {
+            var h = Harness.create();
+            Promise<Unit> gate = Promise.promise();
+            h.aggregator().interceptPublish(_ -> gate);
+
+            var landed = h.aggregator().raiseAwaited(atRisk("n1@1"));
+
+            assertThat(landed.isResolved()).as("the publish is still in flight").isFalse();
+            gate.succeed(Unit.unit());
+            assertThat(landed.await(SETTLE).isSuccess()).as("completes once the event lands").isTrue();
+        }
+
+        @Test
+        @Timeout(10)
+        void givenUpDelivery_completes() {
+            var clock = new AtomicLong(1_000_000L);
+            var h = clocked(clock);
+            h.aggregator().interceptPublish(_ -> Causes.cause("refused").promise());
+
+            var landed = h.aggregator().raiseAwaited(atRisk("n1@1"));
+
+            assertThat(landed.isResolved()).as("control: held for redelivery").isFalse();
+            expireRedelivery(h, clock);
+            assertThat(h.aggregator().redeliveryDropped()).as("control: given up").containsEntry("expired", 1L);
+            assertThat(landed.await(SETTLE).isSuccess()).as("a given-up event ends the wait").isTrue();
+        }
+
+        @Test
+        @Timeout(10)
+        void throttledRepeat_completesAtOnce() {
+            var h = Harness.create();
+            Promise<Unit> gate = Promise.promise();
+            h.aggregator().interceptPublish(_ -> gate);
+
+            var first = h.aggregator().raiseAwaited(atRisk("n1@1"));
+            var repeat = h.aggregator().raiseAwaited(atRisk("n1@1"));
+
+            assertThat(repeat.isResolved()).as("a throttled repeat publishes nothing to wait for").isTrue();
+            assertThat(first.isResolved()).as("control: the first is still in flight").isFalse();
+        }
+
+        @Test
+        @Timeout(10)
+        void replay_completesAtOnce_andPublishesNothing() {
+            var h = Harness.create(Harness.defaultRetention(), OWNER, () -> true);
+
+            var warning = h.aggregator().raiseAwaited(atRisk("n1@1"));
+            var report = h.aggregator().onDeparturePushIncompleteAwaited(SELF, 3, 1, List.of("k1"));
+
+            assertThat(warning.await(SETTLE).isSuccess()).as("replay-suppressed warning").isTrue();
+            assertThat(report.await(SETTLE).isSuccess()).as("replay-suppressed report (emitLocal path)").isTrue();
+            assertThat(h.events()).isEmpty();
+        }
+
+        @Test
+        @Timeout(10)
+        void deliveredWhileAtRiskHeld_completesAfterBothLand() {
+            var h = Harness.create();
+            Promise<Unit> gate = Promise.promise();
+            var published = new java.util.concurrent.CopyOnWriteArrayList<String>();
+            h.aggregator().interceptPublish(event -> recordThen(published, event, gate));
+
+            var atRisk = h.aggregator().raiseAwaited(atRisk("n1@1"));
+            var delivered = h.aggregator().raiseAwaited(delivered("n1@1"));
+
+            assertThat(delivered.isResolved()).as("the recovery is held behind its warning").isFalse();
+            assertThat(published).as("control: only the warning is in flight").containsExactly("dht-departure-sole-copy-at-risk");
+            gate.succeed(Unit.unit());
+            assertThat(delivered.await(SETTLE).isSuccess()).as("completes once both landed").isTrue();
+            assertThat(atRisk.await(SETTLE).isSuccess()).isTrue();
+            assertThat(published).containsExactly("dht-departure-sole-copy-at-risk", "dht-departure-sole-copy-delivered");
+        }
+
+        /// #2684 N1: a second recovery for the subject while the warning is still in flight replaces the held one; the replaced
+        /// recovery is never published, and its wait ends at the replacement instead of never.
+        @Test
+        @Timeout(10)
+        void replacedHeldRecovery_completes() {
+            var h = Harness.create();
+            Promise<Unit> gate = Promise.promise();
+            var published = new java.util.concurrent.CopyOnWriteArrayList<String>();
+            h.aggregator().interceptPublish(event -> recordThen(published, event, gate));
+
+            h.aggregator().raiseAwaited(atRisk("n1@1"));
+            var first = h.aggregator().raiseAwaited(delivered("n1@1"));
+            var second = h.aggregator().raiseAwaited(delivered("n1@1"));
+
+            assertThat(first.await(SETTLE).isSuccess()).as("the replaced recovery's wait ends").isTrue();
+            assertThat(second.isResolved()).as("control: the replacing recovery is still held").isFalse();
+            gate.succeed(Unit.unit());
+            assertThat(second.await(SETTLE).isSuccess()).isTrue();
+            assertThat(published).containsExactly("dht-departure-sole-copy-at-risk", "dht-departure-sole-copy-delivered");
+        }
+
+        /// #2684 N1: a held recovery dropped because the warning it closes is raised again before the first delivery landed is never
+        /// published, and its wait ends at the drop instead of never.
+        @Test
+        @Timeout(10)
+        void heldRecoveryDroppedByARepeatedWarning_completes() {
+            var h = Harness.create();
+            Promise<Unit> gate = Promise.promise();
+            var published = new java.util.concurrent.CopyOnWriteArrayList<String>();
+            h.aggregator().interceptPublish(event -> recordThen(published, event, gate));
+
+            h.aggregator().raiseAwaited(atRisk("n1@1"));
+            var recovery = h.aggregator().raiseAwaited(delivered("n1@1"));
+            h.aggregator().raiseAwaited(atRisk("n1@1"));
+
+            assertThat(published).as("control: the repeated warning was delivered, not throttled")
+                                 .containsExactly("dht-departure-sole-copy-at-risk", "dht-departure-sole-copy-at-risk");
+            assertThat(recovery.await(SETTLE).isSuccess()).as("the dropped recovery's wait ends").isTrue();
+        }
+
+        /// E5: the awaited departure report (3-arg deliver) completes when it lands, not at the call.
+        @Test
+        @Timeout(10)
+        void incompleteReport_heldDelivery_completesOnlyOnceItLands() {
+            var h = Harness.create();
+            Promise<Unit> gate = Promise.promise();
+            var published = new java.util.concurrent.CopyOnWriteArrayList<ClusterEvent>();
+            h.aggregator().interceptPublish(event -> captureThen(published, event, gate));
+
+            var report = h.aggregator().onDeparturePushIncompleteAwaited(SELF, 3, 1, List.of("k1"));
+
+            assertThat(report.isResolved()).as("the publish is still in flight").isFalse();
+            gate.succeed(Unit.unit());
+            assertThat(report.await(SETTLE).isSuccess()).isTrue();
+            assertThat(published).singleElement()
+                                 .satisfies(event -> assertThat(event.details()).containsEntry("soleCopyAtRisk", "1")
+                                                                                .containsEntry("outcome", "COMPLETED_WITH_DATA_AT_RISK"));
+            assertThat(published.getFirst().summary()).contains("completed with data at risk");
+        }
+
+        /// E5: a publish that throws synchronously ends the wait for both entries instead of leaving it open.
+        @Test
+        @Timeout(10)
+        void synchronousThrow_completes() {
+            var h = Harness.create();
+            h.aggregator().interceptPublish(ClusterEventAggregatorTest::throwingPublish);
+
+            var warning = h.aggregator().raiseAwaited(atRisk("n1@1"));
+            var report = h.aggregator().onDeparturePushIncompleteAwaited(SELF, 3, 1, List.of("k1"));
+
+            assertThat(warning.await(SETTLE).isSuccess()).isTrue();
+            assertThat(report.await(SETTLE).isSuccess()).isTrue();
+        }
+
+        private static OperatorWarning atRisk(String subject) {
+            return OperatorWarning.operatorWarning(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK, subject, "at risk " + subject);
+        }
+
+        private static OperatorWarning delivered(String subject) {
+            return OperatorWarning.operatorWarning(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED, subject, "delivered " + subject);
+        }
+
+        private static Promise<Unit> recordThen(List<String> published, ClusterEvent event, Promise<Unit> gate) {
+            published.add(event.details().get("code"));
+
+            return gate;
+        }
+
+        private static Promise<Unit> captureThen(List<ClusterEvent> published, ClusterEvent event, Promise<Unit> gate) {
+            published.add(event);
+
+            return gate;
+        }
+    }
+
+    /// #2034 T22: the observer a drain episode binds turns the push's callbacks into this node's events. The at-risk warning
+    /// carries the episode subject `<node>@<drainStartMillis>`; the final report names its sole-copy share and the outcome.
+    @Nested
+    class DepartureEventsBinding {
+        private static final long DRAIN_START_MILLIS = 1_700_000_000_123L;
+        private static final TimeSpan SETTLE = TimeSpan.timeSpan(2).seconds();
+
+        @Test
+        @Timeout(10)
+        void soleCopyAtRisk_raisesTheWarningForTheDrainEpisodeSubject() {
+            var h = Harness.create();
+            var observer = DhtDeparturePush.departureEvents(h.aggregator(), SELF, DhtDeparturePush.subject(SELF, DRAIN_START_MILLIS));
+
+            assertThat(observer.onSoleCopyAtRisk(2, List.of("k1", "k2")).await(SETTLE).isSuccess()).isTrue();
+
+            assertThat(h.events()).singleElement()
+                                  .satisfies(event -> assertThat(event.details()).containsEntry("code", "dht-departure-sole-copy-at-risk")
+                                                                                 .containsEntry("subject", "self-node@1700000000123"));
+        }
+
+        @Test
+        @Timeout(10)
+        void soleCopyDelivered_raisesTheRecoveryCodeForTheSameSubject() {
+            var h = Harness.create();
+            var observer = DhtDeparturePush.departureEvents(h.aggregator(), SELF, DhtDeparturePush.subject(SELF, DRAIN_START_MILLIS));
+
+            assertThat(observer.onSoleCopyAtRisk(2, List.of("k1", "k2")).await(SETTLE).isSuccess()).isTrue();
+            assertThat(observer.onSoleCopyDelivered(2).await(SETTLE).isSuccess()).isTrue();
+
+            assertThat(h.events()).hasSize(2);
+            assertThat(h.events().get(1).details()).containsEntry("code", "dht-departure-sole-copy-delivered")
+                                                   .containsEntry("subject", "self-node@1700000000123");
+        }
+
+        @Test
+        @Timeout(10)
+        void incompleteReportWithSoleKeys_isTheDataAtRiskDepartureReport() {
+            var h = Harness.create();
+            var observer = DhtDeparturePush.departureEvents(h.aggregator(), SELF, DhtDeparturePush.subject(SELF, DRAIN_START_MILLIS));
+
+            assertThat(observer.onIncompleteReport(5, 2, List.of("k1")).await(SETTLE).isSuccess()).isTrue();
+
+            assertThat(h.events()).singleElement()
+                                  .satisfies(event -> assertThat(event.details()).containsEntry("soleCopyAtRisk", "2")
+                                                                                 .containsEntry("keysAtRisk", "5")
+                                                                                 .containsEntry("outcome", "COMPLETED_WITH_DATA_AT_RISK"));
+            assertThat(h.events().getFirst().summary()).contains("completed with data at risk");
+        }
+
+        @Test
+        @Timeout(10)
+        void incompleteReportWithoutSoleKeys_isAPlainIncompletePush() {
+            var h = Harness.create();
+            var observer = DhtDeparturePush.departureEvents(h.aggregator(), SELF, DhtDeparturePush.subject(SELF, DRAIN_START_MILLIS));
+
+            observer.onIncompleteReport(5, 0, List.of("k1")).await(SETTLE);
+
+            assertThat(h.events()).singleElement()
+                                  .satisfies(event -> assertThat(event.details()).containsEntry("outcome", "COMPLETED"));
+            assertThat(h.events().getFirst().summary()).doesNotContain("data at risk");
+        }
+    }
+
+    private static Promise<Unit> throwingPublish(ClusterEvent event) {
+        throw new IllegalStateException("publish threw for " + event.type());
     }
 }

@@ -24,6 +24,8 @@ import java.util.Map;
 import java.util.Set;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
@@ -141,9 +143,14 @@ class HttpForwarderAccessibilityTest {
         @Override public void handleSend(NetworkServiceMessage.Send send) {}
         @Override public void handleBroadcast(NetworkServiceMessage.Broadcast broadcast) {}
 
-        @Override public synchronized <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+        @Override public synchronized <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             sendTargets.add(nodeId);
-            return unit();
+            return Promise.success(new WriteOutcome.Sent(nodeId));
+        }
+
+        @Override
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            return send(nodeId, message);
         }
 
         @Override public Promise<Unit> start() {return Promise.unitPromise();}

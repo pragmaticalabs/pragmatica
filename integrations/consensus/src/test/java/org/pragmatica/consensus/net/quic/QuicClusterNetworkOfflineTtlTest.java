@@ -93,18 +93,18 @@ class QuicClusterNetworkOfflineTtlTest {
         assertThat(network.offlineBufferSizeForTests(peerId)).as("nothing is left to deliver later").isZero();
     }
 
-    /// #2244 F4: HTTP forwards now go through the outcome-reporting `sendOutcome(peer, frame, ttl)`. Its frame is bounded
-    /// by the caller's wait exactly as the plain TTL send's is: buffered while the peer is down (reported `Sent`, since
+    /// #2244 F4: HTTP forwards go through the outcome-reporting `send(peer, frame, ttl)`. Its frame is bounded
+    /// by the caller's wait: buffered while the peer is down (reported `Sent`, since
     /// it may still be delivered), and dropped at the flush once that wait has passed.
     @Test
-    void sendOutcomeWithTtl_frameFlushedAfterItsCallerGaveUp_isDropped() {
+    void sendWithTtl_reportsSent_frameFlushedAfterItsCallerGaveUp_isDropped() {
         var routed = new CopyOnWriteArrayList<NetworkServiceMessage.OfflineFramesExpired>();
         var network = network(routed);
         var peerId = new NodeId("peer-late-outcome");
         var state = connectingPeer(network, peerId);
         var stream = writableStream();
 
-        var outcome = network.sendOutcome(peerId, request(peerId), SHORT_WAIT).await().unwrap();
+        var outcome = network.send(peerId, request(peerId), SHORT_WAIT).await().unwrap();
         assertThat(outcome).as("a buffered frame may still be delivered").isInstanceOf(WriteOutcome.Sent.class);
         assertThat(network.offlineBufferSizeForTests(peerId)).isEqualTo(1);
 
@@ -118,14 +118,14 @@ class QuicClusterNetworkOfflineTtlTest {
 
     /// Control for the test above: the same outcome-reporting send with a long wait is delivered at the flush.
     @Test
-    void sendOutcomeWithTtl_frameFlushedBeforeItsCallerGaveUp_isDelivered() {
+    void sendWithTtl_reportsSent_frameFlushedBeforeItsCallerGaveUp_isDelivered() {
         var routed = new CopyOnWriteArrayList<NetworkServiceMessage.OfflineFramesExpired>();
         var network = network(routed);
         var peerId = new NodeId("peer-in-time-outcome");
         var state = connectingPeer(network, peerId);
         var stream = writableStream();
 
-        network.sendOutcome(peerId, request(peerId), LONG_WAIT).await().unwrap();
+        network.send(peerId, request(peerId), LONG_WAIT).await().unwrap();
         network.drainOfflineBufferForTests(state, connectionWith(peerId, stream));
 
         verify(stream, times(1)).writeAndFlush(any());
@@ -205,25 +205,7 @@ class QuicClusterNetworkOfflineTtlTest {
         assertThat(routed).hasSize(1);
     }
 
-    /// The outcome-tracking variant (the DHT quorum path) buffers through the same dispatch, so it is bounded the same way.
-    @Test
-    void sendOutcome_isBoundedByTheCap() {
-        var routed = new CopyOnWriteArrayList<NetworkServiceMessage.OfflineFramesExpired>();
-        var network = network(routed);
-        var peerId = new NodeId("peer-outcome");
-        var state = connectingPeer(network, peerId);
-        var stream = writableStream();
-
-        network.setOfflineBufferCap(SHORT_WAIT);
-        network.sendOutcome(peerId, request(peerId));
-        parkPast(PAST_SHORT_WAIT_NANOS);
-        network.drainOfflineBufferForTests(state, connectionWith(peerId, stream));
-
-        verify(stream, never()).writeAndFlush(any());
-        assertThat(routed).hasSize(1);
-    }
-
-    /// The control for the two above: a plain frame flushed inside the cap is still delivered.
+    /// The control for the test above: a plain frame flushed inside the cap is still delivered.
     @Test
     void plainSend_flushedInsideTheCap_isDelivered() {
         var routed = new CopyOnWriteArrayList<NetworkServiceMessage.OfflineFramesExpired>();

@@ -72,7 +72,8 @@ import org.pragmatica.aether.ember.EmberCluster;
 /// HONESTY NOTE (same in-JVM scope as the single-partition sibling): the restart is GRACEFUL. A no-hooks
 /// process kill (the crash-mid-fsync boundary, where the caller is never acked) is NOT reachable in the
 /// in-JVM Ember harness — every stop routes through `AetherNode.stop()`, which runs
-/// `streamPartitionManager.close()` SYNCHRONOUSLY before its async tail, and `killNode(graceful=false)`
+/// `streamPartitionManager.close()` before its stop sequence (inline, or once the sealer's bounded stop seal
+/// lands; know 73fd8d9759), and `killNode(graceful=false)`
 /// only shortens the async-teardown timeout — and adds no durability (close() fsyncs only bytes ALREADY
 /// appended). Durability is purely fsync-before-ack, which a graceful restart proves just as a hard one
 /// would (the hot ring is lost either way). True SIGKILL crash durability lives at the cloud docker-kill

@@ -22,7 +22,9 @@
 #                              driver_lb_public_ip
 #   driver_reap_by_label       driver_reap_list_* / driver_*_ids_by_label /
 #                              driver_delete_* / driver_orphan_core_server_ids /
-#                              driver_server_count_by_label / driver_show_servers_by_label
+#                              driver_server_count_by_label / driver_show_servers_by_label /
+#                              driver_server_count_all (the arm X/K teardown baseline) /
+#                              driver_server_private_ip (the arm X/K inventory)
 #   driver_cost_estimate       driver_cost_estimate [instance_type]
 #                              Returns the per-hour rate for ONE server of that type.
 #                              Callers MUST multiply by the fleet size themselves — the

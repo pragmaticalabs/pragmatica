@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.BooleanSupplier;
+import org.pragmatica.consensus.net.WriteOutcome;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -229,9 +230,14 @@ class DeploymentMetricsSchedulerTest {
         final List<SentMessage> sentMessages = new CopyOnWriteArrayList<>();
 
         @Override
-        public <M extends ProtocolMessage> Unit send(NodeId target, M message) {
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId target, M message) {
             sentMessages.add(new SentMessage(target, message));
-            return Unit.unit();
+            return Promise.success(new WriteOutcome.Sent(target));
+        }
+
+        @Override
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            return send(nodeId, message);
         }
 
         @Override

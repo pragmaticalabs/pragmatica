@@ -897,23 +897,23 @@ public final class DHTAntiEntropy {
     /// that refuses the send — adds one `pendingDigests` entry per owned partition per peer, every
     /// round, with nothing to remove them.
     private void sendLoudly(NodeId peer, ProtocolMessage message, String what, Runnable onNotSent) {
-        network.sendOutcome(peer, message)
+        network.send(peer, message)
                .withSuccess(outcome -> {
-                              if (!outcome.isSent()) {
-                              log.warn("DHT anti-entropy {} to {} not sent ({}); the next round repeats it",
-                                       what,
-                                       peer.id(),
-                                       outcome);
-                              onNotSent.run();
-                          }
-                          })
+                                if (!outcome.isSent()) {
+                                    log.warn("DHT anti-entropy {} to {} not sent ({}); the next round repeats it",
+                                             what,
+                                             peer.id(),
+                                             outcome);
+                                    onNotSent.run();
+                                }
+                            })
                .withFailure(cause -> {
-                              log.warn("DHT anti-entropy {} to {} failed ({}); the next round repeats it",
-                                       what,
-                                       peer.id(),
-                                       cause.message());
-                              onNotSent.run();
-                          });
+                                log.warn("DHT anti-entropy {} to {} failed ({}); the next round repeats it",
+                                         what,
+                                         peer.id(),
+                                         cause.message());
+                                onNotSent.run();
+                            });
     }
 
     /// Drop correlations whose response never came. One interval after a digest was sent the peer is
@@ -1318,7 +1318,8 @@ public final class DHTAntiEntropy {
     /// EARLIER in each walk, so this node can only move earlier, and it stays within RF. Its own knowledge can
     /// therefore never turn a legitimate newcomer into a stray. Two shapes did exactly that before: a co-drainer
     /// this node had not yet heard of (v1820 r4), and a joiner known here but not to the pusher, i.e. joins
-    /// concurrent with drains as in a fleet replacement (v1820 r5). Nothing retries the nack, so each lost the copy.
+    /// concurrent with drains as in a fleet replacement (v1820 r5). Before #2034 nothing retried the nack, so each lost the copy;
+    /// the sender now resends a nacked page to the same target with a backoff, but a refusal that never clears still loses it.
     /// A member the pusher knows and this node does not is simply absent here, which is another removal.
     private boolean replicaHereAroundDeparture(DHTMessage.MigrationDataResponse response, DHTMessage.KeyValue entry) {
         var replicationFactor = config.get().effectiveReplicationFactor(node.ring().nodeCount());

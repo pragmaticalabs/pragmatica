@@ -147,7 +147,7 @@ class DHTDepartureReceiverViewTest {
             ids.forEach(ring::addNode);
 
             var node = dhtNode(id, memoryStorageEngine(), ring, CONFIG);
-            DHTNetwork network = this::deliver;
+            DHTNetwork network = AcceptingNetwork.accepting(this::deliver);
 
             return new Member(id, node, dhtRebalancer(node, network, CONFIG), dhtAntiEntropy(node, network, CONFIG, departing::contains));
         }

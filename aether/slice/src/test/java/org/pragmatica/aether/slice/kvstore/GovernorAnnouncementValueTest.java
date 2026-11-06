@@ -155,4 +155,92 @@ class GovernorAnnouncementValueTest {
             assertThat(next.communityTerm()).isEqualTo(original.communityTerm());
         }
     }
+
+    @Nested
+    class UnchangedFrom {
+        private final NodeId governor = NodeId.nodeId("g-1").unwrap();
+        private final List<NodeId> members = List.of(NodeId.nodeId("w-1").unwrap(), NodeId.nodeId("w-2").unwrap());
+        private final GovernorAnnouncementValue committed = GovernorAnnouncementValue.governorAnnouncementValue(governor, members, "10.0.0.1:7201", 1000L,
+                                                                                                                 3L, Epoch.epoch(0L, 3L, 0), Epoch.ZERO,
+                                                                                                                 HlcTimestamp.ZERO, false);
+
+        @Test
+        void unchangedFrom_onlyTheTimestampDiffers_isTrue() {
+            var refreshed = committed.withMembers(members, "10.0.0.1:7201", Epoch.ZERO);
+
+            assertThat(refreshed.unchangedFrom(committed)).isTrue();
+        }
+
+        @Test
+        void unchangedFrom_membersDiffer_isFalse() {
+            assertThat(committed.withMembers(members.subList(0, 1), "10.0.0.1:7201", Epoch.ZERO).unchangedFrom(committed)).isFalse();
+        }
+
+        @Test
+        void unchangedFrom_membersDifferAtTheSameCount_isFalse() {
+            var swapped = new GovernorAnnouncementValue(governor, 2, List.of(members.get(0), NodeId.nodeId("w-9").unwrap()), "10.0.0.1:7201", 1000L, 3L, Epoch.epoch(0L, 3L, 0), Epoch.ZERO, HlcTimestamp.ZERO, false);
+
+            assertThat(swapped.unchangedFrom(committed)).isFalse();
+        }
+
+        @Test
+        void unchangedFrom_addressDiffers_isFalse() {
+            assertThat(committed.withMembers(members, "10.0.0.9:7201", Epoch.ZERO).unchangedFrom(committed)).isFalse();
+        }
+
+        @Test
+        void unchangedFrom_observedCoreEpochDiffers_isTrue() {
+            assertThat(committed.withMembers(members, "10.0.0.1:7201", Epoch.epoch(0L, 1L, 0)).unchangedFrom(committed)).as("a tick of the core's counter is a time stamp, not a change").isTrue();
+        }
+
+        @Test
+        void unchangedFrom_governorDiffersAlone_isFalse() {
+            var other = NodeId.nodeId("g-2").unwrap();
+            var swapped = GovernorAnnouncementValue.governorAnnouncementValue(other, members, "10.0.0.1:7201", 1000L,
+                                                                              3L, Epoch.epoch(0L, 3L, 0), Epoch.ZERO, HlcTimestamp.ZERO, false);
+
+            assertThat(swapped.unchangedFrom(committed)).isFalse();
+        }
+
+        @Test
+        void unchangedFrom_memberCountDiffers_isFalse() {
+            var counted = new GovernorAnnouncementValue(governor, 7, members, "10.0.0.1:7201", 1000L, 3L, Epoch.epoch(0L, 3L, 0), Epoch.ZERO, HlcTimestamp.ZERO, false);
+
+            assertThat(counted.unchangedFrom(committed)).isFalse();
+        }
+
+        @Test
+        void unchangedFrom_transitionedAtDiffers_isFalse() {
+            var moved = GovernorAnnouncementValue.governorAnnouncementValue(governor, members, "10.0.0.1:7201", 1000L,
+                                                                            3L, Epoch.epoch(0L, 3L, 0), Epoch.ZERO, new HlcTimestamp(5L, governor), false);
+
+            assertThat(moved.unchangedFrom(committed)).isFalse();
+        }
+
+        @Test
+        void unchangedFrom_communityEpochOrTermDiffers_isFalse() {
+            var epoch = GovernorAnnouncementValue.governorAnnouncementValue(governor, members, "10.0.0.1:7201", 1000L,
+                                                                            3L, Epoch.epoch(0L, 4L, 0), Epoch.ZERO, HlcTimestamp.ZERO, false);
+            var term = GovernorAnnouncementValue.governorAnnouncementValue(governor, members, "10.0.0.1:7201", 1000L,
+                                                                           4L, Epoch.epoch(0L, 3L, 0), Epoch.ZERO, HlcTimestamp.ZERO, false);
+
+            assertThat(epoch.unchangedFrom(committed)).isFalse();
+            assertThat(term.unchangedFrom(committed)).isFalse();
+        }
+
+        @Test
+        void unchangedFrom_governorChange_isFalse() {
+            var other = NodeId.nodeId("g-2").unwrap();
+
+            assertThat(committed.withGovernorChange(other, members, "10.0.0.1:7201", Epoch.ZERO, HlcTimestamp.ZERO).unchangedFrom(committed)).isFalse();
+        }
+
+        @Test
+        void unchangedFrom_dissolvedDiffers_isFalse() {
+            var dissolved = GovernorAnnouncementValue.governorAnnouncementValue(governor, members, "10.0.0.1:7201", 1000L,
+                                                                                3L, Epoch.epoch(0L, 3L, 0), Epoch.ZERO, HlcTimestamp.ZERO, true);
+
+            assertThat(dissolved.unchangedFrom(committed)).isFalse();
+        }
+    }
 }

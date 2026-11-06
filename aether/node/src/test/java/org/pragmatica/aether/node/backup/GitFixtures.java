@@ -7,6 +7,7 @@ package org.pragmatica.aether.node.backup;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -25,6 +26,17 @@ final class GitFixtures {
         run(List.of("git", "-C", path.toString(), "config", "maintenance.autoDetach", "false"));
 
         return path.toString();
+    }
+
+    /// The git these tests run against: its path and version, as the test JVM's own PATH resolves them. The real-git tests must hold on every
+    /// server version (the lost-race reason differs between 2.50 and 2.51), so a run states which one it used.
+    static String gitUnderTest() {
+        return run(List.of("sh", "-c", "command -v git; git --version")).replace('\n', ' ').strip();
+    }
+
+    /// Whether this git can speak http(s): a git built without libcurl has no `git-remote-http` and cannot answer the credential tests.
+    static boolean gitHasHttpTransport() {
+        return Files.exists(Path.of(run(List.of("git", "--exec-path")).strip(), "git-remote-http"));
     }
 
     /// Run `git -C dir args` and return its output; fail the test on a non-zero exit.

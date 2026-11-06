@@ -92,7 +92,7 @@ class StreamOwnershipViewsTest {
         var handler = ReplicationReceiveHandler.replicationReceiveHandler(new NodeId("node-c"),
                                                                           (_, _, _, _, _, _) -> Result.success((long) appends.getAndIncrement()),
                                                                           (_, _) -> 0L,
-                                                                          (_, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                                          AcceptingTransports.acceptingReplication((_, message) -> acks.add((ReplicationMessage.ReplicateAck) message)),
                                                                           (_, _) -> {},
                                                                           NO_DURABILITY_BARRIER,
                                                                           views.writeAuthority());

@@ -20,6 +20,7 @@ import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.api.ClusterEventAggregator;
 import org.pragmatica.aether.config.ReplicationDefaultsConfig;
 import org.pragmatica.aether.controller.ControlLoop;
+import org.pragmatica.aether.deployment.cluster.CapacityView;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.cluster.ClusterReplication;
 import org.pragmatica.aether.deployment.cluster.CommunityRetirementIndex;
@@ -28,7 +29,6 @@ import org.pragmatica.aether.deployment.cluster.UpgradeRunIndex;
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
-import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.NodeReportedState;
@@ -39,7 +39,8 @@ import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.aether.node.DhtReplicationSettlement;
 import org.pragmatica.aether.node.DhtWriterStaleWatch;
 import org.pragmatica.aether.node.GossipKeyRotationHandler;
-import org.pragmatica.aether.node.ReplicaCutover;
+import org.pragmatica.aether.node.NodeReplacementWiring;
+import org.pragmatica.aether.node.UpgradeRunWiring;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.aether.node.health.WorkerEndpointDirectory;
 import org.pragmatica.aether.slice.*;
@@ -49,6 +50,8 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.worker.governor.CommunityMembershipFilter;
 import org.pragmatica.aether.worker.governor.GovernorAnnouncer;
+import org.pragmatica.cluster.replica.ReplicaFeedClient;
+import org.pragmatica.cluster.replica.ReplicaServeGate;
 import org.pragmatica.aether.worker.governor.GovernorAuthority;
 import org.pragmatica.aether.worker.governor.GovernorAuthorityClient;
 import org.pragmatica.aether.worker.governor.GovernorAuthorityMessage;
@@ -75,6 +78,7 @@ import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.dht.DHTNode;
 import org.pragmatica.hlc.HlcClock;
@@ -86,6 +90,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.utils.TimeSource;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.utility.react.ReactExecutor;
 import org.pragmatica.serialization.SliceCodec;
 
 import org.slf4j.Logger;
@@ -97,7 +102,6 @@ import static org.pragmatica.aether.node.AetherNode.installedVoterIds;
 import static org.pragmatica.aether.node.AetherNode.isCoreMember;
 import static org.pragmatica.aether.node.AetherNode.metadataDirectory;
 import static org.pragmatica.aether.node.AetherNode.nodesReporting;
-import static org.pragmatica.aether.node.AetherNode.reconcileNodeActivation;
 import static org.pragmatica.aether.node.AetherNode.runtimeReady;
 
 
@@ -141,7 +145,7 @@ public sealed interface WorkerHierarchyAssembly {
                                   CommunityRetirementIndex communityRetirements,
                                   NodeReplacementIndex nodeReplacements,
                                   UpgradeRunIndex upgradeRuns,
-                                  ClusterDeploymentManager clusterDeploymentManager,
+                                  Consumer<ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue>> placementRedrive,
                                   AtomicReference<BooleanSupplier> workerProjectionFreshRef,
                                   AtomicReference<CoreSwimHealthDetector> swimHealthDetectorHolder,
                                   SliceInvoker sliceInvoker,
@@ -149,7 +153,7 @@ public sealed interface WorkerHierarchyAssembly {
                                   Logger growthLog,
                                   NodeId selfId,
                                   GossipKeyRotationHandler gossipKeyRotationHandler,
-                                  ReplicaCutover cutover) {}
+                                  ReactExecutor react) {}
 
     /// What `workerActivation` hands back for the rest of the assembly.
     record WorkerActivationOutputs(AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
@@ -169,7 +173,7 @@ public sealed interface WorkerHierarchyAssembly {
         var communityRetirements = in.communityRetirements();
         var nodeReplacements = in.nodeReplacements();
         var upgradeRuns = in.upgradeRuns();
-        var clusterDeploymentManager = in.clusterDeploymentManager();
+        var placementRedrive = in.placementRedrive();
         var workerProjectionFreshRef = in.workerProjectionFreshRef();
         var swimHealthDetectorHolder = in.swimHealthDetectorHolder();
         var sliceInvoker = in.sliceInvoker();
@@ -177,8 +181,7 @@ public sealed interface WorkerHierarchyAssembly {
         var growthLog = in.growthLog();
         var selfId = in.selfId();
         var gossipKeyRotationHandler = in.gossipKeyRotationHandler();
-        // W-OBS W3: the engine's passive-client latch is the DARK path's readiness; LIVE sets and clears the flag from ReplicaReadiness only (I-W6).
-        var passiveLatch = passiveLatch(in.cutover(), clusterNode);
+        var react = in.react();
         // Worker-mode activation needs the SWIM detector to feed the governor announcer
         // (GAP 2). The detector is a local declared further down (after the SWIM config is
         // built), but this registration lambda is constructed here — so capture it through a
@@ -220,7 +223,7 @@ public sealed interface WorkerHierarchyAssembly {
                                                                                                                                                                                 () -> runtimeReady(clusterNode) && workerProjectionFreshRef.get()
                                                                                                                                                                                                                                            .getAsBoolean(),
                                                                                                                                                                                 growthLog,
-                                                                                                                                                                                passiveLatch))
+                                                                                                                                                                                react))
                                                      .onPut(AetherKey.CommunityPlacementOperationKey.class,
                                                             (ValuePut<AetherKey.CommunityPlacementOperationKey, AetherValue.CommunityPlacementOperationValue> put) -> communityRetirements.put(put.cause()
                                                                                                                                                                                                   .value()))
@@ -229,22 +232,22 @@ public sealed interface WorkerHierarchyAssembly {
                                                                                                                                                                                                                  .key()
                                                                                                                                                                                                                  .communityId()))
                                                      .onPut(AetherKey.NodeReplacementKey.class,
-                                                            (ValuePut<AetherKey.NodeReplacementKey, AetherValue.NodeReplacementValue> put) -> nodeReplacements.put(put.cause()
-                                                                                                                                                                      .key(),
-                                                                                                                                                                   put.cause()
-                                                                                                                                                                      .value()))
+                                                            (ValuePut<AetherKey.NodeReplacementKey, AetherValue.NodeReplacementValue> put) -> NodeReplacementWiring.absorbPut(nodeReplacements,
+                                                                                                                                                                              kvStore::isReplaying,
+                                                                                                                                                                              put))
                                                      .onRemove(AetherKey.NodeReplacementKey.class,
                                                                (ValueRemove<AetherKey.NodeReplacementKey, AetherValue.NodeReplacementValue> remove) -> nodeReplacements.remove(remove.cause()
                                                                                                                                                                                      .key()))
                                                      .onPut(AetherKey.UpgradeRunKey.class,
-                                                            (ValuePut<AetherKey.UpgradeRunKey, AetherValue.UpgradeRunValue> put) -> upgradeRuns.put(put.cause()
-                                                                                                                                                       .value()))
+                                                            (ValuePut<AetherKey.UpgradeRunKey, AetherValue.UpgradeRunValue> put) -> UpgradeRunWiring.absorbPut(upgradeRuns,
+                                                                                                                                                               kvStore::isReplaying,
+                                                                                                                                                               put))
                                                      .onRemove(AetherKey.UpgradeRunKey.class,
                                                                (ValueRemove<AetherKey.UpgradeRunKey, AetherValue.UpgradeRunValue>_) -> upgradeRuns.remove())
                                                      .onPut(AetherKey.NodePlacementKey.class,
                                                             (ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue> put) -> retryPlacedWorker(put,
                                                                                                                                                             membershipFsmRef::get,
-                                                                                                                                                            clusterDeploymentManager))
+                                                                                                                                                            placementRedrive))
                                                      .onPut(AetherKey.GossipKeyRotationKey.class,
                                                             gossipKeyRotationHandler::onGossipKeyRotationPut)
                                                      .build();
@@ -267,22 +270,21 @@ public sealed interface WorkerHierarchyAssembly {
                                 DhtWriterStaleWatch dhtWriterStaleWatch,
                                 ForwardingClusterNode<KVCommand<AetherKey>> forwardingClusterNode,
                                 AtomicReference<Supplier<Set<NodeId>>> cdmReadyNodesRef,
-                                ClusterDeploymentManager clusterDeploymentManager,
+                                Consumer<WorkerJoinDecision> workerAdmissionJoin,
                                 ClusterSyncCollector metricsCollector,
                                 AtomicReference<BooleanSupplier> workerProjectionFreshRef,
                                 NodeReportedStateHolder nodeReportedStateHolder,
                                 Supplier<Epoch> leaderEpochSupplier,
                                 ClusterEventAggregator eventAggregator,
                                 ControlLoop controlLoop,
-                                NodeDeploymentManager nodeDeploymentManager,
+                                Runnable passiveClientActivation,
                                 WorkerEndpointDirectory workerEndpointDirectory,
                                 AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
                                 CommunityMemberDirectory communityDirectory,
                                 ArrayList<MessageRouter.Entry<?>> allEntries,
                                 CoreSwimHealthDetector swimHealthDetector,
                                 MembershipFsm membershipFsm,
-                                Consumer<Supplier<ScheduledFuture<?>>> defer,
-                                ReplicaCutover cutover) {}
+                                Consumer<Supplier<ScheduledFuture<?>>> defer) {}
 
     /// What `workerMetadata` hands back for the rest of the assembly.
     record WorkerMetadataOutputs(Supplier<Set<NodeId>> routingCoreIds,
@@ -310,14 +312,14 @@ public sealed interface WorkerHierarchyAssembly {
         var dhtWriterStaleWatch = in.dhtWriterStaleWatch();
         var forwardingClusterNode = in.forwardingClusterNode();
         var cdmReadyNodesRef = in.cdmReadyNodesRef();
-        var clusterDeploymentManager = in.clusterDeploymentManager();
+        var workerAdmissionJoin = in.workerAdmissionJoin();
         var metricsCollector = in.metricsCollector();
         var workerProjectionFreshRef = in.workerProjectionFreshRef();
         var nodeReportedStateHolder = in.nodeReportedStateHolder();
         var leaderEpochSupplier = in.leaderEpochSupplier();
         var eventAggregator = in.eventAggregator();
         var controlLoop = in.controlLoop();
-        var nodeDeploymentManager = in.nodeDeploymentManager();
+        var passiveClientActivation = in.passiveClientActivation();
         var workerEndpointDirectory = in.workerEndpointDirectory();
         var governorAnnouncerHolder = in.governorAnnouncerHolder();
         var communityDirectory = in.communityDirectory();
@@ -325,7 +327,6 @@ public sealed interface WorkerHierarchyAssembly {
         var swimHealthDetector = in.swimHealthDetector();
         var membershipFsm = in.membershipFsm();
         var defer = in.defer();
-        var cutover = in.cutover();
 
         allEntries.add(MessageRouter.Entry.route(CommunityMetricsSnapshot.class,
                                                  snapshot -> receiveSourceMetrics(clusterNode,
@@ -391,10 +392,14 @@ public sealed interface WorkerHierarchyAssembly {
                                                                                                                                                  config.cache(),
                                                                                                                                                  cacheDhtConfig,
                                                                                                                                                  dhtSettlement);
-        Runnable workerReady = () -> becomeForwarding(switchableCluster,
-                                                      forwardingClusterNode,
-                                                      clusterNode,
-                                                      nodeDeploymentManager);
+        // #2543: a passive client applies no roster change itself, so the leader's installed electorate rides the directory and is installed here.
+        // FER: a refused install (an older epoch or a conflicting roster at the same epoch) is logged and dropped; this worker keeps the electorate it
+        // already holds, which only ever moves forward by epoch. Guarantee earned: a worker's roster never regresses. Mechanism: the epoch guard in
+        // RabiaEngine.installPassiveVoters; the next newer directory retries.
+        Consumer<VoterConfiguration> installVoters = voters -> clusterNode.installPassiveVoters(voters)
+                                                                          .onFailure(cause -> LOG.warn("Worker electorate install refused: {}",
+                                                                                                       cause.message()));
+        Runnable workerReady = () -> becomeForwarding(switchableCluster, forwardingClusterNode, passiveClientActivation);
         var workerMetadataChannel = org.pragmatica.aether.worker.metadata.WorkerMetadataChannel.workerMetadataChannel(config.self(),
                                                                                                                       configuredWorker(config),
                                                                                                                       kvStore,
@@ -414,8 +419,7 @@ public sealed interface WorkerHierarchyAssembly {
                                                                                                                                                  peers),
                                                                                                                       installPeers,
                                                                                                                       installEndpoints,
-                                                                                                                      () -> projectionReady(clusterNode,
-                                                                                                                                            workerReady),
+                                                                                                                      () -> Unit.unit(),
                                                                                                                       message -> metadataFailureReporter.report(config.self(),
                                                                                                                                                                 message),
                                                                                                                       metadataFailureReporter::report,
@@ -432,24 +436,32 @@ public sealed interface WorkerHierarchyAssembly {
                                                                                                                       // replication into every projection, and the worker
                                                                                                                       // applies it on every install — live changes included
                                                                                                                      );
-
-        workerProjectionFreshRef.set(workerMetadataChannel::hasFreshProjection);
-        // W-OBS W3, DARK: nothing below exists unless the node was built LIVE (production never is); LIVE then replaces the freshness gate set
-        // above with the replica readiness and adds the client's routes and ticks.
-        var replicaClient = ReplicaClientAssembly.replicaClient(cutover,
-                                                                configuredWorker(config),
-                                                                new ReplicaClientAssembly.Inputs(config.self(),
-                                                                                                 kvStore,
-                                                                                                 clusterNode,
-                                                                                                 metricsCollector::heldDirectory,
-                                                                                                 routingCoreIds,
-                                                                                                 new ReplicaClientAssembly.DirectoryInstall(installPeers,
-                                                                                                                                            installEndpoints,
-                                                                                                                                            applyDht),
-                                                                                                 workerReady,
-                                                                                                 workerProjectionFreshRef,
-                                                                                                 allEntries,
-                                                                                                 defer));
+        // W-OBS W4: a worker's freshness gate and engine readiness come from the replica client (ReplicaReadiness, I-W6); the projection channel
+        // above no longer polls or drives either, and goes in W5.
+        var started = ReplicaClientAssembly.replicaClient(configuredWorker(config),
+                                                          new ReplicaClientAssembly.Inputs(config.self(),
+                                                                                           kvStore,
+                                                                                           clusterNode,
+                                                                                           metricsCollector::heldDirectory,
+                                                                                           routingCoreIds,
+                                                                                           new ReplicaFeedClient.GovernorArm(() -> Option.option(governorAnnouncerHolder.get())
+                                                                                                                                         .map(GovernorAnnouncer::isGovernor)
+                                                                                                                                         .or(false),
+                                                                                                                             () -> ReplicaFeedAssembly.announcedGovernor(config.self(),
+                                                                                                                                                                         communityDirectory::assignment,
+                                                                                                                                                                         community -> kvStore.getTyped(AetherKey.GovernorAnnouncementKey.forCommunity(community),
+                                                                                                                                                                                                       AetherValue.GovernorAnnouncementValue.class),
+                                                                                                                                                                         governor -> clusterNode.network()
+                                                                                                                                                                                                .connectedPeers()
+                                                                                                                                                                                                .contains(governor))),
+                                                                                           new ReplicaClientAssembly.DirectoryInstall(installPeers,
+                                                                                                                                      installEndpoints,
+                                                                                                                                      applyDht,
+                                                                                                                                      installVoters),
+                                                                                           workerReady,
+                                                                                           workerProjectionFreshRef,
+                                                                                           allEntries,
+                                                                                           defer));
 
         allEntries.add(MessageRouter.Entry.route(org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.ManifestRequest.class,
                                                  workerMetadataChannel::onManifestRequest));
@@ -462,24 +474,30 @@ public sealed interface WorkerHierarchyAssembly {
         allEntries.add(MessageRouter.Entry.route(ValuePut.class, workerMetadataChannel::onValuePut));
         allEntries.add(MessageRouter.Entry.route(ValueRemove.class, workerMetadataChannel::onValueRemove));
         clusterNode.onStateRestored(workerMetadataChannel::onStateRestored);
-        // W-OBS W2: the replica feed server on cores (subscribe and snapshot routes, drain and heartbeat ticks); a worker never serves.
+        // W-OBS W2/W4: the replica feed server (subscribe and snapshot routes, drain and heartbeat ticks). A core serves workers; a worker serves
+        // only as its community's governor, to that community's members, once its serve gate opens (I-W5).
+        var replicaClient = started.map(ReplicaClientAssembly.Started::client);
+
         ReplicaFeedAssembly.replicaFeed(config.self(),
                                         kvStore,
                                         clusterNode.network()::send,
                                         () -> ReplicaFeedAssembly.servesReplicaFeed(configuredWorker(config),
                                                                                     clusterNode.isActive(),
-                                                                                    clusterNode.isPendingCatchUp()),
-                                        membershipFsm::isTrackedAndNotDead,
+                                                                                    clusterNode.isPendingCatchUp(),
+                                                                                    started.map(ReplicaClientAssembly.Started::serveGate)
+                                                                                           .map(ReplicaServeGate::mayServeMembers)
+                                                                                           .or(false)),
+                                        peer -> ReplicaFeedAssembly.mayFeed(configuredWorker(config),
+                                                                            membershipFsm.isTrackedAndNotDead(peer),
+                                                                            communityDirectory.assignment(config.self()),
+                                                                            communityDirectory.assignment(peer)),
                                         peer -> clusterNode.network()
                                                            .connectedPeers()
                                                            .contains(peer),
                                         allEntries,
                                         defer);
-        // #1777 R1b: the same tick retries this node's DHT replication report until it is filed (a no-op once it is)
-        var projectionTick = projectionTick(cutover, workerMetadataChannel);
-
+        // #1777 R1b: this tick retries this node's DHT replication report until it is filed (a no-op once it is)
         defer.accept(() -> SharedScheduler.scheduleAtFixedRate(() -> {
-                                                                   projectionTick.run();
                                                                    dhtSettlement.report();
                                                                    dhtWriterStaleWatch.tick();
                                                                },
@@ -553,9 +571,9 @@ public sealed interface WorkerHierarchyAssembly {
                                                                                                                                                                                             descriptor);
                                                                                                                                                      if (membershipFsm.countedMembers()
                                                                                                                                                                       .contains(peer)) {
-                                                                                                                                                         clusterDeploymentManager.onWorkerJoin(WorkerJoinDecision.workerJoinDecision(peer,
-                                                                                                                                                                                                                                     descriptor.role(),
-                                                                                                                                                                                                                                     hlcClock.now()));
+                                                                                                                                                         workerAdmissionJoin.accept(WorkerJoinDecision.workerJoinDecision(peer,
+                                                                                                                                                                                                                          descriptor.role(),
+                                                                                                                                                                                                                          hlcClock.now()));
                                                                                                                                                      }
                                                                                                                                                  }),
                                                                                                   System::nanoTime,
@@ -689,36 +707,13 @@ public sealed interface WorkerHierarchyAssembly {
                                          replicaClient);
     }
 
-    /// The projection client's first-fresh callback (DARK path): set the engine's passive-client latch, then the worker-ready step.
-    static Unit projectionReady(RabiaNode<KVCommand<AetherKey>> clusterNode, Runnable workerReady) {
-        clusterNode.authorizePassiveClient();
-        workerReady.run();
-
-        return Unit.unit();
-    }
-
-    /// What a WORKER activation directive does to the engine's readiness: DARK sets the passive-client latch (the live setter); LIVE does
-    /// nothing, because readiness is set and cleared from `ReplicaReadiness` only (I-W6).
-    static Runnable passiveLatch(ReplicaCutover cutover, RabiaNode<KVCommand<AetherKey>> clusterNode) {
-        return cutover.isLive()
-               ? () -> {}
-               : clusterNode::authorizePassiveClient;
-    }
-
-    /// The projection client's 100 ms tick: DARK runs it; LIVE does not, the replica client replaces the projection.
-    static Runnable projectionTick(ReplicaCutover cutover, WorkerMetadataChannel channel) {
-        return cutover.isLive()
-               ? () -> {}
-               : channel::tick;
-    }
-
-    /// A worker that is ready to serve: forward writes to the cores and reconcile what this node should run.
+    /// A worker that is ready to serve: forward writes to the cores and run the engine's passive-client activation
+    /// (`DeploymentWiring.legacyGated`: on LEGACY it reconciles what this node should run).
     private static void becomeForwarding(SwitchableClusterNode<KVCommand<AetherKey>> switchableCluster,
                                          ForwardingClusterNode<KVCommand<AetherKey>> forwardingClusterNode,
-                                         RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                         NodeDeploymentManager nodeDeploymentManager) {
+                                         Runnable passiveClientActivation) {
         switchableCluster.switchTo(forwardingClusterNode);
-        reconcileNodeActivation(() -> runtimeReady(clusterNode), nodeDeploymentManager);
+        passiveClientActivation.run();
     }
 
     /// What `communityReachability` reads from the assembly built so far.
@@ -813,7 +808,10 @@ public sealed interface WorkerHierarchyAssembly {
         }
         // a worker holds no partitions and receives no DHT writes; its fence is what its projection says
         dhtNode.confirmReplicationFence();
-        settlement.applied(replication.configVersion());
+        settlement.applied(replication.configVersion(),
+                           replication.changeSettled()
+                           ? DHTNode.NO_CHANGE
+                           : replication.changeVersion());
     }
 
     /// The committed change a worker projection carries, as the record a core reads. A worker holds no partitions, so
@@ -923,7 +921,7 @@ public sealed interface WorkerHierarchyAssembly {
                                           GovernorAuthorityClient governorAuthorityClient,
                                           java.util.function.BooleanSupplier ready,
                                           Logger growthLog,
-                                          Runnable authorizePassiveClient) {
+                                          ReactExecutor react) {
         if (!put.cause().key().nodeId().equals(selfId)) {
             return;
         }
@@ -942,24 +940,28 @@ public sealed interface WorkerHierarchyAssembly {
             clusterNode.authorizeActivation();
         } else if (AetherValue.ActivationDirectiveValue.WORKER.equals(role)) {
             growthLog.info("Received worker activation directive from CDM");
-            swimHealthDetectorSupplier.get().markAssigned();
-            activateWorkerMode(selfId,
-                               clusterNode,
-                               switchableCluster,
-                               forwardingClusterNode,
-                               config,
-                               delegateRouter,
-                               kvStore,
-                               sliceStore,
-                               sliceInvoker,
-                               communityId,
-                               swimHealthDetectorSupplier.get(),
-                               communityDirectory,
-                               governorAnnouncerHolder,
-                               governorAuthorityClient,
-                               ready,
-                               growthLog,
-                               authorizePassiveClient);
+            var swimHealthDetector = swimHealthDetectorSupplier.get();
+
+            swimHealthDetector.markAssigned();
+            // D1-react (KVStore dispatcher design §3.5.1 row 92): the whole activateWorkerMode block is ONE reaction
+            // with communityId captured; CORE authorizeActivation above stays in absorb (it no-ops on a stopped engine).
+            react.react("activate-worker-mode",
+                        () -> activateWorkerMode(selfId,
+                                                 clusterNode,
+                                                 switchableCluster,
+                                                 forwardingClusterNode,
+                                                 config,
+                                                 delegateRouter,
+                                                 kvStore,
+                                                 sliceStore,
+                                                 sliceInvoker,
+                                                 communityId,
+                                                 swimHealthDetector,
+                                                 communityDirectory,
+                                                 governorAnnouncerHolder,
+                                                 governorAuthorityClient,
+                                                 ready,
+                                                 growthLog));
         }
     }
 
@@ -979,8 +981,7 @@ public sealed interface WorkerHierarchyAssembly {
                                            AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
                                            GovernorAuthorityClient governorAuthorityClient,
                                            java.util.function.BooleanSupplier ready,
-                                           Logger log,
-                                           Runnable authorizePassiveClient) {
+                                           Logger log) {
         synchronized (governorAnnouncerHolder) {
             var previous = Option.option(governorAnnouncerHolder.get());
 
@@ -990,7 +991,6 @@ public sealed interface WorkerHierarchyAssembly {
             }
 
             previous.onPresent(GovernorAnnouncer::stop);
-            authorizePassiveClient.run();
             switchableCluster.switchTo(forwardingClusterNode);
             log.info("Worker {} switched to forwarding mode", selfId.id());
             var workerTcpAddress = resolveSelfTcpAddress(config);
@@ -1029,14 +1029,14 @@ public sealed interface WorkerHierarchyAssembly {
 
     private static void retryPlacedWorker(ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue> put,
                                           Supplier<MembershipFsm> membership,
-                                          ClusterDeploymentManager deployment) {
+                                          Consumer<ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue>> redrive) {
         var node = put.cause().key().nodeId();
 
         Option.option(membership.get())
               .filter(fsm -> fsm.isTrackedAndNotDead(node))
               .flatMap(fsm -> fsm.memberDescriptor(node))
               .filter(descriptor -> "worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role()))
-              .onPresent(_ -> deployment.onNodePlacementPut(put));
+              .onPresent(_ -> redrive.accept(put));
     }
 
     private static boolean eligibleGovernor(KVStore<AetherKey, AetherValue> store, NodeId self, String community) {
@@ -1064,11 +1064,11 @@ public sealed interface WorkerHierarchyAssembly {
                          .filter(descriptor -> "worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role()))
                          .filter(descriptor -> config.environment()
                                                      .map(environment -> environment.isLocalWorkerAdmissionAuthorized(peer.id()))
-                                                     .or(false) || store.getTyped(new AetherKey.CapacityReservationKey(peer),
-                                                                                  AetherValue.CapacityReservationValue.class)
-                                                                        .filter(value -> value.intendedRole()
-                                                                                              .equalsIgnoreCase(descriptor.role()) && (value.phase() == AetherValue.CapacityReservationPhase.DISPATCHED || value.phase() == AetherValue.CapacityReservationPhase.OBSERVED))
-                                                                        .isPresent())
+                                                     .or(false) || CapacityView.overStore(store)
+                                                                               .reservation(peer)
+                                                                               .filter(value -> value.intendedRole()
+                                                                                                     .equalsIgnoreCase(descriptor.role()) && (value.phase() == AetherValue.CapacityReservationPhase.DISPATCHED || value.phase() == AetherValue.CapacityReservationPhase.OBSERVED))
+                                                                               .isPresent())
                          .isPresent();
     }
 

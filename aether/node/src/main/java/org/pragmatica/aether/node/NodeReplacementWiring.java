@@ -21,6 +21,8 @@ import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementAnnouncements;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementIndex;
+import org.pragmatica.aether.deployment.cluster.CapacityRecords;
+import org.pragmatica.aether.deployment.cluster.CapacityView;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementPlanner;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementPlanner.DrainState;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementPlanner.Effect;
@@ -32,6 +34,8 @@ import org.pragmatica.aether.deployment.cluster.NodeReplacementService.Refusal;
 import org.pragmatica.aether.deployment.cluster.ProvisionDisposition;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeReplacementKey;
@@ -40,6 +44,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementPhase;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
@@ -94,12 +99,24 @@ public final class NodeReplacementWiring {
     }
 
     /// The listener that turns each committed transition into its operator events, on the node that owns the cluster-events
-    /// partition ONLY: every node applies every record, and the events of one transition must be raised exactly once.
+    /// partition ONLY: every node applies every record, and the events of one transition must be raised exactly once. A
+    /// replayed record announces nothing (KVStore dispatcher design §3.5 R4): it is committed history, not a transition.
     public static NodeReplacementIndex.TransitionListener announcer(BooleanSupplier ownsClusterEvents,
                                                                     OperatorWarningSink warnings) {
-        return (original, before, after) -> ownsClusterEvents.getAsBoolean()
-                                            ? announce(warnings, original, before, after)
-                                            : Unit.unit();
+        return (original, before, after, replayed) -> !replayed && ownsClusterEvents.getAsBoolean()
+                                                      ? announce(warnings, original, before, after)
+                                                      : Unit.unit();
+    }
+
+    /// The KV handler of a committed replacement record (the WorkerHierarchyAssembly route): captures the replay bit at
+    /// absorb, on the delivering thread, and passes it with the record (design §3.5 R4); `isReplaying()` read anywhere
+    /// else reads false.
+    public static Unit absorbPut(NodeReplacementIndex index,
+                                 BooleanSupplier replaying,
+                                 ValuePut<NodeReplacementKey, NodeReplacementValue> put) {
+        return index.put(put.cause().key(),
+                         put.cause().value(),
+                         replaying.getAsBoolean());
     }
 
     public record Inputs(NodeId self,
@@ -116,7 +133,7 @@ public final class NodeReplacementWiring {
                          ClusterTopologyManager ctm,
                          Function<NodeId, Promise<DrainOutcome>> drain,
                          Predicate<NodeId> draining,
-                         Supplier<String> idPrefix,
+                         Supplier<Option<ClusterName>> clusterName,
                          Predicate<NodeId> dhtHolds,
                          Supplier<Set<NodeId>> genesisVoters,
                          java.util.function.IntSupplier fleetLimit,
@@ -149,6 +166,9 @@ public final class NodeReplacementWiring {
     /// The binding of an EXTERNAL reservation written while the fleet ledger could not count it (no ledger, or its inventory is not
     /// complete). The marker travels with the reservation, so whatever later settles it knows whether a slot was taken: it returns a
     /// slot only for a counted reservation and never for this one.
+    /// The mutation builders of the capacity records (O3-3): this class's capacity writes are built only through the port.
+    private static final CapacityRecords WRITES = CapacityRecords.forBuilding();
+
     static final String UNCOUNTED = org.pragmatica.aether.deployment.cluster.CapacityControlledLifecycle.UNCOUNTED_BINDING;
 
     /// The ledger, when it is in a state that can count a slot (it exists and its inventory is complete, as CTM requires).
@@ -161,7 +181,7 @@ public final class NodeReplacementWiring {
     /// for a startup ordering, not for a cause of its own, and rolled back. `none()` when the ledger already counts or the configuration is
     /// committed, so the first provision can initialize the inventory.
     static Option<String> inventoryBlocker(KVStore<AetherKey, AetherValue> store) {
-        if (countable(store.getTyped(AetherKey.CapacityLedgerKey.INSTANCE, AetherValue.CapacityLedgerValue.class)).isPresent()) {
+        if (countable(CapacityView.overStore(store).ledger()).isPresent()) {
             return Option.none();
         }
 
@@ -189,19 +209,17 @@ public final class NodeReplacementWiring {
         }
 
         var countable = countable(ledger);
-        var reservation = new KVCommand.Mutation<AetherKey, AetherValue>(new AetherKey.CapacityReservationKey(replacement),
-                                                                         Option.<AetherValue> none(),
-                                                                         Option.<AetherValue> some(new AetherValue.CapacityReservationValue(source,
-                                                                                                                                            countable.isPresent()
-                                                                                                                                            ? ""
-                                                                                                                                            : UNCOUNTED,
-                                                                                                                                            role.toLowerCase(java.util.Locale.ROOT),
-                                                                                                                                            AetherValue.CapacityReservationPhase.DISPATCHED)));
-        var counted = countable.<KVCommand.Mutation<AetherKey, AetherValue>> map(current -> new KVCommand.Mutation<>(AetherKey.CapacityLedgerKey.INSTANCE,
-                                                                                                                     Option.<AetherValue> some(current),
-                                                                                                                     Option.<AetherValue> some(new AetherValue.CapacityLedgerValue(current.allocated() + 1,
-                                                                                                                                                                                   current.version() + 1,
-                                                                                                                                                                                   current.inventoryComplete()))));
+        var reservation = WRITES.create(replacement,
+                                        new AetherValue.CapacityReservationValue(source,
+                                                                                 countable.isPresent()
+                                                                                 ? ""
+                                                                                 : UNCOUNTED,
+                                                                                 role.toLowerCase(java.util.Locale.ROOT),
+                                                                                 AetherValue.CapacityReservationPhase.DISPATCHED));
+        var counted = countable.<KVCommand.Mutation<AetherKey, AetherValue>> map(current -> WRITES.ledgerChange(Option.some(current),
+                                                                                                                new AetherValue.CapacityLedgerValue(current.allocated() + 1,
+                                                                                                                                                    current.version() + 1,
+                                                                                                                                                    current.inventoryComplete())));
 
         return counted.fold(() -> List.of(reservation), ledgerMutation -> List.of(reservation, ledgerMutation));
     }
@@ -220,31 +238,38 @@ public final class NodeReplacementWiring {
             return List.of();
         }
 
-        var key = new AetherKey.CapacityReservationKey(next.replacement());
+        var node = next.replacement();
 
         return reservation.filter(value -> value.phase() == AetherValue.CapacityReservationPhase.DISPATCHED)
                           // An uncounted reservation holds no slot, but it is the only admission intent a node of a ledger-less cluster has: a worker that
                           // loses its community assignment is admitted again on it. A node that did arrive keeps it; only a rollback (never arrived) drops it.
                           .filter(value -> !(UNCOUNTED.equals(value.sourceBinding()) && next.phase() == NodeReplacementPhase.DONE))
-                          .<KVCommand.Mutation<AetherKey, AetherValue>> map(value -> new KVCommand.Mutation<>(key,
-                                                                                                              Option.<AetherValue> some(value),
-                                                                                                              settled(next.phase(),
-                                                                                                                      value)))
+                          .<KVCommand.Mutation<AetherKey, AetherValue>> map(value -> settledMutation(node,
+                                                                                                     value,
+                                                                                                     settled(next.phase(),
+                                                                                                             value)))
                           .fold(() -> List.<KVCommand.Mutation<AetherKey, AetherValue>> of(),
                                 List::of);
     }
 
-    private static Option<AetherValue> settled(NodeReplacementPhase phase, AetherValue.CapacityReservationValue value) {
+    private static KVCommand.Mutation<AetherKey, AetherValue> settledMutation(NodeId node,
+                                                                              AetherValue.CapacityReservationValue before,
+                                                                              Option<AetherValue.CapacityReservationValue> after) {
+        return after.fold(() -> WRITES.remove(node, before), settled -> WRITES.replace(node, before, settled));
+    }
+
+    private static Option<AetherValue.CapacityReservationValue> settled(NodeReplacementPhase phase,
+                                                                        AetherValue.CapacityReservationValue value) {
         if (UNCOUNTED.equals(value.sourceBinding())) {
             return Option.none();
         }
 
-        return Option.<AetherValue> some(new AetherValue.CapacityReservationValue(value.sourceName(),
-                                                                                  value.sourceBinding(),
-                                                                                  value.intendedRole(),
-                                                                                  phase == NodeReplacementPhase.DONE
-                                                                                  ? AetherValue.CapacityReservationPhase.OBSERVED
-                                                                                  : AetherValue.CapacityReservationPhase.RELEASED));
+        return Option.some(new AetherValue.CapacityReservationValue(value.sourceName(),
+                                                                    value.sourceBinding(),
+                                                                    value.intendedRole(),
+                                                                    phase == NodeReplacementPhase.DONE
+                                                                    ? AetherValue.CapacityReservationPhase.OBSERVED
+                                                                    : AetherValue.CapacityReservationPhase.RELEASED));
     }
 
     /// Hands the pairings to the two reconcilers that must treat them as capacity on purpose. One call, so that what each receives is
@@ -321,6 +346,17 @@ public final class NodeReplacementWiring {
         return Unit.unit();
     }
 
+    /// The node-id prefix of a replacement of a `role` node from `source`: the shape follows the SOURCE of the node being replaced
+    /// (cloud: `aether-node`, no cluster; Docker: `aether-<cluster>-node`), so a cluster with a Docker core and a cloud worker pool mints
+    /// each pool's own shape. The same rule PF-36 budgets (every cloud pool is sized with the cloud shape).
+    static String replacementIdPrefix(NodeReplacementWiring.Inputs in, String role, String source) {
+        return in.ctm()
+                 .nodeIsCloudBacked(NodeRole.nodeRole(role).or(NodeRole.CORE),
+                                    source)
+               ? ProvisionContext.CLOUD_NODE_PREFIX
+               : ProvisionContext.coreNodeNamePrefix(in.clusterName().get());
+    }
+
     /// The provision of a replacement, from the source COMMITTED in its record. A record created with no source (a node of a cluster
     /// bootstrapped from static PEERS has no source label) has it resolved once by the reconciler and committed back before any effect, so a
     /// blank here is a defect, refused, and never read as the source "default" (#1543 F2).
@@ -380,9 +416,7 @@ public final class NodeReplacementWiring {
 
         @Override
         public Promise<Boolean> commit(NodeId original, NodeReplacementValue expected, NodeReplacementValue next) {
-            var reservation = in.kvStore()
-                                .getTyped(new AetherKey.CapacityReservationKey(next.replacement()),
-                                          AetherValue.CapacityReservationValue.class);
+            var reservation = CapacityView.overStore(in.kvStore()).reservation(next.replacement());
 
             return cas(in, original, Option.some(expected), next, settleReservation(next, reservation));
         }
@@ -470,9 +504,7 @@ public final class NodeReplacementWiring {
         /// called, so a new leader that finds the record still PROVISIONING (the old leader died between dispatch and its
         /// commit) finds the reservation too and must not dispatch the same id again; the join deadline bounds the wait.
         private Promise<EffectResult> provision(NodeId original, NodeReplacementValue record) {
-            var reservation = in.kvStore()
-                                .getTyped(new AetherKey.CapacityReservationKey(record.replacement()),
-                                          AetherValue.CapacityReservationValue.class);
+            var reservation = CapacityView.overStore(in.kvStore()).reservation(record.replacement());
 
             if (reservation.isPresent()) {
                 return Promise.success(reservation.filter(value -> value.phase() == AetherValue.CapacityReservationPhase.RELEASED)
@@ -767,9 +799,7 @@ public final class NodeReplacementWiring {
                 return new Refusal.FormerVoterIdentity(former.unwrap()).promise();
             }
 
-            var ledger = countable(in.kvStore()
-                                     .getTyped(AetherKey.CapacityLedgerKey.INSTANCE,
-                                               AetherValue.CapacityLedgerValue.class));
+            var ledger = countable(CapacityView.overStore(in.kvStore()).ledger());
             var sourceName = descriptor.map(d -> d.source()).or("");
 
             if (chosen.isPresent() && ledger.isPresent() && sourceName.isBlank()) {
@@ -782,10 +812,10 @@ public final class NodeReplacementWiring {
                 return new Refusal.FleetFull(ledger.unwrap().allocated()).promise();
             }
 
-            var replacement = chosen.or(() -> NodeId.randomNodeId(in.idPrefix().get()));
+            var source = descriptor.map(d -> d.source()).or("");
+            var replacement = chosen.or(() -> NodeId.randomNodeId(replacementIdPrefix(in, role, source)));
             var external = chosen.isPresent();
             var now = in.clock().getAsLong();
-            var source = descriptor.map(d -> d.source()).or("");
             var record = new NodeReplacementValue(replacement,
                                                   role.toLowerCase(),
                                                   NodeReplacementPhase.PROVISIONING,
@@ -803,9 +833,7 @@ public final class NodeReplacementWiring {
                                                                      role,
                                                                      replacement,
                                                                      source,
-                                                                     in.kvStore()
-                                                                       .getTyped(AetherKey.CapacityLedgerKey.INSTANCE,
-                                                                                 AetherValue.CapacityLedgerValue.class));
+                                                                     CapacityView.overStore(in.kvStore()).ledger());
 
             return cas(in, original, expected, record, alongside).flatMap(accepted -> {
                 if (!accepted) {
@@ -820,7 +848,7 @@ public final class NodeReplacementWiring {
             var member = Option.option(fsm).map(f -> f.memberStates()
                                                       .containsKey(id)).or(false);
             var paired = in.index().all().values().stream().anyMatch(value -> id.equals(value.replacement()));
-            var reserved = in.kvStore().get(new AetherKey.CapacityReservationKey(id)).isPresent();
+            var reserved = CapacityView.overStore(in.kvStore()).holds(id);
 
             return member || paired || reserved;
         }
