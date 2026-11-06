@@ -342,6 +342,9 @@ class NodeFsmInterpreterTest {
             try (var rig = new NodeRig(ReplayRule.WORKER)) {
                 var entered = rig.permit(ORDERS).goal(ORDERS, SliceGoal.LOADED).applier.slot();
 
+                // the store's own deliveries are plain inputs and would close the burst: let them all reach the consumer first
+                await().atMost(Duration.ofSeconds(10)).until(() -> !rig.store.hasPendingNotifications());
+                rig.settle();
                 rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(AUDIT.base(), AUDIT.version()), entered, true);
                 rig.enter();
                 var targets = rig.countOf("TargetPut");
