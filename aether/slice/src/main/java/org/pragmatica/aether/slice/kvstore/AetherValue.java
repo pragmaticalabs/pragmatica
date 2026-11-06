@@ -3667,6 +3667,157 @@ public sealed interface AetherValue {
         UNKNOWN
     }
 
+    /// rc6 §4.2: one admitted workflow, keyed by `WorkflowRunKey(id)`. `stepIndex` is the step in hand; `attempts` counts the effects
+    /// issued for THAT step and `effects` those of the whole run, against the kind's attempt and effect budgets (§4.4). `deadline`
+    /// is the elapsed-time budget, fixed at admission. `issuedAt` is when the current step's effect was issued (`0` = not issued): a
+    /// step with an issued effect is re-checked by its postcondition and re-issued only after the step's settle window (INV-05).
+    /// `detail` carries the state's argument: the awaited postcondition (`WAITING`), the reason (`PAUSED`, `FAILED`) or the incident
+    /// (`ESCALATED`). `conflictKeys` are the keys claimed at admission and released with the terminal commit. Every field lives in
+    /// the committed record, so a new leader resets nothing (INV-06). `epoch` is bumped on every committed transition, so that a run
+    /// that returns to a field-wise identical state is still a different value for the compare-and-set (no ABA).
+    ///
+    /// `issuedAt` and `deadline` are wall-clock milliseconds read by whichever node led at the time: the settle window and the
+    /// elapsed-time budget hold modulo inter-node clock skew (D5). f2b's clock wiring must name the clock it uses.
+    record WorkflowRunValue(String id,
+                            String kind,
+                            Map<String, String> params,
+                            int stepIndex,
+                            int attempts,
+                            int effects,
+                            long startedAt,
+                            long deadline,
+                            long issuedAt,
+                            WorkflowState state,
+                            String detail,
+                            List<String> conflictKeys,
+                            long epoch) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {
+        public WorkflowRunValue {
+            params = Map.copyOf(params);
+            conflictKeys = List.copyOf(conflictKeys);
+        }
+
+        /// A freshly admitted run: step 0, nothing issued.
+        public static WorkflowRunValue admitted(String id,
+                                                String kind,
+                                                Map<String, String> params,
+                                                List<String> conflictKeys,
+                                                long now,
+                                                long deadline) {
+            return new WorkflowRunValue(id,
+                                        kind,
+                                        params,
+                                        0,
+                                        0,
+                                        0,
+                                        now,
+                                        deadline,
+                                        0L,
+                                        WorkflowState.RUNNING,
+                                        "",
+                                        conflictKeys,
+                                        0L);
+        }
+
+        /// The current step's effect is issued: one more attempt and one more effect, awaiting `postcondition`.
+        public WorkflowRunValue issued(String postcondition, long now) {
+            return new WorkflowRunValue(id,
+                                        kind,
+                                        params,
+                                        stepIndex,
+                                        attempts + 1,
+                                        effects + 1,
+                                        startedAt,
+                                        deadline,
+                                        now,
+                                        WorkflowState.WAITING,
+                                        postcondition,
+                                        conflictKeys,
+                                        epoch + 1);
+        }
+
+        /// The current step's postcondition was observed: the next step, with nothing issued for it yet.
+        public WorkflowRunValue advanced() {
+            return new WorkflowRunValue(id,
+                                        kind,
+                                        params,
+                                        stepIndex + 1,
+                                        0,
+                                        effects,
+                                        startedAt,
+                                        deadline,
+                                        0L,
+                                        WorkflowState.RUNNING,
+                                        "",
+                                        conflictKeys,
+                                        epoch + 1);
+        }
+
+        /// The same run in `newState`, with `newDetail` as the state's argument; counters and step untouched.
+        public WorkflowRunValue in(WorkflowState newState, String newDetail) {
+            return new WorkflowRunValue(id,
+                                        kind,
+                                        params,
+                                        stepIndex,
+                                        attempts,
+                                        effects,
+                                        startedAt,
+                                        deadline,
+                                        issuedAt,
+                                        newState,
+                                        newDetail,
+                                        conflictKeys,
+                                        epoch + 1);
+        }
+
+        /// An operator's resume of a `PAUSED` or `ESCALATED` run: `RUNNING` again, with a fresh attempt budget for the step in hand
+        /// and `newDeadline` as the elapsed-time budget. The effect budget stays spent, and an issued effect stays issued, so it is
+        /// re-checked by its postcondition before anything is re-issued.
+        public WorkflowRunValue resumed(long newDeadline) {
+            return new WorkflowRunValue(id,
+                                        kind,
+                                        params,
+                                        stepIndex,
+                                        0,
+                                        effects,
+                                        startedAt,
+                                        newDeadline,
+                                        issuedAt,
+                                        WorkflowState.RUNNING,
+                                        "",
+                                        conflictKeys,
+                                        epoch + 1);
+        }
+
+        /// Whether the reconciler advances this run: `RUNNING` or `WAITING`.
+        public boolean active() {
+            return state == WorkflowState.RUNNING || state == WorkflowState.WAITING;
+        }
+
+        /// Whether committing this run releases its claims: `DONE` or `FAILED`. `ESCALATED` keeps them, because an effect it issued
+        /// may still be in flight and keeps its reservation until a postcondition or an operator resolves it (INV-05).
+        public boolean releasesClaims() {
+            return state == WorkflowState.DONE || state == WorkflowState.FAILED;
+        }
+    }
+
+    /// rc6 §4.2. `RUNNING`: the reconciler acts. `WAITING`: an effect is issued and its postcondition (the run's `detail`) is
+    /// awaited. `PAUSED`: an operator stopped it; resumable. `DONE`: the last step's postcondition was observed (INV-07). `FAILED`:
+    /// a precondition can never hold, or an operator abandoned it. `ESCALATED`: a budget is exhausted; the incident is the `detail`.
+    /// `UNKNOWN` is the decode sentinel: inert, never advanced, holds its claims.
+    @Codec
+    enum WorkflowState {
+        RUNNING,
+        WAITING,
+        PAUSED,
+        DONE,
+        FAILED,
+        ESCALATED,
+        UNKNOWN
+    }
+
+    /// rc6 §4.3: the workflow holding a conflict key, keyed by `WorkflowClaimKey(conflictKey)`.
+    record WorkflowClaimValue(String holderRunId) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {}
+
     /// A definitive no-create refusal. The operation itself is the exclusive recovery-probe token.
     record CommunityPlacementAvailabilityValue(String policyIdentity,
                                                String sourceBinding,

@@ -179,7 +179,7 @@ public sealed interface StorageAssembly {
         // held, never resuming — the leader-change detection-blindness bug). DeploymentMetricsScheduler
         // is leader-pinned via toggleDeploymentMetricsOnLeaderChange instead of task-assignment.
         // #231 Step 2: the remaining control-plane components (CDM, LoadBalancer, ControlLoop,
-        // TTMManager, RollbackManager, AbTestManager, DeploymentManager, StorageAdapter, StreamingCoordinator)
+        // RollbackManager, AbTestManager, DeploymentManager, StorageAdapter, StreamingCoordinator)
         // are leader-pinned via their toggle*OnLeaderChange routes in collectRouteEntries / allEntries below.
         // #250: real demotion + GC, fanned out across every storage setup this node holds via
         // StorageFactory.composite* -- `artifacts`, `content` and `streams` (`storageSetups`, built

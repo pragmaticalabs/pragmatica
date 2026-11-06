@@ -31,7 +31,6 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.locks.LockSupport;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -73,7 +72,7 @@ class SegmentFallbackTest {
         index = new SegmentIndex();
         sink = storageSegmentSink(storage, index);
         tieredReader = tieredStreamReader(index, storage);
-        sealer = segmentSealer(sink);
+        sealer = segmentSealer(SealReleaseLag.laggingRelease(sink));
 
         // Wire SegmentSealer as the eviction listener so evicted events get sealed
         partitionManager = streamPartitionManager(Long.MAX_VALUE, sealer);
@@ -217,16 +216,11 @@ class SegmentFallbackTest {
         }
     }
 
-    /// Sealing runs off the appending thread (#1234), so an evicted offset is readable from storage only once
-    /// its seal has landed; until then a read of it is IN FLIGHT.
+    /// Sealing runs off the appending thread (#1234), and the sealer indexes a segment BEFORE it drops its retained copy,
+    /// so an evicted offset is readable only once it is indexed AND released; until then a read of it is IN FLIGHT
+    /// (#2692). The sink lags its release ([SealReleaseLag#laggingRelease]) so the wait cannot pass on the index alone.
     private void awaitSealedThrough(long offset) {
-        var deadline = System.currentTimeMillis() + 10_000;
-
-        while (index.lastSealedOffset(STREAM, PARTITION) < offset && System.currentTimeMillis() < deadline) {
-            LockSupport.parkNanos(10_000_000);
-        }
-
-        assertThat(index.lastSealedOffset(STREAM, PARTITION)).isGreaterThanOrEqualTo(offset);
+        SealReleaseLag.awaitReadable(index, partitionManager, STREAM, PARTITION, offset);
     }
 
     /// #1247 review M2: after the CursorExpired segment fallback, the ring read for the tail used to be

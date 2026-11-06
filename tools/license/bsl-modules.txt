@@ -4,8 +4,6 @@
 aether/node
 aether/aether-deployment
 aether/aether-control
-aether/aether-ttm
-aether/aether-ttm-onnx
 aether/ember
 aether/forge/forge-api
 aether/forge/forge-core

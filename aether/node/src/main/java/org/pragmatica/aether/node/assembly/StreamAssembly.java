@@ -1414,6 +1414,12 @@ public sealed interface StreamAssembly {
                                                                                                   operatorWarningSink);
         // #1730 phase 2 (B7): a copy not yet compared with the committed owner of the current epoch acknowledges nothing.
         streamReplicationReceiveHandler.ackGate(streamPartitionManager::replicaVerified);
+        // #2599: the ack of a batch the gate held back is sent once a compare verifies the copy, not left to a later batch.
+        streamPartitionManager.onEpochVerified(streamReplicationReceiveHandler::releaseDeferredAck);
+        // #2599: a removed stream's deferred acks go with it, so none is released into a stream recreated under its name.
+        streamPartitionManager.onStreamRemoved(streamReplicationReceiveHandler::forgetDeferredAcks);
+        // #2599 G3: a backfill's ack goes out in the receive handler's per-partition section, settling a deferred ack it covers.
+        streamPartitionBackfill.backfillAckSink(streamReplicationReceiveHandler::ackBackfill);
         // #2087: a replica serves a consumer read only up to the owner's reported visible position.
         streamReplicationReceiveHandler.commitSink(streamPartitionManager::commitAdvanced);
         allEntries.add(MessageRouter.Entry.route(ReplicationMessage.CommitAdvance.class,
@@ -1722,7 +1728,9 @@ public sealed interface StreamAssembly {
     /// DHT bootstrap writer, whose apply runs in an async retry batch that can straddle a leader change):
     /// the decide-then-apply here is synchronous on the reconcile thread, the writer re-checks leadership
     /// immediately before deciding each pair, and consensus rejects a stale-leader apply. A failed apply
-    /// is logged, never thrown, and re-arms the reconcile with backoff ([#STREAM_OWNERSHIP_RETRY_BASE]).
+    /// is logged, never thrown, and re-arms the reconcile with backoff ([#STREAM_OWNERSHIP_RETRY_BASE]). A pass the
+    /// writer refuses before minting (#2654: the life's incarnation is not committed) writes nothing and re-arms the
+    /// reconcile the same way, because nothing else re-runs the pass when the commit lands.
     @Contract
     static void driveStreamOwnership(StreamPartitionOwnershipWriter writer,
                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
@@ -1734,9 +1742,11 @@ public sealed interface StreamAssembly {
         // unfiltered, this driver would re-place entity arcs over the WHOLE member view on every
         // catalog/membership edge and fight that reconcile record-for-record, parking arcs on
         // non-hosting nodes (which refuse every write) for up to one entity tick each time.
-        applyStreamOwnershipBatch(applier,
-                                  retry,
-                                  writer.writeOwnershipChanges(EntityOwnershipReconciler.withoutEntityArcs(reconciled)));
+        writer.mintGate()
+              .onFailure(retry::refused)
+              .onSuccess(_ -> applyStreamOwnershipBatch(applier,
+                                                        retry,
+                                                        writer.writeOwnershipChanges(EntityOwnershipReconciler.withoutEntityArcs(reconciled))));
     }
 
     /// Apply the reconcile pass's ownership-change Puts as ONE consensus batch. An empty batch (a

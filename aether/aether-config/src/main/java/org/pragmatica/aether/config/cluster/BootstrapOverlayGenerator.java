@@ -109,6 +109,9 @@ public interface BootstrapOverlayGenerator {
         values.put("nodes", config.derivedCoreCount());
         values.put("tls",
                    config.operations().tls().autoGenerate());
+        // rc6 spec §8.1 — the fleet cap reaches every node (and every CTM replacement) as `[cluster]
+        // max_nodes`, the key `ConfigLoader` reads into `AutoHealConfig.maxNodes` for `provisionNode`.
+        config.maxNodes().onPresent(maxNodes -> values.put("max_nodes", maxNodes));
         if (!genesisVoters.isEmpty()) {
             values.put("genesis_voters", String.join(",", genesisVoters));
         }

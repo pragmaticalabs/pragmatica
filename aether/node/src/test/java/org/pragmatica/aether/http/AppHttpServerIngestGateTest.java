@@ -862,7 +862,7 @@ class AppHttpServerIngestGateTest {
                 }
             });
 
-            return new Reply(Integer.parseInt(answer.status()), answer.body());
+            return new Reply(answer.statusCode(), answer.body());
         }
 
         @Override
@@ -873,7 +873,7 @@ class AppHttpServerIngestGateTest {
                 sent.set(sendBody(stream, size, false));
             });
 
-            return new Streamed(Integer.parseInt(answer.status()), sent.get());
+            return new Streamed(answer.statusCode(), sent.get());
         }
 
         @Override
@@ -886,10 +886,10 @@ class AppHttpServerIngestGateTest {
                 stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[5]))).sync();
                 Thread.sleep(300);
                 for (var other : others) {
-                    during.add(Integer.parseInt(H3Probe.exchange(port, second -> {
+                    during.add(H3Probe.exchange(port, second -> {
                         second.write(headers(path, Option.some(other), 16));
                         sendBody(second, 16, true);
-                    }).status()));
+                    }).statusCode());
                 }
 
                 stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[5])))
@@ -906,7 +906,7 @@ class AppHttpServerIngestGateTest {
                 stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[10])));
             });
 
-            return new Reply(Integer.parseInt(answer.status()), answer.body());
+            return new Reply(answer.statusCode(), answer.body());
         }
 
         @Override
@@ -919,7 +919,7 @@ class AppHttpServerIngestGateTest {
                 }
             });
 
-            return new Reply(Integer.parseInt(answer.status()), answer.body());
+            return new Reply(answer.statusCode(), answer.body());
         }
 
         @Override
@@ -933,14 +933,14 @@ class AppHttpServerIngestGateTest {
                 stream.shutdownOutput();
             });
 
-            return new Reply(Integer.parseInt(answer.status()), answer.body());
+            return new Reply(answer.statusCode(), answer.body());
         }
 
         @Override
         public Reply postDeclaredOnly(String path, String key, long length) throws Exception {
             var answer = H3Probe.exchange(port, stream -> stream.writeAndFlush(headers(path, Option.some(key), length)).sync());
 
-            return new Reply(Integer.parseInt(answer.status()), answer.body());
+            return new Reply(answer.statusCode(), answer.body());
         }
 
         private io.netty.handler.codec.http3.DefaultHttp3HeadersFrame headers(String path, Option<String> key, long length) {

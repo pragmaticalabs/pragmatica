@@ -61,9 +61,6 @@
         <module>db-migrations</module>
         <module>aether-deployment</module>
         <module>aether-control</module>
-        <!-- TTM modules - after control and metrics -->
-        <module>aether-ttm</module>
-        <module>aether-ttm-onnx</module>
         <!-- worker module removed: sources moved to node and aether-metrics -->
         <module>node</module>
         <!-- Test-support kit: spin one slice with fakes/testcontainers + typed client -->
@@ -311,16 +308,6 @@
                 <version>${project.version}</version>
             </dependency>
 
-            <dependency>
-                <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>aether-ttm</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>aether-ttm-onnx</artifactId>
-                <version>${project.version}</version>
-            </dependency>
 
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>

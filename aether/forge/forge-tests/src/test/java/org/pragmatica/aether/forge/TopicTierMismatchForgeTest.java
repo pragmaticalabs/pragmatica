@@ -71,7 +71,7 @@ class TopicTierMismatchForgeTest {
                                                   .withEnvironment("AETHER_")
                                                   .build();
 
-        cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "ttm", Option.some(configProvider));
+        cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "tier", Option.some(configProvider));
         cluster.withDataBaseDir(baseDir);
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
 

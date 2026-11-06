@@ -20,7 +20,6 @@ public record AetherConfig(ClusterConfig cluster,
                            Option<TlsConfig> tls,
                            Option<DockerConfig> docker,
                            Option<KubernetesConfig> kubernetes,
-                           TtmConfig ttm,
                            SliceConfig slice,
                            AppHttpConfig appHttp,
                            BackupConfig backup,
@@ -38,7 +37,6 @@ public record AetherConfig(ClusterConfig cluster,
                                                     Option<TlsConfig> tls,
                                                     Option<DockerConfig> docker,
                                                     Option<KubernetesConfig> kubernetes,
-                                                    TtmConfig ttm,
                                                     SliceConfig slice,
                                                     AppHttpConfig appHttp,
                                                     BackupConfig backup,
@@ -49,7 +47,6 @@ public record AetherConfig(ClusterConfig cluster,
                                         tls,
                                         docker,
                                         kubernetes,
-                                        ttm,
                                         slice,
                                         appHttp,
                                         backup,
@@ -71,7 +68,6 @@ public record AetherConfig(ClusterConfig cluster,
                             tlsForEnvironment(env),
                             dockerForEnvironment(env),
                             kubernetesForEnvironment(env),
-                            TtmConfig.ttmConfig(),
                             SliceConfig.sliceConfig(),
                             AppHttpConfig.appHttpConfig(),
                             BackupConfig.backupConfig(env),
@@ -97,7 +93,6 @@ public record AetherConfig(ClusterConfig cluster,
                                 tls,
                                 docker,
                                 kubernetes,
-                                ttm,
                                 slice,
                                 appHttp,
                                 backup,
@@ -118,7 +113,6 @@ public record AetherConfig(ClusterConfig cluster,
                                 tls,
                                 docker,
                                 kubernetes,
-                                ttm,
                                 slice,
                                 appHttp,
                                 backup,
@@ -139,7 +133,6 @@ public record AetherConfig(ClusterConfig cluster,
                                 tls,
                                 docker,
                                 kubernetes,
-                                ttm,
                                 slice,
                                 appHttp,
                                 backup,
@@ -160,7 +153,6 @@ public record AetherConfig(ClusterConfig cluster,
                                 tls,
                                 docker,
                                 kubernetes,
-                                ttm,
                                 slice,
                                 appHttp,
                                 backup,
@@ -181,7 +173,6 @@ public record AetherConfig(ClusterConfig cluster,
                                 tls,
                                 docker,
                                 kubernetes,
-                                ttm,
                                 slice,
                                 appHttp,
                                 backup,
@@ -202,7 +193,6 @@ public record AetherConfig(ClusterConfig cluster,
                                 tls,
                                 docker,
                                 kubernetes,
-                                ttm,
                                 slice,
                                 appHttp,
                                 backup,
@@ -223,7 +213,6 @@ public record AetherConfig(ClusterConfig cluster,
                                 tls,
                                 docker,
                                 kubernetes,
-                                ttm,
                                 slice,
                                 appHttp,
                                 backup,
@@ -270,7 +259,6 @@ public record AetherConfig(ClusterConfig cluster,
         private TlsConfig tlsConfig;
         private DockerConfig dockerConfig;
         private KubernetesConfig kubernetesConfig;
-        private TtmConfig ttmConfig;
         private SliceConfig sliceConfig;
         private AppHttpConfig appHttpConfig;
         private BackupConfig backupConfig;
@@ -337,12 +325,6 @@ public record AetherConfig(ClusterConfig cluster,
 
         public Builder kubernetesConfig(KubernetesConfig kubernetesConfig) {
             this.kubernetesConfig = kubernetesConfig;
-
-            return this;
-        }
-
-        public Builder ttm(TtmConfig ttmConfig) {
-            this.ttmConfig = ttmConfig;
 
             return this;
         }
@@ -439,7 +421,6 @@ public record AetherConfig(ClusterConfig cluster,
             var finalTls = tlsFor(clusterConfig);
             var finalDocker = dockerFor();
             var finalK8s = kubernetesFor();
-            var finalTtm = ttmFor();
             var finalSlice = sliceFor();
             var finalAppHttp = appHttpFor();
             var finalBackup = backupFor();
@@ -450,7 +431,6 @@ public record AetherConfig(ClusterConfig cluster,
                                                    finalTls,
                                                    finalDocker,
                                                    finalK8s,
-                                                   finalTtm,
                                                    finalSlice,
                                                    finalAppHttp,
                                                    finalBackup,
@@ -506,10 +486,6 @@ public record AetherConfig(ClusterConfig cluster,
 
         private Option<KubernetesConfig> kubernetesFor() {
             return option(kubernetesConfig).fold(() -> kubernetesForEnvironment(environment), Option::some);
-        }
-
-        private TtmConfig ttmFor() {
-            return option(ttmConfig).or(TtmConfig.ttmConfig());
         }
 
         private SliceConfig sliceFor() {

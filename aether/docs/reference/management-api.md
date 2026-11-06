@@ -133,7 +133,7 @@ This is distinct from the authentication 403 (invalid API key). The authorizatio
 A management request may land on any core node, but where it is ultimately served depends on the route:
 
 - **Control-plane read/write routes forward to the leader** (the control plane is leader-only). This covers cluster/node/slice status, topology, lifecycle, scheduled-task control-plane reads, config, controller, thresholds, observability depth, routes, and workers. A request received by a follower is transparently forwarded to the current leader.
-- **Per-node diagnostic routes are served node-locally** (metrics, traces, alerts, logs, storage, TTM, DHT replication map, certificates). These report the receiving node's own view and are not forwarded.
+- **Per-node diagnostic routes are served node-locally** (metrics, traces, alerts, logs, storage, DHT replication map, certificates). These report the receiving node's own view and are not forwarded.
 - **Per-node addressed routes** (those with an `{id}` node parameter) are forwarded to the named node.
 
 ---
@@ -1932,57 +1932,6 @@ timestamp.
     }
   ]
 }
-```
-
----
-
-## TTM (Time-series Trend Model)
-
-### GET /api/v1/ttm/status
-
-Get TTM engine status including configuration, state, and latest forecast.
-
-**Response:**
-```json
-{
-  "enabled": true,
-  "active": true,
-  "state": "RUNNING",
-  "modelPath": "/models/ttm.onnx",
-  "inputWindowMinutes": 60,
-  "evaluationIntervalMs": 30000,
-  "confidenceThreshold": 0.8,
-  "hasForecast": true,
-  "lastForecast": {
-    "timestamp": 1704067200000,
-    "confidence": 0.92,
-    "recommendation": "ScaleUp"
-  }
-}
-```
-
-### GET /api/v1/ttm/training-data
-
-Export TTM training data (last 120 minute-aggregated samples).
-
-**Response:**
-```json
-[
-  {
-    "timestamp": 1704067200000,
-    "cpuUsage": 0.45,
-    "heapUsage": 0.60,
-    "eventLoopLagMs": 1.2,
-    "latencyMs": 12.3,
-    "invocations": 15000,
-    "gcPauseMs": 50,
-    "intervalMeanLatencyP50": 8.0,
-    "intervalMeanLatencyP95": 25.0,
-    "intervalMeanLatencyP99": 80.0,
-    "errorRate": 0.005,
-    "eventCount": 120
-  }
-]
 ```
 
 ---
@@ -4544,8 +4493,6 @@ separate, still in-flight consolidation effort (spec §3.2–§3.3) owns that su
 | GET | `/api/v1/controller/status` | Controller |
 | GET | `/api/v1/controller/decisions` | Controller |
 | POST | `/api/v1/controller/evaluate` | Controller |
-| GET | `/api/v1/ttm/status` | TTM |
-| GET | `/api/v1/ttm/training-data` | TTM |
 | GET | `/api/v1/alerts` | Alert Management |
 | GET | `/api/v1/alerts/active` | Alert Management |
 | GET | `/api/v1/alerts/history` | Alert Management |

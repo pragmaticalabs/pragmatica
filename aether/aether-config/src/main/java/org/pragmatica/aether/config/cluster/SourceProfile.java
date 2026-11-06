@@ -36,7 +36,23 @@ public record SourceProfile(SourceName name,
                             Map<NodeRole, RoleSubTable> roles,
                             List<FirewallRule> firewallRules,
                             Option<TomlDocument> nodeConfig,
-                            Option<TimeSpan> replacementCeiling) {
+                            Option<TimeSpan> replacementCeiling,
+                            Map<NodeRole, TimeSpan> leadTime,
+                            Option<Integer> maxNodes,
+                            int preference,
+                            CostClass costClass,
+                            SourceFallback fallback) {
+    /// Default `preference` rank (lower is preferred), rc6 spec §8.1.
+    public static final int DEFAULT_PREFERENCE = 100;
+    /// Hetzner mint-to-ready, the measured 63.3s worst case (JVM runtime, n=6) rounded up to 65s.
+    public static final TimeSpan HETZNER_LEAD_TIME = timeSpan(65).seconds();
+    /// AWS / GCP / Azure mint-to-ready. NOT measured (only Hetzner has been): a conservative judgement of
+    /// two minutes, above the Hetzner figure because those providers' VM boot plus runtime start has no
+    /// local measurement behind it. Replace with a measured constant when one exists.
+    public static final TimeSpan OTHER_CLOUD_LEAD_TIME = timeSpan(2).minutes();
+    /// SSH / Docker / Forge sources: the node process starts on an existing host or container, no VM
+    /// is minted. NOT measured; a 30s judgement covering image pull and runtime start.
+    public static final TimeSpan NON_CLOUD_LEAD_TIME = timeSpan(30).seconds();
     /// Ten minutes, per the owner ruling on #1049. Sized against measured cloud mint-to-membership of
     /// 50.3–63.3s (Hetzner JVM runtime, n=6), roughly ten times that, and above the 5-minute
     /// infrastructure-readiness bound a cloud provision may itself spend before it resolves
@@ -74,6 +90,26 @@ public record SourceProfile(SourceName name,
         databases = Map.copyOf(databases);
         roles = Map.copyOf(roles);
         firewallRules = List.copyOf(firewallRules);
+        leadTime = Map.copyOf(leadTime);
+    }
+
+    /// Conservative mint-to-ready for a node of `role` from this source: the configured `lead_time` for the
+    /// role, else the per-provider constant ([#HETZNER_LEAD_TIME], [#OTHER_CLOUD_LEAD_TIME], [#NON_CLOUD_LEAD_TIME]).
+    public TimeSpan effectiveLeadTime(NodeRole role) {
+        return Option.option(leadTime.get(role)).or(this::defaultLeadTime);
+    }
+
+    private TimeSpan defaultLeadTime() {
+        return type == SourceType.CLOUD
+               ? provider.map(SourceProfile::cloudLeadTime)
+                         .or(OTHER_CLOUD_LEAD_TIME)
+               : NON_CLOUD_LEAD_TIME;
+    }
+
+    private static TimeSpan cloudLeadTime(CloudProviderName provider) {
+        return provider == CloudProviderName.HETZNER
+               ? HETZNER_LEAD_TIME
+               : OTHER_CLOUD_LEAD_TIME;
     }
 
     /// Ordered list of zones to attempt when provisioning nodes of this source. Returns
@@ -125,7 +161,12 @@ public record SourceProfile(SourceName name,
                                               Map<NodeRole, RoleSubTable> roles,
                                               List<FirewallRule> firewallRules,
                                               Option<TomlDocument> nodeConfig,
-                                              Option<TimeSpan> replacementCeiling) {
+                                              Option<TimeSpan> replacementCeiling,
+                                              Map<NodeRole, TimeSpan> leadTime,
+                                              Option<Integer> maxNodes,
+                                              int preference,
+                                              CostClass costClass,
+                                              SourceFallback fallback) {
         return new SourceProfile(name,
                                  type,
                                  provider,
@@ -143,7 +184,55 @@ public record SourceProfile(SourceName name,
                                  roles,
                                  firewallRules,
                                  nodeConfig,
-                                 replacementCeiling);
+                                 replacementCeiling,
+                                 leadTime,
+                                 maxNodes,
+                                 preference,
+                                 costClass,
+                                 fallback);
+    }
+
+    public static SourceProfile sourceProfile(SourceName name,
+                                              SourceType type,
+                                              Option<CloudProviderName> provider,
+                                              Option<String> credentials,
+                                              Option<String> region,
+                                              Option<String> zone,
+                                              List<String> zones,
+                                              Option<String> user,
+                                              Option<String> key,
+                                              Option<Integer> sshPort,
+                                              LoadBalancerMode loadBalancer,
+                                              List<String> loadBalancerIps,
+                                              Option<String> loadBalancerEndpoint,
+                                              Map<String, String> databases,
+                                              Map<NodeRole, RoleSubTable> roles,
+                                              List<FirewallRule> firewallRules,
+                                              Option<TomlDocument> nodeConfig,
+                                              Option<TimeSpan> replacementCeiling) {
+        return sourceProfile(name,
+                             type,
+                             provider,
+                             credentials,
+                             region,
+                             zone,
+                             zones,
+                             user,
+                             key,
+                             sshPort,
+                             loadBalancer,
+                             loadBalancerIps,
+                             loadBalancerEndpoint,
+                             databases,
+                             roles,
+                             firewallRules,
+                             nodeConfig,
+                             replacementCeiling,
+                             Map.of(),
+                             Option.empty(),
+                             DEFAULT_PREFERENCE,
+                             CostClass.ONDEMAND,
+                             SourceFallback.ALLOW);
     }
 
     public static SourceProfile sourceProfile(SourceName name,

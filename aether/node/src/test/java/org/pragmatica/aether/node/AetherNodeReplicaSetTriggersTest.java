@@ -89,7 +89,7 @@ class AetherNodeReplicaSetTriggersTest {
     private void assemble(int replicationFactor) {
         fsm.seed(Set.of(A, B, C));
         var writer = StreamPartitionOwnershipWriter.streamPartitionOwnershipWriter(leader::get,
-                                                                                    () -> Epoch.epoch(0L, 1L, 0L),
+                                                                                    () -> Epoch.epoch(1L, 1L, 0L),
                                                                                     HlcClock.hlcClock(A),
                                                                                     (_, _) -> committedOwner.get()
                                                                                                           .map(AetherNodeReplicaSetTriggersTest::ownership),

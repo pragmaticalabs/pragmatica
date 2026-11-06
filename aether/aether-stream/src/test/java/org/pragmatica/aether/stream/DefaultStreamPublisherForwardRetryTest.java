@@ -11,6 +11,7 @@ import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardResponse;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -101,6 +102,34 @@ class DefaultStreamPublisherForwardRetryTest {
 
         publisher(forwardClient).publish("e0".getBytes()).await().onSuccessRun(Assertions::fail).onFailure(cause -> assertThat(cause).isInstanceOf(PublishOutcomeUnknown.class));
         assertThat(forwardClient.publishCalls).isEqualTo(1);
+    }
+
+    /// #2683: a forward whose frame the transport refused before writing it (`PublishNotSent`) never reached the owner, so
+    /// re-sending it cannot duplicate: the forward layer retries it like the owner's own retryable answer. Red before #2683:
+    /// the refused frame was invisible, and the publish waited out its forward wait into "outcome unknown".
+    @Test
+    void forwardToOwner_retriesThenSucceeds_whenTheForwardFrameWasNotSent() {
+        var forwardClient = ScriptedForwardClient.of(notSent(), success());
+
+        publisher(forwardClient).publish("e0".getBytes()).await().onFailureRun(Assertions::fail);
+        assertThat(forwardClient.publishCalls).isEqualTo(2);
+    }
+
+    /// An encode failure is known-not-written too, but no retry can change it: it is not retried.
+    @Test
+    void forwardToOwner_doesNotRetry_whenTheForwardFrameCouldNotBeEncoded() {
+        var forwardClient = ScriptedForwardClient.of(notEncoded(), success());
+
+        publisher(forwardClient).publish("e0".getBytes()).await().onSuccessRun(Assertions::fail).onFailure(cause -> assertThat(cause).isInstanceOf(StreamForwardError.PublishNotEncoded.class));
+        assertThat(forwardClient.publishCalls).isEqualTo(1);
+    }
+
+    private static Supplier<Promise<Long>> notSent() {
+        return () -> StreamForwardError.PublishNotSent.FACTORY.apply(new WriteOutcome.BackpressureRefused(OWNER)).promise();
+    }
+
+    private static Supplier<Promise<Long>> notEncoded() {
+        return () -> StreamForwardError.PublishNotEncoded.FACTORY.apply(new WriteOutcome.EncodeFailed(OWNER, "PublishForward")).promise();
     }
 
     private static Supplier<Promise<Long>> outcomeUnknown() {

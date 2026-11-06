@@ -15,6 +15,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreValue;
 import org.pragmatica.aether.slice.kvstore.BackupEntryCodec;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
@@ -43,10 +45,16 @@ public sealed interface RestoreGate {
     String RESTORE_TRANSACTION_PREFIX = "kv-restore:";
 
     /// A backed-up key was written before this node's restore decision committed. Retryable: the gate
-    /// opens as soon as the decision lands.
-    record RestorePending(String key, String message) implements Cause {
+    /// opens as soon as the decision lands. States its own HTTP status (#2718): 503, a transient refusal a client may
+    /// retry, never the 500 of an unclassified cause.
+    record RestorePending(String key, String message) implements Cause, HttpStatusAware {
         static final Fn1<RestorePending, String> FACTORY = Causes.forOneValue("Write to '%s' refused: the cluster's backup restore decision has not committed yet; retry",
                                                                               RestorePending::new);
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.SERVICE_UNAVAILABLE;
+        }
     }
 
     /// The guard installed on the consensus engine.

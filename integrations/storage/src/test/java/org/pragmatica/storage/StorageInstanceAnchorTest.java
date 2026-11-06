@@ -234,6 +234,26 @@ class StorageInstanceAnchorTest {
         assertThat(await(instance.latestAnchor(NAME)).unwrap().version()).isEqualTo(12);
     }
 
+    /// #2508: writes that land while a prune runs must still be pruned to once it ends; the last write has no later
+    /// write to prune for it. Version 3 starts a prune that is held; 4..6 arrive meanwhile.
+    @Test
+    void writesDuringARunningPrune_arePrunedToWhenItEnds() {
+        var tier = new HeldTier(disk("overlapped"));
+        var instance = instanceOver(List.of(tier), AnchorRetention.anchorRetention(2).unwrap());
+
+        tier.openGate();
+        tier.holdPrunes();
+        for (long version = 1; version <= 6; version++) {
+            await(instance.putAnchor(NAME, version, valueOf(version)));
+        }
+        tier.releasePrunes();
+        while (instance.anchorPruneInFlight(NAME).isPresent()) {
+            awaitPrune(instance);
+        }
+
+        assertThat(versionsOn(tempDir.resolve("overlapped"))).containsExactlyInAnyOrder(4L, 5L, 6L);
+    }
+
     /// A prune failure is counted and logged, never returned: the write it followed has already succeeded.
     @Test
     void aFailedPrune_isCountedAndDoesNotFailTheWrite() {
@@ -330,6 +350,7 @@ class StorageInstanceAnchorTest {
         private final Promise<Unit> gate = Promise.promise();
         private final AtomicBoolean failing = new AtomicBoolean();
         private final AtomicBoolean failingPrunes = new AtomicBoolean();
+        private volatile Promise<Unit> pruneGate = Promise.success(Unit.unit());
 
         HeldTier(StorageTier delegate) {
             this.delegate = delegate;
@@ -342,6 +363,14 @@ class StorageInstanceAnchorTest {
         void fail() {
             failing.set(true);
             openGate();
+        }
+
+        void holdPrunes() {
+            pruneGate = Promise.promise();
+        }
+
+        void releasePrunes() {
+            pruneGate.succeed(Unit.unit());
         }
 
         void failPrunes() {
@@ -365,9 +394,9 @@ class StorageInstanceAnchorTest {
 
         @Override
         public Promise<Unit> pruneAnchors(AnchorName name, long below, int scanLimit) {
-            return failingPrunes.get()
-                   ? StorageError.WriteError.writeError("prune refused").promise()
-                   : delegate.pruneAnchors(name, below, scanLimit);
+            return pruneGate.flatMap(_ -> failingPrunes.get()
+                                          ? StorageError.WriteError.writeError("prune refused").promise()
+                                          : delegate.pruneAnchors(name, below, scanLimit));
         }
 
         @Override
