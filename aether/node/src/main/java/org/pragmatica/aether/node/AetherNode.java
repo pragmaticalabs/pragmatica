@@ -2941,7 +2941,7 @@ public interface AetherNode extends ManageableNode {
         configChangeFeed.setOperatorWarningSink(operatorWarningSink);
         // B4, B10, B11 (design 8.3): B10 and B11 are off the FSM2 path (counted drops under FSM2); B4 is a FSM2 worker's entry edge (F3). B12 is bound to the cluster FSM2 below.
         var passiveClientActivation = deploymentWiring.passiveClientSwitch(() -> reconcileNodeActivation(() -> runtimeReady(clusterNode),
-                                                                                                        nodeDeploymentManager));
+                                                                                                         nodeDeploymentManager));
         var workerAdmissionJoin = deploymentWiring.legacy("B10.WorkerAdmission", clusterDeploymentManager::onWorkerJoin);
         var placementRedrive = deploymentWiring.legacy("B11.PlacementRedrive",
                                                        clusterDeploymentManager::onNodePlacementPut);

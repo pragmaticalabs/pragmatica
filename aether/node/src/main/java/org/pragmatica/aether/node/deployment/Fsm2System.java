@@ -159,7 +159,8 @@ public final class Fsm2System {
     static TimeSpan submitTimeout(AetherNodeConfig config, boolean worker) {
         return worker
                ? ForwardingClusterNode.forwardApplyTimeout()
-               : config.protocol().applyTimeout();
+               : config.protocol()
+                       .applyTimeout();
     }
 
     /// How long a dead core can stay listed in this leader's core view beyond SWIM's own suspicion window (cluster assessment delta 3).
@@ -380,6 +381,7 @@ public final class Fsm2System {
             cluster.start();
             seams.start();
         }
+
         backlog.start();
     }
 
