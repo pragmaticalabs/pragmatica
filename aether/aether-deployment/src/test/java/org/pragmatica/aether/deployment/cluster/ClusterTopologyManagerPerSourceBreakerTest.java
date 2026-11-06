@@ -43,6 +43,8 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.Proxy;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -355,6 +357,71 @@ class ClusterTopologyManagerPerSourceBreakerTest {
         assertThat(asked.get()).as("inside the backoff window the node's source is resolved once, not hot-retried").isEqualTo(1);
         assertThat(manager.circuitBreakerStates()).isEmpty();
         assertThat(heal(Option.some(FROM_FIRST)).unwrap()).as("another node is not held by it").isInstanceOf(ProvisionDisposition.Dispatched.class);
+    }
+
+    /// v2711 survivor 9 (c23): the one-argument reset closes every source and returns the sum of the counts it cleared.
+    @Test
+    void operatorResetByReasonOnly_closesEverySource_andReturnsTheSumCleared() {
+        placeBoth();
+        failingSources.addAll(Set.of("eu-1", "eu-2"));
+        failHeals(FROM_FIRST, 3);
+        failHeals(FROM_SECOND, 2);
+
+        var prior = manager.resetCircuitBreaker("test");
+
+        assertThat(prior).isEqualTo(5);
+        assertThat(manager.circuitBreakerStates()).isEmpty();
+    }
+
+    /// v2711 survivor 9 (c01): a node that joins is attributed to the source its replacement was provisioned in, which is known before any
+    /// placement is committed for it; the join closes that source's breaker only.
+    @Test
+    void nodeJoins_attributedToTheSourceItsReplacementWasProvisionedIn_notToACommittedPlacement() {
+        placeBoth();
+        failingSources.addAll(Set.of("eu-1", "eu-2"));
+        failHeals(FROM_SECOND, 3);
+        failHeals(FROM_FIRST, 1);
+        failingSources.remove("eu-1");
+        var replacement = NodeId.randomNodeId();
+
+        var disposition = manager.provisionReplacement(replacement, Option.some(FROM_FIRST), MEMBERS, NodeRole.CORE).await();
+        manager.onNodeReady(replacement);
+
+        assertThat(disposition.unwrap()).isInstanceOf(ProvisionDisposition.Dispatched.class);
+        assertThat(manager.circuitBreakerStates().keySet()).as("only the replacement's source was closed").containsExactly("eu-2");
+    }
+
+    /// v2711 survivor 9 (c56, c57): a manager that keeps no breaker of its own has none to report, and a reset naming a source is the
+    /// reset it has, whatever the source.
+    @Test
+    void interfaceDefaults_noBreakerStates_andSourceResetDelegatesToTheReasonReset() {
+        var reasons = new CopyOnWriteArrayList<String>();
+        var bare = (ClusterTopologyManager) Proxy.newProxyInstance(ClusterTopologyManager.class.getClassLoader(),
+                                                                   new Class<?>[]{ClusterTopologyManager.class},
+                                                                   new DefaultsOnly(reasons));
+
+        assertThat(bare.circuitBreakerStates()).isEmpty();
+        assertThat(bare.resetCircuitBreaker("named", Option.some(FIRST))).isEqualTo(DefaultsOnly.CLEARED);
+        assertThat(bare.resetCircuitBreaker("unnamed", Option.none())).isEqualTo(DefaultsOnly.CLEARED);
+        assertThat(reasons).containsExactly("named", "unnamed");
+    }
+
+    /// Runs the interface defaults; the one abstract method they lean on records its reason and answers [#CLEARED].
+    private record DefaultsOnly(List<String> reasons) implements InvocationHandler {
+        static final int CLEARED = 7;
+
+        @Override
+        public Object invoke(Object proxy, java.lang.reflect.Method method, Object[] args) throws Throwable {
+            return method.isDefault()
+                   ? InvocationHandler.invokeDefault(proxy, method, args)
+                   : recorded(args);
+        }
+
+        private Object recorded(Object[] args) {
+            reasons.add((String) args[0]);
+
+            return CLEARED;
+        }
     }
 
     private void failHeals(NodeId departed, int times) {

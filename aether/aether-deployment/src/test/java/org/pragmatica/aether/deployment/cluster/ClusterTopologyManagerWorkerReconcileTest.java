@@ -327,6 +327,45 @@ class ClusterTopologyManagerWorkerReconcileTest {
         assertThat(manager.scalingHeld("community stable")).as("target_size changed while disabled").isFalse();
     }
 
+    /// v2711 survivor 9 (c34): with no auto-heal record at all, auto-heal is enabled, and every subject held earlier is announced as resumed
+    /// by the one call, not only the subject asked about.
+    @Test
+    void scalingHeld_noStateRecord_isEnabled_andResumesEveryHeldSubject() {
+        var manager = (ClusterTopologyManagerRecord) ctm;
+        var worker = ClusterTopologyManagerRecord.workerSubject("pool", "worker");
+        seedConfig(communityToml(1), entry("pool", "core", 3), entry("pool", "worker", 1));
+        autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.disabledAt("test", 1L, Map.of("community stable", 1, worker, 1))));
+        assertThat(manager.scalingHeld("community stable")).isTrue();
+        assertThat(manager.scalingHeld(worker)).isTrue();
+
+        autoHealRef.set(Option.none());
+
+        assertThat(manager.scalingHeld("community stable")).as("no record: enabled").isFalse();
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 4);
+        assertThat(warnings).containsExactly("auto-heal-scaling-held",
+                                             "auto-heal-scaling-held",
+                                             "auto-heal-scaling-resumed",
+                                             "auto-heal-scaling-resumed");
+    }
+
+    /// v2711 survivor 9 (c39): a deactivation ends the holds of that activation; the next activation holds, and warns, afresh.
+    @Test
+    void deactivate_endsTheHolds_soTheNextActivationWarnsAgain() {
+        var manager = (ClusterTopologyManagerRecord) ctm;
+        seedConfig(communityToml(1), entry("pool", "core", 3));
+        autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.disabledAt("test", 1L, Map.of("community stable", 1))));
+        ctm.activate();
+        assertThat(manager.scalingHeld("community stable")).isTrue();
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 1);
+
+        ctm.deactivate();
+        ctm.activate();
+        assertThat(manager.scalingHeld("community stable")).isTrue();
+
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 2);
+        assertThat(warnings).containsExactly("auto-heal-scaling-held", "auto-heal-scaling-held");
+    }
+
     /// v2711 survivor 5 (c49): installing the community reconciler hands it the CTM's own auto-heal hold, so the community path honours a
     /// disable; without that wiring the reconciler's default hold answers "never held".
     @Test

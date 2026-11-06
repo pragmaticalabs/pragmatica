@@ -563,6 +563,25 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(ctm.inventoryWait().isPresent()).as("the activation that waited has ended").isFalse();
     }
 
+    /// v2711 survivor 9 (c07): a reset of one source is a change of circumstance too; it ends the recorded inventory wait and resets the
+    /// provisioner's state, exactly as the reset of every source does.
+    @Test
+    void resetOfOneSource_endsTheInventoryWait_andResetsTheProvisionerState() {
+        var resets = new java.util.concurrent.atomic.AtomicInteger();
+
+        ctm.activate();
+        lifecycleManager.onResetProvisionerState(resets::incrementAndGet);
+        lifecycleManager.deferProvision = true;
+        lifecycleManager.deferCause = CapacityControlledLifecycle.AdmissionFailure.INVENTORY_UNAVAILABLE;
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
+        assertThat(ctm.inventoryWait().isPresent()).isTrue();
+
+        ctm.resetCircuitBreaker("test", Option.some(org.pragmatica.aether.environment.SourceName.DEFAULT));
+
+        assertThat(ctm.inventoryWait().isPresent()).as("the wait ended with the reset").isFalse();
+        assertThat(resets.get()).as("the provisioner state was reset once").isEqualTo(1);
+    }
+
     /// The operator events of the lifecycle (the release of an abandoned dispatch) reach the sink the node gives the manager: the manager
     /// hands its sink on to the lifecycle it owns.
     @Test
