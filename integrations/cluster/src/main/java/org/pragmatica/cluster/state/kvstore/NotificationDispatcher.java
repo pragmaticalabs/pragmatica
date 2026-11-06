@@ -17,6 +17,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.function.LongConsumer;
 
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueGet;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -111,6 +112,11 @@ final class NotificationDispatcher {
     private final Map<String, Long> slowReportedAt = new ConcurrentHashMap<>();
     private final AtomicLong slowHandlerMaxNanos = new AtomicLong();
     private final AtomicLong closedDropped = new AtomicLong();
+
+    /// Told, on the delivering thread, the revision of each replay item BEFORE its burst is computed and delivered, so an install is signalled even
+    /// when its burst is empty. Set once at wiring; the default ignores it.
+    private volatile LongConsumer replayStart = _ -> {};
+
     private final ThreadLocal<Boolean> replaying = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private final ThreadLocal<Option<DeliveryBatch>> delivering = ThreadLocal.withInitial(Option::none);
     /// Mutation guard holder only (inline mode): true while this thread's drain is running, so a reentrant write appends.
@@ -165,6 +171,11 @@ final class NotificationDispatcher {
 
     boolean threaded() {
         return threaded;
+    }
+
+    @Contract
+    void onReplayStart(LongConsumer listener) {
+        replayStart = listener;
     }
 
     String name() {
@@ -344,6 +355,10 @@ final class NotificationDispatcher {
         delivering.set(Option.some(batch));
         replaying.set(batch.replay());
         try {
+            if (batch.replay()) {
+                replayStart.accept(batch.revision());
+            }
+
             var messages = batch.replay()
                            ? store.replayBurst()
                            : batch.notifications();

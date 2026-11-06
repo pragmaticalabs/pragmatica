@@ -304,6 +304,7 @@ class NodeFsmInterpreterTest {
                 var desired = rig.countOf("DesiredPut");
                 var targets = rig.countOf("TargetPut");
 
+                rig.interpreter.installedAt(1L);
                 rig.interpreter.deliverKv(new NodeFsmInput.DesiredPut(BILLING, desired(SliceGoal.LOADED)), 1L, true);
                 rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), 1L, true);
                 rig.interpreter.deliverKv(new NodeFsmInput.DesiredPut(AUDIT, desired(SliceGoal.LOADED)), 1L, false);
@@ -328,6 +329,7 @@ class NodeFsmInterpreterTest {
                 rig.enter();
                 var targets = rig.countOf("TargetPut");
 
+                rig.interpreter.installedAt(entered);
                 rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), entered, true);
                 rig.settle();
 
@@ -346,6 +348,7 @@ class NodeFsmInterpreterTest {
                 // the store's own deliveries are plain inputs and would close the burst: let them all reach the consumer first
                 await().atMost(Duration.ofSeconds(10)).until(() -> !rig.store.hasPendingNotifications());
                 rig.settle();
+                rig.interpreter.installedAt(entered);
                 rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(AUDIT.base(), AUDIT.version()), entered, true);
                 rig.settle();
 
@@ -358,6 +361,7 @@ class NodeFsmInterpreterTest {
                 rig.awaitThat(() -> rig.countOf("ConfigChanged") > parked);
                 var targets = rig.countOf("TargetPut");
                 rig.interpreter.requestEntry(false);
+                rig.interpreter.installedAt(entered);
                 rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), entered, true);
                 gate.countDown();
                 rig.settle();
@@ -379,6 +383,7 @@ class NodeFsmInterpreterTest {
                 var stepped = worker.countOf("TargetPut");
                 var coreStepped = core.countOf("TargetPut");
 
+                worker.interpreter.installedAt(entered + 5);
                 worker.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), entered + 5, true);
                 core.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), entered + 5, true);
                 worker.settle();
@@ -387,6 +392,64 @@ class NodeFsmInterpreterTest {
                 assertThat(worker.countOf("TargetPut")).isEqualTo(stepped + 1);
                 assertThat(core.countOf("TargetPut")).as("the core rule is unchanged").isEqualTo(coreStepped);
                 assertThat(core.metric("TargetPut", "dropped_replay")).isEqualTo(1);
+            }
+        }
+
+        /// F1 (v2770c, probe E1): an install whose burst is EMPTY still resets the watermark to its revision (D8: EVERY install). Install 1 is high
+        /// with a one-input burst; install 2 is at revision 1 with no burst at all; the live input at revision 3 is then stepped. Mutation: the
+        /// install signal not resetting (the reset inferred from a burst item), and the live input is dropped against install 1's revision.
+        @Test
+        void anInstallWithAnEmptyBurst_resetsTheWatermark() {
+            try (var rig = new NodeRig(ReplayRule.WORKER)) {
+                var entered = rig.permit(ORDERS).goal(ORDERS, SliceGoal.LOADED).applier.slot();
+
+                rig.enter();
+                rig.interpreter.installedAt(entered + 50);
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), entered + 50, true);
+                rig.interpreter.installedAt(1L);
+                rig.settle();
+                var targets = rig.countOf("TargetPut");
+
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(AUDIT.base(), AUDIT.version()), 3L, false);
+                rig.settle();
+
+                assertThat(rig.countOf("TargetPut")).as("the live input of the new life, above the empty install's revision").isEqualTo(targets + 1);
+                assertThat(rig.metric("TargetPut", "dropped_revision")).isZero();
+            }
+        }
+
+        /// F3 (v2770c): `NO_INSTALL` is below every revision, revision 0 included. A worker's first install, at revision 0 and before any entry, is
+        /// read as an install and its burst is stepped. Mutation: the sentinel set to 0 (the install is taken for one already read, and the burst, at
+        /// the fresh watermark 0, is dropped).
+        @Test
+        void aFirstInstallAtRevisionZero_beforeAnyEntry_stepsItsBurst() {
+            try (var rig = new NodeRig(ReplayRule.WORKER)) {
+                var targets = rig.countOf("TargetPut");
+
+                rig.interpreter.installedAt(0L);
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), 0L, true);
+                rig.settle();
+
+                assertThat(rig.countOf("TargetPut")).isEqualTo(targets + 1);
+                assertThat(rig.metric("TargetPut", "dropped_revision")).isZero();
+            }
+        }
+
+        /// A core never reads an install signal: its drop rule is untouched, so the install signal alone changes nothing there.
+        @Test
+        void aCoreIgnoresTheInstallSignal() {
+            try (var core = new NodeRig()) {
+                var entered = core.permit(ORDERS).goal(ORDERS, SliceGoal.LOADED).applier.slot();
+
+                core.enter();
+                core.interpreter.installedAt(1L);
+                var targets = core.countOf("TargetPut");
+
+                core.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), entered, false);
+                core.settle();
+
+                assertThat(core.countOf("TargetPut")).as("still at or below the entry snapshot").isEqualTo(targets);
+                assertThat(core.metric("TargetPut", "dropped_revision")).isEqualTo(1);
             }
         }
     }

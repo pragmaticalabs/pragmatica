@@ -134,15 +134,34 @@ public final class DeploymentWiring {
         // thread, a wiring bug) maps to 0, which FsmRuntime drops and counts as dropped_revision (watermark >= 0): the fail-safe Fsm2Routes
         // documents. NodeFsmInterpreterTest (aRevisionZeroKvInput_againstAFreshWatermark_isDropped_notStepped) pins the drop; the binding itself is
         // pinned by DeploymentWiringProductionBindingTest; Fsm2RoutesTest pins only that the stamp reads 0 outside the dispatch.
-        return deploymentWiring(config.deploymentEngine(),
-                                worker,
-                                registry,
-                                guard,
-                                new Node(config.self(),
-                                         () -> store.notificationRevision()
-                                                    .or(0L),
-                                         store::isReplaying,
-                                         admissions));
+        var wiring = deploymentWiring(config.deploymentEngine(),
+                                      worker,
+                                      registry,
+                                      guard,
+                                      new Node(config.self(),
+                                               () -> store.notificationRevision()
+                                                          .or(0L),
+                                               store::isReplaying,
+                                               admissions));
+
+        return listeningForInstalls(wiring, store);
+    }
+
+    /// D8: on an FSM2 worker every replay item of the store, the replica feed's and the metadata channel's alike, tells the node FSM which snapshot it
+    /// installs. A core registers nothing: its interpreter drops replay-flagged inputs.
+    static DeploymentWiring listeningForInstalls(DeploymentWiring wiring, KVStore<AetherKey, AetherValue> store) {
+        if (wiring.isFsm2() && wiring.worker) {
+            store.onReplayStart(wiring::snapshotInstalled);
+        }
+
+        return wiring;
+    }
+
+    /// A replica snapshot was installed in the worker's store at `revision`; the node FSM resets its replay watermark to it (ruling D8).
+    @Contract
+    void snapshotInstalled(long revision) {
+        system.onPresent(fsm2 -> fsm2.nodeInterpreter()
+                                     .installedAt(revision));
     }
 
     /// The routes resolve the interpreters when an input arrives, not when the routes are built: the system is assembled after the route table

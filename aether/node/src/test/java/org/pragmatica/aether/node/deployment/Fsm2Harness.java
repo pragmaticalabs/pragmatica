@@ -130,6 +130,11 @@ final class Fsm2Harness implements AutoCloseable {
         return new Fsm2Harness(engine, false, true, true);
     }
 
+    /// As [#production], for a worker: the production factory also registers the store's install listener for the node FSM (ruling D8).
+    static Fsm2Harness productionWorker(DeploymentEngine engine) {
+        return new Fsm2Harness(engine, true, true, true);
+    }
+
     private Fsm2Harness(DeploymentEngine engine, boolean worker, boolean markerCommitted, boolean production) {
         this.markerCommitted.set(markerCommitted);
         this.markerEngine = engine;
@@ -152,6 +157,7 @@ final class Fsm2Harness implements AutoCloseable {
                                                             registry,
                                                             guard,
                                                             new DeploymentWiring.Node(SELF, () -> store.notificationRevision().or(0L), store::isReplaying, AdmissionSeam.admissionSeam(bootTokens::tokenOf, _ -> 0L)));
+            DeploymentWiring.listeningForInstalls(wiring, store);
         }
     }
 

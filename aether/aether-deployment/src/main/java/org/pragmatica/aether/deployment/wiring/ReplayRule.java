@@ -9,7 +9,7 @@ package org.pragmatica.aether.deployment.wiring;
 /// | Rule | A replay-flagged input | Any KV input at or below the snapshot revision |
 /// |---|---|---|
 /// | `CORE` | dropped, `dropped_replay`: a restore never runs while the engine is ACTIVE, and is bracketed by the genuine quorum edges | dropped, `dropped_revision` |
-/// | `WORKER` | a fact: a burst at a new install's revision is stepped as the authoritative diff and resets the snapshot revision to it (ruling D8, know `5b4db3a518`); the same install replayed again is deduplicated | dropped, `dropped_revision` |
+/// | `WORKER` | a fact: the install, signalled by the store ahead of its burst even when the burst is empty, resets the snapshot revision to its own, and the burst is stepped as the authoritative diff (ruling D8, know `5b4db3a518`); the same install replayed again is deduplicated | dropped, `dropped_revision` |
 ///
 /// **Why a worker steps a replay.** A worker's store is a replica fed by a core (owner ruling QJ-7, know `23ca0fd65f` D.2): a re-subscription
 /// installs a snapshot and replays the difference to what was delivered (`ReplicaApplier.install`, `KVStore.replayNotifications`), while the

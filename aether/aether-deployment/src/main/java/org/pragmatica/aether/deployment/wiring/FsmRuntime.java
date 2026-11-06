@@ -32,13 +32,14 @@ import org.slf4j.LoggerFactory;
 /// runs the [ReplayRule#WORKER] rule instead: a replay-flagged input is a fact, deduplicated by the same revision (design D8).
 ///
 /// **A worker's install resets the watermark (CTO ruling D8, know `5b4db3a518`).** On a worker every replica snapshot install (an incarnation
-/// change, `AHEAD`, any `restoreCommittedSnapshot`) is a new snapshot for the node FSM: its burst, the replay-flagged inputs stamped with the
-/// install's revision, is stepped as the authoritative diff, and the watermark becomes that revision, whether it is above or below the old one.
-/// An install is recognised by its revision: a replay at a revision other than the last install's (or the entry snapshot's) opens a new burst,
-/// which stays open until the next input that is not replay-flagged or the next entry snapshot. A later replay at the same revision is that
-/// install again and is deduplicated. Named limits: a different install at the same revision as the last one read is taken for it (its
-/// inputs are stepped only while that burst is still open), because the stamp carries no incarnation tag; and a same-incarnation install
-/// below what the worker already stepped (a lagging core) steps a regressed burst, #2776, as LEGACY does.
+/// change, `AHEAD`, any `restoreCommittedSnapshot`, a `restoreSnapshot` of the metadata channel) is a new snapshot for the node FSM. The install
+/// itself signals it ([#installedAt], fed by `KVStore.onReplayStart`, ahead of the burst and also when the burst is empty): the watermark becomes the
+/// install's revision, whether it is above or below the old one, and the burst, the replay-flagged inputs that follow, is stepped as the
+/// authoritative diff. The burst stays open until the next input that is not replay-flagged or the next entry snapshot. A later install signal at
+/// the revision of the last install read (or of the entry snapshot) is that install again and changes nothing; a replay-flagged input outside an
+/// open burst is judged by the watermark like any other. Named limits: a different install at the same revision as the last one read is taken for
+/// it, because the signal carries no incarnation tag; and a same-incarnation install below what the worker already stepped (a lagging core) steps a
+/// regressed burst, #2776, as LEGACY does.
 abstract class FsmRuntime<I, K, A> {
     private static final Logger log = LoggerFactory.getLogger(FsmRuntime.class);
     /// How long a stop waits for an interpreter (design 7, 2b; the cluster's stop bound): `[guess: 10 s; settled by E-07]`.
@@ -104,6 +105,12 @@ abstract class FsmRuntime<I, K, A> {
     /// Enqueues a KV-sourced `input` stamped by the delivering thread with `KVStore.notificationRevision()` and `KVStore.isReplaying()`.
     public boolean deliverKv(I input, long revision, boolean replay) {
         return offered(mailbox.offer(new FsmItem.Kv<>(input, revision, replay)), inputName(input));
+    }
+
+    /// Enqueues a worker's replica snapshot install at `revision`, ahead of the replay-flagged inputs of its burst (design D8). Called by the store's
+    /// delivering thread at the start of every replay item, so the order in the mailbox is the order of delivery.
+    public boolean installedAt(long revision) {
+        return offered(mailbox.offer(new FsmItem.Install<>(revision)), "SnapshotInstall");
     }
 
     /// Asks the consumer to enter: the consumer snapshots at a revision and steps the entry input, but only while not yet active.
@@ -174,6 +181,7 @@ abstract class FsmRuntime<I, K, A> {
         switch (item) {
             case FsmItem.Input<I, K> input -> step(input.input());
             case FsmItem.Kv<I, K> kv -> keyValue(kv);
+            case FsmItem.Install<I, K> install -> installSignal(install.revision());
             case FsmItem.Tick<I, K> tick -> tick(tick.tick());
             case FsmItem.Entry<I, K> entry -> entry(entry.reconcile());
             case FsmItem.Barrier<I, K> barrier -> barrier.reached().succeed(Unit.unit());
@@ -190,9 +198,6 @@ abstract class FsmRuntime<I, K, A> {
         burstOpen = burstOpen && kv.replay();
         if (kv.replay() && replayRule == ReplayRule.CORE) {
             count(inputName(kv.input()), "dropped_replay");
-        } else if (kv.replay() && kv.revision() != installRevision) {
-            installed(kv.revision());
-            step(kv.input());
         } else if (kv.replay() && burstOpen) {
             step(kv.input());
         } else if (kv.revision() <= watermark) {
@@ -202,11 +207,15 @@ abstract class FsmRuntime<I, K, A> {
         }
     }
 
-    /// A worker's replica install at `revision` (design D8): its burst is the authoritative diff, and what follows dedupes against `revision`.
-    private void installed(long revision) {
-        watermark = revision;
-        installRevision = revision;
-        burstOpen = true;
+    /// A worker's replica install at `revision` (design D8): its burst is the authoritative diff, and what follows dedupes against `revision`. The
+    /// install already read (the last one's, or the entry snapshot's) is not opened again. A core never installs under an ACTIVE interpreter, and
+    /// the store's listener is not registered there.
+    private void installSignal(long revision) {
+        if (replayRule == ReplayRule.WORKER && revision != installRevision) {
+            watermark = revision;
+            installRevision = revision;
+            burstOpen = true;
+        }
     }
 
     private void tick(FsmTimers.Tick<K> tick) {
