@@ -411,9 +411,7 @@ public final class DeploymentWiring {
     }
 
     private void placementPut(ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue> put) {
-        workerJoined(WorkerJoinDecision.workerJoinDecision(put.cause()
-                                                              .key()
-                                                              .nodeId(),
+        workerJoined(WorkerJoinDecision.workerJoinDecision(put.cause().key().nodeId(),
                                                            "worker",
                                                            HlcTimestamp.ZERO));
     }

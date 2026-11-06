@@ -2942,7 +2942,8 @@ public interface AetherNode extends ManageableNode {
         // B4, B10, B11 (design 8.3): B10 and B11 reach a FSM2 core's cluster FSM as `WorkerJoin` (#2762); B4 is a FSM2 worker's entry edge (F3). B12 is bound to the cluster FSM2 below.
         var passiveClientActivation = deploymentWiring.passiveClientSwitch(() -> reconcileNodeActivation(() -> runtimeReady(clusterNode),
                                                                                                          nodeDeploymentManager));
-        var workerAdmissionJoin = deploymentWiring.workerJoin("B10.WorkerAdmission", clusterDeploymentManager::onWorkerJoin);
+        var workerAdmissionJoin = deploymentWiring.workerJoin("B10.WorkerAdmission",
+                                                              clusterDeploymentManager::onWorkerJoin);
         var placementRedrive = deploymentWiring.placementRedrive(clusterDeploymentManager::onNodePlacementPut);
         var drainReportTarget = deploymentWiring.drainReport(clusterDeploymentManager::onNodeDraining);
         // B14 (design 4.4): under FSM2 a core's leader FSM is judged when the committed snapshot is restored; under LEGACY this adds nothing.
