@@ -148,7 +148,8 @@ class ControlLoopRequirementRecordTest {
 
         assertThat(await(() -> store.get(REACTIVE).isPresent())).as("REACTIVE tracks the capped decision").isTrue();
         assertThat(store.getTyped(REACTIVE, SliceRequirementValue.class).unwrap().instances()).isEqualTo(5);
-        assertThat(events).as("the floor holds the target, so no scaling is announced").isEmpty();
+        assertThat(events).as("the floor holds the target, so no scale-up is announced (the cap report is a separate event)")
+                          .noneMatch(ScalingEvent.ScaledUp.class::isInstance);
     }
 
     /// x01, x02, x04: the same decision again is not written and not announced again.
