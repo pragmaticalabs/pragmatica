@@ -46,10 +46,11 @@ class WorkflowLedgerTest {
     void runs_areOrderedByStartTime_oldestFirst() {
         var ledger = cluster.ledger(CORE_1);
 
-        ledger.create(run("wf-c", 30L, "k:c")).await().unwrap();
-        ledger.create(run("wf-a", 10L, "k:a")).await().unwrap();
+        ledger.create(run("wf-a", 30L, "k:a")).await().unwrap();
+        ledger.create(run("wf-c", 10L, "k:c")).await().unwrap();
         ledger.create(run("wf-b", 20L, "k:b")).await().unwrap();
-        assertThat(ledger.runs()).extracting(WorkflowRunValue::id).containsExactly("wf-a", "wf-b", "wf-c");
+        assertThat(ledger.runs()).as("by start time, not by id").extracting(WorkflowRunValue::id)
+                  .containsExactly("wf-c", "wf-b", "wf-a");
     }
 
     @Test
