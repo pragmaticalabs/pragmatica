@@ -160,9 +160,11 @@ class ReplicaAckGateTest {
 
         assertThat(ackOffsets(E2)).containsExactly(5L);
 
+        holdSyncs.set(false);
         replica.markVerifiedForEpoch(STREAM, PARTITION, E2);
+        handler.releaseDeferredAck(STREAM, PARTITION);
 
-        assertThat(ackOffsets(E2)).as("sent once").containsExactly(5L);
+        assertThat(ackOffsets(E2)).as("sent once; a released ack is consumed").containsExactly(5L);
     }
 
     /// G2: the committed epoch advanced between the deferral and the release. The deferred ack carries the old epoch and is
