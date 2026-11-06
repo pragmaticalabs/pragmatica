@@ -66,16 +66,18 @@ class OrphanBackstopTest {
         }
     }
 
+    // The loop is wired and its combiner activated BEFORE the requirements are seeded: activation re-evaluates every committed requirement
+    // base on the scheduler thread, and an evaluation that ran late would remove the requirements without the routed remove event.
     // Red when: the combiner does not remove the requirements of a base whose target is gone (the backstop evaluation drops its orphan
     // removal), or the loop does not hand a removed target to its combiner (onSliceTargetRemove stops routing).
     @Test
     void fsm2OrphanTargetRemoval_leavesNoRequirementOfTheBase() {
         var h = orphanAtRebuild();
 
+        wireLoop(h);
         h.seed(REACTIVE, requirement());
         h.seed(OPERATOR, requirement());
         h.drain();
-        wireLoop(h);
         assertThat(requirementsOfBase(h)).as("control: both requirements are committed before the removal")
                                          .containsExactlyInAnyOrder(REACTIVE, OPERATOR);
 
