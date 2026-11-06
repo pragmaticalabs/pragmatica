@@ -338,6 +338,30 @@ class NodeFsmInterpreterTest {
             }
         }
 
+        /// The install just read is not opened again: after install R's burst closed and a live input moved the watermark above R, the same
+        /// signal at R is a no-op, so a replayed input at the watermark is dropped. Mutation: the install signal not recording its revision as
+        /// the install's (the repeated signal resets the watermark to R and reopens the burst, and the replayed input is stepped).
+        @Test
+        void theSameInstallSignalledAgain_isNotOpenedAgain() {
+            try (var rig = new NodeRig(ReplayRule.WORKER)) {
+                var entered = rig.permit(ORDERS).goal(ORDERS, SliceGoal.LOADED).applier.slot();
+
+                rig.enter();
+                rig.interpreter.installedAt(entered + 5);
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), entered + 5, true);
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(ORDERS.base(), ORDERS.version()), entered + 6, false);
+                rig.settle();
+                var targets = rig.countOf("TargetPut");
+
+                rig.interpreter.installedAt(entered + 5);
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(AUDIT.base(), AUDIT.version()), entered + 6, true);
+                rig.settle();
+
+                assertThat(rig.countOf("TargetPut")).as("the repeated install opened no burst").isEqualTo(targets);
+                assertThat(rig.metric("TargetPut", "dropped_revision")).isEqualTo(1);
+            }
+        }
+
         /// A burst open before the entry is closed by it: the same revision after the entry is the install the snapshot read, and dropped.
         /// Mutation: the entry not closing the open burst (the input is stepped as its continuation).
         @Test
