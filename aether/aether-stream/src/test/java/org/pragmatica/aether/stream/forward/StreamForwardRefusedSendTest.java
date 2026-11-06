@@ -180,6 +180,9 @@ class StreamForwardRefusedSendTest {
             timed.result()
                  .onFailure(cause -> assertThat(StreamForwardError.isRetryablePublish(cause)).as("no retry can change it")
                                                                                             .isFalse());
+            timed.result()
+                 .onFailure(cause -> assertThat(cause.isTerminal() && !cause.isTransient()).as("a hard error, not a transient one")
+                                                                                          .isTrue());
         }
 
         /// A dead connection is not proof: the frame may sit in the offline buffer and land later, so the publish keeps
