@@ -13,7 +13,10 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForward;
+import org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForwardResponse;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.WriteOutcome;
@@ -33,7 +36,11 @@ import static org.pragmatica.aether.stream.forward.StreamForwardClient.streamFor
 /// timeout. Refused under backpressure, a dead connection or no peer state is the transient
 /// [StreamForwardError.ForwardNotSent] every re-reading caller backs off on; an encode failure is the hard
 /// [StreamForwardError.ForwardNotEncoded]; `Sent` keeps the read waiting. Red before #2574: every read waited out its
-/// timeout. Publishes are out of this change's scope (a follow-up) and are not tested here.
+/// timeout.
+///
+/// #2683, the publish side: a forwarded PUBLISH whose frame was refused before it was written fails at once with a KNOWN
+/// outcome ([StreamForwardError.PublishNotSent], [StreamForwardError.PublishNotEncoded]); `Sent` and `ConnectionDead` keep
+/// it waiting into "outcome unknown". Red before #2683: every publish waited out its forward wait.
 @Timeout(value = 60, unit = TimeUnit.SECONDS)
 class StreamForwardRefusedSendTest {
     private static final NodeId SELF = NodeId.randomNodeId();
@@ -140,6 +147,93 @@ class StreamForwardRefusedSendTest {
 
             assertThat(read.await(TimeSpan.timeSpan(5).seconds()).isFailure()).as("the refusal, not the late answer, resolved it")
                                                                                .isTrue();
+        }
+    }
+
+    /// #2683: the two outcomes that prove a PUBLISH frame never left fail the publish at once with the transient, retryable
+    /// [StreamForwardError.PublishNotSent]; an encode failure fails it at once with the hard
+    /// [StreamForwardError.PublishNotEncoded]. A dead connection and `Sent` keep it waiting: the offline buffer may still
+    /// deliver an ordinary frame, so its outcome is unknown until the wait ends.
+    @Nested
+    class NotSentPublishesFailAtOnce {
+        private static Promise<Long> publish(StreamForwardTransport transport, TimeSpan wait) {
+            return client(transport, wait).publishRemote(OWNER, STREAM, 0, new byte[]{1}, 0L);
+        }
+
+        @Test
+        void publishRemote_refusedBeforeWriting_failsWithinMillis_withARetryablePublishNotSent() {
+            List.<WriteOutcome> of(new WriteOutcome.BackpressureRefused(OWNER), new WriteOutcome.NoPeerState(OWNER))
+                .forEach(outcome -> assertPublishNotSentFast(timed(() -> publish(new OutcomeTransport(outcome), LONG_WAIT)),
+                                                             outcome));
+        }
+
+        @Test
+        void publishRemote_encodeFailed_failsAtOnce_withATerminalPublishNotEncoded() {
+            var outcome = new WriteOutcome.EncodeFailed(OWNER, "PublishForward");
+            var timed = timed(() -> publish(new OutcomeTransport(outcome), LONG_WAIT));
+
+            assertThat(timed.millis()).isLessThan(FAST_MILLIS);
+            timed.result()
+                 .onSuccess(_ -> Assertions.fail("a publish that could not be encoded cannot succeed"))
+                 .onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(StreamForwardError.PublishNotEncoded.class,
+                                                                              notEncoded -> assertThat(notEncoded.outcome()).isEqualTo(outcome)));
+            timed.result()
+                 .onFailure(cause -> assertThat(StreamForwardError.isRetryablePublish(cause)).as("no retry can change it")
+                                                                                            .isFalse());
+            timed.result()
+                 .onFailure(cause -> assertThat(cause.isTerminal() && !cause.isTransient()).as("a hard error, not a transient one")
+                                                                                          .isTrue());
+        }
+
+        /// A dead connection is not proof: the frame may sit in the offline buffer and land later, so the publish keeps
+        /// waiting and answers the unknown outcome, as before #2683.
+        @Test
+        void publishRemote_connectionDead_waitsIntoOutcomeUnknown() {
+            assertWaitsIntoOutcomeUnknown(timed(() -> publish(new OutcomeTransport(new WriteOutcome.ConnectionDead(OWNER)),
+                                                              SHORT_WAIT)));
+        }
+
+        @Test
+        void publishRemote_sent_waitsIntoOutcomeUnknown() {
+            assertWaitsIntoOutcomeUnknown(timed(() -> publish(new OutcomeTransport(new WriteOutcome.Sent(OWNER)), SHORT_WAIT)));
+        }
+
+        /// The failure removed the pending entry: an ack that arrives afterwards finds nothing and resolves nothing.
+        @Test
+        void publishRemote_notSent_lateAckIsOrphaned() {
+            var transport = new OutcomeTransport(new WriteOutcome.BackpressureRefused(OWNER));
+            var forwardClient = client(transport, LONG_WAIT);
+            var publish = forwardClient.publishRemote(OWNER, STREAM, 0, new byte[]{1}, 0L);
+            var correlationId = ((PublishForward) transport.frames.getFirst()).correlationId();
+
+            forwardClient.onPublishForwardResponse(PublishForwardResponse.successResponse(OWNER, correlationId, 7L));
+
+            assertThat(publish.await(TimeSpan.timeSpan(5).seconds()).isFailure()).as("the refusal, not the late ack, resolved it")
+                                                                                  .isTrue();
+        }
+
+        private static void assertPublishNotSentFast(Timed<Long> timed, WriteOutcome outcome) {
+            assertThat(timed.millis()).as("a publish that was not sent fails at once, not at the 20 s wait (%s)", outcome)
+                                      .isLessThan(FAST_MILLIS);
+            timed.result()
+                 .onSuccess(_ -> Assertions.fail("a publish that was not sent cannot succeed"))
+                 .onFailure(cause -> assertRetryableNotSent(cause, outcome));
+        }
+
+        private static void assertRetryableNotSent(Cause cause, WriteOutcome outcome) {
+            assertThat(cause).isInstanceOfSatisfying(StreamForwardError.PublishNotSent.class,
+                                                     notSent -> assertThat(notSent.outcome()).isEqualTo(outcome));
+            assertThat(cause.isTransient()).isTrue();
+            assertThat(StreamForwardError.isRetryablePublish(cause)).as("the forwarder retries it: it was never written")
+                                                                   .isTrue();
+            assertThat(cause).as("a known outcome, not an unknown one").isNotInstanceOf(PublishOutcomeUnknown.class);
+        }
+
+        private static void assertWaitsIntoOutcomeUnknown(Timed<Long> timed) {
+            assertThat(timed.millis()).as("waited for the ack").isGreaterThanOrEqualTo(250L);
+            timed.result()
+                 .onSuccess(_ -> Assertions.fail("an unacknowledged publish cannot succeed"))
+                 .onFailure(cause -> assertThat(cause).isInstanceOf(PublishOutcomeUnknown.class));
         }
     }
 

@@ -103,7 +103,7 @@ class AppHttpServerIngestGateRotationTest {
     }
 
     private static String post(int port, String path, int size) throws Exception {
-        return H3Probe.exchange(port, stream -> {
+        return String.valueOf(H3Probe.exchange(port, stream -> {
             var headers = H3Probe.requestHeaders(port, "POST");
 
             headers.headers().path(path);
@@ -111,7 +111,7 @@ class AppHttpServerIngestGateRotationTest {
             stream.write(headers);
             stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[size])))
                   .addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
-        }).status();
+        }).statusCode());
     }
 
     private static final class OkRouter implements SliceRouter {

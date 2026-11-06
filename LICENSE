@@ -15,8 +15,6 @@ Business Source License 1.1 (full text in each module's own LICENSE file), these
     aether/node/
     aether/aether-deployment/
     aether/aether-control/
-    aether/aether-ttm/
-    aether/aether-ttm-onnx/
     aether/ember/
     aether/forge/forge-api/
     aether/forge/forge-core/

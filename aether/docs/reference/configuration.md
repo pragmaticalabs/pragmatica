@@ -53,7 +53,6 @@ before calling `.build()`):
 | `protocol` | `ProtocolConfig.defaultConfig()` |
 | `sliceAction` | `SliceActionConfig.sliceActionConfig()` |
 | `cache` | `DHTConfig.CACHE_DEFAULT` |
-| `ttm` | `TtmConfig.ttmConfig()` |
 | `rollback` | `RollbackConfig.rollbackConfig()` |
 | `controllerConfig` | `ControllerConfig.DEFAULT` |
 | `autoHeal` | `AutoHealConfig.DEFAULT` |

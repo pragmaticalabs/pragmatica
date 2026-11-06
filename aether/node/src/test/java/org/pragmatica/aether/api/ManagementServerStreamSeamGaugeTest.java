@@ -22,7 +22,6 @@ import org.pragmatica.aether.invoke.ScheduledTaskManager;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
 import org.pragmatica.aether.invoke.ScheduledTaskStateRegistry;
 import org.pragmatica.aether.invoke.SliceInvoker;
-import org.pragmatica.aether.node.ClusterTestPorts;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.resource.entity.EntityCheckpointDriver;
 import org.pragmatica.aether.stream.StreamPartitionManager;
@@ -121,7 +120,8 @@ class ManagementServerStreamSeamGaugeTest {
         when(node.storageSetups()).thenReturn(Map.of());
         when(node.streamPartitionManager()).thenReturn(spm);
 
-        return ManagementServer.managementServer(freePort(),
+        // #2719: port 0 - the listener binds its own port; a probed-then-released port can be taken before the bind.
+        return ManagementServer.managementServer(0,
                                                  () -> node,
                                                  mock(EntityCheckpointDriver.class, NONE_OR_MOCK),
                                                  mock(AlertManager.class, NONE_OR_MOCK),
@@ -148,9 +148,5 @@ class ManagementServerStreamSeamGaugeTest {
                                                  Set::of,
                                                  org.pragmatica.aether.api.routes.NodeLifecycleRoutes.SliceFloor.sliceFloor((_, _) -> java.util.List.of(),
                                                                                                                          org.pragmatica.utility.warning.OperatorWarningSink.logOnly()));
-    }
-
-    private static int freePort() {
-        return ClusterTestPorts.freeTcpAndUdpPort();
     }
 }

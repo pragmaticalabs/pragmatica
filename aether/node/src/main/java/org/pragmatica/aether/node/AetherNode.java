@@ -162,8 +162,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipV
 import org.pragmatica.aether.slice.kvstore.ReplicaFilter;
 import org.pragmatica.aether.slice.repository.CompositeRepository;
 import org.pragmatica.aether.slice.repository.Repository;
-import org.pragmatica.aether.ttm.AdaptiveDecisionTree;
-import org.pragmatica.aether.ttm.TTMManager;
 import org.pragmatica.aether.update.AbTestManager;
 import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.aether.worker.governor.GovernorAnnouncer;
@@ -320,7 +318,6 @@ public interface AetherNode extends ManageableNode {
     Option<DynamicConfigManager> dynamicConfigManager();
     AppHttpServer appHttpServer();
     HttpRouteRegistry httpRouteRegistry();
-    TTMManager ttmManager();
     RollbackManager rollbackManager();
     ComprehensiveSnapshotCollector snapshotCollector();
     ArtifactMetricsCollector artifactMetricsCollector();
@@ -1115,6 +1112,11 @@ public interface AetherNode extends ManageableNode {
     /// the unsealed ranges and stops anyway. It runs beside the backup flush, inside `Main`'s 30 s and Ember's 10 s stop
     /// bounds; one seal is one local write and one DHT put. [guess: 5 s, nothing measured it]
     TimeSpan SEALER_STOP_FLUSH_BOUND = TimeSpan.timeSpan(5).seconds();
+    /// #2688: how long a stop waits for the leader deactivation (the `LeaderChange` the passive notification raises) to be
+    /// delivered to the leader-toggled components before it warns and quiesces the router anyway. The reaction is in-memory
+    /// toggling; the bound is for a wedged `LeaderManager` reaction, and it runs ahead of the backup and sealer flushes inside
+    /// Ember's 10 s and `Main`'s 30 s stop bounds. [guess: 2 s, nothing measured it]
+    TimeSpan LEADER_DEACTIVATION_BOUND = TimeSpan.timeSpan(2).seconds();
     /// #1730: how soon a refused (moved-record) ownership write is re-decided.
     TimeSpan OWNERSHIP_REDRIVE_DELAY = TimeSpan.timeSpan(1).seconds();
     /// Declarative stream-consumer ownership poll (#488). No role-change callback is available to a
@@ -1721,7 +1723,6 @@ public interface AetherNode extends ManageableNode {
                           LogLevelRegistry logLevelRegistry,
                           Option<DynamicConfigManager> dynamicConfigManager,
                           AppHttpServer appHttpServer,
-                          TTMManager ttmManager,
                           RollbackManager rollbackManager,
                           ScheduledTaskManager scheduledTaskManager,
                           ComprehensiveSnapshotCollector snapshotCollector,
@@ -1788,7 +1789,8 @@ public interface AetherNode extends ManageableNode {
                           StoragePrefetchChannel prefetchChannel,
                           // Phase-3 design 8.3: the one place the engine-dependent hooks are bound; stopped with the node.
                           DeploymentWiring deploymentWiring,
-                          NodeReactors reactors) implements AetherNode {
+                          NodeReactors reactors,
+                          LeaderDeactivation leaderDeactivation) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
             @Override
@@ -1941,14 +1943,57 @@ public interface AetherNode extends ManageableNode {
                                                                                        backupReplica()))
                                                    .or(Promise.unitPromise());
                 // B13 (design 7, 2a/2b): PASSIVE, then the FSM2 node's SUSPEND drain (a no-op under LEGACY), then the quiesce.
-                deploymentWiring.leaveQuorum(() -> router.route(ClusterStateNotification.passive()),
-                                             router::quiesce);
+                // #2688: the passive notification ends in LeaderChange(none), which the FSM routes onto the LeaderManager react
+                // executor (D1-react), so the leader-toggled components deactivate on that thread, after route() has returned.
+                // The quiesce (a quiesced router drops that reaction) waits, bounded, for that deactivation to have been delivered
+                // (LeaderDeactivation), and everything below runs after the quiesce, in rc5's order: the FSM2 close, the components'
+                // stops (stopNodeComponents), the backup and sealer flushes, then NodeStopSequence. The promise stop() returns
+                // waits for all of it, so "stopped" means those components are inactive.
+                var quorumLeft = deploymentWiring.leaveQuorum(() -> router.route(ClusterStateNotification.passive()),
+                                                              () -> leaderDeactivation.delivered(reactors.executor("LeaderManager"),
+                                                                                                 LEADER_DEACTIVATION_BOUND),
+                                                              router::quiesce);
+                // #642: the cluster-deployment FSM's fixed-rate reconcile timer is cancelled only by
+                // Active.onExit, which nothing reached at shutdown — a stopped node kept running full
+                // deployment reconciles. deactivate() is the same designed path a leader loss takes.
+                //
+                // It heads the chain, so the rest of the shutdown DEPENDS on it staying infallible: it
+                // currently dispatches an FSM event and returns unitPromise(), never a failure. Should
+                // it ever gain a failure path, every stop below — management server, app HTTP, slice
+                // invoker, cluster node — would be skipped by flatMap short-circuit. Recover here at
+                // that point rather than leaving the node half-stopped.
+                //
+                // #1612: the chain lives in NodeStopSequence, where a failed HTTP listener stop is logged and
+                // skipped past rather than ending the shutdown.
+                return quorumLeft.map(this::stopDeploymentWiring)
+                                 .flatMap(() -> stopNodeComponents(backupFlushed))
+                                 .flatMap(() -> NodeStopSequence.run(NodeStopSequence.Steps.steps(this::releaseWatchesThenDeactivate,
+                                                                                                  () -> managementServer.map(ManagementServer::stop)
+                                                                                                                        .or(Promise.unitPromise()),
+                                                                                                  appHttpServer::stop,
+                                                                                                  sliceInvoker::stop,
+                                                                                                  this::closeSharedResources,
+                                                                                                  this::shutdownStorage,
+                                                                                                  clusterNode::stop)))
+                                 .withResult(_ -> closeKvStore())
+                                 .onSuccess(_ -> log.info("Aether node {} stopped",
+                                                          self()));
+            }
+
+            /// B13: the FSM2 interpreters close, after the quiesce that follows the delivery of the passive notification's `LeaderChange` reaction (#2688).
+            private Unit stopDeploymentWiring(Unit unit) {
                 deploymentWiring.stop();
+
+                return unit;
+            }
+
+            /// The components' stops, after the quiesce and the FSM2 close (rc5's order, restored by #2688). Returns the backup's
+            /// bounded flush and then the sealer's, which the stop waits for (rc5's join order, backup first).
+            private Promise<Unit> stopNodeComponents(Promise<Unit> backupFlushed) {
                 controlLoop.stop();
                 workerMetricsAggregator.stop();
                 metricsScheduler.stop();
                 deploymentMetricsScheduler.stop();
-                ttmManager.stop();
                 scheduledTaskManager.stop();
                 snapshotCollector.stop();
                 SliceRuntime.clear();
@@ -1993,30 +2038,8 @@ public interface AetherNode extends ManageableNode {
                 alertManager.closeForwarder();
                 observabilityBaseline.sampler().onPresent(AdaptiveSampler::stop);
                 discoveryProvider.onPresent(this::deregisterFromDiscovery);
-                // #642: the cluster-deployment FSM's fixed-rate reconcile timer is cancelled only by
-                // Active.onExit, which nothing reached at shutdown — a stopped node kept running full
-                // deployment reconciles. deactivate() is the same designed path a leader loss takes.
-                //
-                // It heads the chain, so the rest of the shutdown DEPENDS on it staying infallible: it
-                // currently dispatches an FSM event and returns unitPromise(), never a failure. Should
-                // it ever gain a failure path, every stop below — management server, app HTTP, slice
-                // invoker, cluster node — would be skipped by flatMap short-circuit. Recover here at
-                // that point rather than leaving the node half-stopped.
-                //
-                // #1612: the chain lives in NodeStopSequence, where a failed HTTP listener stop is logged and
-                // skipped past rather than ending the shutdown.
-                return backupFlushed.flatMap(() -> streamsStopped)
-                                    .flatMap(() -> NodeStopSequence.run(NodeStopSequence.Steps.steps(this::releaseWatchesThenDeactivate,
-                                                                                                     () -> managementServer.map(ManagementServer::stop)
-                                                                                                                           .or(Promise.unitPromise()),
-                                                                                                     appHttpServer::stop,
-                                                                                                     sliceInvoker::stop,
-                                                                                                     this::closeSharedResources,
-                                                                                                     this::shutdownStorage,
-                                                                                                     clusterNode::stop)))
-                                    .withResult(_ -> closeKvStore())
-                                    .onSuccess(_ -> log.info("Aether node {} stopped",
-                                                             self()));
+
+                return backupFlushed.flatMap(() -> streamsStopped);
             }
 
             @Override
@@ -2242,7 +2265,6 @@ public interface AetherNode extends ManageableNode {
                                   ? config.appHttp().port()
                                   : 0;
                 var peerCount = config.topology().coreNodes().size();
-                var ttmEnabled = ttmManager.isEnabled();
                 var tlsEnabled = config.tls().isPresent();
 
                 log.info("{}", "+-----------------------------------------------------------------+");
@@ -2263,11 +2285,6 @@ public interface AetherNode extends ManageableNode {
                 }
 
                 log.info("|  Peers:          {}", pad(peerCount + " configured", 46) + "|");
-                log.info("|  TTM:            {}",
-                         pad(ttmEnabled
-                             ? "enabled"
-                             : "disabled",
-                             46) + "|");
                 log.info("|  TLS:            {}",
                          pad(tlsEnabled
                              ? "enabled"
@@ -2824,15 +2841,8 @@ public interface AetherNode extends ManageableNode {
                                                                                     eventAggregator,
                                                                                     kvStore,
                                                                                     clusterEventsStreamName));
-        var ttmManager = TTMManager.ttmManager(config.ttm(),
-                                               minuteAggregator,
-                                               controller::configuration)
-                                   .or(TTMManager.noOp(config.ttm()));
-        ClusterController effectiveController = ttmManager.isEnabled()
-                                                ? AdaptiveDecisionTree.adaptiveDecisionTree(controller, ttmManager)
-                                                : controller;
         var controlLoop = ControlLoop.controlLoop(config.self(),
-                                                  effectiveController,
+                                                  controller,
                                                   metricsCollector,
                                                   Option.some(invocationMetrics),
                                                   clusterNode,
@@ -2987,6 +2997,8 @@ public interface AetherNode extends ManageableNode {
         // routes through this detector's windowed path, so the route-collection needs the ref
         // (the detector itself is constructed below and `set` into the ref before routing starts).
         var quorumLossDetectorRef = new AtomicReference<QuorumLossDetector>();
+        // #2688: watches the LeaderChange deliveries the toggles receive, for stop() to wait on.
+        var leaderDeactivation = LeaderDeactivation.leaderDeactivation();
         var aetherEntries = collectRouteEntries(kvStore,
                                                 nodeDeploymentManager,
                                                 clusterDeploymentManager,
@@ -3010,7 +3022,6 @@ public interface AetherNode extends ManageableNode {
                                                 logLevelRegistry,
                                                 ownershipEpochHighWater,
                                                 dynamicConfigManager,
-                                                ttmManager,
                                                 rabiaMetricsCollector,
                                                 deploymentManager,
                                                 abTestManager,
@@ -3027,6 +3038,7 @@ public interface AetherNode extends ManageableNode {
                                                 consumerGroupRegistry,
                                                 quorumLossDetectorRef,
                                                 managementServerRef,
+                                                leaderDeactivation,
                                                 config.self());
 
         TopologyAssembly.placementDrainRoutes(new TopologyAssembly.PlacementDrainRoutesInputs(config,
@@ -3601,7 +3613,6 @@ public interface AetherNode extends ManageableNode {
                                   logLevelRegistry,
                                   dynamicConfigManager,
                                   appHttpServer,
-                                  ttmManager,
                                   rollbackManager,
                                   scheduledTaskManager,
                                   snapshotCollector,
@@ -3657,7 +3668,8 @@ public interface AetherNode extends ManageableNode {
                                   upgradeWiring.service(),
                                   prefetchChannel,
                                   deploymentWiring,
-                                  reactors);
+                                  reactors,
+                                  leaderDeactivation);
 
         nodeDeploymentManager.setShutdownCallback(node::stop);
         StreamAssembly.retentionWatch(new StreamAssembly.RetentionWatchInputs(kvStore,
@@ -3814,7 +3826,6 @@ public interface AetherNode extends ManageableNode {
                                                                             logLevelRegistry,
                                                                             dynamicConfigManager,
                                                                             appHttpServer,
-                                                                            ttmManager,
                                                                             rollbackManager,
                                                                             scheduledTaskManager,
                                                                             snapshotCollector,
@@ -3870,7 +3881,8 @@ public interface AetherNode extends ManageableNode {
                                                                             upgradeWiring.service(),
                                                                             prefetchChannel,
                                                                             deploymentWiring,
-                                                                            reactors);
+                                                                            reactors,
+                                                                            leaderDeactivation);
                                                   }
 
                                                   return node;
@@ -4542,16 +4554,6 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
-    /// TTMManager — TaskGroup SCALING.
-    @SuppressWarnings("JBCT-RET-01")
-    private static void toggleTtmOnLeaderChange(LeaderNotification.LeaderChange change, TTMManager ttmManager) {
-        if (change.localNodeIsLeader()) {
-            ttmManager.activate();
-        } else {
-            ttmManager.deactivate();
-        }
-    }
-
     /// RollbackManager — TaskGroup SCALING.
     @SuppressWarnings("JBCT-RET-01")
     private static void toggleRollbackOnLeaderChange(LeaderNotification.LeaderChange change,
@@ -4817,7 +4819,6 @@ public interface AetherNode extends ManageableNode {
                                                                     LogLevelRegistry logLevelRegistry,
                                                                     OwnershipEpochHighWater ownershipEpochHighWater,
                                                                     Option<DynamicConfigManager> dynamicConfigManager,
-                                                                    TTMManager ttmManager,
                                                                     RabiaMetricsCollector rabiaMetricsCollector,
                                                                     DeploymentManager deploymentManager,
                                                                     AbTestManager abTestManager,
@@ -4834,6 +4835,7 @@ public interface AetherNode extends ManageableNode {
                                                                     ConsumerGroupRegistry consumerGroupRegistry,
                                                                     AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
                                                                     AtomicReference<Option<ManagementServer>> managementServerRef,
+                                                                    LeaderDeactivation leaderDeactivation,
                                                                     NodeId self) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
         // #887 E2/E3: every node derives its security overrides from the replicated blueprint. The
@@ -5033,19 +5035,19 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> toggleDeploymentMetricsOnLeaderChange(change,
                                                                                               deploymentMetricsScheduler)));
-        // #231 Step 2 — SCALING (ControlLoop, TTMManager, RollbackManager), STRATEGIES (AbTestManager),
+        // #231 Step 2 — SCALING (ControlLoop, RollbackManager), STRATEGIES (AbTestManager),
         // and DeploymentManager leader-pinned. ControlLoop did NOT previously receive LeaderChange
         // (only ClusterStateNotification + MembershipDecision), so this toggle is additive — no duplicate.
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> toggleControlLoopOnLeaderChange(change, controlLoop)));
-        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                              change -> toggleTtmOnLeaderChange(change, ttmManager)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> toggleRollbackOnLeaderChange(change, rollbackManager)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> toggleAbTestOnLeaderChange(change, abTestManager)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> toggleDeploymentManagerOnLeaderChange(change, deploymentManager)));
+        // #2688: after the toggles, on their route: stop() waits for the deactivation this records to be delivered.
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, leaderDeactivation::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> rabiaMetricsCollector.updateRole(change.localNodeIsLeader(),
                                                                                          change.leaderId()

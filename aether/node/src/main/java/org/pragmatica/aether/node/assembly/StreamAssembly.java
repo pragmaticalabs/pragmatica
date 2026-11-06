@@ -1414,6 +1414,12 @@ public sealed interface StreamAssembly {
                                                                                                   operatorWarningSink);
         // #1730 phase 2 (B7): a copy not yet compared with the committed owner of the current epoch acknowledges nothing.
         streamReplicationReceiveHandler.ackGate(streamPartitionManager::replicaVerified);
+        // #2599: the ack of a batch the gate held back is sent once a compare verifies the copy, not left to a later batch.
+        streamPartitionManager.onEpochVerified(streamReplicationReceiveHandler::releaseDeferredAck);
+        // #2599: a removed stream's deferred acks go with it, so none is released into a stream recreated under its name.
+        streamPartitionManager.onStreamRemoved(streamReplicationReceiveHandler::forgetDeferredAcks);
+        // #2599 G3: a backfill's ack goes out in the receive handler's per-partition section, settling a deferred ack it covers.
+        streamPartitionBackfill.backfillAckSink(streamReplicationReceiveHandler::ackBackfill);
         // #2087: a replica serves a consumer read only up to the owner's reported visible position.
         streamReplicationReceiveHandler.commitSink(streamPartitionManager::commitAdvanced);
         allEntries.add(MessageRouter.Entry.route(ReplicationMessage.CommitAdvance.class,

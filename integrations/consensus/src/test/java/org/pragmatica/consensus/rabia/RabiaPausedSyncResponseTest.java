@@ -60,9 +60,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// those pending batches — instead of the persisted/empty fallback that omits them and
 /// wedges a joiner unable to re-propose an in-flight batch.
 ///
-/// Deterministic, engine-level, no chaos. The only sleeps are the same executor-drain
-/// waits the established `RabiaEnginePauseResumeTest` harness uses (single-threaded
-/// in-process executor; not timing-dependent on wall-clock behaviour).
+/// Deterministic, engine-level, no chaos. Every step waits for the engine's single apply executor
+/// to drain (`settleForTesting`), never for wall-clock time: a fixed sleep shorter than a loaded
+/// host's executor lag read the engine before it had handled the message (#2720).
 class RabiaPausedSyncResponseTest {
 
     record TestCommand(String value) implements Command {}
@@ -94,12 +94,17 @@ class RabiaPausedSyncResponseTest {
         engine.stop().await();
     }
 
-    private void activateEngine() throws InterruptedException {
+    private void settle() {
+        engine.settleForTesting().await();
+        engine.settleForTesting().await();
+    }
+
+    private void activateEngine() {
         engine.clusterState(ClusterStateNotification.active());
-        Thread.sleep(150);
+        settle();
         engine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
         engine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
-        Thread.sleep(50);
+        settle();
     }
 
     private SyncResponse<TestCommand> lastSyncResponseTo() {
@@ -126,7 +131,7 @@ class RabiaPausedSyncResponseTest {
     /// and is never re-persisted — so it appears in the response if and only if the Paused branch
     /// serves live state. This is the exact #230 wedge the fix repairs.
     @Test
-    void pausedEngine_servesPendingBatches_onSyncRequest() throws InterruptedException {
+    void pausedEngine_servesPendingBatches_onSyncRequest() {
         activateEngine();
         assertThat(engine.isActive()).isTrue();
 
@@ -134,14 +139,14 @@ class RabiaPausedSyncResponseTest {
         // pause/resume suite) so we can also assert the retained phase travels in the response.
         var decisionBatch = Batch.<TestCommand>create(SERIALIZER, List.of(new TestCommand("committed")));
         engine.processDecision(new Decision<>(NODE_2, Phase.ZERO, StateValue.V1, decisionBatch));
-        Thread.sleep(80);
+        settle();
         var phaseBeforePause = engine.currentPhaseForTesting();
         assertThat(phaseBeforePause).as("phase must advance past ZERO").isNotEqualTo(Phase.ZERO);
 
         // Quorum loss → Paused. State (currentPhase + pendingBatches) is retained AND a snapshot
         // is persisted at this instant.
         engine.clusterState(ClusterStateNotification.passive());
-        Thread.sleep(80);
+        settle();
         assertThat(engine.isPaused()).as("DISAPPEARED must transition to Paused").isTrue();
 
         // Seed an in-flight batch AFTER the pause via the supported NewBatch receiver. This batch
@@ -149,7 +154,7 @@ class RabiaPausedSyncResponseTest {
         // discriminator between the live-state and persisted-fallback branches.
         var postPauseBatch = Batch.<TestCommand>create(SERIALIZER, List.of(new TestCommand("arrived-while-paused")));
         engine.handleNewBatch(new NewBatch<>(NODE_2, postPauseBatch));
-        Thread.sleep(50);
+        settle();
         assertThat(engine.pendingBatchCountForTesting())
             .as("post-pause batch must be retained in LIVE pendingBatches")
             .isGreaterThanOrEqualTo(1);
@@ -158,7 +163,7 @@ class RabiaPausedSyncResponseTest {
 
         // A joiner asks the Paused engine to sync.
         engine.handleSyncRequest(new SyncRequest(JOINER));
-        Thread.sleep(80);
+        settle();
 
         var response = lastSyncResponseTo();
         assertThat(response.sender()).isEqualTo(NODE_1);
@@ -176,14 +181,14 @@ class RabiaPausedSyncResponseTest {
     /// no valid live state) must still answer from the persisted/empty fallback — i.e. an
     /// EMPTY pendingBatches set — proving only Active/Observing/Paused serve live state.
     @Test
-    void stoppedEngine_servesEmptyFallback_onSyncRequest() throws InterruptedException {
+    void stoppedEngine_servesEmptyFallback_onSyncRequest() {
         // Fresh engine: initial state is Stopped(), in-memory persistence is empty.
         assertThat(engine.isActive()).isFalse();
         assertThat(engine.isPaused()).isFalse();
 
         network.clearMessages();
         engine.handleSyncRequest(new SyncRequest(JOINER));
-        Thread.sleep(80);
+        settle();
 
         var response = lastSyncResponseTo();
         assertThat(response.state().pendingBatches())
@@ -201,13 +206,13 @@ class RabiaPausedSyncResponseTest {
     /// with the Stopped case above so the marking is pinned at both ends of the branch the receiver's
     /// adoption rule now depends on.
     @Test
-    void activeEngine_marksItsResponseLive() throws InterruptedException {
+    void activeEngine_marksItsResponseLive() {
         activateEngine();
         assertThat(engine.isActive()).isTrue();
 
         network.clearMessages();
         engine.handleSyncRequest(new SyncRequest(JOINER));
-        Thread.sleep(80);
+        settle();
 
         assertThat(lastSyncResponseTo().responder())
             .as("#667: the producer marks a live engine's snapshot LIVE")

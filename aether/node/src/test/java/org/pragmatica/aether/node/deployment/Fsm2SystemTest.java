@@ -10,6 +10,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.Nested;
@@ -20,6 +21,8 @@ import org.pragmatica.aether.deployment.node.machine.LocalStep;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmEffect;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmInput;
 import org.pragmatica.aether.deployment.wiring.BacklogSampler;
+import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.LeaderDeactivation;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
@@ -32,6 +35,12 @@ import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.utility.react.ReactExecutor;
+import org.pragmatica.utility.react.ReactFailureSink;
+import org.pragmatica.utility.react.ReactGate;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -43,6 +52,7 @@ import static org.awaitility.Awaitility.await;
 /// dispatch across a real snapshot (PR C obligation 1).
 class Fsm2SystemTest {
     private static final Artifact ORDERS = Artifact.artifact("org.example:orders:1.0.0").unwrap();
+    private static final TimeSpan LEFT_BOUND = TimeSpan.timeSpan(10).seconds();
 
     private static boolean activeNode(Fsm2Harness harness) {
         return harness.system.map(system -> system.nodeInterpreter().model().active()).or(false);
@@ -345,14 +355,16 @@ class Fsm2SystemTest {
                 var order = new CopyOnWriteArrayList<String>();
 
                 enterQuorum(harness);
-                harness.wiring.leaveQuorum(() -> {
-                                               harness.router.route(ClusterStateNotification.passive());
-                                               order.add("passive");
-                                           },
-                                           () -> order.add(activeNode(harness)
-                                                           ? "quiesce-while-active"
-                                                           : "quiesce"));
+                var left = harness.wiring.leaveQuorum(() -> {
+                                                          harness.router.route(ClusterStateNotification.passive());
+                                                          order.add("passive");
+                                                      },
+                                                      Promise::unitPromise,
+                                                      () -> order.add(activeNode(harness)
+                                                                      ? "quiesce-while-active"
+                                                                      : "quiesce"));
 
+                assertThat(left.await(LEFT_BOUND).isSuccess()).as("the quorum is left").isTrue();
                 assertThat(order).containsExactly("passive", "quiesce");
             }
         }
@@ -362,10 +374,89 @@ class Fsm2SystemTest {
             try (var harness = new Fsm2Harness(DeploymentEngine.LEGACY, false).assembled()) {
                 var order = new CopyOnWriteArrayList<String>();
 
-                harness.wiring.leaveQuorum(() -> order.add("passive"), () -> order.add("quiesce"));
+                var left = harness.wiring.leaveQuorum(() -> order.add("passive"), Promise::unitPromise, () -> order.add("quiesce"));
 
+                assertThat(left.await(LEFT_BOUND).isSuccess()).as("the quorum is left").isTrue();
                 assertThat(order).containsExactly("passive", "quiesce");
             }
+        }
+
+        /// #2688: the quiesce, which would drop the queued `LeaderChange` reaction, waits for the reactions of the PASSIVE edge to have run, and the
+        /// wait is taken only after PASSIVE was routed (taken before it, it could not cover the reactions PASSIVE queues).
+        @Test
+        void leaveQuorum_quiescesOnlyOnceTheQueuedReactionsHaveRun() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.LEGACY, false).assembled()) {
+                var order = new CopyOnWriteArrayList<String>();
+                var delivered = Promise.<Unit> promise();
+                var left = harness.wiring.leaveQuorum(() -> order.add("passive"), () -> taken(order, delivered), () -> order.add("quiesce"));
+
+                assertThat(order).containsExactly("passive", "delivered");
+                assertThat(left.isResolved()).isFalse();
+
+                delivered.succeed(Unit.unit());
+
+                assertThat(left.await(LEFT_BOUND).isSuccess()).as("the quorum is left").isTrue();
+                assertThat(order).containsExactly("passive", "delivered", "quiesce");
+            }
+        }
+
+        /// #2688: the quiesce, and what the caller chains after it (the node's teardown, which blocks), never run on the thread that resolved the
+        /// wait: in the node that is the react executor whose reactions were awaited, or the shared timeout scheduler.
+        @Test
+        void leaveQuorum_quiescesOffTheThreadThatResolvedTheWait() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.LEGACY, false).assembled()) {
+                var quiescedOn = new CopyOnWriteArrayList<Thread>();
+                var delivered = Promise.<Unit> promise();
+                var left = harness.wiring.leaveQuorum(() -> {}, () -> delivered, () -> quiescedOn.add(Thread.currentThread()));
+
+                delivered.succeed(Unit.unit());
+
+                assertThat(left.await(LEFT_BOUND).isSuccess()).as("the quorum is left").isTrue();
+                assertThat(quiescedOn).as("quiesced once, on another thread than the one that resolved the wait")
+                                      .hasSize(1)
+                                      .doesNotContain(Thread.currentThread());
+            }
+        }
+
+        /// A10 on the stop path, with no waiting: a leader that never steps down (its deactivation is never delivered) holds the quiesce until the
+        /// node's bound is reached; the bound armed is the node's, and when it is reached the quorum is left, quiesce after PASSIVE.
+        @Test
+        void leaveQuorum_withALeaderThatNeverStepsDown_quiescesWhenTheNodesBoundIsReached() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.LEGACY, false).assembled()) {
+                var executor = ReactExecutor.reactExecutor("LeaderManager", ReactGate.reactGate(() -> true, () -> false), ReactFailureSink.loggingOnly());
+                var order = new CopyOnWriteArrayList<String>();
+                var armed = new AtomicReference<Promise<Unit>>();
+                var bounds = new CopyOnWriteArrayList<TimeSpan>();
+                var deactivation = LeaderDeactivation.leaderDeactivation((promise, bound) -> arm(armed, bounds, promise, bound));
+
+                deactivation.onLeaderChange(LeaderNotification.leaderChange(Option.some(NodeId.nodeId("self").unwrap()), true));
+                var left = harness.wiring.leaveQuorum(() -> order.add("passive"),
+                                                      () -> deactivation.delivered(executor, AetherNode.LEADER_DEACTIVATION_BOUND),
+                                                      () -> order.add("quiesce"));
+
+                assertThat(bounds).as("armed once, with the node's bound").containsExactly(AetherNode.LEADER_DEACTIVATION_BOUND);
+                assertThat(left.isResolved()).as("the leader has not stepped down and the bound has not been reached").isFalse();
+                assertThat(order).containsExactly("passive");
+
+                armed.get().fail(Causes.cause("the bound was reached"));
+
+                assertThat(left.await(LEFT_BOUND).isSuccess()).as("the quorum is left at the bound").isTrue();
+                assertThat(order).containsExactly("passive", "quiesce");
+                executor.close();
+            }
+        }
+
+        private static Promise<Unit> arm(AtomicReference<Promise<Unit>> armed, List<TimeSpan> bounds, Promise<Unit> promise, TimeSpan bound) {
+            armed.set(promise);
+            bounds.add(bound);
+
+            return promise;
+        }
+
+        private static Promise<Unit> taken(List<String> order, Promise<Unit> delivered) {
+            order.add("delivered");
+
+            return delivered;
         }
 
         /// 2b: a node consumer stuck in an input does not hold the stop past the bound; the stop says so and goes on.

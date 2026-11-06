@@ -29,7 +29,7 @@ A common first reaction from architects is "so you implemented actors." This is 
 | Service method call | `Promise<T>` method call (local or remote, transparent) |
 | `@RestController` | `routes.toml` (declarative HTTP routing) |
 | Kubernetes Deployment YAML | Blueprint TOML |
-| HPA (Horizontal Pod Autoscaler) | Built-in reactive + predictive scaling |
+| HPA (Horizontal Pod Autoscaler) | Built-in reactive scaling |
 
 There is no message passing, no mailbox, no behavior switching, no supervision tree. Your existing service-based designs, API contracts, domain decomposition, and interaction patterns transfer directly.
 

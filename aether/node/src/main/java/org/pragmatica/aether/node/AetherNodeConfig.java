@@ -19,7 +19,6 @@ import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.config.WorkerConfig;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.TimeoutsConfig;
-import org.pragmatica.aether.config.TtmConfig;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
@@ -58,7 +57,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                DHTConfig cache,
                                Option<TlsConfig> tls,
                                TlsConfig quicTls,
-                               TtmConfig ttm,
                                AppHttpConfig appHttp,
                                ControllerConfig controllerConfig,
                                Option<ConfigurationProvider> configProvider,
@@ -92,7 +90,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                             DHTConfig cache,
                             Option<TlsConfig> tls,
                             TlsConfig quicTls,
-                            TtmConfig ttm,
                             AppHttpConfig appHttp,
                             ControllerConfig controllerConfig,
                             Option<ConfigurationProvider> configProvider,
@@ -124,7 +121,6 @@ public record AetherNodeConfig(TopologyConfig topology,
              cache,
              tls,
              quicTls,
-             ttm,
              appHttp,
              controllerConfig,
              configProvider,
@@ -176,7 +172,7 @@ public record AetherNodeConfig(TopologyConfig topology,
     }
 
     public static SelfStage builder() {
-        return self -> coreNodes -> managementPort -> sliceConfig -> artifactRepo -> coreMax -> appHttp -> tls -> quicTls -> certificateProvider -> configProvider -> environment -> managementHttpProtocol -> storageConfig -> backupConfig -> membership -> streaming -> protocol -> sliceAction -> cache -> ttm -> controllerConfig -> autoHeal -> observability -> atomicity -> activationGated -> timeouts -> workerConfig -> deploymentDefaults -> clusterFormation -> {
+        return self -> coreNodes -> managementPort -> sliceConfig -> artifactRepo -> coreMax -> appHttp -> tls -> quicTls -> certificateProvider -> configProvider -> environment -> managementHttpProtocol -> storageConfig -> backupConfig -> membership -> streaming -> protocol -> sliceAction -> cache -> controllerConfig -> autoHeal -> observability -> atomicity -> activationGated -> timeouts -> workerConfig -> deploymentDefaults -> clusterFormation -> {
             // Capacity limits do not define the initial voting electorate.
             var effectiveClusterSize = Math.max(1,
                                                 (int) coreNodes.stream()
@@ -204,7 +200,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                         cache,
                                         tls,
                                         quicTls,
-                                        ttm,
                                         appHttp,
                                         controllerConfig,
                                         configProvider,
@@ -256,7 +251,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     cache,
                                     tls,
                                     quicTls,
-                                    ttm,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
@@ -294,7 +288,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     cache,
                                     tls,
                                     quicTls,
-                                    ttm,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
@@ -330,7 +323,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     cache,
                                     tls,
                                     quicTls,
-                                    ttm,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
@@ -370,7 +362,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     cache,
                                     tls,
                                     quicTls,
-                                    ttm,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
@@ -410,7 +401,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     cache,
                                     tls,
                                     quicTls,
-                                    ttm,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
@@ -456,7 +446,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     cache,
                                     tls,
                                     quicTls,
-                                    ttm,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
@@ -495,7 +484,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     cache,
                                     tls,
                                     quicTls,
-                                    ttm,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
@@ -549,7 +537,6 @@ public record AetherNodeConfig(TopologyConfig topology,
              + ", cache=" + cache
              + ", tls=" + tls
              + ", quicTls=" + quicTls
-             + ", ttm=" + ttm
              + ", appHttp=" + appHttp
              + ", controllerConfig=" + controllerConfig
              + ", configProvider=" + configProvider
@@ -725,18 +712,10 @@ public record AetherNodeConfig(TopologyConfig topology,
     }
 
     public interface WithCache {
-        WithTtm cache(DHTConfig config);
+        WithControllerConfig cache(DHTConfig config);
 
         default AetherNodeConfig build() {
             return cache(DHTConfig.CACHE_DEFAULT).build();
-        }
-    }
-
-    public interface WithTtm {
-        WithControllerConfig ttm(TtmConfig config);
-
-        default AetherNodeConfig build() {
-            return ttm(TtmConfig.ttmConfig()).build();
         }
     }
 

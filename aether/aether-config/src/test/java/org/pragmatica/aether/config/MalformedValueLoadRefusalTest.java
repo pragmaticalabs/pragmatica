@@ -172,14 +172,6 @@ class MalformedValueLoadRefusalTest {
             [app-http]
             enabled = "yes"
             """), "app-http.enabled", "yes");
-        assertRefused(ConfigLoader.loadFromString("""
-            [cluster]
-            environment = "docker"
-            nodes = 3
-
-            [ttm]
-            enabled = "yes"
-            """), "ttm.enabled", "yes");
     }
 
     @Test

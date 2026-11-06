@@ -925,8 +925,10 @@ public final class StreamApiRoutes implements RouteSource {
         };
     }
 
+    /// #2683: a forwarded publish whose frame the transport refused before writing it ([StreamForwardError.PublishNotSent])
+    /// is pre-append too: the frame never left this node, so the owner cannot have appended it.
     private static boolean isPreAppendRefusal(Cause cause) {
-        return cause instanceof StreamForwardError.RemotePublishRetryable || StreamForwardHandler.isRetryable(cause);
+        return cause instanceof StreamForwardError.RemotePublishRetryable || cause instanceof StreamForwardError.PublishNotSent || StreamForwardHandler.isRetryable(cause);
     }
 
     /// #524 guard: an out-of-range `partition` on a Management-API publish must fail 4xx naming the

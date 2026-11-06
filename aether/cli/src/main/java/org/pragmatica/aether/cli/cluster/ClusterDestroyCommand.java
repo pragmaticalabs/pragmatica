@@ -177,7 +177,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
             return Result.success(ExitCode.ERROR);
         }
 
-        var endpoint = installTargetOverrides(entry, clusterName);
+        var endpoint = installTargetOverrides(entry);
 
         return performDestruction(registry, clusterName, endpoint);
     }
@@ -201,8 +201,8 @@ class ClusterDestroyCommand implements Callable<Integer> {
     /// Residual, stated rather than hidden: when the target has neither a key file nor an `api_key_env`,
     /// no override is installed and `resolveApiKey()` still falls back to the active cluster's key. That
     /// now surfaces as an enumeration failure and a refusal instead of a silently undrained destroy.
-    private Result<String> installTargetOverrides(ClusterRegistry.ClusterEntry entry, ClusterName clusterName) {
-        installTargetApiKey(entry, clusterName);
+    private Result<String> installTargetOverrides(ClusterRegistry.ClusterEntry entry) {
+        installTargetApiKey(entry);
 
         return targetEndpoint(entry).onSuccess(ClusterHttpClient::setEndpointOverride);
     }
@@ -213,16 +213,8 @@ class ClusterDestroyCommand implements Callable<Integer> {
     }
 
     @Contract
-    private static void installTargetApiKey(ClusterRegistry.ClusterEntry entry, ClusterName clusterName) {
-        ClusterTargetMixin.readApiKeyFile(clusterName.value())
-                          .option()
-                          .orElse(() -> recordedApiKey(entry))
-                          .onPresent(ClusterHttpClient::setApiKeyOverride);
-    }
-
-    private static org.pragmatica.lang.Option<String> recordedApiKey(ClusterRegistry.ClusterEntry entry) {
-        return entry.apiKeyEnv()
-                    .flatMap(envName -> option(System.getenv(envName)));
+    private static void installTargetApiKey(ClusterRegistry.ClusterEntry entry) {
+        ClusterTargetMixin.apiKeyOf(entry).onPresent(ClusterHttpClient::setApiKeyOverride);
     }
 
     /// #995 — against a healthy 3-node cloud cluster this emitted NOTHING for ~2.5 minutes and deleted

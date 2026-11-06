@@ -77,7 +77,7 @@ sequenceDiagram
     MAG->>MAG: Broadcast snapshot to all nodes
 ```
 
-Maintains a 2-hour sliding window for historical pattern detection (used by TTM predictor).
+Maintains a 2-hour sliding window for historical pattern detection.
 
 ## Invocation Metrics
 
