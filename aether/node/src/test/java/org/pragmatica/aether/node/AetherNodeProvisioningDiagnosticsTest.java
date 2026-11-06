@@ -22,13 +22,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AetherNodeProvisioningDiagnosticsTest {
     private static final ProvisioningDecisionSnapshot DECISION = new ProvisioningDecisionSnapshot(ReconcileTrigger.values()[0], 3, 3, 3, true, true, true, 0L, "NO_DEFICIT");
     private static final CircuitBreakerState BREAKER = new CircuitBreakerState(2, 3, 0L, false);
+    private static final Map<String, CircuitBreakerState> SOURCES = Map.of("eu-1", new CircuitBreakerState(1, 3, 500L, true));
 
     private static ClusterTopologyManager manager(Option<LastProvisionFailure> failure, Option<LastProvisionFailure> wait, long waits) {
         return (ClusterTopologyManager) Proxy.newProxyInstance(ClusterTopologyManager.class.getClassLoader(),
                                                                new Class<?>[]{ClusterTopologyManager.class},
                                                                (_, method, _) -> switch (method.getName()) {
                                                                    case "circuitBreakerState" -> BREAKER;
-                                                                   case "circuitBreakerStates" -> Map.of();
+                                                                   case "circuitBreakerStates" -> SOURCES;
                                                                    case "lastProvisionFailure" -> failure;
                                                                    case "inventoryWait" -> wait;
                                                                    case "inventoryWaits" -> waits;
@@ -45,6 +46,7 @@ class AetherNodeProvisioningDiagnosticsTest {
 
         assertThat(diagnostics.decision()).isSameAs(DECISION);
         assertThat(diagnostics.circuitBreaker()).isEqualTo(BREAKER);
+        assertThat(diagnostics.circuitBreakers()).isEqualTo(SOURCES);
         assertThat(diagnostics.lastProvisionFailure()).isEqualTo(Option.some(failure));
         assertThat(diagnostics.inventoryWait()).isEqualTo(Option.some(wait));
         assertThat(diagnostics.inventoryWaits()).isEqualTo(9L);
