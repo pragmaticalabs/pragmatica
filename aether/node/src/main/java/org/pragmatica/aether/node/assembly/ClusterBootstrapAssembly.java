@@ -410,10 +410,12 @@ public sealed interface ClusterBootstrapAssembly {
         }
     }
 
-    /// #2654: the incarnation-commit re-drive. The bootstrap module refuses to mint the core partition's ownership
-    /// epoch while the life's incarnation is `ClusterIncarnation.NONE`, and on a fresh cluster the restore decision
-    /// (`FRESH`) commits BEFORE the registrar's genesis, so without this hook a refusal at leader gain has no re-drive
-    /// left. The hook reads the incarnation from the put: it applies the put to the mirror the module's epoch supplier
+    /// #2654: the incarnation-commit re-drive. While the life's incarnation is `ClusterIncarnation.NONE` the bootstrap
+    /// module mints the core partition's ownership only provisionally, at incarnation 0 (know 0cced4f7d6), and on a fresh
+    /// cluster the restore decision (`FRESH`) commits BEFORE the registrar's genesis, so this hook is the re-drive that
+    /// rewrites that record under the committed incarnation. It re-opens the module's attempt budget
+    /// ([BootstrapModule#onIncarnationCommitted]): a provisional mint that spent the last attempt must not leave the record
+    /// at incarnation 0. The hook reads the incarnation from the put: it applies the put to the mirror the module's epoch supplier
     /// reads before it re-drives, so the re-drive mints at the committed incarnation whichever route the router
     /// delivers first (the mirror's own route sets the same value, so applying it twice is idempotent).
     @Contract
@@ -421,7 +423,7 @@ public sealed interface ClusterBootstrapAssembly {
                                     ObservedIncarnation incarnation,
                                     BootstrapModule bootstrapModule) {
         incarnation.onPut(put);
-        bootstrapModule.retryIfNeeded();
+        bootstrapModule.onIncarnationCommitted();
     }
 
     /// #1797: a committed `LeaderKey` naming this node raises the held term even without a leader-gain edge.

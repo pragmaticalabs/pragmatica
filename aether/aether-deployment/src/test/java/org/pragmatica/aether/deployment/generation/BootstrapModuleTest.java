@@ -27,6 +27,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.NodeAddress;
 
 import java.net.SocketAddress;
@@ -347,6 +348,75 @@ class BootstrapModuleTest {
                 .noneMatch(p -> p.key() instanceof DhtPartitionOwnershipKey);
         }
 
+        /// H2 (v2691): a provisional mint spends an attempt like any core write. Two failed core writes before it make the
+        /// provisional mint the LAST attempt; the incarnation commit must still rewrite the record, so it re-opens the
+        /// budget. Red if the commit only re-drives (`retryIfNeeded` with the budget spent): the record stays at incarnation 0.
+        @Test
+        void incarnationCommit_afterAProvisionalMintSpentTheLastAttempt_stillRewritesTheRecord() {
+            var fixture = newFixture(/* initialCoreSize */ 1);
+            fixture.incarnation.set(Epoch.NO_INCARNATION);
+            fixture.cluster.failCoreWrites(BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS - 1);
+            fixture.module.onLeaderGained();
+            for (var pass = 1; pass < BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS; pass++) {
+                fixture.module.retryIfNeeded();
+            }
+            var provisional = lastCoreOwnershipPut(fixture.cluster.batches);
+            fixture.kv.put(DhtPartitionOwnershipKey.dhtPartitionOwnershipKey(BootstrapModule.CORE_PARTITION_ID), provisional);
+            fixture.module.retryIfNeeded();
+            assertThat(corePartitionPutCount(fixture.cluster.batches)).as("two failed core writes, then the provisional mint: the budget is spent")
+                                                                      .isEqualTo(BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS);
+            assertThat(provisional.ownerEpoch().incarnation()).isEqualTo(Epoch.NO_INCARNATION);
+
+            fixture.incarnation.set(FIXTURE_INCARNATION);
+            fixture.module.onIncarnationCommitted();
+
+            assertThat(corePartitionPutCount(fixture.cluster.batches)).as("the commit rewrites the provisional record")
+                                                                      .isEqualTo(BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS + 1L);
+            var rewritten = lastCoreOwnershipPut(fixture.cluster.batches);
+            assertThat(rewritten.ownerNodeId()).isEqualTo(SELF);
+            assertThat(rewritten.ownershipTerm()).isEqualTo(2L);
+            assertThat(rewritten.ownerEpoch()).isEqualTo(Epoch.epoch(FIXTURE_INCARNATION, FIXTURE_RABIA_TERM, 2L));
+        }
+
+        /// N4 (v2691): a provisional mint through the retry path (the leader-change write failed) does not complete the
+        /// bootstrap either, so the commit still rewrites it. Red if the retry path's write completes the bootstrap.
+        @Test
+        void retryPath_provisionalMint_leavesTheBootstrapOpen_andTheCommitRewritesIt() {
+            var fixture = newFixture(/* initialCoreSize */ 1);
+            fixture.incarnation.set(Epoch.NO_INCARNATION);
+            fixture.cluster.failCoreWrites(1);
+            fixture.module.onLeaderGained();
+            fixture.module.retryIfNeeded();
+            var provisional = lastCoreOwnershipPut(fixture.cluster.batches);
+            assertThat(corePartitionPutCount(fixture.cluster.batches)).as("the failed leader-change write, then the retry's provisional mint")
+                                                                      .isEqualTo(2L);
+            assertThat(provisional.ownerEpoch().incarnation()).isEqualTo(Epoch.NO_INCARNATION);
+            fixture.kv.put(DhtPartitionOwnershipKey.dhtPartitionOwnershipKey(BootstrapModule.CORE_PARTITION_ID), provisional);
+
+            fixture.incarnation.set(FIXTURE_INCARNATION);
+            fixture.module.onIncarnationCommitted();
+
+            var rewritten = lastCoreOwnershipPut(fixture.cluster.batches);
+            assertThat(rewritten.ownershipTerm()).isEqualTo(2L);
+            assertThat(rewritten.ownerEpoch()).isEqualTo(Epoch.epoch(FIXTURE_INCARNATION, FIXTURE_RABIA_TERM, 2L));
+        }
+
+        /// The budget bounds provisional mints while the incarnation stays uncommitted: a mint that commits but is not yet
+        /// seen in the KV snapshot is planned again on the next pass, and only the commit re-opens the budget. Red if a
+        /// provisional mint resets the budget (b3): every pass then writes again, without bound.
+        @Test
+        void incarnationNone_provisionalMintsStayWithinTheAttemptBudget() {
+            var fixture = newFixture(/* initialCoreSize */ 1);
+            fixture.incarnation.set(Epoch.NO_INCARNATION);
+            fixture.module.onLeaderGained();
+            for (var pass = 0; pass < 2 * BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS; pass++) {
+                fixture.module.retryIfNeeded();
+            }
+
+            assertThat(corePartitionPutCount(fixture.cluster.batches)).as("provisional mints while the incarnation is uncommitted")
+                                                                      .isEqualTo(BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS);
+        }
+
         private static long corePartitionPutCount(List<List<KVCommand<AetherKey>>> batches) {
             return collectPuts(batches).stream()
                                        .filter(p -> p.key() instanceof DhtPartitionOwnershipKey)
@@ -472,6 +542,7 @@ class BootstrapModuleTest {
         final List<List<KVCommand<AetherKey>>> batches = new ArrayList<>();
         private final boolean lateCommits;
         private Promise<?> applied = Promise.success(Unit.unit());
+        private int coreWriteFailures;
 
         RecordingClusterNode() {
             this(false);
@@ -479,6 +550,12 @@ class BootstrapModuleTest {
 
         RecordingClusterNode(boolean lateCommits) {
             this.lateCommits = lateCommits;
+        }
+
+        /// The next `count` batches that carry a core-partition ownership write fail; the config seed, submitted apart from
+        /// it, is not affected.
+        void failCoreWrites(int count) {
+            coreWriteFailures = count;
         }
 
         /// The promise the most recent batch's `apply` handed back.
@@ -499,9 +576,19 @@ class BootstrapModuleTest {
         @SuppressWarnings({"unchecked", "rawtypes"})
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
             batches.add(List.copyOf(commands));
+            if (coreWriteFailures > 0 && carriesCoreWrite(commands)) {
+                coreWriteFailures--;
+                applied = Promise.failure(Causes.cause("injected core write failure"));
+                return (Promise) applied;
+            }
             applied = lateCommits ? LateResolution.later(List.of()) : Promise.success(List.of());
             return (Promise) applied;
         }
+    }
+
+    private static boolean carriesCoreWrite(List<KVCommand<AetherKey>> commands) {
+        return commands.stream()
+                       .anyMatch(cmd -> cmd instanceof KVCommand.Put<?, ?> put && put.key() instanceof DhtPartitionOwnershipKey);
     }
 
     /// Minimal SWIM/NTT-free topology stub. Membership-v2 finale: the bootstrap now sources

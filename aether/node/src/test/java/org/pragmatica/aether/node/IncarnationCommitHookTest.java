@@ -24,9 +24,10 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
-/// #2654: the incarnation-commit hook re-drives the bootstrap module, whose core-partition ownership mint was refused
-/// while the life's incarnation read `ClusterIncarnation.NONE`. On a fresh cluster the restore decision commits
-/// before genesis, so this hook is the only re-drive left after a refusal at leader gain.
+/// #2654: the incarnation-commit hook re-drives the bootstrap module through [BootstrapModule#onIncarnationCommitted],
+/// which re-opens its attempt budget, so the core record minted provisionally while the life's incarnation read
+/// `ClusterIncarnation.NONE` is rewritten under the committed one. On a fresh cluster the restore decision commits before
+/// genesis, so this hook is the re-drive that rewrites it.
 class IncarnationCommitHookTest {
     private final BootstrapModule bootstrapModule = mock(BootstrapModule.class);
 
@@ -36,7 +37,7 @@ class IncarnationCommitHookTest {
 
         ClusterBootstrapAssembly.onIncarnationCommit(genesisPut(), incarnation, bootstrapModule);
 
-        verify(bootstrapModule).retryIfNeeded();
+        verify(bootstrapModule).onIncarnationCommitted();
     }
 
     /// Pins that the hook reads the put's value: the re-drive must already see the committed incarnation, even when
@@ -48,7 +49,7 @@ class IncarnationCommitHookTest {
         var seenAtReDrive = new AtomicLong(-1L);
 
         doAnswer(_ -> recordCurrent(seenAtReDrive, incarnation)).when(bootstrapModule)
-                                                               .retryIfNeeded();
+                                                               .onIncarnationCommitted();
 
         ClusterBootstrapAssembly.onIncarnationCommit(genesisPut(), incarnation, bootstrapModule);
 
@@ -70,7 +71,7 @@ class IncarnationCommitHookTest {
                                                        AetherNode.generationEpoch(incarnation, () -> 1L));
         var mintedAtReDrive = new AtomicLong(-1L);
         doAnswer(_ -> recordMinted(mintedAtReDrive, epochSources)).when(bootstrapModule)
-                                                                  .retryIfNeeded();
+                                                                  .onIncarnationCommitted();
         var router = ClusterBootstrapAssembly.healthKvRouter(routingInputs(epochSources));
 
         router.asRouteEntries()
@@ -80,7 +81,7 @@ class IncarnationCommitHookTest {
                                      .unwrap()
                                      .route(genesisPut()));
 
-        verify(bootstrapModule, times(1)).retryIfNeeded();
+        verify(bootstrapModule, times(1)).onIncarnationCommitted();
         assertThat(mintedAtReDrive.get()).as("the incarnation the module's generation epoch carries at the re-drive")
                                          .isEqualTo(ClusterIncarnationValue.GENESIS);
     }

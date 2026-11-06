@@ -61,6 +61,13 @@ public interface BootstrapModule {
     @Contract
     void retryIfNeeded();
 
+    /// #2654 (H2): the life's cluster incarnation committed. A provisional core record minted while the incarnation read
+    /// NONE spends an attempt like any core write, so the pass that rewrites it under the committed incarnation cannot rest
+    /// on what is left of the budget: a provisional mint that was the last attempt would leave the record at incarnation 0.
+    /// This re-opens the budget, then re-drives as [#retryIfNeeded] does, in the same one reaction.
+    @Contract
+    void onIncarnationCommitted();
+
     /// The executor `retryIfNeeded` runs its attempt on. A node installs its gated executor once, at assembly; until
     /// then (and in a host that installs none) the attempt runs inline, as before D1-react.
     default Unit installReactExecutor(ReactExecutor executor) {
@@ -136,6 +143,18 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     @Override
     public void retryIfNeeded() {
         react.get().react("bootstrap-retry", this::retryBootstrapIfNeeded);
+    }
+
+    @Contract
+    @Override
+    public void onIncarnationCommitted() {
+        react.get().react("bootstrap-incarnation-commit", this::reopenBudgetAndRetry);
+    }
+
+    @Contract
+    private void reopenBudgetAndRetry() {
+        bootstrapAttempts.set(0);
+        retryBootstrapIfNeeded();
     }
 
     @Override
