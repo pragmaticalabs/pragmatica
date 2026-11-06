@@ -32,6 +32,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// The code catalogue is how operators identify a warning (#1574), so the codes must be unique and stable.
 class OperatorWarningCodeTest {
+    /// #2201 D-01, CTO ruling on #2615: a partition WAL's fail-stop refuses every publish to it on the node, so it pages (CRITICAL); its
+    /// recovery only reports that the reopened log accepted a durable write (INFO).
+    @Test
+    void walFailStopPair_hasItsSeverities() {
+        assertThat(OperatorWarningCode.STORAGE_WAL_FAIL_STOPPED.level()).isEqualTo(WarningLevel.CRITICAL);
+        assertThat(OperatorWarningCode.STORAGE_WAL_WRITABLE.level()).isEqualTo(WarningLevel.INFO);
+    }
+
     @Test
     void codes_areUnique() {
         var byCode = Arrays.stream(OperatorWarningCode.values())

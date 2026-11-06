@@ -669,15 +669,16 @@ public enum OperatorWarningCode {
     /// message names both paths. Decided once, at boot, so there is no recovery code: move the state directory
     /// (`-Daether.state.dir` / `AETHER_STATE_DIR`) off the volume and restart.
     STORAGE_VOLUME_GUARD_INACTIVE("storage-volume-guard-inactive", "storage", WarningLevel.WARNING),
-    /// An append log fail-stopped after a failed fsync, frame write or reopen: every later append is refused until the node restarts and
-    /// recovers the valid prefix. A stream partition's log raises it with the subject `stream[partition]`, once per log (`know:`
+    /// An append log fail-stopped after a failed fsync, frame write or reopen: every later append is refused for the rest of the node's
+    /// process. Recovery is replacing the node: a node id never returns, so the replacement does not reopen the log. A whole-cluster
+    /// restart that keeps node ids reopens it, and the reopen recovers the valid prefix. A stream partition's log raises it with the subject `stream[partition]`, once per log (`know:`
     /// `4ddd1ddfda`), and every publish to that partition on the node is refused from then on; a log with no owner of its own raises it
     /// with the storage instance as the subject, once per instance (a second such log failing in the same boot is in the node log only).
     /// The message names the log and the cause. Closed by [#STORAGE_WAL_WRITABLE] for a stream partition; the instance subject has no
     /// recovery, because the instance raise names no log a later boot could report on.
     STORAGE_WAL_FAIL_STOPPED("storage-wal-fail-stopped", "storage", WarningLevel.CRITICAL),
-    /// The recovery of [#STORAGE_WAL_FAIL_STOPPED], same subject `stream[partition]`: after a restart, the partition's reopened log
-    /// accepted its first durable write. INFO. The fail-stop leaves a mark beside the log (written best-effort: a volume that refused
+    /// The recovery of [#STORAGE_WAL_FAIL_STOPPED], same subject `stream[partition]`: the partition's log, reopened under the same node id
+    /// (a whole-cluster restart; a replaced node never reopens it, so no recovery follows a replacement), accepted its first durable write. INFO. The fail-stop leaves a mark beside the log (written best-effort: a volume that refused
     /// the fsync may refuse the mark, and then no recovery is raised); a reopen that finds it raises this once and deletes the mark.
     STORAGE_WAL_WRITABLE("storage-wal-writable", "storage", WarningLevel.INFO, STORAGE_WAL_FAIL_STOPPED),
     /// Block prefetching could not be started when the node reported ready, so the instance serves reads without the hints it would

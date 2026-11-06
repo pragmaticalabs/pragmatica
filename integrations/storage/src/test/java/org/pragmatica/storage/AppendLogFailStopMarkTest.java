@@ -56,6 +56,45 @@ class AppendLogFailStopMarkTest {
         again.close();
     }
 
+    /// The recovery is reported only after a SUCCESSFUL force (v2615 a10/a11): a reopened log whose first force fails fail-stops again,
+    /// and reporting the recovery before that force, or on its failure, would close a fail-stop that is still open. The frame write
+    /// lands; the force over it fails.
+    @Test
+    void reopenOverAMark_whoseFirstForceFails_reportsNoRecovery_andKeepsTheMark() throws Exception {
+        failStopALog();
+        var recoveries = new AtomicInteger();
+        var reopened = AppendLog.open(file()).unwrap().onFailStopRecovered(recoveries::incrementAndGet);
+        var written = reopened.write(reopened.lastOffset() + 1, bytes("c"), 2L);
+        assertThat(written.isSuccess()).as("control: the frame write lands before the channel goes").isTrue();
+
+        channelOf(reopened).close();
+        var committed = reopened.commit(written.unwrap()).await();
+
+        assertThat(committed.isFailure()).as("control: the force failed").isTrue();
+        assertThat(reopened.failStopped()).as("control: the failed force fail-stopped the log again").isTrue();
+        assertThat(recoveries.get()).as("no durable write was accepted: nothing recovered").isZero();
+        assertThat(Files.exists(AppendLog.failStopMarkOf(file()))).as("the fail-stop is still open: its mark stays").isTrue();
+        reopened.close();
+    }
+
+    /// A discarded log takes its mark with it (v2615 item 4): a log created again at the same path never had that fail-stop, so it must
+    /// not report its recovery.
+    @Test
+    void deleteFiles_removesTheMark_soALogCreatedAgainReportsNoRecovery() throws Exception {
+        failStopALog();
+        var discarded = AppendLog.open(file()).unwrap();
+        discarded.close();
+
+        discarded.deleteFiles().onFailure(cause -> fail(cause.message()));
+
+        assertThat(Files.exists(AppendLog.failStopMarkOf(file()))).as("the mark is deleted with the log").isFalse();
+        var recoveries = new AtomicInteger();
+        var created = AppendLog.open(file()).unwrap().onFailStopRecovered(recoveries::incrementAndGet);
+        created.append(0, bytes("a"), 0L).await().onFailure(cause -> fail(cause.message()));
+        assertThat(recoveries.get()).isZero();
+        created.close();
+    }
+
     @Test
     void openWithoutAMark_neverReportsARecovery() {
         var recoveries = new AtomicInteger();

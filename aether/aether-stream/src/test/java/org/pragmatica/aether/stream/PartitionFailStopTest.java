@@ -177,6 +177,56 @@ class PartitionFailStopTest {
         assertThat(warnings).as("the recovery deleted the mark: a later restart raises nothing").isEmpty();
     }
 
+    /// The recovery is wired on every open path, not only the fresh one (v2615 s04): a partition whose log fail-stopped, reopened after a
+    /// restart through the hydrate of a committed config, raises `STORAGE_WAL_WRITABLE` at its first durable write.
+    @Test
+    void failStopThenRestart_hydratedPartition_raisesTheRecovery() throws Exception {
+        leaveAFailStoppedLogBehind();
+
+        manager = tracked(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir)));
+        manager.placementRoleSupplier((_, _) -> Role.OWNER);
+        manager.onStreamConfigPut(configPut(StreamConfig.streamConfig(STREAM)));
+        assertThat(manager.partitionBuffer(STREAM, PARTITION).isPresent()).as("control: the hydrate materialized the partition").isTrue();
+
+        assertRecoveryIsReported();
+    }
+
+    /// As above for a partition materialized on its own after a metadata-only hydrate (v2615 s05).
+    @Test
+    void failStopThenRestart_lazilyMaterializedPartition_raisesTheRecovery() throws Exception {
+        leaveAFailStoppedLogBehind();
+        var role = new AtomicReference<>(Role.NONE);
+
+        manager = tracked(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir)));
+        manager.placementRoleSupplier((_, _) -> role.get());
+        manager.onStreamConfigPut(configPut(StreamConfig.streamConfig(STREAM)));
+        assertThat(manager.partitionBuffer(STREAM, PARTITION).isPresent()).as("control: the hydrate was metadata-only").isFalse();
+        role.set(Role.OWNER);
+        manager.materializePartition(STREAM, PARTITION).onFailure(cause -> fail(cause.message()));
+
+        assertRecoveryIsReported();
+    }
+
+    private void leaveAFailStoppedLogBehind() throws Exception {
+        manager = materialized();
+        manager.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+        publish("acked").onFailure(cause -> fail(cause.message()));
+        failStopTheWal();
+        publish("meets-the-failure");
+        awaitWarnings(1);
+        closeManager();
+        warnings.clear();
+    }
+
+    private void assertRecoveryIsReported() throws Exception {
+        manager.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+        publish("after-restart").onFailure(cause -> fail(cause.message()));
+
+        awaitWarnings(1);
+        assertThat(warnings.getFirst().code()).isEqualTo(OperatorWarningCode.STORAGE_WAL_WRITABLE);
+        assertThat(warnings.getFirst().subject()).isEqualTo(STREAM + "[" + PARTITION + "]");
+    }
+
     private void assertFailStopIsReported() throws Exception {
         manager.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
         publish("acked").onFailure(cause -> fail(cause.message()));

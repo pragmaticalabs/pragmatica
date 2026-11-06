@@ -582,14 +582,16 @@ public final class AppendLog implements AutoCloseable {
         }
     }
 
-    /// Delete the log's files -- the log, its epoch history and any stale temp -- after [#close], when the
-    /// log itself is being discarded (a deleted stream). Best effort per file; the first failure is returned.
+    /// Delete the log's files -- the log, its epoch history, any stale temp and its fail-stop mark -- after [#close], when the
+    /// log itself is being discarded (a deleted stream). The mark goes too, so a log later created at the same path does not report
+    /// the recovery of a fail-stop it never had. Best effort per file; the first failure is returned.
     public Result<Unit> deleteFiles() {
         var sidecar = EpochHistory.sidecarOf(file);
 
         return Result.allOf(FileOps.deleteIfExists(file),
                             FileOps.deleteIfExists(sidecar),
-                            FileOps.deleteIfExists(sidecar.resolveSibling(sidecar.getFileName() + ".tmp")))
+                            FileOps.deleteIfExists(sidecar.resolveSibling(sidecar.getFileName() + ".tmp")),
+                            FileOps.deleteIfExists(failStopMarkOf(file)))
                      .mapToUnit();
     }
 
@@ -685,8 +687,7 @@ public final class AppendLog implements AutoCloseable {
     /// The fail-stop mark of `logFile`: `<name>.failstopped` beside `<name>.wal` (any other log file name gets `.failstopped`
     /// appended), as [EpochHistory#sidecarOf] names the epoch sidecar. Not a log file, so [#logNamesUnder] never lists it.
     static Path failStopMarkOf(Path logFile) {
-        var name = logFile.getFileName()
-                          .toString();
+        var name = logFile.getFileName().toString();
         var stem = name.endsWith(LOG_SUFFIX)
                    ? name.substring(0,
                                     name.length() - LOG_SUFFIX.length())
@@ -864,8 +865,9 @@ public final class AppendLog implements AutoCloseable {
     private void reportRecoveryOnce() {
         if (failStopMarked) {
             failStopMarked = false;
-            FileOps.deleteIfExists(failStopMarkOf(file))
-                   .onFailure(cause -> log.warn("AppendLog {} could not delete its fail-stop mark: {}", file, cause.message()));
+            FileOps.deleteIfExists(failStopMarkOf(file)).onFailure(cause -> log.warn("AppendLog {} could not delete its fail-stop mark: {}",
+                                                                                     file,
+                                                                                     cause.message()));
             log.info("AppendLog {} accepted a durable write after an earlier fail-stop", file);
             failStopRecoveryListener.onPresent(Runnable::run);
         }
@@ -891,8 +893,7 @@ public final class AppendLog implements AutoCloseable {
     /// Best-effort: the volume that refused the force may refuse the mark too, and then a restart reports no recovery.
     private void markFailStop(Cause cause) {
         FileOps.writeBytesDurable(failStopMarkOf(file),
-                                 cause.message()
-                                      .getBytes(StandardCharsets.UTF_8))
+                                  cause.message().getBytes(StandardCharsets.UTF_8))
                .onFailure(markFailure -> log.warn("AppendLog {} could not write its fail-stop mark: {}",
                                                   file,
                                                   markFailure.message()));
