@@ -10,8 +10,8 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.assertj.core.api.SoftAssertions;
 import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
@@ -20,10 +20,14 @@ import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamWriteRouter;
+import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -44,17 +48,20 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.sleepQuietly;
 /// - Arm 3: with the committed ISR the publish needs the dropped replica's ack, so it is still pending while the replica lags,
 ///   and the owner's visible head reaches N after the repair (the completion ack). The publish outcome itself (5 s ack timer
 ///   against the repair) is reported, not asserted.
-/// - Arm 4 (separate test, ordered last because it kills the owner, `@Disabled`: see its reason): the owner dies inside the
-///   window; the survivors should converge on N. In 3 of 5 samples they did; in 2 the new owner (the node that missed N)
-///   stayed at N-1 for 60 s while the other survivor held N.
+/// - Arm 4 (separate test, ordered last because it kills the owner): the owner dies inside the window, and the drop is armed on
+///   the survivor the failover will elect, so the new owner is always the node that missed N (#2682). T1: with no publish and
+///   no owner read after the kill, both survivors reach N (the new owner's promotion gate starts eagerly on the committed record
+///   and pulls N from the other survivor; before #2682 nothing started it and the new owner stayed at N-1). T2: the next publish
+///   through the new owner lands at N+1, never N, and the other survivor's record at N is still the one published before the kill.
 /// Control rounds interleave the drop rounds: no drop, the publish succeeds and the replica holds N within seconds, which
 /// shows the instrument sees a healthy replica as healthy.
 ///
 /// **Not built as the design wrote it, and why.** The design's "RF 3, CF 2, no ISR" variant of arm 2 cannot be built here:
 /// a committed ISR exists in every Ember stream (the ISR of three is awaited at boot), so the publish always needs both
 /// replicas. The owner's registry row for the replica is not reachable from `AetherNode` (no accessor), so "row >= N" is
-/// observed through its consequence, the owner's visible head. The new owner of arm 4 is whichever survivor wins the
-/// election; forcing it to be the node that missed N would need the package-private `ReplicaPlacement.rank`.
+/// observed through its consequence, the owner's visible head. Arm 4 picks the lagging survivor with the public
+/// `ReplicaPlacement.place` over the survivors, the call the leader's writer makes over its live members, and asserts after the
+/// kill that the committed owner is that node, so a change of the election fails loudly instead of silently testing the other case.
 ///
 /// `read_forward_timeout` is lowered (default 2 s, here [#READ_FORWARD_SECONDS]) so the re-verify bound is 10 x that.
 @PortBudget
@@ -65,6 +72,7 @@ class EmberLostTailChunkRepairTest {
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
     private static final TimeSpan PUBLISH_BOUND = TimeSpan.timeSpan(30).seconds();
     private static final long ISR_BUDGET_MS = 90_000L;
+    private static final long FAILOVER_BUDGET_MS = 90_000L;
     private static final int READ_FORWARD_SECONDS = Integer.getInteger("lostTail.readForwardSeconds", 1);
     private static final long BOUND_MS = 10_000L * READ_FORWARD_SECONDS;
     private static final long REPAIR_BUDGET_MS = 2 * BOUND_MS + 10_000L;
@@ -105,19 +113,19 @@ class EmberLostTailChunkRepairTest {
                           READ_FORWARD_SECONDS, BOUND_MS, repairMs.size(), repairMs, controlMs.size(), controlMs);
     }
 
+    /// T1 is measured before T2 and both are asserted together, so a run on code without #2682 reports T2 (the premise that a
+    /// publish never reuses N) even though T1 is red there.
     @Test
-    @Disabled("#2682 (found by #2347 arm 4): RED in 2 of 5 samples (bigboy, readForward 1 s and 2 s): the committed new owner is the node that missed the tail "
-              + "(head N-1) while the other survivor holds N, and in the red samples the new owner stayed at N-1 for 60 s. "
-              + "Nondeterministic, so it cannot be an enabled tripwire; enable once the promotion gate pulls from the ahead survivor deterministically")
     @Order(2)
     @Timeout(1200)
-    void ownerKilledInsideTheWindow_survivorsConvergeOnTheLostTail() {
+    void ownerKilledInsideTheWindow_survivorsConvergeOnTheLostTail_andTheNextPublishLandsAfterIt() {
         boot();
         awaitRoundPrecondition("arm 4");
 
         var owner = owner();
         var survivors = cluster.allNodes().stream().filter(node -> !node.self().equals(owner.self())).toList();
-        var lagging = survivors.getFirst();
+        var lagging = electedAmong(survivors);
+        var ahead = survivors.stream().filter(node -> !node.self().equals(lagging.self())).findFirst().orElseThrow();
         var tail = ringHead(owner) + 1;
 
         armDrop(lagging);
@@ -125,15 +133,76 @@ class EmberLostTailChunkRepairTest {
         var publish = publishAsync(owner, "arm4");
 
         awaitUntil(() -> droppedAtMs.get() > 0L, DROP_LANDED_BUDGET_MS, "arm 4: the tail chunk was dropped on the lagging replica");
-        awaitUntil(() -> ringHead(survivors.getLast()) == tail, CONTROL_BUDGET_MS, "arm 4 control: the other survivor holds the tail");
+        awaitUntil(() -> ringHead(ahead) == tail, CONTROL_BUDGET_MS, "arm 4 control: the other survivor holds the tail");
         assertThat(ringHead(lagging)).as("arm 4 control: the lagging survivor misses the tail").isEqualTo(tail - 1);
         assertThat(cluster.killNode(owner.self().id(), false).await(STOP_BOUND).isSuccess()).as("owner killed inside the window").isTrue();
         publish.await(PUBLISH_BOUND);
+        awaitUntil(() -> survivors.stream().anyMatch(node -> node.self().id().equals(committedOwnerId())),
+                   FAILOVER_BUDGET_MS,
+                   "arm 4: the committed ownership record names a survivor");
+        assertThat(committedOwnerId()).as("arm 4 precondition: the committed owner is the lagging survivor. HRW wiring changed; re-derive the lagging choice")
+                                      .isEqualTo(lagging.self().id());
 
-        awaitSurvivorsHoldTheTail(survivors, tail, REPAIR_BUDGET_MS + 30_000L);
-        System.out.printf("LOSTTAIL arm4 newOwner=%s laggingNode=%s%n",
-                          StreamTripwireSupport.committedRecord(cluster, ENGINE_KEY, PARTITION).map(value -> value.owner().id()).or("none"),
-                          lagging.self().id());
+        // T1: no publish and no owner read until both survivors hold the tail, or the budget ends
+        var t1StartedAt = System.currentTimeMillis();
+        var heads = survivorHeadsAfter(survivors, tail, REPAIR_BUDGET_MS + 30_000L);
+        var t1Ms = System.currentTimeMillis() - t1StartedAt;
+        // T2: the next publish through the new owner
+        var next = publishThroughTheNewOwner(lagging);
+        var atTail = payloadAt(ahead, tail);
+
+        System.out.printf("LOSTTAIL arm4 readForwardSeconds=%d laggingNode=%s aheadNode=%s tail=%d t1Heads=%s t1Ms=%d t2Offset=%s aheadAtTail=%s%n",
+                          READ_FORWARD_SECONDS, lagging.self().id(), ahead.self().id(), tail, heads, t1Ms, next.fold(Cause::message, String::valueOf), atTail);
+        var soft = new SoftAssertions();
+
+        soft.assertThat(next.fold(Cause::message, String::valueOf)).as("T2: the next publish lands after the tail, never on it")
+                                                                    .isEqualTo(String.valueOf(tail + 1));
+        soft.assertThat(atTail).as("T2: the other survivor's record at the tail is the one published before the kill")
+                               .isEqualTo("arm4-payload");
+        soft.assertThat(heads).as("T1: both survivors hold the tail after the owner died, with no demand on the new owner")
+                              .containsOnly(tail);
+        soft.assertAll();
+    }
+
+    /// The survivor the leader's writer elects: `desiredOwner` is `ReplicaPlacement.place` over the live members, and the
+    /// failover keeps it because it is a live ISR member.
+    private AetherNode electedAmong(List<AetherNode> survivors) {
+        var elected = ReplicaPlacement.place(ENGINE_KEY, PARTITION, survivors.stream().map(AetherNode::self).toList(), 3)
+                                      .map(ReplicaPlacement.Placement::owner)
+                                      .unwrap();
+
+        return survivors.stream().filter(node -> node.self().equals(elected)).findFirst().orElseThrow();
+    }
+
+    private String committedOwnerId() {
+        return StreamTripwireSupport.committedRecord(cluster, ENGINE_KEY, PARTITION).map(value -> value.owner().id()).or("none");
+    }
+
+    /// Publishes once through the new owner's router, retrying while its promotion gate has not activated it yet.
+    private Result<Long> publishThroughTheNewOwner(AetherNode newOwner) {
+        var deadline = System.currentTimeMillis() + 2 * PUBLISH_BOUND.millis();
+        var outcome = publishAsync(newOwner, "arm4-next").await(PUBLISH_BOUND);
+
+        while (notActivated(outcome) && System.currentTimeMillis() < deadline) {
+            sleepQuietly(200L);
+            outcome = publishAsync(newOwner, "arm4-next").await(PUBLISH_BOUND);
+        }
+
+        return outcome;
+    }
+
+    private static boolean notActivated(Result<Long> outcome) {
+        return outcome.fold(cause -> cause instanceof StreamError.OwnerNotActivated, _ -> false);
+    }
+
+    /// The payload `node` holds at `offset`, read from its ring including the appended, not yet visible, suffix.
+    private static String payloadAt(AetherNode node, long offset) {
+        return node.streamPartitionManager()
+                   .partitionBuffer(ENGINE_KEY, PARTITION)
+                   .flatMap(ring -> ring.readAppended(offset, 1).option())
+                   .flatMap(events -> Option.from(events.stream().filter(event -> event.offset() == offset).findFirst()))
+                   .map(event -> new String(event.data(), StandardCharsets.UTF_8))
+                   .or("<missing>");
     }
 
     /// Each round starts from a committed ISR of all three: the publish of a round needs every ISR peer's ack, so a shrunk ISR
@@ -145,8 +214,9 @@ class EmberLostTailChunkRepairTest {
         StreamTripwireSupport.awaitFullIsr(cluster, ENGINE_KEY, ISR_BUDGET_MS);
     }
 
-    /// As `awaitUntil`, printing the survivors' heads and the committed owner every ten seconds, so a failure shows who lacks the tail.
-    private void awaitSurvivorsHoldTheTail(List<AetherNode> survivors, long tail, long budgetMs) {
+    /// Waits until every survivor's head is `tail` or the budget ends, printing the heads and the committed owner every ten
+    /// seconds, and returns the heads it ended on.
+    private List<Long> survivorHeadsAfter(List<AetherNode> survivors, long tail, long budgetMs) {
         var startedAt = System.currentTimeMillis();
         var nextReport = 0L;
 
@@ -162,8 +232,7 @@ class EmberLostTailChunkRepairTest {
 
             sleepQuietly(500L);
         }
-        assertThat(survivors.stream().map(node -> ringHead(node)).toList()).as("arm 4: both survivors hold the tail after the owner died")
-                                                                          .containsOnly(tail);
+        return survivors.stream().map(node -> ringHead(node)).toList();
     }
 
     private long dropRound(int round) {

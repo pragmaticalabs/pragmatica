@@ -12,6 +12,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.api.AlertManager;
@@ -24,6 +25,7 @@ import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.membership.ntt.DrainProcedure;
 import org.pragmatica.aether.invoke.InvocationTraceStore;
 import org.pragmatica.aether.node.AetherNodeConfig;
+import org.pragmatica.aether.node.DhtDeparturePush;
 import org.pragmatica.aether.node.KvDispatchLagWatch;
 import org.pragmatica.aether.node.SystemStreamRegistrar;
 import org.pragmatica.aether.slice.*;
@@ -219,7 +221,7 @@ public sealed interface ClusterEventsAssembly {
                             RabiaNode<KVCommand<AetherKey>> clusterNode,
                             InvocationTraceStore traceStore,
                             AtomicReference<Consumer<DrainReason>> clusterEventDrainEmitterRef,
-                            AtomicReference<DeparturePushObserver> departurePushObserverRef,
+                            AtomicReference<Function<String, DeparturePushObserver>> departurePushObserverRef,
                             DrainProcedure drainProcedure,
                             AlertManager alertManager,
                             HlcClock clusterEventsHlcClock,
@@ -262,11 +264,10 @@ public sealed interface ClusterEventsAssembly {
                                                                                                                              .id(),
                                                                                                                        "reason",
                                                                                                                        String.valueOf(reason)))));
-        // #427: resolve the departure-push observer now the aggregator is bound — a budget overrun
-        // during graceful departure emits DeparturePushIncomplete (per-node fact, un-gated emitLocal).
-        departurePushObserverRef.set((keysAtRisk, sampleKeys) -> eventAggregator.onDeparturePushIncomplete(config.self(),
-                                                                                                           keysAtRisk,
-                                                                                                           sampleKeys));
+        // #427, #2034: resolve the departure-push observer factory now the aggregator is bound — each drain episode's
+        // observer raises the sole-copy at-risk / delivered operator warnings for its subject and the final
+        // DeparturePushIncomplete (per-node facts, un-gated), every one awaited by the push before the node halts.
+        departurePushObserverRef.set(subject -> DhtDeparturePush.departureEvents(eventAggregator, config.self(), subject));
         // Operator-driven inject endpoints replicate via the events stream so peer nodes return
         // injected items on cross-node reads. AlertManager emits AlertInjected; InvocationTraceStore
         // emits TraceInjected through a thin sink that keeps the aether-invoke module free of any

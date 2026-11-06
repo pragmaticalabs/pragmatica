@@ -6,14 +6,18 @@ package org.pragmatica.aether.deployment.membership.ntt;
 
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -322,6 +326,147 @@ class DrainProcedureTest {
 
         private static Promise<Unit> countAndReturn(AtomicInteger counter, Promise<Unit> push) {
             counter.incrementAndGet();
+
+            return push;
+        }
+    }
+
+    /// #2034 T18: the push gets an absolute window anchored at the drain start, reports its outcome before the exit runs, and sees
+    /// the halt; the legacy `Supplier` push still drains and counts as completed.
+    @Nested
+    class DepartureWindowAndOutcome {
+        private static final TimeSpan GRACE = timeSpan(5).seconds();
+
+        @Test
+        @Timeout(10)
+        void window_deadlineIsDrainStartPlusGraceLessSlack() {
+            var seen = new AtomicReference<DrainWindow>();
+            var procedure = DrainProcedure.drainProcedure(InFlightRequestTracker.inFlightRequestTracker(),
+                                                          () -> {},
+                                                          reason -> {},
+                                                          window -> settledWith(seen, window, DepartureOutcome.COMPLETED),
+                                                          () -> {},
+                                                          GRACE);
+            var before = System.nanoTime();
+
+            procedure.initiate(TEST_REASON);
+            var after = System.nanoTime();
+
+            await().atMost(2, TimeUnit.SECONDS).untilAsserted(() -> assertThat(seen.get()).isNotNull());
+            assertThat(seen.get().legsDeadlineNanos()).isBetween(before + GRACE.nanos() - DrainProcedure.HALT_SLACK.nanos(),
+                                                                 after + GRACE.nanos() - DrainProcedure.HALT_SLACK.nanos());
+        }
+
+        @Test
+        @Timeout(10)
+        void window_lateQuiesce_deadlineStaysAnchoredAtTheDrainStart() throws InterruptedException {
+            var tracker = InFlightRequestTracker.inFlightRequestTracker();
+            var seen = new AtomicReference<DrainWindow>();
+            var procedure = DrainProcedure.drainProcedure(tracker,
+                                                          () -> {},
+                                                          reason -> {},
+                                                          window -> settledWith(seen, window, DepartureOutcome.COMPLETED),
+                                                          () -> {},
+                                                          GRACE);
+
+            tracker.enter();
+            var before = System.nanoTime();
+            procedure.initiate(TEST_REASON);
+            var after = System.nanoTime();
+            Thread.sleep(200);
+            tracker.exit();
+
+            await().atMost(2, TimeUnit.SECONDS).untilAsserted(() -> assertThat(seen.get()).isNotNull());
+            assertThat(seen.get().legsDeadlineNanos()).as("quiesce time is deducted from the window, never re-anchored")
+                                                      .isBetween(before + GRACE.nanos() - DrainProcedure.HALT_SLACK.nanos(),
+                                                                 after + GRACE.nanos() - DrainProcedure.HALT_SLACK.nanos());
+        }
+
+        @Test
+        @Timeout(10)
+        void dataAtRiskOutcome_isRecordedBeforeTheExitRuns() {
+            var seenAtExit = new AtomicReference<Option<DepartureOutcome>>(Option.none());
+            var holder = new AtomicReference<DrainProcedure>();
+            var procedure = DrainProcedure.drainProcedure(InFlightRequestTracker.inFlightRequestTracker(),
+                                                          () -> {},
+                                                          reason -> {},
+                                                          _ -> Promise.success(DepartureOutcome.COMPLETED_WITH_DATA_AT_RISK),
+                                                          () -> seenAtExit.set(holder.get().departureOutcome()),
+                                                          GRACE);
+            holder.set(procedure);
+
+            procedure.initiate(TEST_REASON);
+
+            await().atMost(2, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(procedure.state()).isEqualTo(DrainProcedure.DrainState.EXITED));
+            assertThat(seenAtExit.get()).isEqualTo(Option.some(DepartureOutcome.COMPLETED_WITH_DATA_AT_RISK));
+        }
+
+        @Test
+        @Timeout(10)
+        void window_isHaltedOnceTheDrainExited() {
+            var seen = new AtomicReference<DrainWindow>();
+            var exits = new AtomicInteger();
+            var procedure = DrainProcedure.drainProcedure(InFlightRequestTracker.inFlightRequestTracker(),
+                                                          () -> {},
+                                                          reason -> {},
+                                                          window -> settledWith(seen, window, DepartureOutcome.COMPLETED),
+                                                          exits::incrementAndGet,
+                                                          GRACE);
+
+            procedure.initiate(TEST_REASON);
+            await().atMost(2, TimeUnit.SECONDS).untilAsserted(() -> assertThat(exits.get()).isEqualTo(1));
+
+            assertThat(seen.get().halted().getAsBoolean()).isTrue();
+        }
+
+        @Test
+        @Timeout(10)
+        void window_isNotHaltedWhileDraining() {
+            var seen = new AtomicReference<DrainWindow>();
+            Promise<DepartureOutcome> push = Promise.promise();
+            var procedure = DrainProcedure.drainProcedure(InFlightRequestTracker.inFlightRequestTracker(),
+                                                          () -> {},
+                                                          reason -> {},
+                                                          window -> pendingWith(seen, window, push),
+                                                          () -> {},
+                                                          GRACE);
+
+            procedure.initiate(TEST_REASON);
+            await().atMost(2, TimeUnit.SECONDS).untilAsserted(() -> assertThat(seen.get()).isNotNull());
+
+            assertThat(seen.get().halted().getAsBoolean()).as("control: still draining").isFalse();
+            push.succeed(DepartureOutcome.COMPLETED);
+        }
+
+        @Test
+        @Timeout(10)
+        void legacySupplierPush_stillDrainsAndExits_asCompleted() {
+            var exits = new AtomicInteger();
+            var procedure = DrainProcedure.drainProcedure(InFlightRequestTracker.inFlightRequestTracker(),
+                                                          () -> {},
+                                                          reason -> {},
+                                                          () -> Promise.unitPromise(),
+                                                          exits::incrementAndGet);
+
+            procedure.initiate(TEST_REASON);
+
+            await().atMost(2, TimeUnit.SECONDS).untilAsserted(() -> assertThat(exits.get()).isEqualTo(1));
+            assertThat(procedure.departureOutcome()).isEqualTo(Option.some(DepartureOutcome.COMPLETED));
+        }
+
+        private static Promise<DepartureOutcome> settledWith(AtomicReference<DrainWindow> seen,
+                                                             DrainWindow window,
+                                                             DepartureOutcome outcome) {
+            seen.set(window);
+
+            return Promise.success(outcome);
+        }
+
+        private static Promise<DepartureOutcome> pendingWith(AtomicReference<DrainWindow> seen,
+                                                             DrainWindow window,
+                                                             Promise<DepartureOutcome> push) {
+            seen.set(window);
 
             return push;
         }
