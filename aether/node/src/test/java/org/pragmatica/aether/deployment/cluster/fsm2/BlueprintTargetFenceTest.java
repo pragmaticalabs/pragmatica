@@ -13,10 +13,10 @@ import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.lang.Option;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
@@ -152,22 +152,61 @@ class BlueprintTargetFenceTest {
         return h;
     }
 
-    // CF-5 residual, ENABLED TRIPWIRE asserting today's behaviour: the witness fences a put against a delete, not a removal batch
-    // lost with its leader's term. Removing such an orphan needs the R2-style reconcile step (a target whose owner blueprint is
-    // absent is removed, with the 2-tick hysteresis and the restore guard of G2 6.5): CF-8's `newLeader_orphanTarget_removed`.
-    // When this goes red, the orphan is removed: delete this tripwire and enable the test below.
-    @Test
-    void tripwire_removalBatchLostWithTheTerm_orphanTargetSurvivesTheRebuild() {
-        assertThat(orphanedByALostRemovalBatch().store.get(ORDERS_TARGET).isPresent())
-                  .as("today the orphan survives; when this fails, enable newLeader_orphanTarget_removed")
-                  .isTrue();
-    }
-
-    // CF-8 newLeader_orphanTarget_removed (G2 P2), the real assertion of the tripwire above.
-    @Disabled("CF-8: needs the orphan-target reconcile step; the tripwire above pins today's behaviour")
+    // CF-8 newLeader_orphanTarget_removed (G2 P2; the CF-5 residual): the witness fences a put against a delete, not a removal batch
+    // lost with its leader's term. The new leader removes a committed target whose owner blueprint is absent from its mirror.
+    // Red when: no reconcile step removes a target whose owner blueprint is absent (the removal batch of the delete was lost).
     @Test
     void newLeader_orphanTarget_removed() {
         assertThat(orphanedByALostRemovalBatch().store.get(ORDERS_TARGET)).isEqualTo(Option.none());
+    }
+
+    // CF-8, hysteresis (G2 6.5): an orphan is removed on its second observation, not its first
+    // Red when: the first tick that observes the orphan removes it (no hysteresis), or no tick removes it.
+    @Test
+    void orphanTarget_isRemovedOnlyAfterTwoConsecutiveTicks() {
+        var h = active();
+
+        publish(h, app(ATTEMPT, ORDERS));
+        h.policy = FsmHarness.SettlePolicy.HOLD;
+        delete(h);
+        h.held.clear();
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        h.deliver(new ClusterInput.Deactivate());
+        h.commitLeader(FsmHarness.SELF, 3L);
+        h.drain();
+        h.activate();
+        assertThat(h.store.get(ORDERS_TARGET).isPresent()).as("control: the orphan is committed at the rebuild").isTrue();
+
+        h.advance(h.settings.timing().tick());
+        assertThat(h.store.get(ORDERS_TARGET).isPresent()).as("observed once: kept").isTrue();
+        h.advance(h.settings.timing().tick() * 2);
+        assertThat(h.store.get(ORDERS_TARGET)).as("observed on consecutive ticks: removed").isEqualTo(Option.none());
+    }
+
+    // CF-8, the restore guard (G2 6.5 rollbackRestore_differentId_targetsNotRemovedByR2): a rollback to a blueprint of another id leaves
+    // the kept slice's target naming the removed id for a while; the restored blueprint re-owns the slice.
+    // Red when: the orphan step removes a target whose slice a present blueprint declares.
+    @Test
+    void rollbackRestore_differentId_targetsNotRemovedByR2() {
+        var h = active();
+        var first = blueprint("org.example:app:1.0.0", false, ATTEMPT, slice(ORDERS, 1, 1, Set.of()));
+        var second = blueprint("org.example:app:2.0.0", false, "attempt-2", slice(ORDERS_V2, 1, 1, Set.of()));
+        var node = node(h, CORE_1, 11);
+
+        publish(h, first);
+        node.follows(ORDERS);
+        h.drain();
+        publish(h, second, Option.some(first));
+        node.writes(ORDERS_V2, SliceObservedState.LOADING);
+        h.drain();
+        node.fails(ORDERS_V2, true);
+        h.drain();
+        h.advance(h.settings.timing().tick() * 6);
+
+        assertThat(h.submits(SubmitKind.ROLLBACK)).as("control: the attempt rolled back").hasSize(1);
+        assertThat(h.store.get(new AppBlueprintKey(blueprintId("org.example:app:2.0.0")))).as("control: the rolled-back id is gone")
+                  .isEqualTo(Option.none());
+        assertThat(h.store.get(ORDERS_TARGET).isPresent()).as("the restored blueprint's slice keeps its target").isTrue();
     }
 
     // CF-5, the fence's own arm, on the declaration and on the awaited-target re-send

@@ -4,9 +4,19 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.Comparator;
+import java.util.List;
+
+import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.GoalMode;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.TxDraft;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.lang.Option;
 
 
@@ -34,6 +44,84 @@ public sealed interface Orphans {
                                                "orphan"));
 
         return m;
+    }
+
+    /// An orphan target survives this many consecutive ticks of observation before it is removed (G2 6.5, 2-tick hysteresis).
+    int ORPHAN_TARGET_TICKS = 2;
+
+    /// Reconcile step 6b (CF-8, `newLeader_orphanTarget_removed`): a committed target whose owning blueprint is absent from the mirror is
+    /// removed. This is the level-triggered half of the blueprint delete: a removal batch lost with its leader's term leaves no event for
+    /// a new leader to act on. At most one scan per tick. A target is removed only after `ORPHAN_TARGET_TICKS` consecutive
+    /// observations and is never removed while it could still be owned (see `isOrphanTarget`). The removal is a mutation expecting the
+    /// target at the value observed, so a target that moved is not removed; it is not parked: a lost or refused removal is derived again
+    /// two ticks later, until the target is gone.
+    static ClusterModel runTargets(ClusterModel m) {
+        if (m.orphanTargetScanTick == m.tickCount) {
+            return m;
+        }
+
+        m.orphanTargetScanTick = m.tickCount;
+        var candidates = m.targets.keys()
+                                  .stream()
+                                  .filter(base -> isOrphanTarget(m, base))
+                                  .sorted(Comparator.comparing(ArtifactBase::asString))
+                                  .toList();
+
+        m.orphanTargets = observed(m, candidates);
+        removeAged(m, candidates);
+
+        return m;
+    }
+
+    private static PMap<ArtifactBase, Long> observed(ClusterModel m, List<ArtifactBase> candidates) {
+        var next = PMap.<ArtifactBase, Long> empty(m.scans);
+
+        for (var base : candidates) {
+            next = next.put(base,
+                            m.orphanTargets.get(base).or(m.tickCount));
+        }
+
+        return next;
+    }
+
+    private static ClusterModel removeAged(ClusterModel m, List<ArtifactBase> candidates) {
+        candidates.stream()
+                  .filter(base -> m.tickCount - m.orphanTargets.get(base)
+                                                               .or(m.tickCount) >= ORPHAN_TARGET_TICKS)
+                  .forEach(base -> removeOrphan(m, base));
+
+        return m;
+    }
+
+    /// The observation restarts at the removal, so a removal that is lost or refused is derived again two ticks later.
+    private static ClusterModel removeOrphan(ClusterModel m, ArtifactBase base) {
+        removal(m, base).onPresent(mutation -> Outbox.direct(m,
+                                                             TxDraft.draft(SubmitKind.ORPHAN_TARGET,
+                                                                           mutation.key(),
+                                                                           List.of(mutation))));
+        m.orphanTargets = m.orphanTargets.put(base, m.tickCount);
+
+        return m;
+    }
+
+    private static Option<KVCommand.Mutation<AetherKey, AetherValue>> removal(ClusterModel m, ArtifactBase base) {
+        return m.targets.get(base)
+                        .map(target -> new KVCommand.Mutation<AetherKey, AetherValue>(new SliceTargetKey(base),
+                                                                                      Option.some((AetherValue) target),
+                                                                                      Option.none()));
+    }
+
+    /// The target names an owner that the mirror does not hold, and nothing else could own it: no blueprint declares the base now (a
+    /// different-id restore re-owns the kept slices, G2 6.5), no put of it is in flight, and no rolling update names it. A target
+    /// with no owner at all was set by an operator and is not an orphan.
+    private static boolean isOrphanTarget(ClusterModel m, ArtifactBase base) {
+        return m.targets.get(base)
+                        .flatMap(target -> target.owningBlueprint())
+                        .map(owner -> !m.blueprints.containsKey(owner))
+                        .or(false)
+               && !m.ownerByBase.containsKey(base)
+               && !m.pendingTargetPuts.containsKey(base)
+               && !m.routings.containsKey(base);
     }
 
     private static boolean isOrphan(ClusterModel m, SlicePair pair) {

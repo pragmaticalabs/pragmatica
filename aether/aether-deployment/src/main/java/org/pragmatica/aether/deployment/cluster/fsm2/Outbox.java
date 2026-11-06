@@ -682,6 +682,8 @@ public sealed interface Outbox {
             case BLUEPRINT_REMOVAL -> rederiveRemoval(m, ctx, draft);
             // 6.2: a refused target batch is not resubmitted at once; the awaited-target sweep (reconcile step 1) re-sends it after its bound.
             case TARGETS -> m;
+            // CF-8: an orphan-target removal is derived again by the reconcile scan two ticks later (`Orphans.runTargets`).
+            case ORPHAN_TARGET -> m;
             default -> rederiveByPair(m, ctx, draft);
         };
     }
