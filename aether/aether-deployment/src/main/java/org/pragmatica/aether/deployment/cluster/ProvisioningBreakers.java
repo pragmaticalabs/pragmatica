@@ -60,12 +60,6 @@ final class ProvisioningBreakers {
         return nowMs < refusedUntil.getOrDefault(key, 0L);
     }
 
-    /// End the refusal window of `key`.
-    @Contract
-    void clearRefusal(String key) {
-        refusedUntil.remove(key);
-    }
-
     /// Count a failure of `source`; once `cap` is reached the backoff window is armed. Returns the new consecutive count.
     @Contract
     int recordFailure(String source, int cap, long nowMs, long backoffMs) {
