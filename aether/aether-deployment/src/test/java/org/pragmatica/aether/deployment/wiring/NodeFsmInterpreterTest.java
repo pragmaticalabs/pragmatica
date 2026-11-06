@@ -353,7 +353,9 @@ class NodeFsmInterpreterTest {
                 // and the same-revision input are queued back to back, ahead of them
                 var gate = new CountDownLatch(1);
                 rig.gate = gate;
+                var parked = rig.countOf("ConfigChanged");
                 rig.interpreter.deliver(new NodeFsmInput.ConfigChanged("hold"));
+                rig.awaitThat(() -> rig.countOf("ConfigChanged") > parked);
                 var targets = rig.countOf("TargetPut");
                 rig.interpreter.requestEntry(false);
                 rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), entered, true);
