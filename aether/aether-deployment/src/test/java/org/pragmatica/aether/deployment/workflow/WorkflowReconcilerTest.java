@@ -52,6 +52,7 @@ class WorkflowReconcilerTest {
     void setUp() {
         cluster = new WorkflowTestCluster();
         probe = new WarningProbe();
+        cluster.announceTo(() -> true, probe.sink());
         actions = new AtomicInteger();
         observations = new AtomicInteger();
         real = cluster.ledger(CORE_1);
@@ -114,7 +115,7 @@ class WorkflowReconcilerTest {
     }
 
     private WorkflowReconciler reconciler(TimeSpan bound) {
-        return WorkflowReconciler.workflowReconciler(ledger(), Map.of("k", kind), () -> T0, probe.sink(), bound);
+        return WorkflowReconciler.workflowReconciler(ledger(), Map.of("k", kind), () -> T0, bound);
     }
 
     private WorkflowRunValue admit(String id, String key) {
@@ -287,7 +288,7 @@ class WorkflowReconcilerTest {
         assertThat(actions.get()).isZero();
     }
 
-    //--- the at-most-once incident (A3): a commit applied but not seen to be accepted never raises
+    //--- the durable announce (f2b §5): the incident is raised from the APPLIED transition, never from the commit's answer
 
     private WorkflowRunValue pastDeadline() {
         var run = admit("wf-1", "a");
@@ -308,8 +309,10 @@ class WorkflowReconcilerTest {
         assertThat(probe.settled()).hasSize(1);
     }
 
+    /// Before f2b the reconciler raised on the commit's answer, so a late answer lost the incident. The raise is now derived from
+    /// the applied record, so the incident is raised once although the tick never saw the commit accepted.
     @Test
-    void tick_escalationCommitAppliedButAnsweredLate_isNeverAnnounced_yetStaysCommitted() {
+    void tick_escalationCommitAppliedButAnsweredLate_isStillAnnouncedOnce() {
         pastDeadline();
 
         commits = (expected, next) -> appliedButUnanswered(expected, next, Promise.promise());
@@ -319,16 +322,16 @@ class WorkflowReconcilerTest {
         tick(reconciler);
         assertThat(committed("wf-1").state()).as("the commit was applied").isEqualTo(WorkflowState.ESCALATED);
         assertThat(committed("wf-1").detail()).as("the incident survives as the run's detail").contains("elapsed-time budget");
-        assertThat(probe.settled()).as("at most once: nothing re-raises it").isEmpty();
+        assertThat(probe.settled()).as("raised from the applied transition, once").hasSize(1);
     }
 
     @Test
-    void tick_escalationCommitAppliedButAnswerFailed_isNeverAnnounced() {
+    void tick_escalationCommitAppliedButAnswerFailed_isStillAnnouncedOnce() {
         pastDeadline();
         commits = (expected, next) -> appliedButUnanswered(expected, next, BOOM.promise());
         tick(reconciler(BOUND));
         assertThat(committed("wf-1").state()).isEqualTo(WorkflowState.ESCALATED);
-        assertThat(probe.settled()).isEmpty();
+        assertThat(probe.settled()).hasSize(1);
     }
 
     /// The wrapper, not the applier, answers: the REAL commit is applied, and the caller is handed `answer` instead of its result.

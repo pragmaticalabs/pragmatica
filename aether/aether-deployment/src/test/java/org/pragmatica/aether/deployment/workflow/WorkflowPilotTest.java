@@ -105,6 +105,7 @@ class WorkflowPilotTest {
         world = new World();
         clock = new AtomicLong(T0);
         probe = new WarningProbe();
+        cluster.announceTo(() -> true, probe.sink());
         kinds = Map.of("pilot", pilot(world));
     }
 
@@ -136,8 +137,7 @@ class WorkflowPilotTest {
     private WorkflowReconciler reconciler(NodeId self) {
         return WorkflowReconciler.workflowReconciler(cluster.ledger(self),
                                                      kinds,
-                                                     clock::get,
-                                                     probe.sink());
+                                                     clock::get);
     }
 
     private WorkflowRunValue admit() {

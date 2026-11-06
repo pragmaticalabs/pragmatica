@@ -915,13 +915,13 @@ public enum OperatorWarningCode {
     /// A workflow exhausted its attempt, elapsed-time or effect budget and stopped as ESCALATED (rc6 §4.4). The subject is the
     /// workflow id; the message names the budget, the postcondition that was not observed and the recovery verbs (resume or
     /// abandon). The workflow keeps its conflict-key claims until an operator resolves it, because the effect it issued last may
-    /// still be in flight. Raised AT MOST ONCE, by the leader that committed the escalation; [#WORKFLOW_RESOLVED] closes it. The event is lost when
-    /// that leader dies between the accepted commit and the raise, and when the commit's answer is slower than the reconciler's bound
-    /// or fails after being applied (the run is then already ESCALATED and inactive, so nothing re-raises it). The committed run keeps
-    /// the incident as its detail in every case.
+    /// still be in flight. Raised AT MOST ONCE per committed transition into ESCALATED, by the cluster-events owner that applies it
+    /// (derived from the applied record, skipping replays, never from a commit's answer); [#WORKFLOW_RESOLVED] closes it. The event is
+    /// lost only when that owner dies between the apply and the raise. The committed run keeps the incident as its detail in every case.
     WORKFLOW_ESCALATED("workflow-escalated", "workflow", WarningLevel.CRITICAL),
-    /// The recovery of [#WORKFLOW_ESCALATED], same subject (rc6 §4.4): an operator resumed or abandoned the escalated workflow.
-    /// INFO; declared here with its pair (the owner rule), raised by the operator surface that resolves a run (f2b), not by the engine core.
+    /// The recovery of [#WORKFLOW_ESCALATED], same subject (rc6 §4.4): the escalated workflow left ESCALATED by any committed
+    /// transition (a resume, or the terminal commit of an abandon). INFO; raised with the same guarantee and by the same owner as
+    /// [#WORKFLOW_ESCALATED], from the applied transition.
     WORKFLOW_RESOLVED("workflow-resolved", "workflow", WarningLevel.INFO, WORKFLOW_ESCALATED),
     /// The recovery of [#CONFIG_WATCH_CALLBACK_FAILED], same subject (#774): the next delivery bound and (when it called back) succeeded.
     /// INFO, published only after a published failure for the subject (#752 mechanism).

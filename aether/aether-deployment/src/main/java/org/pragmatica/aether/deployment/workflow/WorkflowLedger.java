@@ -5,11 +5,8 @@
 package org.pragmatica.aether.deployment.workflow;
 
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
-import java.util.stream.Stream;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.WorkflowClaimKey;
@@ -77,26 +74,20 @@ public interface WorkflowLedger {
         return List.copyOf(mutations);
     }
 
-    /// The ledger over the node's KV store. `apply` submits commands to consensus and answers their results; `self` is this node,
-    /// which submits only while the committed leader record names it (the applier refuses a transaction of a stale leader anyway).
+    /// The ledger over the node's KV store. `runs` is the run index fed by the store's `WorkflowRunKey` put/remove route; `apply`
+    /// submits commands to consensus and answers their results; `self` is this node, which submits only while the committed leader
+    /// record names it (the applier refuses a transaction of a stale leader anyway).
     static WorkflowLedger workflowLedger(KVStore<AetherKey, AetherValue> store,
+                                         WorkflowRunIndex runs,
                                          NodeId self,
                                          Fn1<Promise<List<Object>>, List<KVCommand<AetherKey>>> apply) {
         record ledger(KVStore<AetherKey, AetherValue> store,
+                      WorkflowRunIndex index,
                       NodeId self,
                       Fn1<Promise<List<Object>>, List<KVCommand<AetherKey>>> apply) implements WorkflowLedger {
             @Override
             public List<WorkflowRunValue> runs() {
-                return untypedValues(store.snapshot()).filter(WorkflowRunValue.class::isInstance)
-                                    .map(WorkflowRunValue.class::cast)
-                                    .sorted(Comparator.comparingLong(WorkflowRunValue::startedAt).thenComparing(WorkflowRunValue::id))
-                                    .toList();
-            }
-
-            /// The store also holds the leader record, which is not an `AetherValue`: the typed view must not be streamed.
-            private static Stream<?> untypedValues(Map<?, ?> snapshot) {
-                return snapshot.values()
-                               .stream();
+                return index.runs();
             }
 
             @Override
@@ -149,6 +140,6 @@ public interface WorkflowLedger {
             }
         }
 
-        return new ledger(store, self, apply);
+        return new ledger(store, runs, self, apply);
     }
 }
