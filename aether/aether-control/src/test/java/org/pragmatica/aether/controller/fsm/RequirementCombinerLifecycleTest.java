@@ -52,6 +52,7 @@ class RequirementCombinerLifecycleTest {
     private KVStore<AetherKey, AetherValue> store;
     private final AtomicInteger applied = new AtomicInteger();
     private final AtomicBoolean failApply = new AtomicBoolean();
+    private volatile Promise<List<Object>> gate;
     private LeaderCombiner combiner;
 
     @BeforeEach
@@ -183,6 +184,89 @@ class RequirementCombinerLifecycleTest {
         assertThat(await(() -> committedTarget() == 6)).as("the target-put notification combined").isTrue();
     }
 
+    /// q11: every failed write counts as another attempt (the count grows with each retry).
+    @Test
+    void failedWrite_isCountedAsGrowingAttempts() {
+        failingWriteIsRetrying();
+
+        assertThat(await(() -> combiner.retries().getOrDefault(BASE, 0) >= 2)).as("the second failure is attempt 2").isTrue();
+    }
+
+    /// q05, q06, q07: a retry that finally writes forgets its attempt count.
+    @Test
+    void retryThatWrites_clearsTheRetryCount() {
+        failingWriteIsRetrying();
+        failApply.set(false);
+
+        assertThat(await(() -> committedTarget() == 6)).as("the retry wrote the combination").isTrue();
+        assertThat(await(() -> combiner.retries().isEmpty())).as("the written combination cleared its retry count").isTrue();
+    }
+
+    /// q08, q09, r20: a retry that finds the postcondition holding (Settled) clears the count and is not retried again.
+    @Test
+    void retryThatFindsThePostconditionHolding_clearsTheCountAndStops() {
+        failingWriteIsRetrying();
+        failApply.set(false);
+        commit(new KVCommand.Put<>(TARGET_KEY, targetOf(6)));
+
+        assertThat(await(() -> combiner.retries().isEmpty())).as("a CombinerOutcome is not a failure to retry").isTrue();
+        pause(300);
+        assertThat(combiner.retries()).as("and nothing re-armed a retry").isEmpty();
+    }
+
+    /// q06: an orphan removal that finally writes also forgets its attempt count.
+    @Test
+    void orphanRemovalRetryThatWrites_clearsTheRetryCount() {
+        combiner.activate();
+        commit(new KVCommand.Put<>(OPERATOR, requirement(6, Option.none())));
+        commit(new KVCommand.Remove<>(TARGET_KEY, store.get(TARGET_KEY).map(Object.class::cast)));
+        failApply.set(true);
+        combiner.onSliceTargetRemove(TARGET_KEY);
+        assertThat(await(() -> combiner.retries().containsKey(BASE))).as("the failed removal is counted for a retry").isTrue();
+
+        failApply.set(false);
+
+        assertThat(await(() -> store.get(OPERATOR).isEmpty())).as("the retry removed the orphan requirement").isTrue();
+        assertThat(await(() -> combiner.retries().isEmpty())).as("the written removal cleared its retry count").isTrue();
+    }
+
+    /// q02: deactivation forgets the pending retry counts.
+    @Test
+    void deactivate_forgetsPendingRetries() {
+        failingWriteIsRetrying();
+
+        combiner.deactivate();
+
+        assertThat(combiner.retries()).isEmpty();
+    }
+
+    /// q10: a write that fails after leadership was lost is neither counted nor retried.
+    @Test
+    void failureAfterDeactivate_isNotCounted() {
+        var held = Promise.<List<Object>> promise();
+
+        gate = held;
+        combiner.activate();
+        commit(new KVCommand.Put<>(OPERATOR, requirement(6, Option.none())));
+        combiner.onRequirementPut(OPERATOR);
+        assertThat(await(() -> applied.get() >= 1)).as("the write is in flight").isTrue();
+
+        combiner.deactivate();
+        held.fail(Causes.cause("apply failed after deactivate (test)"));
+        pause(300);
+
+        assertThat(combiner.retries()).as("a deactivated combiner does not retry").isEmpty();
+    }
+
+    /// Leads, puts an operator requirement of 6 and fails its write; returns once the failure is counted for the retry.
+    private void failingWriteIsRetrying() {
+        combiner.activate();
+        commit(new KVCommand.Put<>(OPERATOR, requirement(6, Option.none())));
+        failApply.set(true);
+        combiner.onRequirementPut(OPERATOR);
+        assertThat(await(() -> combiner.retries().containsKey(BASE))).as("the failed write is counted for a retry").isTrue();
+    }
+
     /// Activates over a requirement that expires in a minute and returns the timer the combination armed for it.
     private ScheduledFuture<?> armedTimer() {
         commit(new KVCommand.Put<>(SCHEDULED, requirement(6, Option.some(System.currentTimeMillis() + 60_000))));
@@ -194,6 +278,12 @@ class RequirementCombinerLifecycleTest {
 
     private Promise<List<Object>> apply(List<KVCommand<AetherKey>> batch) {
         applied.incrementAndGet();
+
+        var held = gate;
+
+        if (held != null) {
+            return held;
+        }
 
         if (failApply.get()) {
             return Causes.cause("apply failed (test)").promise();
