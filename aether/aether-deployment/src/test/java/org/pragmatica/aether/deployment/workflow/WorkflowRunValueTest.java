@@ -76,4 +76,16 @@ class WorkflowRunValueTest {
             assertThat(run.releasesClaims()).as(state.name()).isEqualTo(state == WorkflowState.DONE || state == WorkflowState.FAILED);
         }
     }
+
+    @Test
+    void abandoned_isFailedWithTheCauseInDetail_andOnlyThatIsAbandoned() {
+        var abandoned = fresh().abandoned("operator gave up");
+
+        assertThat(abandoned.state()).isEqualTo(WorkflowState.FAILED);
+        assertThat(abandoned.detail()).isEqualTo("abandoned:operator gave up");
+        assertThat(abandoned.isAbandoned()).isTrue();
+        assertThat(abandoned.releasesClaims()).isTrue();
+        assertThat(fresh().in(WorkflowState.FAILED, "abandoned").isAbandoned()).isFalse();
+        assertThat(fresh().in(WorkflowState.DONE, "abandoned:x").isAbandoned()).isFalse();
+    }
 }

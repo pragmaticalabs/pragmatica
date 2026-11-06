@@ -6,8 +6,10 @@ package org.pragmatica.aether.deployment.workflow;
 
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
@@ -141,87 +143,128 @@ public final class WorkflowRunIndex {
         return index.remove(remove.cause().key().id());
     }
 
-    /// The listener that turns each committed run transition into its operator events, on the node that owns the cluster-events
+    /// The announcer that turns each committed run transition into its operator events, on the node that owns the cluster-events
     /// partition ONLY: every node applies every run, and the events of one transition must be raised once. A replayed run announces
-    /// nothing: it is committed history, not a transition.
+    /// nothing: it is committed history, not a transition. See [Announcer] for the events, the open-incident set and the seeding.
+    public static Announcer announcer(WorkflowRunIndex index, BooleanSupplier ownsClusterEvents, OperatorWarningSink warnings) {
+        return new Announcer(index, ownsClusterEvents, warnings);
+    }
+
+    /// The transition listener of [#announcer]. It keeps `openIncidents`, the run ids whose incident is open, on EVERY node (a replayed
+    /// or non-owner put updates it and raises nothing), so a node that takes the cluster-events partition over already knows them.
     ///
-    /// - [OperatorWarningCode#WORKFLOW_ESCALATED] when `after` is `ESCALATED` and `before` was not; the message is the incident.
-    /// - [OperatorWarningCode#WORKFLOW_RESOLVED] ONLY when `before` was `ESCALATED` and `after` is terminal (`DONE` or `FAILED`); the
-    ///   message carries the [Outcome]. At most one per run per ESCALATED episode: the raise is derived from the applied (before, after)
-    ///   pair, and the index holds the terminal run afterwards, so a redelivered terminal commit has a terminal `before` and raises nothing.
-    /// - [OperatorWarningCode#WORKFLOW_RESUMED] (INFO, not a recovery: the incident stays open) when `before` was `ESCALATED` and `after`
-    ///   is `RUNNING` or `WAITING`. A run that escalates again after a resume opens a new incident.
+    /// - [OperatorWarningCode#WORKFLOW_ESCALATED] when `after` is `ESCALATED` and the run id has no open incident. Re-escalating a run
+    ///   whose incident is still open (a resume leaves it open) raises nothing: dedupe by run id (CTO ruling Q4, v2803c F1).
+    /// - [OperatorWarningCode#WORKFLOW_RESOLVED] when the run id has an open incident and `after` is terminal (`DONE` or `FAILED`); the
+    ///   message carries the [Outcome], `ABANDONED` when [WorkflowRunValue#isAbandoned] holds. It removes the id, so a redelivered
+    ///   terminal commit raises nothing.
+    /// - [OperatorWarningCode#WORKFLOW_RESUMED] (INFO, not a recovery: the incident stays open) when the run id has an open incident and
+    ///   `after` is `RUNNING` or `WAITING`. Unreachable in f2b (no resume verb); tested by committing a `resumed(...)` value directly.
+    ///
+    /// Seeding (N13, v2803c F2). [#reseed] rebuilds `openIncidents` from the COMMITTED `ESCALATED` runs in the index. The owner wiring
+    /// calls it when this node starts to own the events partition, on every owner change, and after a state restore (a restore applies
+    /// no listener call, so a run that escalated before the snapshot was never seen). Without it a new owner would resolve nothing.
+    /// It re-derives a RESOLVED whose terminal commit arrives after the takeover; a terminal commit applied BEFORE the takeover by a node
+    /// that never raised its RESOLVED is not recoverable from committed state (the run no longer records that it escalated), and its
+    /// ESCALATED stays open until the operator closes it.
     ///
     /// Guarantee per operation. RAISE: at most once per owner tenure; an owner hand-off can duplicate or lose it. Mechanism: the raise is
-    /// derived from the applied (before, after) pair, never from a commit's answer, so a slow or failed answer does not lose it. Within a
-    /// tenure it is deduped by the owner gate (`ownsClusterEvents`), the replay bit, and the (before, after) pair looked up by run id (the
-    /// index holds the new run afterwards, so a redelivered identical transition raises nothing). Across a hand-off the gate is the live
-    /// placement of the events partition read at each node's own apply time, not at a log index: the old owner can apply before it gives
-    /// up and the new one after it took over (two raises), or the new one before and the old one after (none); before the controller is
-    /// bound the gate reads false everywhere (#957); an owner dying between apply and raise loses it. The committed run keeps the incident
-    /// as its `detail` in every case. `[design intent, unverified]` on a live cluster.
-    public static TransitionListener announcer(BooleanSupplier ownsClusterEvents, OperatorWarningSink warnings) {
-        return (before, after, replayed) -> !replayed && ownsClusterEvents.getAsBoolean()
-                                            ? announce(warnings, before, after)
-                                            : Unit.unit();
-    }
+    /// derived from the applied run and the open-incident set, never from a commit's answer, so a slow or failed answer does not lose
+    /// it. Within a tenure it is deduped by the owner gate (`ownsClusterEvents`), the replay bit, and the set (looked up by run id).
+    /// Across a hand-off the gate is the live placement of the events partition read at each node's own apply time, not at a log
+    /// index: the old owner can apply before it gives up and the new one after it took over (two raises, unless the new owner's set
+    /// already holds the id, which it does when it saw the escalation), or the new one before and the old one after (none); before the
+    /// controller is bound the gate reads false everywhere (#957); an owner dying between apply and raise loses it. The committed run
+    /// keeps the incident as its `detail` in every case. `[design intent, unverified]` on a live cluster.
+    public static final class Announcer implements TransitionListener {
+        private final WorkflowRunIndex index;
+        private final BooleanSupplier ownsClusterEvents;
+        private final OperatorWarningSink warnings;
+        private final Set<String> openIncidents = new HashSet<>();
 
-    private static Unit announce(OperatorWarningSink warnings,
-                                 Option<WorkflowRunValue> before,
-                                 WorkflowRunValue after) {
-        var wasEscalated = before.filter(WorkflowRunIndex::escalated).isPresent();
-
-        if (escalated(after) && !wasEscalated) {
-            return OperatorWarnings.raise(LOG,
-                                          warnings,
-                                          OperatorWarningCode.WORKFLOW_ESCALATED,
-                                          after.id(),
-                                          "{}",
-                                          after.detail());
+        private Announcer(WorkflowRunIndex index, BooleanSupplier ownsClusterEvents, OperatorWarningSink warnings) {
+            this.index = index;
+            this.ownsClusterEvents = ownsClusterEvents;
+            this.warnings = warnings;
         }
 
-        return wasEscalated
-               ? announceLeft(warnings, after)
-               : Unit.unit();
+        @Override
+        public Unit onTransition(Option<WorkflowRunValue> before, WorkflowRunValue after, boolean replayed) {
+            var step = track(after);
+
+            return !replayed && ownsClusterEvents.getAsBoolean()
+                   ? raise(step, after)
+                   : Unit.unit();
+        }
+
+        /// Rebuild the open incidents from the committed `ESCALATED` runs in the index (the seeding, N13).
+        public synchronized Unit reseed() {
+            openIncidents.clear();
+            index.runs()
+                 .stream()
+                 .filter(WorkflowRunIndex::escalated)
+                 .forEach(run -> openIncidents.add(run.id()));
+
+            return Unit.unit();
+        }
+
+        private synchronized Step track(WorkflowRunValue after) {
+            return switch (after.state()) {
+                case ESCALATED -> openIncidents.add(after.id()) ? Step.ESCALATE : Step.NONE;
+                case DONE, FAILED -> openIncidents.remove(after.id()) ? Step.RESOLVE : Step.NONE;
+                case RUNNING, WAITING -> openIncidents.contains(after.id()) ? Step.RESUME : Step.NONE;
+                default -> Step.NONE;
+            };
+        }
+
+        private Unit raise(Step step, WorkflowRunValue after) {
+            return switch (step) {
+                case ESCALATE -> OperatorWarnings.raise(LOG,
+                                                        warnings,
+                                                        OperatorWarningCode.WORKFLOW_ESCALATED,
+                                                        after.id(),
+                                                        "{}",
+                                                        after.detail());
+                case RESOLVE -> OperatorWarnings.raise(LOG,
+                                                       warnings,
+                                                       OperatorWarningCode.WORKFLOW_RESOLVED,
+                                                       after.id(),
+                                                       "Workflow {} left ESCALATED with outcome {}",
+                                                       after.id(),
+                                                       outcomeOf(after));
+                case RESUME -> OperatorWarnings.raise(LOG,
+                                                      warnings,
+                                                      OperatorWarningCode.WORKFLOW_RESUMED,
+                                                      after.id(),
+                                                      "Workflow {} was resumed from ESCALATED and is now {}",
+                                                      after.id(),
+                                                      after.state());
+                case NONE -> Unit.unit();
+            };
+        }
     }
 
-    private static Unit announceLeft(OperatorWarningSink warnings, WorkflowRunValue after) {
-        return outcomeOf(after.state()).fold(() -> announceResume(warnings, after),
-                                             outcome -> OperatorWarnings.raise(LOG,
-                                                                               warnings,
-                                                                               OperatorWarningCode.WORKFLOW_RESOLVED,
-                                                                               after.id(),
-                                                                               "Workflow {} left ESCALATED with outcome {}",
-                                                                               after.id(),
-                                                                               outcome));
+    private enum Step {
+        NONE,
+        ESCALATE,
+        RESOLVE,
+        RESUME
     }
 
-    private static Unit announceResume(OperatorWarningSink warnings, WorkflowRunValue after) {
-        return after.state() == WorkflowState.RUNNING || after.state() == WorkflowState.WAITING
-               ? OperatorWarnings.raise(LOG,
-                                        warnings,
-                                        OperatorWarningCode.WORKFLOW_RESUMED,
-                                        after.id(),
-                                        "Workflow {} was resumed from ESCALATED and is now {}",
-                                        after.id(),
-                                        after.state())
-               : Unit.unit();
-    }
-
-    /// How an escalated run ended. `ABANDONED` is RESERVED: the ledger has no abandon operation yet, so a committed abandon is
-    /// indistinguishable from a `FAILED` commit and is announced as `FAILED`; the lane that adds the abandon verb derives it.
+    /// How an escalated run ended. `ABANDONED` is derived from the run's own terminal record ([WorkflowRunValue#isAbandoned]); no
+    /// production verb commits one until L1b's abandon.
     public enum Outcome {
         DONE,
         FAILED,
         ABANDONED
     }
 
-    private static Option<Outcome> outcomeOf(WorkflowState state) {
-        return switch (state) {
-            case DONE -> Option.some(Outcome.DONE);
-            case FAILED -> Option.some(Outcome.FAILED);
-            default -> Option.none();
-        };
+    private static Outcome outcomeOf(WorkflowRunValue terminal) {
+        return terminal.isAbandoned()
+               ? Outcome.ABANDONED
+               : terminal.state() == WorkflowState.DONE
+                 ? Outcome.DONE
+                 : Outcome.FAILED;
     }
 
     private static boolean escalated(WorkflowRunValue run) {

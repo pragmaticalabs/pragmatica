@@ -3769,6 +3769,21 @@ public sealed interface AetherValue {
                                         epoch + 1);
         }
 
+        /// The `detail` prefix that marks a `FAILED` run as abandoned by an operator. The cause rides in the existing `detail` field,
+        /// so the wire shape is unchanged (rc6 f2b N11, CTO ruling v2803c F3).
+        public static final String ABANDONED_PREFIX = "abandoned:";
+
+        /// The same run ended by an operator's abandon: `FAILED`, with `reason` after the [#ABANDONED_PREFIX] as the `detail`. Counters
+        /// and step untouched.
+        public WorkflowRunValue abandoned(String reason) {
+            return in(WorkflowState.FAILED, ABANDONED_PREFIX + reason);
+        }
+
+        /// Whether this run is a `FAILED` run that an operator abandoned (its `detail` carries the [#ABANDONED_PREFIX] cause).
+        public boolean isAbandoned() {
+            return state == WorkflowState.FAILED && detail.startsWith(ABANDONED_PREFIX);
+        }
+
         /// An operator's resume of a `PAUSED` or `ESCALATED` run: `RUNNING` again, with a fresh attempt budget for the step in hand
         /// and `newDeadline` as the elapsed-time budget. The effect budget stays spent, and an issued effect stays issued, so it is
         /// re-checked by its postcondition before anything is re-issued.

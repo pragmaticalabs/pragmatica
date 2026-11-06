@@ -86,7 +86,7 @@ class WorkflowRunIndexTest {
         var stale = run("wf-stale", 5L);
         var restored = run("wf-a", 10L).in(WorkflowState.ESCALATED, "incident");
 
-        index.onTransition(WorkflowRunIndex.announcer(() -> true, probe.sink()));
+        index.onTransition(WorkflowRunIndex.announcer(index, () -> true, probe.sink()));
         index.put(stale);
         index.restore(Map.<Object, Object> of(new WorkflowRunKey("wf-a"),
                              restored,
@@ -220,7 +220,7 @@ class WorkflowRunIndexTest {
         var index = WorkflowRunIndex.workflowRunIndex();
         var running = run("wf-a", 10L);
 
-        index.onTransition(WorkflowRunIndex.announcer(() -> true, probe.sink()));
+        index.onTransition(WorkflowRunIndex.announcer(index, () -> true, probe.sink()));
         index.put(running);
         index.put(running.in(WorkflowState.ESCALATED, "attempt budget exhausted"));
         var raised = probe.settled();
@@ -236,7 +236,7 @@ class WorkflowRunIndexTest {
         var index = WorkflowRunIndex.workflowRunIndex();
         var escalated = run("wf-a", 10L).in(WorkflowState.ESCALATED, "incident");
 
-        index.onTransition(WorkflowRunIndex.announcer(() -> true, probe.sink()));
+        index.onTransition(WorkflowRunIndex.announcer(index, () -> true, probe.sink()));
         WorkflowRunIndex.absorbPut(index, () -> true, put(escalated));
         assertThat(index.runs()).containsExactly(escalated);
         assertThat(probe.settled()).isEmpty();
@@ -250,7 +250,7 @@ class WorkflowRunIndexTest {
         for (int n = 0; n < nodes.size(); n++) {
             var owner = n == 1;
 
-            nodes.get(n).onTransition(WorkflowRunIndex.announcer(() -> owner, probe.sink()));
+            nodes.get(n).onTransition(WorkflowRunIndex.announcer(nodes.get(n), () -> owner, probe.sink()));
         }
         var running = run("wf-a", 10L);
         var escalated = running.in(WorkflowState.ESCALATED, "incident");
@@ -269,7 +269,7 @@ class WorkflowRunIndexTest {
         var index = WorkflowRunIndex.workflowRunIndex();
         var escalated = run("wf-a", 10L).in(WorkflowState.ESCALATED, "incident");
 
-        index.onTransition(WorkflowRunIndex.announcer(() -> true, probe.sink()));
+        index.onTransition(WorkflowRunIndex.announcer(index, () -> true, probe.sink()));
         index.put(escalated);
         index.put(escalated.resumed(99_000L));
         var raised = probe.settled();
@@ -285,7 +285,7 @@ class WorkflowRunIndexTest {
         var index = WorkflowRunIndex.workflowRunIndex();
         var escalated = run("wf-a", 10L).in(WorkflowState.ESCALATED, "incident");
 
-        index.onTransition(WorkflowRunIndex.announcer(() -> true, probe.sink()));
+        index.onTransition(WorkflowRunIndex.announcer(index, () -> true, probe.sink()));
         index.put(escalated);
         index.put(escalated.in(WorkflowState.DONE, ""));
         var raised = probe.settled();
@@ -301,7 +301,7 @@ class WorkflowRunIndexTest {
         var escalated = run("wf-a", 10L).in(WorkflowState.ESCALATED, "incident");
         var failed = escalated.in(WorkflowState.FAILED, "abandoned");
 
-        index.onTransition(WorkflowRunIndex.announcer(() -> true, probe.sink()));
+        index.onTransition(WorkflowRunIndex.announcer(index, () -> true, probe.sink()));
         index.put(escalated);
         index.put(failed);
         index.put(failed);
@@ -314,43 +314,104 @@ class WorkflowRunIndexTest {
         var index = WorkflowRunIndex.workflowRunIndex();
         var running = run("wf-a", 10L);
 
-        index.onTransition(WorkflowRunIndex.announcer(() -> true, probe.sink()));
+        index.onTransition(WorkflowRunIndex.announcer(index, () -> true, probe.sink()));
         index.put(running);
         index.put(running.in(WorkflowState.DONE, ""));
         assertThat(probe.settled()).isEmpty();
     }
 
-    /// An abandon ends the escalated run as FAILED (ABANDONED is reserved until the ledger has the verb): it resolves the incident, outcome FAILED.
+    /// A committed abandon (its cause in the run's detail) resolves the incident with outcome ABANDONED, not FAILED (v2803c F3).
     @Test
-    void announcer_abandonOfAnEscalatedRun_raisesResolved() {
+    void announcer_abandonedTerminalOfAnEscalatedRun_raisesResolved_withOutcomeAbandoned() {
         var index = WorkflowRunIndex.workflowRunIndex();
         var escalated = run("wf-a", 10L).in(WorkflowState.ESCALATED, "incident");
 
-        index.onTransition(WorkflowRunIndex.announcer(() -> true, probe.sink()));
+        index.onTransition(WorkflowRunIndex.announcer(index, () -> true, probe.sink()));
         index.put(escalated);
-        index.put(escalated.in(WorkflowState.FAILED, "abandoned"));
+        index.put(escalated.abandoned("operator gave up"));
         var raised = probe.settled();
 
         assertThat(codes(raised)).containsExactly(OperatorWarningCode.WORKFLOW_ESCALATED, OperatorWarningCode.WORKFLOW_RESOLVED);
-        assertThat(raised.getLast().message()).contains("outcome FAILED");
+        assertThat(raised.getLast().message()).contains("outcome ABANDONED");
     }
 
-    /// A run that escalates again after a resume opens a new incident; a re-applied ESCALATED value is not a new transition.
+    /// A FAILED run whose detail is not an abandon cause stays outcome FAILED.
     @Test
-    void announcer_reEscalationAfterResume_opensANewIncident_andAnUnchangedStateRaisesNothing() {
+    void announcer_failedTerminalOfAnEscalatedRun_raisesResolved_withOutcomeFailed() {
+        var index = WorkflowRunIndex.workflowRunIndex();
+        var escalated = run("wf-a", 10L).in(WorkflowState.ESCALATED, "incident");
+
+        index.onTransition(WorkflowRunIndex.announcer(index, () -> true, probe.sink()));
+        index.put(escalated);
+        index.put(escalated.in(WorkflowState.FAILED, "precondition can never hold"));
+        assertThat(probe.settled().getLast().message()).contains("outcome FAILED");
+    }
+
+    /// Q4 / v2803c F1: re-escalating a run whose incident is still open (a resume leaves it open) does NOT raise a second ESCALATED;
+    /// a re-applied ESCALATED value raises nothing either. After the terminal commit closes the incident, a later escalation is new.
+    @Test
+    void announcer_reEscalationWhileTheIncidentIsOpen_raisesNoSecondEscalated() {
         var index = WorkflowRunIndex.workflowRunIndex();
         var escalated = run("wf-a", 10L).in(WorkflowState.ESCALATED, "first");
         var resumed = escalated.resumed(99_000L);
         var again = resumed.in(WorkflowState.ESCALATED, "second");
 
-        index.onTransition(WorkflowRunIndex.announcer(() -> true, probe.sink()));
+        index.onTransition(WorkflowRunIndex.announcer(index, () -> true, probe.sink()));
         index.put(escalated);
         index.put(escalated);
         index.put(resumed);
         index.put(again);
-        assertThat(codes(probe.settled())).containsExactly(OperatorWarningCode.WORKFLOW_ESCALATED,
-                                                           OperatorWarningCode.WORKFLOW_RESUMED,
-                                                           OperatorWarningCode.WORKFLOW_ESCALATED);
+        assertThat(codes(probe.settled())).containsExactly(OperatorWarningCode.WORKFLOW_ESCALATED, OperatorWarningCode.WORKFLOW_RESUMED);
+    }
+
+    /// N13 / v2803c F2: a node that never saw the escalation (it came in a snapshot, which announces nothing) takes the events
+    /// partition over, is seeded from the COMMITTED escalated runs, and resolves the incident when the terminal commit arrives.
+    @Test
+    void announcer_ownerHandOff_seededFromCommittedState_resolvesTheOpenIncident() {
+        var index = WorkflowRunIndex.workflowRunIndex();
+        var escalated = run("wf-a", 10L).in(WorkflowState.ESCALATED, "incident");
+        var owner = new AtomicBoolean(false);
+        var announcer = WorkflowRunIndex.announcer(index, owner::get, probe.sink());
+
+        index.onTransition(announcer);
+        index.restore(Map.of(new WorkflowRunKey("wf-a"), escalated));
+        owner.set(true);
+        announcer.reseed();
+        index.put(escalated.in(WorkflowState.DONE, ""));
+        var raised = probe.settled();
+
+        assertThat(codes(raised)).containsExactly(OperatorWarningCode.WORKFLOW_RESOLVED);
+        assertThat(raised.getLast().message()).contains("outcome DONE");
+    }
+
+    /// N13: the seeding also dedupes across the hand-off: a run already ESCALATED in committed state is an open incident, so the new
+    /// owner does not raise a second ESCALATED when the same escalation is applied to it again.
+    @Test
+    void announcer_ownerHandOff_seededFromCommittedState_raisesNoSecondEscalated() {
+        var index = WorkflowRunIndex.workflowRunIndex();
+        var escalated = run("wf-a", 10L).in(WorkflowState.ESCALATED, "incident");
+        var announcer = WorkflowRunIndex.announcer(index, () -> true, probe.sink());
+
+        index.onTransition(announcer);
+        index.restore(Map.of(new WorkflowRunKey("wf-a"), escalated));
+        announcer.reseed();
+        index.put(escalated);
+        assertThat(probe.settled()).isEmpty();
+    }
+
+    /// N13: the seeding reads the committed state: a run that is no longer ESCALATED in the index is not an open incident any more.
+    @Test
+    void announcer_reseed_dropsAnIncidentWhoseRunIsNoLongerEscalatedInCommittedState() {
+        var index = WorkflowRunIndex.workflowRunIndex();
+        var escalated = run("wf-a", 10L).in(WorkflowState.ESCALATED, "incident");
+        var announcer = WorkflowRunIndex.announcer(index, () -> true, probe.sink());
+
+        index.onTransition(announcer);
+        index.put(escalated);
+        index.restore(Map.of(new WorkflowRunKey("wf-a"), escalated.in(WorkflowState.DONE, "")));
+        announcer.reseed();
+        index.put(escalated.in(WorkflowState.DONE, ""));
+        assertThat(codes(probe.settled())).containsExactly(OperatorWarningCode.WORKFLOW_ESCALATED);
     }
 
     /// End to end over the real store route: the ledger's resume commit of an escalated run raises RESUMED.

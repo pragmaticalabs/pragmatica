@@ -88,7 +88,7 @@ final class WorkflowTestCluster {
 
     /// Announce every applied transition to `warnings`, as the cluster-events owner when `owns` says so.
     Unit announceTo(BooleanSupplier owns, OperatorWarningSink warnings) {
-        return index.onTransition(WorkflowRunIndex.announcer(owns, warnings));
+        return index.onTransition(WorkflowRunIndex.announcer(index, owns, warnings));
     }
 
     /// Commit `node` as the leader, as an election would.

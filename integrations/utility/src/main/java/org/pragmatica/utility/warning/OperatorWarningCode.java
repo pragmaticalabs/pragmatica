@@ -926,15 +926,15 @@ public enum OperatorWarningCode {
     /// it, and is published even if the raise was lost. [verified: unit level, the announcer against a stubbed gate; not a live cluster]
     WORKFLOW_ESCALATED("workflow-escalated", "workflow", WarningLevel.CRITICAL),
     /// The recovery of [#WORKFLOW_ESCALATED], same subject (rc6 §4.4, CTO ruling Q4): an ESCALATED workflow reached a terminal state, DONE
-    /// or FAILED (an abandon commits FAILED; the message names the outcome). A resume does NOT resolve it, see [#WORKFLOW_RESUMED]. INFO;
+    /// or FAILED (the message names the outcome: DONE, FAILED or ABANDONED, the last when the failed run's detail carries the abandon cause). A resume does NOT resolve it, see [#WORKFLOW_RESUMED]. INFO;
     /// raised at most once per run per ESCALATED episode within an owner tenure (same raise guarantee, same gate and same hand-off
     /// duplicate-or-lose conditions as [#WORKFLOW_ESCALATED]); the close itself is published by any owner (`closesAcrossNodes`).
     /// Closes across nodes: the open state is the committed run state, so the cluster-events owner that applies the terminal state may be
     /// a different node (or process) than the one that raised the ESCALATED, which holds no open state for it (#2062).
     WORKFLOW_RESOLVED("workflow-resolved", "workflow", WarningLevel.INFO, WORKFLOW_ESCALATED, true),
     /// A workflow left ESCALATED by an operator resume and is RUNNING or WAITING again (rc6 §4.4, CTO ruling Q4). A point event with no
-    /// recovery pairing: it does not close [#WORKFLOW_ESCALATED] (only a terminal state does), and a run that escalates again opens a new
-    /// incident. Subject is the workflow id. INFO; same raise guarantee as [#WORKFLOW_ESCALATED] (at most once per owner tenure; a hand-off can duplicate or lose it).
+    /// recovery pairing: it does not close [#WORKFLOW_ESCALATED] (only a terminal state does), and a run that escalates again while the
+    /// incident is open raises no second [#WORKFLOW_ESCALATED] (deduped by run id). Subject is the workflow id. INFO; same raise guarantee as [#WORKFLOW_ESCALATED] (at most once per owner tenure; a hand-off can duplicate or lose it).
     WORKFLOW_RESUMED("workflow-resumed", "workflow", WarningLevel.INFO),
     /// The recovery of [#CONFIG_WATCH_CALLBACK_FAILED], same subject (#774): the next delivery bound and (when it called back) succeeded.
     /// INFO, published only after a published failure for the subject (#752 mechanism).
