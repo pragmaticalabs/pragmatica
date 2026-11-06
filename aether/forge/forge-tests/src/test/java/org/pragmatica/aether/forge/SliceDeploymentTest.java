@@ -226,6 +226,46 @@ class SliceDeploymentTest {
                .until(() -> committedTarget(leaderPort, 4));
     }
 
+    @Test
+    void abTest_concluded_combinesTheOperatorRequirementIntoTheTarget() {
+        var leaderPort = cluster.getLeaderManagementPort().unwrap();
+
+        deploy(leaderPort, TEST_ARTIFACT, 3);
+        await().atMost(DEPLOY_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> sliceIsActive(TEST_ARTIFACT));
+
+        // Both variants name the deployed version, so no new artifact is needed: the A/B test only drives the target's lifecycle.
+        var version = TEST_ARTIFACT.substring(TEST_ARTIFACT.lastIndexOf(':') + 1);
+        var base = TEST_ARTIFACT.substring(0, TEST_ARTIFACT.lastIndexOf(':'));
+        var created = post(leaderPort,
+                           "/api/v1/ab-tests/create",
+                           "{\"artifactBase\": \"" + base + "\", \"variants\": {\"a\": \"" + version + "\", \"b\": \"" + version + "\"}}",
+                           "application/json");
+        assertThat(created).doesNotContain("\"error\"");
+        var testId = testId(created);
+
+        // While the test runs its canary the combiner holds the target; the operator requirement of 4 is committed but not combined.
+        var scaled = scale(leaderPort, TEST_ARTIFACT, 4);
+        assertThat(scaled).doesNotContain("\"error\"");
+
+        var concluded = post(leaderPort, "/api/v1/ab-tests/conclude/" + testId, "{\"winner\": \"a\"}", "application/json");
+        assertThat(concluded).doesNotContain("\"error\"");
+
+        // The test's put (AetherNode: controlLoop::onAbTestPut) re-runs the combiner, which commits the requirement.
+        await().atMost(DEPLOY_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> committedTarget(leaderPort, 4));
+    }
+
+    private static String testId(String response) {
+        var matcher = java.util.regex.Pattern.compile("\"testId\"\\s*:\\s*\"([^\"]+)\"").matcher(response);
+
+        assertThat(matcher.find()).as("testId in " + response).isTrue();
+
+        return matcher.group(1);
+    }
+
     private boolean committedTarget(int port, int expected) {
         return getSlices(port).replaceAll("\\s", "")
                               .contains("\"targetInstances\":" + expected + ",");
