@@ -8,9 +8,11 @@ import java.util.Set;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.RequirementKind;
 import org.pragmatica.consensus.NodeId;
 
 import org.junit.jupiter.api.Test;
@@ -119,5 +121,26 @@ class WorkerMetadataIndexTest {
         assertThat(index.peersForWorker(WORKER, Set.of(CORE))).doesNotContain(FOREIGN);
         index.put(foreignAssignment, AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.DEACTIVATING));
         assertThat(index.endpointPeersForWorker(WORKER)).containsExactly(WORKER);
+    }
+
+    /// rc6 §3.1 (n22): a slice's capacity requirement is a leader-side input of the combiner and enters no worker scope, where the slice's
+    /// target travels in its artifact scope. Positive control: the target put moves the artifact scope's revision, so a requirement put that
+    /// leaves every revision unmoved is not the index failing to see a put.
+    @Test
+    void sliceRequirementKey_entersNoWorkerScope_whereTheSliceTargetEntersTheArtifactScope() {
+        var index = WorkerMetadataIndex.workerMetadataIndex();
+        var base = ArtifactBase.artifactBase("com.example:service").unwrap();
+        var scope = "artifact:" + base.asString();
+
+        index.put(AetherKey.SliceTargetKey.sliceTargetKey(base), "opaque value: the arm reads the key only");
+        var afterTarget = index.revision();
+
+        assertThat(index.revision(scope)).as("control: the target is in the artifact scope").isPositive();
+
+        index.put(AetherKey.SliceRequirementKey.sliceRequirementKey(base, RequirementKind.OPERATOR), "opaque value: the unscoped arm never reads it");
+
+        assertThat(index.revision()).as("a requirement put moves no revision").isEqualTo(afterTarget);
+        assertThat(index.snapshot(scope).keySet()).as("the artifact scope holds the target and no requirement")
+                                                 .containsExactly(AetherKey.SliceTargetKey.sliceTargetKey(base));
     }
 }
