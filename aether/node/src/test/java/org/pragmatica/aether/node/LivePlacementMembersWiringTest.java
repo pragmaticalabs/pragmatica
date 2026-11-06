@@ -133,6 +133,8 @@ class LivePlacementMembersWiringTest {
                         .containsOnlyOnce("streamPartitionManager.onEpochVerified(streamReplicationReceiveHandler::releaseDeferredAck);");
         assertThat(code).as("#2599: a removed stream's deferred acks are dropped with it")
                         .containsOnlyOnce("streamPartitionManager.onStreamRemoved(streamReplicationReceiveHandler::forgetDeferredAcks);");
+        assertThat(code).as("#2599 G3: a backfill's ack goes out in the receive handler's per-partition section")
+                        .containsOnlyOnce("streamPartitionBackfill.backfillAckSink(streamReplicationReceiveHandler::ackBackfill);");
         assertThat(code).containsOnlyOnce("streamReplicationManager.ownerEpochs(streamOwnerEpochSource);");
         assertThat(code).containsOnlyOnce("streamPartitionManager.repairReportBound(TimeSpan.timeSpan(STREAM_BACKFILL_REDRIVE_INTERVAL.millis()*12L).millis());");
         assertThat(code).containsOnlyOnce("ownerActivation.peerRingTail((node,stream,partition)->");

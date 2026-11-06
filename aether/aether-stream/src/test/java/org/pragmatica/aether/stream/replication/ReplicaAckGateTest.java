@@ -64,6 +64,7 @@ class ReplicaAckGateTest {
     private static final long E2_START = 3L;
     private static final NodeId NODE_A = NodeId.nodeId("node-a").unwrap();
     private static final NodeId NODE_B = NodeId.nodeId("node-b").unwrap();
+    private static final NodeId NODE_C = NodeId.nodeId("node-c").unwrap();
     private static final List<NodeId> MEMBERS = List.of(NODE_A, NODE_B);
 
     private final NodeId owner = ReplicaPlacement.rank(STREAM, PARTITION, MEMBERS).getFirst();
@@ -422,32 +423,114 @@ class ReplicaAckGateTest {
         assertThat(ackOffsets(E2)).containsExactly(5L);
     }
 
-    /// v2735 F2 (G3): the backfill acks its watermark (outside the deferred-ack section) BEFORE the compare verifies the copy;
-    /// the release that follows acks the verified head, never the older deferred offset below it, so the owner's last ack of
-    /// this replica is not lowered.
+    /// v2735 F2 (G3): the backfill acks its watermark BEFORE the compare verifies the copy, and that ack goes out in the
+    /// receive handler's section (the production sink), where it settles the lower deferral of its epoch. The release that the
+    /// verification then runs finds nothing to send, so the owner's view of this replica does not go from 10 back to 5.
     @Test
     void backfillAckThenRelease_neverLowersTheOwnersView() {
         var ownerLog = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
+        var releases = new AtomicInteger();
 
         ownerLog.createStream(StreamConfig.streamConfig(STREAM));
         unverifiedCopyUnderE2();
         IntStream.range(0, 11).forEach(i -> ownerLog.appendRecovered(STREAM, PARTITION, payload(i), 1000L + i).unwrap());
         handler.onReplicateEvents(liveBatch(5, 1, E2));
         assertThat(acks).as("deferred").isEmpty();
+        replica.onEpochVerified((stream, partition) -> releaseCounted(releases, stream, partition));
+        holdSyncs.set(true);
 
         backfill((_, request) -> Promise.success(ownerResponse(ownerLog, request.fromOffset())),
                  AcceptingReplicationTransport.accepting((_, message) -> recordAck(message)),
                  (_, _, _) -> Promise.promise()).backfill(STREAM, PARTITION)
                                                 .await();
 
-        assertThat(eventually(() -> replica.replicaVerified(STREAM, PARTITION))).as("verified").isTrue();
-        assertThat(eventually(() -> acks.size() >= 2)).as("the backfill's ack and the release's; acks = %s", acks).isTrue();
-
-        var offsets = ackOffsets(E2);
-
-        assertThat(offsets.getFirst()).as("the backfill acked its watermark first; acks = %s", offsets).isEqualTo(10L);
-        assertThat(offsets).as("no ack lowers the one before it").isSorted();
+        assertThat(eventually(() -> releases.get() > 0)).as("the compare verified the copy and ran the release").isTrue();
+        releaseHeldSyncs();
+        assertThat(ackOffsets(E2)).as("the backfill's ack settled the deferral; a release after it would send 5").containsExactly(10L);
         ownerLog.close();
+    }
+
+    /// G3 at its boundary: a backfill ack at exactly the deferred offset, in the deferral's epoch, settles it.
+    @Test
+    void backfillAck_atTheDeferredOffset_settlesTheDeferral() {
+        unverifiedCopyUnderE2();
+        handler.onReplicateEvents(liveBatch(5, 1, E2));
+        handler.ackBackfill(owner, STREAM, PARTITION, 5L, E2);
+
+        replica.markVerifiedForEpoch(STREAM, PARTITION, E2);
+
+        assertThat(ackOffsets(E2)).as("the backfill's ack only").containsExactly(5L);
+    }
+
+    /// G3 below its boundary: a backfill ack of the deferral's epoch below the deferred offset leaves it to its release.
+    @Test
+    void backfillAck_belowTheDeferredOffset_leavesTheDeferralToItsRelease() {
+        unverifiedCopyUnderE2();
+        handler.onReplicateEvents(liveBatch(5, 3, E2));
+        handler.ackBackfill(owner, STREAM, PARTITION, 6L, E2);
+
+        replica.markVerifiedForEpoch(STREAM, PARTITION, E2);
+
+        assertThat(ackOffsets(E2)).containsExactly(6L, 7L);
+    }
+
+    /// G3 across epochs: a backfill ack of another epoch settles nothing of this one; the deferral waits for its own release.
+    @Test
+    void backfillAck_ofAnotherEpoch_leavesTheDeferralToItsRelease() {
+        unverifiedCopyUnderE2();
+        handler.onReplicateEvents(liveBatch(5, 1, E2));
+        handler.ackBackfill(owner, STREAM, PARTITION, 10L, E1);
+
+        replica.markVerifiedForEpoch(STREAM, PARTITION, E2);
+
+        assertThat(ackOffsetsUnder(E1)).containsExactly(10L);
+        assertThat(ackOffsetsUnder(E2)).as("released under its own epoch").containsExactly(5L);
+    }
+
+    /// v2735d probe (a), F2: this replica's committed view is still E2 and its copy is verified for E2; a batch of a NEWER epoch
+    /// (E3, from its new owner, accepted because this view lags) lands at the head between the release's gate read and its head
+    /// read. The release acks, under E2 to E2's owner, its deferred offset and never that head, which holds E3's records. The
+    /// rule that acked the head read before the barrier sent 7 here.
+    @Test
+    void probeV2735d_releaseUnderE2_neverAcksANewerEpochsRecords() {
+        var injected = new AtomicBoolean();
+
+        unverifiedCopyUnderE2();
+        handler.onReplicateEvents(liveBatch(5, 1, E2));
+        assertThat(acks).as("deferred").isEmpty();
+        holdSyncs.set(true);
+        handler.ackGate((stream, partition) -> injectE3OnFirstVerifiedRead(injected, stream, partition));
+        replica.markVerifiedForEpoch(STREAM, PARTITION, E2);
+
+        assertThat(injected.get()).as("the E3 batch was injected").isTrue();
+        assertThat(replica.nextExpectedOffset(STREAM, PARTITION)).as("the E3 batch landed at the head").isEqualTo(8L);
+
+        var e3LiveSync = heldSyncs.poll();
+        var releaseSync = heldSyncs.poll();
+
+        assertThat(releaseSync).as("two barriers in flight").isNotNull();
+        drain(releaseSync);
+
+        assertThat(ackOffsetsUnder(E2)).as("acks under E2 cover only E2's records (0..5); all acks = %s", acks).containsExactly(5L);
+        drain(e3LiveSync);
+    }
+
+    /// #2753 TRIPWIRE (pins current behaviour, which predates #2599): the gate opens for the OWNER placement role
+    /// (`ReplicaSetController::roleFor`, from HRW placement, not the committed record). While the committed owner is still the
+    /// batch's sender at E2, a stale compare's verification (an epoch captured before E2) runs the release, and the deferral of a
+    /// copy never verified for E2 is sent. When #2753 lands, this pin turns red: flip it to assert that no ack is sent.
+    @Test
+    void tripwire_2753_ownerRoleOpensTheGate_unverifiedDeferralIsSent() {
+        unverifiedCopyUnderE2();
+        handler.onReplicateEvents(liveBatch(5, 1, E2));
+        assertThat(acks).as("deferred").isEmpty();
+        replica.placementRoleSupplier((_, _) -> Role.OWNER);
+
+        replica.markVerifiedForEpoch(STREAM, PARTITION, E1);
+
+        assertThat(ackOffsets(E2)).as("#2753 role bypass: no compare verified this copy for E2, yet the deferral is sent. When #2753 "
+                                      + "lands this goes red: flip it to assert no ack is sent")
+                                  .containsExactly(5L);
     }
 
     /// R1 TRIPWIRE (pins current behaviour): a compare whose response carries no records (an empty owner) never verifies the
@@ -489,7 +572,8 @@ class ReplicaAckGateTest {
 
         replica.markVerifiedForEpoch(STREAM, PARTITION, E3);
 
-        assertThat(ackOffsets(E3)).as("the E3 ack, at the verified head").containsExactly(7L);
+        assertThat(ackOffsets(E3)).as("the E3 ack, at its deferred offset: 7 is E2's record, not the E3 batch's")
+                                  .containsExactly(6L);
     }
 
     /// m10, the other order: a deferral of a newer epoch is not displaced by a later-deferred lower one of an older epoch, which
@@ -539,6 +623,30 @@ class ReplicaAckGateTest {
 
         if (reads.incrementAndGet() == 2) {
             replica.markVerifiedForEpoch(stream, partition, E2);
+        }
+
+        return verified;
+    }
+
+    /// The production listener, counted: the release has run (and requested its barrier, if it had anything to send) when
+    /// the count moves.
+    private void releaseCounted(AtomicInteger releases, String stream, int partition) {
+        handler.releaseDeferredAck(stream, partition);
+        releases.incrementAndGet();
+    }
+
+    /// The real gate; at its first open reading, a batch of E3 from E3's owner lands at the head (6, 7).
+    private boolean injectE3OnFirstVerifiedRead(AtomicBoolean injected, String stream, int partition) {
+        var verified = replica.replicaVerified(stream, partition);
+
+        if (verified && injected.compareAndSet(false, true)) {
+            handler.onReplicateEvents(replicateEvents(NODE_C,
+                                                      STREAM,
+                                                      PARTITION,
+                                                      6,
+                                                      List.of("e3-6".getBytes(UTF_8), "e3-7".getBytes(UTF_8)),
+                                                      List.of(2006L, 2007L),
+                                                      E3));
         }
 
         return verified;
@@ -623,20 +731,25 @@ class ReplicaAckGateTest {
         registry.registerReplica(STREAM, PARTITION, owner);
         registry.registerReplica(STREAM, PARTITION, self);
 
-        return partitionBackfill(registry,
-                                 replica.alignedRecovery(),
-                                 catchup,
-                                 replication,
-                                 probe,
-                                 (stream, partition) -> replica.partitionInfo(stream, partition)
-                                                               .map(StreamPartitionManager.PartitionInfo::headOffset)
-                                                               .or(-1L),
-                                 self,
-                                 TimeSpan.timeSpan(3600).seconds(),
-                                 () -> MEMBERS,
-                                 committedOwners(),
-                                 replica::syncReplicated,
-                                 replica.quarantineView());
+        var backfill = partitionBackfill(registry,
+                                         replica.alignedRecovery(),
+                                         catchup,
+                                         replication,
+                                         probe,
+                                         (stream, partition) -> replica.partitionInfo(stream, partition)
+                                                                       .map(StreamPartitionManager.PartitionInfo::headOffset)
+                                                                       .or(-1L),
+                                         self,
+                                         TimeSpan.timeSpan(3600).seconds(),
+                                         () -> MEMBERS,
+                                         committedOwners(),
+                                         replica::syncReplicated,
+                                         replica.quarantineView());
+
+        // The production wiring (StreamAssembly).
+        backfill.backfillAckSink(handler::ackBackfill);
+
+        return backfill;
     }
 
     private void recordAck(ReplicationMessage message) {
@@ -681,6 +794,13 @@ class ReplicaAckGateTest {
         assertThat(acks).as("every ack carries %s", epoch).allSatisfy(ack -> assertThat(ack.ownerEpoch()).isEqualTo(epoch));
 
         return acks.stream().map(ReplicationMessage.ReplicateAck::confirmedOffset).toList();
+    }
+
+    private List<Long> ackOffsetsUnder(Epoch epoch) {
+        return acks.stream()
+                   .filter(ack -> ack.ownerEpoch().equals(epoch))
+                   .map(ReplicationMessage.ReplicateAck::confirmedOffset)
+                   .toList();
     }
 
     private static byte[] payload(int i) {

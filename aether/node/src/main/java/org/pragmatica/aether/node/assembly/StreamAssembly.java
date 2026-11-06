@@ -1418,6 +1418,8 @@ public sealed interface StreamAssembly {
         streamPartitionManager.onEpochVerified(streamReplicationReceiveHandler::releaseDeferredAck);
         // #2599: a removed stream's deferred acks go with it, so none is released into a stream recreated under its name.
         streamPartitionManager.onStreamRemoved(streamReplicationReceiveHandler::forgetDeferredAcks);
+        // #2599 G3: a backfill's ack goes out in the receive handler's per-partition section, settling a deferred ack it covers.
+        streamPartitionBackfill.backfillAckSink(streamReplicationReceiveHandler::ackBackfill);
         // #2087: a replica serves a consumer read only up to the owner's reported visible position.
         streamReplicationReceiveHandler.commitSink(streamPartitionManager::commitAdvanced);
         allEntries.add(MessageRouter.Entry.route(ReplicationMessage.CommitAdvance.class,
