@@ -808,6 +808,23 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
         assertThat(terminates.get()).isEqualTo(1);
     }
 
+    /// The v-2062 B1 duplicate also comes as the drain-grace backstop of a directed drain (not a join-grace reap) after the reap of NodeRemoved was
+    /// confirmed: only a JOIN_GRACE_REAP is evidence of an instance under the id (#2457), so this one still asks the provider nothing.
+    @Test
+    void confirmedReap_thenDrainGraceBackstopOfADirectedDrain_autoHealEnabled_asksTheProviderNothing() {
+        lost();
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        settle();
+        var asked = listings.get();
+
+        ctm.drainNode(LOST, DrainReason.OPERATOR_COMMAND);
+        settle();
+
+        assertThat(listings.get()).as("no provider call for the backstop of a drain that carries no evidence").isEqualTo(asked);
+        assertThat(terminates.get()).isEqualTo(1);
+        assertThat(events).as("no false unconfirmed event").isEmpty();
+    }
+
     /// Forced interleaving: chain A lists a confirmed node and sees nothing new, and before A acts a concurrent chain B (which saw a new instance)
     /// drops the confirmation. A was cleared by a decision that no longer holds, so it must not terminate: with auto-heal disabled, no provider
     /// terminate may follow. The hook runs INSIDE A's listing, the window between A's decision and its action.
