@@ -557,10 +557,11 @@ public final class ReplicationReceiveHandler {
     /// higher than the head the copy holds then: a repair between the deferral and the release can have cut the deferred
     /// offsets. A live ack sent meanwhile that covers it has already dropped it ([#sendLiveAck]).
     ///
-    /// The release acks the head the copy holds when the gate opens, not only the deferred offset, when that is higher: the copy
-    /// is verified, so that head is the owner's lineage, and the barrier requested after reading it covers it. The backfill's
-    /// own ack of its watermark goes out before the compare verifies the copy, outside the [#deferredAcks] section; released at
-    /// the deferred offset alone, the ack after it lowered the owner's view of this replica.
+    /// The release acks the head the copy holds when the gate opens, not the deferred offset: the copy is verified, so that head
+    /// is the owner's lineage, and the barrier requested after reading it covers it. It holds the deferred offsets unless a
+    /// repair cut them, and a record appended after the reading is not covered, so the head read is also the ceiling. The
+    /// backfill's own ack of its watermark goes out before the compare verifies the copy, outside the [#deferredAcks] section;
+    /// released at the deferred offset, the ack after it lowered the owner's view of this replica.
     @Contract
     public void releaseDeferredAck(String streamName, int partition) {
         option(deferredAcks.get(partitionKey(streamName, partition))).filter(_ -> ackGate.mayAck(streamName, partition))
@@ -574,15 +575,13 @@ public final class ReplicationReceiveHandler {
 
     @Contract
     private void releaseDurably(String streamName, int partition, DeferredAck gated, long headBeforeSync) {
-        var upTo = Math.max(gated.through(), headBeforeSync);
-
         durability.sync(streamName, partition)
                   .onSuccess(_ -> deferredAcks.computeIfPresent(partitionKey(streamName, partition),
                                                                 (_, held) -> sendIfStillGated(streamName,
                                                                                               partition,
                                                                                               gated,
                                                                                               held,
-                                                                                              upTo)))
+                                                                                              headBeforeSync)))
                   .onFailure(cause -> reportWithheldAck(streamName,
                                                         partition,
                                                         gated.through(),

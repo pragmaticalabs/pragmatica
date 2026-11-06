@@ -264,6 +264,23 @@ class ReplicaAckGateTest {
         assertThat(ackOffsets(E2)).containsExactly(5L);
     }
 
+    /// G4 at the release's head reading: a repair cut the copy below the deferred offset before the release read the head, and
+    /// the cut offsets were written again before the send. Those were appended after the barrier was requested, so the ack stops
+    /// at the head the release read.
+    @Test
+    void deferredAck_cutBeforeTheHeadReadAndRewrittenBeforeTheSend_acksOnlyWhatTheBarrierCovers() {
+        unverifiedCopyUnderE2();
+        handler.onReplicateEvents(liveBatch(5, 3, E2));
+        cutNext.set(6L);
+        holdSyncs.set(true);
+        replica.markVerifiedForEpoch(STREAM, PARTITION, E2);
+        cutNext.set(Long.MAX_VALUE);
+
+        releaseHeldSyncs();
+
+        assertThat(ackOffsets(E2)).containsExactly(5L);
+    }
+
     /// A lower re-delivery deferred after a higher batch does not lower what is released.
     @Test
     void deferredAck_lowerReDeliveryWhileDeferred_releasesTheHigher() {
