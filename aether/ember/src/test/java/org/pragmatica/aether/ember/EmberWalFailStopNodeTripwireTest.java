@@ -136,7 +136,7 @@ class EmberWalFailStopNodeTripwireTest {
         var owner = cluster.getNode(StreamTripwireSupport.awaitFullIsr(cluster, ENGINE_KEY, ISR_BUDGET_MS).owner().id()).unwrap();
         var router = StreamTripwireSupport.component(owner, "streamWriteRouter", StreamWriteRouter.class);
 
-        assertThat(router.publish(ENGINE_KEY, PARTITION, "before".getBytes(StandardCharsets.UTF_8), System.currentTimeMillis()).await(PUBLISH_BOUND).isSuccess())
+        assertThat(StreamTripwireSupport.publishOnceActivated(router, ENGINE_KEY, "before".getBytes(StandardCharsets.UTF_8)).isSuccess())
             .as("control: the owner acknowledges before the fail-stop").isTrue();
         scrapeBeforeFailStop = scrape(owner);
         closeWalChannel(owner);
