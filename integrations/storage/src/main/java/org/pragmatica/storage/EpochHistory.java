@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.zip.CRC32;
 
 import org.pragmatica.lang.Functions.Fn2;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.FileOps;
@@ -45,11 +46,14 @@ final class EpochHistory {
     private final Fn2<Result<Unit>, Path, byte[]> writer;
     private final Object lock = new Object();
     private volatile List<AppendLog.EpochStart> entries;
+    /// The key of the last entry, published with every `entries` it belongs to, so a reader needs no list access (#2201 A-01).
+    private volatile Option<AppendLog.EpochKey> lastKey;
 
     private EpochHistory(Path sidecar, Fn2<Result<Unit>, Path, byte[]> writer, List<AppendLog.EpochStart> entries) {
         this.sidecar = sidecar;
         this.writer = writer;
         this.entries = entries;
+        this.lastKey = lastKeyOf(entries);
     }
 
     /// `<name>.epochs` beside `<name>.wal` (any other log file name gets `.epochs` appended).
@@ -79,6 +83,17 @@ final class EpochHistory {
 
     List<AppendLog.EpochStart> entries() {
         return entries;
+    }
+
+    /// The key of the last recorded epoch, [Option#none] for an empty history. O(1), reads memory only.
+    Option<AppendLog.EpochKey> lastKey() {
+        return lastKey;
+    }
+
+    private static Option<AppendLog.EpochKey> lastKeyOf(List<AppendLog.EpochStart> history) {
+        return history.isEmpty()
+               ? Option.none()
+               : Option.some(history.getLast().key());
     }
 
     /// Monotonic under `order`: a key that does not follow the last one, or a start below the previous
@@ -167,6 +182,7 @@ final class EpochHistory {
     }
 
     private Unit install(List<AppendLog.EpochStart> next) {
+        lastKey = lastKeyOf(next);
         entries = next;
 
         return unit();

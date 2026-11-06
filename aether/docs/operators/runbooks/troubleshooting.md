@@ -226,6 +226,32 @@ The failing step's VMs are destroyed. The error names any VM still running and b
    cores held a majority, healing the network does not bring them back and replacement cannot run. Follow
    [No-majority partition / every core halted](incident-response.md#no-majority-partition--every-core-halted)
 
+### Issue: A Stream Partition's WAL Fail-Stopped
+
+**Symptoms:**
+- CRITICAL `storage-wal-fail-stopped` with the subject `stream[partition]`
+- Every publish to that partition on the node is refused with `PartitionFailStopped`
+- `wal.failStopped` is `true` for the partition; gauge `aether.streams.wal.failstopped` is above 0
+
+**Cause:** the WAL's fsync, a frame write or a post-compaction reopen failed (often a full or read-only volume). The log stops
+for good rather than retry, because a retried fsync can falsely succeed after the OS dropped the dirty pages.
+
+**Resolution:**
+1. Check the volume that holds the WAL (free space, read-only remount, disk errors in the kernel log).
+2. Replace the node (`POST /api/v1/nodes/replace/<node-id>`). A node id never returns, so a single node cannot rejoin under its
+   old id; the replacement joins under a new id and its partitions catch up from the other replicas. Only a whole-cluster
+   restart, which keeps every node id, reopens the same WAL.
+
+**How the alarm closes** — one of three events, each with the same `stream[partition]` subject:
+- `storage-wal-retired` (INFO): the node that fail-stopped was removed or decommissioned, as when it is replaced. Its log is not
+  reopened.
+- `storage-wal-writable` (INFO): a whole-cluster restart reopened the same WAL under the same node id, and it accepted a durable
+  write.
+- `NODE_FAILED`: the node crashed and could publish nothing; the failure event supersedes the alarm.
+
+Known limit: the subject names the partition, not the node. If two nodes fail-stop the same partition, the close from one node
+also closes the other's alarm; check `wal.failStopped` on each node.
+
 ## Log Levels
 
 To increase logging temporarily:

@@ -82,6 +82,8 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     public static final long MAX_CAPACITY = (Long.MAX_VALUE - HEADER_SIZE - DEFAULT_SEGMENT_BYTES) / INDEX_ENTRY_SIZE;
     /// Always-admit growth predicate (default seam — standalone buffers grow without budget gating).
     private static final LongPredicate ALWAYS_ADMIT = _ -> true;
+    /// The guard of an ordered append whose caller keeps its own checks (WAL replay, replica receive): admits every write.
+    private static final Supplier<Result<Unit>> ADMIT_ALL = Result::unitResult;
 
     /// No-op release (default seam).
     private static final LongConsumer NOOP_RELEASE = _ -> {};
@@ -173,6 +175,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// head and the next append rewrites those slots, so a copy that straddles it can pair one record's index entry
     /// with another's bytes. Written only under `appendLock`.
     private volatile long truncationSeq;
+    /// Set once, under `appendLock`, when an ordered append's withdrawal failed ([#continuedOrWithdrawn]): every later append is
+    /// refused with this cause until the partition is re-materialized (a new ring).
+    private volatile Option<Cause> halted = Option.none();
     /// Test-only seam (#1730): run by [#stableAcrossTruncation] after a read completed and before it checks
     /// [#truncationSeq], the moment a truncation must be detected. Production never sets it.
     private Runnable truncationWindowProbe = NO_READ_WINDOW_PROBE;
@@ -445,6 +450,11 @@ public final class OffHeapRingBuffer implements AutoCloseable {
             return StreamError.General.BUFFER_CLOSED.result();
         }
 
+        if (halted.isPresent()) {
+            return halted.unwrap()
+                         .result();
+        }
+
         if (payload.length > dataRegionSize) {
             return new StreamError.EventTooLarge(payload.length, dataRegionSize).result();
         }
@@ -466,9 +476,56 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// confirmation peers. Listeners then learn the new visible high-water on this ring's serial notifier,
     /// never under the section.
     public <T> Result<T> appendOrdered(byte[] payload, long timestamp, Fn1<Result<T>, Long> inOrder) {
+        return appendOrdered(payload, timestamp, ADMIT_ALL, inOrder);
+    }
+
+    /// [#appendOrdered(byte[], long, Fn1)] behind `guard` (#2201 A-01): the guard runs INSIDE the ordered section, before an offset
+    /// exists, so a write it refuses takes no offset, writes nothing and runs no `inOrder`. Whatever the guard reads (the owner-epoch
+    /// fence, the log's last epoch, the log's health) cannot change between the check and the append, because every append on this ring
+    /// waits for the section. The guard must be O(1) and must not block: every append on the partition waits for it.
+    public <T> Result<T> appendOrdered(byte[] payload,
+                                       long timestamp,
+                                       Supplier<Result<Unit>> guard,
+                                       Fn1<Result<T>, Long> inOrder) {
         synchronized (appendLock) {
-            return appendLocked(payload, timestamp).flatMap(inOrder);
+            var entryHead = headOffset();
+
+            return guard.get()
+                        .flatMap(_ -> appendLocked(payload, timestamp))
+                        .flatMap(offset -> continuedOrWithdrawn(entryHead, inOrder, offset));
         }
+    }
+
+    /// The rollback of the ordered section (#2201 A-01, spec 5.2 item 3): when `inOrder` fails, the offsets appended since `entryHead`
+    /// are withdrawn by [#truncateSuffix(long)], still under the (reentrant) append lock, so no other append can see them and the next
+    /// append takes the withdrawn offset. Legal because a withdrawn append evicted only OLDER events (an ordered run that would evict its
+    /// own members is refused before it takes an offset, [#appendRunLocked]), so `entryHead >= tail - 1`. Durable and visible are
+    /// lowered by `min` and had not been raised for the withdrawn offsets; no listener was notified for them. Evicted events stay
+    /// evicted: they were older, durable and handed to the sealer.
+    private <T> Result<T> continuedOrWithdrawn(long entryHead, Fn1<Result<T>, Long> inOrder, long offset) {
+        var outcome = inOrder.apply(offset);
+
+        return outcome.isSuccess()
+               ? outcome
+               : withdrawn(entryHead, outcome);
+    }
+
+    /// Returns `failed` once its offsets are withdrawn. A withdrawal that itself fails (an arena closed under it) halts the ring: its
+    /// head may now be ahead of the partition's log, which is the A-01 defect, so it accepts no append until the partition is
+    /// re-materialized, and the publish fails with the withdrawal's cause.
+    private <T> Result<T> withdrawn(long entryHead, Result<T> failed) {
+        return truncateSuffix(entryHead).fold(this::halted, _ -> failed);
+    }
+
+    private <T> Result<T> halted(Cause withdrawalFailure) {
+        halted = Option.some(withdrawalFailure);
+        log.error("Ring {}[{}] HALTED: an ordered append whose continuation failed could not be withdrawn ({}); the ring accepts no "
+                 + "append until the partition is re-materialized",
+                  streamName,
+                  partition,
+                  withdrawalFailure.message());
+
+        return withdrawalFailure.result();
     }
 
     /// Offset-addressed sibling of [#appendOrdered] (#1505): lands the event at `offset` and nowhere else,
@@ -540,7 +597,9 @@ public final class OffHeapRingBuffer implements AutoCloseable {
                                         long nextOffset,
                                         Fn1<Result<Long>, Long> inOrder) {
         if (offset == nextOffset) {
-            return appendLocked(payload, timestamp).flatMap(inOrder);
+            return appendLocked(payload, timestamp).flatMap(assigned -> continuedOrWithdrawn(nextOffset - 1,
+                                                                                             inOrder,
+                                                                                             assigned));
         }
 
         return offset < nextOffset
@@ -677,83 +736,60 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// A failed batch skips `inOrder`; listeners run after the section is released, as for
     /// [#appendOrdered].
     public <T> Result<T> appendBatchOrdered(List<byte[]> payloads, long[] timestamps, Fn1<Result<T>, Long> inOrder) {
-        return notifyingAfter(appendBatchOrderedLocked(payloads, timestamps, inOrder));
+        return appendBatchOrdered(payloads, timestamps, ADMIT_ALL, inOrder);
+    }
+
+    /// [#appendBatchOrdered(List, long[], Fn1)] behind `guard`, evaluated inside the section before the run takes any offset, as for
+    /// [#appendOrdered(byte[], long, Supplier, Fn1)].
+    public <T> Result<T> appendBatchOrdered(List<byte[]> payloads,
+                                            long[] timestamps,
+                                            Supplier<Result<Unit>> guard,
+                                            Fn1<Result<T>, Long> inOrder) {
+        return notifyingAfter(appendBatchOrderedLocked(payloads, timestamps, guard, inOrder));
     }
 
     private <T> Result<T> appendBatchOrderedLocked(List<byte[]> payloads,
                                                    long[] timestamps,
+                                                   Supplier<Result<Unit>> guard,
                                                    Fn1<Result<T>, Long> inOrder) {
         synchronized (appendLock) {
-            return appendRunLocked(payloads, timestamps).flatMap(inOrder);
+            var entryHead = headOffset();
+
+            return guard.get()
+                        .flatMap(_ -> appendRunLocked(payloads, timestamps))
+                        .flatMap(lastOffset -> continuedOrWithdrawn(entryHead, inOrder, lastOffset));
         }
     }
 
-    /// Append `payloads` as ONE contiguous run, never worse than appending them one by one (#1287 review
-    /// K1). A run that fits the ring after growth goes in as one batch. A run larger than that — up to
-    /// the whole data region and beyond — is appended event by event under the same lock, each event
-    /// evicting exactly as a sequential append would, so the run is still contiguous. Only when some event
-    /// can never fit the allocation (a frozen ring) does the run refuse with
-    /// [StreamError.General#RUN_DOES_NOT_FIT], appending nothing, so the caller can give each event
-    /// the single-publish treatment instead.
+    /// Append `payloads` as ONE contiguous run, as one batch, or refuse it with [StreamError.General#RUN_DOES_NOT_FIT], appending
+    /// nothing, so the caller can give each event the single-publish treatment instead. A run is refused when its bytes exceed the
+    /// allocation after growth or its count exceeds the ring's capacity (#2201 A-01, NT-107): such a run would evict its OWN earlier
+    /// members to make room, which a failed continuation could not withdraw ([#continuedOrWithdrawn]). Before PR-2c such a run was
+    /// appended event by event, each event evicting as a sequential append would.
     private Result<Long> appendRunLocked(List<byte[]> payloads, long[] timestamps) {
         var total = totalPayloadSize(payloads);
 
-        return total <= dataRegionSize
+        return total <= dataRegionSize && payloads.size() <= capacity
                ? guardedAccess(() -> ensureGrownFor((int) total)).flatMap(_ -> appendRunGrown(payloads,
                                                                                               timestamps,
                                                                                               total))
-               : appendEachLocked(payloads, timestamps);
+               : StreamError.General.RUN_DOES_NOT_FIT.result();
     }
 
     private Result<Long> appendRunGrown(List<byte[]> payloads, long[] timestamps, long total) {
         return total <= allocatedDataBytes
                ? appendBatchLocked(payloads, timestamps)
-               : appendEachLocked(payloads, timestamps);
-    }
-
-    /// Grows for the largest event first; the allocation never shrinks, so if the largest fits every
-    /// event does, and no append below can take the drop branch.
-    private Result<Long> appendEachLocked(List<byte[]> payloads, long[] timestamps) {
-        var largest = largestPayloadSize(payloads);
-
-        return guardedAccess(() -> ensureGrownFor(largest)).flatMap(_ -> appendEachIfEveryEventFits(payloads,
-                                                                                                    timestamps,
-                                                                                                    largest));
-    }
-
-    private Result<Long> appendEachIfEveryEventFits(List<byte[]> payloads, long[] timestamps, int largest) {
-        return largest <= allocatedDataBytes
-               ? appendEach(payloads, timestamps)
                : StreamError.General.RUN_DOES_NOT_FIT.result();
-    }
-
-    /// NOT atomic under REJECT_WHEN_FULL or sealing backpressure: an event can fail `BUFFER_FULL`
-    /// after earlier ones of the run were appended, leaving them in the ring while the failed run skips
-    /// its ordered continuation (no WAL frames, no replication for them). No durable/visible frontier
-    /// advances for a failed run, and the caller reports unknown outcomes rather than retrying it.
-    /// EVENTUAL rings can hit SEALING_BEHIND while evicting; STRONG batches use the consensus path.
-    private Result<Long> appendEach(List<byte[]> payloads, long[] timestamps) {
-        var last = success(rawHeadOffset());
-
-        for (int i = 0; i < payloads.size(); i++) {
-            var index = i;
-
-            last = last.flatMap(_ -> appendLocked(payloads.get(index), timestamps[index]));
-        }
-
-        return last;
-    }
-
-    private static int largestPayloadSize(List<byte[]> payloads) {
-        return payloads.stream()
-                       .mapToInt(payload -> payload.length)
-                       .max()
-                       .orElse(0);
     }
 
     private Result<Long> appendBatchLocked(List<byte[]> payloads, long[] timestamps) {
         if (closed.get()) {
             return StreamError.General.BUFFER_CLOSED.result();
+        }
+
+        if (halted.isPresent()) {
+            return halted.unwrap()
+                         .result();
         }
 
         if (payloads.isEmpty()) {
@@ -895,19 +931,34 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         truncationListeners.forEach(listener -> listener.accept(keepThrough));
     }
 
+    /// The writer half of the seqlock (A-13(c), spec 5.2 item 4): the sequence is odd exactly while the header is rewritten, and its
+    /// parity is restored on ANY exit, so an exception inside the window (an arena closed mid-cut) can never leave readers spinning on an
+    /// odd sequence. The rollback runs this far more often than the cut does.
+    @SuppressWarnings("JBCT-EX-01")
     private long cutSuffix(long keepThrough, long head) {
+        var opened = truncationSeq + 1;
+
+        truncationSeq = opened;
+        try {
+            VarHandle.storeStoreFence();
+            insideCutProbe.run();
+
+            return cutHeader(keepThrough, head);
+        } finally {
+            VarHandle.storeStoreFence();
+            truncationSeq = opened + 1;
+        }
+    }
+
+    private long cutHeader(long keepThrough, long head) {
         var removed = head - keepThrough;
         var removedBytes = bytesOf(keepThrough + 1, head);
 
-        truncationSeq = truncationSeq + 1;
-        VarHandle.storeStoreFence();
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET, keepThrough);
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_EVENT_COUNT, rawEventCount() - removed);
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_DATA_WRITE_POS, dataWritePos() - removedBytes);
         durableOffset.updateAndGet(value -> Math.min(value, keepThrough));
         visibleOffset.updateAndGet(value -> Math.min(value, keepThrough));
-        VarHandle.storeStoreFence();
-        truncationSeq = truncationSeq + 1;
 
         return removed;
     }
@@ -949,6 +1000,15 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     @Contract
     void afterDurableCutProbe(Runnable probe) {
         afterDurableCutProbe = probe;
+    }
+
+    /// Runs inside the seqlock window of a cut, after the sequence turned odd and before the header changes. Production never sets it;
+    /// a test throws from it (or closes the arena) to show the window's parity is restored on any exit (NT-30).
+    private Runnable insideCutProbe = NO_READ_WINDOW_PROBE;
+
+    @Contract
+    void insideCutProbe(Runnable probe) {
+        insideCutProbe = probe;
     }
 
     /// Test seam (#1730): see [#truncationWindowProbe]. Set before any reader thread starts.
