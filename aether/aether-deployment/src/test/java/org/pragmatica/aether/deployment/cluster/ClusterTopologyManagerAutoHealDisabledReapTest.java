@@ -18,7 +18,6 @@ import java.util.function.Predicate;
 import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import org.pragmatica.aether.deployment.DeploymentMap;
@@ -715,7 +714,6 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
         relist();
     }
 
-    @Disabled("#2457 still present at 869dcab4637f: the confirmed-id recheck runs only with auto-heal disabled. Enable when fixed and delete the tripwires.")
     @Test
     void confirmedReap_thenNeverJoinedZombieUnderTheSameId_autoHealEnabled_isReapedOrAnnounced() {
         automaticReapConfirmedThenAnotherInstanceUnderTheSameId();
@@ -726,7 +724,6 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
         assertThat(reapedOrAnnounced()).as("terminates=%s events=%s", terminates.get(), events).isTrue();
     }
 
-    @Disabled("#2457 still present at 869dcab4637f: the confirmed-id recheck runs only with auto-heal disabled. Enable when fixed and delete the tripwires.")
     @Test
     void confirmedReap_thenOrphanUnderTheSameId_autoHealEnabled_isReapedOrAnnounced() throws ReflectiveOperationException {
         automaticReapConfirmedThenAnotherInstanceUnderTheSameId();
@@ -737,29 +734,42 @@ class ClusterTopologyManagerAutoHealDisabledReapTest {
         assertThat(reapedOrAnnounced()).as("terminates=%s events=%s", terminates.get(), events).isTrue();
     }
 
-    /// TRIPWIRE for #2457: asserts what happens TODAY (the instance under the confirmed id is neither deleted nor announced).
-    /// When it goes red the bug is fixed: enable the two `@Disabled` tests above and delete both tripwires.
+    /// #2457: the look the evidence-bearing trigger buys is a pure read. A join-grace reap of a confirmed id under which nothing new is listed
+    /// terminates nothing and reports nothing unconfirmed: the confirmation stands.
     @Test
-    void tripwire_confirmedReap_thenZombieUnderTheSameId_autoHealEnabled_isNeitherReapedNorAnnouncedToday() {
-        automaticReapConfirmedThenAnotherInstanceUnderTheSameId();
+    void confirmedReap_thenJoinGraceReapWithNothingNewListed_autoHealEnabled_terminatesNothingAndRaisesNoUnconfirmedEvent() {
+        lost();
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        settle();
+        var asked = listings.get();
 
         ctm.drainNode(LOST, DrainReason.JOIN_GRACE_REAP);
         settle();
 
-        assertThat(reapedOrAnnounced()).as("#2457 fixed? enable the @Disabled tests").isFalse();
+        assertThat(listings.get()).as("the evidence-bearing trigger looks").isGreaterThan(asked);
+        assertThat(terminates.get()).isEqualTo(1);
+        assertThat(events).as("a confirmed reap with nothing new under the id raises nothing").isEmpty();
     }
 
+    /// #2457: the evidence belongs to the reap it started. Once that reap is confirmed, a later NodeRemoved of the node is again the no-op that asks
+    /// the provider nothing.
     @Test
-    void tripwire_confirmedReap_thenOrphanUnderTheSameId_autoHealEnabled_isNeitherReapedNorAnnouncedToday() throws ReflectiveOperationException {
+    void confirmedReap_zombieReaped_thenNodeRemovedAgain_autoHealEnabled_asksTheProviderNothing() {
         automaticReapConfirmedThenAnotherInstanceUnderTheSameId();
+        ctm.drainNode(LOST, DrainReason.JOIN_GRACE_REAP);
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 2);
+        settle();
+        var asked = listings.get();
 
-        orphanSweepFinds(LOST);
+        lost();
         settle();
 
-        assertThat(reapedOrAnnounced()).as("#2457 fixed? enable the @Disabled tests").isFalse();
+        assertThat(listings.get()).as("no provider call once the evidence-bearing reap is confirmed").isEqualTo(asked);
+        assertThat(terminates.get()).isEqualTo(2);
     }
 
-    /// Auto-heal enabled: nothing is held, so a second reap of a confirmed node stays a no-op that asks the provider nothing.
+    /// Auto-heal enabled: nothing is held, so a second reap of a confirmed node whose trigger reports no instance under the id (NodeRemoved again)
+    /// stays a no-op that asks the provider nothing (#2457 looks again only for a join-grace reap or the orphan sweep).
     @Test
     void confirmedReap_secondReapOfTheSameNode_autoHealEnabled_asksTheProviderNothing() {
         lost();
