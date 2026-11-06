@@ -226,12 +226,95 @@ class ClusterTopologyManagerAutoHealDurabilityTest {
                 .isTrue();
     }
 
+    /// v2711 survivor 6: a disable made with no committed configuration records version 0 and no scaling, not a default version.
+    @Test
+    void disable_withNoCommittedConfiguration_recordsVersionZeroAndNoScaling() {
+        ctmA.setAutoHealEnabled(false, "operator: maintenance").await().unwrap();
+
+        var record = kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class).unwrap();
+        assertThat(record.enabled()).isFalse();
+        assertThat(record.disabledAtConfigVersion()).isZero();
+        assertThat(record.disabledAtScaling()).isEmpty();
+    }
+
+    /// v2711 survivor 6: the disable records each declared community's `target_size` under its hold subject, next to the worker counts, and
+    /// the configuration's own version.
+    @Test
+    void disable_recordsEachCommunitysTargetSizeBesideTheWorkerCounts() {
+        commitConfig(configWith(Option.some(COMMUNITY_TOML.formatted(4)),
+                                7L,
+                                new AetherValue.TopologyEntry("pool", "core", 3),
+                                new AetherValue.TopologyEntry("pool", "worker", 1)));
+        var ctm = newCtm(() -> kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class), this::storedConfig);
+
+        ctm.setAutoHealEnabled(false, "operator: maintenance").await().unwrap();
+
+        var record = kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class).unwrap();
+        assertThat(record.disabledAtConfigVersion()).isEqualTo(7L);
+        assertThat(record.disabledAtScaling()).containsExactlyInAnyOrderEntriesOf(Map.of("worker pool/core", 3,
+                                                                                         "worker pool/worker", 1,
+                                                                                         "community stable", 4));
+    }
+
+    /// v2711 survivor 6: a duplicated (source, role) records its first entry's count, as the desired-count lookup does.
+    @Test
+    void disable_recordsTheFirstEntryOfADuplicatedSourceRole() {
+        commitConfig(configWith(Option.none(),
+                                3L,
+                                new AetherValue.TopologyEntry("pool", "core", 3),
+                                new AetherValue.TopologyEntry("pool", "core", 5)));
+        var ctm = newCtm(() -> kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class), this::storedConfig);
+
+        ctm.setAutoHealEnabled(false, "operator: maintenance").await().unwrap();
+
+        var record = kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class).unwrap();
+        assertThat(record.disabledAtScaling()).containsExactlyEntriesOf(Map.of("worker pool/core", 3));
+    }
+
+    /// v2711 survivor 6: an enable records no configuration version and no scaling, even when a configuration is committed.
+    @Test
+    void enable_recordsNoVersionAndNoScaling_evenWithACommittedConfiguration() {
+        commitConfig(config(2L, 2));
+        var ctm = newCtm(() -> kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class), this::storedConfig);
+        ctm.setAutoHealEnabled(false, "operator: maintenance").await().unwrap();
+
+        ctm.setAutoHealEnabled(true, "operator: done").await().unwrap();
+
+        var record = kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class).unwrap();
+        assertThat(record.enabled()).isTrue();
+        assertThat(record.disabledAtConfigVersion()).isZero();
+        assertThat(record.disabledAtScaling()).isEmpty();
+    }
+
     private Option<ClusterConfigValue> storedConfig() {
         return kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT, ClusterConfigValue.class);
     }
 
     private void commitConfig(ClusterConfigValue value) {
         kvStore.process(kvStore.createBatch((List) List.of(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT, value))));
+    }
+
+    private static final String COMMUNITY_TOML = """
+        config_version = "1.0.0"
+        [cluster]
+        name = "test"
+        version = "1.0.0"
+        [source.pool]
+        type = "forge"
+        zones = ["old", "new"]
+        [source.pool.core]
+        count = 3
+        [source.pool.worker]
+        count = 1
+        [community.stable]
+        target_size = %d
+        [community.stable.placement.destination]
+        source = "pool"
+        zone = "new"
+        """;
+
+    private static ClusterConfigValue configWith(Option<String> toml, long version, AetherValue.TopologyEntry... entries) {
+        return new ClusterConfigValue(toml, "test", "1.0.0", List.of(entries), 3, 9, "test", version, 1L);
     }
 
     private static ClusterConfigValue config(long version, int workers) {
