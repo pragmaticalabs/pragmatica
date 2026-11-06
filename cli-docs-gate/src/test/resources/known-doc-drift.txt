@@ -109,7 +109,6 @@ aether/docs/guides/deploy-guide.md	option: --cleanup on aether deploy
 # --- aether/docs/operators/scaling.md ---
 aether/docs/operators/scaling.md	command: aether forge
 aether/docs/operators/scaling.md	command: aether logs
-aether/docs/operators/scaling.md	option: --auto on aether scale
 aether/docs/operators/scaling.md	option: --last on aether events
 aether/docs/operators/scaling.md	option: --max on aether scale
 aether/docs/operators/scaling.md	option: --min on aether scale
