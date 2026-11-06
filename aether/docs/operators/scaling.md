@@ -164,10 +164,11 @@ target = clamp( max(minAvailable, every unexpired requirement), 3, maxInstances 
   test's canary. A blueprint's declared count seeds the target when it is first created. A redeploy and a rolling update
   change the target's version and keep its count [mechanism: those writers carry the committed count; the combiner runs on
   every requirement change, target change, topology change and expiry].
-- An A/B test runs its variant at a fixed 3 instances while the test deploys its variants or is active (#1721). The
+- An A/B test runs its variant at a fixed 3 instances while the test deploys its variants, is active or is being rolled back (#1721). The
   combiner and the autoscaler leave that slice alone meanwhile, so a canary never runs at the full target. Concluding or
   rolling back the test sets the slice to its floor (at least 3), and the combiner then restores the count the committed
-  requirements ask for [mechanism: the combiner skips a slice whose A/B test runs a canary, and re-runs on the test's put].
+  requirements ask for [mechanism: the combiner skips a slice whose A/B test runs a canary, and re-runs on the test's put]. `CONCLUDING` is
+  outside the hold (a refused conclude must not freeze scaling), so the count can flap once in that window before it converges.
 - `max` takes the largest estimate of the same demand; requirements never add up.
 - The cluster's size does not bound the target (placeable capacity is defined per placement audience in a later
   release). One node hosts at most one instance of a slice, so a target above the number of eligible nodes in the slice's

@@ -2552,10 +2552,14 @@ public sealed interface AetherValue {
                                    updatedAt);
         }
 
-        /// Whether the test runs a canary on the slice's target: its variants are being deployed or it is active. The canary runs at the
-        /// fixed variant count (#1721), so the requirement combiner and the autoscaler hold that slice while this is true (v2713 item 7).
+        /// Whether the test runs a canary on the slice's target: its variants are being deployed, it is active, or it is being rolled
+        /// back (scaling up a variant that is being rolled back is the wrong direction). The canary runs at the fixed variant count
+        /// (#1721), so the requirement combiner and the autoscaler hold that slice while this is true (v2713 item 7).
+        /// `CONCLUDING` is deliberately outside the hold: a refused conclude can leave the test there indefinitely, which must not
+        /// freeze scaling. Known limit: the combiner may write the combined count onto the variant in that window, and the conclude
+        /// write then resets it to the floor (the count flaps, then converges).
         public boolean runsCanary() {
-            return "DEPLOYING_VARIANTS".equals(state) || "ACTIVE".equals(state);
+            return "DEPLOYING_VARIANTS".equals(state) || "ACTIVE".equals(state) || "ROLLING_BACK".equals(state);
         }
     }
 

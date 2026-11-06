@@ -268,7 +268,7 @@ stateDiagram-v2
 ### CLI Commands
 
 ```bash
-aether deploy org.example:order-processor:2.0.0 --rolling -n 3
+aether deploy org.example:order-processor:2.0.0 --rolling
 aether deploy promote <id>           # shift to next traffic stage
 aether deploy complete <id>          # 100% to v2, drain v1
 aether deploy rollback <id>          # Revert to v1
