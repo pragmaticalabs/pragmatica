@@ -196,6 +196,13 @@ class OperatorWarningWiringTest {
 
     /// The assembly source (`AetherNode.java` plus `node/assembly/*.java`) with line comments removed and all whitespace
     /// stripped; each pin must match exactly once across that set. See [AssemblySource].
+    /// #2034 T22: once the aggregator is bound, each drain episode's departure push raises its events through THIS node's aggregator,
+    /// for the episode's subject. `ClusterEventAggregatorTest.DepartureEventsBinding` drives the bound observer itself.
+    @Test
+    void assembly_bindsTheDepartureObserverFactoryToThisNodesAggregator() {
+        assertThat(assemblyCode()).containsOnlyOnce("departurePushObserverRef.set(subject->DhtDeparturePush.departureEvents(eventAggregator,config.self(),subject));");
+    }
+
     private static String assemblyCode() {
         return AssemblySource.stripped();
     }
