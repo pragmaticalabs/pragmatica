@@ -6,6 +6,7 @@ package org.pragmatica.aether.node.backup;
 
 import java.util.List;
 
+import org.pragmatica.aether.api.routes.ManagementStatus;
 import org.pragmatica.aether.node.NodeCodecs;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.BackupRestoreKey;
@@ -21,6 +22,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.http.HttpStatus;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.utils.Causes;
@@ -56,6 +58,17 @@ class RestoreGateTest {
         assertThat(refusal).isInstanceOf(RestoreGate.RestorePending.class);
         assertThat(RestoreGate.admit(kvStore, List.of(new KVCommand.Remove<>(STATE_KEY))).isFailure()).isTrue();
         assertThat(RestoreGate.admit(kvStore, List.of(transaction("seeder:1"))).isFailure()).isTrue();
+    }
+
+    /// #2718: a write refused before the decision commits is a transient refusal. The management funnel must classify it
+    /// (503, retryable), not fall through to the unclassified 500.
+    @Test
+    void restorePending_answersAClassified503_throughTheManagementFunnel() {
+        Cause refusal = RestoreGate.admit(kvStore, List.of(new KVCommand.Put<>(STATE_KEY, STATE_VALUE)))
+                                   .fold(cause -> cause, _ -> Causes.cause("admitted"));
+
+        assertThat(ManagementStatus.classifiedStatus(refusal).isPresent()).as("RestorePending is classified, not a WARN-and-500 fallback").isTrue();
+        assertThat(ManagementStatus.statusOf(refusal)).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
     }
 
     @Test

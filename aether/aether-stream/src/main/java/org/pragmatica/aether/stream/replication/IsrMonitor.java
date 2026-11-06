@@ -11,6 +11,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -32,7 +33,9 @@ import org.slf4j.LoggerFactory;
 ///   - **shrink** — an ISR member that has not been caught up to the owner's head for longer than `lagMax` leaves;
 ///   - **expand** — a registered replica outside the ISR whose confirmed offset reached the high-water mark (the
 ///     lowest offset every ISR member confirmed, or the owner's head when it is alone) joins: it holds every
-///     acknowledged record.
+///     acknowledged record. Expansion counts only rows confirmed under the committed owner epoch, as the acknowledgement
+///     does, and admits nobody until every ISR member has one (#2694): at the start of a tenure a member with no such row
+///     would otherwise read as `-1` and admit a replica that misses the records acknowledged in earlier tenures.
 ///     A member the leader FENCED (the committed `fenced` set: removed because the leader's liveness view does not list
 ///     it) never joins, so the leader's shrink and this expansion read ONE liveness input and cannot reverse each
 ///     other (#1883).
@@ -44,6 +47,8 @@ import org.slf4j.LoggerFactory;
 /// ask (Kafka's `replica.lag.time.max.ms`).
 public final class IsrMonitor {
     private static final Logger log = LoggerFactory.getLogger(IsrMonitor.class);
+    /// The high-water mark while some ISR member has not yet confirmed under the current owner epoch: no offset reaches it.
+    private static final long ADMIT_NOBODY = Long.MAX_VALUE;
 
     /// The partitions this node currently owns and serves, with their committed record.
     @FunctionalInterface
@@ -161,14 +166,15 @@ public final class IsrMonitor {
         next.add(self);
         peers.stream().filter(peer -> now - seen.get(peer) <= lagMax.nanos()).forEach(next::add);
         var candidates = new ArrayList<NodeId>();
-        var firstHighWater = highWater(peers, confirmed, partition.head());
+        var counted = confirmedUnderOwnerEpoch(partition);
+        var firstHighWater = highWater(peers, counted, partition.head());
 
-        confirmed.forEach((replica, offset) -> admitIfCaughtUp(candidates, record, replica, offset, firstHighWater));
+        counted.forEach((replica, offset) -> admitIfCaughtUp(candidates, record, replica, offset, firstHighWater));
         // Count the candidates toward every acknowledgement BEFORE re-reading the high-water mark they are admitted
         // against: an ack resolved earlier was confirmed in the registry by every ISR member, so it is at or below
         // the re-read mark; one resolved later waits for the candidate.
         pendingAdditions.put(key, new Pending(record, Set.copyOf(candidates)));
-        var reread = confirmedByNode(partition);
+        var reread = confirmedUnderOwnerEpoch(partition);
         var highWater = highWater(peers, reread, partition.head());
         var admitted = candidates.stream()
                                  .filter(candidate -> reread.getOrDefault(candidate, -1L) >= highWater)
@@ -182,10 +188,20 @@ public final class IsrMonitor {
                : Option.some(List.copyOf(next));
     }
 
-    /// The lowest offset every ISR member other than the owner confirmed, or the owner's head when it is alone.
+    /// The lowest offset every ISR member other than the owner confirmed, or the owner's head when it is alone;
+    /// [#ADMIT_NOBODY] while some member has no counted row (#2694). An absent row is not "confirmed nothing": at the
+    /// start of a tenure it is a member that holds the earlier tenures' acknowledged records but has not yet confirmed
+    /// them to this owner, so reading it as `-1` would admit a replica that does not hold them.
     private static long highWater(List<NodeId> peers, Map<NodeId, Long> confirmed, long head) {
         return peers.stream()
-                    .mapToLong(peer -> confirmed.getOrDefault(peer, -1L))
+                    .allMatch(confirmed::containsKey)
+               ? lowestConfirmed(peers, confirmed, head)
+               : ADMIT_NOBODY;
+    }
+
+    private static long lowestConfirmed(List<NodeId> peers, Map<NodeId, Long> confirmed, long head) {
+        return peers.stream()
+                    .mapToLong(confirmed::get)
                     .min()
                     .orElse(head);
     }
@@ -211,11 +227,28 @@ public final class IsrMonitor {
         }
     }
 
+    /// Every row, of any epoch: what the shrink measures lag with.
     private Map<NodeId, Long> confirmedByNode(Owned partition) {
+        return confirmedByNode(partition, _ -> true);
+    }
+
+    /// Only the rows confirmed under the committed owner epoch (#2694), the count an acknowledgement on this owner uses
+    /// ([DefaultReplicationManager] B11): a row of an earlier tenure describes another lineage and admits nobody.
+    private Map<NodeId, Long> confirmedUnderOwnerEpoch(Owned partition) {
+        var ownerEpoch = partition.record().ownerEpoch();
+
+        return confirmedByNode(partition,
+                               descriptor -> descriptor.epoch()
+                                                       .equals(ownerEpoch));
+    }
+
+    private Map<NodeId, Long> confirmedByNode(Owned partition, Predicate<ReplicaDescriptor> counted) {
         var byNode = new ConcurrentHashMap<NodeId, Long>();
 
         registry.replicasFor(partition.streamName(),
                              partition.partition())
+                .stream()
+                .filter(counted)
                 .forEach(descriptor -> byNode.merge(descriptor.nodeId(),
                                                     descriptor.confirmedOffset(),
                                                     Math::max));

@@ -512,6 +512,7 @@ final class DefaultStorageInstance implements StorageInstance {
     private final AnchorRetention anchorRetention;
     /// The prune running for each anchor, resolving when it has finished; a write that finds one running starts none.
     private final Map<AnchorName, Promise<Unit>> anchorPrunes = new ConcurrentHashMap<>();
+    private final Map<AnchorName, Long> anchorPrunePending = new ConcurrentHashMap<>();
     private final AtomicLong anchorPruneFailures = new AtomicLong();
     /// Levels of the tiers that are cluster-shared: a copy there is not this node's, so a record that places
     /// the block only on these tiers holds nothing of this node's to track.
@@ -1204,18 +1205,37 @@ final class DefaultStorageInstance implements StorageInstance {
         return unit();
     }
 
+    /// Records `version` as the newest one whose prune is owed, then runs a prune if none is running for `name`. A write
+    /// that lands while a prune runs is not dropped: its version waits in `anchorPrunePending` and the running prune's
+    /// finish starts the next one, so the last write is always pruned to (a skipped request would leave the newest
+    /// retention + 2 versions on disk until some later write, which a final write never gets).
     private Unit startAnchorPrune(AnchorName name, long version) {
-        var below = version - anchorRetention.versions();
+        anchorPrunePending.merge(name, version, Math::max);
+
+        return runOwedAnchorPrune(name);
+    }
+
+    private Unit runOwedAnchorPrune(AnchorName name) {
         var running = Promise.<Unit> promise();
 
-        if (below > 0 && anchorPrunes.putIfAbsent(name, running) == null) {
-            Promise.allOf(durableTiers.stream()
-                                      .map(tier -> tier.pruneAnchors(name,
-                                                                     below,
-                                                                     anchorRetention.scanLimit())
-                                                       .withFailure(cause -> countPruneFailure(tier, name, cause)))
-                                      .toList()).onResult(_ -> finishAnchorPrune(name, running));
+        if (anchorPrunes.putIfAbsent(name, running) == null) {
+            Option.option(anchorPrunePending.remove(name))
+                  .map(version -> version - anchorRetention.versions())
+                  .filter(below -> below > 0)
+                  .fold(() -> finishAnchorPrune(name, running),
+                        below -> pruneBelow(name, below, running));
         }
+
+        return unit();
+    }
+
+    private Unit pruneBelow(AnchorName name, long below, Promise<Unit> running) {
+        Promise.allOf(durableTiers.stream()
+                                  .map(tier -> tier.pruneAnchors(name,
+                                                                 below,
+                                                                 anchorRetention.scanLimit())
+                                                   .withFailure(cause -> countPruneFailure(tier, name, cause)))
+                                  .toList()).onResult(_ -> finishAnchorPrune(name, running));
 
         return unit();
     }
@@ -1231,8 +1251,14 @@ final class DefaultStorageInstance implements StorageInstance {
         return unit();
     }
 
+    /// Releases `name`, starts the prune a write owed meanwhile, and only then resolves `running`: a waiter on `running`
+    /// that looks again finds the successor already registered.
     private Unit finishAnchorPrune(AnchorName name, Promise<Unit> running) {
         anchorPrunes.remove(name, running);
+        if (anchorPrunePending.containsKey(name)) {
+            runOwedAnchorPrune(name);
+        }
+
         running.succeed(unit());
 
         return unit();

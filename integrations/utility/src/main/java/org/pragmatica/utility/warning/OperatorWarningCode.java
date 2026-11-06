@@ -909,7 +909,23 @@ public enum OperatorWarningCode {
     CONFIG_WATCH_CALLBACK_RECOVERED("config-watch-callback-recovered",
                                     "config",
                                     WarningLevel.INFO,
-                                    CONFIG_WATCH_CALLBACK_FAILED);
+                                    CONFIG_WATCH_CALLBACK_FAILED),
+    /// A draining node holds DHT keys whose only copy it may be (#2034): no replica outside the departing set holds them, and no
+    /// target in the post-departure responsible set has acknowledged applying them yet. Raised at most once per drain, at plan time
+    /// (a key with no target, or a window already used up), when the base window ends with such keys still unacknowledged, or when
+    /// the inventory could not be enumerated before the drain deadline (count 0, at-risk set unknown). The subject is
+    /// `<nodeId>@<drainStartMillis>`, one drain episode. The drain still halts at its deadline; keys still unacknowledged then are lost
+    /// with the node unless restored. Recovery action: restore or re-put the keys named in the event and in the departing node's WARN
+    /// log from their source of truth. Closed in-drain by [#DHT_DEPARTURE_SOLE_COPY_DELIVERED]; after a halt it stays open (no
+    /// operator closer in this release).
+    DHT_DEPARTURE_SOLE_COPY_AT_RISK("dht-departure-sole-copy-at-risk", "dht", WarningLevel.CRITICAL),
+    /// The recovery of [#DHT_DEPARTURE_SOLE_COPY_AT_RISK], same subject (#2034): every sole-copy key was acknowledged by a target in its
+    /// post-departure responsible set before the node halted. INFO, published by the draining node itself, only after its published
+    /// at-risk event (#752 mechanism).
+    DHT_DEPARTURE_SOLE_COPY_DELIVERED("dht-departure-sole-copy-delivered",
+                                      "dht",
+                                      WarningLevel.INFO,
+                                      DHT_DEPARTURE_SOLE_COPY_AT_RISK);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

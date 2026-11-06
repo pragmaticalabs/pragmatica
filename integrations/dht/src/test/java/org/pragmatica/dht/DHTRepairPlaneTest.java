@@ -342,10 +342,11 @@ class DHTRepairPlaneTest {
             assertThat(newcomer.node().getLocal(keys.get(41)).await().unwrap().unwrap()).isEqualTo(value(MIB, 541));
         }
 
-        /// Pages leave one after another, each once the previous is acked: with no ack coming back only the first
-        /// page leaves, and when the budget expires every key — sent and unsent — is reported at risk.
+        /// Pages leave one after another, each once the previous is acked: with no ack coming back only the first page
+        /// leaves — resent every `resendAfter` (#2034), always under the same correlation id — and when the budget expires every
+        /// key, sent and unsent, is reported at risk.
         @Test
-        void unackedPush_reportsEveryPlannedKeyAtRisk_andSendsOnlyTheFirstPage() {
+        void unackedPush_reportsEveryPlannedKeyAtRisk_andResendsOnlyTheFirstPage() {
             var cluster = new RepairCluster(PAIR, "leaver", "r1", "r2");
             var leaver = cluster.member("leaver");
             var keys = keysLeaverReplicates(leaver, 40);
@@ -359,7 +360,11 @@ class DHTRepairPlaneTest {
             cluster.unreachable.add(newcomer.id());
             leaver.rebalancer().pushOnDeparture(timeSpan(300).millis(), (atRisk, _) -> reported.set(atRisk)).await();
 
-            assertThat(cluster.sentOfType(DHTMessage.MigrationDataResponse.class)).as("the chain waits for the first ack").hasSize(1);
+            var pushes = cluster.sentOfType(DHTMessage.MigrationDataResponse.class);
+            assertThat(pushes).as("the first page is resent").hasSizeGreaterThanOrEqualTo(2);
+            assertThat(pushes.stream().map(DHTMessage.MigrationDataResponse::requestId).distinct())
+                .as("the chain waits for the first ack: only page 1 ever leaves")
+                .hasSize(1);
             assertThat(reported).as("unsent pages are at risk too").hasValue(keys.size());
         }
 
