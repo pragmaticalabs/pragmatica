@@ -238,8 +238,9 @@ for good rather than retry, because a retried fsync can falsely succeed after th
 
 **Resolution:**
 1. Check the volume that holds the WAL (free space, read-only remount, disk errors in the kernel log).
-2. Replace the node (`POST /api/v1/nodes/replace/<node-id>`). A node id never returns, so restarting the process under the
-   same id is refused; the replacement joins under a new id and its partitions catch up from the other replicas.
+2. Replace the node (`POST /api/v1/nodes/replace/<node-id>`). A node id never returns, so a single node cannot rejoin under its
+   old id; the replacement joins under a new id and its partitions catch up from the other replicas. Only a whole-cluster
+   restart, which keeps every node id, reopens the same WAL.
 
 **How the alarm closes** — one of three events, each with the same `stream[partition]` subject:
 - `storage-wal-retired` (INFO): the node that fail-stopped was removed or decommissioned, as when it is replaced. Its log is not

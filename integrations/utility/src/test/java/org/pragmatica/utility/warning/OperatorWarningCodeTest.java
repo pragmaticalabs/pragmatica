@@ -38,6 +38,7 @@ class OperatorWarningCodeTest {
     void walFailStopPair_hasItsSeverities() {
         assertThat(OperatorWarningCode.STORAGE_WAL_FAIL_STOPPED.level()).isEqualTo(WarningLevel.CRITICAL);
         assertThat(OperatorWarningCode.STORAGE_WAL_WRITABLE.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STORAGE_WAL_WRITABLE.recoveryOf()).isEqualTo(Option.some(OperatorWarningCode.STORAGE_WAL_FAIL_STOPPED));
         assertThat(OperatorWarningCode.STORAGE_WAL_RETIRED.level()).isEqualTo(WarningLevel.INFO);
         assertThat(OperatorWarningCode.STORAGE_WAL_RETIRED.recoveryOf()).isEqualTo(Option.some(OperatorWarningCode.STORAGE_WAL_FAIL_STOPPED));
         assertThat(OperatorWarningCode.STORAGE_WAL_WRITABLE.closesAcrossNodes()).as("raised by a later process than the warning").isTrue();

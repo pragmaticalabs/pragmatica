@@ -1720,12 +1720,15 @@ class ClusterEventAggregatorTest {
     void walFailStop_isRetired_whenTheNodeItselfIsRemoved_notWhenAnotherIs() {
         var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
         h.aggregator().onOperatorWarning(walFailStopped("orders[0]"));
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
         h.aggregator().onMembershipDecision(new MembershipDecision.NodeRemoved(new NodeId("another"), List.of(), 1L, h.hlc().now()));
-        assertThat(codes(h)).as("control: another node's removal leaves the fail-stop open").containsExactly("storage-wal-fail-stopped");
+        assertThat(codes(h)).as("control: another node's removal leaves the fail-stop open")
+                            .containsExactly("storage-wal-fail-stopped", "stream-consumer-state-diverged");
 
         h.aggregator().onMembershipDecision(new MembershipDecision.NodeRemoved(SELF, List.of(), 2L, h.hlc().now()));
 
-        assertThat(codes(h)).containsExactly("storage-wal-fail-stopped", "storage-wal-retired");
+        assertThat(codes(h)).as("only the WAL fail-stop is retired; the unrelated open warning is left to its own recovery")
+                            .containsExactly("storage-wal-fail-stopped", "stream-consumer-state-diverged", "storage-wal-retired");
         var retired = h.events().getLast();
         assertThat(retired.details()).containsEntry("subject", "orders[0]");
         assertThat(retired.summary()).as("names the departure").contains(SELF.id()).contains("removed from the cluster");
@@ -1737,12 +1740,31 @@ class ClusterEventAggregatorTest {
         var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
         h.aggregator().onOperatorWarning(walFailStopped("orders[0]"));
         h.aggregator().onOperatorWarning(walFailStopped("orders[3]"));
+        h.aggregator().onMembershipDecision(new MembershipDecision.NodeDecommissioned(new NodeId("another"), List.of(), 1L, h.hlc().now()));
+        assertThat(codes(h)).as("control: another node's decommission retires nothing").doesNotContain("storage-wal-retired");
 
         h.aggregator().onMembershipDecision(new MembershipDecision.NodeDecommissioned(SELF, List.of(), 2L, h.hlc().now()));
 
         var retired = h.events().stream().filter(event -> "storage-wal-retired".equals(event.details().get("code"))).toList();
         assertThat(retired).extracting(event -> event.details().get("subject")).containsExactlyInAnyOrder("orders[0]", "orders[3]");
         assertThat(retired).allSatisfy(event -> assertThat(event.summary()).contains("decommissioned"));
+    }
+
+    /// A fail-stop whose first publish failed is still awaiting delivery when the node leaves: it is retired too, and the retirement
+    /// follows the warning into the log once the retry lands (#752), never before it.
+    @Test
+    void walFailStop_awaitingDeliveryAtDeparture_isRetiredAfterTheWarningLands() throws InterruptedException {
+        var h = Harness.create();
+        var publisher = h.publisher().getAndSet(null);
+
+        h.aggregator().onOperatorWarning(walFailStopped("orders[0]"));
+        h.aggregator().onMembershipDecision(new MembershipDecision.NodeRemoved(SELF, List.of(), 2L, h.hlc().now()));
+        h.publisher().set(publisher);
+        assertThat(codes(h)).as("control: nothing is in the log yet").isEmpty();
+        Thread.sleep(ClusterEventRedelivery.INITIAL_BACKOFF_MS + 100);
+        h.aggregator().redeliverDue();
+
+        assertThat(codes(h)).containsExactly("storage-wal-fail-stopped", "storage-wal-retired");
     }
 
     /// A shutdown is not a departure: a whole-cluster restart reopens the log and closes the fail-stop with STORAGE_WAL_WRITABLE.
