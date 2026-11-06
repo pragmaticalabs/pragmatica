@@ -179,6 +179,21 @@ public sealed interface Slices {
         return retryHeld(m, ctx);
     }
 
+    /// Reconcile step 2c, CF-4 (#2759, legacy #2579 / #2581): a LOADED instance under goal LOADED whose ACTIVE goal write failed,
+    /// was lost, or was never sent (the LOADED row arrived while this node could not submit) is activated again. The event arm
+    /// (C10a) fires once per observation; this level-triggered arm re-derives what it could not land, through the same gate, so an
+    /// unpermitted version gets goal UNLOADED here as it does there. Every observed version is covered, the new version of a
+    /// rolling update included. A goal in flight is not re-issued: [#activate] skips a pair whose effective goal already heads
+    /// past LOADED.
+    static ClusterModel reactivate(ClusterModel m, Ctx ctx) {
+        m.observedByArtifact.keys()
+                            .stream()
+                            .sorted(Comparator.comparing(Artifact::asString))
+                            .forEach(artifact -> activateLoaded(m, ctx, artifact));
+
+        return m;
+    }
+
     private static ClusterModel activateLoaded(ClusterModel m, Ctx ctx, Artifact artifact) {
         Idx.members(m.observedByArtifact, artifact)
            .toList()

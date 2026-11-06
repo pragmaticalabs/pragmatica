@@ -138,9 +138,13 @@ class DefaultStreamPublisherBatchTest {
         assertBatchMatchesPerEvent(Option.none(), distinctEvents(2_000, 1024));
     }
 
-    /// A no-WAL ring can refuse sealing after an oversized run has already appended a prefix.
+    /// #2201 A-01 (PR-2c, NT-107): a run larger than the data region is refused `RUN_DOES_NOT_FIT` before it takes any offset, because
+    /// appending it event by event would evict its own earlier members, which a failed continuation could not withdraw. Before PR-2c the
+    /// run was appended part-way here (two of three inputs, then the sealer refused the third) and every outcome was `OutcomeUnknown`.
+    /// Now the publisher falls back to single publishes: the first appends and waits for an ack its replica never sends (outcome
+    /// unknown), the rest are not attempted, and no run ever asks the sealer to take its own members.
     @Test
-    void publishBatch_sealingBackpressureMidRun_keepsEveryOutcomeUnknownWithoutRetry() {
+    void publishBatch_runLargerThanTheDataRegion_isRefusedWhole_andFallsBackToSinglePublishes() {
         var refusals = new AtomicInteger();
         var sends = new AtomicInteger();
         var self = NodeId.nodeId("self").unwrap();
@@ -161,17 +165,15 @@ class DefaultStreamPublisherBatchTest {
                 Option.<java.util.function.Function<byte[], Object>> none());
             var payloads = distinctEvents(3, 512 * 1024);
             var outcomes = publisher.publishBatch(payloads).await().unwrap();
-            var unknown = new PublishOutcome.OutcomeUnknown(StreamError.General.SEALING_BEHIND);
 
-            assertThat(outcomes).containsExactly(unknown, unknown, unknown);
-            assertThat(refusals.get()).as("an uncertain run must not retry its inputs").isEqualTo(1);
+            assertThat(outcomes.getFirst()).as("the first single publish appended and was never acked").isInstanceOf(PublishOutcome.OutcomeUnknown.class);
+            assertThat(outcomes.subList(1, 3)).allSatisfy(outcome -> assertThat(outcome).isInstanceOf(PublishOutcome.NotAttempted.class));
+            assertThat(refusals.get()).as("the refused run never asked the sealer to take its own members").isZero();
             var ring = manager.partitionBuffer(STREAM, 0).unwrap();
-            assertThat(ring.headOffset()).as("two inputs appended before sealing refused the third").isEqualTo(1);
-            assertThat(ring.readAppended(0, 3).unwrap()).extracting(OffHeapRingBuffer.RawEvent::offset)
-                .containsExactly(0L, 1L);
-            assertThat(ring.durableOffset()).isEqualTo(-1);
-            assertThat(ring.visibleOffset()).isEqualTo(-1);
-            assertThat(sends.get()).as("failed ring run skips the replication continuation").isZero();
+            assertThat(ring.headOffset()).as("only the first single publish appended").isEqualTo(0);
+            assertThat(ring.durableOffset()).as("no WAL: durable once appended").isEqualTo(0);
+            assertThat(ring.visibleOffset()).as("never acked by its confirmation peer, so never visible").isEqualTo(-1);
+            assertThat(sends.get()).as("only the single publish replicated").isEqualTo(1);
         }
     }
 

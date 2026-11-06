@@ -6,6 +6,7 @@ import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -13,6 +14,7 @@ import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.zip.CRC32;
@@ -32,6 +34,7 @@ import org.pragmatica.lang.io.FileOps;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Promise.promise;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Result.unitResult;
@@ -83,7 +86,7 @@ import static org.pragmatica.lang.Unit.unit;
 /// `append` resolves its `Promise` ONLY after the record's bytes are `force(false)`-durable, while
 /// still batching concurrent appends into a single fsync. It is `write` then `commit`:
 ///   - `write` runs in the CALLER's thread, before `append` returns (#1232): a serialized write
-///     section (`writeLock`) refuses an offset that does not exceed the last written one
+///     section (`writeLock`) refuses an offset the order rule below does not admit
 ///     ([WalError.OffsetRegression]), assigns a monotonic write-seq, writes the framed bytes at the
 ///     current end position, and publishes `writtenSeq = seq` AFTER the write completes — so any
 ///     reader of `writtenSeq` sees a seq whose bytes are in the channel. File order is therefore CALL
@@ -98,6 +101,15 @@ import static org.pragmatica.lang.Unit.unit;
 /// concurrent appends typically costs far fewer than N fsyncs. Only `commit` runs on the async executor
 /// (`Promise.promise`), so a pipelined publisher that fires without awaiting maximizes batching, and a
 /// caller holding an ordered section can `write` inside it and wait for the fsync outside it.
+///
+/// ## Offset order (I-04, #2201)
+/// The log validates offsets and never assigns them: its writer assigns each offset inside its own ordered section. A write at
+/// offset `o` is accepted when `o == lastOffset + 1`; when the log holds no record (`lastOffset == -1`: nothing since open, or a
+/// cut to empty), at any offset; or when `lastOffset < o <= floor + 1`, a forward jump across a range the sealed tier already holds,
+/// where `floor` is read LIVE, at the write, from the supplier installed by [#withSealedFloor] (a log opened without one has no
+/// floor, `-1`, and admits only `lastOffset + 1`). Any other offset is refused with [WalError.OffsetRegression]: nothing is written,
+/// no epoch entry is recorded, and the log stays writable. The floor is read only off the contiguous path, so a contiguous write
+/// costs nothing extra.
 ///
 /// ## Fail-stop on fsync or frame-write failure (#634-7, #1232)
 /// A FAILED group-commit `force` fail-stops the WAL: the covered appends resolve failure, and every
@@ -114,6 +126,11 @@ import static org.pragmatica.lang.Unit.unit;
 /// alternative is a zombie with a closed channel). The state is operator-visible as
 /// `WalStats.failStopped`. Recovery action: reopen (node restart) — the scan trims to the valid
 /// prefix, and nothing acked is lost because refused appends were never acked.
+///
+/// The transition also leaves a mark beside the log, `<name>.failstopped` ([#failStopMarkOf]), written best-effort (a volume that
+/// refused the fsync may refuse the mark too). A later open that finds the mark reports the recovery ([#onFailStopRecovered]) at its
+/// FIRST successful group commit, so the closing event says the reopened log accepted a durable write, not merely that it opened,
+/// and deletes the mark. A mark that cannot be deleted repeats that report at the next open.
 ///
 /// ## Recovery (torn-write + CRC)
 /// `open` scans from byte 0, validating each record by length-frame + CRC, and positions further
@@ -149,6 +166,8 @@ public final class AppendLog implements AutoCloseable {
     private static final int CRC_HEADER_BYTES = 8 + 8;
     /// File-size watermark past which a `truncate` triggers a compaction rewrite (else O(1) lazy).
     private static final long COMPACTION_THRESHOLD_BYTES = 8L * 1024 * 1024;
+    /// The floor of a log opened without one ([#withSealedFloor]): nothing sealed, so only `lastOffset + 1` follows a record.
+    private static final LongSupplier NO_SEALED_FLOOR = () -> - 1L;
 
     private static final Fn1<Cause, Throwable> APPEND_FAILED = t -> new WalError.AppendFailed(t.getMessage());
 
@@ -175,6 +194,10 @@ public final class AppendLog implements AutoCloseable {
     private volatile long fsyncMaxNanos;  // guarded by syncLock
     private volatile Option<Cause> syncFailure = Option.none();  // set once under syncLock on fail-stop; never cleared
     private volatile boolean closed;
+    private volatile LongSupplier sealedFloor = NO_SEALED_FLOOR;  // the live floor of the order rule (I-04); read under writeLock
+    private volatile Option<Consumer<Cause>> failStopListener = Option.none();  // replaces sink.failStopped when installed (D-01)
+    private volatile Option<Runnable> failStopRecoveryListener = Option.none();  // the closing report of an earlier fail-stop (D-01)
+    private volatile boolean failStopMarked;  // the mark of an earlier fail-stop was found at open; cleared by the first successful force
     private final EpochHistory epochs;
     private final TornTailSink sink;
 
@@ -191,6 +214,7 @@ public final class AppendLog implements AutoCloseable {
         this.writePosition = writePosition;
         this.lastOffset = lastOffset;
         this.syncedOffset = lastOffset;
+        this.failStopMarked = Files.exists(failStopMarkOf(file));
     }
 
     /// Open-or-create the log at `file`, positioned for further appends AFTER its last VALID
@@ -339,7 +363,7 @@ public final class AppendLog implements AutoCloseable {
     /// Append a record and GROUP-COMMIT fsync: [#write] in the caller's thread, then [#commit]. The
     /// returned `Promise` resolves ONLY after this record's bytes are `force(false)`-durable; concurrent
     /// appends may share one fsync. Refused once a fsync has failed (see the fail-stop section of the
-    /// class doc), and for an offset that does not exceed the last written one.
+    /// class doc), and for an offset the offset-order rule does not admit (class doc, I-04).
     public Promise<Unit> append(long offset, byte[] payload, long timestampMillis) {
         return write(offset, payload, timestampMillis).async()
                     .flatMap(this::commit);
@@ -347,9 +371,9 @@ public final class AppendLog implements AutoCloseable {
 
     /// Write the record's frame NOW, in the caller's thread, and return its write sequence for
     /// [#commit]. The frame is in the channel (not yet durable) when this returns, so file order is call
-    /// order. Refused unwritten when closed, fail-stopped, or when `offset` does not exceed the last
-    /// written offset ([WalError.OffsetRegression]) — recovery places records by stored offset and
-    /// refuses a duplicate, so the writer never produces one.
+    /// order. Refused unwritten when closed, fail-stopped, or when the offset-order rule does not admit `offset`
+    /// ([WalError.OffsetRegression]: at or below the last written offset, or a gap above it the sealed floor does not cover) —
+    /// recovery places records by stored offset and refuses a duplicate or a gap, so the writer never produces one.
     public Result<Long> write(long offset, byte[] payload, long timestampMillis) {
         return closed
                ? WalError.General.WAL_CLOSED.result()
@@ -519,6 +543,12 @@ public final class AppendLog implements AutoCloseable {
         return epochs.entries();
     }
 
+    /// The key of the last recorded owner epoch, [Option#none] when the history is empty (#2201 A-01). O(1) and allocation-free: the
+    /// history publishes it with every change, so a per-append check (the ordered section's guard) never walks the list.
+    public Option<EpochKey> lastEpochKey() {
+        return epochs.lastKey();
+    }
+
     /// Drop every epoch entry starting above `offset`, durably -- for a log truncated back to `offset`,
     /// where no epoch began past it.
     public Result<Unit> truncateEpochsAbove(long offset) {
@@ -552,14 +582,16 @@ public final class AppendLog implements AutoCloseable {
         }
     }
 
-    /// Delete the log's files -- the log, its epoch history and any stale temp -- after [#close], when the
-    /// log itself is being discarded (a deleted stream). Best effort per file; the first failure is returned.
+    /// Delete the log's files -- the log, its epoch history, any stale temp and its fail-stop mark -- after [#close], when the
+    /// log itself is being discarded (a deleted stream). The mark goes too, so a log later created at the same path does not report
+    /// the recovery of a fail-stop it never had. Best effort per file; the first failure is returned.
     public Result<Unit> deleteFiles() {
         var sidecar = EpochHistory.sidecarOf(file);
 
         return Result.allOf(FileOps.deleteIfExists(file),
                             FileOps.deleteIfExists(sidecar),
-                            FileOps.deleteIfExists(sidecar.resolveSibling(sidecar.getFileName() + ".tmp")))
+                            FileOps.deleteIfExists(sidecar.resolveSibling(sidecar.getFileName() + ".tmp")),
+                            FileOps.deleteIfExists(failStopMarkOf(file)))
                      .mapToUnit();
     }
 
@@ -605,6 +637,63 @@ public final class AppendLog implements AutoCloseable {
 
     public Path path() {
         return file;
+    }
+
+    /// Whether the log refuses every later append after a failed fsync, frame write or reopen (see the fail-stop section of the class
+    /// doc). Never cleared in this incarnation; a reopen recovers the valid prefix. One volatile read.
+    public boolean failStopped() {
+        return syncFailure.isPresent();
+    }
+
+    /// The refusal [#write] would return for any offset before looking at it: [WalError.General#WAL_CLOSED] when closed, the stored
+    /// fail-stop cause when fail-stopped, success otherwise (#2201 A-01: the ordered section checks it before an offset exists). Two
+    /// volatile reads, no allocation on success.
+    public Result<Unit> writable() {
+        return closed
+               ? WalError.General.WAL_CLOSED.result()
+               : syncFailure.fold(Result::unitResult, Cause::result);
+    }
+
+    /// Installs `floor`, the live sealed floor of the offset-order rule (see the class doc, I-04): the highest offset the sealed tier
+    /// durably holds for this log's partition, `-1` when nothing is sealed. Read at each write that does not follow `lastOffset`
+    /// contiguously, never captured, because the floor rises while the log runs. Installed once by the opener before the first write;
+    /// returns this log.
+    public AppendLog withSealedFloor(LongSupplier floor) {
+        sealedFloor = floor;
+
+        return this;
+    }
+
+    /// Installs `listener` as the receiver of this log's fail-stop (#2201 D-01), in place of the sink's
+    /// [TornTailSink#failStopped]: an owner that knows what the log holds (a stream partition) reports it under its own subject, and
+    /// the instance-level report would only repeat it under a vaguer one. Invoked once, on the transition to fail-stopped, under the
+    /// log's sync lock, so it must not block. Installed once by the opener before the first write; returns this log.
+    public AppendLog onFailStop(Consumer<Cause> listener) {
+        failStopListener = some(listener);
+
+        return this;
+    }
+
+    /// Installs `listener` as the receiver of this log's recovery from a fail-stop recorded by an EARLIER open (#2201 D-01): invoked
+    /// once, at the first successful group commit of this open, when the open found the log's fail-stop mark ([#failStopMarkOf]).
+    /// Never invoked for a log that has no mark. Runs under the log's sync lock, so it must not block. Installed once by the opener
+    /// before the first write; returns this log.
+    public AppendLog onFailStopRecovered(Runnable listener) {
+        failStopRecoveryListener = some(listener);
+
+        return this;
+    }
+
+    /// The fail-stop mark of `logFile`: `<name>.failstopped` beside `<name>.wal` (any other log file name gets `.failstopped`
+    /// appended), as [EpochHistory#sidecarOf] names the epoch sidecar. Not a log file, so [#logNamesUnder] never lists it.
+    static Path failStopMarkOf(Path logFile) {
+        var name = logFile.getFileName().toString();
+        var stem = name.endsWith(LOG_SUFFIX)
+                   ? name.substring(0,
+                                    name.length() - LOG_SUFFIX.length())
+                   : name;
+
+        return logFile.resolveSibling(stem + ".failstopped");
     }
 
     /// Last appended offset, or `-1` when the WAL holds no valid record.
@@ -661,10 +750,16 @@ public final class AppendLog implements AutoCloseable {
     // === append path ===
     private Result<Long> writeRecord(long offset, byte[] payload, long timestampMillis) {
         synchronized (writeLock) {
-            return offset > lastOffset
+            return admitsOffset(offset)
                    ? writeNext(offset, payload, timestampMillis)
                    : new WalError.OffsetRegression(offset, lastOffset).result();
         }
+    }
+
+    /// The offset-order rule (I-04, class doc), under `writeLock`: `o == lastOffset + 1`, any `o` on an empty log, or
+    /// `lastOffset < o <= floor + 1`. The floor supplier is consulted only when the first two do not hold.
+    private boolean admitsOffset(long offset) {
+        return offset == lastOffset + 1 || (offset > lastOffset && (lastOffset == -1 || offset <= sealedFloor.getAsLong() + 1));
     }
 
     private Result<Long> writeAttributed(long offset,
@@ -673,7 +768,7 @@ public final class AppendLog implements AutoCloseable {
                                          EpochKey key,
                                          EpochOrder order) {
         synchronized (writeLock) {
-            return offset > lastOffset
+            return admitsOffset(offset)
                    ? epochs.recordIfNew(key, offset, order)
                            .onFailure(this::failStopOnEpochWriteFailure)
                            .flatMap(_ -> writeNext(offset, payload, timestampMillis))
@@ -761,19 +856,53 @@ public final class AppendLog implements AutoCloseable {
                      .onSuccess(_ -> publishSync(target,
                                                  covered,
                                                  System.nanoTime() - startedAt))
+                     .onSuccess(_ -> reportRecoveryOnce())
                      .onFailure(this::failStop);
+    }
+
+    /// Runs under `syncLock`, after a successful force: the first one of an open that found the fail-stop mark deletes the mark and
+    /// reports the recovery. One volatile read otherwise.
+    private void reportRecoveryOnce() {
+        if (failStopMarked) {
+            failStopMarked = false;
+            FileOps.deleteIfExists(failStopMarkOf(file)).onFailure(cause -> log.warn("AppendLog {} could not delete its fail-stop mark: {}",
+                                                                                     file,
+                                                                                     cause.message()));
+            log.info("AppendLog {} accepted a durable write after an earlier fail-stop", file);
+            failStopRecoveryListener.onPresent(Runnable::run);
+        }
     }
 
     /// Runs under `syncLock` (the only writer of `syncFailure`). Loud once at the moment of
     /// failure (a failed fsync, frame write or post-compaction reopen); every later append (and
     /// truncate) is refused with the stored cause.
     private void failStop(Cause cause) {
-        syncFailure = Option.some(new WalError.FailStopped(cause.message()));
+        var first = syncFailure.isEmpty();
+
+        syncFailure = some(new WalError.FailStopped(cause.message()));
         log.error("AppendLog fail-stopped for {} — appends refused; "
                  + "reopen (node restart) recovers the valid prefix: {}",
                   file,
                   cause.message());
-        sink.failStopped(file, cause);
+        if (first) {
+            markFailStop(cause);
+            reportFailStop(cause);
+        }
+    }
+
+    /// Best-effort: the volume that refused the force may refuse the mark too, and then a restart reports no recovery.
+    private void markFailStop(Cause cause) {
+        FileOps.writeBytesDurable(failStopMarkOf(file),
+                                  cause.message().getBytes(StandardCharsets.UTF_8))
+               .onFailure(markFailure -> log.warn("AppendLog {} could not write its fail-stop mark: {}",
+                                                  file,
+                                                  markFailure.message()));
+    }
+
+    /// Once per log: to the installed [#onFailStop] listener when there is one, to the sink otherwise. Two writers that both passed
+    /// the health check before the first failure can each fail their frame, so the transition, not the call, is reported.
+    private void reportFailStop(Cause cause) {
+        failStopListener.onPresent(listener -> listener.accept(cause)).onEmpty(() -> sink.failStopped(file, cause));
     }
 
     /// Runs under `syncLock` (the only writer of these fields). The timing wraps ONLY the
@@ -1321,9 +1450,10 @@ public final class AppendLog implements AutoCloseable {
             }
         }
 
-        /// An append whose offset does not exceed the last written offset (#1232). File order must be
-        /// offset order — recovery places records by stored offset and refuses a duplicate — so the
-        /// frame is refused before it is written.
+        /// An append whose offset the order rule does not admit (#1232; I-04, #2201): one that does not exceed the last written
+        /// offset, or that leaves a gap above `lastOffset + 1` not covered by the sealed floor. File order must be offset order and
+        /// contiguous above the sealed floor — recovery places records by stored offset, refuses a duplicate and refuses a gap above
+        /// the seed — so the frame is refused before it is written, and the log stays writable.
         record OffsetRegression(long offset, long lastOffset) implements WalError {
             @Override
             public String message() {

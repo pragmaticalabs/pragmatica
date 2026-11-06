@@ -775,10 +775,13 @@ class ManagementServerImpl implements ManagementServer {
         Supplier<Number> usedRatio = () -> computeStreamMemoryRatio(spm);
         // #2201 A-14: safety-relevant seams still at their default on a node with a WAL; anything but 0 is a wiring defect.
         Supplier<Number> unboundSafetySeams = spm::unboundSafetySeamCount;
+        // #2201 D-01: partitions whose WAL fail-stopped; 0 from boot, at least 1 while a partition refuses every publish.
+        Supplier<Number> failStoppedWals = spm::failStoppedWalCount;
 
         observability.gauge("aether.streams.memory.used.bytes", usedBytes);
         observability.gauge("aether.streams.memory.used.ratio", usedRatio);
         observability.gauge("aether.streams.seams.unbound.safety", unboundSafetySeams);
+        observability.gauge("aether.streams.wal.failstopped", failStoppedWals);
         registerConsensusBatchMetrics();
     }
 

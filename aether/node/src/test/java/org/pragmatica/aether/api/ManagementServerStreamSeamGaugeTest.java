@@ -12,6 +12,7 @@ import java.util.Set;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import org.mockito.stubbing.Answer;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
@@ -35,7 +36,10 @@ import static org.mockito.Mockito.when;
 
 /// #2201 A-14, the author pre-check of PR-2a: the started `ManagementServer` exposes `aether.streams.seams.unbound.safety`, reading
 /// the node's partition manager ([StreamPartitionManager#unboundSafetySeamCount]). Red with the gauge registration removed from
-/// `registerStreamMemoryMetrics`, or with its supplier reading anything but the manager.
+/// `registerStreamMemoryMetrics`, or with its supplier reading anything but the manager. #2201 D-01 (PR-2c, NT-32 wiring): the same for
+/// `aether.streams.wal.failstopped` ([StreamPartitionManager#failStoppedWalCount]), and its Prometheus exposition line ends in the value
+/// (R2.2: the Ember tripwire parses the LAST token of a line, so a trailing timestamp would be read as the value). The scrape is the
+/// registry's own, which `/api/v1/metrics/prometheus` serves unchanged (`MetricsRoutes`, `ObservabilityRegistry.scrape`).
 class ManagementServerStreamSeamGaugeTest {
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(30).seconds();
 
@@ -80,6 +84,34 @@ class ManagementServerStreamSeamGaugeTest {
 
         assertThat(gauge).as("the started server registered the gauge").isNotNull();
         assertThat(gauge.value()).as("it reads the manager's count").isEqualTo(3.0);
+    }
+
+    @Test
+    @Timeout(60)
+    void startedServer_exposesTheWalFailStoppedGauge_readingThePartitionManager_withTheValueAsTheLastToken() {
+        var spm = mock(StreamPartitionManager.class);
+
+        when(spm.failStoppedWalCount()).thenReturn(2L);
+        server = managementServer(spm);
+
+        var started = server.start().await(START_BOUND);
+
+        assertThat(started.isSuccess()).as("control: the server started: %s", started).isTrue();
+
+        var gauge = server.meterRegistry().find("aether.streams.wal.failstopped").gauge();
+
+        assertThat(gauge).as("the started server registered the gauge").isNotNull();
+        assertThat(gauge.value()).as("it reads the manager's count").isEqualTo(2.0);
+
+        var line = ((PrometheusMeterRegistry) server.meterRegistry()).scrape()
+                                                                     .lines()
+                               .filter(sample -> sample.startsWith("aether_streams_wal_failstopped"))
+                               .findFirst();
+
+        assertThat(line).as("the scrape carries the gauge").isPresent();
+        assertThat(Double.parseDouble(line.get().substring(line.get().lastIndexOf(' ') + 1)))
+            .as("the last token of the exposition line is the value, not a timestamp: %s", line.get())
+            .isEqualTo(2.0);
     }
 
     private static ManagementServer managementServer(StreamPartitionManager spm) {

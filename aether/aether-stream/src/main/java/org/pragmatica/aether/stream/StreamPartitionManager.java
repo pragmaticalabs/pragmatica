@@ -80,6 +80,8 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Functions.Fn2;
+import org.pragmatica.lang.Functions.Fn3;
 import org.pragmatica.lang.Lazy;
 import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Option;
@@ -302,6 +304,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final java.util.concurrent.atomic.AtomicLong repairGeneration = new java.util.concurrent.atomic.AtomicLong();
 
     private volatile boolean operatorWarningsBound = false;
+
+    /// The manager's own [WalFailStop]: both reports raise operator warnings under the subject `stream[partition]`.
+    private final WalFailStop walAlarms = WalFailStop.walFailStop(this::walFailStopped, this::walWritable);
 
     /// Know 3b01e624f1: the WAL directories (`<stream>@<incarnation>`) under the log root as they were when the first stream life was adopted,
     /// i.e. at startup, before this process created any. Read once: the directories of this process's own lives are not in it.
@@ -1472,7 +1477,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                      partition),
                                       logs,
                                       lastSealedOffset,
-                                      hydrateTrimFailure(config))
+                                      hydrateTrimFailure(config),
+                                      walAlarms)
                           .onFailure(_ -> release(floorBytes))
                           .onSuccess(entry -> restoreVisible(config, entry))
                           .flatMap(entry -> publishFreshEntry(config, entry, commitMode));
@@ -1991,7 +1997,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                      partition),
                                       logs,
                                       lastSealedOffset,
-                                      hydrateTrimFailure(config))
+                                      hydrateTrimFailure(config),
+                                      walAlarms)
                           .onSuccess(entry -> restoreVisible(config, entry))
                           .onSuccess(StreamEntry::markCommitted)
                           .onFailure(cause -> hydrationFailed(config, floorBytes, cause))
@@ -2691,6 +2698,21 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// node gauge `aether.streams.seams.unbound.safety`.
     public int unboundSafetySeamCount() {
         return unboundSafetySeams().size();
+    }
+
+    /// #2201 D-01: how many partitions materialized on this node have a fail-stopped WAL; `0` from boot. The value of the node gauge
+    /// `aether.streams.wal.failstopped`, read on scrape from the live map (no hot-path accounting). A partition that is released or
+    /// re-materialized with a fresh WAL stops counting.
+    public long failStoppedWalCount() {
+        return streams.values()
+                      .stream()
+                      .flatMap(entry -> entry.materialized()
+                                             .values()
+                                             .stream())
+                      .filter(partition -> partition.wal()
+                                                    .map(AppendLog::failStopped)
+                                                    .or(false))
+                      .count();
     }
 
     /// #2201 A-14: the boot check. On a node configured with a WAL, every safety-relevant seam still at its default is named
@@ -3544,7 +3566,18 @@ public final class StreamPartitionManager implements AutoCloseable {
                                  timestamp,
                                  ownerEpoch,
                                  admission,
+                                 ownerSection(streamName, partition, ownerEpoch),
                                  offset -> logAndReplicate(streamName, partition, offset, payload, timestamp, ownerEpoch));
+    }
+
+    /// The in-section admission of an owner append (#2201 A-01): the epoch fence, the provenance check and the log's health, re-read
+    /// under the ring's append lock before an offset exists. The pre-section checks stay as the cheap early exit.
+    private PartitionSection ownerSection(String streamName, int partition, Epoch ownerEpoch) {
+        return PartitionSection.partitionSection(streamName,
+                                                 partition,
+                                                 () -> ensureNotStale(streamName, partition, ownerEpoch),
+                                                 () -> provenanceAdmits(streamName, partition, some(ownerEpoch)),
+                                                 () -> walFor(streamName, partition));
     }
 
     /// The in-section half of an owner publish — runs under the partition's append lock, right after the
@@ -3653,6 +3686,66 @@ public final class StreamPartitionManager implements AutoCloseable {
     @FunctionalInterface
     interface TrimFailure {
         Cause trimFailed(String streamName, int partition, long head, Cause cause);
+    }
+
+    /// Where a partition log opened by the static open path reports its fail-stop (#2201 D-01), and the recovery from a fail-stop an
+    /// earlier open recorded (its first durable write after the restart). Each runs once per log, under the log's sync lock, so it must
+    /// not block.
+    interface WalFailStop {
+        Unit walFailStopped(String streamName, int partition, Cause cause);
+        Unit walWritable(String streamName, int partition);
+
+        static WalFailStop walFailStop(Fn3<Unit, String, Integer, Cause> failStopped,
+                                       Fn2<Unit, String, Integer> writable) {
+            record walFailStop(Fn3<Unit, String, Integer, Cause> failStopped, Fn2<Unit, String, Integer> writable) implements WalFailStop {
+                @Override
+                public Unit walFailStopped(String streamName, int partition, Cause cause) {
+                    return failStopped.apply(streamName, partition, cause);
+                }
+
+                @Override
+                public Unit walWritable(String streamName, int partition) {
+                    return writable.apply(streamName, partition);
+                }
+            }
+
+            return new walFailStop(failStopped, writable);
+        }
+    }
+
+    /// The operator warning of a partition log's fail-stop (#2201 D-01, `know:` `4ddd1ddfda`): `STORAGE_WAL_FAIL_STOPPED` with the
+    /// subject `stream[partition]`, raised once per log (the log reports its transition once), or when the sink binds if the log stopped
+    /// before it. Publishes to the partition are refused with [StreamError.PartitionFailStopped] from then on.
+    private Unit walFailStopped(String streamName, int partition, Cause cause) {
+        raiseOrDefer(() -> OperatorWarnings.raise(log,
+                                                  operatorWarnings,
+                                                  OperatorWarningCode.STORAGE_WAL_FAIL_STOPPED,
+                                                  streamName + "[" + partition + "]",
+                                                  "The WAL of stream {} partition {} fail-stopped: {}. Every publish to the partition on this node is refused "
+                                                 + "from now on. Recovery: replace the node (POST /api/v1/nodes/replace/{id}); check the volume holding the WAL "
+                                                 + "(full or read-only). A node id never returns, so the replacement does not reopen this log: "
+                                                 + "storage-wal-retired closes this warning when the node is removed or decommissioned, and "
+                                                 + "storage-wal-writable when a whole-cluster restart reopens the log under the same node id.",
+                                                  streamName,
+                                                  partition,
+                                                  cause.message()));
+
+        return unit();
+    }
+
+    /// The recovery of [#walFailStopped] (CTO ruling on #2615): `STORAGE_WAL_WRITABLE`, same subject, raised when the partition's log,
+    /// reopened after a restart over the mark its fail-stop left, accepted its first durable write ([AppendLog#onFailStopRecovered]).
+    private Unit walWritable(String streamName, int partition) {
+        raiseOrDefer(() -> OperatorWarnings.raise(log,
+                                                  operatorWarnings,
+                                                  OperatorWarningCode.STORAGE_WAL_WRITABLE,
+                                                  streamName + "[" + partition + "]",
+                                                  "The WAL of stream {} partition {} accepted a durable write after an earlier fail-stop: "
+                                                 + "publishes to the partition on this node are admitted again.",
+                                                  streamName,
+                                                  partition));
+
+        return unit();
     }
 
     /// A trim failure met while a hydrate builds the entry of `config`'s life: recorded in that life's state.
@@ -3901,6 +3994,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                     Epoch ownerEpoch) {
         return buffer.appendBatchOrdered(payloads,
                                          LongStream.generate(() -> timestamp).limit(payloads.size()).toArray(),
+                                         ownerSection(streamName, partition, ownerEpoch)::admit,
                                          lastOffset -> logRunAndReplicate(streamName,
                                                                           partition,
                                                                           lastOffset,
@@ -4185,12 +4279,12 @@ public final class StreamPartitionManager implements AutoCloseable {
                                  timestamp,
                                  ownerEpoch,
                                  provenanceAdmits(streamName, partition, some(ownerEpoch)),
-                                 offset -> success(logReplicated(streamName,
-                                                                 partition,
-                                                                 offset,
-                                                                 payload,
-                                                                 timestamp,
-                                                                 some(ownerEpoch))));
+                                 offset -> logReplicated(streamName,
+                                                         partition,
+                                                         offset,
+                                                         payload,
+                                                         timestamp,
+                                                         some(ownerEpoch)));
     }
 
     /// Offset-addressed sibling of [#appendReplicatedInSection] (#1505): the same fence, admission and size
@@ -4214,12 +4308,12 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                    timestamp,
                                                                                    new PartitionQuarantine(streamName,
                                                                                                            partition),
-                                                                                   assigned -> success(logReplicated(streamName,
-                                                                                                                     partition,
-                                                                                                                     assigned,
-                                                                                                                     payload,
-                                                                                                                     timestamp,
-                                                                                                                     provenance))))
+                                                                                   assigned -> logReplicated(streamName,
+                                                                                                             partition,
+                                                                                                             assigned,
+                                                                                                             payload,
+                                                                                                             timestamp,
+                                                                                                             provenance)))
                            .onSuccess(_ -> entry.updateActivity());
     }
 
@@ -4294,26 +4388,40 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// frame with NO fsync (#1244): durability is claimed at the ACK, not the append. [#syncReplicated] is
     /// the barrier — the receive handler awaits it once per batch and a backfill run awaits it before
     /// promoting — and it commits every frame written so far in one group commit. The record's offset is
-    /// handed through unchanged. A failed write is recorded rather than raised: the record is applied and
-    /// serveable, but [#syncReplicated] fails, so acks stop and the owner's barrier degrades honestly.
-    private long logReplicated(String streamName,
-                               int partition,
-                               long offset,
-                               byte[] payload,
-                               long timestamp,
-                               Option<Epoch> provenance) {
-        walFor(streamName, partition).onPresent(wal -> recordReplicatedWrite(streamName,
-                                                                             partition,
-                                                                             new ReplicatedWrite(wal,
-                                                                                                 offset,
-                                                                                                 attributedWrite(wal,
-                                                                                                                 offset,
-                                                                                                                 payload,
-                                                                                                                 timestamp,
-                                                                                                                 provenance))));
+    /// handed through unchanged. A failed write is recorded AND returned (#2201 A-01, NT-28): the failure fails the
+    /// ordered continuation, so the ring withdraws the record ([OffHeapRingBuffer#appendOrderedAt]) and the
+    /// sender's retry lands at the same offset; the recorded failure keeps [#syncReplicated] failing, so nothing is
+    /// acked, until a later write on this log succeeds.
+    private Result<Long> logReplicated(String streamName,
+                                       int partition,
+                                       long offset,
+                                       byte[] payload,
+                                       long timestamp,
+                                       Option<Epoch> provenance) {
+        var logged = walFor(streamName, partition).map(wal -> logReplicatedTo(wal,
+                                                                              streamName,
+                                                                              partition,
+                                                                              offset,
+                                                                              attributedWrite(wal,
+                                                                                              offset,
+                                                                                              payload,
+                                                                                              timestamp,
+                                                                                              provenance)))
+                           .or(() -> success(offset));
+
         provenance.onPresent(_ -> flagMissingHistory(streamName, partition, offset));
 
-        return offset;
+        return logged;
+    }
+
+    private Result<Long> logReplicatedTo(AppendLog wal,
+                                         String streamName,
+                                         int partition,
+                                         long offset,
+                                         Result<Long> writeSeq) {
+        recordReplicatedWrite(streamName, partition, new ReplicatedWrite(wal, offset, writeSeq));
+
+        return writeSeq.map(_ -> offset);
     }
 
     /// #1277 review N2: forget the latest replicated write recorded for `(streamName, partition)` when its
@@ -4369,14 +4477,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// A replicated WAL frame write: the WAL it went to, the record's offset — the position the barrier
     /// exposes once this write is durable (#1235) — and its write sequence (or the write failure).
     ///
-    /// The latest write replaces the previous one; no separate poison flag is kept. A later success after
-    /// a failed write would leave a hole the ring does not have, but a failed frame write or fsync
-    /// FAIL-STOPS the WAL, so every later write on that instance fails too and acks stay withheld. The one
-    /// refusal that does not fail-stop, [AppendLog.WalError.OffsetRegression], means the replica's ring
-    /// assigned an offset its WAL already holds — ring and WAL disagree, and that offset's payload in the
-    /// file may differ from the ring's; a later successful write lets acks resume past it.
-    /// `[design intent — unverified: reachable only through a ring/WAL head mismatch such as a frozen-ring
-    /// drop during recovery (#1233); no test induces it]`. The entry is forgotten when its WAL is released
+    /// The latest write replaces the previous one; no separate poison flag is kept. A failed write also fails
+    /// the ordered continuation, so the ring withdraws that record (#2201 A-01) and no hole is left behind it: a
+    /// failed frame write or fsync FAIL-STOPS the WAL, so every later write on that instance fails too and acks
+    /// stay withheld; a refusal that does not fail-stop ([AppendLog.WalError.OffsetRegression], a ring/WAL head
+    /// mismatch) leaves the ring at its previous head, and a later successful write at that offset lets acks
+    /// resume (`OrderedSectionRollbackTest.ReplicaReceiveRollback`). The entry is forgotten when its WAL is released
     /// ([#forgetReplicatedWrites]), so a rebuilt partition's first barrier never targets a closed WAL.
     record ReplicatedWrite(AppendLog wal, long offset, Result<Long> writeSeq) {
         Promise<Unit> commit() {
@@ -4430,8 +4536,30 @@ public final class StreamPartitionManager implements AutoCloseable {
                                             Epoch ownerEpoch,
                                             Result<Unit> admission,
                                             Fn1<Result<T>, Long> inOrder) {
+        return appendToPartition(entry,
+                                 streamName,
+                                 partition,
+                                 payload,
+                                 timestamp,
+                                 ownerEpoch,
+                                 admission,
+                                 PartitionSection.ADMIT_ALL,
+                                 inOrder);
+    }
+
+    /// As above, with `section` admitting the append inside the ordered section, before the ring assigns an offset (#2201 A-01).
+    private <T> Result<T> appendToPartition(StreamEntry entry,
+                                            String streamName,
+                                            int partition,
+                                            byte[] payload,
+                                            long timestamp,
+                                            Epoch ownerEpoch,
+                                            Result<Unit> admission,
+                                            PartitionSection section,
+                                            Fn1<Result<T>, Long> inOrder) {
         return appendTarget(entry, streamName, partition, payload, ownerEpoch, admission).flatMap(buffer -> buffer.appendOrdered(payload,
                                                                                                                                  timestamp,
+                                                                                                                                 section::admit,
                                                                                                                                  inOrder))
                            .onSuccess(_ -> entry.updateActivity());
     }
@@ -4523,13 +4651,11 @@ public final class StreamPartitionManager implements AutoCloseable {
                          .or(Result::unitResult);
     }
 
+    /// O(1): the log's cached last key ([AppendLog#lastEpochKey]), never a walk of the history (#2201 A-01, the guard reads it on every
+    /// owner append).
     private Option<Epoch> lastRecordedEpoch(String streamName, int partition) {
-        return walFor(streamName, partition).flatMap(wal -> Option.from(wal.epochHistory()
-                                                                           .stream()
-                                                                           .reduce((earlier, later) -> later)))
-                     .flatMap(last -> ProvenanceEntry.provenanceEntry(last).option())
-                     .map(entry -> entry.epoch()
-                                        .rank());
+        return walFor(streamName, partition).flatMap(AppendLog::lastEpochKey)
+                     .flatMap(key -> ProvenanceEntry.rankOf(key).option());
     }
 
     /// The owner-epoch history of this node's copy of `(streamName, partition)`, oldest first (#1596): empty when
@@ -5969,7 +6095,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           budgetFreedGeneration::get,
                                           logs,
                                           lastSealedOffset,
-                                          lifeTrimFailure(config))
+                                          lifeTrimFailure(config),
+                                          walAlarms)
                           .onFailure(_ -> releaseFailedMaterialize(ref, floorBytes, slotHeld))
                           .onSuccess(candidate -> restoreVisible(config,
                                                                  partition,
@@ -6793,13 +6920,20 @@ public final class StreamPartitionManager implements AutoCloseable {
                                               IntPredicate shouldMaterialize,
                                               Option<AppendLog.Opener> logs,
                                               LastSealedOffsetSource lastSealedOffset,
-                                              TrimFailure trimFailed) {
+                                              TrimFailure trimFailed,
+                                              WalFailStop failStopped) {
             var selected = selectedPartitions(config, shouldMaterialize);
             var ringResults = buildRings(config, selected, listener, reserve, release, budgetFreed);
 
             return Result.allOf(ringResults)
                          .mapError(_ -> StreamError.General.STREAM_MEMORY_EXCEEDED)
-                         .flatMap(rings -> openEntryWals(config, selected, rings, logs, lastSealedOffset, trimFailed))
+                         .flatMap(rings -> openEntryWals(config,
+                                                         selected,
+                                                         rings,
+                                                         logs,
+                                                         lastSealedOffset,
+                                                         trimFailed,
+                                                         failStopped))
                          .onFailure(_ -> closeBuilt(ringResults));
         }
 
@@ -6872,14 +7006,16 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                             LongSupplier budgetFreed,
                                                             Option<AppendLog.Opener> logs,
                                                             LastSealedOffsetSource lastSealedOffset,
-                                                            TrimFailure trimFailed) {
+                                                            TrimFailure trimFailed,
+                                                            WalFailStop failStopped) {
             return buildRing(config, partition, listener, reserve, release, budgetFreed).mapError(_ -> StreamError.General.STREAM_MEMORY_EXCEEDED)
                             .flatMap(ring -> openAndRecoverOne(config,
                                                                partition,
                                                                ring,
                                                                logs,
                                                                lastSealedOffset,
-                                                               trimFailed));
+                                                               trimFailed,
+                                                               failStopped));
         }
 
         private static Result<MaterializedPartition> openAndRecoverOne(StreamConfig config,
@@ -6887,8 +7023,9 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                        OffHeapRingBuffer ring,
                                                                        Option<AppendLog.Opener> logs,
                                                                        LastSealedOffsetSource lastSealedOffset,
-                                                                       TrimFailure trimFailed) {
-            return openWal(config, partition, logs).onFailure(_ -> ring.closeWithoutRelease())
+                                                                       TrimFailure trimFailed,
+                                                                       WalFailStop failStopped) {
+            return openWal(config, partition, logs, lastSealedOffset, failStopped).onFailure(_ -> ring.closeWithoutRelease())
                           .flatMap(wal -> recoverOne(config, partition, ring, wal, lastSealedOffset, trimFailed));
         }
 
@@ -6940,13 +7077,14 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                          List<OffHeapRingBuffer> rings,
                                                          Option<AppendLog.Opener> logs,
                                                          LastSealedOffsetSource lastSealedOffset,
-                                                         TrimFailure trimFailed) {
-            return openWals(config, selected, logs).flatMap(wals -> recoverWals(config,
-                                                                                selected,
-                                                                                rings,
-                                                                                wals,
-                                                                                lastSealedOffset,
-                                                                                trimFailed))
+                                                         TrimFailure trimFailed,
+                                                         WalFailStop failStopped) {
+            return openWals(config, selected, logs, lastSealedOffset, failStopped).flatMap(wals -> recoverWals(config,
+                                                                                                               selected,
+                                                                                                               rings,
+                                                                                                               wals,
+                                                                                                               lastSealedOffset,
+                                                                                                               trimFailed))
                            .map(wals -> entryOf(config, selected, rings, wals));
         }
 
@@ -7214,16 +7352,24 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         private static Result<List<Option<AppendLog>>> openWals(StreamConfig config,
                                                                 List<Integer> selected,
-                                                                Option<AppendLog.Opener> logs) {
-            return logs.map(opener -> openSelectedWals(config, selected, opener))
+                                                                Option<AppendLog.Opener> logs,
+                                                                LastSealedOffsetSource lastSealedOffset,
+                                                                WalFailStop failStopped) {
+            return logs.map(opener -> openSelectedWals(config, selected, opener, lastSealedOffset, failStopped))
                        .or(() -> success(noWals(selected.size())));
         }
 
         private static Result<List<Option<AppendLog>>> openSelectedWals(StreamConfig config,
                                                                         List<Integer> selected,
-                                                                        AppendLog.Opener opener) {
+                                                                        AppendLog.Opener opener,
+                                                                        LastSealedOffsetSource lastSealedOffset,
+                                                                        WalFailStop failStopped) {
             var results = selected.stream()
-                                  .map(partition -> openPartitionWal(opener, config, partition).map(Option::some))
+                                  .map(partition -> openPartitionWal(opener,
+                                                                     config,
+                                                                     partition,
+                                                                     lastSealedOffset,
+                                                                     failStopped).map(Option::some))
                                   .toList();
 
             return Result.allOf(results).onFailure(_ -> closeOpenedWals(results));
@@ -7233,15 +7379,33 @@ public final class StreamPartitionManager implements AutoCloseable {
         /// {@link #openSelectedWals} for the one-partition materialize path ({@link #materializeOne}).
         private static Result<Option<AppendLog>> openWal(StreamConfig config,
                                                          int partition,
-                                                         Option<AppendLog.Opener> logs) {
-            return logs.map(opener -> openPartitionWal(opener, config, partition).map(Option::some))
+                                                         Option<AppendLog.Opener> logs,
+                                                         LastSealedOffsetSource lastSealedOffset,
+                                                         WalFailStop failStopped) {
+            return logs.map(opener -> openPartitionWal(opener, config, partition, lastSealedOffset, failStopped).map(Option::some))
                        .or(() -> success(Option.none()));
         }
 
         /// The log `<stream>[@<incarnation>]/<partition>`: under the storage instance's log root in production, which
         /// keeps the pre-#1567 layout `<walBaseDir>/<stream>/<partition>.wal` for a config with no incarnation.
-        private static Result<AppendLog> openPartitionWal(AppendLog.Opener opener, StreamConfig config, int partition) {
-            return opener.open(logName(config, partition));
+        ///
+        /// The log gets the partition's LIVE sealed floor for its offset-order rule (I-04, #2201): the same source recovery seeds
+        /// the ring from, so the first write above a ring seeded at the floor (a WAL whose last record is below it) is admitted, and
+        /// any other gap is refused. Its fail-stop is reported by the manager under the subject `stream[partition]` (#2201 D-01), in place
+        /// of the storage instance's report.
+        private static Result<AppendLog> openPartitionWal(AppendLog.Opener opener,
+                                                          StreamConfig config,
+                                                          int partition,
+                                                          LastSealedOffsetSource lastSealedOffset,
+                                                          WalFailStop failStopped) {
+            return opener.open(logName(config, partition))
+                         .map(wal -> wal.withSealedFloor(() -> lastSealedOffset.lastSealedOffset(config.name(),
+                                                                                                 partition)))
+                         .map(wal -> wal.onFailStop(cause -> failStopped.walFailStopped(config.name(),
+                                                                                        partition,
+                                                                                        cause)))
+                         .map(wal -> wal.onFailStopRecovered(() -> failStopped.walWritable(config.name(),
+                                                                                           partition)));
         }
 
         /// The log of one partition of one LIFE of a stream (#1278 review), shared by the open and the read-only
