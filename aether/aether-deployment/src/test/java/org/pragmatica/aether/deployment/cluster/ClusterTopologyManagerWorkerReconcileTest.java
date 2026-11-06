@@ -411,6 +411,60 @@ class ClusterTopologyManagerWorkerReconcileTest {
         assertThat(resumed).contains("worker primary/worker");
     }
 
+    /// v2711c (c24): the pairing, pinned for any iteration order. Every subject removed raises exactly one resume; a hold added during
+    /// the drain is drained with its resume or stays held; nothing is removed silently, twice, or both resumed and held.
+    @Test
+    void drainHeld_pairsEveryRemovalWithOneResume_whateverTheIterationOrder() {
+        var snapshotOrder = new java.util.concurrent.CopyOnWriteArraySet<String>();
+        var hashOrder = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
+
+        assertPaired(snapshotOrder);
+        assertPaired(hashOrder);
+    }
+
+    private static void assertPaired(Set<String> held) {
+        var everHeld = new java.util.concurrent.CopyOnWriteArraySet<String>();
+        var resumed = new CopyOnWriteArrayList<String>();
+        var added = new java.util.concurrent.atomic.AtomicInteger();
+
+        for (var i = 0; i < 8; i++) {
+            held.add("original-" + i);
+            everHeld.add("original-" + i);
+        }
+        ClusterTopologyManagerRecord.drainHeld(held, subject -> {
+            resumed.add(subject);
+            if (subject.startsWith("original-")) {
+                var late = "late-" + added.getAndIncrement();
+                everHeld.add(late);
+                held.add(late);
+            }
+        });
+
+        var accounted = new java.util.HashSet<>(resumed);
+
+        accounted.addAll(held);
+        assertThat(accounted).as("resumed + still held is every subject ever held").isEqualTo(everHeld);
+        assertThat(resumed).as("no duplicate resume").doesNotHaveDuplicates();
+        assertThat(held).as("a resumed subject is not held").doesNotContainAnyElementsOf(resumed);
+        assertThat(resumed).as("every original is resumed").containsAll(everHeld.stream().filter(s -> s.startsWith("original-")).toList());
+    }
+
+    /// v2711c (c25): releasing a subject that is not held (never held, or removed by a competing release) raises no resume.
+    @Test
+    void releaseHeld_aSubjectNotHeld_raisesNoResume() {
+        var held = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
+        var resumed = new CopyOnWriteArrayList<String>();
+
+        held.add("held one");
+        ClusterTopologyManagerRecord.releaseHeld(held, "never held", resumed::add);
+        assertThat(resumed).as("not held: no resume").isEmpty();
+        assertThat(held).containsExactly("held one");
+
+        ClusterTopologyManagerRecord.releaseHeld(held, "held one", resumed::add);
+        ClusterTopologyManagerRecord.releaseHeld(held, "held one", resumed::add);
+        assertThat(resumed).as("released once, resumed once").containsExactly("held one");
+    }
+
     private static void resumeAndRaceAHold(String subject, Set<String> held, List<String> resumed) {
         resumed.add(subject);
         held.add("community stable");
@@ -426,6 +480,17 @@ class ClusterTopologyManagerWorkerReconcileTest {
         assertThat(ctm.declaresSource(sourceName("prmary"))).as("a typo").isFalse();
         seedConfig(communityToml(1));
         assertThat(ctm.declaresSource(sourceName("pool"))).as("a [source.*] table").isTrue();
+    }
+
+    /// v2711c (c04): a committed, parseable configuration that does not declare the source does not declare it (the reset of it is
+    /// refused by the route, which asks this).
+    @Test
+    void declaresSource_aParseableConfigThatDoesNotDeclareIt_isNotDeclared() {
+        seedConfig(communityToml(1));
+
+        assertThat(ctm.declaresSource(sourceName("pool"))).as("declared by [source.pool]").isTrue();
+        assertThat(ctm.declaresSource(sourceName("prmary"))).as("a typo of a name the TOML does not declare").isFalse();
+        assertThat(ctm.declaresSource(sourceName("elsewhere"))).as("another source").isFalse();
     }
 
     private static org.pragmatica.aether.environment.SourceName sourceName(String name) {

@@ -1059,7 +1059,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     @Contract
-    private static void releaseHeld(Set<String> held, String subject, Consumer<String> resumed) {
+    static void releaseHeld(Set<String> held, String subject, Consumer<String> resumed) {
         if (held.remove(subject)) {
             resumed.accept(subject);
         }
