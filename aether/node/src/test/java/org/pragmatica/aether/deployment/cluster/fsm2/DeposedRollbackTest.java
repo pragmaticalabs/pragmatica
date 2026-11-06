@@ -23,7 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// CF-1 of the FSM replacement plan (#2759; legacy #2614 G2 P0 and #2592 / #2593), the rollback scenarios ported to fsm2.
 ///
-/// **Every leader deployment write** commits only if the committed `LeaderValue` at the commit position equals the witness the
+/// **Every write the cluster FSM submits** commits only if the committed `LeaderValue` at the commit position equals the witness the
 /// writer read, and a node whose committed leader record names another node, or whose term ended, submits nothing. Mechanism:
 /// every `Outbox` transaction is a `LeaderTransaction` (the applier refuses a stale leader witness), and the FSM submits only while
 /// the committed leader names it (R-5.7.1 (a)). The legacy `onAbandoned` (the abandoned rollback releases its bookkeeping) is the

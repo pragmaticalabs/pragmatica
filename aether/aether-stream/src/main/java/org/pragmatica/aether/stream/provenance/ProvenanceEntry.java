@@ -76,6 +76,12 @@ public record ProvenanceEntry(ProvenanceKind kind, Epoch rank, Option<String> id
         return ProvenanceEpoch.fromKey(start.key()).map(epoch -> provenanceEntry(epoch, start.startOffset()));
     }
 
+    /// The rank of the epoch a log key names, as [#provenanceEntry(EpochStart)] reads it, without an entry (#2201 A-01: the ordered
+    /// section's guard reads the log's cached last key on every owner append). A key this codec did not write is a failure.
+    public static Result<Epoch> rankOf(EpochKey key) {
+        return ProvenanceEpoch.fromKey(key).map(ProvenanceEpoch::rank);
+    }
+
     /// Whether this entry names a decision: a real epoch always does; a synthetic kind only with its `d`. An entry
     /// without one (only a peer that is not this codec could send it) compares equal to nothing, like UNDEFINED
     /// (#1638 N1): two such entries would otherwise both read as `Unknown("")` and compare equal.

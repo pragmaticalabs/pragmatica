@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.generation.EpochMintError;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -45,6 +46,77 @@ class IsrOwnershipWriterTest {
     private static final LeaderValue LEADER = new LeaderValue(A, 1L);
 
     private final IsrOwnershipWriter writer = writer(List.of(A, B, C, D), (_, _, owner) -> List.of(owner, B, C));
+
+    /// #2654: after a whole-cluster restore the incarnation mirror reads `ClusterIncarnation.NONE` (0) until the restore
+    /// commits the new life's incarnation, and stream ownership records are not backed up, so the leader mints the
+    /// partition's first record in that window. Minted at incarnation 0 it ranks below every epoch the restored life
+    /// committed (the #1529 hazard), so the writer refuses the mint. The production path is the public driver, which reads the
+    /// generation epoch itself.
+    @Nested
+    class MintBeforeIncarnationCommit {
+        private static final Epoch UNCOMMITTED = Epoch.epoch(0L, 2L, 0L);
+
+        private final IsrOwnershipWriter uncommitted = new IsrOwnershipWriter(() -> true,
+                                                                             () -> UNCOMMITTED,
+                                                                             HlcClock.hlcClock(A),
+                                                                             (_, _) -> Option.none(),
+                                                                             (_, _) -> Option.some(A),
+                                                                             new StreamPartitionOwnershipWriter.IsrInputs() {
+                                                                                 @Override
+                                                                                 public List<NodeId> liveMembers() {
+                                                                                     return List.of(A, B, C);
+                                                                                 }
+
+                                                                                 @Override
+                                                                                 public List<NodeId> initialIsr(String stream, int partition, NodeId owner) {
+                                                                                     return List.of(owner, B, C);
+                                                                                 }
+                                                                             },
+                                                                             () -> Option.some(LEADER));
+
+        @Test
+        void writeOwnershipChange_incarnationNone_mintsNothing() {
+            assertThat(uncommitted.writeOwnershipChange(STREAM, PARTITION).isEmpty())
+                .as("no ownership record is minted while the life's incarnation is NONE")
+                .isTrue();
+        }
+
+        /// The refusal reaches the batch driver through the gate, so the driver can re-drive the pass.
+        @Test
+        void mintGate_leaderIncarnationNone_isRefusedAsNotCommitted() {
+            assertThat(uncommitted.mintGate().<Object>fold(cause -> cause, _ -> "passed"))
+                .isEqualTo(EpochMintError.General.INCARNATION_NOT_COMMITTED);
+        }
+
+        @Test
+        void mintGate_followerIncarnationNone_passes_becauseAFollowerMintsNothing() {
+            var follower = new IsrOwnershipWriter(() -> false,
+                                                  uncommitted.generationEpochSupplier(),
+                                                  uncommitted.hlcClock(),
+                                                  uncommitted.committedOwnership(),
+                                                  uncommitted.hrwOwner(),
+                                                  uncommitted.isrInputs(),
+                                                  uncommitted.committedLeader());
+
+            assertThat(follower.mintGate().isSuccess()).isTrue();
+        }
+
+        /// Control: the same writer mints once the incarnation is committed, so the refusal above is the guard.
+        @Test
+        void writeOwnershipChange_incarnationCommitted_mintsAtThatIncarnation() {
+            var committed = new IsrOwnershipWriter(() -> true,
+                                                   () -> GENERATION,
+                                                   uncommitted.hlcClock(),
+                                                   uncommitted.committedOwnership(),
+                                                   uncommitted.hrwOwner(),
+                                                   uncommitted.isrInputs(),
+                                                   uncommitted.committedLeader());
+
+            assertThat(committed.mintGate().isSuccess()).isTrue();
+            assertThat(committed.writeOwnershipChange(STREAM, PARTITION).map(IsrOwnershipWriterTest::mintedEpoch))
+                .isEqualTo(Option.some(GENERATION.withCounter(1L)));
+        }
+    }
 
     @Nested
     class FirstRecord {
@@ -377,6 +449,13 @@ class IsrOwnershipWriterTest {
                                           }
                                       },
                                       committedLeader);
+    }
+
+    private static Epoch mintedEpoch(KVCommand<AetherKey> command) {
+        var transaction = (KVCommand.LeaderTransaction<?, ?>) command;
+        var mutation = (KVCommand.Mutation<?, ?>) transaction.mutations().getFirst();
+
+        return ((StreamPartitionOwnershipValue) mutation.replacement().unwrap()).ownerEpoch();
     }
 
     @FunctionalInterface

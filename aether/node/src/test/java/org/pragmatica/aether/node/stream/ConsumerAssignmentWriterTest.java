@@ -43,8 +43,12 @@ class ConsumerAssignmentWriterTest {
     }
 
     private ConsumerAssignmentWriter writer(boolean isLeader) {
+        return writer(isLeader, Epoch.epoch(1L, RABIA_TERM, 0L));
+    }
+
+    private ConsumerAssignmentWriter writer(boolean isLeader, Epoch generation) {
         return ConsumerAssignmentWriter.consumerAssignmentWriter(() -> isLeader,
-                                                                 () -> Epoch.epoch(0L, RABIA_TERM, 0L),
+                                                                 () -> generation,
                                                                  HlcClock.hlcClock(NODE_A),
                                                                  (stream, partition, group) -> Option.option(committed.get(ConsumerAssignmentKey.consumerAssignmentKey(stream,
                                                                                                                                                                        partition,
@@ -57,7 +61,7 @@ class ConsumerAssignmentWriterTest {
 
     private void commit(int partition, NodeId assignee, long term) {
         committed.put(ConsumerAssignmentKey.consumerAssignmentKey(STREAM, partition, GROUP),
-                      ConsumerAssignmentValue.consumerAssignmentValue(assignee, Epoch.epoch(0L, 1L, term), term, HlcTimestamp.ZERO));
+                      ConsumerAssignmentValue.consumerAssignmentValue(assignee, Epoch.epoch(1L, 1L, term), term, HlcTimestamp.ZERO));
     }
 
     private static ConsumerAssignmentValue valueOf(KVCommand<AetherKey> command) {
@@ -72,7 +76,7 @@ class ConsumerAssignmentWriterTest {
         assertThat(valueOf(commands.getFirst())).extracting(ConsumerAssignmentValue::assignee,
                                                             ConsumerAssignmentValue::epoch,
                                                             ConsumerAssignmentValue::assignmentTerm)
-                                                .containsExactly(NODE_A, Epoch.epoch(0L, RABIA_TERM, 1L), 1L);
+                                                .containsExactly(NODE_A, Epoch.epoch(1L, RABIA_TERM, 1L), 1L);
     }
 
     @Test
@@ -92,7 +96,14 @@ class ConsumerAssignmentWriterTest {
         assertThat(valueOf(commands.getFirst())).extracting(ConsumerAssignmentValue::assignee,
                                                             ConsumerAssignmentValue::epoch,
                                                             ConsumerAssignmentValue::assignmentTerm)
-                                                .containsExactly(NODE_B, Epoch.epoch(0L, RABIA_TERM, 4L), 4L);
+                                                .containsExactly(NODE_B, Epoch.epoch(1L, RABIA_TERM, 4L), 4L);
+    }
+
+    /// #2654: while the life's incarnation is NONE the leader mints nothing, so no assignment can rank below the restored
+    /// life's epochs; the periodic consumer reconcile re-decides once the commit is observed.
+    @Test
+    void writeAssignmentChanges_writesNothing_whileTheIncarnationIsNone() {
+        assertThat(writer(true, Epoch.epoch(0L, RABIA_TERM, 0L)).writeAssignmentChanges(STREAM, GROUP, List.of(assigned(0, NODE_A)))).isEmpty();
     }
 
     @Test

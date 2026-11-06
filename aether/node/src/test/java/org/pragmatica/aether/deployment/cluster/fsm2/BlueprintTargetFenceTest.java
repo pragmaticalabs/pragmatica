@@ -27,12 +27,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// CF-5 and CF-6 of the FSM replacement plan (#2759): the target a publish declares is fenced on the blueprint that owns it.
 ///
-/// - **CF-5, blueprint publish then delete:** after the delete commits, no `SliceTargetKey` owned by the deleted blueprint
-///   survives, in either commit order of the target put and the delete. Mechanism: every target put carries a `ReadWitness` on
-///   its owner's `AppBlueprintKey` at the value the declaration read, so a put that would commit after the blueprint is gone is
-///   refused by the applier; a put that commits first is a committed target the delete's removal batch removes. This holds
-///   across a leader change too (D.9): per-origin FIFO (#2629) does not order a put sent in one term against a delete handled in
-///   another.
+/// - **CF-5, blueprint publish then delete, per operation:** the fence is a `ReadWitness` on the owner's `AppBlueprintKey` that
+///   every target put carries. (a) A put that would commit after the blueprint's delete, or after a republish, is refused by the
+///   applier, in either commit order and across a leader change (D.9: per-origin FIFO (#2629) does not order a put sent in one
+///   term against a delete handled in another). (b) A target that committed BEFORE the delete is removed by the delete's removal
+///   batch only if that batch commits. A removal batch lost with its leader's term leaves an orphan target: the witness does not
+///   cover it. That residual is pinned by `tripwire_removalBatchLostWithTheTerm_orphanTargetSurvivesTheRebuild` and closed by CF-8
+///   (`newLeader_orphanTarget_removed`, disabled until the orphan-target reconcile step exists).
 /// - **CF-6, two publishes of one id:** the last committed target matches the committed blueprint. Mechanism: the target put
 ///   is a mutation expecting the committed target the declaration read, and carries the blueprint witness, so the earlier
 ///   declaration's put cannot commit over the later one.
@@ -323,7 +324,7 @@ class BlueprintTargetFenceTest {
 
     // CF-5, the fence's own arm, on the declaration and on the awaited-target re-send
     // Red when: a target put, first sent or re-sent at the awaited-target bound, carries no witness on its owner blueprint at the
-    // value the declaration read.
+    // owner's value the mirror held when it was sent.
     @Test
     void everyTargetPut_witnessesItsOwnerBlueprint() {
         var h = active();
@@ -342,6 +343,19 @@ class BlueprintTargetFenceTest {
         assertThat(h.submits(SubmitKind.TARGETS)).allSatisfy(submit -> assertThat(submit.transaction().guards()).anyMatch(guard -> guard.key()
                                                                                                                                         .equals(new AppBlueprintKey(blueprintId(APP))) && guard.expected()
                                                                                                                                                                                                .equals(Option.some(value))));
+    }
+
+    // CF-5, an empty load order declares nothing: submitTargets' empty-mutations guard
+    // Red when: the guard is gone, so publishing a blueprint with no slices throws on the first mutation's key (getFirst of an empty
+    // list) instead of publishing nothing.
+    @Test
+    void publishEmptyLoadOrder_submitsNoTargetsAndThrowsNothing() {
+        var h = active();
+
+        publish(h, blueprint(APP, false, ATTEMPT));
+
+        assertThat(h.store.get(new AppBlueprintKey(blueprintId(APP))).isPresent()).as("control: the empty blueprint committed").isTrue();
+        assertThat(h.submits(SubmitKind.TARGETS)).as("no TARGETS submit for an empty load order").isEmpty();
     }
 
     // CF-6
