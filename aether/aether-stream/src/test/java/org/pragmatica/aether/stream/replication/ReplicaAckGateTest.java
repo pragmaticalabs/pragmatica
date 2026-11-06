@@ -117,6 +117,19 @@ class ReplicaAckGateTest {
         assertThat(replica.replicaVerified(STREAM, PARTITION)).isTrue();
     }
 
+    /// The pre-apply reading decides: a gate that trusts the copy on that reading and doubts it afterwards (the committed
+    /// epoch moved between the reading and the apply) still lets the batch's ack go, and the gate is read once.
+    @Test
+    void liveBatch_trustedOnThePreApplyReading_isAckedWithoutASecondReading() {
+        var readings = new AtomicInteger();
+
+        handler.ackGate((_, _) -> readings.incrementAndGet() == 1);
+        handler.onReplicateEvents(liveBatch(0, 1, E1));
+
+        assertThat(ackOffsets(E1)).containsExactly(0L);
+        assertThat(readings.get()).as("gate readings").isEqualTo(1);
+    }
+
     /// The snapshot is taken only for a batch of the committed epoch. A batch of a newer epoch (this replica has not yet seen
     /// its commit) reads the gate after the apply, as before: the fresh copy's head then reached the committed epoch's start.
     @Test
