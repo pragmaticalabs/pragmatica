@@ -6,7 +6,6 @@ package org.pragmatica.aether.deployment.workflow;
 
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -21,9 +20,8 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
-import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
-import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.WarningLevel;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -98,15 +96,15 @@ class WorkflowPilotTest {
     private WorkflowTestCluster cluster;
     private World world;
     private AtomicLong clock;
-    private List<OperatorWarning> warnings;
     private Map<String, WorkflowKind<?>> kinds;
+    private WarningProbe probe;
 
     @BeforeEach
     void setUp() {
         cluster = new WorkflowTestCluster();
         world = new World();
         clock = new AtomicLong(T0);
-        warnings = new CopyOnWriteArrayList<>();
+        probe = new WarningProbe();
         kinds = Map.of("pilot", pilot(world));
     }
 
@@ -139,7 +137,7 @@ class WorkflowPilotTest {
         return WorkflowReconciler.workflowReconciler(cluster.ledger(self),
                                                      kinds,
                                                      clock::get,
-                                                     OperatorWarningSink.handingOffTo(warnings::add));
+                                                     probe.sink());
     }
 
     private WorkflowRunValue admit() {
@@ -184,7 +182,7 @@ class WorkflowPilotTest {
         assertThat(cluster.claim("node:n1")).as("DONE releases the claim").isEqualTo(Option.none());
         tick(leader);
         assertThat(world.provisionCalls.get() + world.verifyCalls.get()).as("a DONE run is inert").isEqualTo(2);
-        assertThat(settled(warnings)).isEmpty();
+        assertThat(probe.settled()).isEmpty();
     }
 
     /// INV-06: the old leader issued the effect and lost leadership; the new leader continues from the committed run, adopting the
@@ -266,23 +264,25 @@ class WorkflowPilotTest {
         clock.addAndGet(SETTLE_MS);
         tick(leader);
         assertThat(committed().attempts()).isEqualTo(2);
-        assertThat(settled(warnings)).isEmpty();
+        assertThat(probe.settled()).isEmpty();
         clock.addAndGet(SETTLE_MS);
         tick(leader);
         var escalated = committed();
 
         assertThat(escalated.state()).isEqualTo(WorkflowState.ESCALATED);
         assertThat(escalated.detail()).contains("attempt budget of 2", "'node provisioned'");
-        assertThat(settled(warnings)).hasSize(1);
-        assertThat(settled(warnings).getFirst().code()).isEqualTo(OperatorWarningCode.WORKFLOW_ESCALATED);
-        assertThat(settled(warnings).getFirst().subject()).isEqualTo("wf-pilot");
-        assertThat(settled(warnings).getFirst().message()).contains("'node provisioned'", "resume", "abandon");
+        assertThat(probe.settled()).hasSize(1);
+        assertThat(probe.settled().getFirst().code()).isEqualTo(OperatorWarningCode.WORKFLOW_ESCALATED);
+        assertThat(probe.settled().getFirst().subject()).isEqualTo("wf-pilot");
+        assertThat(probe.settled().getFirst().code().level()).isEqualTo(WarningLevel.CRITICAL);
+        assertThat(probe.settled().getFirst().code().code()).isEqualTo("workflow-escalated");
+        assertThat(probe.settled().getFirst().message()).contains("'node provisioned'", "resume", "abandon");
         assertThat(cluster.claim("node:n1")).isEqualTo(Option.some(new WorkflowClaimValue("wf-pilot")));
         clock.addAndGet(SETTLE_MS * 100);
         tick(leader);
         tick(leader);
         assertThat(world.provisionCalls.get()).as("an escalated run is inert").isEqualTo(2);
-        assertThat(settled(warnings)).as("the incident is raised once").hasSize(1);
+        assertThat(probe.settled()).as("the incident is raised once").hasSize(1);
     }
 
     @Test
@@ -298,7 +298,7 @@ class WorkflowPilotTest {
         assertThat(committed().state()).isEqualTo(WorkflowState.ESCALATED);
         assertThat(committed().detail()).contains("elapsed-time budget");
         assertThat(world.provisionCalls.get()).isZero();
-        assertThat(settled(warnings)).hasSize(1);
+        assertThat(probe.settled()).hasSize(1);
     }
 
     @Test
@@ -387,22 +387,5 @@ class WorkflowPilotTest {
         tick(reconciler(CORE_1));
         assertThat(committed().state()).isEqualTo(WorkflowState.WAITING);
         assertThat(cluster.run("wf-broken").unwrap().state()).isEqualTo(WorkflowState.RUNNING);
-    }
-
-    /// The sink hands warnings to a single worker thread, so a snapshot taken at once could miss one in flight.
-    /// The pause lets the hand-off drain before the test reads the list.
-    private static List<OperatorWarning> settled(List<OperatorWarning> warnings) {
-        pause();
-
-        return List.copyOf(warnings);
-    }
-
-    @SuppressWarnings("java:S2925")
-    private static void pause() {
-        try {
-            Thread.sleep(200);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
     }
 }

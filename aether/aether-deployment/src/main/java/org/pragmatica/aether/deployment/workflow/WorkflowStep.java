@@ -16,6 +16,14 @@ import org.pragmatica.lang.io.TimeSpan;
 /// that mechanism accepted the request, not when its effect is complete: completion is the postcondition's to observe. `settle` is
 /// how long an issued effect is given before the step may issue it again. `postconditionName` is what a `WAITING` run and an
 /// incident name.
+///
+/// D10 (architect decision): spec §4.1 lists `idempotencyKey`, `timeout` and `role` on a step; f2a does NOT carry them as fields.
+/// The idempotency key is derived as (run id, stepIndex), the effect timeout is the kind's budget bound (the reconciler's `bound`),
+/// and `role` is deferred to f2b, where the production kinds are wired.
+///
+/// D4 (commit-before-effect): `action` runs only after the commit recording the issue was accepted, and only while the node still
+/// leads at that moment. An accepted effect can nevertheless run on a node that was deposed after the check, concurrently with a
+/// later attempt once `settle` has elapsed. An `action` must therefore be fenced and idempotent per (run id, stepIndex).
 public record WorkflowStep<O>(String name,
                               Fn1<Readiness, O> precondition,
                               Fn1<Promise<Unit>, WorkflowRunValue> action,

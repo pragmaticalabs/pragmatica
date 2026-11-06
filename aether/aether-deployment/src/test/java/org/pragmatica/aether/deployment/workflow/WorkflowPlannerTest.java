@@ -236,4 +236,24 @@ class WorkflowPlannerTest {
                                                                                    START + SETTLE_MS));
         assertThat(plan(fresh(), NOTHING_READY, START + 5)).isEqualTo(plan(fresh(), NOTHING_READY, START + 5));
     }
+
+    /// Never-issued means `issuedAt == 0`, which is not a time: a `now` inside the settle window measured from 0 must not hold the run.
+    @Test
+    void plan_neverIssuedStep_withNowBelowTheSettleWindow_issues_notHolds() {
+        assertThat(fresh().issuedAt()).isZero();
+        assertThat(plan(fresh(), NOTHING_READY, SETTLE_MS - 1)).isInstanceOf(Plan.Issue.class);
+    }
+
+    /// After a resume or a step change `attempts` and `effects` differ; the incident reports each one's own count.
+    @Test
+    void plan_incident_reportsAttemptsAndEffectsSeparately_whenTheyDiffer() {
+        var second = fresh().issued("node provisioned", START).advanced().issued("node verified", START).issued("node verified", START);
+        var plan = plan(second, NOTHING_READY, START + SETTLE_MS);
+
+        assertThat(second.attempts()).isEqualTo(2);
+        assertThat(second.effects()).isEqualTo(3);
+        assertThat(plan).isInstanceOf(Plan.Commit.class);
+        assertThat(((Plan.Commit) plan).next().detail()).contains("not observed after 2 attempt(s), 3 effect(s) in total",
+                                                                  "step 1 'verify'");
+    }
 }

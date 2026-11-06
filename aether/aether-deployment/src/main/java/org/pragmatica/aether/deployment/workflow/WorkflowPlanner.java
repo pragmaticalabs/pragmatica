@@ -20,7 +20,9 @@ import org.pragmatica.lang.Unit;
 /// The order of the checks is the guarantee:
 /// 1. the POSTCONDITION first: an effect that happened (even one whose call timed out, or one a previous leader issued) is adopted,
 ///    never re-issued (INV-05), and the run is `DONE` only when the last step's postcondition is observed (INV-07);
-/// 2. the elapsed-time budget, then the step's settle window (an issued effect is given `settle` before anything is re-issued),
+/// 2. the elapsed-time budget, then the step's settle window (an issued effect is given `settle` before anything is re-issued,
+///    modulo inter-node clock skew: `now`, `issuedAt` and `deadline` are wall-clock readings that different nodes took, and f2b's
+///    clock wiring must name the clock it uses (D5)),
 ///    then the attempt and effect budgets; exhaustion ESCALATES and names the postcondition that was not observed (§4.4);
 /// 3. the PRECONDITION last: ready issues the effect, not-yet holds, impossible FAILS the run.
 public interface WorkflowPlanner<O> {
@@ -38,6 +40,8 @@ public interface WorkflowPlanner<O> {
         /// Commit `next` (the step's effect recorded as issued) by compare-and-set on the run read, and only when that commit is
         /// accepted, perform `action`. Recording the issue BEFORE the effect is what lets a new leader tell an issued effect from an
         /// unissued one, and what keeps two leaders from both issuing one attempt: only one compare-and-set on the run can win.
+        /// The accepted effect can still run on a node deposed after the reconciler's leader check, concurrently with a later
+        /// attempt once settle has elapsed: `action` must be fenced and idempotent per (run id, stepIndex) (D4, D10).
         record Issue(WorkflowRunValue next, Fn1<Promise<Unit>, WorkflowRunValue> action) implements Plan {}
 
         Hold HOLD = new Hold();

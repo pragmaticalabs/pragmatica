@@ -31,9 +31,15 @@ import org.slf4j.LoggerFactory;
 /// continues from the committed `stepIndex`, attempts, effects and deadline, so failover resets nothing (INV-06). Called from a
 /// scheduler thread, never from an FSM listener.
 ///
-/// An effect is performed only after the commit recording it as issued was accepted ([WorkflowPlanner.Plan.Issue]). An escalation
-/// is announced as [OperatorWarningCode#WORKFLOW_ESCALATED] once its commit is accepted, by the leader that committed it: at most
-/// once (a leader that dies between the accept and the raise loses the event; the committed run keeps the incident as its detail).
+/// An effect is performed only after the commit recording it as issued was accepted ([WorkflowPlanner.Plan.Issue]), and only while
+/// this node still leads at that moment. That narrows the window but does not close it: an accepted effect can still run on a node
+/// that was deposed after the check, concurrently with a later attempt once `settle` has elapsed, so executors must be fenced and
+/// idempotent per (run id, stepIndex) (D4, D10).
+///
+/// An escalation is announced as [OperatorWarningCode#WORKFLOW_ESCALATED] once its commit is accepted, by the leader that committed
+/// it: AT MOST ONCE. The event is lost when the leader dies between the accept and the raise, and also when the commit's answer
+/// arrives later than `bound` or fails after the commit was applied (the tick stops waiting, the next tick finds the run already
+/// ESCALATED and therefore inactive, and nothing re-raises it). The committed run keeps the incident as its detail in every case.
 /// A run whose kind this node does not know (a newer node admitted it) is held, never failed.
 public interface WorkflowReconciler {
     Promise<Unit> reconcile();
@@ -114,7 +120,7 @@ public interface WorkflowReconciler {
                                                                                                               ? announced(commit.next())
                                                                                                               : Promise.unitPromise());
                     case WorkflowPlanner.Plan.Issue issue -> commit(run, issue.next()).flatMap(accepted -> accepted
-                                                                                                           ? performed(issue)
+                                                                                                           ? fenced(issue)
                                                                                                            : Promise.unitPromise());
                 };
             }
@@ -127,13 +133,26 @@ public interface WorkflowReconciler {
                              .recover(_ -> false);
             }
 
+            // Design-out: the leader is re-checked immediately before the effect. A deposed leader burns the attempt it committed
+            // (the run stays WAITING with the issue recorded; the new leader decides by the postcondition and the settle window)
+            // instead of acting. Guarantee: narrows, never closes, the window in which a stale leader acts; the executor's own
+            // fencing and per-(run id, stepIndex) idempotency close it.
+            private Promise<Unit> fenced(WorkflowPlanner.Plan.Issue issue) {
+                return ledger.leads()
+                       ? performed(issue)
+                       : Promise.unitPromise();
+            }
+
             // Design-out (INV-05): an effect call that failed or went unanswered is UNCERTAIN, not failed. The run is already
             // committed as WAITING with the issue recorded, so later ticks decide by the postcondition, and the effect is issued
-            // again only after the step's settle window, against the attempt and effect budgets.
+            // again only after the step's settle window, against the attempt and effect budgets. The bound is armed on a DERIVED
+            // promise (`mapToUnit`): Promise.timeout fails the promise it is called on, so an existing mechanism that returns a
+            // shared or cached promise must not have it failed, for every subscriber, by this run's bound.
             private Promise<Unit> performed(WorkflowPlanner.Plan.Issue issue) {
                 return Result.lift(() -> issue.action()
                                               .apply(issue.next()))
                              .fold(Cause::<Unit> promise, promise -> promise)
+                             .mapToUnit()
                              .timeout(bound)
                              .recover(_ -> Unit.unit());
             }

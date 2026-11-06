@@ -16,6 +16,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowRunValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowState;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 
@@ -245,5 +246,60 @@ class WorkflowAdmissionTest {
                                                            1L)
                             .await()
                             .isSuccess()).isTrue();
+    }
+
+    @Test
+    void admit_storesTheParamsAndTheDeadlineOnTheCommittedRun() {
+        var run = admit(List.of("node:n1")).unwrap();
+
+        assertThat(run.params()).isEqualTo(Map.of("node", "n1"));
+        assertThat(cluster.run(run.id()).unwrap().params()).isEqualTo(Map.of("node", "n1"));
+        assertThat(cluster.run(run.id()).unwrap().startedAt()).isEqualTo(1_000L);
+    }
+
+    @Test
+    void admit_withTheDefaultIdFactory_givesDistinctWfPrefixedIds() {
+        var defaults = WorkflowAdmission.workflowAdmission(ledger, Map.of("pilot", PILOT));
+        var first = defaults.admit("pilot", Map.of(), List.of("node:n1"), 1L).await().unwrap();
+        var second = defaults.admit("pilot", Map.of(), List.of("node:n2"), 1L).await().unwrap();
+
+        assertThat(first.id()).startsWith("wf-");
+        assertThat(second.id()).startsWith("wf-");
+        assertThat(first.id()).isNotEqualTo(second.id());
+    }
+
+    /// The applier refused, but when the claims are read back nobody holds any key of the run (the holder released in between, or
+    /// leadership moved): the refusal names no holder and says retry.
+    @Test
+    void admit_refusedWithNoVisibleHolder_isNotAdmitted_namingTheRun() {
+        var refusing = new WorkflowLedger() {
+            @Override
+            public List<WorkflowRunValue> runs() {
+                return List.of();
+            }
+
+            @Override
+            public Option<WorkflowClaimValue> claim(String conflictKey) {
+                return Option.none();
+            }
+
+            @Override
+            public boolean leads() {
+                return true;
+            }
+
+            @Override
+            public Promise<Boolean> create(WorkflowRunValue run) {
+                return Promise.success(false);
+            }
+
+            @Override
+            public Promise<Boolean> commit(WorkflowRunValue expected, WorkflowRunValue next) {
+                return Promise.success(false);
+            }
+        };
+        var refused = refusal(admission(refusing).admit("pilot", Map.of(), List.of("node:n1"), 1L).await());
+
+        assertThat(refused).isEqualTo(new AdmissionRefusal.NotAdmitted("wf-1"));
     }
 }

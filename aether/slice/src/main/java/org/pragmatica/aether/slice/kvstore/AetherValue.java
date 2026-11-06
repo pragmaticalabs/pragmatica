@@ -3673,7 +3673,11 @@ public sealed interface AetherValue {
     /// step with an issued effect is re-checked by its postcondition and re-issued only after the step's settle window (INV-05).
     /// `detail` carries the state's argument: the awaited postcondition (`WAITING`), the reason (`PAUSED`, `FAILED`) or the incident
     /// (`ESCALATED`). `conflictKeys` are the keys claimed at admission and released with the terminal commit. Every field lives in
-    /// the committed record, so a new leader resets nothing (INV-06). `epoch` is bumped on every committed transition.
+    /// the committed record, so a new leader resets nothing (INV-06). `epoch` is bumped on every committed transition, so that a run
+    /// that returns to a field-wise identical state is still a different value for the compare-and-set (no ABA).
+    ///
+    /// `issuedAt` and `deadline` are wall-clock milliseconds read by whichever node led at the time: the settle window and the
+    /// elapsed-time budget hold modulo inter-node clock skew (D5). f2b's clock wiring must name the clock it uses.
     record WorkflowRunValue(String id,
                             String kind,
                             Map<String, String> params,

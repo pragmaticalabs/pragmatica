@@ -15,6 +15,7 @@ import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.messaging.MessageRouter;
@@ -33,6 +34,7 @@ final class WorkflowTestCluster {
 
     private final KVStore<StructuredKey, Object> store;
     private long term = 1;
+    private int raws;
 
     WorkflowTestCluster() {
         store = new KVStore<>(MessageRouter.mutable(),
@@ -61,6 +63,12 @@ final class WorkflowTestCluster {
                                              commands -> Promise.success(apply((List) commands)));
     }
 
+    /// A ledger whose submission path is `apply` (to capture commands or fake consensus answers); reads still hit the real store.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    WorkflowLedger ledger(NodeId self, Fn1<Promise<List<Object>>, List<KVCommand<AetherKey>>> apply) {
+        return WorkflowLedger.workflowLedger((KVStore<AetherKey, AetherValue>)(KVStore<?, ?>) store, self, apply);
+    }
+
     List<Object> apply(List<KVCommand<StructuredKey>> commands) {
         synchronized (store) {
             return store.process(store.createBatch(commands));
@@ -81,7 +89,7 @@ final class WorkflowTestCluster {
         var expected = run(run.id()).map(Object.class::cast);
 
         apply(List.of(new KVCommand.LeaderTransaction<StructuredKey, Object>(key,
-                                                                             "raw-" + run.epoch() + "-" + run.id(),
+                                                                             "raw-" + raws++ + "-" + run.id(),
                                                                              store.getTyped(LeaderKey.INSTANCE,
                                                                                             LeaderValue.class)
                                                                                   .unwrap(),
