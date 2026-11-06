@@ -214,6 +214,22 @@ class RequirementCombinerLifecycleTest {
         assertThat(combiner.retries()).as("and nothing re-armed a retry").isEmpty();
     }
 
+    /// q06: an orphan removal that finally writes also forgets its attempt count.
+    @Test
+    void orphanRemovalRetryThatWrites_clearsTheRetryCount() {
+        combiner.activate();
+        commit(new KVCommand.Put<>(OPERATOR, requirement(6, Option.none())));
+        commit(new KVCommand.Remove<>(TARGET_KEY, store.get(TARGET_KEY).map(Object.class::cast)));
+        failApply.set(true);
+        combiner.onSliceTargetRemove(TARGET_KEY);
+        assertThat(await(() -> combiner.retries().containsKey(BASE))).as("the failed removal is counted for a retry").isTrue();
+
+        failApply.set(false);
+
+        assertThat(await(() -> store.get(OPERATOR).isEmpty())).as("the retry removed the orphan requirement").isTrue();
+        assertThat(await(() -> combiner.retries().isEmpty())).as("the written removal cleared its retry count").isTrue();
+    }
+
     /// q02: deactivation forgets the pending retry counts.
     @Test
     void deactivate_forgetsPendingRetries() {
