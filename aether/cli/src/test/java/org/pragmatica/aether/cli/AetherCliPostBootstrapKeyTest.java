@@ -16,7 +16,6 @@ import java.util.concurrent.TimeUnit;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -73,6 +72,11 @@ class AetherCliPostBootstrapKeyTest {
     }
 
     private void runCli(String... args) throws IOException, InterruptedException {
+        runCliWithContextEnv(null, args);
+    }
+
+    /// `contextEnvKey` non-null exports `AETHER_FRESH_API_KEY` into the child (an operator who set it by hand).
+    private void runCliWithContextEnv(String contextEnvKey, String... args) throws IOException, InterruptedException {
         var command = new ArrayList<String>();
 
         command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
@@ -86,6 +90,9 @@ class AetherCliPostBootstrapKeyTest {
 
         builder.environment().remove("AETHER_API_KEY");
         builder.environment().remove("AETHER_FRESH_API_KEY");
+        if (contextEnvKey != null) {
+            builder.environment().put("AETHER_FRESH_API_KEY", contextEnvKey);
+        }
         var process = builder.redirectInput(ProcessBuilder.Redirect.from(new java.io.File("/dev/null"))).start();
 
         if (!process.waitFor(60, TimeUnit.SECONDS)) {
@@ -94,7 +101,6 @@ class AetherCliPostBootstrapKeyTest {
         }
     }
 
-    @Disabled("#2133 still present at 869dcab4637f: a plain command reads only the env var the registry names, never the saved api-key file. Enable when fixed and delete the tripwires below.")
     @Test
     void status_afterBootstrap_freshShell_dialsTheActiveClusterWithItsSavedKey() throws Exception {
         runCli("status");
@@ -104,7 +110,6 @@ class AetherCliPostBootstrapKeyTest {
                   .endsWith("key=" + BOOTSTRAP_KEY);
     }
 
-    @Disabled("#2133 still present at 869dcab4637f: see status_afterBootstrap_freshShell_dialsTheActiveClusterWithItsSavedKey. Enable when fixed.")
     @Test
     void clusterTopology_afterBootstrap_freshShell_dialsTheActiveClusterWithItsSavedKey() throws Exception {
         runCli("cluster", "topology");
@@ -114,23 +119,13 @@ class AetherCliPostBootstrapKeyTest {
                   .endsWith("key=" + BOOTSTRAP_KEY);
     }
 
-    /// TRIPWIRE for #2133: asserts what happens TODAY (no key sent: the 401 of the ticket). When it goes red the bug is
-    /// fixed: enable the two `@Disabled` tests above and delete both tripwires.
+    /// The saved file outranks an exported `api_key_env`: `cluster rotate-key` rewrites the file, so after a
+    /// rotation an env var exported earlier holds the revoked key (`ClusterTargetMixin.apiKeyOf`).
     @Test
-    void tripwire_status_afterBootstrap_freshShell_sendsNoKeyToday() throws Exception {
-        runCli("status");
+    void status_savedKeyAndExportedEnvVarDisagree_theSavedKeyTravels() throws Exception {
+        runCliWithContextEnv("stale-exported-key", "status");
 
-        assertThat(requests).isNotEmpty();
-        assertThat(requests.getFirst()).as("#2133 fixed? enable status_afterBootstrap_freshShell_dialsTheActiveClusterWithItsSavedKey")
-                  .endsWith("key=null");
-    }
-
-    @Test
-    void tripwire_clusterTopology_afterBootstrap_freshShell_sendsNoKeyToday() throws Exception {
-        runCli("cluster", "topology");
-
-        assertThat(requests).isNotEmpty();
-        assertThat(requests.getFirst()).as("#2133 fixed? enable clusterTopology_afterBootstrap_freshShell_dialsTheActiveClusterWithItsSavedKey")
-                  .endsWith("key=null");
+        assertThat(requests).as("the active context is dialled").isNotEmpty();
+        assertThat(requests.getFirst()).endsWith("key=" + BOOTSTRAP_KEY);
     }
 }

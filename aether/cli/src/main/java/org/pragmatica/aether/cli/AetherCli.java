@@ -29,6 +29,7 @@ import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 
 import org.pragmatica.aether.cli.cluster.ClusterRegistry;
+import org.pragmatica.aether.cli.cluster.ClusterTargetMixin;
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.BuildInfo;
 import org.pragmatica.aether.config.ConfigLoader;
@@ -674,8 +675,7 @@ public class AetherCli implements Runnable {
 
     private Option<String> contextApiKey() {
         return endpointFromContext
-               ? activeContext().flatMap(ClusterRegistry.ClusterEntry::apiKeyEnv)
-                              .flatMap(envName -> option(System.getenv(envName)))
+               ? activeContext().flatMap(ClusterTargetMixin::apiKeyOf)
                : Option.empty();
     }
 
