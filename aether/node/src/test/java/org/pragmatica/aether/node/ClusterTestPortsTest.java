@@ -260,12 +260,15 @@ class ClusterTestPortsTest {
         }
     }
 
-    /// A window port free right now on cluster UDP, cluster TCP and SWIM UDP, NOT claimed: a test occupies it.
+    /// A window port free right now on cluster UDP, cluster TCP and SWIM UDP and NOT held by this JVM: a test occupies
+    /// it. A port this JVM already holds would be refused for that reason, and the released-port control would then fail
+    /// (seen on cloudbb-d1 in the full suite, where earlier tests had issued hundreds of ports).
     private static int occupiableClusterCandidate() {
         for (int attempt = 0; attempt < 200; attempt++) {
             var port = ClusterTestPorts.windowCandidate();
 
-            if (ClusterTestPorts.WINDOW.contains(port + SWIM) && ClusterTestPorts.isFreeClusterPort(port)) {
+            if (ClusterTestPorts.WINDOW.contains(port + SWIM) && !ClusterTestPorts.heldHere(port)
+                && !ClusterTestPorts.heldHere(port + SWIM) && ClusterTestPorts.isFreeClusterPort(port)) {
                 return port;
             }
         }

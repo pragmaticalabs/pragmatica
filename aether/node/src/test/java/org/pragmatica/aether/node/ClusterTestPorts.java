@@ -222,6 +222,11 @@ public final class ClusterTestPorts {
         return ThreadLocalRandom.current().nextInt(WINDOW.first(), WINDOW.last() + 1);
     }
 
+    /// True when this JVM already holds the lock on `port` (issued, or part of an issued cluster port).
+    static boolean heldHere(int port) {
+        return HELD.containsKey(port);
+    }
+
     /// Locks every port in `ports`, then probes them; on any refusal, releases what this call locked.
     private static synchronized boolean claimAll(int first, int... rest) {
         var ports = new int[rest.length + 1];
