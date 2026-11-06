@@ -12,7 +12,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 
 class SystemStreamsTest {
-
     /// Enumerated-set pin, not a structural/reflective scan: [SystemStreams#ALL] is a hand-maintained
     /// catalog (its own doc comment says as much — "adding a new system stream ... must also list it
     /// here"), and [SystemStreamBootstrap] registers exactly what it iterates. This test hardcodes the
@@ -24,11 +23,18 @@ class SystemStreamsTest {
     /// described a third creation path was deleted in #734).
     @Test
     void all_engineKeys_matchExpectedEnumeratedSet() {
-        var actual = SystemStreams.ALL.stream()
-                                      .map(address -> address.name().value())
-                                      .collect(Collectors.toSet());
+        var actual = SystemStreams.ALL.stream().map(address -> address.name()
+                                                                      .value()).collect(Collectors.toSet());
 
-        assertThat(actual).isEqualTo(Set.of("cluster-events"));
+        assertThat(actual).isEqualTo(Set.of("cluster-events", "capacity-minute", "capacity-hour"));
+    }
+
+    /// The write gate covers the capacity streams: blueprints cannot write them (the owner's append path
+    /// refuses any `system:` stream, and the management gate refuses these engine keys).
+    @Test
+    void isForbiddenEngineKey_capacityStreams_isTrue() {
+        assertThat(SystemStreams.isForbiddenEngineKey("system:capacity-minute:1.0.0")).isTrue();
+        assertThat(SystemStreams.isForbiddenEngineKey("system:capacity-hour:1.0.0")).isTrue();
     }
 
     @Test
@@ -58,5 +64,30 @@ class SystemStreamsTest {
     @Test
     void isForbiddenEngineKey_emptyString_isFalse() {
         assertThat(SystemStreams.isForbiddenEngineKey("")).isFalse();
+    }
+
+    /// Rc6 f3a: the retention numbers are a declared guess, so the record count and byte caps are pinned as well
+    /// as the age; an off-by-one in a cap silently shortens the window under mode ANY.
+    @Test
+    void retentionFor_capacityMinute_pinsCountBytesAndAge() {
+        var policy = SystemStreams.retentionFor(SystemStreams.CAPACITY_MINUTE).unwrap();
+
+        assertThat(policy.maxCount()).isEqualTo(10_000_000L);
+        assertThat(policy.maxBytes()).isEqualTo(2L * 1024 * 1024 * 1024);
+        assertThat(policy.maxAgeMs()).isEqualTo(35L * 24 * 60 * 60 * 1000);
+    }
+
+    @Test
+    void retentionFor_capacityHour_pinsCountBytesAndAge() {
+        var policy = SystemStreams.retentionFor(SystemStreams.CAPACITY_HOUR).unwrap();
+
+        assertThat(policy.maxCount()).isEqualTo(5_000_000L);
+        assertThat(policy.maxBytes()).isEqualTo(1024L * 1024 * 1024);
+        assertThat(policy.maxAgeMs()).isEqualTo(1095L * 24 * 60 * 60 * 1000);
+    }
+
+    @Test
+    void retentionFor_clusterEvents_keepsTheBootstrapDefault() {
+        assertThat(SystemStreams.retentionFor(SystemStreams.CLUSTER_EVENTS).isEmpty()).isTrue();
     }
 }

@@ -48,6 +48,8 @@ import org.pragmatica.aether.http.security.SecurityError;
 import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.invoke.InvocationContext;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
+import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.Origin;
+import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.Settlement;
 import org.pragmatica.aether.metrics.observability.HttpRequestObserver;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
@@ -1706,6 +1708,7 @@ class AppHttpServerAdapter implements AppHttpServer {
         var routeInfo = resolveRouteInfo(routeKey.httpMethod(), routeKey.pathPrefix());
         var startTime = System.nanoTime();
 
+        routeInfo.onPresent(this::recordArrival);
         routeInfo.onPresent(info -> recordMetricsStart(info));
         invocationAdmission.execute(() -> router.handle(httpCtx),
                                     result -> emitLocalResult(result,
@@ -2079,6 +2082,7 @@ class AppHttpServerAdapter implements AppHttpServer {
         var routeInfo = resolveRouteInfo(method, normalizedPath);
         var startTime = System.nanoTime();
 
+        routeInfo.onPresent(this::recordArrival);
         routeInfo.onPresent(this::recordMetricsStart);
         invocationAdmission.execute(() -> router.handle(httpCtx),
                                     result -> emitForwardResult(result,
@@ -2439,9 +2443,35 @@ class AppHttpServerAdapter implements AppHttpServer {
         metricsCollector.onPresent(mc -> mc.recordStart(route.artifact(), route.method()));
     }
 
+    /// Rc6 f3a: the EXTERNAL arrival, counted when the route resolves and before the node's admission gate or any
+    /// route rate limit runs. Requests refused earlier (authentication, no route, upload caps) have no resolved
+    /// route and are not counted per artifact.
+    private void recordArrival(ResolvedRoute route) {
+        metricsCollector.onPresent(mc -> mc.recordArrival(route.artifact(),
+                                                          route.method().name(),
+                                                          Origin.EXTERNAL));
+    }
+
+    private void recordSettled(ResolvedRoute route, Settlement settlement) {
+        metricsCollector.onPresent(mc -> mc.recordSettled(route.artifact(),
+                                                          route.method().name(),
+                                                          Origin.EXTERNAL,
+                                                          settlement));
+    }
+
+    /// Admission refusal and the route rate limit are REJECTED; any other failure is FAILED.
+    private static Settlement settlementOf(Cause cause) {
+        return switch (cause) {
+            case org.pragmatica.aether.invoke.InvocationAdmission.Error _ -> Settlement.REJECTED;
+            case RateGuardError.LimitExceeded _ -> Settlement.REJECTED;
+            default -> Settlement.FAILED;
+        };
+    }
+
     private void recordMetricsSuccess(ResolvedRoute route, long startTime, int requestBytes, int responseBytes) {
         var durationNs = System.nanoTime() - startTime;
 
+        recordSettled(route, Settlement.COMPLETED);
         metricsCollector.onPresent(mc -> recordSuccessMetrics(mc, route, durationNs, requestBytes, responseBytes));
     }
 
@@ -2458,6 +2488,7 @@ class AppHttpServerAdapter implements AppHttpServer {
         var durationNs = System.nanoTime() - startTime;
         var errorType = cause.getClass().getSimpleName();
 
+        recordSettled(route, settlementOf(cause));
         metricsCollector.onPresent(mc -> recordFailureMetrics(mc, route, durationNs, requestBytes, errorType));
     }
 

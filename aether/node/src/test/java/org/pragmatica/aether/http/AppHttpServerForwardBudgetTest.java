@@ -28,7 +28,10 @@ import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpRequestHandler;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
+import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
+import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.Origin;
 import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
+import org.pragmatica.aether.worker.metrics.ArrivalCounts;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.blueprint.SecurityOverrides;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
@@ -73,6 +76,10 @@ class AppHttpServerForwardBudgetTest {
     }
 
     private AppHttpServer server(Deserializer deserializer) {
+        return server(deserializer, Option.none());
+    }
+
+    private AppHttpServer server(Deserializer deserializer, Option<InvocationMetricsCollector> collector) {
         return AppHttpServer.appHttpServer(AppHttpConfig.insecureAppHttpConfig(TEST_PORT),
                                              ForwardingTimeouts.forwardingTimeouts(),
                                              SELF_NODE,
@@ -82,7 +89,7 @@ class AppHttpServerForwardBudgetTest {
                                              Option.some(new StubSerializer()),
                                              Option.some(deserializer),
                                              Option.none(),
-                                             Option.none(),
+                                             collector,
                                              Option.none(),
                                              Option.none(),
                                              Option.<org.pragmatica.aether.update.DeploymentManager>none());
@@ -204,6 +211,31 @@ class AppHttpServerForwardBudgetTest {
         assertThat(((HttpForwardResponse) network.sentMessages().getFirst()).success()).isFalse();
         org.awaitility.Awaitility.await().untilAsserted(() -> assertThat(tracker.count()).isZero());
         assertThat(network.sentMessages()).hasSize(1);
+    }
+
+    /// Rc6 f3a: a forwarded request is counted EXTERNAL once, at the node that serves it.
+    @Test
+    void forwardedArrival_served_isCountedExternalAtTheServingNode() {
+        var collector = InvocationMetricsCollector.invocationMetricsCollector();
+
+        server(new StubDeserializer(context("/local/thing")), Option.some(collector))
+            .onHttpForwardRequest(forwardRequest("corr-counted", Deadline.NO_BUDGET));
+
+        assertThat(collector.arrivalCounts(TEST_ARTIFACT, "create", Origin.EXTERNAL)).isEqualTo(new ArrivalCounts(1, 1, 0, 1, 0));
+        assertThat(collector.arrivalCounts(TEST_ARTIFACT, "create", Origin.INTERNAL)).isEqualTo(ArrivalCounts.ZERO);
+    }
+
+    @Test
+    void forwardedArrival_refusedByAdmission_isArrivalAndRejected() {
+        var collector = InvocationMetricsCollector.invocationMetricsCollector();
+        var tracker = org.pragmatica.aether.deployment.drain.InFlightRequestTracker.inFlightRequestTracker();
+        var counted = server(new StubDeserializer(context("/local/thing")), Option.some(collector));
+
+        counted.setInvocationAdmission(tracker);
+        tracker.setAcceptingNewWork(false);
+        counted.onHttpForwardRequest(forwardRequest("corr-drained", Deadline.NO_BUDGET));
+
+        assertThat(collector.arrivalCounts(TEST_ARTIFACT, "create", Origin.EXTERNAL)).isEqualTo(new ArrivalCounts(1, 0, 1, 0, 0));
     }
 
     private static HttpForwardRequest forwardRequest(String correlationId, long remainingMillis) {
