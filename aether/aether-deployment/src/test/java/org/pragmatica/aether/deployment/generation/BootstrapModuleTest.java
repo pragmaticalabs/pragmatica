@@ -280,37 +280,85 @@ class BootstrapModuleTest {
         }
     }
 
-    /// #2654: before the life's cluster incarnation commits (the mirror reads `Epoch.NO_INCARNATION`), a core ownership
-    /// epoch minted then would rank below every epoch a restored life committed. The module plans no core partition,
-    /// spends no bootstrap attempt, and mints at the committed incarnation once the commit re-drives it.
+    /// #2654 as amended for the core DHT site (know 0cced4f7d6): before the life's cluster incarnation commits (the mirror
+    /// reads `Epoch.NO_INCARNATION`, e.g. while a #1533 restore is blocked) the core partition is still owned, through a
+    /// PROVISIONAL record minted at incarnation 0 that does not complete the bootstrap. The incarnation commit re-drives the
+    /// module, which rewrites it at ownershipTerm + 1 under the committed incarnation. A record committed under an
+    /// incarnation is never taken over at incarnation 0.
     @Nested
     class MintBeforeIncarnationCommit {
         @Test
-        void onLeaderGained_incarnationNone_mintsNoCorePartition() {
+        void onLeaderGained_incarnationNone_mintsAProvisionalCoreRecord() {
             var fixture = newFixture(/* initialCoreSize */ 1);
             fixture.incarnation.set(Epoch.NO_INCARNATION);
 
             fixture.module.onLeaderGained();
 
-            assertThat(collectPuts(fixture.cluster.batches)).noneMatch(p -> p.key() instanceof DhtPartitionOwnershipKey);
+            var provisional = coreOwnershipPut(fixture.cluster.batches);
+            assertThat(provisional.ownerNodeId()).isEqualTo(SELF);
+            assertThat(provisional.ownerEpoch())
+                .as("the core partition is owned while the incarnation is uncommitted, at incarnation 0")
+                .isEqualTo(Epoch.epoch(Epoch.NO_INCARNATION, FIXTURE_RABIA_TERM, 1L));
+            assertThat(provisional.ownershipTerm()).isEqualTo(1L);
         }
 
         @Test
-        void retryIfNeeded_afterTheIncarnationCommits_mintsAtTheCommittedIncarnation() {
+        void incarnationCommit_rewritesTheProvisionalRecord_atTheNextTerm_underTheCommittedIncarnation() {
             var fixture = newFixture(/* initialCoreSize */ 1);
             fixture.incarnation.set(Epoch.NO_INCARNATION);
             fixture.module.onLeaderGained();
-            // More refused passes than the attempt budget: a refusal must not spend an attempt.
+            var provisional = coreOwnershipPut(fixture.cluster.batches);
+            fixture.kv.put(DhtPartitionOwnershipKey.dhtPartitionOwnershipKey(BootstrapModule.CORE_PARTITION_ID), provisional);
+            // More passes than the attempt budget while still uncommitted: the held provisional record is not rewritten,
+            // and the budget is left for the commit's rewrite.
             for (var pass = 0; pass < BootstrapModule.BOOTSTRAP_MAX_ATTEMPTS; pass++) {
                 fixture.module.retryIfNeeded();
             }
+            assertThat(corePartitionPutCount(fixture.cluster.batches)).as("no rewrite before the commit").isEqualTo(1L);
 
             fixture.incarnation.set(FIXTURE_INCARNATION);
             fixture.module.retryIfNeeded();
 
-            assertThat(coreOwnershipPut(fixture.cluster.batches).ownerEpoch())
-                .as("the core ownership epoch minted once the incarnation commit re-drives the module")
-                .isEqualTo(Epoch.epoch(FIXTURE_INCARNATION, FIXTURE_RABIA_TERM, 1L));
+            var rewritten = lastCoreOwnershipPut(fixture.cluster.batches);
+            assertThat(rewritten.ownerNodeId()).as("the live provisional owner keeps the partition").isEqualTo(SELF);
+            assertThat(rewritten.ownershipTerm()).isEqualTo(2L);
+            assertThat(rewritten.ownerEpoch())
+                .as("the provisional bootstrap was not complete: the commit's re-drive supersedes it under the committed incarnation")
+                .isEqualTo(Epoch.epoch(FIXTURE_INCARNATION, FIXTURE_RABIA_TERM, 2L));
+            assertThat(rewritten.ownerEpoch().isStrictlyAfter(provisional.ownerEpoch())).isTrue();
+        }
+
+        @Test
+        void incarnationNone_neverTakesOverARecordCommittedUnderAnIncarnation() {
+            var deposed = new NodeId("node-deposed");
+            var committed = DhtPartitionOwnershipValue.dhtPartitionOwnershipValue(deposed,
+                                                                                  BootstrapModule.CORE_COMMUNITY_ID,
+                                                                                  Epoch.epoch(FIXTURE_INCARNATION, FIXTURE_RABIA_TERM, 1L),
+                                                                                  1L,
+                                                                                  HlcTimestamp.ZERO);
+            var fixture = newFixture(/* initialCoreSize */ 1);
+            fixture.kv.put(DhtPartitionOwnershipKey.dhtPartitionOwnershipKey(BootstrapModule.CORE_PARTITION_ID), committed);
+            fixture.incarnation.set(Epoch.NO_INCARNATION);
+
+            fixture.module.onLeaderGained();
+
+            assertThat(collectPuts(fixture.cluster.batches))
+                .as("a takeover at incarnation 0 would rank below the committed record: it waits for the commit")
+                .noneMatch(p -> p.key() instanceof DhtPartitionOwnershipKey);
+        }
+
+        private static long corePartitionPutCount(List<List<KVCommand<AetherKey>>> batches) {
+            return collectPuts(batches).stream()
+                                       .filter(p -> p.key() instanceof DhtPartitionOwnershipKey)
+                                       .count();
+        }
+
+        private static DhtPartitionOwnershipValue lastCoreOwnershipPut(List<List<KVCommand<AetherKey>>> batches) {
+            return collectPuts(batches).stream()
+                                       .filter(p -> p.key() instanceof DhtPartitionOwnershipKey)
+                                       .map(p -> (DhtPartitionOwnershipValue) p.value())
+                                       .reduce((first, second) -> second)
+                                       .orElseThrow(() -> new AssertionError("expected a core DhtPartitionOwnership Put"));
         }
     }
 
