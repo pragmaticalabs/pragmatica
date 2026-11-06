@@ -209,11 +209,11 @@ class DeploymentFsmKvRecordsCodecTest {
                                       OTHER_NODE,
                                       new UnresponsiveEntry(OTHER_GENERATION, SliceGoal.LOADED, 1_760_000_666_000L));
 
-            var judgment = new ArtifactJudgmentValue(true, Map.of(NODE, 4, OTHER_NODE, 2), unresponsive);
+            var judgment = new ArtifactJudgmentValue(true, Map.of(NODE, 4, OTHER_NODE, 2), unresponsive, Set.of());
 
             assertThat(judgment.unresponsive()).as("the constructor keeps what it is given").isEqualTo(unresponsive);
             roundTrip(key, judgment);
-            roundTrip(key, new ArtifactJudgmentValue(false, Map.of(), Map.of()));
+            roundTrip(key, new ArtifactJudgmentValue(false, Map.of(), Map.of(), Set.of()));
         }
 
         /// CF-8 (#2759): the judged attempts are part of the encoded shape, so a rebuilt leader scopes the ALL_OR_NOTHING
@@ -380,7 +380,7 @@ class DeploymentFsmKvRecordsCodecTest {
 
             source.put(NODE, new UnresponsiveEntry(GENERATION, SliceGoal.ACTIVE, 1L));
 
-            var value = new ArtifactJudgmentValue(false, Map.of(), source);
+            var value = new ArtifactJudgmentValue(false, Map.of(), source, Set.of());
 
             source.put(OTHER_NODE, new UnresponsiveEntry(OTHER_GENERATION, SliceGoal.LOADED, 2L));
 

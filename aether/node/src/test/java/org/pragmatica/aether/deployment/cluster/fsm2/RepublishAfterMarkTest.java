@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 import static org.pragmatica.aether.deployment.cluster.fsm2.LcSupport.*;
+import static org.pragmatica.aether.deployment.cluster.fsm2.SlFixtures.goalOf;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
@@ -117,8 +118,6 @@ class RepublishAfterMarkTest {
         h.drain();
         h.activate();
         h.advance(h.settings.timing().tick() * 3);
-        assertThat(judgment(h).map(ArtifactJudgmentValue::judgedAttempts)).as("control: the stale mark is still committed")
-                  .isEqualTo(Option.some(Set.of("attempt-1")));
         assertThat(h.submits(SubmitKind.ROLLBACK)).as("new leader: fresh attempt not rolled back by a stale mark")
                   .isEmpty();
     }
@@ -209,6 +208,89 @@ class RepublishAfterMarkTest {
                                       new ArtifactJudgmentValue(false, Map.of(CORE_1, 1), Map.of(), Set.of("attempt-1")));
 
         assertThat(h.submits(SubmitKind.ROLLBACK)).as("no permanent mark, no rollback").isEmpty();
+    }
+
+    private static boolean placed(FsmHarness h) {
+        return Set.of(CORE_1, CORE_2, CORE_3)
+                  .stream()
+                  .anyMatch(node -> goalOf(h, node, ORDERS).equals(Option.some(SliceGoal.LOADED)));
+    }
+
+    /// The republish batch (the one that removes the mark) is lost with the term; the next leader rebuilds with the stale mark committed.
+    private static FsmHarness lostBatchBeforeNewLeader(FsmHarness.SettlePolicy afterRebuild) {
+        var h = succeededThenMarked();
+
+        h.policy = FsmHarness.SettlePolicy.LOSE;
+        publish(h, AGAIN, Option.some(FIRST));
+        h.deliver(new ClusterInput.Deactivate());
+        h.commitLeader(FsmHarness.SELF, 3L);
+        h.drain();
+        h.policy = afterRebuild;
+        h.activate();
+
+        return h;
+    }
+
+    // Red when: the leader never removes a mark that did not judge the open attempt (V2771b: the attempt stays IN_PROGRESS, never placed).
+    @Test
+    void lostBatchNewLeader_staleMark_removedAndLaterAttemptPlaced() {
+        var h = lostBatchBeforeNewLeader(FsmHarness.SettlePolicy.APPLY);
+
+        h.advanceBySeconds(120);
+        assertThat(judgment(h)).as("the stale mark is superseded by the open attempt it did not judge")
+                  .isEqualTo(Option.none());
+        assertThat(placed(h)).as("the later attempt is placed within the normal bound").isTrue();
+        assertThat(h.submits(SubmitKind.ROLLBACK)).as("the later attempt is not rolled back by the stale mark")
+                  .isEmpty();
+    }
+
+    // Red when: the removal is not retried after it is lost (the first removal is lost; a tick derives it again).
+    @Test
+    void lostBatchNewLeader_staleMarkRemovalLost_removedByALaterTick() {
+        var h = lostBatchBeforeNewLeader(FsmHarness.SettlePolicy.LOSE);
+
+        h.advance(h.settings.timing().tick() * 2);
+        assertThat(h.submits(SubmitKind.STALE_MARK)).as("control: the removal was sent").isNotEmpty();
+        assertThat(judgment(h).map(ArtifactJudgmentValue::permanentFailure)).as("control: lost, the mark stands")
+                  .isEqualTo(Option.some(true));
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        h.advanceBySeconds(120);
+        assertThat(judgment(h)).as("a later tick removed it").isEqualTo(Option.none());
+    }
+
+    // Red when: every mark is removed (the attempt comparison is dropped), or a mark judging the open attempt no longer rolls it back.
+    @Test
+    void allOrNothing_markJudgingTheOpenAttempt_isNotRemovedAndRollsBack() {
+        var h = openApplyWithJudgment(active(),
+                                      new ArtifactJudgmentValue(true, Map.of(), Map.of(), Set.of("attempt-1")));
+
+        h.advanceBySeconds(60);
+        assertThat(h.submits(SubmitKind.STALE_MARK)).as("no removal of a mark that judged the open attempt").isEmpty();
+        assertThat(h.submits(SubmitKind.ROLLBACK)).as("the rollback still happens").isNotEmpty();
+    }
+
+    // Red when: the removal is not exact-value guarded: a newer mark committed while the removal is in flight is removed with it.
+    @Test
+    void staleMarkRemoval_racingANewerMark_leavesTheNewerMark() {
+        var h = lostBatchBeforeNewLeader(FsmHarness.SettlePolicy.HOLD);
+        var newer = new ArtifactJudgmentValue(true, Map.of(), Map.of(), Set.of("attempt-1", "attempt-2"));
+
+        h.advance(h.settings.timing().tick() * 2);
+        var removal = h.submits(SubmitKind.STALE_MARK);
+
+        assertThat(removal).as("control: the removal of the stale mark is in flight").isNotEmpty();
+        h.seed(new ArtifactJudgmentKey(ORDERS), newer);
+        h.drain();
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        removal.stream()
+               .filter(submit -> h.held.containsKey(submit.correlationId()))
+               .toList()
+               .forEach(submit -> settleHeld(h, submit));
+        assertThat(judgment(h)).as("the removal of the older mark was refused: the newer mark stands")
+                  .isEqualTo(Option.some(newer));
+        h.advance(h.settings.timing().tick() * 3);
+        assertThat(h.submits(SubmitKind.ROLLBACK)).as("the newer mark judges the open attempt: it rolls it back")
+                  .isNotEmpty();
     }
 
     private static FsmHarness settleHeld(FsmHarness h, ClusterEffect.Submit submit) {

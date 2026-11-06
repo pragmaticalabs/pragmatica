@@ -81,7 +81,7 @@ class SlObservedTest {
             seedTarget(h, ORDERS, 1, 1);
             seedJudgment(h,
                          ORDERS,
-                         new ArtifactJudgmentValue(true, Map.of(), Map.of()));
+                         new ArtifactJudgmentValue(true, Map.of(), Map.of(), Set.of()));
             seedGoal(h, CORE_1, ORDERS, SliceGoal.ACTIVE, G1);
             seedRow(h, CORE_1, ORDERS, SliceObservedState.ACTIVE, G1, 0L);
             h.activate();

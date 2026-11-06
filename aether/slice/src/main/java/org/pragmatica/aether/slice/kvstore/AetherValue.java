@@ -4357,13 +4357,6 @@ public sealed interface AetherValue {
             unresponsive = Map.copyOf(unresponsive);
             judgedAttempts = Collections.unmodifiableSortedSet(new TreeSet<>(judgedAttempts));
         }
-
-        /// A judgment that names no judged attempt: its permanent mark rolls back no apply.
-        public ArtifactJudgmentValue(boolean permanentFailure,
-                                     Map<NodeId, Integer> retries,
-                                     Map<NodeId, UnresponsiveEntry> unresponsive) {
-            this(permanentFailure, retries, unresponsive, Set.of());
-        }
     }
 
     /// Whether a node id is recorded as departed or as admitted (spec R-4.3.0).

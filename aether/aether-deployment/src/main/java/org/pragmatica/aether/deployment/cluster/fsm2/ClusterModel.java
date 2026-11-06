@@ -485,6 +485,7 @@ public final class ClusterModel {
         OUTCOME,
         ORPHAN,
         ORPHAN_TARGET,
+        STALE_MARK,
         DIVERGENCE
     }
 

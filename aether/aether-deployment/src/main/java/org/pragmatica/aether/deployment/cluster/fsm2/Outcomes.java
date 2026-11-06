@@ -93,7 +93,7 @@ public sealed interface Outcomes {
                                                      ctx,
                                                      entry.getKey()));
 
-        return rollbackMarked(m, ctx);
+        return supersededMarks(rollbackMarked(m, ctx));
     }
 
     /// CF-8 (G2 P2 `newLeader_rollbackIntent_rollbackCompleted`): under ALL_OR_NOTHING the decision to roll back is the durable permanent-failure
@@ -134,13 +134,60 @@ public sealed interface Outcomes {
 
     /// The declared artifacts of `id` whose permanent mark judged `attempt`.
     private static Stream<Artifact> markedArtifacts(ClusterModel m, BlueprintId id, String attempt) {
+        return declaredArtifacts(m, id).filter(artifact -> judgedAttempt(m, artifact, attempt));
+    }
+
+    private static Stream<Artifact> declaredArtifacts(ClusterModel m, BlueprintId id) {
         return m.blueprints.get(id)
                            .stream()
                            .flatMap(value -> value.blueprint()
                                                   .loadOrder()
                                                   .stream())
-                           .map(slice -> slice.artifact())
-                           .filter(artifact -> judgedAttempt(m, artifact, attempt));
+                           .map(slice -> slice.artifact());
+    }
+
+    /// CF-8 (V2771b): a permanent mark is superseded once an open apply of the current attempt declares the artifact and the mark did not
+    /// judge that attempt. The publish batch that removes the mark of a republish can be lost across a term change; the mark then
+    /// blocks placement of the new attempt for good while rolling nothing back. The leader removes it here, on every tick, at the
+    /// observed judgment value, so a newer mark committed meanwhile is never removed. In flight the removal is not sent again; a
+    /// refused or lost one is derived again by the next tick (`Outbox.rederive`).
+    private static ClusterModel supersededMarks(ClusterModel m) {
+        m.applies.entries()
+                 .stream()
+                 .sorted(Comparator.comparing(entry -> entry.getKey()
+                                                            .asString()))
+                 .filter(entry -> Blueprints.isOpen(m,
+                                                    entry.getKey(),
+                                                    entry.getValue()))
+                 .filter(entry -> attemptOf(m,
+                                            entry.getKey()).equals(entry.getValue().attemptId()))
+                 .forEach(entry -> removeSuperseded(m,
+                                                    entry.getKey(),
+                                                    entry.getValue().attemptId()));
+
+        return m;
+    }
+
+    private static ClusterModel removeSuperseded(ClusterModel m, BlueprintId id, String attempt) {
+        declaredArtifacts(m, id).filter(artifact -> supersededMark(m, artifact, attempt))
+                         .flatMap(artifact -> Blueprints.judgmentRemoval(m, artifact).stream())
+                         .filter(mutation -> !inFlight(m,
+                                                       SubmitKind.STALE_MARK,
+                                                       mutation.key()))
+                         .forEach(mutation -> Outbox.direct(m,
+                                                            TxDraft.draft(SubmitKind.STALE_MARK,
+                                                                          mutation.key(),
+                                                                          List.of(mutation))));
+
+        return m;
+    }
+
+    private static boolean supersededMark(ClusterModel m, Artifact artifact, String attempt) {
+        return m.judgments.get(artifact)
+                          .filter(ArtifactJudgmentValue::permanentFailure)
+                          .map(judgment -> !judgment.judgedAttempts()
+                                                    .contains(attempt))
+                          .or(false);
     }
 
     private static boolean judgedAttempt(ClusterModel m, Artifact artifact, String attempt) {
@@ -220,16 +267,19 @@ public sealed interface Outcomes {
     }
 
     private static boolean succeededInFlight(ClusterModel m, BlueprintId id) {
-        var key = new DeploymentOutcomeKey(id);
+        return inFlight(m, SubmitKind.SUCCEEDED, new DeploymentOutcomeKey(id));
+    }
 
+    /// Whether a draft of `kind` on `key` is submitted and unsettled, or waits in the outbox.
+    private static boolean inFlight(ClusterModel m, SubmitKind kind, AetherKey key) {
         return m.submitted.values()
                           .stream()
                           .flatMap(submitted -> submitted.drafts()
                                                          .stream())
-                          .anyMatch(draft -> draft.kind() == SubmitKind.SUCCEEDED && draft.key()
-                                                                                          .equals(key)) || m.outbox.stream()
-                                                                                                                   .anyMatch(draft -> draft.kind() == SubmitKind.SUCCEEDED && draft.key()
-                                                                                                                                                                                   .equals(key));
+                          .anyMatch(draft -> draft.kind() == kind && draft.key()
+                                                                          .equals(key)) || m.outbox.stream()
+                                                                                                   .anyMatch(draft -> draft.kind() == kind && draft.key()
+                                                                                                                                                   .equals(key));
     }
 
     /// "n of m" (R-2.1): the verdict states the coverage and never implies every instance is ACTIVE.

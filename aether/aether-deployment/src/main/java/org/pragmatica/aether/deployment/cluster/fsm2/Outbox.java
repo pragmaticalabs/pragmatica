@@ -684,6 +684,8 @@ public sealed interface Outbox {
             case TARGETS -> m;
             // CF-8: an orphan-target removal is derived again by the reconcile scan two ticks later (`Orphans.runTargets`).
             case ORPHAN_TARGET -> m;
+            // CF-8 (V2771b): a refused stale-mark removal is derived again by the next tick's sweep (`Outcomes.sweep`), from the mirror's current judgment.
+            case STALE_MARK -> m;
             default -> rederiveByPair(m, ctx, draft);
         };
     }
