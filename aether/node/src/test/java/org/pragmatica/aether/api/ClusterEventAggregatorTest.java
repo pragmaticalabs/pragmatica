@@ -2802,6 +2802,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.PROVISION_ADMISSION_DEFERRED,
                 OperatorWarningCode.CORE_CAPACITY_AWAITING_DURABLE,
                 OperatorWarningCode.CORE_REPLACEMENT_SOURCE_UNRESOLVED,
+                OperatorWarningCode.WORKFLOW_ESCALATED,
                 OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
                 OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE,
                 OperatorWarningCode.STREAM_OWNER_LINEAGE_REFUSED,
