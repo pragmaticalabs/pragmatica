@@ -915,6 +915,13 @@ public final class EmberCluster {
                       info);
     }
 
+    /// TEST SEAM (#2734 wiring pin) — hold a node back exactly as [#start(Set)] does, without creating one, so
+    /// `EmberClusterHeldBackRegistrationTest` can drive the real [#startHeldBackNodes] path over a fake whose `start()` it
+    /// resolves itself.
+    void adoptHeldBackNode(String nodeIdStr, AetherNode node) {
+        heldBackNodes.put(nodeIdStr, node);
+    }
+
     /// TEST SEAM (#1112 wiring pin) — the live [#nodes] map. A `computeIfAbsent` in flight on it
     /// blocks the `clear()` every teardown path starts with, which is how the test HOLDS the clear
     /// and proves the outcome cannot reach the caller until it returns. Never read by product code.
@@ -963,10 +970,18 @@ public final class EmberCluster {
 
     private Promise<Unit> startHeldBackInstance(String nodeIdStr, AetherNode node) {
         return node.start()
-                   .onSuccess(_ -> nodes.put(nodeIdStr, node))
-                   .onSuccess(_ -> log.info("Held-back node {} started and rejoined the cluster", nodeIdStr))
                    .fold(result -> result.fold(cause -> stopFailedHeldBackNode(nodeIdStr, node, cause),
-                                               _ -> Promise.unitPromise()));
+                                               _ -> registerStartedHeldBackNode(nodeIdStr, node)));
+    }
+
+    /// #2734: the registration is a step of the chain that resolves [#startHeldBackNodes], so a caller that has seen it
+    /// resolve finds the node in [#getNode]. It used to be an `onSuccess` side effect, which a promise runs on another thread
+    /// AFTER its dependent steps, so the outcome reached the caller first and `getNode` answered empty (the #1112 shape).
+    private Promise<Unit> registerStartedHeldBackNode(String nodeIdStr, AetherNode node) {
+        nodes.put(nodeIdStr, node);
+        log.info("Held-back node {} started and rejoined the cluster", nodeIdStr);
+
+        return Promise.unitPromise();
     }
 
     /// #1308: a held-back node enters [#nodes] only once its start SUCCEEDS, so on a start failure
