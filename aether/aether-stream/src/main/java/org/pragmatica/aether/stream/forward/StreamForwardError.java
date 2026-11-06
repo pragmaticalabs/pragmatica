@@ -72,6 +72,24 @@ public sealed interface StreamForwardError extends Cause {
                                                                                               ForwardNotEncoded::new);
     }
 
+    /// A forwarded PUBLISH whose frame the local transport refused before writing it (#2683): the FORWARD lane refused it
+    /// under backpressure, or there was no peer state ([WriteOutcome.BackpressureRefused], [WriteOutcome.NoPeerState]).
+    /// Both prove the frame never left, so the owner cannot have appended it: the outcome is KNOWN (not written), and the
+    /// publish fails at once where it used to wait out its forward wait and answer [org.pragmatica.aether.slice.PublishOutcomeUnknown].
+    /// A dead connection is NOT this cause: an ordinary frame may sit in the offline buffer and be delivered later, so that
+    /// publish keeps waiting. Transient and pre-append, so the forwarder retries it ([#isRetryablePublish]).
+    record PublishNotSent(WriteOutcome outcome, String message) implements StreamForwardError, Cause.Transient {
+        public static final Fn1<PublishNotSent, WriteOutcome> FACTORY = Causes.forOneValue("Stream publish forward was not sent: %s",
+                                                                                           PublishNotSent::new);
+    }
+
+    /// A forwarded PUBLISH whose message could not be encoded ([WriteOutcome.EncodeFailed], #2683): nothing was written, so
+    /// the outcome is known, and no retry can change it (a missing or broken codec), so it is a hard error.
+    record PublishNotEncoded(WriteOutcome outcome, String message) implements StreamForwardError, Cause.Terminal {
+        public static final Fn1<PublishNotEncoded, WriteOutcome> FACTORY = Causes.forOneValue("Stream publish forward could not be encoded: %s",
+                                                                                              PublishNotEncoded::new);
+    }
+
     record ReadForwardFailed(String detail) implements StreamForwardError {
         @Override
         public String message() {
@@ -80,11 +98,12 @@ public sealed interface StreamForwardError extends Cause {
     }
 
     /// Typed classifier the forwarder uses to decide whether a forward-publish failure is worth a bounded
-    /// retry: true ONLY for {@link RemotePublishRetryable} (the owner's explicit retryable signal), so no
+    /// retry: true ONLY for {@link RemotePublishRetryable} (the owner's explicit retryable signal) and
+    /// {@link PublishNotSent} (#2683: the frame provably never left, so a re-send cannot duplicate), so no
     /// other failure cause — a permanent {@link RemotePublishFailed}, a timeout, an unavailable transport —
     /// is ever retried.
     static boolean isRetryablePublish(Cause cause) {
-        return cause instanceof RemotePublishRetryable;
+        return cause instanceof RemotePublishRetryable || cause instanceof PublishNotSent;
     }
 
     /// Whether `cause`, or any cause in its chain, is a read the transport did not send ([ForwardNotSent], #2574): the

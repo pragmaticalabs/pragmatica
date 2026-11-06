@@ -20,6 +20,8 @@ import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.http.HttpStatus;
 
 import java.lang.reflect.Proxy;
@@ -251,6 +253,23 @@ class StreamApiRoutesPublishPartitionTest {
                     .isInstanceOfSatisfying(ManagementServerError.PublishRetryable.class,
                                             retryable -> assertThat(retryable.httpStatus()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE));
         }
+    }
+
+    /// #2683: a forwarded publish whose frame the transport refused before writing it never reached the owner, so it is a
+    /// pre-append refusal and answers the retryable 503 ("refused before writing, retry"), never the 503 "outcome unknown"
+    /// the expired forward used to answer. An encode failure is known-not-written too but no retry fixes it, so it is NOT
+    /// turned into the retry invitation.
+    @Test
+    void retryableRefusal_publishNotSent_is503Retryable_publishNotEncodedIsNot() {
+        var owner = new NodeId("owner");
+        Cause notSent = StreamForwardError.PublishNotSent.FACTORY.apply(new WriteOutcome.BackpressureRefused(owner));
+        Cause notEncoded = StreamForwardError.PublishNotEncoded.FACTORY.apply(new WriteOutcome.EncodeFailed(owner, "PublishForward"));
+
+        assertThat(StreamApiRoutes.retryableRefusal(STREAM_ADDRESS, notSent))
+                .isInstanceOfSatisfying(ManagementServerError.PublishRetryable.class,
+                                        retryable -> assertThat(retryable.httpStatus()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE));
+        assertThat(StreamApiRoutes.retryableRefusal(STREAM_ADDRESS, notSent).message()).contains("refused before writing, retry");
+        assertThat(StreamApiRoutes.retryableRefusal(STREAM_ADDRESS, notEncoded)).isSameAs(notEncoded);
     }
 
     /// Control: the allow-list is not widened to every transient cause or every stream error. A timeout may follow a
