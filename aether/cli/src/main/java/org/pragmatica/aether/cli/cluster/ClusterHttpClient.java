@@ -280,8 +280,7 @@ public sealed interface ClusterHttpClient {
                ? ClusterRegistry.load()
                                 .option()
                                 .flatMap(ClusterRegistry::current)
-                                .flatMap(ClusterRegistry.ClusterEntry::apiKeyEnv)
-                                .flatMap(envName -> option(System.getenv(envName)))
+                                .flatMap(ClusterTargetMixin::apiKeyOf)
                : Option.empty();
     }
 

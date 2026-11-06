@@ -8,6 +8,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.cli.cluster.BootstrapState.PhaseStatus;
@@ -24,6 +25,7 @@ import org.pragmatica.lang.utils.Causes;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
+import java.nio.file.Files;
 import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse.BodyHandler;
@@ -404,6 +406,45 @@ class ClusterDestroyCommandTest {
 
             assertEquals(clusterName("named-cluster").unwrap(), capturedName.get(),
                          "Override name must be routed to BootstrapStatePersistence loader");
+        }
+    }
+
+    /// #2133: `destroy --cluster X` presents X's own saved key, read by the one resolver, not whatever the active cluster holds.
+    @Nested
+    class TargetApiKey {
+        @TempDir
+        Path tempHome;
+
+        private Function<String, Path> originalResolver;
+
+        private String originalApiKey;
+
+        @BeforeEach
+        void isolateKeyFiles() {
+            originalResolver = ClusterTargetMixin.apiKeyPathResolver;
+            originalApiKey = ClusterHttpClient.API_KEY_OVERRIDE.get();
+            ClusterTargetMixin.apiKeyPathResolver = name -> tempHome.resolve(name).resolve("api-key");
+            ClusterHttpClient.API_KEY_OVERRIDE.set(null);
+        }
+
+        @AfterEach
+        void restoreKeyFiles() {
+            ClusterTargetMixin.apiKeyPathResolver = originalResolver;
+            ClusterHttpClient.API_KEY_OVERRIDE.set(originalApiKey);
+        }
+
+        @Test
+        void installTargetOverrides_installsTheTargetsSavedKey() throws Exception {
+            var keyFile = tempHome.resolve("test-cluster").resolve("api-key");
+            Files.createDirectories(keyFile.getParent());
+            Files.writeString(keyFile, "target-key\n");
+            var entry = new ClusterRegistry.ClusterEntry("test-cluster", "https://10.255.255.1:8080", none());
+            var install = ClusterDestroyCommand.class.getDeclaredMethod("installTargetOverrides", ClusterRegistry.ClusterEntry.class);
+            install.setAccessible(true);
+
+            install.invoke(new ClusterDestroyCommand(), entry);
+
+            assertEquals("target-key", ClusterHttpClient.API_KEY_OVERRIDE.get());
         }
     }
 
