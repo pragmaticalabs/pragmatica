@@ -27,7 +27,7 @@ import static org.pragmatica.lang.Option.option;
 ///
 /// Rank, lexicographic: 1. meets the deadline (a boolean, so with no deadline every candidate ties; a raw
 /// lead-time key would reorder a docker+cloud community that sets no field); 2. `preference` ascending;
-/// 3. cost rank ascending; 4. source name, then zone (`""` when unzoned) ascending, exactly today's
+/// 3. cost rank ascending (`cost_class` only); 4. source name, then zone (`""` when unzoned) ascending, exactly today's
 /// `CommunityPlacementReconciler.locationOrder()`.
 ///
 /// Guarantees: deterministic for identical arguments (no clock, no map iteration; key 4 is a total order on
@@ -96,8 +96,7 @@ public final class SourceRanking {
                          .reversed()
                          .thenComparingInt(ranked -> ranked.profile()
                                                            .preference())
-                         .thenComparingInt(ranked -> costRank(ranked.profile().costClass(),
-                                                              request.spotTolerant()))
+                         .thenComparingInt(ranked -> costRank(ranked.profile().costClass()))
                          .thenComparing(ranked -> ranked.location()
                                                         .source())
                          .thenComparing(ranked -> ranked.location()
@@ -112,15 +111,13 @@ public final class SourceRanking {
                       .or(true);
     }
 
-    /// `reserved` and `free` rank 0, `ondemand` 1, `spot` 2, or 0 when the request tolerates spot. `FREE`
-    /// sharing rank 0 with `reserved` is a GUESS: the spec order does not mention it (owner question Q4).
-    private static int costRank(CostClass costClass, boolean spotTolerant) {
+    /// Reads `cost_class` only: `reserved` and `free` rank 0, `ondemand` 1, `spot` 2. `FREE` sharing rank 0 with
+    /// `reserved` is the owner ruling Q4, know ea915292bf.
+    private static int costRank(CostClass costClass) {
         return switch (costClass) {
             case RESERVED, FREE -> 0;
             case ONDEMAND -> 1;
-            case SPOT -> spotTolerant
-                         ? 0
-                         : 2;
+            case SPOT -> 2;
         };
     }
 }

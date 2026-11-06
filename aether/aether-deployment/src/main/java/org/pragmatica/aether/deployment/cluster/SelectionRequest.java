@@ -11,9 +11,9 @@ import org.pragmatica.lang.Option;
 ///
 /// `deadlineMs` is an absolute epoch-millisecond deadline, absent when the request has none (the S3 stand-in,
 /// §2.2). `evaluatedAtMs` is the caller's injected-clock reading: [SourceRanking] never reads a clock itself.
-/// `spotTolerant` is `false` unless the caller opts the request into spot capacity (§2.5).
-public record SelectionRequest(Option<Long> deadlineMs, long evaluatedAtMs, boolean spotTolerant) {
-    public static SelectionRequest selectionRequest(Option<Long> deadlineMs, long evaluatedAtMs, boolean spotTolerant) {
-        return new SelectionRequest(deadlineMs, evaluatedAtMs, spotTolerant);
+/// There is no spot-tolerance flag: spot is always treated as not tolerated (owner ruling Q4, know ea915292bf).
+public record SelectionRequest(Option<Long> deadlineMs, long evaluatedAtMs) {
+    public static SelectionRequest selectionRequest(Option<Long> deadlineMs, long evaluatedAtMs) {
+        return new SelectionRequest(deadlineMs, evaluatedAtMs);
     }
 }

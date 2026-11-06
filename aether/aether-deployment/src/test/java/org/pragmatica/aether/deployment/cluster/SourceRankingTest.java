@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -45,7 +44,7 @@ class SourceRankingTest {
 
     // ---- identity: ranking with no new field set is exactly today's locationOrder() (review F3) ----
     @Test
-    void rank_defaultProfiles_matchesProductionLocationOrder() throws Exception {
+    void rank_defaultProfiles_ordersExactlyAsLocationOrder() {
         var random = new Random(42);
         var sources = defaultSources();
         var mixedSeen = false;
@@ -54,7 +53,7 @@ class SourceRankingTest {
             var candidates = randomLocations(random, POOL);
             var expected = new ArrayList<>(candidates);
 
-            expected.sort(productionLocationOrder());
+            expected.sort(PlacementReconciler.locationOrder());
             var literal = new ArrayList<>(candidates);
 
             literal.sort(Comparator.comparing(Location::source).thenComparing(location -> location.zone()
@@ -73,27 +72,23 @@ class SourceRankingTest {
     @Test
     void rank_defaultProfiles_matchesGoldenLists() {
         var sources = defaultSources();
-
+        // (1) name order puts the hetzner source first, lead-time order would put docker first
         assertEquals(List.of(loc("a-hetzner", null), loc("b-docker", null)),
                      SourceRanking.rank(List.of(loc("b-docker", null), loc("a-hetzner", null)),
                                         sources,
                                         NodeRole.WORKER,
                                         none(),
                                         NO_COUNTS));
-        assertEquals(List.of(loc("a-hetzner", null), loc("a-hetzner", "z1"), loc("a-hetzner", "z2"), loc("c-aws", "z1")),
-                     SourceRanking.rank(List.of(loc("c-aws", "z1"),
-                                                loc("a-hetzner", "z2"),
-                                                loc("a-hetzner", "z1"),
-                                                loc("a-hetzner", null)),
+        // (2) one source in zones z2, z1 plus an unzoned location of another source: source, then zone
+        assertEquals(List.of(loc("a-hetzner", "z1"), loc("a-hetzner", "z2"), loc("b-docker", null)),
+                     SourceRanking.rank(List.of(loc("a-hetzner", "z2"), loc("b-docker", null), loc("a-hetzner", "z1")),
                                         sources,
                                         NodeRole.WORKER,
                                         none(),
                                         NO_COUNTS));
-        assertEquals(List.of(loc("b-docker", "z1"), loc("d-ssh", null), loc("e-hetzner", "z3"), loc("f-forge", "z2")),
-                     SourceRanking.rank(List.of(loc("f-forge", "z2"),
-                                                loc("e-hetzner", "z3"),
-                                                loc("d-ssh", null),
-                                                loc("b-docker", "z1")),
+        // (3) two cloud types with different lead times plus docker, names ordered against lead time
+        assertEquals(List.of(loc("a-hetzner", null), loc("b-docker", null), loc("c-aws", null)),
+                     SourceRanking.rank(List.of(loc("c-aws", null), loc("b-docker", null), loc("a-hetzner", null)),
                                         sources,
                                         NodeRole.WORKER,
                                         none(),
@@ -146,7 +141,7 @@ class SourceRankingTest {
         var random = new Random(11);
         var sources = randomSources(random);
         var candidates = randomLocations(random, POOL);
-        var request = SelectionRequest.selectionRequest(Option.some(NOW + 100_000L), NOW, true);
+        var request = SelectionRequest.selectionRequest(Option.some(NOW + 100_000L), NOW);
         var first = SourceRanking.rank(candidates, sources, NodeRole.WORKER, request, NO_COUNTS);
 
         for (int i = 0; i < 100; i++) {
@@ -172,7 +167,7 @@ class SourceRankingTest {
     void rank_deadline_beatsPreferenceAndName() {
         var sources = Map.of("a-cloud", with(hetzner("a-cloud"), 1, CostClass.ONDEMAND), "b-docker", docker("b-docker"));
         var candidates = List.of(loc("a-cloud", null), loc("b-docker", null));
-        var tight = SelectionRequest.selectionRequest(Option.some(NOW + 40_000L), NOW, false);
+        var tight = SelectionRequest.selectionRequest(Option.some(NOW + 40_000L), NOW);
 
         assertEquals(List.of(loc("a-cloud", null), loc("b-docker", null)),
                      SourceRanking.rank(candidates, sources, NodeRole.WORKER, none(), NO_COUNTS));
@@ -184,8 +179,8 @@ class SourceRankingTest {
     void rank_deadlineExactlyAtLeadTime_meetsDeadline() {
         var sources = Map.of("a-cloud", hetzner("a-cloud"), "b-docker", docker("b-docker"));
         var candidates = List.of(loc("b-docker", null), loc("a-cloud", null));
-        var boundary = SelectionRequest.selectionRequest(Option.some(NOW + 65_000L), NOW, false);
-        var oneShort = SelectionRequest.selectionRequest(Option.some(NOW + 64_999L), NOW, false);
+        var boundary = SelectionRequest.selectionRequest(Option.some(NOW + 65_000L), NOW);
+        var oneShort = SelectionRequest.selectionRequest(Option.some(NOW + 64_999L), NOW);
 
         assertEquals(loc("a-cloud", null),
                      SourceRanking.rank(candidates, sources, NodeRole.WORKER, boundary, NO_COUNTS).getFirst());
@@ -197,7 +192,7 @@ class SourceRankingTest {
     void rank_everyCandidateMissesDeadline_stillRanksAll() {
         var sources = defaultSources();
         var candidates = List.of(loc("c-aws", null), loc("a-hetzner", null));
-        var impossible = SelectionRequest.selectionRequest(Option.some(NOW), NOW, false);
+        var impossible = SelectionRequest.selectionRequest(Option.some(NOW), NOW);
 
         assertEquals(List.of(loc("a-hetzner", null), loc("c-aws", null)),
                      SourceRanking.rank(candidates, sources, NodeRole.WORKER, impossible, NO_COUNTS));
@@ -250,8 +245,8 @@ class SourceRankingTest {
     }
 
     @Test
-    void rank_free_sharesReservedRank_guessPendingOwnerQ4() {
-        // Q4: the spec order does not place FREE; the design recommends rank 0 with RESERVED. A guess, pinned here.
+    void rank_freeAndReserved_shareRank_ownerRulingQ4() {
+        // Owner ruling Q4, know ea915292bf: FREE and RESERVED both rank 0, so name decides between them.
         var sources = Map.of("a-ondemand",
                              with(hetzner("a-ondemand"), 100, CostClass.ONDEMAND),
                              "b-free",
@@ -261,24 +256,22 @@ class SourceRankingTest {
                              "d-spot",
                              with(hetzner("d-spot"), 100, CostClass.SPOT));
         var all = List.of(loc("d-spot", null), loc("c-reserved", null), loc("b-free", null), loc("a-ondemand", null));
+        var reservedFirstByName = Map.of("a-x",
+                                         with(docker("a-x"), 100, CostClass.RESERVED),
+                                         "b-x",
+                                         with(docker("b-x"), 100, CostClass.FREE));
+        var freeFirstByName = Map.of("a-x",
+                                     with(docker("a-x"), 100, CostClass.FREE),
+                                     "b-x",
+                                     with(docker("b-x"), 100, CostClass.RESERVED));
+        var pair = List.of(loc("b-x", null), loc("a-x", null));
 
         assertEquals(List.of(loc("b-free", null), loc("c-reserved", null), loc("a-ondemand", null), loc("d-spot", null)),
                      SourceRanking.rank(all, sources, NodeRole.WORKER, none(), NO_COUNTS));
-    }
-
-    @Test
-    void rank_spotTolerant_liftsSpotToTopCostTier() {
-        var sources = Map.of("a-ondemand",
-                             with(hetzner("a-ondemand"), 100, CostClass.ONDEMAND),
-                             "z-spot",
-                             with(hetzner("z-spot"), 100, CostClass.SPOT));
-        var candidates = List.of(loc("a-ondemand", null), loc("z-spot", null));
-        var tolerant = SelectionRequest.selectionRequest(Option.none(), NOW, true);
-
-        assertEquals(List.of(loc("a-ondemand", null), loc("z-spot", null)),
-                     SourceRanking.rank(candidates, sources, NodeRole.WORKER, none(), NO_COUNTS));
-        assertEquals(List.of(loc("z-spot", null), loc("a-ondemand", null)),
-                     SourceRanking.rank(candidates, sources, NodeRole.WORKER, tolerant, NO_COUNTS));
+        assertEquals(List.of(loc("a-x", null), loc("b-x", null)),
+                     SourceRanking.rank(pair, reservedFirstByName, NodeRole.WORKER, none(), NO_COUNTS));
+        assertEquals(List.of(loc("a-x", null), loc("b-x", null)),
+                     SourceRanking.rank(pair, freeFirstByName, NodeRole.WORKER, none(), NO_COUNTS));
     }
 
     // ---- key 4: source name, then zone ----
@@ -382,19 +375,8 @@ class SourceRankingTest {
     }
 
     // ---- fixtures ----
-    @SuppressWarnings("unchecked")
-    private static Comparator<Location> productionLocationOrder() throws Exception {
-        // locationOrder() is private static on the package-private PlacementReconciler record (same file as the
-        // CommunityPlacementReconciler interface); reflection is the narrowest seam and needs no production change.
-        Method method = Class.forName("org.pragmatica.aether.deployment.cluster.PlacementReconciler").getDeclaredMethod("locationOrder");
-
-        method.setAccessible(true);
-
-        return (Comparator<Location>) method.invoke(null);
-    }
-
     private static SelectionRequest none() {
-        return SelectionRequest.selectionRequest(Option.none(), NOW, false);
+        return SelectionRequest.selectionRequest(Option.none(), NOW);
     }
 
     private static Location loc(String source, String zone) {
