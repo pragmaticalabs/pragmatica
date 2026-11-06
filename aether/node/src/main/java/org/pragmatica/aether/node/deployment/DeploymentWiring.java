@@ -461,7 +461,6 @@ public final class DeploymentWiring {
     /// a react executor) have run; the quiesce, which would drop them, waits for it. The returned promise resolves after the quiesce.
     public Promise<Unit> leaveQuorum(Runnable routePassive, Supplier<Promise<Unit>> delivered, Runnable quiesce) {
         routePassive.run();
-
         var reactionsRun = delivered.get();
 
         system.onPresent(Fsm2System::drainNode);
