@@ -1957,7 +1957,6 @@ public interface AetherNode extends ManageableNode {
                                                               () -> leaderDeactivation.delivered(reactors.executor("LeaderManager"),
                                                                                                  LEADER_DEACTIVATION_BOUND),
                                                               router::quiesce);
-
                 // #642: the cluster-deployment FSM's fixed-rate reconcile timer is cancelled only by
                 // Active.onExit, which nothing reached at shutdown — a stopped node kept running full
                 // deployment reconciles. deactivate() is the same designed path a leader loss takes.

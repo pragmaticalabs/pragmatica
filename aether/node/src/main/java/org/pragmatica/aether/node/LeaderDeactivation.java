@@ -58,8 +58,7 @@ public record LeaderDeactivation(AtomicReference<Promise<Unit>> next) {
     }
 
     private Unit deactivationDelivered() {
-        next.get()
-            .succeed(unit());
+        next.get().succeed(unit());
 
         return unit();
     }
