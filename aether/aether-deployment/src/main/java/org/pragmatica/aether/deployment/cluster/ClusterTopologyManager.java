@@ -116,6 +116,10 @@ public interface ClusterTopologyManager extends TopologyManager {
         return resetCircuitBreaker(reason);
     }
 
+    /// Whether the committed cluster configuration declares `source` (a `[source.*]` table, or a source of its desired topology), as this
+    /// node has applied it. The reset route refuses an undeclared source rather than silently resetting nothing.
+    boolean declaresSource(SourceName source);
+
     /// #685 — the operator's auto-heal disable/enable is a durable cluster fact stored in consensus
     /// KV (`AetherKey.AutoHealStateKey`), never a leader's in-memory mood: a read reflects the log
     /// applied LOCALLY, so the flag becomes visible on a node when that node applies the committed

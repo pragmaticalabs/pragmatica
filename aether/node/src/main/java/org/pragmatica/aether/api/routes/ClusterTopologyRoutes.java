@@ -62,17 +62,21 @@ import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.http.routing.Handler;
+import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.routing.PathParameter;
+import org.pragmatica.http.routing.RequestContext;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.type.TypeToken;
 
 import static org.pragmatica.aether.api.ManagementApiResponses.ClusterTopologyStatusResponse;
 
 
 public final class ClusterTopologyRoutes implements RouteSource {
+    private static final TypeToken<CircuitBreakerResetRequest> RESET_REQUEST = TypeToken.typeToken(CircuitBreakerResetRequest.class);
     private final Supplier<ManageableNode> nodeSupplier;
 
     private ClusterTopologyRoutes(Supplier<ManageableNode> nodeSupplier) {
@@ -96,8 +100,8 @@ public final class ClusterTopologyRoutes implements RouteSource {
                          ManagementRoutes.<GovernorsResponse> route(ManagementRoute.CLUSTER_GOVERNORS).toJson(this::buildGovernorsResponse),
                          ManagementRoutes.<CircuitBreakerStatusResponse> route(ManagementRoute.CLUSTER_CIRCUIT_BREAKER_STATUS).toJson(_ -> buildCircuitBreakerStatus()),
                          ManagementRoutes.<CircuitBreakerResetResponse> route(ManagementRoute.CLUSTER_CIRCUIT_BREAKER_RESET)
-                                         .withBody(CircuitBreakerResetRequest.class)
-                                         .toJson(this::resetCircuitBreaker),
+                                         .to(this::resetCircuitBreaker)
+                                         .asJson(),
                          ManagementRoutes.<AutoHealStatusResponse> route(ManagementRoute.CLUSTER_AUTO_HEAL_STATUS).toJson(_ -> buildAutoHealStatus()),
                          ManagementRoutes.<RoleMismatchesResponse> route(ManagementRoute.CLUSTER_ROLE_MISMATCHES).toJson(_ -> buildRoleMismatches()),
                          ManagementRoutes.<AutoHealToggleResponse> route(ManagementRoute.CLUSTER_AUTO_HEAL_ENABLE).toJson(_ -> setAutoHeal(true)),
@@ -127,16 +131,40 @@ public final class ClusterTopologyRoutes implements RouteSource {
     }
 
     /// The reset of one source's breaker, or of every breaker when the request names no source (spec §8.3). A source name is parsed here,
-    /// at the boundary, so a malformed one is refused rather than silently resetting nothing.
-    private Promise<CircuitBreakerResetResponse> resetCircuitBreaker(CircuitBreakerResetRequest request) {
+    /// at the boundary, and must be declared by the committed configuration, so a malformed or unknown one is refused rather than
+    /// silently resetting nothing. The body is optional: the route took none before the per-source reset, and an empty one still means
+    /// every source.
+    private Promise<CircuitBreakerResetResponse> resetCircuitBreaker(RequestContext request) {
         return ctmOpt().async(CTM_UNAVAILABLE)
                      .flatMap(ctm -> resetRequested(ctm, request));
     }
 
-    private static Promise<CircuitBreakerResetResponse> resetRequested(ClusterTopologyManager ctm,
-                                                                       CircuitBreakerResetRequest request) {
-        return requestedSource(request).async()
-                              .map(source -> resetSource(ctm, source));
+    static Promise<CircuitBreakerResetResponse> resetRequested(ClusterTopologyManager ctm, RequestContext request) {
+        return resetBody(request).flatMap(ClusterTopologyRoutes::requestedSource)
+                        .flatMap(source -> declaredSource(ctm, source))
+                        .async()
+                        .map(source -> resetSource(ctm, source));
+    }
+
+    private static Result<Option<String>> resetBody(RequestContext request) {
+        return Option.option(request.bodyAsString())
+                     .filter(Verify.Is::present)
+                     .fold(() -> Result.success(Option.<String> none()),
+                           _ -> request.jsonBody(RESET_REQUEST)
+                                       .map(body -> Option.option(body.source())));
+    }
+
+    private static Result<Option<SourceName>> requestedSource(Option<String> raw) {
+        return raw.filter(Verify.Is::present)
+                  .fold(() -> Result.success(Option.<SourceName> none()),
+                        name -> SourceName.sourceName(name).map(Option::some));
+    }
+
+    private static Result<Option<SourceName>> declaredSource(ClusterTopologyManager ctm, Option<SourceName> source) {
+        return source.filter(name -> !ctm.declaresSource(name))
+                     .fold(() -> Result.success(source),
+                           name -> HttpStatus.BAD_REQUEST.with("Source '" + name.value() + "' is not declared by the committed cluster configuration")
+                                                 .result());
     }
 
     private static CircuitBreakerResetResponse resetSource(ClusterTopologyManager ctm, Option<SourceName> source) {
@@ -145,13 +173,6 @@ public final class ClusterTopologyRoutes implements RouteSource {
         return new CircuitBreakerResetResponse("reset",
                                                prior,
                                                source.map(SourceName::value).or("all"));
-    }
-
-    private static Result<Option<SourceName>> requestedSource(CircuitBreakerResetRequest request) {
-        return Option.option(request.source())
-                     .filter(Verify.Is::present)
-                     .fold(() -> Result.success(Option.<SourceName> none()),
-                           raw -> SourceName.sourceName(raw).map(Option::some));
     }
 
     /// #689: the operator-visible half of the role-mismatch detection — the same ledger the CTM's

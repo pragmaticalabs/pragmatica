@@ -4,6 +4,7 @@
 package org.pragmatica.aether.cli.cluster;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Callable;
 
 import org.pragmatica.aether.cli.ExitCode;
@@ -11,7 +12,9 @@ import org.pragmatica.aether.cli.OutputFormatter;
 import org.pragmatica.aether.cli.OutputFormatter.Column;
 import org.pragmatica.aether.cli.OutputFormatter.TableSpec;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Result;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -115,6 +118,8 @@ class ClusterTopologyCommand implements Callable<Integer> {
         @Command(name = "reset", description = "Reset the CTM provisioning circuit breaker of one source (--source) or of all (operator override; use after fixing the underlying provisioning issue)")
         @SuppressWarnings("JBCT-RET-01")
         static class ResetCommand implements Callable<Integer> {
+            private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
+
             @CommandLine.ParentCommand
             private CircuitBreakerCommand cbParent;
 
@@ -124,17 +129,18 @@ class ClusterTopologyCommand implements Callable<Integer> {
             @CommandLine.Option(names = "--source", description = "Reset only this source's breaker (default: every source's)")
             private String source = "";
 
-            private String requestBody() {
-                return source.isBlank()
-                       ? "{}"
-                       : "{\"source\":\"" + source + "\"}";
+            /// Written by the JSON writer, so a source name is escaped whatever it holds; the server still validates it.
+            Result<String> requestBody() {
+                return MAPPER.writeAsString(source.isBlank()
+                                            ? Map.<String, String> of()
+                                            : Map.of("source", source));
             }
 
             @Override
             public Integer call() {
                 return clusterTarget.applyOverrides()
-                                    .flatMap(_ -> ClusterHttpClient.post(CLUSTER_CIRCUIT_BREAKER_RESET,
-                                                                         requestBody()))
+                                    .flatMap(_ -> requestBody())
+                                    .flatMap(body -> ClusterHttpClient.post(CLUSTER_CIRCUIT_BREAKER_RESET, body))
                                     .fold(ResetCommand::onFailure, this::onSuccess);
             }
 

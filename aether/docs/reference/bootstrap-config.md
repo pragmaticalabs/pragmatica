@@ -517,12 +517,14 @@ WARN naming the cluster, the cap, and the observed count.
 > the cluster makes no provision or terminate on its own initiative: not a core replacement, not a
 > worker or spot source/role that is short or over its desired count, not a community member, and not
 > the deletion of a departed node's instance. Two things are not held: an operator-directed retirement,
-> and a desired count or community `target_size` that an operator **commits while auto-heal is
-> disabled**, which is explicit intent and is acted on (the disable records the configuration version
-> it was made at, and a later committed version releases the hold). That release is per configuration
-> commit, not per source: any configuration commit made while disabled releases the hold for every
-> worker source and community. Each hold is announced once (`auto-heal-scaling-held`) and enabling
-> auto-heal again resumes the paths and announces it (`auto-heal-scaling-resumed`).
+> and a desired count or community `target_size` that an operator **changes while auto-heal is
+> disabled**, which is explicit intent and is acted on. The release is per source/role and per
+> community: the disable records each one's committed count or `target_size`, and only a commit that
+> changes that subject's own value releases it (from then on it is acted on, a loss correction
+> included). A commit that leaves the value unchanged, such as another source's count or an unrelated
+> setting, releases nothing. A disable is refused if the configuration changed underneath it; retry it.
+> Each hold is announced once (`auto-heal-scaling-held`); a release, or enabling auto-heal again,
+> announces it (`auto-heal-scaling-resumed`).
 >
 > #675 made that decision: the node config is the one live surface; every key here that could not reach
 > a node is refused (PF-26), and `[timeouts.scaling] auto_heal_retry` was removed from the node config

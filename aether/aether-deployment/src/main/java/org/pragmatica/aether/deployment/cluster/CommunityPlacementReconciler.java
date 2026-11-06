@@ -60,6 +60,11 @@ public interface CommunityPlacementReconciler {
         return Unit.unit();
     }
 
+    /// The subject the auto-heal hold of a community is asked and raised for; the disable record keys the community's `target_size` by it.
+    static String holdSubject(String communityId) {
+        return "community " + communityId;
+    }
+
     /// #1543 E2: a worker replacement pairing brings a surge worker into a community on purpose. `protectedNodes` (a live
     /// pairing's original before it retires, and its replacement throughout) are never chosen as the node a reduction removes.
     /// Without it the surge reads as an excess and the placement removes whichever member sorts first, which can be the
@@ -1301,7 +1306,7 @@ record PlacementReconciler(NodeId self,
                                             LeaderValue leader,
                                             Map<AetherKey, AetherValue> snapshot) {
         return autonomyHold.get()
-                           .test("community " + policy.id())
+                           .test(CommunityPlacementReconciler.holdSubject(policy.id()))
                ? Promise.unitPromise()
                : reserve(config, policy, leader, snapshot);
     }

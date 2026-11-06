@@ -872,6 +872,24 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     @Override
+    public boolean declaresSource(SourceName source) {
+        return clusterConfigReader.get()
+                                  .filter(config -> declares(config, source.value()))
+                                  .isPresent();
+    }
+
+    private static boolean declares(ClusterConfigValue config, String source) {
+        return config.desiredTopology()
+                     .stream()
+                     .anyMatch(entry -> entry.sourceName()
+                                             .equals(source)) || config.tomlContent()
+                                                                       .flatMap(ClusterTopologyManagerRecord::parseConfig)
+                                                                       .filter(parsed -> parsed.sources()
+                                                                                               .containsKey(source))
+                                                                       .isPresent();
+    }
+
+    @Override
     public boolean isAutoHealEnabled() {
         return autoHealStateReader.get()
                                   .map(AutoHealStateValue::enabled)
@@ -892,24 +910,41 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// scalar with no contention, so the equality shortcut bought nothing and cost correctness. The
     /// returned boolean is the prior value AS THIS NODE SAW IT — not a confirmation of what the durable
     /// record previously held.
+    ///
+    /// A disable is fenced on the configuration it records (spec §8.4, item 4 of the #2711 review): one transaction carries a
+    /// [KVCommand.ReadWitness] on [ClusterConfigKey#CURRENT] at the very value the recorded version and scaling values were read from, so
+    /// a configuration commit decided but not yet applied on this node refuses the disable ([HierarchyStateWriter.Refusal#CONFLICT])
+    /// instead of recording a stale baseline that the next apply would release at once. An enable records nothing from the
+    /// configuration and carries no witness.
     @Override
     public Promise<Boolean> setAutoHealEnabled(boolean enabled, String reason) {
         var previous = autoHealStateReader.get();
+        var config = clusterConfigReader.get();
+        var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(AetherKey.AutoHealStateKey.SINGLETON,
+                                                                      previous.map(value -> (AetherValue) value),
+                                                                      Option.some(autoHealRecord(enabled, reason, config)));
 
         return hierarchyWriter.get()
-                              .put(AetherKey.AutoHealStateKey.SINGLETON,
-                                   previous.map(value -> (AetherValue) value),
-                                   autoHealRecord(enabled, reason))
+                              .commit(List.of(mutation), autoHealGuards(enabled, config))
                               .map(_ -> previous.map(AutoHealStateValue::enabled)
                                                 .or(true));
     }
 
-    /// A disable records the committed configuration version it was written against, so a scaling change committed after it can be told
-    /// from one that was already there ([#scalingHeld]); an enable records none.
-    private AutoHealStateValue autoHealRecord(boolean enabled, String reason) {
+    private static List<KVCommand.ReadWitness<AetherKey>> autoHealGuards(boolean enabled, Option<ClusterConfigValue> config) {
+        return enabled
+               ? List.of()
+               : List.of(new KVCommand.ReadWitness<AetherKey>(ClusterConfigKey.CURRENT, config.map(value -> (Object) value)));
+    }
+
+    /// A disable records, from the one configuration snapshot it is fenced on, that configuration's version and each subject's scaling
+    /// value, so a value committed after it can be told from one that was already there ([#scalingHeld]); an enable records none.
+    private static AutoHealStateValue autoHealRecord(boolean enabled, String reason, Option<ClusterConfigValue> config) {
         return enabled
                ? AutoHealStateValue.autoHealStateValue(true, reason)
-               : AutoHealStateValue.disabledAt(reason, committedConfigVersion());
+               : AutoHealStateValue.disabledAt(reason,
+                                               config.map(ClusterConfigValue::configVersion)
+                                                     .or(0L),
+                                               scalingOf(config));
     }
 
     private long committedConfigVersion() {
@@ -918,28 +953,71 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                   .or(0L);
     }
 
-    /// Spec §8.4 — whether the worker and community paths may NOT act on their own now. Auto-heal enabled: they may (and a hold raised earlier
-    /// is announced as resumed). Disabled: they may not, unless an operator committed the desired count or community `target_size` after the
-    /// disable (the committed configuration version is ahead of the one recorded at disable time): that is explicit intent, and is acted on.
-    /// An operator-directed retirement never asks here. The hold is raised once per `subject` for the run of holds (the set is the flood
-    /// guard; the resume clears it). Granularity, marked: the revision is the whole configuration's, so any configuration commit made while
-    /// disabled releases the hold for every source and community, not only the one it changed.
+    /// The scaling value of every subject the auto-heal hold is raised for, as `config` commits it: the desired count of each worker
+    /// source/role ([#workerSubject]) and the `target_size` of each declared community ([CommunityPlacementReconciler#holdSubject]).
+    /// A duplicated (source, role) keeps its first entry, as [ClusterConfigValue#desiredCountFor] does.
+    static Map<String, Integer> scalingOf(Option<ClusterConfigValue> config) {
+        return config.map(ClusterTopologyManagerRecord::scalingOf)
+                     .or(Map::of);
+    }
+
+    private static Map<String, Integer> scalingOf(ClusterConfigValue config) {
+        return Stream.concat(workerScaling(config), communityScaling(config))
+                     .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (first, _) -> first));
+    }
+
+    private static Stream<Map.Entry<String, Integer>> workerScaling(ClusterConfigValue config) {
+        return config.desiredTopology()
+                     .stream()
+                     .map(entry -> Map.entry(workerSubject(entry.sourceName(), entry.role()), entry.count()));
+    }
+
+    private static Stream<Map.Entry<String, Integer>> communityScaling(ClusterConfigValue config) {
+        return config.tomlContent()
+                     .flatMap(ClusterTopologyManagerRecord::parseConfig)
+                     .map(parsed -> parsed.communities()
+                                          .values()
+                                          .stream()
+                                          .map(policy -> Map.entry(CommunityPlacementReconciler.holdSubject(policy.id()),
+                                                                   policy.targetSize())))
+                     .or(Stream::empty);
+    }
+
+    /// The subject the auto-heal hold of a worker source/role is asked and raised for.
+    static String workerSubject(String sourceName, String role) {
+        return "worker " + sourceName + "/" + role;
+    }
+
+    /// Spec §8.4 — whether the worker and community paths may NOT act on their own now. Auto-heal enabled: they may, and every hold raised
+    /// earlier is announced as resumed. Disabled: `subject` is held while its own committed scaling value (count or community `target_size`)
+    /// equals the one recorded at disable time ([AutoHealStateValue#disabledAtScaling]); a commit that leaves it unchanged releases
+    /// nothing. A value an operator committed after the disable differs: that is explicit intent, the subject is released (its hold, if
+    /// raised, is announced as resumed) and acted on. An operator-directed retirement never asks here. The hold is raised once per
+    /// `subject` for the run of holds (the set is the flood guard; a release or resume removes the subject).
     boolean scalingHeld(String subject) {
         var state = autoHealStateReader.get();
 
-        if (state.filter(value -> !value.enabled())
-                 .filter(value -> committedConfigVersion() <= value.disabledAtConfigVersion())
-                 .isPresent()) {
+        if (state.map(AutoHealStateValue::enabled).or(true)) {
+            resumeScaling();
+
+            return false;
+        }
+
+        if (state.filter(value -> unchangedSinceDisable(value, subject)).isPresent()) {
             holdScaling(subject);
 
             return true;
         }
 
-        if (state.map(AutoHealStateValue::enabled).or(true)) {
-            resumeScaling();
-        }
+        releaseScaling(subject);
 
         return false;
+    }
+
+    private boolean unchangedSinceDisable(AutoHealStateValue state, String subject) {
+        return Option.option(state.disabledAtScaling()
+                                  .get(subject))
+                     .equals(Option.option(scalingOf(clusterConfigReader.get()).get(subject)));
     }
 
     @Contract
@@ -956,13 +1034,37 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract
     private void resumeScaling() {
-        heldScaling.forEach(subject -> OperatorWarnings.raise(log,
-                                                              warningSink.get(),
-                                                              OperatorWarningCode.AUTO_HEAL_SCALING_RESUMED,
-                                                              subject,
-                                                              "Auto-heal is enabled again: {} is no longer held",
-                                                              subject));
-        heldScaling.clear();
+        drainHeld(heldScaling, this::raiseResumed);
+    }
+
+    @Contract
+    private void releaseScaling(String subject) {
+        releaseHeld(heldScaling, subject, this::raiseResumed);
+    }
+
+    /// Announces every held subject as resumed, one element at a time: a subject is resumed only by the call that removed it, so a hold
+    /// added concurrently (the community reconcile and the worker poll run on different threads) is either drained here with its resume
+    /// or stays held for the next one, and never cleared without its resume.
+    @Contract
+    static void drainHeld(Set<String> held, Consumer<String> resumed) {
+        held.forEach(subject -> releaseHeld(held, subject, resumed));
+    }
+
+    @Contract
+    private static void releaseHeld(Set<String> held, String subject, Consumer<String> resumed) {
+        if (held.remove(subject)) {
+            resumed.accept(subject);
+        }
+    }
+
+    @Contract
+    private void raiseResumed(String subject) {
+        OperatorWarnings.raise(log,
+                               warningSink.get(),
+                               OperatorWarningCode.AUTO_HEAL_SCALING_RESUMED,
+                               subject,
+                               "Auto-heal is enabled again, or a new value was committed: {} is no longer held",
+                               subject);
     }
 
     /// Membership v2 / E2 — provision a replacement, PURE ACTUATOR.
@@ -1810,7 +1912,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
         var delta = entry.count() - actual.size();
 
-        if (delta == 0 || scalingHeld("worker " + entry.sourceName() + "/" + entry.role())) {
+        if (delta == 0 || scalingHeld(workerSubject(entry.sourceName(), entry.role()))) {
             return Promise.unitPromise();
         }
 

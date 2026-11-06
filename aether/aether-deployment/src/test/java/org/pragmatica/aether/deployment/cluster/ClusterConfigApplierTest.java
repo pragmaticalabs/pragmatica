@@ -382,6 +382,11 @@ class ClusterConfigApplierTest {
         }
 
         @Override
+        public boolean declaresSource(SourceName source) {
+            return false;
+        }
+
+        @Override
         public boolean isAutoHealEnabled() {
             return true;
         }

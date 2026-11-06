@@ -1933,28 +1933,34 @@ public sealed interface AetherValue {
     /// singleton key means auto-heal is enabled (the pre-#685 default) — never persisted as an explicit
     /// "enabled" record.
     ///
-    /// `disabledAtConfigVersion` is the committed cluster-configuration version at the moment auto-heal was disabled (`0` for an enable and
-    /// for a disable written with no configuration). It tells an operator's scaling change made WHILE disabled from one that was already
-    /// committed: a desired count or community `target_size` committed after it (a higher `configVersion`) is explicit operator intent and
-    /// is acted on while auto-heal stays disabled.
-    record AutoHealStateValue(boolean enabled, String reason, long updatedAt, long disabledAtConfigVersion) implements AetherValue {
+    /// `disabledAtConfigVersion` is the committed cluster-configuration version the disable was written against (`0` for an enable and
+    /// for a disable written with no configuration), and `disabledAtScaling` holds, from that same configuration, the desired count of
+    /// every worker source/role and the `target_size` of every declared community, keyed by the subject the hold is raised for. Spec §8.4:
+    /// a subject stays held while its own committed value equals the one recorded here; a value an operator commits WHILE disabled differs
+    /// and is explicit intent, acted on while auto-heal stays disabled. A commit that leaves a subject's value unchanged releases nothing.
+    record AutoHealStateValue(boolean enabled,
+                              String reason,
+                              long updatedAt,
+                              long disabledAtConfigVersion,
+                              Map<String, Integer> disabledAtScaling) implements AetherValue {
         public AutoHealStateValue {
             if (reason == null) {
                 reason = "";
             }
+            disabledAtScaling = Map.copyOf(disabledAtScaling);
         }
 
         public static AutoHealStateValue autoHealStateValue(boolean enabled, String reason) {
-            return new AutoHealStateValue(enabled, reason, System.currentTimeMillis(), 0L);
+            return new AutoHealStateValue(enabled, reason, System.currentTimeMillis(), 0L, Map.of());
         }
 
         public static AutoHealStateValue autoHealStateValue(boolean enabled, String reason, long updatedAt) {
-            return new AutoHealStateValue(enabled, reason, updatedAt, 0L);
+            return new AutoHealStateValue(enabled, reason, updatedAt, 0L, Map.of());
         }
 
-        /// A disable that records the configuration version it was written against.
-        public static AutoHealStateValue disabledAt(String reason, long configVersion) {
-            return new AutoHealStateValue(false, reason, System.currentTimeMillis(), configVersion);
+        /// A disable that records the configuration it was written against: its version and each subject's scaling value in it.
+        public static AutoHealStateValue disabledAt(String reason, long configVersion, Map<String, Integer> scaling) {
+            return new AutoHealStateValue(false, reason, System.currentTimeMillis(), configVersion, scaling);
         }
     }
 
