@@ -1,0 +1,3 @@
+### Fixed (2026-11-06 — #2508: StorageMaintenanceWiringTest anchor_retention flake)
+- **A write that landed while an anchor prune was running was never pruned to**, so the final write of a burst left retention + 2 versions on disk (4 instead of 3 at `anchor_retention = 2`) until some later write; the single-flight guard dropped the request instead of queuing it.
+- `DefaultStorageInstance` now records the newest version a skipped write owes and starts the next prune when the running one ends. `[verified: integrations/storage/src/test/java/org/pragmatica/storage/StorageInstanceAnchorTest.java#writesDuringARunningPrune_arePrunedToWhenItEnds]` (red without the fix, green with it); `[mechanism: StorageInstance.java startAnchorPrune/runOwedAnchorPrune/finishAnchorPrune]`.
