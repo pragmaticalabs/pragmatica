@@ -20,6 +20,7 @@ import java.util.function.BooleanSupplier;
 import java.util.Comparator;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
+import java.util.function.Function;
 
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
@@ -242,7 +243,10 @@ final class StreamTripwireSupport {
         var deadline = System.currentTimeMillis() + budgetMs;
 
         while (System.currentTimeMillis() < deadline) {
-            var record = committedRecord(cluster, engineKey, PARTITION).filter(value -> value.isrVersion() > 0 && value.isr().size() == size);
+            var record = committedRecord(cluster, engineKey, PARTITION).filter(value -> value.isrVersion() > 0 && value.isr().size() == size)
+                                                                       .filter(value -> ownerApplied(cluster.getNode(value.owner().id()),
+                                                                                                     node -> ownerView(node, engineKey),
+                                                                                                     value));
 
             if (record.isPresent()) {
                 return record.unwrap();
@@ -252,6 +256,21 @@ final class StreamTripwireSupport {
         }
 
         throw new AssertionError("no committed ISR of " + size + " for " + engineKey + " within " + budgetMs + "ms; last: " + committedRecord(cluster, engineKey, PARTITION));
+    }
+
+    /// #2734: [#committedRecord] is satisfied by ANY node that applied the record, and a node's apply of a committed value lags the
+    /// others by milliseconds. A test that published through the owner the moment one OTHER node showed the record met an owner
+    /// whose store still answered none: the publish stamped the zero epoch and was refused `StaleEpochAppend(presented 0:0:0)`
+    /// when the apply landed during the append (the first publish materializes the partition, which is the wide window). The
+    /// record is applied on the owner once the owner's own view equals it; an owner that is not running (held back) has no view
+    /// to wait for.
+    static <N> boolean ownerApplied(Option<N> owner, Function<N, Option<StreamPartitionOwnershipValue>> view, StreamPartitionOwnershipValue record) {
+        return owner.map(node -> view.apply(node).filter(record::equals).isPresent()).or(true);
+    }
+
+    private static Option<StreamPartitionOwnershipValue> ownerView(AetherNode node, String engineKey) {
+        return node.kvStore().getTyped(AetherKey.StreamPartitionOwnershipKey.streamPartitionOwnershipKey(engineKey, PARTITION),
+                                       StreamPartitionOwnershipValue.class);
     }
 
     static Option<StreamPartitionOwnershipValue> committedRecord(EmberCluster cluster, String engineKey, int partition) {
