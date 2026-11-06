@@ -19,6 +19,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
+
 /// #2713 (CTO ruling "AB witness option A"): the per-slice index of live A/B tests ([AbTestBaseKey]) and the one write shape of an A/B
 /// test record, which keeps the two in the same transaction.
 ///
@@ -36,7 +37,8 @@ public sealed interface AbTestIndex {
     /// live test is left, or, when the derived value is the committed one, a witness on it. A concurrent write that moved the index
     /// refuses this one, and its rebuild derives from the moved state. Fails with
     /// [SliceTargetFence.SliceTargetFenceError.NoCommittedLeader] when no leader is committed.
-    static Result<LeaderTransaction<AetherKey, AetherValue>> testWrite(KVStore<AetherKey, AetherValue> store, AbTestValue test) {
+    static Result<LeaderTransaction<AetherKey, AetherValue>> testWrite(KVStore<AetherKey, AetherValue> store,
+                                                                       AbTestValue test) {
         var key = new AbTestKey(test.testId());
         var indexKey = AbTestBaseKey.abTestBaseKey(test.artifactBase());
         var committed = store.get(indexKey);
@@ -44,11 +46,15 @@ public sealed interface AbTestIndex {
         var testMutation = new Mutation<AetherKey, AetherValue>(key, store.get(key), Option.some(test));
 
         return derived.equals(committed)
-               ? SliceTargetFence.guardedTransaction(store, List.of(witness(store, test.artifactBase())), List.of(testMutation))
+               ? SliceTargetFence.guardedTransaction(store,
+                                                     List.of(witness(store, test.artifactBase())),
+                                                     List.of(testMutation))
                : SliceTargetFence.guardedTransaction(store,
                                                      List.of(),
                                                      List.of(testMutation,
-                                                             new Mutation<AetherKey, AetherValue>(indexKey, committed, derived)));
+                                                             new Mutation<AetherKey, AetherValue>(indexKey,
+                                                                                                  committed,
+                                                                                                  derived)));
     }
 
     /// The witness on `base`'s index at its committed value, absent included: the requirement combiner's fence on every A/B write of
@@ -56,7 +62,8 @@ public sealed interface AbTestIndex {
     static ReadWitness<AetherKey> witness(KVStore<AetherKey, AetherValue> store, ArtifactBase base) {
         var key = AbTestBaseKey.abTestBaseKey(base);
 
-        return new ReadWitness<>(key, store.get(key).map(Object.class::cast));
+        return new ReadWitness<>(key,
+                                 store.get(key).map(Object.class::cast));
     }
 
     /// The index of `written`'s base once `written` commits: the base's committed tests with `written` in place of its own record.
@@ -69,7 +76,7 @@ public sealed interface AbTestIndex {
                        tests.stream()
                             .filter(test -> test.artifactBase()
                                                 .equals(written.artifactBase()) && !test.testId()
-                                                                                       .equals(written.testId()))
+                                                                                        .equals(written.testId()))
                             .toList());
     }
 
@@ -77,7 +84,6 @@ public sealed interface AbTestIndex {
         var all = new ArrayList<>(others);
 
         all.add(written);
-
         var entries = all.stream()
                          .filter(AbTestValue::isLive)
                          .sorted(Comparator.comparing(AbTestValue::testId))

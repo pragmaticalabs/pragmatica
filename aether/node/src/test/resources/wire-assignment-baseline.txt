@@ -167,6 +167,7 @@ SHAPE org.pragmatica.aether.slice.generation.CommunitySummary (communityId:java.
 SHAPE org.pragmatica.aether.slice.generation.CoreMember (nodeId:org.pragmatica.consensus.NodeId,host:java.lang.String,port:int,healthHint:org.pragmatica.aether.slice.generation.HealthHint,joinedEpoch:org.pragmatica.aether.slice.generation.Epoch,lastSeenEpoch:org.pragmatica.aether.slice.generation.Epoch,provisioningSource:org.pragmatica.aether.slice.kvstore.AetherValue$ProvisioningSource)
 SHAPE org.pragmatica.aether.slice.generation.Epoch (incarnation:long,rabiaTerm:long,localCounter:long)
 SHAPE org.pragmatica.aether.slice.generation.PartitionOwner (partitionId:java.lang.String,ownerNodeId:org.pragmatica.consensus.NodeId,ownerCommunityId:java.lang.String,ownerEpoch:org.pragmatica.aether.slice.generation.Epoch,ownershipTerm:long)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$AbTestBaseKey (artifactBase:org.pragmatica.aether.artifact.ArtifactBase)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$AbTestKey (testId:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$ActivationDirectiveKey (nodeId:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$AlertThresholdKey (metricName:java.lang.String)
@@ -244,6 +245,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$VersionRoutingKey (artifactB
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$WorkerSliceDirectiveKey (artifact:org.pragmatica.aether.artifact.Artifact,communityId:org.pragmatica.lang.Option<java.lang.String>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$WorkflowClaimKey (conflictKey:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$WorkflowRunKey (id:java.lang.String)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$AbTestBaseValue (liveTests:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$AbTestValue (testId:java.lang.String,artifactBase:org.pragmatica.aether.artifact.ArtifactBase,baselineVersion:org.pragmatica.aether.artifact.Version,variantVersionsJson:java.lang.String,state:java.lang.String,splitRuleJson:java.lang.String,newWeight:int,oldWeight:int,blueprintId:java.lang.String,createdAt:long,updatedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ActivationDirectiveValue (role:java.lang.String,communityId:java.lang.String,governorHint:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$AlertThresholdValue (metricName:java.lang.String,warningThreshold:double,criticalThreshold:double,updatedAt:long)
@@ -610,6 +612,7 @@ TAG  org.pragmatica.aether.slice.generation.CoreMember 837
 TAG  org.pragmatica.aether.slice.generation.Epoch 838
 TAG  org.pragmatica.aether.slice.generation.HealthHint 840
 TAG  org.pragmatica.aether.slice.generation.PartitionOwner 841
+TAG  org.pragmatica.aether.slice.kvstore.AetherKey$AbTestBaseKey 2225
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$AbTestKey 1088
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ActivationDirectiveKey 1090
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$AlertThresholdKey 1091
@@ -687,6 +690,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherKey$VersionRoutingKey 1136
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$WorkerSliceDirectiveKey 1137
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$WorkflowClaimKey 2223
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$WorkflowRunKey 2220
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$AbTestBaseValue 2226
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$AbTestValue 1601
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ActivationDirectiveValue 1602
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$AlertThresholdValue 1603
