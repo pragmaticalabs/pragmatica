@@ -607,6 +607,24 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(ctm.circuitBreakerStates().keySet()).as("the replacement's source closed, not the committed one").containsExactly("eu-2");
     }
 
+    /// v2711 survivor 9 (c01): a joined node that was no replacement belongs to the source committed for it.
+    @Test
+    void nodeReady_withoutAReplacement_closesTheBreakerOfItsCommittedSource() {
+        var members = Set.of(SELF, PEER_A, PEER_B);
+        var first = org.pragmatica.aether.environment.SourceName.sourceName("eu-1").unwrap();
+        var second = org.pragmatica.aether.environment.SourceName.sourceName("eu-2").unwrap();
+        lifecycleManager.committedSources.put(PEER_A, first);
+        lifecycleManager.committedSources.put(PEER_B, second);
+        ctm.activate();
+        lifecycleManager.failProvisions();
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.some(PEER_A), members, NodeRole.CORE).await();
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.some(PEER_B), members, NodeRole.CORE).await();
+
+        ctm.onNodeReady(PEER_A);
+
+        assertThat(ctm.circuitBreakerStates().keySet()).as("its committed source closed, the other kept").containsExactly("eu-2");
+    }
+
     /// The operator events of the lifecycle (the release of an abandoned dispatch) reach the sink the node gives the manager: the manager
     /// hands its sink on to the lifecycle it owns.
     @Test
