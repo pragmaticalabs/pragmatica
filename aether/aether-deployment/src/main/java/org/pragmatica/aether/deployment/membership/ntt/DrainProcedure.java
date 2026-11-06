@@ -7,12 +7,15 @@ package org.pragmatica.aether.deployment.membership.ntt;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.Unit;
@@ -53,6 +56,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///     both funnel through `performExit()`'s `DRAINING → EXITED` CAS. The tracker-quiesced fork
 ///     additionally waits on the graceful-departure push (issue #427) via a two-flag gate; the
 ///     grace-deadline fork ignores both flags, so the push can never gate the halt beyond grace.
+///     The push gets a [DrainWindow] whose deadline is the drain start plus the grace, less a halt
+///     slack (#2034), so it resolves, and reports its [DepartureOutcome], before the grace fork fires.
 ///   - No KV / consensus dependency. A partition victim cannot rely on consensus to drain
 ///     itself; the procedure runs purely off node-local state.
 ///   - The SWIM `LEAVE` emit is wrapped in a no-throw guard at the caller (`Runnable`).
@@ -61,9 +66,13 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 public final class DrainProcedure {
     private static final Logger log = LoggerFactory.getLogger(DrainProcedure.class);
     private static final TimeSpan DEFAULT_DRAIN_TIMEOUT = timeSpan(30).seconds();
-    /// Default push supplier for triggers that carry no DHT data (or hosts without a DHT layer): an
+    /// How long before the grace deadline the departure legs must resolve (#2034): time to log the outcome and reach the
+    /// quiesced-fork exit before the grace fork forces it. [taste, marked: settle by forge drain timings]
+    static final TimeSpan HALT_SLACK = timeSpan(1).seconds();
+
+    /// Default push for triggers that carry no DHT data (or hosts without a DHT layer): an
     /// already-settled success, so the quiesced-fork exit gate never waits on it (issue #427).
-    private static final Supplier<Promise<Unit>> NO_DEPARTURE_PUSH = () -> Promise.success(Unit.unit());
+    private static final Function<DrainWindow, Promise<DepartureOutcome>> NO_DEPARTURE_PUSH = _ -> Promise.success(DepartureOutcome.COMPLETED);
 
     public enum DrainState {
         INACTIVE,
@@ -74,7 +83,7 @@ public final class DrainProcedure {
     private final InFlightRequestTracker tracker;
     private final Runnable swimLeaveEmitter;
     private final Consumer<DrainReason> drainInitiatedEmitter;
-    private final Supplier<Promise<Unit>> departurePush;
+    private final Function<DrainWindow, Promise<DepartureOutcome>> departurePush;
     private final Runnable jvmExit;
     private final TimeSpan drainTimeout;
     private final AtomicReference<DrainState> state = new AtomicReference<>(DrainState.INACTIVE);
@@ -87,11 +96,18 @@ public final class DrainProcedure {
     /// it is the hard backstop, so the push can never gate the halt beyond the grace window.
     private final AtomicBoolean trackerDrained = new AtomicBoolean(false);
     private final AtomicBoolean pushSettled = new AtomicBoolean(false);
+    /// The drain clock, captured by the single winning [#initiate] (#2034): monotonic for the deadline, wall clock for the
+    /// event subject.
+    private volatile long drainStartNanos;
+    private volatile long drainStartMillis;
+
+    /// How the departure push ended; empty until it settles (and for ever if the grace fork halts first).
+    private final AtomicReference<Option<DepartureOutcome>> departureOutcome = new AtomicReference<>(Option.none());
 
     private DrainProcedure(InFlightRequestTracker tracker,
                            Runnable swimLeaveEmitter,
                            Consumer<DrainReason> drainInitiatedEmitter,
-                           Supplier<Promise<Unit>> departurePush,
+                           Function<DrainWindow, Promise<DepartureOutcome>> departurePush,
                            Runnable jvmExit,
                            TimeSpan drainTimeout) {
         this.tracker = tracker;
@@ -176,7 +192,44 @@ public final class DrainProcedure {
                                                 Supplier<Promise<Unit>> departurePush,
                                                 Runnable jvmExit,
                                                 TimeSpan drainTimeout) {
+        return new DrainProcedure(tracker,
+                                  swimLeaveEmitter,
+                                  drainInitiatedEmitter,
+                                  completedAfter(departurePush),
+                                  jvmExit,
+                                  drainTimeout);
+    }
+
+    /// The #2034 production factory: the departure push receives the [DrainWindow] (absolute deadline, drain start, halt flag)
+    /// and reports its [DepartureOutcome]. Otherwise as the `Supplier` factory above, which adapts to this one with an outcome of
+    /// [DepartureOutcome#COMPLETED] (Forge and Ember hosts keep using it unchanged).
+    public static DrainProcedure drainProcedure(InFlightRequestTracker tracker,
+                                                Runnable swimLeaveEmitter,
+                                                Consumer<DrainReason> drainInitiatedEmitter,
+                                                Function<DrainWindow, Promise<DepartureOutcome>> departurePush,
+                                                Runnable jvmExit) {
+        return drainProcedure(tracker,
+                              swimLeaveEmitter,
+                              drainInitiatedEmitter,
+                              departurePush,
+                              jvmExit,
+                              DEFAULT_DRAIN_TIMEOUT);
+    }
+
+    /// Fully-explicit variant of the #2034 factory with a caller-supplied drain grace window.
+    public static DrainProcedure drainProcedure(InFlightRequestTracker tracker,
+                                                Runnable swimLeaveEmitter,
+                                                Consumer<DrainReason> drainInitiatedEmitter,
+                                                Function<DrainWindow, Promise<DepartureOutcome>> departurePush,
+                                                Runnable jvmExit,
+                                                TimeSpan drainTimeout) {
         return new DrainProcedure(tracker, swimLeaveEmitter, drainInitiatedEmitter, departurePush, jvmExit, drainTimeout);
+    }
+
+    /// A legacy push knows nothing of sole copies: whatever it settles with, the outcome is [DepartureOutcome#COMPLETED].
+    private static Function<DrainWindow, Promise<DepartureOutcome>> completedAfter(Supplier<Promise<Unit>> departurePush) {
+        return _ -> departurePush.get()
+                                 .map(_ -> DepartureOutcome.COMPLETED);
     }
 
     /// Kick off the §8.2 procedure. Single-shot: re-entries while `DRAINING` or `EXITED`
@@ -188,6 +241,8 @@ public final class DrainProcedure {
             return;
         }
 
+        drainStartNanos = System.nanoTime();
+        drainStartMillis = System.currentTimeMillis();
         initiatedReason.set(reason);
         log.warn("DrainProcedure: DRAINING (reason={}) — closing tracker gate, grace={}ms",
                  reason,
@@ -201,22 +256,28 @@ public final class DrainProcedure {
     /// Kick off the bounded graceful-departure push (issue #427, D1). Started ONLY from the
     /// tracker-quiesced continuation ([#onTrackerDrained]) — after in-flight accepted requests have
     /// completed — so the chunk enumeration snapshots storage AFTER the last in-flight write lands,
-    /// never concurrently with it. The supplier's own budget bounds it; `onResult` fires on settle
-    /// (acks in OR budget expired) and flips the `pushSettled` gate. A synchronous throw from the
-    /// supplier is isolated — the push is best-effort observability, never a correctness requirement,
-    /// and the drain must proceed regardless.
+    /// never concurrently with it. The [DrainWindow] bounds it (#2034); `onResult` fires on settle and
+    /// flips the `pushSettled` gate. A synchronous throw from the push, or a failed push, is isolated
+    /// and counts as [DepartureOutcome#COMPLETED] — the drain must proceed regardless (FER: the push's own
+    /// report already named what it left behind).
     private void startDeparturePush() {
-        runDeparturePushSafely().onResult(_ -> onPushSettled());
+        runDeparturePushSafely().onResult(result -> onPushSettled(result.or(DepartureOutcome.COMPLETED)));
     }
 
-    private Promise<Unit> runDeparturePushSafely() {
-        return Result.lift(Causes::fromThrowable, departurePush::get).fold(cause -> {
-                                                                               log.warn("DrainProcedure: departure push kickoff failed: {} — drain proceeds",
-                                                                                        cause.message());
+    private Promise<DepartureOutcome> runDeparturePushSafely() {
+        var window = DrainWindow.drainWindow(drainStartNanos + drainTimeout.nanos() - HALT_SLACK.nanos(),
+                                             drainStartMillis,
+                                             () -> state.get() == DrainState.EXITED);
 
-                                                                               return Promise.unitPromise();
-                                                                           },
-                                                                           promise -> promise);
+        return Result.lift(Causes::fromThrowable,
+                           () -> departurePush.apply(window))
+                     .fold(DrainProcedure::kickoffFailed, promise -> promise);
+    }
+
+    private static Promise<DepartureOutcome> kickoffFailed(Cause cause) {
+        log.warn("DrainProcedure: departure push kickoff failed: {} — drain proceeds", cause.message());
+
+        return Promise.success(DepartureOutcome.COMPLETED);
     }
 
     /// Best-effort `SelfDrainInitiated` emit. A throwing emitter does not interrupt the drain — the
@@ -253,8 +314,20 @@ public final class DrainProcedure {
         startDeparturePush();
     }
 
-    /// Departure-push settled (acks in, or its bounded budget expired). Flips the second exit gate.
-    private void onPushSettled() {
+    /// How the departure push ended, once it settled (#2034). Empty before, and when the grace fork halted first.
+    public Option<DepartureOutcome> departureOutcome() {
+        return departureOutcome.get();
+    }
+
+    /// Departure-push settled (acks in, or its bounded window ended). Records and logs the outcome, then flips the second exit
+    /// gate, so the outcome is known before `jvmExit` runs.
+    private void onPushSettled(DepartureOutcome outcome) {
+        departureOutcome.set(Option.some(outcome));
+        if (outcome == DepartureOutcome.COMPLETED_WITH_DATA_AT_RISK) {
+            log.warn("DrainProcedure: drain completed with data at risk — sole-copy DHT chunk(s) unconfirmed on any survivor; "
+                    + "halting anyway (see the departure-push report and the dht-departure-sole-copy-at-risk event)");
+        }
+
         pushSettled.set(true);
         maybeExit();
     }

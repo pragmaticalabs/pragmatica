@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.artifact.Artifact;
@@ -25,6 +26,7 @@ import org.pragmatica.aether.slice.stream.SystemStreams;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamPartitionManager.Exhaustion;
 import org.pragmatica.aether.stream.SystemStreamFactories;
+import org.pragmatica.aether.node.DhtDeparturePush;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.leader.LeaderNotification;
@@ -46,6 +48,9 @@ import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.utility.warning.OperatorWarning;
@@ -2696,6 +2701,7 @@ class ClusterEventAggregatorTest {
 
     /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the three consumer pairs of #2201
     /// C-16 (behind the ring, the hole, and the cursor expiry), the oversized-event refusal and the
+    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the departure sole-copy pair of #2034); every other code keeps the plain 60 s throttle.
     /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the refused consensus restore of #2316); every other code keeps the plain 60 s throttle.
     @Test
     void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
@@ -2774,6 +2780,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.SCHEMA_MIGRATION_FENCED,
                 OperatorWarningCode.KV_DISPATCH_CAUGHT_UP,
                 OperatorWarningCode.KV_DISPATCH_SLOW_HANDLER_RETURNED,
+                OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED,
             });
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(new OperatorWarningCode[]{
@@ -2844,6 +2851,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.SCHEMA_MIGRATION_UNFENCED,
                 OperatorWarningCode.KV_DISPATCH_LAGGING,
                 OperatorWarningCode.KV_DISPATCH_SLOW_HANDLER,
+                OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK,
             });
         var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);
@@ -3080,5 +3088,249 @@ class ClusterEventAggregatorTest {
         assertThat(codes(h)).containsExactly("stream-catchup-source-not-answering", "stream-catchup-source-answering-restored");
         assertThat(h.events().stream().map(ClusterEvent::severity).toList())
             .containsExactly(ClusterEvent.Severity.WARNING, ClusterEvent.Severity.INFO);
+    }
+
+    /// #2034 T20: [ClusterEventAggregator#raiseAwaited] completes when the event's life ends — landed, given up, throttled,
+    /// suppressed by replay, or after a synchronous throw — never at the call while a publish is still in flight. A draining node
+    /// waits on these before it halts, so a promise that never completes, or completes early, breaks that wait.
+    @Nested
+    class RaiseAwaited {
+        private static final TimeSpan SETTLE = TimeSpan.timeSpan(2).seconds();
+
+        @Test
+        @Timeout(10)
+        void heldDelivery_completesOnlyOnceTheEventLands() {
+            var h = Harness.create();
+            Promise<Unit> gate = Promise.promise();
+            h.aggregator().interceptPublish(_ -> gate);
+
+            var landed = h.aggregator().raiseAwaited(atRisk("n1@1"));
+
+            assertThat(landed.isResolved()).as("the publish is still in flight").isFalse();
+            gate.succeed(Unit.unit());
+            assertThat(landed.await(SETTLE).isSuccess()).as("completes once the event lands").isTrue();
+        }
+
+        @Test
+        @Timeout(10)
+        void givenUpDelivery_completes() {
+            var clock = new AtomicLong(1_000_000L);
+            var h = clocked(clock);
+            h.aggregator().interceptPublish(_ -> Causes.cause("refused").promise());
+
+            var landed = h.aggregator().raiseAwaited(atRisk("n1@1"));
+
+            assertThat(landed.isResolved()).as("control: held for redelivery").isFalse();
+            expireRedelivery(h, clock);
+            assertThat(h.aggregator().redeliveryDropped()).as("control: given up").containsEntry("expired", 1L);
+            assertThat(landed.await(SETTLE).isSuccess()).as("a given-up event ends the wait").isTrue();
+        }
+
+        @Test
+        @Timeout(10)
+        void throttledRepeat_completesAtOnce() {
+            var h = Harness.create();
+            Promise<Unit> gate = Promise.promise();
+            h.aggregator().interceptPublish(_ -> gate);
+
+            var first = h.aggregator().raiseAwaited(atRisk("n1@1"));
+            var repeat = h.aggregator().raiseAwaited(atRisk("n1@1"));
+
+            assertThat(repeat.isResolved()).as("a throttled repeat publishes nothing to wait for").isTrue();
+            assertThat(first.isResolved()).as("control: the first is still in flight").isFalse();
+        }
+
+        @Test
+        @Timeout(10)
+        void replay_completesAtOnce_andPublishesNothing() {
+            var h = Harness.create(Harness.defaultRetention(), OWNER, () -> true);
+
+            var warning = h.aggregator().raiseAwaited(atRisk("n1@1"));
+            var report = h.aggregator().onDeparturePushIncompleteAwaited(SELF, 3, 1, List.of("k1"));
+
+            assertThat(warning.await(SETTLE).isSuccess()).as("replay-suppressed warning").isTrue();
+            assertThat(report.await(SETTLE).isSuccess()).as("replay-suppressed report (emitLocal path)").isTrue();
+            assertThat(h.events()).isEmpty();
+        }
+
+        @Test
+        @Timeout(10)
+        void deliveredWhileAtRiskHeld_completesAfterBothLand() {
+            var h = Harness.create();
+            Promise<Unit> gate = Promise.promise();
+            var published = new java.util.concurrent.CopyOnWriteArrayList<String>();
+            h.aggregator().interceptPublish(event -> recordThen(published, event, gate));
+
+            var atRisk = h.aggregator().raiseAwaited(atRisk("n1@1"));
+            var delivered = h.aggregator().raiseAwaited(delivered("n1@1"));
+
+            assertThat(delivered.isResolved()).as("the recovery is held behind its warning").isFalse();
+            assertThat(published).as("control: only the warning is in flight").containsExactly("dht-departure-sole-copy-at-risk");
+            gate.succeed(Unit.unit());
+            assertThat(delivered.await(SETTLE).isSuccess()).as("completes once both landed").isTrue();
+            assertThat(atRisk.await(SETTLE).isSuccess()).isTrue();
+            assertThat(published).containsExactly("dht-departure-sole-copy-at-risk", "dht-departure-sole-copy-delivered");
+        }
+
+        /// #2684 N1: a second recovery for the subject while the warning is still in flight replaces the held one; the replaced
+        /// recovery is never published, and its wait ends at the replacement instead of never.
+        @Test
+        @Timeout(10)
+        void replacedHeldRecovery_completes() {
+            var h = Harness.create();
+            Promise<Unit> gate = Promise.promise();
+            var published = new java.util.concurrent.CopyOnWriteArrayList<String>();
+            h.aggregator().interceptPublish(event -> recordThen(published, event, gate));
+
+            h.aggregator().raiseAwaited(atRisk("n1@1"));
+            var first = h.aggregator().raiseAwaited(delivered("n1@1"));
+            var second = h.aggregator().raiseAwaited(delivered("n1@1"));
+
+            assertThat(first.await(SETTLE).isSuccess()).as("the replaced recovery's wait ends").isTrue();
+            assertThat(second.isResolved()).as("control: the replacing recovery is still held").isFalse();
+            gate.succeed(Unit.unit());
+            assertThat(second.await(SETTLE).isSuccess()).isTrue();
+            assertThat(published).containsExactly("dht-departure-sole-copy-at-risk", "dht-departure-sole-copy-delivered");
+        }
+
+        /// #2684 N1: a held recovery dropped because the warning it closes is raised again before the first delivery landed is never
+        /// published, and its wait ends at the drop instead of never.
+        @Test
+        @Timeout(10)
+        void heldRecoveryDroppedByARepeatedWarning_completes() {
+            var h = Harness.create();
+            Promise<Unit> gate = Promise.promise();
+            var published = new java.util.concurrent.CopyOnWriteArrayList<String>();
+            h.aggregator().interceptPublish(event -> recordThen(published, event, gate));
+
+            h.aggregator().raiseAwaited(atRisk("n1@1"));
+            var recovery = h.aggregator().raiseAwaited(delivered("n1@1"));
+            h.aggregator().raiseAwaited(atRisk("n1@1"));
+
+            assertThat(published).as("control: the repeated warning was delivered, not throttled")
+                                 .containsExactly("dht-departure-sole-copy-at-risk", "dht-departure-sole-copy-at-risk");
+            assertThat(recovery.await(SETTLE).isSuccess()).as("the dropped recovery's wait ends").isTrue();
+        }
+
+        /// E5: the awaited departure report (3-arg deliver) completes when it lands, not at the call.
+        @Test
+        @Timeout(10)
+        void incompleteReport_heldDelivery_completesOnlyOnceItLands() {
+            var h = Harness.create();
+            Promise<Unit> gate = Promise.promise();
+            var published = new java.util.concurrent.CopyOnWriteArrayList<ClusterEvent>();
+            h.aggregator().interceptPublish(event -> captureThen(published, event, gate));
+
+            var report = h.aggregator().onDeparturePushIncompleteAwaited(SELF, 3, 1, List.of("k1"));
+
+            assertThat(report.isResolved()).as("the publish is still in flight").isFalse();
+            gate.succeed(Unit.unit());
+            assertThat(report.await(SETTLE).isSuccess()).isTrue();
+            assertThat(published).singleElement()
+                                 .satisfies(event -> assertThat(event.details()).containsEntry("soleCopyAtRisk", "1")
+                                                                                .containsEntry("outcome", "COMPLETED_WITH_DATA_AT_RISK"));
+            assertThat(published.getFirst().summary()).contains("completed with data at risk");
+        }
+
+        /// E5: a publish that throws synchronously ends the wait for both entries instead of leaving it open.
+        @Test
+        @Timeout(10)
+        void synchronousThrow_completes() {
+            var h = Harness.create();
+            h.aggregator().interceptPublish(ClusterEventAggregatorTest::throwingPublish);
+
+            var warning = h.aggregator().raiseAwaited(atRisk("n1@1"));
+            var report = h.aggregator().onDeparturePushIncompleteAwaited(SELF, 3, 1, List.of("k1"));
+
+            assertThat(warning.await(SETTLE).isSuccess()).isTrue();
+            assertThat(report.await(SETTLE).isSuccess()).isTrue();
+        }
+
+        private static OperatorWarning atRisk(String subject) {
+            return OperatorWarning.operatorWarning(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK, subject, "at risk " + subject);
+        }
+
+        private static OperatorWarning delivered(String subject) {
+            return OperatorWarning.operatorWarning(OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED, subject, "delivered " + subject);
+        }
+
+        private static Promise<Unit> recordThen(List<String> published, ClusterEvent event, Promise<Unit> gate) {
+            published.add(event.details().get("code"));
+
+            return gate;
+        }
+
+        private static Promise<Unit> captureThen(List<ClusterEvent> published, ClusterEvent event, Promise<Unit> gate) {
+            published.add(event);
+
+            return gate;
+        }
+    }
+
+    /// #2034 T22: the observer a drain episode binds turns the push's callbacks into this node's events. The at-risk warning
+    /// carries the episode subject `<node>@<drainStartMillis>`; the final report names its sole-copy share and the outcome.
+    @Nested
+    class DepartureEventsBinding {
+        private static final long DRAIN_START_MILLIS = 1_700_000_000_123L;
+        private static final TimeSpan SETTLE = TimeSpan.timeSpan(2).seconds();
+
+        @Test
+        @Timeout(10)
+        void soleCopyAtRisk_raisesTheWarningForTheDrainEpisodeSubject() {
+            var h = Harness.create();
+            var observer = DhtDeparturePush.departureEvents(h.aggregator(), SELF, DhtDeparturePush.subject(SELF, DRAIN_START_MILLIS));
+
+            assertThat(observer.onSoleCopyAtRisk(2, List.of("k1", "k2")).await(SETTLE).isSuccess()).isTrue();
+
+            assertThat(h.events()).singleElement()
+                                  .satisfies(event -> assertThat(event.details()).containsEntry("code", "dht-departure-sole-copy-at-risk")
+                                                                                 .containsEntry("subject", "self-node@1700000000123"));
+        }
+
+        @Test
+        @Timeout(10)
+        void soleCopyDelivered_raisesTheRecoveryCodeForTheSameSubject() {
+            var h = Harness.create();
+            var observer = DhtDeparturePush.departureEvents(h.aggregator(), SELF, DhtDeparturePush.subject(SELF, DRAIN_START_MILLIS));
+
+            assertThat(observer.onSoleCopyAtRisk(2, List.of("k1", "k2")).await(SETTLE).isSuccess()).isTrue();
+            assertThat(observer.onSoleCopyDelivered(2).await(SETTLE).isSuccess()).isTrue();
+
+            assertThat(h.events()).hasSize(2);
+            assertThat(h.events().get(1).details()).containsEntry("code", "dht-departure-sole-copy-delivered")
+                                                   .containsEntry("subject", "self-node@1700000000123");
+        }
+
+        @Test
+        @Timeout(10)
+        void incompleteReportWithSoleKeys_isTheDataAtRiskDepartureReport() {
+            var h = Harness.create();
+            var observer = DhtDeparturePush.departureEvents(h.aggregator(), SELF, DhtDeparturePush.subject(SELF, DRAIN_START_MILLIS));
+
+            assertThat(observer.onIncompleteReport(5, 2, List.of("k1")).await(SETTLE).isSuccess()).isTrue();
+
+            assertThat(h.events()).singleElement()
+                                  .satisfies(event -> assertThat(event.details()).containsEntry("soleCopyAtRisk", "2")
+                                                                                 .containsEntry("keysAtRisk", "5")
+                                                                                 .containsEntry("outcome", "COMPLETED_WITH_DATA_AT_RISK"));
+            assertThat(h.events().getFirst().summary()).contains("completed with data at risk");
+        }
+
+        @Test
+        @Timeout(10)
+        void incompleteReportWithoutSoleKeys_isAPlainIncompletePush() {
+            var h = Harness.create();
+            var observer = DhtDeparturePush.departureEvents(h.aggregator(), SELF, DhtDeparturePush.subject(SELF, DRAIN_START_MILLIS));
+
+            observer.onIncompleteReport(5, 0, List.of("k1")).await(SETTLE);
+
+            assertThat(h.events()).singleElement()
+                                  .satisfies(event -> assertThat(event.details()).containsEntry("outcome", "COMPLETED"));
+            assertThat(h.events().getFirst().summary()).doesNotContain("data at risk");
+        }
+    }
+
+    private static Promise<Unit> throwingPublish(ClusterEvent event) {
+        throw new IllegalStateException("publish threw for " + event.type());
     }
 }
