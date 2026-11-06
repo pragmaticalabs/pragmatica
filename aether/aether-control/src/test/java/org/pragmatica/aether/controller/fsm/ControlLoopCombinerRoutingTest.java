@@ -22,6 +22,7 @@ import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.controller.RequirementCombiner;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.AbTestKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceRequirementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -33,6 +34,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -46,6 +48,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// `RequirementCombinerOrderingTest#productionCombiner_operatorAboveCoreCount_commitsTheRequirement`.
 class ControlLoopCombinerRoutingTest {
     private static final NodeId SELF = NodeId.nodeId("leader").unwrap();
+    private static final NodeId PEER = NodeId.nodeId("peer").unwrap();
     private static final Artifact V1 = Artifact.artifact("org.example:routed-slice:1.0.0").unwrap();
     private static final BlueprintId OWNER = BlueprintId.blueprintId("org.example:routed-app:1.0.0").unwrap();
     private static final SliceTargetKey TARGET_KEY = SliceTargetKey.sliceTargetKey(V1.base());
@@ -120,6 +123,40 @@ class ControlLoopCombinerRoutingTest {
         spiedLoop().onSliceRequirementRemove(new ValueRemove<>(new KVCommand.Remove<>(REACTIVE, Option.none()), Option.none()));
 
         assertThat(spy.events()).containsExactly("requirementRemove " + REACTIVE.asString());
+    }
+
+    /// k01
+    @Test
+    void nodeJoined_reachesTheCombiner() {
+        spiedLoop().onMembershipDecision(MembershipDecision.nodeJoined(PEER, List.of(SELF, PEER)));
+
+        assertThat(spy.events()).containsExactly("topology");
+    }
+
+    /// k02
+    @Test
+    void nodeRemoved_reachesTheCombiner() {
+        spiedLoop().onMembershipDecision(MembershipDecision.nodeRemoved(PEER, List.of(SELF)));
+
+        assertThat(spy.events()).containsExactly("topology");
+    }
+
+    /// k03
+    @Test
+    void nodeDecommissioned_reachesTheCombiner() {
+        spiedLoop().onMembershipDecision(MembershipDecision.nodeDecommissioned(PEER, List.of(SELF)));
+
+        assertThat(spy.events()).containsExactly("topology");
+    }
+
+    /// k04: a canary that started or ended changes whether the slice is combined, so the A/B test put reaches the combiner.
+    @Test
+    void abTestPut_reachesTheCombinerWithTheSliceBase() {
+        var test = AetherValue.AbTestValue.abTestValue("t1", V1.base(), V1.version(), "{}", "ACTIVE", "{}", 50, 50, OWNER.asString(), 0L, 0L);
+
+        spiedLoop().onAbTestPut(new ValuePut<>(new KVCommand.Put<>(new AbTestKey("t1"), test), Option.none()));
+
+        assertThat(spy.events()).containsExactly("abTest " + V1.base().asString());
     }
 
     /// c07: the loop's own combiner reads the loop's clock. A scheduled claim of 7 that expired ten seconds ago is not combined, so
