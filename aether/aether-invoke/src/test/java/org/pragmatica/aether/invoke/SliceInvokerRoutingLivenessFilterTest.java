@@ -5,8 +5,9 @@
 package org.pragmatica.aether.invoke;
 
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -22,7 +23,6 @@ import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.aether.update.VersionRouting;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
-import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -54,6 +54,7 @@ class SliceInvokerRoutingLivenessFilterTest {
     private static final NodeId SELF = new NodeId("self-node");
     private static final NodeId DEAD = new NodeId("dead-node");
     private static final NodeId LIVE_OLD = new NodeId("live-old-node");
+    private static final NodeId LIVE_OLD_2 = new NodeId("live-old-node-2");
     private static final NodeId LIVE_NEW = new NodeId("live-new-node");
     private static final Version OLD_VERSION = Version.version("1.0.0").unwrap();
     private static final Version NEW_VERSION = Version.version("1.1.0").unwrap();
@@ -148,23 +149,23 @@ class SliceInvokerRoutingLivenessFilterTest {
                   .contains(LIVE_NEW);
     }
 
-    /// The FAILOVER arm reaches the weighted pick by its own route (`selectEndpointWithFailover`), so it
-    /// needs its own base-scoped exclusion — the plain arm's is a different call site. Routing is ALL_NEW
-    /// and the only new-version host is DEAD, so a version-scoped exclusion computed from the invoked OLD
-    /// artifact is empty and the very FIRST failover send went to the dead node. With the base-scoped set
-    /// the new arm is empty and the pick falls back to the reachable old host.
+    /// A NotSent re-route (#2807) reaches the weighted pick with the refused nodes excluded, so that exclusion must be
+    /// base-scoped too. Routing is ALL_NEW and the only new-version host is DEAD; both old hosts refuse the write. A
+    /// version-scoped exclusion computed from the invoked OLD artifact would leave DEAD in the pick.
     @Test
-    void weightedRouting_failoverFirstAttempt_neverSelectsDeadNodeHostingOnlyTheOtherVersion() {
+    void weightedRouting_notSentReroute_neverSelectsDeadNodeHostingOnlyTheOtherVersion() {
         registerEndpoint(OLD, 0, LIVE_OLD);
+        registerEndpoint(OLD, 1, LIVE_OLD_2);
         registerEndpoint(NEW, 0, DEAD);
+        network.refuse(LIVE_OLD);
+        network.refuse(LIVE_OLD_2);
         startInvoker(routing("1:0"), rejecting(DEAD));
 
-        var _ = invoker.invokeWithRetry(OLD, METHOD, "request", new TypeToken<String>() {}, 3).await();
+        var _ = invoker.invoke(OLD, METHOD, "request", new TypeToken<String>() {}).await();
 
-        assertThat(network.targets()).as("#275: the failover arm's first attempt must not go to a node the filter rejects, "
+        assertThat(network.targets()).as("#275: a re-route must not go to a node the filter rejects, "
                                          + "even when that node hosts only the version the caller did not name")
-                  .isNotEmpty()
-                  .containsOnly(LIVE_OLD);
+                  .containsExactlyInAnyOrder(LIVE_OLD, LIVE_OLD_2);
     }
 
     /// The filter leaves NOTHING. A silent empty pick, or a fallback onto the unfiltered set, would both be
@@ -178,30 +179,6 @@ class SliceInvokerRoutingLivenessFilterTest {
         var result = invoker.invoke(OLD, METHOD, "request", new TypeToken<String>() {}).await();
 
         assertThat(result.isFailure()).as("#275: no reachable endpoint must fail rather than hang or fall back to the dead node")
-                  .isTrue();
-        assertThat(network.targets()).as("#275: nothing may be sent when every candidate is filtered out")
-                  .isEmpty();
-    }
-
-    /// Same exhaustion on the retry path. The failover arm reported this as `AllInstancesFailedError` with
-    /// an empty attempt list — an operator surface saying the instances failed for a call that never left
-    /// this node, and a non-transient cause for a situation a replacement node resolves. It must be the
-    /// transient `NoEndpointsError`. (#1573: the invoker publishes no failure event at all any more — the
-    /// all-instances-failed verdict is the leader-side detector's.)
-    @Test
-    void weightedRouting_everyHostInaccessible_retryReportsNoEndpoints() {
-        registerEndpoint(OLD, 0, DEAD);
-        registerEndpoint(NEW, 0, DEAD);
-        startInvoker(routing("1:1"), rejecting(DEAD));
-
-        var failure = new AtomicReference<Cause>();
-        var _ = invoker.invokeWithRetry(OLD, METHOD, "request", new TypeToken<String>() {}, 3)
-                       .await()
-                       .onFailure(failure::set);
-
-        assertThat(failure.get()).as("#275: nothing was attempted, so this is an absence of endpoints, not an instance failure")
-                  .isInstanceOf(SliceInvokerError.NoEndpointsError.class);
-        assertThat(failure.get().isTransient()).as("#275: every host being unreachable is transient — a replacement is coming")
                   .isTrue();
         assertThat(network.targets()).as("#275: nothing may be sent when every candidate is filtered out")
                   .isEmpty();
@@ -269,6 +246,11 @@ class SliceInvokerRoutingLivenessFilterTest {
     /// Records the target node of every `InvokeRequest` the invoker sends; nothing ever answers.
     private static final class CapturingNetwork extends StubClusterNetwork {
         private final List<NodeId> targets = new CopyOnWriteArrayList<>();
+        private final Set<NodeId> refusing = ConcurrentHashMap.newKeySet();
+
+        void refuse(NodeId node) {
+            refusing.add(node);
+        }
 
         @Override
         public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
@@ -276,7 +258,9 @@ class SliceInvokerRoutingLivenessFilterTest {
                 targets.add(nodeId);
             }
 
-            return Promise.success(new WriteOutcome.Sent(nodeId));
+            return Promise.success(refusing.contains(nodeId)
+                                   ? new WriteOutcome.NoPeerState(nodeId)
+                                   : new WriteOutcome.Sent(nodeId));
         }
 
         List<NodeId> targets() {

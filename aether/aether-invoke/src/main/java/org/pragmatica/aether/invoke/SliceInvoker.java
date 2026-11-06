@@ -15,11 +15,13 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
 import org.pragmatica.aether.http.forward.AccessibilityFilter;
+import org.pragmatica.aether.http.forward.ForwardError;
 import org.pragmatica.aether.endpoint.EndpointRegistry.Endpoint;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse;
@@ -33,6 +35,7 @@ import org.pragmatica.aether.slice.topic.MessageContext;
 import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.aether.update.DeploymentManager.ActiveRouting;
 import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
@@ -135,12 +138,6 @@ public interface SliceInvoker extends SliceInvokerFacade {
 
     <R> Promise<R> invoke(Artifact slice, MethodName method, Object request, TypeToken<R> responseType);
 
-    <R> Promise<R> invokeWithRetry(Artifact slice,
-                                   MethodName method,
-                                   Object request,
-                                   TypeToken<R> responseType,
-                                   int maxRetries);
-
     <R> Promise<R> invokeLocal(Artifact slice, MethodName method, Object request, TypeToken<R> responseType);
 
     /// Why a non-default [SliceInvoker] refuses [#invokeLocalWithContext].
@@ -193,8 +190,10 @@ public interface SliceInvoker extends SliceInvokerFacade {
     Promise<Unit> stop();
     int pendingCount();
     long DEFAULT_TIMEOUT_MS = 20_000;
+    /// Default bound on NotSent re-routes of one typed [#invoke(Artifact, MethodName, Object, TypeToken)] call (#2807),
+    /// the default of `timeouts.invocation.max_retries`. A re-route sends to ANOTHER instance only a request the
+    /// transport provably refused to write; nothing is ever re-sent.
     int DEFAULT_MAX_RETRIES = 3;
-    long BASE_RETRY_DELAY_MS = 100;
 
     /// #275: membership-liveness narrowing for slice-to-slice endpoint selection, the same
     /// [AccessibilityFilter] the HTTP forward path consults (`MembershipFsm.reachableMembers`). A node
@@ -241,6 +240,30 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                      long timeoutMs,
                                      long cleanupIntervalMs,
                                      DeploymentManager deploymentManager) {
+        return sliceInvoker(self,
+                            network,
+                            endpointRegistry,
+                            invocationHandler,
+                            serializer,
+                            deserializer,
+                            timeoutMs,
+                            cleanupIntervalMs,
+                            DEFAULT_MAX_RETRIES,
+                            deploymentManager);
+    }
+
+    /// `maxRetries` bounds the NotSent re-routes of one typed call (`timeouts.invocation.max_retries`, #2807); zero or
+    /// less disables re-routing.
+    static SliceInvoker sliceInvoker(NodeId self,
+                                     ClusterNetwork network,
+                                     EndpointRegistry endpointRegistry,
+                                     InvocationHandler invocationHandler,
+                                     Serializer serializer,
+                                     Deserializer deserializer,
+                                     long timeoutMs,
+                                     long cleanupIntervalMs,
+                                     int maxRetries,
+                                     DeploymentManager deploymentManager) {
         return new SliceInvokerImpl(self,
                                     network,
                                     endpointRegistry,
@@ -249,6 +272,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                     deserializer,
                                     timeoutMs,
                                     cleanupIntervalMs,
+                                    maxRetries,
                                     deploymentManager);
     }
 }
@@ -272,6 +296,7 @@ class SliceInvokerImpl implements SliceInvoker {
     private final Serializer serializer;
     private final Deserializer deserializer;
     private final long timeoutMs;
+    private final int maxRetries;
     private volatile ScheduledFuture<?> cleanupTask;
     private final DeploymentManager deploymentManager;
     private final ConcurrentHashMap<String, PendingInvocation> pendingInvocations = new ConcurrentHashMap<>();
@@ -327,6 +352,7 @@ class SliceInvokerImpl implements SliceInvoker {
                      Deserializer deserializer,
                      long timeoutMs,
                      long cleanupIntervalMs,
+                     int maxRetries,
                      DeploymentManager deploymentManager) {
         this.self = self;
         this.network = network;
@@ -335,6 +361,7 @@ class SliceInvokerImpl implements SliceInvoker {
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.timeoutMs = timeoutMs;
+        this.maxRetries = maxRetries;
         this.deploymentManager = deploymentManager;
         this.cleanupTask = SharedScheduler.scheduleAtFixedRate(this::cleanupStaleInvocations,
                                                                timeSpan(cleanupIntervalMs).millis());
@@ -592,19 +619,86 @@ class SliceInvokerImpl implements SliceInvoker {
         // wait falls back to the full configured timeout (measured: 60,015ms elapsed under a 300ms
         // budget before this capture existed).
         var deadline = Deadline.current();
+        var attempt = new RouteAttempt<>(slice, method, request, responseType, deadline, Set.<NodeId> of(), maxRetries);
 
-        return selectEndpointWithAffinity(slice, method, request).flatMap(endpoint -> endpoint.nodeId()
-                                                                                              .equals(self)
-                                                                                      ? invokeLocal(slice,
-                                                                                                    method,
-                                                                                                    request,
-                                                                                                    responseType)
-                                                                                      : sendRequestResponse(endpoint,
-                                                                                                            slice,
-                                                                                                            method,
-                                                                                                            request,
-                                                                                                            deadline))
+        return selectEndpointWithAffinity(slice,
+                                          method,
+                                          request,
+                                          attempt.refusedNodes()).flatMap(endpoint -> invokeAt(attempt, endpoint))
                                          .onFailure(cause -> logInvokeFailure(slice, method, cause));
+    }
+
+    /// #2807: one typed call's routing state across NotSent re-routes: the nodes whose transport refused the request
+    /// and how many re-routes are left (`timeouts.invocation.max_retries`).
+    private record RouteAttempt<R>(Artifact slice,
+                                   MethodName method,
+                                   Object request,
+                                   TypeToken<R> responseType,
+                                   Deadline deadline,
+                                   Set<NodeId> refusedNodes,
+                                   int reroutesLeft) {
+        RouteAttempt<R> refusedBy(NodeId node) {
+            return new RouteAttempt<>(slice,
+                                      method,
+                                      request,
+                                      responseType,
+                                      deadline,
+                                      Stream.concat(refusedNodes.stream(),
+                                                    Stream.of(node))
+                                            .collect(Collectors.toUnmodifiableSet()),
+                                      reroutesLeft - 1);
+        }
+    }
+
+    private <R> Promise<R> invokeAt(RouteAttempt<R> attempt, Endpoint endpoint) {
+        return endpoint.nodeId()
+                       .equals(self)
+               ? invokeLocal(attempt.slice(), attempt.method(), attempt.request(), attempt.responseType())
+               : this.<R> sendRequestResponse(endpoint,
+                                              attempt.slice(),
+                                              attempt.method(),
+                                              attempt.request(),
+                                              attempt.deadline())
+                     .fold(result -> result.fold(cause -> rerouteIfNotSent(attempt,
+                                                                           endpoint.nodeId(),
+                                                                           cause),
+                                                 Promise::success));
+    }
+
+    /// #2807: only a request the transport provably refused to write ([ForwardError.NotSent]) goes to another instance.
+    /// Every other failure is surfaced as it is: a timeout, a departed target ([SliceInvokerError.TargetDeparted]) or the
+    /// callee's own failure may follow a request that ran, and a non-idempotent call must not run twice. The re-route is
+    /// bounded by the call's re-routes left and by its remaining deadline.
+    private <R> Promise<R> rerouteIfNotSent(RouteAttempt<R> attempt, NodeId refusedNode, Cause cause) {
+        return isReroutable(attempt, cause)
+               ? reroute(attempt.refusedBy(refusedNode), refusedNode, cause)
+               : cause.promise();
+    }
+
+    private boolean isReroutable(RouteAttempt<?> attempt, Cause cause) {
+        return cause instanceof ForwardError.NotSent
+               && attempt.reroutesLeft() > 0
+               && !attempt.deadline()
+                          .expired()
+               && !stopped.get();
+    }
+
+    /// The next instance comes from the normal endpoint selection with every refused node excluded. When none is left,
+    /// the call fails with the refusal itself, which says nothing ran, rather than with "no endpoint".
+    private <R> Promise<R> reroute(RouteAttempt<R> next, NodeId refusedNode, Cause notSent) {
+        log.debug("[requestId={}] {}.{} not sent to {}, re-routing to another instance ({} re-routes left): {}",
+                  InvocationContext.getOrGenerateRequestId(),
+                  next.slice(),
+                  next.method(),
+                  refusedNode,
+                  next.reroutesLeft(),
+                  notSent.message());
+
+        return selectEndpointWithAffinity(next.slice(),
+                                          next.method(),
+                                          next.request(),
+                                          next.refusedNodes()).orElse(notSent::promise)
+                                         .flatMap(endpoint -> invokeAt(next, endpoint));
     }
 
     /// One tier-mismatch WARN per (subscriber slice, method) per this period, then DEBUG with a suppressed count (#1337). A hot ephemeral
@@ -736,7 +830,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                                         InvocationContext.isSampled());
         // The frame must not outlive the wait that just started: a call delivered after its caller timed out ("may
         // have run") would run minutes later on reattach (#1996).
-        network.send(targetNode, invokeRequest, callerWait);
+        network.send(targetNode, invokeRequest, callerWait)
+               .onSuccess(outcome -> refusal(outcome).onPresent(pendingPromise::fail));
         if (log.isDebugEnabled()) {
             log.debug("[requestId={}] Sent InvokeRequest to {}: {}.{} [{}]",
                       requestId,
@@ -745,263 +840,6 @@ class SliceInvokerImpl implements SliceInvoker {
                       method,
                       correlationId);
         }
-    }
-
-    @Override
-    public <R> Promise<R> invokeWithRetry(Artifact slice,
-                                          MethodName method,
-                                          Object request,
-                                          TypeToken<R> responseType,
-                                          int maxRetries) {
-        if (stopped.get()) {
-            return INVOKER_STOPPED.promise();
-        }
-
-        var requestId = InvocationContext.getOrGenerateRequestId();
-        // Ambient budget captured at entry, same reasoning as invoke(): the failover arm sites run in
-        // continuations where the ScopedValue is not bound.
-        var ctx = new FailoverContext<>(slice,
-                                        method,
-                                        request,
-                                        responseType,
-                                        maxRetries,
-                                        requestId,
-                                        Set.of(),
-                                        List.of(),
-                                        Option.none(),
-                                        Deadline.current());
-
-        return Promise.promise(promise -> executeWithFailover(promise, ctx));
-    }
-
-    private record FailoverContext<R>(Artifact slice,
-                                      MethodName method,
-                                      Object request,
-                                      TypeToken<R> responseType,
-                                      int maxRetries,
-                                      String requestId,
-                                      java.util.Set<NodeId> failedNodes,
-                                      java.util.List<NodeId> attemptedNodes,
-                                      Option<Cause> lastError,
-                                      Deadline deadline) {
-        FailoverContext<R> withFailure(NodeId failedNode, Cause error) {
-            var newFailed = new java.util.HashSet<>(failedNodes);
-
-            newFailed.add(failedNode);
-            var newAttempted = new java.util.ArrayList<>(attemptedNodes);
-
-            newAttempted.add(failedNode);
-
-            return new FailoverContext<>(slice,
-                                         method,
-                                         request,
-                                         responseType,
-                                         maxRetries,
-                                         requestId,
-                                         Set.copyOf(newFailed),
-                                         List.copyOf(newAttempted),
-                                         Option.some(error),
-                                         deadline);
-        }
-
-        int attemptCount() {
-            return attemptedNodes.size();
-        }
-    }
-
-    private <R> void executeWithFailover(Promise<R> promise, FailoverContext<R> ctx) {
-        selectEndpointWithFailover(ctx.slice, ctx.method, ctx.failedNodes).onEmpty(() -> handleAllEndpointsFailed(promise,
-                                                                                                                  ctx))
-                                  .onPresent(endpoint -> invokeEndpointWithFailover(promise, ctx, endpoint));
-    }
-
-    private Option<Endpoint> selectEndpointWithFailover(Artifact slice,
-                                                        MethodName method,
-                                                        java.util.Set<NodeId> failedNodes) {
-        var artifactBase = ArtifactBase.artifactBase(slice.groupId(), slice.artifactId());
-        var activeRouting = deploymentManager.activeRouting(artifactBase);
-
-        if (activeRouting.isEmpty()) {
-            var exclude = excludedNodes(slice, method, failedNodes);
-
-            if (exclude.isEmpty()) {
-                return endpointRegistry.selectEndpoint(slice, method);
-            }
-
-            return endpointRegistry.selectEndpointExcluding(slice, method, exclude);
-        }
-        // #275: the weighted pick draws from every version of the base, so the exclusion handed to it
-        // must be base-scoped too. Scoping it to `slice`'s own version left a dead node hosting only the
-        // other version out of the set, and the pick then handed that node out mid-deployment.
-        var exclude = excludedNodesForBase(artifactBase, method, failedNodes);
-
-        return activeRouting.flatMap(routing -> endpointRegistry.selectEndpointWithRouting(artifactBase,
-                                                                                           method,
-                                                                                           routing.routing(),
-                                                                                           routing.oldVersion(),
-                                                                                           routing.newVersion(),
-                                                                                           exclude))
-                            .orElse(() -> endpointRegistry.selectEndpointExcluding(slice, method, exclude));
-    }
-
-    private <R> void invokeEndpointWithFailover(Promise<R> promise, FailoverContext<R> ctx, Endpoint endpoint) {
-        var targetNode = endpoint.nodeId();
-
-        if (targetNode.equals(self)) {
-            invokeLocalForFailover(promise, ctx);
-
-            return;
-        }
-
-        invokeRemoteForFailover(promise, ctx, targetNode);
-    }
-
-    @SuppressWarnings("unchecked")
-    private <R> void invokeLocalForFailover(Promise<R> promise, FailoverContext<R> ctx) {
-        invocationHandler.localSlice(ctx.slice)
-                         .async(SLICE_NOT_FOUND)
-                         .flatMap(bridge -> InvocationContext.runWithRequestId(ctx.requestId,
-                                                                               () -> ObservabilityCells.around(bridge,
-                                                                                                               ctx.method.name(),
-                                                                                                               () -> invokeViaBridge(ctx.slice,
-                                                                                                                                     bridge,
-                                                                                                                                     ctx.method,
-                                                                                                                                     ctx.request))))
-                         .onSuccess(result -> promise.succeed((R) result))
-                         .onFailure(cause -> handleFailoverFailure(promise, ctx, self, cause));
-    }
-
-    private <R> void invokeRemoteForFailover(Promise<R> promise, FailoverContext<R> ctx, NodeId targetNode) {
-        findSenderBridge(ctx.slice(),
-                         ctx.request).onEmpty(() -> handleFailoverFailure(promise,
-                                                                          ctx,
-                                                                          targetNode,
-                                                                          SENDER_BRIDGE_NOT_FOUND))
-                        .onPresent(senderBridge -> senderBridge.encode(ctx.request)
-                                                               .onSuccess(payload -> sendFailoverPayload(promise,
-                                                                                                         ctx,
-                                                                                                         targetNode,
-                                                                                                         payload,
-                                                                                                         senderBridge))
-                                                               .onFailure(cause -> handleFailoverFailure(promise,
-                                                                                                         ctx,
-                                                                                                         targetNode,
-                                                                                                         cause)));
-    }
-
-    @SuppressWarnings("unchecked")
-    private <R> void sendFailoverPayload(Promise<R> promise,
-                                         FailoverContext<R> ctx,
-                                         NodeId targetNode,
-                                         byte[] payload,
-                                         SliceBridge senderBridge) {
-        var correlationId = IdGenerator.generate();
-        var pendingPromise = Promise.<Object> promise();
-        var pending = new PendingInvocation(pendingPromise,
-                                            System.currentTimeMillis(),
-                                            ctx.requestId,
-                                            targetNode,
-                                            senderBridge,
-                                            Option.none(),
-                                            timeoutMs);
-
-        pendingInvocations.put(correlationId, pending);
-        pendingInvocationsByNode.computeIfAbsent(targetNode, _ -> ConcurrentHashMap.newKeySet()).add(correlationId);
-        var callerWait = ctx.deadline().bounded(timeSpan(timeoutMs).millis());
-
-        pendingPromise.timeout(callerWait).onResult(_ -> removePendingInvocation(correlationId, targetNode));
-        var invokeRequest = InvokeRequest.invokeRequest(self,
-                                                        correlationId,
-                                                        ctx.requestId,
-                                                        ctx.slice,
-                                                        ctx.method,
-                                                        payload,
-                                                        true,
-                                                        InvocationContext.currentDepth() + 1,
-                                                        1,
-                                                        InvocationContext.isSampled());
-        // Same bound as the primary send: a failover attempt delivered after its wait ended would run a third time (#1996).
-        network.send(targetNode, invokeRequest, callerWait);
-        if (log.isDebugEnabled()) {
-            log.debug("[requestId={}] Sent failover invocation to {}: {}.{} [{}] (attempt {})",
-                      ctx.requestId,
-                      targetNode,
-                      ctx.slice,
-                      ctx.method,
-                      correlationId,
-                      ctx.attemptCount() + 1);
-        }
-
-        pendingPromise.onSuccess(result -> promise.succeed((R) result))
-                      .onFailure(cause -> handleFailoverFailure(promise, ctx, targetNode, cause));
-    }
-
-    private <R> void handleFailoverFailure(Promise<R> promise, FailoverContext<R> ctx, NodeId failedNode, Cause cause) {
-        if (stopped.get()) {
-            promise.fail(INVOKER_STOPPED);
-
-            return;
-        }
-
-        var newCtx = ctx.withFailure(failedNode, cause);
-
-        if (newCtx.attemptCount() > ctx.maxRetries) {
-            handleMaxRetriesExceeded(promise, newCtx);
-
-            return;
-        }
-
-        var delayMs = BASE_RETRY_DELAY_MS * (1L << (newCtx.attemptCount() - 1));
-
-        if (log.isDebugEnabled()) {
-            log.debug("[requestId={}] Endpoint {} failed, scheduling failover retry in {}ms: {}.{} - {}",
-                      ctx.requestId,
-                      failedNode,
-                      delayMs,
-                      ctx.slice,
-                      ctx.method,
-                      cause.message());
-        }
-
-        SharedScheduler.schedule(() -> executeWithFailover(promise, newCtx), timeSpan(delayMs).millis());
-    }
-
-    private <R> void handleAllEndpointsFailed(Promise<R> promise, FailoverContext<R> ctx) {
-        // #275: with the liveness filter the FIRST selection can already come back empty, because every
-        // registered endpoint sits on a node the filter rejects. Nothing was attempted, so this is not an
-        // "all instances failed" outcome — reporting it as one publishes a failure event with an empty
-        // attempt list and no cause, and tells an operator the instances failed when the call never left
-        // this node. It is a transient absence of reachable endpoints: the replacement is still coming.
-        if (ctx.attemptedNodes.isEmpty()) {
-            log.warn("[requestId={}] No reachable endpoint for {}.{}: every registered endpoint is on an unreachable node",
-                     ctx.requestId,
-                     ctx.slice,
-                     ctx.method);
-            promise.fail(SliceInvokerError.NoEndpointsError.noEndpointsError(ctx.slice, ctx.method));
-
-            return;
-        }
-
-        log.error("[requestId={}] All instances failed for {}.{}: {} nodes attempted",
-                  ctx.requestId,
-                  ctx.slice,
-                  ctx.method,
-                  ctx.attemptCount());
-        // #1573: no event from here. The all-instances-failed verdict belongs to the leader-side
-        // AllInstancesFailedDetector, which sees every instance; one caller's retry exhaustion does not.
-        promise.fail(new SliceInvokerError.AllInstancesFailedError(ctx.slice,
-                                                                   ctx.method,
-                                                                   ctx.attemptedNodes.size() + " nodes attempted"));
-    }
-
-    private <R> void handleMaxRetriesExceeded(Promise<R> promise, FailoverContext<R> ctx) {
-        log.warn("[requestId={}] Max retries ({}) exceeded for {}.{}: {} nodes attempted",
-                 ctx.requestId,
-                 ctx.maxRetries,
-                 ctx.slice,
-                 ctx.method,
-                 ctx.attemptCount());
-        promise.fail(ctx.lastError.or(Causes.cause("Max retries exceeded with no error recorded")));
     }
 
     @Override
@@ -1027,6 +865,17 @@ class SliceInvokerImpl implements SliceInvoker {
 
     private static String affinityLookupKey(Artifact artifact, MethodName method) {
         return artifact.asString() + "/" + method.name();
+    }
+
+    /// #2807: a refused write proves the request never left this node, so the call fails at once with
+    /// [ForwardError.NotSent] instead of waiting out its timeout. `Sent` and `ConnectionDead` leave the call waiting: an
+    /// `InvokeRequest` is offline-buffered, so a frame reported under either may still be delivered (see
+    /// [ClusterNetwork#send(NodeId, org.pragmatica.consensus.ProtocolMessage, TimeSpan)]).
+    private static Option<Cause> refusal(WriteOutcome outcome) {
+        return switch (outcome) {
+            case WriteOutcome.BackpressureRefused _, WriteOutcome.NoPeerState _, WriteOutcome.EncodeFailed _ -> Option.some(ForwardError.NotSent.notSent(Causes.cause("Transport refused the invocation request: " + outcome)));
+            case WriteOutcome.Sent _, WriteOutcome.ConnectionDead _ -> Option.none();
+        };
     }
 
     @Override
@@ -1182,12 +1031,14 @@ class SliceInvokerImpl implements SliceInvoker {
                                                       .equals(departedNode));
         Option.option(pendingInvocationsByNode.remove(departedNode))
               .filter(ids -> !ids.isEmpty())
-              .onPresent(correlationIds -> retryPendingForDepartedNode(departedNode, correlationIds));
+              .onPresent(correlationIds -> failPendingForDepartedNode(departedNode, correlationIds));
 
         return org.pragmatica.lang.Unit.unit();
     }
 
-    private void retryPendingForDepartedNode(NodeId departedNode, Set<String> correlationIds) {
+    /// #2807: every pending call to a departed node was already handed to the transport, so it may have run there. It
+    /// fails with [SliceInvokerError.TargetDeparted] and is never re-sent to another instance.
+    private void failPendingForDepartedNode(NodeId departedNode, Set<String> correlationIds) {
         var affectedRequestIds = correlationIds.stream()
                                                .map(pendingInvocations::get)
                                                .flatMap(p -> Option.option(p).stream())
@@ -1195,19 +1046,21 @@ class SliceInvokerImpl implements SliceInvoker {
                                                .limit(5)
                                                .toList();
 
-        log.debug("Node {} departed, triggering immediate retry for {} pending invocations, requestIds={}",
+        log.debug("Node {} departed, failing {} pending invocations (sent, outcome unknown, not re-sent), requestIds={}",
                   departedNode,
                   correlationIds.size(),
                   affectedRequestIds);
         for (var correlationId : correlationIds) {
-            Option.option(pendingInvocations.remove(correlationId)).onPresent(pending -> retryDepartedInvocation(pending,
-                                                                                                                 departedNode));
+            Option.option(pendingInvocations.remove(correlationId)).onPresent(pending -> failDepartedInvocation(pending,
+                                                                                                                departedNode));
         }
     }
 
-    private void retryDepartedInvocation(PendingInvocation pending, NodeId departedNode) {
-        log.debug("Triggering retry for request [{}] due to node {} departure", pending.requestId(), departedNode);
-        pending.promise().fail(Causes.cause("Target node " + departedNode + " departed"));
+    private void failDepartedInvocation(PendingInvocation pending, NodeId departedNode) {
+        log.debug("[requestId={}] Failing invocation: target node {} departed after the send; outcome unknown, not re-sent",
+                  pending.requestId(),
+                  departedNode);
+        pending.promise().fail(SliceInvokerError.TargetDeparted.targetDeparted(departedNode));
     }
 
     /// The pending call settled: answered, failed, or timed out. A completion-awaited call that TIMED OUT is retained
@@ -1228,11 +1081,6 @@ class SliceInvokerImpl implements SliceInvoker {
         }
 
         removeFromNodeIndex(correlationId, pending.targetNode());
-    }
-
-    private void removePendingInvocation(String correlationId, NodeId targetNode) {
-        pendingInvocations.remove(correlationId);
-        removeFromNodeIndex(correlationId, targetNode);
     }
 
     private void removeFromNodeIndex(String correlationId, NodeId targetNode) {
@@ -1284,7 +1132,7 @@ class SliceInvokerImpl implements SliceInvoker {
         log.error("[requestId={}] Failed to deserialize response [{}]: {}", requestId, correlationId, cause.message());
     }
 
-    private Promise<Endpoint> selectEndpoint(Artifact slice, MethodName method) {
+    private Promise<Endpoint> selectEndpoint(Artifact slice, MethodName method, Set<NodeId> refusedNodes) {
         var artifactBase = ArtifactBase.artifactBase(slice.groupId(), slice.artifactId());
         // #275: an endpoint on a node membership no longer counts reachable is skipped even while its
         // KV row is still registered. Each arm narrows over the candidate set it will actually draw
@@ -1296,36 +1144,47 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                                   routing,
                                                                                   excludedNodesForBase(artifactBase,
                                                                                                        method,
-                                                                                                       Set.of())))
-                                .or(() -> selectEndpointWithoutRouting(slice, method));
+                                                                                                       refusedNodes)))
+                                .or(() -> selectEndpointWithoutRouting(slice, method, refusedNodes));
     }
 
-    private Promise<Endpoint> selectEndpointWithoutRouting(Artifact slice, MethodName method) {
-        var inaccessible = inaccessibleNodes(slice, method);
+    private Promise<Endpoint> selectEndpointWithoutRouting(Artifact slice,
+                                                           MethodName method,
+                                                           Set<NodeId> refusedNodes) {
+        var excluded = excludedNodes(slice, method, refusedNodes);
 
-        if (inaccessible.isEmpty()) {
+        if (excluded.isEmpty()) {
             return endpointRegistry.selectEndpoint(slice, method)
                                    .async(NO_ENDPOINT_FOUND);
         }
 
-        return endpointRegistry.selectEndpointExcluding(slice, method, inaccessible)
+        return endpointRegistry.selectEndpointExcluding(slice, method, excluded)
                                .async(NO_ENDPOINT_FOUND);
     }
 
     private Promise<Endpoint> selectEndpointWithAffinity(Artifact slice, MethodName method, Object request) {
+        return selectEndpointWithAffinity(slice, method, request, Set.of());
+    }
+
+    /// `refusedNodes` are the nodes whose transport refused this call's request (#2807); a re-route never picks one,
+    /// through affinity or the plain selection.
+    private Promise<Endpoint> selectEndpointWithAffinity(Artifact slice,
+                                                         MethodName method,
+                                                         Object request,
+                                                         Set<NodeId> refusedNodes) {
         var resolver = Option.option(affinityResolvers.get(affinityLookupKey(slice, method)));
-        var inaccessible = inaccessibleNodes(slice, method);
+        var excluded = excludedNodes(slice, method, refusedNodes);
         // #275: affinity to an inaccessible node yields to the filtered plain selection below.
         var affinityEndpoint = resolver.flatMap(r -> r.resolveAffinityNode(request))
-                                       .filter(node -> !inaccessible.contains(node))
+                                       .filter(node -> !excluded.contains(node))
                                        .flatMap(node -> endpointRegistry.selectEndpointByAffinity(slice, method, node))
-                                       .filter(endpoint -> !inaccessible.contains(endpoint.nodeId()));
+                                       .filter(endpoint -> !excluded.contains(endpoint.nodeId()));
 
         if (affinityEndpoint.isPresent()) {
             return affinityEndpoint.async(NO_ENDPOINT_FOUND);
         }
 
-        return selectEndpoint(slice, method);
+        return selectEndpoint(slice, method, refusedNodes);
     }
 
     /// #275: the registered endpoint nodes for `slice.method` that the accessibility filter rejects.

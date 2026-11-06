@@ -82,6 +82,10 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
                                   storageMaintenance);
     }
 
+    /// `maxRetries` (`timeouts.invocation.max_retries`, default 3) bounds the NotSent re-routes of one typed
+    /// slice-to-slice call (#2807): a call the transport provably refused to write goes to another instance, at most
+    /// this many times. A call that may have reached its target (timeout, departed target, callee failure) is never
+    /// re-sent. `retryBaseDelay` has no reader: a re-route goes to another instance at once.
     public record InvocationTimeouts(TimeSpan timeout,
                                      TimeSpan invokerTimeout,
                                      TimeSpan retryBaseDelay,
