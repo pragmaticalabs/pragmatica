@@ -30,6 +30,8 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistryHolderKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistryKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicPublisherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -65,7 +67,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// W-30, the builder-drift golden (phase-3 design 4.3, L3): for the same slice, configuration and committed state, the commands the adapter's
 /// builders produce equal the commands the LEGACY `NodeDeploymentState` builders submit. The legacy side is the real private builder methods of
 /// `NodeDeploymentState.Active`, driven by reflection (the same bridge the sibling suites use), with a recording cluster that captures what the
-/// legacy chain would have sent. When the rc5 L-03 fix lands in the legacy builders only, this test goes red.
+/// legacy chain would have sent. The per-holder stream references (#1978, I-36) changed both builders together; a change to one side alone turns
+/// this test red.
 class SliceLegBuildersGoldenTest {
     private static final Artifact ARTIFACT = ORDERS;
     private static final Artifact BLUEPRINT = Artifact.artifact("org.example:orders-app:1.0.0").unwrap();
@@ -307,36 +310,39 @@ class SliceLegBuildersGoldenTest {
         var legacy = legacyStreamRefs(slice);
         var adapter = builders.streamReferences(ARTIFACT, slice);
 
-        assertThat(legacy).as("two declared roles, two ACQUIRE commands").hasSize(2);
+        assertThat(legacy).as("two declared roles, each the entry's template record and the holder's own key").hasSize(4);
         assertThat(adapter).extracting(LegCommand::kind).containsOnly(LegKind.STREAM_REF);
         assertThat(adapter.stream().map(LegCommand::command).toList()).isEqualTo(legacy);
     }
 
-    /// L-03, documented: the ACQUIRE count is the committed count plus one at build time, so two builds before a commit agree, and a build after
-    /// the commit counts one more. This is the legacy behaviour, carried over unchanged.
+    /// #1978 (I-36): a reference is this node's own holder key `(stream, SELF, artifact, attempt 0)`, never a count read from the committed
+    /// entry. Two builds before a commit agree; a build after the commit puts the SAME key again (no template record, the entry exists), so a
+    /// rebuilt activation cannot add a second reference. Red when the adapter names another node, artifact or attempt, or still writes a count.
     @Test
-    void streamReferences_areAbsoluteCounts_readFromTheCommittedEntryWhenBuilt() {
+    void streamReferences_areThisNodesHolderKey_andARebuildAfterTheCommitPutsTheSameKey() {
         var blueprint = BlueprintId.blueprintId(BLUEPRINT);
         var events = ResourceAddress.resourceAddress("ticketing", "events", "1.0.0").unwrap();
+        var holder = StreamRegistryHolderKey.streamRegistryHolderKey(events, SELF, ARTIFACT, 0L);
 
         owned(blueprint);
         kv.process(kv.createBatch(List.of(new KVCommand.Put<>(BlueprintStreamBindingsKey.blueprintStreamBindingsKey(blueprint),
                                                               BlueprintStreamBindingsValue.blueprintStreamBindingsValue(List.of(BlueprintStreamBindingsValue.NamedAddress.namedAddress("events", events)))))));
         var slice = new RuntimeFixtures.StreamRoleSlice();
 
-        var first = builders.streamReferences(ARTIFACT, slice);
-        var second = builders.streamReferences(ARTIFACT, slice);
+        var first = commandsOf(builders.streamReferences(ARTIFACT, slice));
 
-        assertThat(first).as("two builds before either commits write the same count").isEqualTo(second);
-        assertThat(refCount(first.getFirst())).isEqualTo(1);
+        assertThat(first).as("two builds before either commits agree").isEqualTo(commandsOf(builders.streamReferences(ARTIFACT, slice)));
+        assertThat(first).extracting(KVCommand::key).containsExactly(StreamRegistryKey.streamRegistryKey(events), holder);
 
-        kv.process(kv.createBatch(List.of(first.getFirst().command())));
+        kv.process(kv.createBatch(first));
 
-        assertThat(refCount(builders.streamReferences(ARTIFACT, slice).getFirst())).as("a build after the commit counts one more").isEqualTo(2);
+        assertThat(commandsOf(builders.streamReferences(ARTIFACT, slice))).as("a build after the commit puts the same holder key, nothing else")
+                                                                         .extracting(KVCommand::key)
+                                                                         .containsExactly(holder);
     }
 
-    private static int refCount(LegCommand leg) {
-        return ((AetherValue.StreamRegistryValue) ((KVCommand.Put<?, ?>) leg.command()).value()).entry().refCount();
+    private static List<KVCommand<AetherKey>> commandsOf(List<LegCommand> legs) {
+        return legs.stream().map(LegCommand::command).toList();
     }
 
     @Test
@@ -430,15 +436,36 @@ class SliceLegBuildersGoldenTest {
 
         assertThat(legacy).as("two acquired roles, two releases").hasSize(2);
         assertThat(adapter.stream().map(LegCommand::command).toList()).isEqualTo(legacy);
+        assertThat(adapter).extracting(LegCommand::command)
+                           .extracting(KVCommand::key)
+                           .as("#1978: each release removes this node's own holder key and nothing else")
+                           .containsExactly(StreamRegistryHolderKey.streamRegistryHolderKey(EVENTS, SELF, ARTIFACT, 0L),
+                                            StreamRegistryHolderKey.streamRegistryHolderKey(AUDIT, SELF, ARTIFACT, 0L));
+        assertThat(adapter).extracting(LegCommand::command)
+                           .as("#2505 F4: each release is witnessed by the value its acquire committed, so a late one cannot remove a re-acquire")
+                           .allSatisfy(command -> assertThat(((KVCommand.Remove<AetherKey>) command).witness()).isEqualTo(kv.get(command.key())
+                                                                                                                           .map(Object.class::cast)))
+                           .allSatisfy(command -> assertThat(((KVCommand.Remove<AetherKey>) command).witness().isPresent()).isTrue());
     }
 
+    /// #1978: removing a holder key that is not held is a no-op, so a release is built without reading whether the acquire committed, and
+    /// without reaching for the cluster. Red when the release reads the registry (it would see no holder and build nothing).
     @Test
-    void streamReferenceReleases_areEmpty_whenNothingWasAcquired_likeLegacy() throws Exception {
+    void streamReferenceReleases_areBuiltWhenNothingWasAcquired_withoutReachingForTheCluster_likeLegacy() throws Exception {
         bindTwoStreamRoles();
         var slice = new RuntimeFixtures.StreamRoleSlice();
+        var untouched = new SliceLegBuilders(new SliceLegBuilders.Sources(SELF,
+                                                                         sliceStore,
+                                                                         kv,
+                                                                         () -> {
+                                                                             throw new AssertionError("the cluster was read for a release");
+                                                                         },
+                                                                         () -> CLOCK,
+                                                                         () -> OperatorWarningSink.handingOffTo(adapterWarnings::add)));
+        var legacy = legacyStreamRefs(slice, "RELEASE");
 
-        assertThat(legacyStreamRefs(slice, "RELEASE")).isEmpty();
-        assertThat(builders.teardown(ARTIFACT, slice)).isEmpty();
+        assertThat(legacy).as("legacy builds both releases with nothing acquired").hasSize(2);
+        assertThat(untouched.teardown(ARTIFACT, slice).stream().map(LegCommand::command).toList()).isEqualTo(legacy);
     }
 
     /// Nothing bound to release means nothing to read the registry for: a slice without a blueprint's stream bindings leaves the cluster untouched.
@@ -456,10 +483,13 @@ class SliceLegBuildersGoldenTest {
         assertThat(untouched.teardown(ARTIFACT, new RuntimeFixtures.StreamRoleSlice())).isEmpty();
     }
 
+    private static final ResourceAddress EVENTS = ResourceAddress.resourceAddress("ticketing", "events", "1.0.0").unwrap();
+    private static final ResourceAddress AUDIT = ResourceAddress.resourceAddress("ticketing", "audit", "1.0.0").unwrap();
+
     private void bindTwoStreamRoles() {
         var blueprint = BlueprintId.blueprintId(BLUEPRINT);
-        var events = ResourceAddress.resourceAddress("ticketing", "events", "1.0.0").unwrap();
-        var audit = ResourceAddress.resourceAddress("ticketing", "audit", "1.0.0").unwrap();
+        var events = EVENTS;
+        var audit = AUDIT;
 
         owned(blueprint);
         kv.process(kv.createBatch(List.of(new KVCommand.Put<>(BlueprintStreamBindingsKey.blueprintStreamBindingsKey(blueprint),

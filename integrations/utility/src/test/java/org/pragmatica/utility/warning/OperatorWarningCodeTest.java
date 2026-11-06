@@ -32,6 +32,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// The code catalogue is how operators identify a warning (#1574), so the codes must be unique and stable.
 class OperatorWarningCodeTest {
+    /// #2201 D-01, CTO ruling on #2615: a partition WAL's fail-stop refuses every publish to it on the node, so it pages (CRITICAL); its
+    /// recovery only reports that the reopened log accepted a durable write (INFO).
+    @Test
+    void walFailStopPair_hasItsSeverities() {
+        assertThat(OperatorWarningCode.STORAGE_WAL_FAIL_STOPPED.level()).isEqualTo(WarningLevel.CRITICAL);
+        assertThat(OperatorWarningCode.STORAGE_WAL_WRITABLE.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STORAGE_WAL_WRITABLE.recoveryOf()).isEqualTo(Option.some(OperatorWarningCode.STORAGE_WAL_FAIL_STOPPED));
+        assertThat(OperatorWarningCode.STORAGE_WAL_RETIRED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STORAGE_WAL_RETIRED.recoveryOf()).isEqualTo(Option.some(OperatorWarningCode.STORAGE_WAL_FAIL_STOPPED));
+        assertThat(OperatorWarningCode.STORAGE_WAL_WRITABLE.closesAcrossNodes()).as("raised by a later process than the warning").isTrue();
+        assertThat(OperatorWarningCode.STORAGE_WAL_RETIRED.closesAcrossNodes()).as("raised by the node that holds the open warning").isFalse();
+    }
+
     @Test
     void codes_areUnique() {
         var byCode = Arrays.stream(OperatorWarningCode.values())
@@ -363,7 +376,6 @@ class OperatorWarningCodeTest {
         // D1, added on purpose: a failed KV dispatcher stops (in production, halts) its node; the only end is a restart.
         OperatorWarningCode.KV_DISPATCHER_FAILED,
         OperatorWarningCode.STORAGE_VOLUME_GUARD_INACTIVE,
-        OperatorWarningCode.STORAGE_WAL_FAIL_STOPPED,
         OperatorWarningCode.STORAGE_STREAM_DISK_CAP_OVER_SPACE,
         OperatorWarningCode.STORAGE_STREAM_DISK_SPACE_UNREADABLE,
         OperatorWarningCode.STORAGE_INTEGRITY_FAILED,

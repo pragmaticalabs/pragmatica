@@ -9,7 +9,9 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
@@ -55,7 +57,7 @@ class AetherNodeStreamOwnershipRetryTest {
         var applies = new AtomicInteger();
         var scheduled = new CopyOnWriteArrayList<Scheduled>();
         var writer = StreamPartitionOwnershipWriter.streamPartitionOwnershipWriter(() -> true,
-                                                                                    () -> Epoch.epoch(0L, 1L, 0L),
+                                                                                    () -> Epoch.epoch(1L, 1L, 0L),
                                                                                     HlcClock.hlcClock(A),
                                                                                     (_, _) -> committedOwner.get().map(AetherNodeStreamOwnershipRetryTest::ownership),
                                                                                     (stream, partition) -> controllerRef.get().desiredOwner(stream, partition));
@@ -100,6 +102,47 @@ class AetherNodeStreamOwnershipRetryTest {
         assertThat(retry.consecutiveFailures().get()).as("a successful write resets the backoff").isZero();
     }
 
+    /// #2654: a pass the writer refuses because the life's incarnation is not committed (genesis, or a whole-cluster restore,
+    /// before the commit) writes nothing, so it changes no placement input either. The refusal must re-arm the reconcile;
+    /// the re-armed pass mints at the committed incarnation once the commit is observed.
+    @Test
+    void refusedPass_incarnationNone_rearmsTheReconcile_andTheRetryMintsAtTheCommittedIncarnation() {
+        var incarnation = new AtomicLong(Epoch.NO_INCARNATION);
+        var committed = new AtomicReference<Option<StreamPartitionOwnershipValue>>(Option.none());
+        var applies = new AtomicInteger();
+        var scheduled = new CopyOnWriteArrayList<Scheduled>();
+        var writer = StreamPartitionOwnershipWriter.streamPartitionOwnershipWriter(() -> true,
+                                                                                    () -> Epoch.epoch(incarnation.get(), 1L, 0L),
+                                                                                    HlcClock.hlcClock(A),
+                                                                                    (_, _) -> committed.get(),
+                                                                                    (_, _) -> Option.some(A));
+        Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier = commands -> {
+            applies.incrementAndGet();
+            @SuppressWarnings("unchecked")
+            var put = (KVCommand.Put<AetherKey, AetherValue>) commands.getFirst();
+            committed.set(Option.some((StreamPartitionOwnershipValue) put.value()));
+            return Promise.success(List.of());
+        };
+        var pass = List.of(PartitionKey.partitionKey(STREAM, 0));
+        var retryRef = new AtomicReference<AetherNode.StreamOwnershipRetry>();
+
+        retryRef.set(AetherNode.StreamOwnershipRetry.streamOwnershipRetry((task, delay) -> scheduled.add(new Scheduled(task, delay)),
+                                                                          () -> StreamAssembly.driveStreamOwnership(writer, applier, retryRef.get(), pass)));
+
+        StreamAssembly.driveStreamOwnership(writer, applier, retryRef.get(), pass);
+
+        assertThat(applies.get()).as("nothing is minted while the incarnation is NONE").isZero();
+        assertThat(scheduled).as("the refused pass re-armed the reconcile once").hasSize(1);
+        assertThat(scheduled.getFirst().delay()).as("first re-arm uses the base delay").isEqualTo(AetherNode.STREAM_OWNERSHIP_RETRY_BASE);
+
+        incarnation.set(2L);
+        scheduled.removeFirst().task().run();
+
+        assertThat(applies.get()).as("the re-armed pass minted once the incarnation committed").isEqualTo(1);
+        assertThat(committed.get().map(value -> value.ownerEpoch().incarnation())).as("minted at the committed incarnation").isEqualTo(Option.some(2L));
+        assertThat(retryRef.get().consecutiveFailures().get()).as("a settled write resets the backoff").isZero();
+    }
+
     /// A write that fails for good must cost a BOUNDED number of attempts per unit time: each failure arms exactly ONE
     /// re-run (no fan-out), and the delays double to the cap, so ten minutes of virtual time hold at most a few dozen
     /// attempts, not a spin.
@@ -128,6 +171,25 @@ class AetherNodeStreamOwnershipRetryTest {
 
         assertThat(attempts.get()).as("attempts in ten minutes of persistent failure are bounded by the backoff cap").isLessThanOrEqualTo(30);
         assertThat(attempts.get()).as("and the retry keeps going: the cap bounds the rate, not the count").isGreaterThan(10);
+    }
+
+    /// #2654 (v2691 N1): consecutive refusals back off like failures. The refusal must advance the failure count, or
+    /// a cluster whose incarnation stays uncommitted re-runs the pass at the base delay forever. Red if `refused` reads
+    /// the count without advancing it.
+    @Test
+    void refused_backsOffPerConsecutiveRefusal() {
+        var scheduled = new CopyOnWriteArrayList<Scheduled>();
+        var retry = AetherNode.StreamOwnershipRetry.streamOwnershipRetry((task, delay) -> scheduled.add(new Scheduled(task, delay)),
+                                                                         () -> {});
+
+        retry.refused(Causes.cause("incarnation not committed"));
+        retry.refused(Causes.cause("incarnation not committed"));
+
+        assertThat(scheduled).as("each refusal arms exactly one retry").hasSize(2);
+        assertThat(scheduled.get(0).delay()).as("first refusal: the base delay").isEqualTo(AetherNode.STREAM_OWNERSHIP_RETRY_BASE);
+        assertThat(scheduled.get(1).delay().millis()).as("second consecutive refusal: doubled")
+                                                     .isEqualTo(2 * AetherNode.STREAM_OWNERSHIP_RETRY_BASE.millis());
+        assertThat(retry.consecutiveFailures().get()).as("both refusals counted").isEqualTo(2);
     }
 
     @Test

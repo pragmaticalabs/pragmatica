@@ -12,9 +12,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -40,14 +40,14 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 /// while no WAL frame exists for it. Replicas pull the appended (not visible) range, and the next accepted frame lands
 /// past a hole.
 ///
-/// Each nested group holds the TRIPWIRE (enabled, asserts today's behaviour, GREEN) and the REAL assertion beside it
-/// (`@Disabled`, RED today). When the overhaul adds the abort, the tripwire fails: delete it and enable the real one.
+/// PR-2c flipped every group: the tripwires are deleted and the real assertions are enabled, each in the commit that caused the flip
+/// (the in-section guard flipped `EpochRace`; the rollback flipped `RingContract` and `FailStoppedWal`).
+@Timeout(120)
 class OrderedSectionAbortTripwireTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
     private static final Epoch E1 = Epoch.epoch(0, 1, 0);
     private static final Epoch E3 = Epoch.epoch(0, 3, 0);
-    private static final String ENABLE = "A-01 tripwire: the ordered section now aborts a refused append; delete this tripwire and enable the real assertion beside it (#2201)";
 
     /// The ring contract itself: a failed `inOrder` must leave the head where it was (RING appendOrdered).
     ///
@@ -57,21 +57,7 @@ class OrderedSectionAbortTripwireTest {
     /// the pin for a ring-level fix only.
     @Nested
     class RingContract {
-        @Test
-        void appendOrdered_leavesTheOffsetAssigned_whenTheContinuationFails_tripwire() {
-            try (var ring = offHeapRingBuffer(8, 4096)) {
-                ring.append(bytes("a"), 1L).onFailure(cause -> fail(cause.message()));
-                var before = ring.headOffset();
-
-                var refused = ring.<Long> appendOrdered(bytes("orphan"), 2L, _ -> Causes.cause("wal refused").result());
-
-                assertThat(refused.isFailure()).as("control: the continuation's failure is returned").isTrue();
-                assertThat(ring.headOffset()).as(ENABLE).isEqualTo(before + 1);
-                assertThat(texts(ring.readAppended(before + 1, 5).unwrap())).as(ENABLE).containsExactly("orphan");
-            }
-        }
-
-        @Disabled("A-01 real assertion, RED today: a failed inOrder must leave the head unchanged (#2201)")
+        /// Flipped by PR-2c's rollback (`OffHeapRingBuffer#continuedOrWithdrawn`).
         @Test
         void appendOrdered_leavesTheHeadUnchanged_whenTheContinuationFails() {
             try (var ring = offHeapRingBuffer(8, 4096)) {
@@ -93,24 +79,7 @@ class OrderedSectionAbortTripwireTest {
         @TempDir
         Path walDir;
 
-        @Test
-        void refusedPublishes_leaveOrphansInTheRing_tripwire() throws Exception {
-            var manager = openWithOneAckedEvent(walDir);
-            var ring = manager.partitionBuffer(STREAM, PARTITION).unwrap();
-            var before = ring.headOffset();
-
-            failStopTheWal(manager);
-            var first = manager.publishLocal(STREAM, PARTITION, bytes("lost-1"), 2L);
-            var second = manager.publishLocal(STREAM, PARTITION, bytes("lost-2"), 3L);
-
-            assertThat(first.isFailure()).as("control: the publish that met the I/O failure is reported failed").isTrue();
-            assertThat(second.isFailure()).as("control: a publish on a fail-stopped WAL is refused").isTrue();
-            assertThat(ring.headOffset()).as(ENABLE).isEqualTo(before + 2);
-            assertThat(texts(ring.readAppended(before + 1, 5).unwrap())).as(ENABLE).containsExactly("lost-1", "lost-2");
-            manager.close();
-        }
-
-        @Disabled("A-01 real assertion, RED today: publishes refused by a stopped WAL must not enter the ring (#2201)")
+        /// Flipped by PR-2c: the publish that meets the I/O failure is withdrawn by the rollback, the next is refused by the guard.
         @Test
         void refusedPublishes_leaveNothingInTheRing() throws Exception {
             var manager = openWithOneAckedEvent(walDir);
@@ -135,27 +104,18 @@ class OrderedSectionAbortTripwireTest {
         @TempDir
         Path walDir;
 
-        @Test
-        void epochRegressionInsideTheSection_leavesAnOrphan_andAHoleInTheWal_tripwire() throws Exception {
-            var race = new Race(walDir);
-
-            race.run();
-
-            assertThat(race.stalled.get().isFailure()).as("control: the stale-epoch publish was refused by the WAL").isTrue();
-            assertThat(race.stalledOffsetVisibleToReaders()).as(ENABLE).isTrue();
-            assertThat(race.walOffsets()).as("the WAL has a hole at the orphan's offset").containsExactly(0L, 1L, 3L);
-            assertThat(race.restartRefused()).as(ENABLE).isTrue();
-            race.shutDown();
-        }
-
-        @Disabled("A-01 real assertion, RED today: the refused stale-epoch publish must leave no offset and no WAL hole (#2201)")
+        /// Flipped by PR-2c's in-section guard (`PartitionSection`): the stale publish is refused before the ring assigns it an offset.
         @Test
         void epochRegressionInsideTheSection_leavesNoOrphanAndNoHole() throws Exception {
             var race = new Race(walDir);
 
             race.run();
 
+            assertThat(race.stalled.get().isFailure()).as("control: the stale-epoch publish was refused").isTrue();
+            race.stalled.get().onFailure(cause -> assertThat(cause).as("refused by the in-section provenance check, not by the WAL after an offset")
+                                                                   .isInstanceOf(StreamError.ProvenanceRegression.class));
             assertThat(race.stalledOffsetVisibleToReaders()).isFalse();
+            assertThat(race.walOffsets()).as("no hole: the next publish took the offset the refused one never had").containsExactly(0L, 1L, 2L);
             assertThat(race.restartRefused()).isFalse();
             race.shutDown();
         }
@@ -204,8 +164,20 @@ class OrderedSectionAbortTripwireTest {
 
             staleThread.set(stale);
             stale.start();
+            awaitBlockedOnTheSection(stale);
             manager.publishLocal(STREAM, PARTITION, bytes("e3-reentrant"), 3L, E3).onFailure(cause -> fail(cause.message()));
             sends.set(Integer.MIN_VALUE / 2);
+        }
+
+        /// The stale publisher has passed every pre-section check (at E1, the last recorded epoch) and waits for the section T0 holds,
+        /// so its refusal can only come from inside the section.
+        private void awaitBlockedOnTheSection(Thread stale) {
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+            while (stale.getState() != Thread.State.BLOCKED && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertThat(stale.getState()).as("T2 waits for the section").isEqualTo(Thread.State.BLOCKED);
         }
 
         boolean stalledOffsetVisibleToReaders() {

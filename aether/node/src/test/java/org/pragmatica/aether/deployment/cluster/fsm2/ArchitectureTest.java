@@ -11,7 +11,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
+
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 
 import org.junit.jupiter.api.Test;
 
@@ -161,5 +164,172 @@ class ArchitectureTest {
 
         assertThat(real).as("the scan sees the package").containsKeys("ClusterInput.java", "Handlers.java");
         assertThat(real).allSatisfy((name, text) -> assertThat(text).as(name).doesNotContain("SelfShutdown"));
+    }
+
+    // -- CF-1 (#2759): every leader deployment write leaves through the Outbox -------------------------------------------------
+    private static final Path WIRING = SOURCES.getParent().resolveSibling("wiring");
+    /// The leader-side files of the wiring that carry a cluster FSM write: the interpreter and the write path it submits through.
+    private static final List<String> LEADER_WIRING = List.of("ClusterFsmInterpreter.java", "Submitter.java");
+
+    /// The package's sources plus the leader-side wiring, comments and string literals blanked.
+    private static Map<String, String> leaderWriteSources() throws IOException {
+        var out = new TreeMap<String, String>();
+
+        sources().forEach((name, text) -> out.put(name, strip(text)));
+        for (var name : LEADER_WIRING) {
+            out.put("wiring/" + name, strip(Files.readString(WIRING.resolve(name))));
+        }
+
+        return out;
+    }
+
+    /// Every `KVCommand` that can be handed to the cluster: the permitted subclasses of the sealed interface, read by reflection,
+    /// so a command type added later is covered without editing this test.
+    private static List<String> commandTypes() {
+        return Stream.of(KVCommand.class.getPermittedSubclasses())
+                     .map(Class::getSimpleName)
+                     .sorted()
+                     .toList();
+    }
+
+    /// Each construction of a `KVCommand` (`new X(..)`, `new X<..>(..)`, `X::new`, qualified or imported) and of a
+    /// `ClusterEffect.Submit`, as `file: Type`.
+    static List<String> commandConstructions(Map<String, String> stripped) {
+        var found = new ArrayList<String>();
+
+        stripped.forEach((name, text) -> {
+            for (var type : commandTypes()) {
+                var imported = Pattern.compile("import\\s+[\\w.]*KVCommand\\s*\\.\\s*(" + type + "|\\*)\\s*;").matcher(text).find();
+                var qualifier = imported
+                                ? "(?:(?:\\w+\\s*\\.\\s*)*KVCommand\\s*\\.\\s*)?"
+                                : "(?:\\w+\\s*\\.\\s*)*KVCommand\\s*\\.\\s*";
+                found.addAll(matches(name, type, text, qualifier + type));
+            }
+
+            var submitImported = Pattern.compile("import\\s+[\\w.]*ClusterEffect\\s*\\.\\s*(Submit|\\*)\\s*;").matcher(text).find();
+            found.addAll(matches(name,
+                                 "Submit",
+                                 text,
+                                 (submitImported
+                                  ? "(?:(?:\\w+\\s*\\.\\s*)*ClusterEffect\\s*\\.\\s*)?"
+                                  : "(?:\\w+\\s*\\.\\s*)*ClusterEffect\\s*\\.\\s*") + "Submit"));
+        });
+
+        return found;
+    }
+
+    private static List<String> matches(String name, String type, String text, String typePattern) {
+        var found = new ArrayList<String>();
+        var construction = Pattern.compile("new\\s+" + typePattern + "\\s*(?:<[^()]*>)?\\s*\\(|\\b" + typePattern + "\\s*(?:<[^()]*>)?\\s*::\\s*new\\b");
+        var matcher = construction.matcher(text);
+
+        while (matcher.find()) {
+            found.add(name + ": " + type);
+        }
+
+        return found;
+    }
+
+    /// Blanks comments, string literals, text blocks and char literals (a mention there is not a construction).
+    static String strip(String source) {
+        var out = new StringBuilder(source.length());
+        var i = 0;
+
+        while (i < source.length()) {
+            if (source.startsWith("//", i)) {
+                i = blank(source, out, i, source.indexOf('\n', i), 0);
+            } else if (source.startsWith("/*", i)) {
+                i = blank(source, out, i, source.indexOf("*/", i + 2), 2);
+            } else if (source.startsWith("\"\"\"", i)) {
+                i = blank(source, out, i, source.indexOf("\"\"\"", i + 3), 3);
+            } else if (source.charAt(i) == '"' || source.charAt(i) == '\'') {
+                i = blank(source, out, i, literalEnd(source, i), 1);
+            } else {
+                out.append(source.charAt(i++));
+            }
+        }
+
+        return out.toString();
+    }
+
+    private static int literalEnd(String source, int open) {
+        var quote = source.charAt(open);
+
+        for (var i = open + 1; i < source.length(); i++) {
+            if (source.charAt(i) == '\\') {
+                i++;
+            } else if (source.charAt(i) == quote) {
+                return i;
+            }
+        }
+
+        return source.length();
+    }
+
+    private static int blank(String source, StringBuilder out, int from, int found, int closerLength) {
+        var end = found < 0
+                  ? source.length()
+                  : Math.min(source.length(), found + closerLength);
+
+        for (var i = from; i < end; i++) {
+            out.append(source.charAt(i) == '\n'
+                       ? '\n'
+                       : ' ');
+        }
+
+        return end;
+    }
+
+    // CF-1 (#2759, mirror of #2614's S1-S5 scan)
+    // Red when: any cluster FSM class or the leader-side wiring other than `Outbox` builds a KVCommand or a Submit, or `Outbox` builds
+    // anything but its one LeaderTransaction and its one Submit.
+    @Test
+    void everyKvCommandLeavesThroughOutbox() throws IOException {
+        var real = leaderWriteSources();
+
+        assertThat(real).as("the scan sees the package and the leader wiring")
+                        .containsKeys("Outbox.java", "Blueprints.java", "wiring/ClusterFsmInterpreter.java", "wiring/Submitter.java");
+        assertThat(commandTypes()).as("the reflection sees the command types").contains("LeaderTransaction", "Put", "Remove");
+        assertThat(commandConstructions(real)).containsExactlyInAnyOrder("Outbox.java: LeaderTransaction", "Outbox.java: Submit");
+    }
+
+    // CF-1, the reflection half (mirror of #2614's F1-F4)
+    // Red when: a Submit can carry a command that is not a LeaderTransaction, so a write could leave without the leader witness.
+    @Test
+    void aSubmitCarriesOnlyALeaderTransaction() {
+        var components = ClusterEffect.Submit.class.getRecordComponents();
+
+        assertThat(Stream.of(components)
+                         .filter(component -> KVCommand.class.isAssignableFrom(component.getType()))
+                         .map(component -> component.getType()
+                                                    .getName())
+                         .toList())
+                  .as("the one command a Submit carries")
+                  .containsExactly(KVCommand.LeaderTransaction.class.getName());
+    }
+
+    // CF-1, positive control
+    // Red when: the scan misses a planted construction in any of its shapes, or flags a mention in a comment or a string.
+    @Test
+    void theOutboxScan_seesPlantedConstructions_andIgnoresComments() {
+        var planted = new TreeMap<String, String>();
+
+        planted.put("Qualified.java", strip("class Q { Object a = new KVCommand.Put<>(k, v); Object b = new KVCommand.Remove<AetherKey>(k, w); }"));
+        planted.put("Imported.java",
+                    strip("import org.pragmatica.cluster.state.kvstore.KVCommand.LeaderTransaction;\n"
+                          + "class I { Object t = new LeaderTransaction<>(k, c, l, g, m); }"));
+        planted.put("Reference.java", strip("class R { Fn f = KVCommand.Put::new; Object s = new ClusterEffect.Submit(a, b, c); }"));
+        planted.put("Comment.java",
+                    strip("class C { // new KVCommand.Put<>(k, v)\n /* new ClusterEffect.Submit( */ String s = \"new KVCommand.Remove<>(\"; }"));
+        planted.put("Unimported.java", strip("class U { Object p = new Put(k, v); }"));
+        planted.put("FullyQualified.java",
+                    strip("class F { Object p = new org.pragmatica.cluster.state.kvstore.KVCommand.Put<>(k, v); }"));
+
+        assertThat(commandConstructions(planted)).containsExactlyInAnyOrder("Qualified.java: Put",
+                                                                            "Qualified.java: Remove",
+                                                                            "Imported.java: LeaderTransaction",
+                                                                            "Reference.java: Put",
+                                                                            "Reference.java: Submit",
+                                                                            "FullyQualified.java: Put");
     }
 }

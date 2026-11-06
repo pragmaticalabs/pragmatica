@@ -41,7 +41,8 @@ class BootstrapEngineStopGateTest {
 
     private BootstrapModule newModule(RecordingClusterNode node) {
         var created = BootstrapModule.bootstrapModule(() -> true,
-                                                      () -> Epoch.epoch(0L, 1L, 0L),
+                                                      // #2654: a committed incarnation; at Epoch.NO_INCARNATION the module plans no bootstrap write.
+                                                      () -> Epoch.epoch(1L, 1L, 0L),
                                                       () -> Option.<Long>none(),
                                                       HlcClock.hlcClock(new NodeId("test-self")),
                                                       () -> Set.<NodeId>of(),

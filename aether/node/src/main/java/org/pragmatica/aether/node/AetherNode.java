@@ -156,6 +156,8 @@ import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentSealer;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.stream.KvBackedStreamRegistry;
+import org.pragmatica.aether.slice.stream.StreamRegistryHolderReconciler;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
@@ -1504,6 +1506,16 @@ public interface AetherNode extends ManageableNode {
                 LOG.debug("{} stream ownership write(s) refused on a moved record; re-deciding", refused);
                 schedule.accept(reconcile, OWNERSHIP_REDRIVE_DELAY);
             }
+        }
+
+        /// #2654: the writer refused the pass before minting (the life's incarnation is not committed). Nothing else
+        /// re-runs it once the commit lands, so the reconcile is re-armed, backed off like a failure.
+        @Contract
+        public void refused(Cause cause) {
+            var delay = delayAfter(consecutiveFailures.getAndIncrement());
+
+            LOG.debug("Stream ownership pass refused: {} — reconcile re-armed in {}", cause.message(), delay);
+            schedule.accept(reconcile, delay);
         }
 
         @Contract
@@ -3058,6 +3070,21 @@ public interface AetherNode extends ManageableNode {
                                                               aetherEntries));
         var growthLog = LoggerFactory.getLogger(AetherNode.class);
         var selfId = config.self();
+        // #1978 (I-36): the references a node held to stream-registry entries leave with it. Every node runs the same idempotent sweep on
+        // the departure edge; the leader's level reconcile sweeps a node still holding after two passes absent from membership, which
+        // covers a missed edge and a failed sweep apply (owner ruling Q19 (a)). The reconcile reads the not-DEAD projection, not the counted one:
+        // a draining node is DEPARTING (not counted) while its slices still run, and a refuted drain returns it as a live member.
+        var streamRegistry = KvBackedStreamRegistry.kvBackedStreamRegistry(clusterNode, kvStore);
+
+        wireStreamRegistrySweep(aetherEntries, streamRegistry::sweepHoldersOf);
+        var streamRegistryHolderReconciler = StreamRegistryHolderReconciler.streamRegistryHolderReconciler(streamRegistry,
+                                                                                                           selfId,
+                                                                                                           () -> Option.option(membershipFsmRef.get()).map(MembershipFsm::broadcastEligibleMembers),
+                                                                                                           isLeaderSupplier);
+
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(streamRegistryHolderReconciler::tick,
+                                                                      StreamRegistryHolderReconciler.INTERVAL,
+                                                                      StreamRegistryHolderReconciler.INTERVAL));
         var gossipEncryptionOut = SwimAssembly.gossipEncryption(new SwimAssembly.GossipEncryptionInputs(config));
         var rotatingEncryptor = gossipEncryptionOut.rotatingEncryptor();
         var gossipKeyRotationHandler = gossipEncryptionOut.gossipKeyRotationHandler();
@@ -3363,6 +3390,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                               allEntries,
                                                                                                                               leaderReconciler,
                                                                                                                               bootstrapModule,
+                                                                                                                              epochSources,
                                                                                                                               reactors.executor("ClusterTopologyManager")));
         // D1-react (KVStore dispatcher design §3.5.1 rows 72/73): activation, deactivation and status writes run on its react executor.
         spokesmanPingLoop.installReactExecutor(reactors.executor("SpokesmanPingLoop"));
@@ -4074,8 +4102,10 @@ public interface AetherNode extends ManageableNode {
     /// The committed generation epoch at local counter 0 (#1529): the cluster incarnation (dominant) and the
     /// leader term — the base every ownership writer mints its owner epochs from. A named seam so
     /// `ClusterIncarnationTest.GenerationEpochSeam` pins it (forcing the incarnation to 0 here left every
-    /// module green). An epoch minted before the registrar commits the genesis incarnation carries 0, which
-    /// ranks below every later mint.
+    /// module green). Before the life's incarnation commits (genesis, or a restore that has not committed the new
+    /// one yet) this epoch carries `ClusterIncarnation.NONE` (0), which ranks below every later mint and below every
+    /// epoch a restored life committed; so no ownership or lineage writer mints from it then (#2654,
+    /// [Epoch#mintable]).
     static Supplier<Epoch> generationEpoch(ObservedIncarnation incarnation, Supplier<Long> rabiaTermSupplier) {
         return () -> Epoch.epoch(incarnation.current(), rabiaTermSupplier.get(), 0L);
     }
@@ -4092,9 +4122,14 @@ public interface AetherNode extends ManageableNode {
     /// read the [ObservedIncarnation] mirror, which the committed key's notifications keep current.
     ///
     /// The mirror can only LAG the committed incarnation (until a commit's notification is dispatched, or a
-    /// snapshot install's replay), never lead it, and a lagging incarnation mints a LOWER epoch. Every fence
-    /// orders incarnation-first and refuses an older epoch, so a stale read is refused, never accepted in the
-    /// newer incarnation's place: the cost of the lag is a retried write, not a wrong one.
+    /// snapshot install's replay), never lead it, and a lagging incarnation mints a LOWER epoch. A lower epoch is
+    /// refused by a fence only where a HIGHER one is already committed for the same key: a key the restore did not
+    /// bring back (stream ownership is not backed up) has nothing to refuse it, so a lagging mint IS accepted and
+    /// then ranks below the restored life's epochs (#2654, observed after a whole-cluster restore). The mirror reads
+    /// `ClusterIncarnation.NONE` from a restore's remove until its put, and before genesis; the ownership and lineage
+    /// mints therefore refuse a NONE base (`Epoch.mintable`, `EpochMintError.General.INCARNATION_NOT_COMMITTED`) and
+    /// are re-driven once the commit is observed. [limit: lag-within-a-life] A lag between two committed
+    /// incarnations (both non-NONE) is not refused here; it is bounded by the one-notification lag above.
     record EpochSources(ObservedIncarnation incarnation,
                         AtomicLong generationCounter,
                         Supplier<Epoch> leaderEpoch,
@@ -4449,6 +4484,19 @@ public interface AetherNode extends ManageableNode {
             // #964 S2: an unparseable config string is UNRECOGNISED, never the wire sentinel.
             default -> AetherValue.ProvisioningSource.UNRECOGNISED;
         };
+    }
+
+    /// #1978 (I-36): a node that leaves membership loses the stream-registry references it held. A core's departure is the
+    /// `NodeRemoved` edge; a worker's never reaches `MembershipDecision` and travels on [WorkerLeaveDecision] (#731). The sweep is
+    /// idempotent and witnessed (it removes the keys it read, and only while they still hold what it read), so running it on every
+    /// node is the same outcome as running it on one. `NodeDecommissioned` is not routed: no production code emits it (its factory
+    /// has no production caller), and the level reconcile sweeps any node that is no longer a member, however it left.
+    @Contract
+    static void wireStreamRegistrySweep(List<MessageRouter.Entry<?>> entries, Consumer<NodeId> sweep) {
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
+                                              decision -> sweep.accept(decision.nodeId())));
+        entries.add(MessageRouter.Entry.route(WorkerLeaveDecision.class,
+                                              decision -> sweep.accept(decision.nodeId())));
     }
 
     /// RC1 Step 2: register a `MembershipDecision` subscriber against every concrete variant

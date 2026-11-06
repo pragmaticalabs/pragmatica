@@ -29,7 +29,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 | `GET /api/v1/nodes/lifecycle/<id>` | Per-node lifecycle state (ON_DUTY, DRAINING, DECOMMISSIONED, …) | `aether nodes lifecycle` |
 | `aether cluster membership` | Per-peer SWIM FSM state + the quorum-loss self-drain signal | (CLI) |
 | `GET /api/v1/streams/{namespace}/{stream}/{version}/replicas/{partition}` | `hrwOwner`, `servedByOwner`, `replicas[].state`, `confirmedOffset` | (stream failover diagnosis) |
-| Metrics (Micrometer) | `aether.streams.memory.used.bytes` / `.used.ratio` — the only dedicated failure-adjacent gauges today | scrape endpoint |
+| Metrics (Micrometer) | `aether.streams.memory.used.bytes` / `.used.ratio`, and `aether.streams.wal.failstopped` (partitions whose WAL fail-stopped, #2201 D-01) — the only dedicated failure-adjacent gauges today | scrape endpoint |
 
 > **There is no aggregate MTTR gauge, and there are no dedicated failure-rate metrics** — this is deliberate (`resilience-operability-principles.md` P2). Budgets, event counts, and the surfaces above are the honest signals.
 

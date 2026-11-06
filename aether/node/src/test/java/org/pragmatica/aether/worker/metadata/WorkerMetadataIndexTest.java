@@ -59,6 +59,21 @@ class WorkerMetadataIndexTest {
         assertThat(index.scopesForWorker(WORKER).stream().flatMap(scope -> index.snapshot(scope).keySet().stream())).contains(subscription, publisher);
     }
 
+    /// X01 (#2505 mutation): a stream-registry holder key travels in the global scope beside the entry record it counts toward, so a
+    /// worker reading the registry sees the entry's references and does not report every entry as holder-less (invisible).
+    @Test
+    void streamRegistryHolderKeyIsInTheGlobalScope_andReachesAWorker() {
+        var index = WorkerMetadataIndex.workerMetadataIndex();
+        var address = org.pragmatica.aether.slice.resource.ResourceAddress.resourceAddress("default", "orders", "1.0.0").unwrap();
+        var holder = AetherKey.StreamRegistryHolderKey.streamRegistryHolderKey(address, CORE, Artifact.artifact("org.example:orders:1.0.0").unwrap(), 0L);
+        var value = AetherValue.StreamRegistryHolderValue.streamRegistryHolderValue(1_000L, 1L);
+
+        index.put(holder, value);
+
+        assertThat(index.snapshot(WorkerMetadataIndex.GLOBAL)).containsEntry(holder, value);
+        assertThat(index.scopesForWorker(WORKER).stream().flatMap(scope -> index.snapshot(scope).keySet().stream())).contains(holder);
+    }
+
     @Test
     void rawProviderConfigurationNeverEntersWorkerProjection() {
         var index = WorkerMetadataIndex.workerMetadataIndex();

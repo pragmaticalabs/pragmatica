@@ -22,6 +22,8 @@ import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 
 /// Leader-only, idempotent, deterministic writer of per-`(stream, partition)` ownership records
@@ -45,7 +47,10 @@ import org.pragmatica.lang.Option;
 /// ## Epoch-advance semantics
 /// The `ownerEpoch` is `Epoch.epoch(incarnation, rabiaTerm, ownershipTerm)`: the committed generation
 /// epoch — the cluster incarnation (#1529), which ranks first so a new run outranks a restored one, then
-/// the generation term — paired with the per-partition `ownershipTerm` as the local counter. Both are a
+/// the generation term — paired with the per-partition `ownershipTerm` as the local counter. While the life's
+/// incarnation is not committed (`ClusterIncarnation.NONE`: before genesis, or after a whole-cluster restore until
+/// the new incarnation commits) no record is minted (#2654, `Epoch.mintable`): it would rank below every epoch the
+/// restored life committed. The leader's batch driver re-arms its retry on that refusal ([#mintGate]). The generation term and `ownershipTerm` are a
 /// pure function of committed state — the generation term from the committed generation, the
 /// `ownershipTerm` read from (and bumped relative to) the committed `StreamPartitionOwnershipValue` —
 /// so two replicas presented the same committed state reach the IDENTICAL decision and write the
@@ -105,11 +110,23 @@ public interface StreamPartitionOwnershipWriter {
     /// `Put` per GENUINELY-moved partition. An empty `partitions` list — or a pass with no moved
     /// partitions — yields an empty list and the caller applies nothing.
     default List<KVCommand<AetherKey>> writeOwnershipChanges(List<PartitionKey> partitions) {
+        // The per-pair calls answer a refused mint (#2654) with none, like an unchanged owner; the driver tells the two
+        // apart through [#mintGate] before it asks for the batch.
         return partitions.stream()
                          .map(partition -> writeOwnershipChange(partition.streamName(),
                                                                 partition.partition()))
                          .flatMap(Option::stream)
                          .toList();
+    }
+
+    /// #2654: whether this node may mint ownership epochs now. Refused with
+    /// `EpochMintError.General.INCARNATION_NOT_COMMITTED` while this node leads and the life's cluster incarnation is
+    /// not committed (genesis not yet committed, or a whole-cluster restore not yet committed), so the batch driver can
+    /// re-drive the pass instead of reading the empty batch as "nothing moved": nothing else re-runs the pass when the
+    /// commit lands. A follower mints nothing anyway, and passes. The default passes: a hand-driven writer with no
+    /// generation epoch of its own has nothing to refuse.
+    default Result<Unit> mintGate() {
+        return Result.unitResult();
     }
 
     /// The pre-#1730 writer: plain `Put`s of records carrying no committed ISR (`isrVersion` 0), which the ack
@@ -217,13 +234,28 @@ record StreamPartitionOwnershipWriterRecord(BooleanSupplier isLeaderSupplier,
         if (!isLeaderSupplier.getAsBoolean()) {
             return Option.none();
         }
+        // #2654 design-out: a refused base (the life's incarnation is not committed) mints nothing, so no record can rank
+        // below the restored life's epochs; the refusal itself reaches the batch driver, which re-drives the pass.
+        return currentEpoch().mintable()
+                           .option()
+                           .flatMap(epoch -> decideAt(stream, partition, epoch));
+    }
 
+    private Option<KVCommand<AetherKey>> decideAt(String stream, int partition, Epoch epoch) {
         return hrwOwner.ownerOf(stream, partition)
                        .flatMap(owner -> decide(stream,
                                                 partition,
                                                 committedOwnership.ownershipOf(stream, partition),
                                                 owner,
-                                                currentEpoch()));
+                                                epoch));
+    }
+
+    @Override
+    public Result<Unit> mintGate() {
+        return isLeaderSupplier.getAsBoolean()
+               ? currentEpoch().mintable()
+                             .mapToUnit()
+               : Result.unitResult();
     }
 
     private Option<KVCommand<AetherKey>> rewriteIfOwnerChanged(String stream,
@@ -303,16 +335,28 @@ record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
         if (!isLeaderSupplier.getAsBoolean()) {
             return Option.none();
         }
+        // #2654 design-out, as in the plain writer: a refused base mints nothing; the batch driver re-drives the pass.
+        return generationEpochSupplier.get()
+                                      .mintable()
+                                      .option()
+                                      .flatMap(epoch -> decideAt(stream, partition, epoch));
+    }
 
+    private Option<KVCommand<AetherKey>> decideAt(String stream, int partition, Epoch epoch) {
         var committed = committedOwnership.ownershipOf(stream, partition);
 
         return hrwOwner.ownerOf(stream, partition)
                        .orElse(() -> committed.map(StreamPartitionOwnershipValue::owner))
-                       .flatMap(owner -> decide(stream,
-                                                partition,
-                                                committed,
-                                                owner,
-                                                generationEpochSupplier.get()));
+                       .flatMap(owner -> decide(stream, partition, committed, owner, epoch));
+    }
+
+    @Override
+    public Result<Unit> mintGate() {
+        return isLeaderSupplier.getAsBoolean()
+               ? generationEpochSupplier.get()
+                                        .mintable()
+                                        .mapToUnit()
+               : Result.unitResult();
     }
 
     /// The record the leader should commit next, or none when the committed one stands (or no owner may be chosen).

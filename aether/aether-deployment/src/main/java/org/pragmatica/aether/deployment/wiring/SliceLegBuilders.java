@@ -87,6 +87,9 @@ import org.slf4j.LoggerFactory;
 final class SliceLegBuilders {
     private static final Logger log = LoggerFactory.getLogger(SliceLegBuilders.class);
     private static final String MANIFEST_DIR = "META-INF/slice/";
+    /// The attempt of a slice's holder key, as legacy's `SLICE_HOLDER_ATTEMPT`: a node runs one instance of an artifact at a time, so acquire
+    /// and release of the same instance name the same key.
+    private static final long SLICE_HOLDER_ATTEMPT = 0L;
 
     private static final Fn3<Cause, String, String, String> INVALID_SCHEDULE_STRING = Causes.forThreeValues("Scheduled task '%s' has an invalid schedule '%s': %s");
 
@@ -143,13 +146,14 @@ final class SliceLegBuilders {
                                                                        scheduled));
     }
 
-    /// The per-instance stream reference counts to take with the ACTIVE row (event-stream-namespaces 8.5), one per declared stream role
-    /// whose address the blueprint's bindings resolve.
+    /// The per-instance stream references to take with the ACTIVE row (event-stream-namespaces 8.5), one per declared stream role whose
+    /// address the blueprint's bindings resolve.
     ///
-    /// **L-03, carried over from legacy and pinned (W-09).** The leg commands and the ACQUIRE ride beside the version-fenced observed Put,
-    /// not inside its fence, and ACQUIRE is an absolute count: it is the committed entry's count plus one, read when the command is built
-    /// (`KvBackedStreamRegistry.acquireCommand`). Two instances that build before either commits therefore write the same count, and a refused
-    /// observed Put does not undo a leg that landed. The rc5 L-03 fix, when it lands, changes this builder and the legacy one together.
+    /// **Holder keys, as legacy (#1978, I-36).** Each reference is this node's own holder key `(stream, node, artifact, attempt 0)`
+    /// (`KvBackedStreamRegistry.acquireCommands`), plus the entry's template record when the store holds none yet. Nothing reads a count, so two
+    /// instances that build before either commits keep both references, and a rebuild after a commit puts the same key again. The leg commands
+    /// still ride beside the version-fenced observed Put, not inside its fence: a refused observed Put does not undo a leg that landed, which for
+    /// a reference is the same key the instance's next activation puts.
     List<LegCommand> streamReferences(Artifact artifact, Slice slice) {
         var declarations = streamRoleDeclarations(artifact, slice);
 
@@ -158,8 +162,8 @@ final class SliceLegBuilders {
                : acquireCommands(artifact, declarations);
     }
 
-    /// The commands of the teardown batch (N13, N16): this node's topic-subscription rows, the stream registrations, the stream reference
-    /// counts to release, and the scheduled tasks with their pause keys, in the legacy chain's order. Every one is a remove or a release; the
+    /// The commands of the teardown batch (N13, N16): this node's topic-subscription rows, the stream registrations, this node's stream
+    /// reference holder keys to release, and the scheduled tasks with their pause keys, in the legacy chain's order. Every one is a remove or a release; the
     /// last-replica filter on the cluster-scoped ones is the FSM's (see the class comment).
     List<LegCommand> teardown(Artifact artifact, Slice slice) {
         return concat(topicRemovals(artifact, slice),
@@ -534,8 +538,13 @@ final class SliceLegBuilders {
 
         for (var declaration : declarations) {
             bindings.flatMap(found -> found.addressFor(declaration.alias()))
-                    .onPresent(address -> commands.add(LegCommand.legCommand(LegKind.STREAM_REF,
-                                                                             registry.acquireCommand(blueprintTemplate(address)))));
+                    .onPresent(address -> registry.acquireCommands(blueprintTemplate(address),
+                                                                   sources.self(),
+                                                                   artifact,
+                                                                   SLICE_HOLDER_ATTEMPT,
+                                                                   sources.clock().getAsLong())
+                                                  .forEach(command -> commands.add(LegCommand.legCommand(LegKind.STREAM_REF,
+                                                                                                         command))));
         }
 
         return List.copyOf(commands);
@@ -549,8 +558,10 @@ final class SliceLegBuilders {
                : releaseCommands(artifact, declarations);
     }
 
-    /// The mirror of [#acquireCommands]: one release per declared role whose address the blueprint's bindings resolve and whose registry entry
-    /// exists (a release of an entry nobody acquired is a no-op, so nothing is built for it).
+    /// The mirror of [#acquireCommands], as legacy: one release of this node's own holder key per declared role whose address the blueprint's
+    /// bindings resolve, witnessed by the value the key holds in the applied mirror (`KvBackedStreamRegistry.releaseCommand`), so a release
+    /// that lands after this node's next activation acquired again is refused. It reads no cluster, and is built whether or not the acquire
+    /// committed: a release of a key that is not held is a no-op.
     private List<LegCommand> releaseCommands(Artifact artifact, List<StreamRole> declarations) {
         var bindings = owningBlueprintId(artifact).flatMap(this::bindingsFor);
 
@@ -558,13 +569,15 @@ final class SliceLegBuilders {
             return List.of();
         }
 
-        var registry = KvBackedStreamRegistry.kvBackedStreamRegistry(sources.cluster().get(),
-                                                                     sources.kvStore());
         var commands = new ArrayList<LegCommand>();
 
         for (var declaration : declarations) {
             bindings.flatMap(found -> found.addressFor(declaration.alias()))
-                    .flatMap(registry::releaseCommand)
+                    .map(address -> KvBackedStreamRegistry.releaseCommand(sources.kvStore(),
+                                                                          address,
+                                                                          sources.self(),
+                                                                          artifact,
+                                                                          SLICE_HOLDER_ATTEMPT))
                     .onPresent(command -> commands.add(LegCommand.legCommand(LegKind.STREAM_REF, command)));
         }
 

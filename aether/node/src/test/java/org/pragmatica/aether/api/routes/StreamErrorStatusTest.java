@@ -96,6 +96,7 @@ class StreamErrorStatusTest {
         all.put(new StreamError.RepairPreserveFailed("s", 0, "r"), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.DivergenceNotEstablished("s", 0, 3L), HttpStatus.INTERNAL_SERVER_ERROR);
         all.put(new StreamError.TruncateBelowRetained("s", 0, 1L, 5L), HttpStatus.INTERNAL_SERVER_ERROR);
+        all.put(new StreamError.PartitionFailStopped("s", 0, Causes.cause("c")), HttpStatus.SERVICE_UNAVAILABLE);
 
         return all;
     }
