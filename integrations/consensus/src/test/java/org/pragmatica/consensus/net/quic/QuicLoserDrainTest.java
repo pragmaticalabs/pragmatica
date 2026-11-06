@@ -201,6 +201,7 @@ class QuicLoserDrainTest {
             verify(channel, never()).close();
             verify(stream).writeAndFlush(any());
             verify(channel, timeout(5_000)).close();
+            awaitEnded(ended);
             assertThat(ended).containsExactly(QuicPeerConnection.DrainEnd.BOUND_HIT);
         } finally {
             loop.shutdownGracefully();
@@ -231,6 +232,7 @@ class QuicLoserDrainTest {
             closing.setSuccess();
 
             verify(channel, timeout(5_000)).close();
+            awaitEnded(ended);
             assertThat(ended).containsExactly(QuicPeerConnection.DrainEnd.FLUSHED);
         } finally {
             loop.shutdownGracefully();
@@ -404,6 +406,7 @@ class QuicLoserDrainTest {
             connection.closeAfterDrain(300, ended::add);
             closing.setSuccess();
             verify(channel, timeout(5_000)).close();
+            awaitEnded(ended);
             Thread.sleep(700);
 
             assertThat(ended).containsExactly(QuicPeerConnection.DrainEnd.FLUSHED);
@@ -411,6 +414,12 @@ class QuicLoserDrainTest {
         } finally {
             loop.shutdownGracefully();
         }
+    }
+
+    /// The drain closes the channel first and reports its outcome after, on the event loop: the close having been
+    /// requested does not mean the outcome is recorded yet (#2782). Waits, bounded, for the outcome itself.
+    private static void awaitEnded(List<QuicPeerConnection.DrainEnd> ended) {
+        awaitTrue(() -> !ended.isEmpty(), TimeSpan.timeSpan(5).seconds(), "the drain outcome to be reported");
     }
 
     private static QuicChannel activeChannel() {
