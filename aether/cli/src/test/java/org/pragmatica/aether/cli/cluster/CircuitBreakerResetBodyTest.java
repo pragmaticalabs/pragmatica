@@ -27,6 +27,17 @@ class CircuitBreakerResetBodyTest {
         assertThat(bodyFor()).isEqualTo("{}");
     }
 
+    @Test
+    void requestBody_blankSource_isOmitted() {
+        assertThat(bodyFor("--source", "  ")).isEqualTo("{}");
+        assertThat(bodyFor("--source", "")).isEqualTo("{}");
+    }
+
+    @Test
+    void requestBody_plainSource_isTheSourceKeyWithThatValue() {
+        assertThat(bodyFor("--source", "eu-1")).isEqualTo("{\"source\":\"eu-1\"}");
+    }
+
     private static String bodyFor(String... args) {
         var command = new ClusterTopologyCommand.CircuitBreakerCommand.ResetCommand();
         new CommandLine(command).parseArgs(args);
