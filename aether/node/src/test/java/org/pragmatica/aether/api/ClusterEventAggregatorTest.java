@@ -2696,7 +2696,7 @@ class ClusterEventAggregatorTest {
 
     /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the three consumer pairs of #2201
     /// C-16 (behind the ring, the hole, and the cursor expiry), the oversized-event refusal and the
-    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the refused consensus restore of #2316); every other code keeps the plain 60 s throttle.
+    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the refused consensus restore of #2316, a stream partition's WAL fail-stop of #2201); every other code keeps the plain 60 s throttle.
     @Test
     void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).toList())
@@ -2753,6 +2753,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STORAGE_DEMOTION_RESUMED,
                 OperatorWarningCode.STORAGE_SNAPSHOT_WRITE_RECOVERED,
                 OperatorWarningCode.STORAGE_TIER_WRITABLE,
+                OperatorWarningCode.STORAGE_WAL_WRITABLE,
                 OperatorWarningCode.STORAGE_DHT_MARKER_VERIFIED,
                 OperatorWarningCode.STORAGE_MAINTENANCE_STARTED,
                 OperatorWarningCode.STORAGE_PREFETCH_STARTED,
@@ -2819,6 +2820,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STORAGE_DEMOTION_REFUSED,
                 OperatorWarningCode.STORAGE_SNAPSHOT_WRITE_FAILED,
                 OperatorWarningCode.STORAGE_TIER_FULL,
+                OperatorWarningCode.STORAGE_WAL_FAIL_STOPPED,
                 OperatorWarningCode.STORAGE_DHT_MARKER_UNVERIFIED,
                 OperatorWarningCode.STORAGE_MAINTENANCE_NOT_STARTED,
                 OperatorWarningCode.STORAGE_PREFETCH_NOT_STARTED,
