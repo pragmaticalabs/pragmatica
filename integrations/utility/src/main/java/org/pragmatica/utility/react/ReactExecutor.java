@@ -9,6 +9,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 import org.slf4j.Logger;
@@ -45,6 +46,18 @@ public interface ReactExecutor {
     /// Side-effect reactions dropped because the gate was closed when they ran (or the executor was closed).
     long droppedEngineStopped();
     Unit close();
+
+    /// Resolves once every reaction submitted before this call has finished (#2688). The marker is an [#undo], so FIFO
+    /// puts it behind them, the gate never drops it, and a closed executor runs it on the caller's thread: the promise
+    /// always resolves. Never blocks the caller. On an [#inline] executor everything has already run, so it is resolved.
+    default Promise<Unit> drained() {
+        var done = Promise.<Unit> promise();
+
+        undo("drained",
+             () -> done.succeed(Unit.unit()));
+
+        return done;
+    }
 
     static ReactExecutor reactExecutor(String component, ReactGate gate, ReactFailureSink failureSink) {
         return new Serial(component,
