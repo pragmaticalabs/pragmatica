@@ -38,6 +38,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -404,10 +405,15 @@ public final class UpgradeRunWiring {
         private Promise<UpgradeRunValue> afterAttempt(Result<UpgradeRunValue> result,
                                                       Supplier<Promise<UpgradeRunValue>> request,
                                                       int attempts) {
-            return result.fold(cause -> cause instanceof Refusal.Conflict && attempts > 1
-                                        ? reevaluated(request, attempts - 1)
-                                        : cause.<UpgradeRunValue> promise(),
-                               Promise::success);
+            return result.fold(cause -> afterRefusal(cause, request, attempts), Promise::success);
+        }
+
+        private Promise<UpgradeRunValue> afterRefusal(Cause cause,
+                                                      Supplier<Promise<UpgradeRunValue>> request,
+                                                      int attempts) {
+            return cause instanceof Refusal.Conflict && attempts > 1
+                   ? reevaluated(request, attempts - 1)
+                   : cause.promise();
         }
 
         private Promise<UpgradeRunValue> notApplicable(String operation) {
