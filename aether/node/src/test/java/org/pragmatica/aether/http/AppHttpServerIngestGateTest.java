@@ -295,12 +295,31 @@ class AppHttpServerIngestGateTest {
         sameBody_passesTheBigRoute_andIsRefused413OnTheSmallRoute(Protocol.H3);
     }
 
-    @org.junit.jupiter.api.RepeatedTest(300)
+    @Test
     void diag2746() throws Exception {
         start(Protocol.H3, defaults(), 10 * MIB);
         var client = client(Protocol.H3);
-        assertThat(client.post("/api/small/", Option.some(KEY_A), 2 * MIB, Mode.DECLARED).status()).isEqualTo(413);
-        assertThat(client.post("/api/small/", Option.some(KEY_A), 2 * MIB, Mode.UNDECLARED).status()).isEqualTo(413);
+        var stopBurn = new java.util.concurrent.atomic.AtomicBoolean();
+        for (int t = 0; t < 14; t++) {
+            var th = new Thread(() -> { long x = 0; while (!stopBurn.get()) { x += System.nanoTime() % 7; } });
+            th.setDaemon(true);
+            th.start();
+        }
+        var bad = 0;
+        try {
+            for (int i = 0; i < 1500; i++) {
+                var mode = i % 2 == 0 ? Mode.DECLARED : Mode.UNDECLARED;
+                var r = client.post("/api/small/", Option.some(KEY_A), 2 * MIB, mode);
+                if (r.status() != 413) { bad++; }
+            }
+        } catch (NumberFormatException e) {
+            System.err.println("DIAG2746 NFE " + e);
+            bad++;
+        } finally {
+            stopBurn.set(true);
+        }
+        System.err.println("DIAG2746 bad=" + bad);
+        assertThat(bad).isZero();
     }
 
     private void sameBody_passesTheBigRoute_andIsRefused413OnTheSmallRoute(Protocol protocol) throws Exception {
