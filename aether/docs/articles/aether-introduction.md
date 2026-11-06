@@ -155,14 +155,6 @@ aether thresholds set interval_mean_latency_p99 500ms --action alert
 
 These rules run locally on every node. There's no central controller that becomes a single point of failure.
 
-### Predictive Scaling: Anticipating Load Before It Arrives
-
-Above the Lizard Brain, Aether is integrating predictive capabilities using time-series analysis. The system maintains a 2-hour sliding window of metrics--CPU usage, request rates, latency percentiles--and learns patterns.
-
-The goal is straightforward: if your application sees traffic spikes every day at 9 AM when users log in, or every Monday when batch jobs run, the cluster should scale *before* the load arrives, not after users experience slowdowns.
-
-This is still an area of active development, but the architecture supports it cleanly. The Lizard Brain handles immediate reactions, while predictive models inform proactive scaling decisions. If the prediction system fails or produces bad recommendations, the Lizard Brain catches problems reactively. Defense in depth.
-
 ### Rolling Updates Without Drama
 
 Deploying a new version of a slice follows a two-stage model:

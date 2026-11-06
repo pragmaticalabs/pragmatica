@@ -428,8 +428,6 @@ public enum ManagementRoute {
     CONTROLLER_DECISIONS(GET, "/controller/decisions", List.of(), LEADER),
     CONTROLLER_CONFIG_SET(POST, "/controller/config", List.of(), LEADER),
     CONTROLLER_EVALUATE(POST, "/controller/evaluate", List.of(), LEADER),
-    TTM_STATUS(GET, "/ttm/status", List.of(), LOCAL),
-    TTM_TRAINING_DATA(GET, "/ttm/training-data", List.of(), LOCAL),
     LOG_LEVELS_LIST(GET, "/logging/levels", List.of(), LOCAL),
     LOG_LEVEL_SET(POST, "/logging/levels", List.of(), LOCAL),
     LOG_LEVEL_RESET(DELETE, "/logging/levels", List.of("logger"), LOCAL),

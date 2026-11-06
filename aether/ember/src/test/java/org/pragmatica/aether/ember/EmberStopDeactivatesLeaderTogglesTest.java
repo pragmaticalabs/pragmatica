@@ -29,8 +29,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// `stop()` has returned. The control reading before the stop proves the observed components are active on
 /// the leader, so an inactive reading afterwards is the deactivation and not a component that never
 /// started. Only the components `AetherNode` exposes are read; the other leader-toggled components share
-/// the same `LeaderChange` route and are not observable from here. `ttmManager` is not pinned either: TTM is
-/// disabled in this fixture, so it is never active and cannot discriminate.
+/// the same `LeaderChange` route and are not observable from here.
 ///
 /// Mutation record (both red, three runs each): swapping `router.route(passive)` and `router.quiesce()` in
 /// `AetherNode.stop`, and making `DelegateRouter.route` asynchronous, each leave `deploymentManager` and

@@ -176,7 +176,6 @@ public final class ConfigLoader {
         populateTlsConfig(doc, builder, environment, env);
         populateDockerConfig(doc, builder, environment);
         populateKubernetesConfig(doc, builder, environment);
-        populateTtmConfig(doc, builder);
         populateSliceConfig(doc, builder);
         populateAppHttpConfig(doc, builder, env);
         populateBackupConfig(doc, builder, environment, environmentExplicit, env);
@@ -432,28 +431,6 @@ public final class ConfigLoader {
         var storageClass = doc.getString("kubernetes", "storage_class").or("");
 
         return KubernetesConfig.kubernetesConfig(namespace, serviceType, storageClass).unwrap();
-    }
-
-    private static void populateTtmConfig(TomlDocument doc, AetherConfig.Builder builder) {
-        var ttmEnabled = doc.getBoolean("ttm", "enabled").or(false);
-
-        if (ttmEnabled) {
-            builder.ttm(ttmFromDocument(doc));
-        }
-    }
-
-    private static TtmConfig ttmFromDocument(TomlDocument doc) {
-        var modelPath = doc.getString("ttm", "model_path").or("models/ttm-aether.onnx");
-        var inputWindow = doc.getInt("ttm", "input_window_minutes").or(60);
-        var predictionHorizon = doc.getInt("ttm", "prediction_horizon").or(1);
-        var evalInterval = parseTimeSpanOrMs(doc,
-                                             "ttm",
-                                             "evaluation_interval",
-                                             "evaluation_interval_ms",
-                                             timeSpan(60).seconds());
-        var confidence = doc.getDouble("ttm", "confidence_threshold").or(0.7);
-
-        return TtmConfig.ttmConfig(modelPath, inputWindow, predictionHorizon, evalInterval, confidence, true).or(TtmConfig.ttmConfig());
     }
 
     @SuppressWarnings({"JBCT-STY-05", "JBCT-RET-07"})

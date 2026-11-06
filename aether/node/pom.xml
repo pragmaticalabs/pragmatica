@@ -256,11 +256,6 @@
             <version>${project.version}</version>
         </dependency>
 
-        <dependency>
-            <groupId>org.pragmatica-lite.aether</groupId>
-            <artifactId>aether-ttm</artifactId>
-            <version>${project.version}</version>
-        </dependency>
 
         <!-- Split node modules -->
         <dependency>
@@ -455,12 +450,6 @@
                                         <exclude>META-INF/*.RSA</exclude>
                                     </excludes>
                                 </filter>
-                                <filter>
-                                    <artifact>com.microsoft.onnxruntime:onnxruntime</artifact>
-                                    <excludes>
-                                        <exclude>ai/onnxruntime/native/osx-*/**/*.dSYM/**</exclude>
-                                    </excludes>
-                                </filter>
                             </filters>
                             <createDependencyReducedPom>false</createDependencyReducedPom>
                             <finalName>aether-node</finalName>
@@ -471,16 +460,4 @@
         </plugins>
     </build>
 
-    <profiles>
-        <profile>
-            <id>with-ttm</id>
-            <dependencies>
-                <dependency>
-                    <groupId>org.pragmatica-lite.aether</groupId>
-                    <artifactId>aether-ttm-onnx</artifactId>
-                    <version>${project.version}</version>
-                </dependency>
-            </dependencies>
-        </profile>
-    </profiles>
 </project>

@@ -53,9 +53,7 @@ Requests to slices on the failed node are automatically retried on other nodes h
 
 ## How does scaling work?
 
-Two-tier system:
-1. **Reactive** (1-second interval) -- responds to current CPU, latency, queue depth, error rate
-2. **Predictive** (60-second interval) -- ONNX ML model forecasts load from a rolling history window (default 1 hour, configurable up to 2 hours via `inputWindowMinutes`), pre-scales before spikes
+Scaling is **reactive**: the runtime evaluates current CPU, latency, queue depth and error rate every second and adds or removes instances accordingly. Operator-set floors bound it -- a slice never scales below the blueprint's instance floor (at least 3, see [deployment](deployment.md)), and `aether scale` preserves it.
 
 Configure per-blueprint via CLI: `aether scale <artifact> --min 2 --max 10 --target-cpu 60`
 

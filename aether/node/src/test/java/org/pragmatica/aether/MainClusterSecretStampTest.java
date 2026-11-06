@@ -18,7 +18,6 @@ import org.pragmatica.aether.config.NodeConfig;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.TimeoutsConfig;
 import org.pragmatica.aether.config.TlsConfig;
-import org.pragmatica.aether.config.TtmConfig;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.dht.DHTConfig;
@@ -186,7 +185,6 @@ class MainClusterSecretStampTest {
                                                      Option.some(TlsConfig.tlsConfig(clusterSecret)),
                                                      Option.none(),
                                                      Option.none(),
-                                                     TtmConfig.ttmConfig(),
                                                      SliceConfig.sliceConfig(),
                                                      AppHttpConfig.appHttpConfig(),
                                                      BackupConfig.backupConfig(Environment.DOCKER),
