@@ -940,9 +940,10 @@ class ClusterDeploymentStateActiveTest {
         void activeLeaderWithAWideTarget() {
             kvStore.put(SliceTargetKey.sliceTargetKey(ARTIFACT.base()),
                         SliceTargetValue.sliceTargetValue(ARTIFACT.version(), 5));
-            harness.dispatch(new Activate());
             sink = org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(warnings::add);
-            activeState().ctx().setOperatorWarningSink(sink);
+            // Bound before activation: the leader's first reconcile on entry already observes the shortfall.
+            ((ClusterDeploymentState.Dormant) harness.state()).ctx().setOperatorWarningSink(sink);
+            harness.dispatch(new Activate());
             activeState().blueprints()
                          .put(ARTIFACT, ClusterDeploymentManager.Blueprint.blueprint(ARTIFACT, 5, 3, Option.none(), false));
         }
@@ -965,8 +966,9 @@ class ClusterDeploymentStateActiveTest {
             activeState().reconcile();
             activeState().reconcile();
             activeState().reconcile();
+            activeState().reconcile();
 
-            assertThat(codes()).as("three ticks over the same shortfall: one warning, not a loop").containsExactly("slice-target-exceeds-placement");
+            assertThat(codes()).as("activation plus three ticks over the same shortfall: one warning, not a loop").containsExactly("slice-target-exceeds-placement");
             var shortfall = activeState().ctx().placementShortfalls().get(ARTIFACT);
             assertThat(shortfall.desired()).isEqualTo(5);
             assertThat(shortfall.placeable()).as("the eligible nodes of the audience").isLessThan(5).isPositive();
