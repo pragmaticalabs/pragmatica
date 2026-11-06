@@ -154,7 +154,9 @@ public sealed interface SliceRequirements {
     /// [SliceTargetFence.SliceTargetFenceError] when no target, owner or leader is committed.
     ///
     /// An expired requirement is removed in the same transaction, and while `REACTIVE` is below the committed count it is re-based to
-    /// that count with it ([#reactiveRebase]): an expiry releases its claim and never commands a scale-down (spec §3.1). Fails with [CombinerOutcome.CanaryRunning] while an A/B canary runs on the target.
+    /// that count with it ([#reactiveRebase]): an expiry releases its claim and never commands a scale-down (spec §3.1). Fails with [CombinerOutcome.CanaryRunning] while an A/B canary runs on the target,
+    /// and the transaction witnesses the base's A/B index at the value read (#2713), so an A/B write between this read and the commit
+    /// refuses it.
     static Result<LeaderTransaction<AetherKey, AetherValue>> combinerTransaction(KVStore<AetherKey, AetherValue> store,
                                                                                  ArtifactBase base,
                                                                                  long nowMs,
@@ -222,7 +224,8 @@ public sealed interface SliceRequirements {
     }
 
     /// The requirement writes of a combination that leaves the target count as committed: witnessed on the target at `target` and on
-    /// its owning blueprint, so a target that moved or was removed after the read refuses them.
+    /// its owning blueprint, so a target that moved or was removed after the read refuses them, and on the base's A/B index, so a canary
+    /// that started after the read refuses them as it refuses a target write (#2713).
     private static Result<LeaderTransaction<AetherKey, AetherValue>> heldTargetTransaction(KVStore<AetherKey, AetherValue> store,
                                                                                            SliceTargetKey key,
                                                                                            SliceTargetValue target,
@@ -231,9 +234,11 @@ public sealed interface SliceRequirements {
                                             key,
                                             target.owningBlueprint())
                                .flatMap(ownerGuards -> SliceTargetFence.guardedTransaction(store,
-                                                                                           withTargetWitness(key,
-                                                                                                             target,
-                                                                                                             ownerGuards),
+                                                                                           withAbTestWitness(store,
+                                                                                                             key.artifactBase(),
+                                                                                                             withTargetWitness(key,
+                                                                                                                               target,
+                                                                                                                               ownerGuards)),
                                                                                            mutations));
     }
 
@@ -286,6 +291,19 @@ public sealed interface SliceRequirements {
         var all = new ArrayList<>(guards);
 
         all.addAll(requirementWitnesses(store, base));
+
+        return withAbTestWitness(store, base, all);
+    }
+
+    /// `guards` and the witness on `base`'s A/B index ([AbTestIndex#witness]) at its committed value, absent included (#2713): the
+    /// read-time [#canaryRunning] check holds at commit, because an A/B write of the base that creates a test or moves one after the
+    /// read changes the index and refuses the combination, and its rebuild reads the moved test.
+    private static List<ReadWitness<AetherKey>> withAbTestWitness(KVStore<AetherKey, AetherValue> store,
+                                                                  ArtifactBase base,
+                                                                  List<ReadWitness<AetherKey>> guards) {
+        var all = new ArrayList<>(guards);
+
+        all.add(AbTestIndex.witness(store, base));
 
         return all;
     }

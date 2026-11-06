@@ -217,6 +217,8 @@ final class BackupFixtures {
                                                            owner.asString(),
                                                            1_700_000_000_000L,
                                                            1_700_000_000_500L)),
+                       new Fixture(AetherKey.AbTestBaseKey.abTestBaseKey(base),
+                                   AetherValue.AbTestBaseValue.abTestBaseValue("checkout-v2=ACTIVE,checkout-v3=CONCLUDING")),
                        new Fixture(ClusterConfigKey.CURRENT,
                                    ClusterConfigValue.clusterConfigValue("[cluster]\nname = \"prod|eu\"\n# ünïcødé = yes\n",
                                                                          "prod",

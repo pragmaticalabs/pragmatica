@@ -2580,6 +2580,22 @@ public sealed interface AetherValue {
         public boolean runsCanary() {
             return "DEPLOYING_VARIANTS".equals(state) || "ACTIVE".equals(state) || "ROLLING_BACK".equals(state);
         }
+
+        /// Whether the test has not ended: every state but `COMPLETED`, `ROLLED_BACK` and `FAILED`, an unknown one included, so a state
+        /// this node cannot name stays in the base's [AbTestBaseValue] rather than leaving it.
+        public boolean isLive() {
+            return ! ("COMPLETED".equals(state) || "ROLLED_BACK".equals(state) || "FAILED".equals(state));
+        }
+    }
+
+    /// #2713: the live A/B tests of one slice ([AetherKey.AbTestBaseKey]), each as `testId=STATE`, sorted by test id and joined with
+    /// `,`. It is a pure function of the base's committed [AbTestValue]s, so it changes on every write that creates a live test, moves
+    /// one to another state or ends one, and the requirement combiner's witness on it refuses a combination read before such a write.
+    /// The entry is removed when the base's last live test ends.
+    record AbTestBaseValue(String liveTests) implements AetherValue {
+        public static AbTestBaseValue abTestBaseValue(String liveTests) {
+            return new AbTestBaseValue(liveTests);
+        }
     }
 
     /// Committed assignee of one consumer group's partition (#1271). Written by the leader-only

@@ -126,7 +126,7 @@ class SliceRequirementFenceTest {
     }
 
     /// s18, s19: an expired requirement removed while the combined count stays at the target is a held-target write; it carries the same
-    /// two witnesses.
+    /// two witnesses, and the base's A/B index witnessed absent (#2713).
     @Test
     void combinerTransaction_expiredRequirementCountUnchanged_witnessesTheTargetThenTheOwnerBlueprint() {
         var store = store();
@@ -141,7 +141,8 @@ class SliceRequirementFenceTest {
 
         assertThat(transaction.mutations().stream().map(KVCommand.Mutation::key).toList()).contains(OPERATOR_KEY);
         assertThat(transaction.guards()).containsExactly(new ReadWitness<AetherKey>(TARGET_KEY, Option.some(target)),
-                                                         new ReadWitness<AetherKey>(OWNER_KEY, Option.some(blueprint)));
+                                                         new ReadWitness<AetherKey>(OWNER_KEY, Option.some(blueprint)),
+                                                         new ReadWitness<AetherKey>(AetherKey.AbTestBaseKey.abTestBaseKey(BASE), Option.none()));
     }
 
     /// s20: the held-target write of an orphaned target (owner not committed) is refused.

@@ -13,6 +13,7 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.RequirementKind;
+import org.pragmatica.aether.slice.kvstore.ReplicaFilter;
 import org.pragmatica.consensus.NodeId;
 
 import org.junit.jupiter.api.Test;
@@ -157,5 +158,25 @@ class WorkerMetadataIndexTest {
         assertThat(index.revision()).as("a requirement put moves no revision").isEqualTo(afterTarget);
         assertThat(index.snapshot(scope).keySet()).as("the artifact scope holds the target and no requirement")
                                                  .containsExactly(AetherKey.SliceTargetKey.sliceTargetKey(base));
+    }
+
+    /// #2713: the per-slice A/B index is a leader-side input of the requirement combiner, like the A/B records it indexes, and enters no
+    /// worker scope; the replica filter INCLUDES it with them. Positive control: the target put moves the artifact scope's revision.
+    @Test
+    void abTestBaseKey_entersNoWorkerScope_andTheReplicaIncludesIt() {
+        var index = WorkerMetadataIndex.workerMetadataIndex();
+        var base = ArtifactBase.artifactBase("com.example:service").unwrap();
+        var scope = "artifact:" + base.asString();
+
+        index.put(AetherKey.SliceTargetKey.sliceTargetKey(base), "opaque value: the arm reads the key only");
+        var afterTarget = index.revision();
+
+        assertThat(index.revision(scope)).as("control: the target is in the artifact scope").isPositive();
+
+        index.put(AetherKey.AbTestBaseKey.abTestBaseKey(base), "opaque value: the unscoped arm never reads it");
+
+        assertThat(index.revision()).as("an A/B index put moves no revision").isEqualTo(afterTarget);
+        assertThat(ReplicaFilter.replicaFilter().excludes(AetherKey.AbTestBaseKey.abTestBaseKey(base))).as("INCLUDED, as AbTestKey is")
+                                                                                                .isFalse();
     }
 }

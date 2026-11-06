@@ -17,6 +17,7 @@ import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.blueprint.SliceSpec;
+import org.pragmatica.aether.slice.kvstore.AbTestIndex;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AbTestKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
@@ -466,20 +467,22 @@ public interface AbTestManager {
                            .flatMap(this::cacheAndPersistTest);
             }
 
-            @SuppressWarnings("unchecked")
+            /// #2713: the record is written in ONE transaction with the base's A/B index ([AbTestIndex#testWrite]), so the requirement
+            /// combiner's witness on the index refuses a combination read before this write. A refused submission (a concurrent write
+            /// moved the index or the record) is rebuilt from a fresh read.
             private Promise<AbTestDeployment> cacheAndPersistTest(AbTestDeployment test) {
                 tests.put(test.testId(), test);
                 if (test.isTerminal()) {
                     pruneTerminalTests();
                 }
 
-                var key = new AbTestKey(test.testId());
                 var value = buildTestValue(test);
-                var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
 
-                return clusterNode.<Unit> apply(List.of(command))
-                                  .timeout(kvOperationTimeout)
-                                  .map(_ -> test);
+                return SliceTargetFence.submit("ab-test " + test.testId(),
+                                               clusterNode::apply,
+                                               () -> AbTestIndex.testWrite(kvStore, value))
+                                       .timeout(kvOperationTimeout)
+                                       .map(_ -> test);
             }
 
             private AbTestValue buildTestValue(AbTestDeployment test) {

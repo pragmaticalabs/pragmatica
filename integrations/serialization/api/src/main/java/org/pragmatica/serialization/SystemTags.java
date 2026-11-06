@@ -761,7 +761,12 @@ public interface SystemTags {
         pin(table, 2222, "org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowState");
         pin(table, 2223, "org.pragmatica.aether.slice.kvstore.AetherKey.WorkflowClaimKey");
         pin(table, 2224, "org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowClaimValue");
-        // ---- 2225..16383 RESERVED ----
+        // rc6 f1 (#2713, CTO ruling "AB witness option A"): the per-slice index of live A/B tests the requirement combiner witnesses.
+        // 2225 and up were free at the rc5 tip f43a86ac9d, every open PR head (#2803 rc6/f2b, #2810, #2812, #2809, #2770) and every
+        // origin rc6/* branch, F5c included (scanned 2026-11-06), so these take 2225..2226.
+        pin(table, 2225, "org.pragmatica.aether.slice.kvstore.AetherKey.AbTestBaseKey");
+        pin(table, 2226, "org.pragmatica.aether.slice.kvstore.AetherValue.AbTestBaseValue");
+        // ---- 2227..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

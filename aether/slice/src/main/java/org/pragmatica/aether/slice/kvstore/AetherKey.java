@@ -1459,6 +1459,35 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// #2713: the per-slice index of the live A/B tests of one [ArtifactBase]. Written in the SAME transaction as every [AbTestKey]
+    /// write of a test of the base, so the requirement combiner can witness every A/B change of the base, a test created after its read
+    /// included, with one point witness ([AetherValue.AbTestBaseValue]). Absent while the base has no live test.
+    record AbTestBaseKey(ArtifactBase artifactBase) implements ClusterStateKey {
+        private static final String PREFIX = "ab-test-base/";
+
+        @Override
+        public String asString() {
+            return PREFIX + artifactBase.asString();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static AbTestBaseKey abTestBaseKey(ArtifactBase artifactBase) {
+            return new AbTestBaseKey(artifactBase);
+        }
+
+        public static Result<AbTestBaseKey> abTestBaseKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return AB_TEST_BASE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return ArtifactBase.artifactBase(key.substring(PREFIX.length())).map(AbTestBaseKey::new);
+        }
+    }
+
     record NodeArtifactKey(NodeId nodeId, Artifact artifact) implements RuntimeKey {
         private static final String PREFIX = "node-artifact/";
 
@@ -1807,6 +1836,8 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     Fn1<Cause, String> SCHEMA_MIGRATION_LOCK_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid schema-lock key format: %s");
 
     Fn1<Cause, String> AB_TEST_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid ab-test key format: %s");
+
+    Fn1<Cause, String> AB_TEST_BASE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid ab-test-base key format: %s");
 
     Fn1<Cause, String> CLUSTER_CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid cluster-config key format: %s");
 
