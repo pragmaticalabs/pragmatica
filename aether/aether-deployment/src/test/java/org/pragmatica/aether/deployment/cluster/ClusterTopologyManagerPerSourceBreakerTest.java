@@ -129,7 +129,20 @@ class ClusterTopologyManagerPerSourceBreakerTest {
         new AtomicReference<>(node -> Causes.cause("no placement for " + node.id()).result());
     private final List<String> events = new CopyOnWriteArrayList<>();
     private final Set<String> failingSources = ConcurrentHashMap.newKeySet();
+    private final AtomicReference<Option<ClusterConfigValue>> configRef = new AtomicReference<>(Option.none());
     private ClusterTopologyManager manager;
+
+    private static ClusterConfigValue configAtVersion(long version) {
+        return new ClusterConfigValue(Option.some(TWO_CLOUD_SOURCES_TOML),
+                                      "prod-cluster",
+                                      "1.0.0",
+                                      List.of(new AetherValue.TopologyEntry("eu-1", "core", 3)),
+                                      3,
+                                      9,
+                                      "cloud",
+                                      version,
+                                      System.currentTimeMillis());
+    }
 
     @BeforeEach
     void setUp() {
@@ -142,15 +155,9 @@ class ClusterTopologyManagerPerSourceBreakerTest {
                                                 NodeInfo.nodeInfo(PEER_A, NodeAddress.nodeAddress("10.0.0.2", 6000).unwrap()),
                                                 NodeInfo.nodeInfo(PEER_B, NodeAddress.nodeAddress("10.0.0.3", 6000).unwrap())));
         var observer = TopologyObserver.topologyObserver(config, quietRouter(), snapshotSource).unwrap();
-        var configValue = Option.some(new ClusterConfigValue(Option.some(TWO_CLOUD_SOURCES_TOML),
-                                                             "prod-cluster",
-                                                             "1.0.0",
-                                                             List.of(new AetherValue.TopologyEntry("eu-1", "core", 3)),
-                                                             3,
-                                                             9,
-                                                             "cloud",
-                                                             1L,
-                                                             System.currentTimeMillis()));
+        var configValue = Option.some(configAtVersion(1L));
+
+        configRef.set(configValue);
         var kv = new KVStore<StructuredKey, Object>(quietRouter(), noSerializer(), noDeserializer());
 
         kv.process(kv.createBatch(List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(SELF, 1)),
@@ -175,7 +182,7 @@ class ClusterTopologyManagerPerSourceBreakerTest {
                                                                 AutoHealConfig.autoHealConfig(timeSpan(1).millis(), AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT).unwrap(),
                                                                 DeploymentMap.deploymentMap(),
                                                                 snapshotSource,
-                                                                () -> configValue,
+                                                                configRef::get,
                                                                 _ -> Promise.success(List.of()),
                                                                 () -> ClusterPhase.NORMAL);
         manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warning -> events.add(warning.code().code())));
@@ -357,6 +364,27 @@ class ClusterTopologyManagerPerSourceBreakerTest {
         assertThat(asked.get()).as("inside the backoff window the node's source is resolved once, not hot-retried").isEqualTo(1);
         assertThat(manager.circuitBreakerStates()).isEmpty();
         assertThat(heal(Option.some(FROM_FIRST)).unwrap()).as("another node is not held by it").isInstanceOf(ProvisionDisposition.Dispatched.class);
+    }
+
+    /// v2711c (c37): a committed configuration change re-keys the unresolved-source refusal window, so the same departed node is resolved
+    /// afresh on the next pass instead of waiting out the window armed under the old configuration.
+    @Test
+    void unresolvedRefusal_aCommittedConfigChange_endsTheWindow() {
+        var asked = new java.util.concurrent.atomic.AtomicInteger();
+        committedSource.set(node -> {
+            asked.incrementAndGet();
+
+            return Causes.cause("no placement for " + node.id()).<SourceName> result();
+        });
+
+        heal(Option.some(UNPLACED));
+        heal(Option.some(UNPLACED));
+        assertThat(asked.get()).as("inside the window the node is resolved once").isEqualTo(1);
+
+        configRef.set(Option.some(configAtVersion(2L)));
+        heal(Option.some(UNPLACED));
+
+        assertThat(asked.get()).as("the new configuration version resolves afresh").isEqualTo(2);
     }
 
     /// v2711 survivor 9 (c23): the one-argument reset closes every source and returns the sum of the counts it cleared.
