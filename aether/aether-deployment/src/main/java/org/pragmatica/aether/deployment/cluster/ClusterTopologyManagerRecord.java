@@ -1433,7 +1433,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     private void recordRefusal(String key, Cause cause) {
         lastProvisionFailureRef.set(new LastProvisionFailure(cause.message(), nowMs()));
-        breakers.refuseUntil(key, nowMs() + autoHealConfig.provisioningTimeout().millis());
+        breakers.refuseUntil(key,
+                             nowMs() + autoHealConfig.provisioningTimeout().millis());
     }
 
     private static final String SOURCE_SUBJECT = "core-replacement";
@@ -1443,15 +1444,16 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// it is not a provider failure, so the circuit never counts it: it is paced by its own window, and told to the operator once per run of refusals (the flag is the flood guard;
     /// [#resumeSourceResolution] clears it). No provider effect has happened on this path, so there is nothing to compensate.
     private Promise<ProvisionDisposition> deferUnresolvedSource(Option<NodeId> failedPeer, Cause cause) {
-        return Promise.success(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.SOURCE_UNRESOLVED))
-                      .onSuccess(_ -> recordUnresolvedSource(failedPeer, cause));
+        return Promise.success(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.SOURCE_UNRESOLVED)).onSuccess(_ -> recordUnresolvedSource(failedPeer,
+                                                                                                                                                           cause));
     }
 
     /// The refusal window of an unresolved source is per departed node: another node whose source resolves is not held by it.
     /// A committed configuration change is a change of circumstance: it carries its version in the key, so the next pass resolves afresh.
     private String unresolvedKey(Option<NodeId> failedPeer) {
         return failedPeer.map(peer -> ProvisioningBreakers.UNRESOLVED + peer.id())
-                         .or(ProvisioningBreakers.UNRESOLVED) + "@" + committedConfigVersion();
+                         .or(ProvisioningBreakers.UNRESOLVED)
+             + "@" + committedConfigVersion();
     }
 
     @Contract
