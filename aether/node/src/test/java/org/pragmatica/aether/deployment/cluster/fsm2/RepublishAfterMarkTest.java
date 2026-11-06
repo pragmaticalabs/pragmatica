@@ -11,9 +11,11 @@ import java.util.Set;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentApplyKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentApplyValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
@@ -249,8 +251,11 @@ class RepublishAfterMarkTest {
     void lostBatchNewLeader_staleMarkRemovalLost_removedByALaterTick() {
         var h = lostBatchBeforeNewLeader(FsmHarness.SettlePolicy.LOSE);
 
-        h.advance(h.settings.timing().tick() * 2);
-        assertThat(h.submits(SubmitKind.STALE_MARK)).as("control: the removal was sent").isNotEmpty();
+        h.advance(h.settings.timing().tick());
+        assertThat(h.submits(SubmitKind.STALE_MARK)
+                    .stream()
+                    .filter(submit -> submit.incarnation() == 2)).as("the removal is sent once of the new leader's reconciles while it is in flight")
+                  .hasSize(1);
         assertThat(judgment(h).map(ArtifactJudgmentValue::permanentFailure)).as("control: lost, the mark stands")
                   .isEqualTo(Option.some(true));
         h.policy = FsmHarness.SettlePolicy.APPLY;
@@ -291,6 +296,39 @@ class RepublishAfterMarkTest {
         h.advance(h.settings.timing().tick() * 3);
         assertThat(h.submits(SubmitKind.ROLLBACK)).as("the newer mark judges the open attempt: it rolls it back")
                   .isNotEmpty();
+    }
+
+    // Red when: the sweep considers an apply that is no longer open (its attempt has a terminal outcome) a reason to remove a mark.
+    @Test
+    void closedApply_markNotJudgingItsAttempt_isNotRemoved() {
+        var h = succeededThenMarked();
+        var mark = new ArtifactJudgmentValue(true, Map.of(), Map.of(), Set.of("attempt-0"));
+
+        h.seed(new ArtifactJudgmentKey(ORDERS), mark);
+        h.seed(new DeploymentApplyKey(blueprintId(APP)), new DeploymentApplyValue("attempt-1", Option.none(), h.wallMs));
+        h.drain();
+        h.advance(h.settings.timing().tick() * 3);
+        assertThat(outcomeStatus(h)).as("control: the attempt has its terminal outcome")
+                  .isEqualTo(Option.some(DeploymentOutcomeStatus.SUCCEEDED));
+        assertThat(h.submits(SubmitKind.STALE_MARK)).as("a closed apply supersedes nothing").isEmpty();
+    }
+
+    // Red when: the sweep reads the attempt of an apply that is not the blueprint's current attempt (a newer blueprint whose apply is not yet
+    // committed): the mark of the current attempt would be removed on the evidence of the older apply.
+    @Test
+    void applyOfAnOlderAttempt_markOfTheCurrentAttempt_isNotRemoved() {
+        var h = active();
+        var node = node(h, CORE_1, 11);
+
+        publish(h, FIRST);
+        node.writes(ORDERS, SliceObservedState.LOADING);
+        h.drain();
+        h.seed(new AppBlueprintKey(blueprintId(APP)), AGAIN);
+        h.drain();
+        h.seed(new ArtifactJudgmentKey(ORDERS), new ArtifactJudgmentValue(true, Map.of(), Map.of(), Set.of("attempt-2")));
+        h.drain();
+        h.advance(h.settings.timing().tick() * 3);
+        assertThat(h.submits(SubmitKind.STALE_MARK)).as("the older apply says nothing about the mark of the current attempt").isEmpty();
     }
 
     private static FsmHarness settleHeld(FsmHarness h, ClusterEffect.Submit submit) {
