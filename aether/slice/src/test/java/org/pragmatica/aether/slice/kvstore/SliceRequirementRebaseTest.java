@@ -108,12 +108,15 @@ class SliceRequirementRebaseTest {
     void reactiveRebase_valueCarriesCountReasonAndCommittedRevision() {
         var store = storeWithTarget(5);
         var held = SliceTargetValue.sliceTargetValue(V1, 5, Option.<BlueprintId>none());
+
+        store.onPhaseCompleted(42L);
+
         var rebase = SliceRequirements.reactiveRebase(store, BASE, held).unwrap();
 
         assertThat(rebase.instances()).isEqualTo(5);
         assertThat(rebase.reason()).isEqualTo("held at 5: a claim was released or expired");
         assertThat(rebase.expiresAt().isEmpty()).isTrue();
-        assertThat(store.committedRevision()).as("control: the store has committed batches").isPositive();
+        assertThat(store.committedRevision()).as("control: the revision is not the zero the mutant writes").isEqualTo(42L);
         assertThat(rebase.baseTargetRevision()).isEqualTo(store.committedRevision());
     }
 
