@@ -295,6 +295,14 @@ class AppHttpServerIngestGateTest {
         sameBody_passesTheBigRoute_andIsRefused413OnTheSmallRoute(Protocol.H3);
     }
 
+    @org.junit.jupiter.api.RepeatedTest(300)
+    void diag2746() throws Exception {
+        start(Protocol.H3, defaults(), 10 * MIB);
+        var client = client(Protocol.H3);
+        assertThat(client.post("/api/small/", Option.some(KEY_A), 2 * MIB, Mode.DECLARED).status()).isEqualTo(413);
+        assertThat(client.post("/api/small/", Option.some(KEY_A), 2 * MIB, Mode.UNDECLARED).status()).isEqualTo(413);
+    }
+
     private void sameBody_passesTheBigRoute_andIsRefused413OnTheSmallRoute(Protocol protocol) throws Exception {
         start(protocol, defaults(), 10 * MIB);
         var client = client(protocol);

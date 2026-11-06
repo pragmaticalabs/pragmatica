@@ -83,7 +83,7 @@ public final class H3Probe {
             var quic = connect.getNow();
             var reader = new AnswerReader();
 
-            quic.closeFuture().addListener(_ -> reader.finish());
+            quic.closeFuture().addListener(_ -> reader.finish("quicClose"));
 
             var stream = Http3.newRequestStream(quic, reader).sync().getNow();
 
@@ -171,23 +171,25 @@ public final class H3Probe {
 
         @Override
         protected void channelInputClosed(ChannelHandlerContext ctx) {
-            finish();
+            finish("inputClosed");
         }
 
         @Override
         public void channelInactive(ChannelHandlerContext ctx) {
-            finish();
+            finish("inactive");
             ctx.fireChannelInactive();
         }
 
         @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-            finish();
+            System.err.println("DIAG2746 exceptionCaught " + cause);
+            finish("exception");
             ctx.close();
         }
 
-        void finish() {
+        void finish(String why) {
             synchronized (body) {
+                if (!answer.isDone() && "closed".equals(status)) System.err.println("DIAG2746 closed-by " + why + " t=" + System.nanoTime());
                 answer.complete(new Answer(status, body.toString()));
             }
         }
