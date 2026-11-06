@@ -168,9 +168,78 @@ class SwimLinkLostLivePeerTest {
                                             .isZero());
     }
 
+    /// #2724 probe filter 1 (SUSPECT): a hint that does not leave the peer SUSPECT sends no probe.
+    /// The leader dies at the floor (FAULTY, not escalated again by [#SwimProtocol]'s suspicion
+    /// path); a later current hint for it (the ClusterSync pong report arriving after the verdict)
+    /// must not probe a FAULTY member: that would revive a condemned peer's traffic and, for an
+    /// untombstoned one, its ALIVE path. Read and hint are consecutive, past the probe timeout of
+    /// any earlier probe, so a Ping to the leader in between can only come from the hint.
+    @Test
+    void peerUnresponsiveHint_peerAlreadyFaulty_notProbed() {
+        startWith(Map.of(LEADER, false, NODE_B, true, NODE_C, true, NODE_D, true));
+        await().atMost(Duration.ofSeconds(8))
+             .pollInterval(Duration.ofMillis(10))
+             .until(() -> !forLeader(SwimObservation.DepartedObserved.class).isEmpty());
+        pause(3 * 200L);
+        var pingsBefore = transport.pingsTo(ADDR_A);
+        var stateAtHint = protocol.members().get(LEADER).state();
+
+        protocol.recordTransportHint(LEADER, peerUnresponsiveHint());
+
+        assertThat(stateAtHint).as("instrument: the leader is FAULTY when the second hint lands")
+                  .isEqualTo(MemberState.FAULTY);
+        assertThat(transport.pingsTo(ADDR_A)).as("a hint that finds the peer non-SUSPECT sends no probe")
+                  .isEqualTo(pingsBefore);
+    }
+
+    /// #2724 probe filter 2 (current hint): a LINK_LOST hint recorded while the link is connected
+    /// (a late hint after a reconnect) is not current death evidence. The peer still goes SUSPECT,
+    /// on the unfloored window, and the hint-time probe is not sent: the connected link already
+    /// contradicts the hint, so the floor that the probe protects does not apply.
+    @Test
+    void linkLostHint_linkConnected_suspectedOnUnflooredWindowAndNotProbed() {
+        transport.autoHint.set(false);
+        liveTransport.add(LEADER);
+        startWith(Map.of(LEADER, true, NODE_B, true, NODE_C, true, NODE_D, true));
+        await().atMost(Duration.ofSeconds(3))
+             .pollInterval(Duration.ofMillis(5))
+             .until(() -> transport.pingsTo(ADDR_A) >= 1);
+        var pingsBefore = transport.pingsTo(ADDR_A);
+
+        protocol.recordTransportHint(LEADER, linkLostHint());
+
+        assertThat(transport.pingsTo(ADDR_A)).as("a hint that is not current death evidence sends no hint-time probe (the next round-robin probe of the leader is 4 periods away)")
+                  .isEqualTo(pingsBefore);
+        assertThat(protocol.members().get(LEADER).state()).as("instrument: the late hint still suspects a healthy peer")
+                  .isEqualTo(MemberState.SUSPECT);
+    }
+
+    private static TransportObservation.PeerUnreachable peerUnresponsiveHint() {
+        return new TransportObservation.PeerUnreachable(LEADER,
+                                                        Causes.cause("ClusterSync missed pongs"),
+                                                        TransportObservation.HintOrigin.PEER_UNRESPONSIVE);
+    }
+
+    private static void pause(long millis) {
+        await().pollDelay(Duration.ofMillis(millis))
+             .atMost(Duration.ofMillis(millis + 1_000))
+             .until(() -> true);
+    }
+
+    private static TransportObservation.PeerUnreachable linkLostHint() {
+        return new TransportObservation.PeerUnreachable(LEADER,
+                                                        Causes.cause("QUIC link evicted by the leader after NodeRemoved"),
+                                                        TransportObservation.HintOrigin.LINK_LOST);
+    }
+
     /// `answersAfterHint`: whether the leader keeps answering Pings after the eviction. Every peer
     /// answers before it, so the leader is HEALTHY when the hint lands.
     private void startWith(Map<NodeId, Boolean> answersAfterHint) {
+        build(answersAfterHint);
+        protocol.start();
+    }
+
+    private void build(Map<NodeId, Boolean> answersAfterHint) {
         transport.answersAfterHint.putAll(answersAfterHint);
         protocol = SwimProtocol.swimProtocol(config,
                                              transport,
@@ -186,7 +255,6 @@ class SwimLinkLostLivePeerTest {
         seed(NODE_B, ADDR_B);
         seed(NODE_C, ADDR_C);
         seed(NODE_D, ADDR_D);
-        protocol.start();
     }
 
     /// Past the floor AND past the tick that would probe the leader again: node-b's second probe
@@ -233,6 +301,7 @@ class SwimLinkLostLivePeerTest {
         final AtomicBoolean hinted = new AtomicBoolean();
         final AtomicLong hintedAt = new AtomicLong();
         final AtomicBoolean secondHint = new AtomicBoolean();
+        final AtomicBoolean autoHint = new AtomicBoolean(true);
         final AtomicLong pingIndexAtHint = new AtomicLong();
         final AtomicLong otherPeerPingsBeforeDeath = new AtomicLong(-1);
         private final CopyOnWriteArrayList<InetSocketAddress> pings = new CopyOnWriteArrayList<>();
@@ -270,7 +339,7 @@ class SwimLinkLostLivePeerTest {
                                              new Ack(peer, ping.sequence(), List.of()));
                 }
 
-                if (peer.equals(LEADER) && hinted.compareAndSet(false, true)) {
+                if (autoHint.get() && peer.equals(LEADER) && hinted.compareAndSet(false, true)) {
                     hintedAt.set(System.currentTimeMillis());
                     pingIndexAtHint.set(pings.size());
                     protocol.get()
