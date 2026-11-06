@@ -375,6 +375,8 @@ class ClusterTopologyManagerWorkerReconcileTest {
             zones = ["old", "new"]
             [source.pool.core]
             count = 3
+            [source.pool.worker]
+            count = 1
             [community.stable]
             target_size = %d
             [community.stable.placement.destination]
