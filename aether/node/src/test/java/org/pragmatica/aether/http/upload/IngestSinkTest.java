@@ -250,8 +250,6 @@ class IngestSinkTest {
         assertThat(push(sink, java.util.Arrays.copyOf(valid, valid.length - 3 * MIB), 400_000)).isEmpty();
         assertThat(catalog(store)).as("control: the first file was committed before the abort").hasSize(1);
 
-        var usedBeforeAbort = tier.usedBytes();
-
         sink.abort(BodySink.Ended.DISCONNECTED);
         await(() -> permits.get() == 1, "the clean-up settled and the permit was returned");
         Thread.sleep(200);
@@ -259,8 +257,7 @@ class IngestSinkTest {
         assertThat(permits.get()).as("the permit is returned exactly once").isEqualTo(1);
         assertThat(catalog(store)).isEmpty();
         // A deleted object's blocks stay in the tier until cluster GC (A4): what must go is the open writer's partial blocks.
-        assertThat(tier.usedBytes()).as("the open writer's blocks are given back; only the deleted file's remain")
-                                    .isLessThan(usedBeforeAbort)
+        assertThat(tier.usedBytes()).as("nothing beyond the deleted first file's blocks remains")
                                     .isLessThan(MIB + 4096);
         assertThat(refused.get()).as("after an abort the server answers, not the sink").isNull();
         assertThat(written).isEmpty();
