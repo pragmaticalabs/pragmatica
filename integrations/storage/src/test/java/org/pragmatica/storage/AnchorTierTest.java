@@ -597,11 +597,6 @@ class AnchorTierTest {
             return unsupported();
         }
 
-        @Override
-        public Promise<Boolean> touchObject(String key, String contentType) {
-            return unsupported();
-        }
-
         private static <T> Promise<T> unsupported() {
             return new S3Error.ApiError(501, "NotImplemented", "not used by these tests").promise();
         }

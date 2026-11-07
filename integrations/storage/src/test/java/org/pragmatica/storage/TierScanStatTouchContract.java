@@ -166,14 +166,47 @@ abstract class TierScanStatTouchContract {
         assertThat(scanAll(KeyShard.all(), 10)).containsExactly(id);
     }
 
+    /// A scan reports the time a touch set, as [StorageTier#stat] does, and lists a touched block once -- on S3, where
+    /// the touch is a marker object beside the block, at every page size, so a marker can open the page after its block.
+    @Test
+    void scan_listsATouchedBlockOnce_withTheTimeStatReports() {
+        var ids = IntStream.range(0, 3)
+                           .mapToObj(i -> store(bytes("touched block " + i)))
+                           .toList();
+
+        ids.forEach(this::age);
+
+        var aged = ids.stream().map(id -> tier.stat(id).await().unwrap().unwrap().writtenAtMillis()).toList();
+
+        ids.forEach(id -> assertThat(tier.touch(id).await().unwrap()).isTrue());
+
+        for (var index = 0; index < ids.size(); index++) {
+            assertThat(tier.stat(ids.get(index)).await().unwrap().unwrap().writtenAtMillis()).as("stat after the touch")
+                                                                                                .isGreaterThan(aged.get(index));
+        }
+
+        for (var limit : List.of(1, 2, 10)) {
+            var scanned = scanAllStats(KeyShard.all(), limit);
+
+            assertThat(scanned.stream().map(BlockStat::id).toList()).as("page size %d", limit)
+                                                                   .containsExactlyInAnyOrderElementsOf(ids);
+            scanned.forEach(stat -> assertThat(stat).as("page size %d", limit)
+                                                    .isEqualTo(tier.stat(stat.id()).await().unwrap().unwrap()));
+        }
+    }
+
     protected List<BlockId> scanAll(KeyShard shard, int limit) {
-        var found = new ArrayList<BlockId>();
+        return scanAllStats(shard, limit).stream().map(BlockStat::id).toList();
+    }
+
+    protected List<BlockStat> scanAllStats(KeyShard shard, int limit) {
+        var found = new ArrayList<BlockStat>();
         var cursor = Option.<Cursor> none();
 
         do {
             var page = tier.scan(shard, cursor, limit).await().unwrap();
 
-            page.items().forEach(stat -> found.add(stat.id()));
+            found.addAll(page.items());
             cursor = page.next();
         } while (cursor.isPresent());
 

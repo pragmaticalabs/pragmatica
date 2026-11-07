@@ -5,6 +5,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Pattern;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import org.pragmatica.cloud.aws.s3.S3Client;
@@ -56,6 +57,9 @@ public final class RemoteTier implements StorageTier {
     private static final int UNBOUNDED = Integer.MAX_VALUE;
     /// A block object's last key segment: the full lowercase hex of its id ([BlockId#hexString]).
     private static final Pattern BLOCK_NAME = Pattern.compile("[0-9a-f]{64}");
+    /// A block's touch marker is `{blockKey}.touched` ([#touch]); the ascending LIST order puts it right after the block.
+    private static final String TOUCH_MARKER_SUFFIX = ".touched";
+    private static final String MARKER_CONTENT_TYPE = "text/plain";
 
     private final S3Client s3Client;
     private final String keyPrefix;
@@ -127,11 +131,17 @@ public final class RemoteTier implements StorageTier {
         return request("PUT", key, () -> s3Client.putObject(key, content, CONTENT_TYPE));
     }
 
+    /// Deletes the block, then its touch marker ([#touch]). A marker written by a touch that raced this delete outlives
+    /// it as an orphan: harmless, since [#stat] and [#scan] read a marker only beside its block, and swept by the reclaim
+    /// phase (A4).
     @Override
     public Promise<Unit> delete(BlockId id) {
         var key = s3Key(id);
+        var marker = markerKey(key);
 
-        return request("DELETE", key, () -> s3Client.deleteObject(key));
+        return request("DELETE", key, () -> s3Client.deleteObject(key)).flatMap(_ -> request("DELETE",
+                                                                                            marker,
+                                                                                            () -> s3Client.deleteObject(marker)));
     }
 
     @Override
@@ -141,17 +151,28 @@ public final class RemoteTier implements StorageTier {
         return request("HEAD", key, () -> s3Client.headObject(key));
     }
 
-    /// One HEAD: the object's size and the provider's `Last-Modified`, which has whole-second precision.
+    /// Two HEADs, of the block and of its touch marker ([#touch]): the block's size, and the later of the two
+    /// `Last-Modified` times, which have whole-second precision.
     @Override
     public Promise<Option<BlockStat>> stat(BlockId id) {
         var key = s3Key(id);
 
-        return request("HEAD", key, () -> s3Client.statObject(key)).map(found -> found.map(object -> statOf(id, object)));
+        return request("HEAD", key, () -> s3Client.statObject(key)).flatMap(found -> found.fold(() -> Promise.success(none()),
+                                                                                                 block -> withMarker(id,
+                                                                                                                     block)));
+    }
+
+    private Promise<Option<BlockStat>> withMarker(BlockId id, S3Client.ObjectStat block) {
+        var marker = markerKey(block.key());
+
+        return request("HEAD", marker, () -> s3Client.statObject(marker)).map(touched -> some(statOf(id, block, touched)));
     }
 
     /// One LIST per first-level key prefix of the shard (ascending), each resuming with `start-after`, until the page is
     /// full; a prefix wholly before the cursor is not listed. A listed object under a block prefix whose key is not a
-    /// block key is skipped. Needs the ascending LIST order the anchors need (see the class doc).
+    /// block key -- a touch marker among them -- is skipped; a block's time is the later of its own and its marker's,
+    /// which the ascending order lists right after it. Needs the ascending LIST order the anchors need (see the class
+    /// doc).
     @Override
     public Promise<Page<BlockStat>> scan(KeyShard shard, Option<Cursor> after, int limit) {
         return KeyShard.pageLimit(limit)
@@ -165,13 +186,28 @@ public final class RemoteTier implements StorageTier {
                        .map(found -> KeyShard.pageOf(found, limit));
     }
 
-    /// A server-side copy of the object onto itself ([S3Client#touchObject]): the provider rewrites the object and
-    /// stamps a new `Last-Modified`; this node sends no bytes. Resolves on the provider's answer, as [#put] does.
+    /// Records an access without writing the block: one HEAD of the block and, only when it is held, one PUT of its
+    /// touch marker `{blockKey}.touched`, whose `Last-Modified` [#stat] and [#scan] report when it is the later time. The
+    /// block object itself is never written, copied or created, so a touch racing a delete of the block cannot bring
+    /// it back: at worst the marker outlives the block as an orphan (see [#delete]). True means the block was held at
+    /// the HEAD and the marker PUT was answered; a delete landing after the HEAD can still remove the block, which is
+    /// why the reclaim phase (A4) reads the marker time as last access with a grace window longer than a touch takes.
+    /// The marker's content is this node's clock at the touch, in epoch milliseconds, for diagnosis only.
     @Override
     public Promise<Boolean> touch(BlockId id) {
         var key = s3Key(id);
 
-        return request("COPY", key, () -> s3Client.touchObject(key, CONTENT_TYPE));
+        return request("HEAD", key, () -> s3Client.headObject(key)).flatMap(held -> held
+                                                                                    ? markTouched(key)
+                                                                                    : Promise.success(false));
+    }
+
+    private Promise<Boolean> markTouched(String key) {
+        var marker = markerKey(key);
+        var touchedAt = Long.toString(System.currentTimeMillis())
+                            .getBytes(StandardCharsets.UTF_8);
+
+        return request("PUT", marker, () -> s3Client.putObject(marker, touchedAt, MARKER_CONTENT_TYPE)).map(_ -> true);
     }
 
     private Promise<List<BlockStat>> collect(List<String> prefixes,
@@ -189,6 +225,7 @@ public final class RemoteTier implements StorageTier {
                      ? Promise.success(List.<BlockStat> of())
                      : listUnder(prefix,
                                  resume.filter(hex -> hex.startsWith(prefix)).map(this::blockKey),
+                                 none(),
                                  limit - found.size());
 
         return listed.flatMap(more -> collect(prefixes,
@@ -198,46 +235,91 @@ public final class RemoteTier implements StorageTier {
                                               Stream.concat(found.stream(), more.stream()).toList()));
     }
 
-    private Promise<List<BlockStat>> listUnder(String prefix, Option<String> startAfter, int wanted) {
+    /// `open` is a block listed last on the previous page, whose marker, if any, this page lists first.
+    private Promise<List<BlockStat>> listUnder(String prefix,
+                                               Option<String> startAfter,
+                                               Option<S3Client.ObjectStat> open,
+                                               int wanted) {
         var listPrefix = keyPrefix + prefix + "/";
 
         return request("LIST", listPrefix, () -> s3Client.listObjectStats(listPrefix, startAfter, wanted)).flatMap(listing -> restOf(prefix,
+                                                                                                                                     open,
                                                                                                                                      listing,
                                                                                                                                      wanted));
     }
 
     /// A provider may end a page early with more to come; the prefix is listed on from the last key until `wanted`
-    /// blocks are found or it says nothing follows.
-    private Promise<List<BlockStat>> restOf(String prefix, S3Client.ObjectListing listing, int wanted) {
-        var stats = listing.objects().stream().flatMap(object -> blockStatOf(object).stream()).toList();
-        var more = listing.truncated() && !listing.objects().isEmpty() && stats.size() < wanted;
+    /// blocks are found or it says nothing follows. A block a truncated page ends with stays open: its marker may come
+    /// first on the next page, so it is settled there.
+    private Promise<List<BlockStat>> restOf(String prefix,
+                                            Option<S3Client.ObjectStat> open,
+                                            S3Client.ObjectListing listing,
+                                            int wanted) {
+        var objects = Stream.concat(open.stream(), listing.objects().stream()).toList();
+        var more = listing.truncated() && !listing.objects().isEmpty();
+        var stillOpen = more
+                        ? Option.option(objects.getLast()).filter(object -> isBlockKey(object.key()))
+                        : Option.<S3Client.ObjectStat> none();
+        var settled = objects.subList(0, objects.size() - (stillOpen.isPresent()
+                                                           ? 1
+                                                           : 0));
+        var stats = blockStatsOf(settled);
 
-        return more
+        return more && stats.size() < wanted
                ? listUnder(prefix,
                            some(listing.objects().getLast().key()),
+                           stillOpen,
                            wanted - stats.size()).map(rest -> Stream.concat(stats.stream(),
                                                                             rest.stream())
+                                                                    .limit(wanted)
                                                                     .toList())
-               : Promise.success(stats);
+               : Promise.success(stats.stream().limit(wanted).toList());
     }
 
-    private Option<BlockStat> blockStatOf(S3Client.ObjectStat object) {
+    /// The blocks among `objects` (in listing order), each with the time of the marker listed right after it, if any.
+    private List<BlockStat> blockStatsOf(List<S3Client.ObjectStat> objects) {
+        return IntStream.range(0, objects.size())
+                        .boxed()
+                        .flatMap(index -> blockStatOf(objects.get(index),
+                                                      index + 1 < objects.size()
+                                                      ? some(objects.get(index + 1))
+                                                      : none()).stream())
+                        .toList();
+    }
+
+    private Option<BlockStat> blockStatOf(S3Client.ObjectStat object, Option<S3Client.ObjectStat> next) {
         var name = object.key().substring(object.key().lastIndexOf('/') + 1);
 
-        return BLOCK_NAME.matcher(name).matches() && object.key()
-                                                           .equals(blockKey(name))
+        return isBlockKey(object.key())
                ? BlockId.fromHex(name)
                         .option()
-                        .map(id -> statOf(id, object))
+                        .map(id -> statOf(id,
+                                          object,
+                                          next.filter(marker -> marker.key()
+                                                                      .equals(markerKey(object.key())))))
                : none();
     }
 
-    private static BlockStat statOf(BlockId id, S3Client.ObjectStat object) {
-        return BlockStat.blockStat(id, object.size(), object.lastModifiedMillis());
+    private boolean isBlockKey(String key) {
+        var name = key.substring(key.lastIndexOf('/') + 1);
+
+        return BLOCK_NAME.matcher(name).matches() && key.equals(blockKey(name));
+    }
+
+    private static BlockStat statOf(BlockId id, S3Client.ObjectStat block, Option<S3Client.ObjectStat> marker) {
+        return BlockStat.blockStat(id,
+                                   block.size(),
+                                   Math.max(block.lastModifiedMillis(),
+                                            marker.map(S3Client.ObjectStat::lastModifiedMillis)
+                                                  .or(block.lastModifiedMillis())));
     }
 
     private String blockKey(String hex) {
         return keyPrefix + hex.substring(0, 2) + "/" + hex.substring(2, 4) + "/" + hex;
+    }
+
+    private static String markerKey(String blockKey) {
+        return blockKey + TOUCH_MARKER_SUFFIX;
     }
 
     @Override

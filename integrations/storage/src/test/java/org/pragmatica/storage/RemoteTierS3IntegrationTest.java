@@ -473,7 +473,7 @@ class RemoteTierS3IntegrationTest {
     }
 
     /// A2b: the scan/stat/touch contract against the real endpoint -- Last-Modified from HEAD and from LIST, start-after
-    /// paging in the endpoint's key order, and the touch as a CopyObject of the object onto itself.
+    /// paging in the endpoint's key order, and the touch as a marker object listed right after its block.
     @Nested
     class ScanStatTouch extends TierScanStatTouchContract {
         @Override
@@ -529,52 +529,134 @@ class RemoteTierS3IntegrationTest {
         }
     }
 
-    /// v2829 FIX 5: a touch racing a delete of the same block never brings the block back. Touch then delete leaves it
-    /// absent, and so does delete then touch (the touch finds nothing and creates nothing); an overlap must end the same
-    /// way. Every round overlaps the two at the worst point: the delete is sent the moment the touch sends its copy, after
-    /// the touch's HEAD. An unconditional copy onto itself was not ordered against the delete on MinIO: 35 of 50 rounds
-    /// left the object in the bucket.
+    /// v2829 FIX 5: a touch racing a delete of the same block never brings the block back. The S3 touch never writes
+    /// the block object -- it HEADs it and writes a marker beside it -- so no ordering of the two can recreate it: at worst
+    /// the marker outlives the block. Two shapes, 50 rounds each: the touch and the delete issued together, and the
+    /// delete sent the moment the touch sends its write, after its HEAD. A touch that wrote the block -- a copy of the
+    /// object onto itself, even conditional on its ETag -- left it in 35 and 43 of 50 rounds of the second shape on
+    /// MinIO.
     @Nested
     class TouchRacingDelete {
         private static final int ROUNDS = 50;
 
         @Test
-        void touchRacingDelete_neverResurrectsTheBlock() {
-            var http = new DeleteOnCopyHttp(JdkHttpOperations.jdkHttpOperations());
-            var racing = durableTier(clientWith(http), prefix);
-            var resurrected = IntStream.range(0, ROUNDS).filter(round -> resurrects(racing, http, round)).boxed().toList();
+        void touchIssuedWithADelete_neverResurrectsTheBlock() {
+            var resurrected = IntStream.range(0, ROUNDS).filter(this::resurrectsTogether).boxed().toList();
 
-            assertThat(http.deletes).as("every round raced a delete against the copy").hasSize(ROUNDS);
             assertThat(resurrected).as("rounds that left the deleted block in the bucket, of %d", ROUNDS).isEmpty();
         }
 
-        private boolean resurrects(RemoteTier racing, DeleteOnCopyHttp http, int round) {
-            var content = ("touch racing delete " + round).getBytes(StandardCharsets.UTF_8);
-            var id = blockIdOf(content);
+        @Test
+        void deleteSentAtTheTouchWrite_neverResurrectsTheBlock() {
+            var http = new DeleteOnWriteHttp(JdkHttpOperations.jdkHttpOperations(), tier);
+            var racing = durableTier(clientWith(http), prefix);
+            var resurrected = IntStream.range(0, ROUNDS).filter(round -> resurrectsAtWrite(racing, http, round)).boxed().toList();
 
-            tier.put(id, content).await().onFailure(cause -> fail(cause.message()));
+            assertThat(http.deletes).as("every round raced a delete against the touch's write").hasSize(ROUNDS);
+            assertThat(resurrected).as("rounds that left the deleted block in the bucket, of %d", ROUNDS).isEmpty();
+        }
+
+        private boolean resurrectsTogether(int round) {
+            var id = stored("touch issued with a delete " + round);
+            var touch = tier.touch(id);
+            var delete = tier.delete(id);
+
+            touch.await().onFailure(cause -> fail("round " + round + ": touch failed: " + cause.message()));
+            delete.await().onFailure(cause -> fail("round " + round + ": delete failed: " + cause.message()));
+
+            return held(id);
+        }
+
+        private boolean resurrectsAtWrite(RemoteTier racing, DeleteOnWriteHttp http, int round) {
+            var id = stored("delete sent at the touch write " + round);
+
             racing.touch(id).await().onFailure(cause -> fail("round " + round + ": touch failed: " + cause.message()));
             http.deletes.getLast().await().onFailure(cause -> fail("round " + round + ": delete failed: " + cause.message()));
 
-            return s3Client.headObject(keyOf(id)).await().<Boolean>fold(cause -> fail(cause.message()), held -> held);
+            return held(id);
+        }
+
+        private BlockId stored(String text) {
+            var content = text.getBytes(StandardCharsets.UTF_8);
+            var id = blockIdOf(content);
+
+            tier.put(id, content).await().onFailure(cause -> fail(cause.message()));
+
+            return id;
+        }
+
+        private boolean held(BlockId id) {
+            return s3Client.headObject(keyOf(id)).await().<Boolean>fold(cause -> fail(cause.message()), found -> found);
         }
     }
 
-    /// Delegates to a real transport; the moment a copy is sent, sends a delete of its source key without waiting for it.
-    static final class DeleteOnCopyHttp implements HttpOperations {
+    /// The touch on the real endpoint: it writes a marker beside the block and never the block; on an absent block it
+    /// writes nothing; scan lists no marker; delete removes the marker too.
+    @Nested
+    class TouchMarker {
+        @Test
+        void touch_writesAMarker_andScanListsOnlyTheBlock() {
+            var content = "marked, not rewritten".getBytes(StandardCharsets.UTF_8);
+            var id = blockIdOf(content);
+
+            tier.put(id, content).await().onFailure(cause -> fail(cause.message()));
+
+            var written = s3Client.statObject(keyOf(id)).await().fold(cause -> fail(cause.message()), stat -> stat).unwrap();
+
+            waitPastTheNextSecond();
+            assertThat(tier.touch(id).await().<Boolean>fold(cause -> fail(cause.message()), touched -> touched)).isTrue();
+
+            assertThat(s3Client.statObject(keyOf(id)).await().fold(cause -> fail(cause.message()), stat -> stat).unwrap())
+                .as("the block object is not rewritten")
+                .isEqualTo(written);
+            assertThat(s3Client.headObject(keyOf(id) + ".touched").await().<Boolean>fold(cause -> fail(cause.message()), found -> found))
+                .isTrue();
+            assertThat(tier.scan(KeyShard.all(), Option.none(), 10).await().fold(cause -> fail(cause.message()), page -> page).items())
+                .extracting(BlockStat::id)
+                .containsExactly(id);
+        }
+
+        @Test
+        void touch_ofAnAbsentBlock_isFalse_andWritesNoMarker() {
+            var id = blockIdOf("never stored on the endpoint".getBytes(StandardCharsets.UTF_8));
+
+            assertThat(tier.touch(id).await().<Boolean>fold(cause -> fail(cause.message()), touched -> touched)).isFalse();
+            assertThat(s3Client.listObjects(prefix, 10).await().fold(cause -> fail(cause.message()), keys -> keys)).isEmpty();
+        }
+
+        @Test
+        void delete_removesTheMarker() {
+            var content = "touched, then deleted on the endpoint".getBytes(StandardCharsets.UTF_8);
+            var id = blockIdOf(content);
+
+            tier.put(id, content).await().onFailure(cause -> fail(cause.message()));
+            tier.touch(id).await().onFailure(cause -> fail(cause.message()));
+            tier.delete(id).await().onFailure(cause -> fail(cause.message()));
+
+            assertThat(s3Client.listObjects(prefix, 10).await().fold(cause -> fail(cause.message()), keys -> keys)).isEmpty();
+        }
+    }
+
+    /// Delegates to a real transport; the moment a PUT is sent -- the touch's only write -- sends a delete of the block
+    /// it names (the PUT's key without a `.touched` suffix) through `deleting`, without waiting for it.
+    static final class DeleteOnWriteHttp implements HttpOperations {
         private final HttpOperations delegate;
+        private final RemoteTier deleting;
         final List<Promise<Unit>> deletes = new CopyOnWriteArrayList<>();
 
-        DeleteOnCopyHttp(HttpOperations delegate) {
+        DeleteOnWriteHttp(HttpOperations delegate, RemoteTier deleting) {
             this.delegate = delegate;
+            this.deleting = deleting;
         }
 
         @Override
         public <T> Promise<HttpResult<T>> send(HttpRequest request, BodyHandler<T> handler) {
-            request.headers()
-                   .firstValue("x-amz-copy-source")
-                   .map(source -> source.substring(BUCKET.length() + 1))
-                   .ifPresent(key -> deletes.add(s3Client.deleteObject(key)));
+            if (request.method().equals("PUT")) {
+                var path = request.uri().getPath();
+                var hex = path.substring(path.lastIndexOf('/') + 1).replace(".touched", "");
+
+                deletes.add(deleting.delete(BlockId.fromHex(hex).fold(cause -> fail(cause.message()), id -> id)));
+            }
 
             return delegate.send(request, handler);
         }

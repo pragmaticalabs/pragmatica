@@ -80,18 +80,19 @@ class StorageInstanceEnsureHeldTest {
         assertThat(store.currentEpoch()).isEqualTo(epoch);
     }
 
-    /// The GC refresh of a block the tier holds moves its write time and sends no bytes.
+    /// The GC refresh of a block the tier holds moves its write time and never rewrites the block: S3 records the touch
+    /// in a marker beside it.
     @Test
     void refreshOfAHeldBlock_movesItsWriteTime_withoutRewritingIt() {
         var id = node.put(CONTENT).await().unwrap();
         var written = shared.stat(id).await().unwrap().unwrap().writtenAtMillis();
-        var puts = s3.puts.get();
+        var blockPuts = s3.blockPuts();
 
         s3.clock.addAndGet(60_000L);
         node.ensureHeld(id, TierLevel.REMOTE).await().unwrap();
 
         assertThat(shared.stat(id).await().unwrap().unwrap().writtenAtMillis()).isEqualTo(written + 60_000L);
-        assertThat(s3.puts.get()).as("no bytes sent").isEqualTo(puts);
+        assertThat(s3.blockPuts()).as("the block is not rewritten").isEqualTo(blockPuts);
     }
 
     @Test

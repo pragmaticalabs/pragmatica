@@ -66,10 +66,6 @@ record RestS3Client(S3Config config,
     private static final Pattern CONTENTS_PATTERN = Pattern.compile("<Contents>(.*?)</Contents>", Pattern.DOTALL);
     private static final Pattern SIZE_PATTERN = Pattern.compile("<Size>(.*?)</Size>");
     private static final Pattern LAST_MODIFIED_PATTERN = Pattern.compile("<LastModified>(.*?)</LastModified>");
-    private static final String COPY_SOURCE_HEADER = "x-amz-copy-source";
-    private static final String METADATA_DIRECTIVE_HEADER = "x-amz-metadata-directive";
-    private static final String COPY_SOURCE_IF_MATCH_HEADER = "x-amz-copy-source-if-match";
-    private static final String IF_MATCH_HEADER = "if-match";
 
     @Override
     public Promise<Unit> putObject(String key, byte[] content, String contentType) {
@@ -172,35 +168,6 @@ record RestS3Client(S3Config config,
                         .flatMap(RestS3Client::parseListing);
     }
 
-    /// A HEAD reads the object's ETag, then the copy is conditional on it twice: on the source
-    /// (`x-amz-copy-source-if-match`) and on the destination (`If-Match`, a conditional write), so a delete landing
-    /// between the HEAD and the copy's write fails the copy instead of letting it recreate the object. The copy source is
-    /// `{bucket}/{key}` as is: the keys this client is used with (hex block ids under an operator prefix) need no encoding.
-    @Override
-    public Promise<Boolean> touchObject(String key, String contentType) {
-        return head(key).flatMap(result -> toEtag(result, key))
-                   .flatMap(etag -> etag.fold(() -> success(false),
-                                              tag -> copyIfMatch(key, contentType, tag)));
-    }
-
-    private Promise<Boolean> copyIfMatch(String key, String contentType, String etag) {
-        var url = config.objectUrl(key);
-        var headers = Map.of("content-type",
-                             contentType,
-                             COPY_SOURCE_HEADER,
-                             config.bucket() + "/" + key,
-                             METADATA_DIRECTIVE_HEADER,
-                             "REPLACE",
-                             COPY_SOURCE_IF_MATCH_HEADER,
-                             etag,
-                             IF_MATCH_HEADER,
-                             etag);
-
-        return authorize("PUT", url, headers, EMPTY_BODY).map(signed -> buildCopyRequest(url, headers, signed))
-                        .flatMap(http::sendString)
-                        .flatMap(result -> toCopied(result, key));
-    }
-
     // --- Signing ---
     /// The headers to add to a request: the SigV4 set, plus the session token when the credentials carry one
     /// (it is part of the signed headers, so it is passed to the signer as well as returned).
@@ -262,14 +229,6 @@ record RestS3Client(S3Config config,
                            signedHeaders);
     }
 
-    private HttpRequest buildCopyRequest(String url, Map<String, String> headers, Map<String, String> signedHeaders) {
-        var builder = request(url).PUT(BodyPublishers.noBody());
-
-        headers.forEach(builder::header);
-
-        return withHeaders(builder, signedHeaders);
-    }
-
     // --- Response handlers (Leaf functions) ---
     private static Promise<Unit> checkPutSuccess(HttpResult<String> result, String key) {
         if (result.isSuccess()) {
@@ -325,21 +284,6 @@ record RestS3Client(S3Config config,
                         .promise();
     }
 
-    /// A 2xx carries the object's `ETag`; a 404 is absence; a 2xx without it fails with [S3Error.ParseError].
-    private static Promise<Option<String>> toEtag(HttpResult<Unit> result, String key) {
-        if (result.isSuccess()) {
-            return header(result, "ETag", key).map(Option::some)
-                         .async();
-        }
-
-        return result.statusCode() == 404
-               ? success(none())
-               : S3Error.fromResponse(result.statusCode(),
-                                      "",
-                                      key)
-                        .promise();
-    }
-
     private static Result<ObjectStat> statFromHeaders(HttpResult<Unit> result, String key) {
         return header(result, "Content-Length", key).flatMap(RestS3Client::parseSize)
                      .flatMap(size -> header(result, "Last-Modified", key).flatMap(RestS3Client::parseHttpDate)
@@ -366,28 +310,6 @@ record RestS3Client(S3Config config,
     private static Result<Long> parseIsoDate(String value) {
         return Result.lift(_ -> new S3Error.ParseError("date '" + value + "' is not an ISO-8601 instant"),
                            () -> Instant.parse(value.trim()).toEpochMilli());
-    }
-
-    /// S3 can answer a copy with 200 and an `<Error>` body when it fails after starting: that is a failure, not a copy. A
-    /// 412 is a failed `If-Match`: the object was deleted or replaced since its HEAD, so it was not touched.
-    private static Promise<Boolean> toCopied(HttpResult<String> result, String key) {
-        if (result.isSuccess() && !result.body().contains("<Error>")) {
-            return success(true);
-        }
-
-        if (result.statusCode() == 412) {
-            return success(false);
-        }
-
-        var error = S3Error.fromResponse(result.isSuccess()
-                                         ? 500
-                                         : result.statusCode(),
-                                         result.body(),
-                                         key);
-
-        return error instanceof S3Error.NotFound
-               ? success(false)
-               : error.promise();
     }
 
     private static Promise<Unit> checkDeleteSuccess(HttpResult<String> result, String key) {

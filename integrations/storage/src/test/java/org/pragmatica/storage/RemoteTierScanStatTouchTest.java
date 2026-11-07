@@ -1,5 +1,6 @@
 package org.pragmatica.storage;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.stream.IntStream;
 
@@ -62,13 +63,75 @@ class RemoteTierScanStatTouchTest extends TierScanStatTouchContract {
         assertThat(scanAll(KeyShard.all(), 10)).containsExactly(id);
     }
 
+    /// The S3 touch never writes the block: it writes one marker object beside it, carrying the touching node's clock.
     @Test
-    void touch_sendsNoBytes() {
+    void touch_writesAMarkerBesideTheBlock_andNeverTheBlock() {
         var id = store(bytes("touched in place"));
-        var putsBefore = s3.puts.get();
+        var blockPuts = s3.blockPuts();
+
+        assertThat(tier.touch(id).await().unwrap()).isTrue();
+
+        assertThat(s3.blockPuts()).as("the block is not rewritten").isEqualTo(blockPuts);
+        assertThat(s3.keys()).containsExactly(keyOf(id), keyOf(id) + ".touched");
+        assertThat(Long.parseLong(new String(s3.getObject(keyOf(id) + ".touched").await().unwrap().unwrap(),
+                                             StandardCharsets.UTF_8))).as("the marker carries the touch time")
+                                                                      .isPositive();
+    }
+
+    @Test
+    void touch_ofAnAbsentBlock_writesNoMarker() {
+        var id = BlockId.blockId(bytes("never stored")).unwrap();
+
+        assertThat(tier.touch(id).await().unwrap()).isFalse();
+
+        assertThat(s3.putKeys).isEmpty();
+        assertThat(s3.keys()).isEmpty();
+    }
+
+    @Test
+    void delete_removesTheBlockAndItsMarker() {
+        var id = store(bytes("touched, then deleted"));
 
         tier.touch(id).await().unwrap();
+        tier.delete(id).await().unwrap();
 
-        assertThat(s3.puts.get()).isEqualTo(putsBefore);
+        assertThat(s3.keys()).isEmpty();
+    }
+
+    /// Markers are never listed as blocks: neither a touched block's marker nor an orphan one, left by a touch that
+    /// raced a delete of its block.
+    @Test
+    void scan_neverListsTouchMarkers() {
+        var touched = store(bytes("touched block"));
+        var untouched = store(bytes("untouched block"));
+        var gone = BlockId.blockId(bytes("deleted while touched")).unwrap();
+
+        tier.touch(touched).await().unwrap();
+        s3.putObject(keyOf(gone) + ".touched", bytes("1"), "text/plain").await().unwrap();
+
+        assertThat(scanAll(KeyShard.all(), 10)).containsExactlyInAnyOrder(touched, untouched);
+        assertThat(scanAll(KeyShard.all(), 1)).containsExactlyInAnyOrder(touched, untouched);
+        assertThat(tier.stat(gone).await().unwrap().isEmpty()).as("an orphan marker is no block").isTrue();
+    }
+
+    /// A provider page that ends on a block leaves its marker to the next page: the block's time is still the touch's.
+    @Test
+    void scan_readsTheMarkerOfABlockThatEndsAProviderPage() {
+        var ids = contentsSharingOneFirstByte(3).stream()
+                                                .map(this::store)
+                                                .toList();
+
+        s3.clock.addAndGet(60_000L);
+        ids.forEach(id -> tier.touch(id).await().unwrap());
+        s3.listPageCap.set(1);
+
+        var scanned = scanAllStats(KeyShard.all(), 2);
+
+        assertThat(scanned.stream().map(BlockStat::id).toList()).containsExactlyInAnyOrderElementsOf(ids);
+        assertThat(scanned).allMatch(stat -> stat.writtenAtMillis() == s3.clock.get(), "every block reports its touch");
+    }
+
+    private String keyOf(BlockId id) {
+        return "scan-prefix/" + id.shardPrefix() + "/" + id.hexString();
     }
 }

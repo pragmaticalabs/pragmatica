@@ -4,6 +4,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -169,12 +170,15 @@ class RemoteTierTest {
         private final ConcurrentHashMap<String, Long> modified = new ConcurrentHashMap<>();
         final AtomicLong clock = new AtomicLong(1_000_000L);
         final AtomicInteger puts = new AtomicInteger();
+        /// The key of every PUT, in order.
+        final List<String> putKeys = new CopyOnWriteArrayList<>();
         /// The most objects one LIST page returns, whatever `maxKeys` asks: a provider may end a page early.
         final AtomicInteger listPageCap = new AtomicInteger(Integer.MAX_VALUE);
 
         @Override
         public Promise<Unit> putObject(String key, byte[] content, String contentType) {
             puts.incrementAndGet();
+            putKeys.add(key);
             store.put(key, content.clone());
             modified.put(key, clock.get());
             return Promise.success(unit());
@@ -224,13 +228,18 @@ class RemoteTierTest {
             return Promise.success(ObjectListing.objectListing(page, keys.size() > page.size()));
         }
 
-        @Override
-        public Promise<Boolean> touchObject(String key, String contentType) {
-            return Promise.success(option(modified.computeIfPresent(key, (_, _) -> clock.get())).isPresent());
-        }
-
         boolean containsKey(String key) {
             return store.containsKey(key);
+        }
+
+        /// Every key held, in ascending order.
+        List<String> keys() {
+            return List.copyOf(store.keySet());
+        }
+
+        /// The PUTs of keys that are not touch markers: the block writes.
+        long blockPuts() {
+            return putKeys.stream().filter(key -> !key.endsWith(".touched")).count();
         }
     }
 }

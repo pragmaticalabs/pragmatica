@@ -35,11 +35,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse.BodyHandler;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.Deque;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentLinkedDeque;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -446,8 +443,7 @@ class S3ClientTest {
         assertThat(cause).isInstanceOf(S3Error.AccessDenied.class);
     }
 
-    /// A2b: HEAD with its size and Last-Modified, a LIST page with each object's size and Last-Modified, and the touch
-    /// as a CopyObject of the object onto itself.
+    /// A2b: HEAD with its size and Last-Modified, and a LIST page with each object's size and Last-Modified.
     @Nested
     class ObjectStats {
         @Test
@@ -517,94 +513,12 @@ class S3ClientTest {
             assertThat(listing.truncated()).isFalse();
             assertThat(capturedRequest.get().uri().getRawQuery()).doesNotContain("start-after");
         }
-
-        @Test
-        void touchObject_headsForTheEtag_thenCopiesTheObjectOntoItself_conditionalOnIt() {
-            testHttp.script(200, Map.of("ETag", List.of(ETAG)), "");
-            testHttp.script(200, Map.of(), "<CopyObjectResult><LastModified>2025-01-01T00:00:00.000Z</LastModified></CopyObjectResult>");
-
-            assertThat(minioClient.touchObject("blocks/ab/cd/key", "application/octet-stream").await().unwrap()).isTrue();
-
-            assertThat(testHttp.requests).extracting(HttpRequest::method).containsExactly("HEAD", "PUT");
-
-            var request = testHttp.requests.get(1);
-
-            assertThat(request.uri().toString()).isEqualTo("http://minio:9000/test-bucket/blocks/ab/cd/key");
-            assertThat(request.headers().firstValue("x-amz-copy-source")).hasValue("test-bucket/blocks/ab/cd/key");
-            assertThat(request.headers().firstValue("x-amz-metadata-directive")).hasValue("REPLACE");
-            assertThat(request.headers().firstValue("x-amz-copy-source-if-match")).hasValue(ETAG);
-            assertThat(request.headers().firstValue("If-Match")).hasValue(ETAG);
-            assertThat(signedHeaders(request)).contains("x-amz-copy-source",
-                                                        "x-amz-metadata-directive",
-                                                        "x-amz-copy-source-if-match",
-                                                        "if-match");
-            assertThat(request.bodyPublisher().map(publisher -> publisher.contentLength())).hasValue(0L);
-        }
-
-        private static List<String> signedHeaders(HttpRequest request) {
-            var authorization = request.headers().firstValue("Authorization").orElse("");
-            var start = authorization.indexOf("SignedHeaders=") + "SignedHeaders=".length();
-
-            return List.of(authorization.substring(start, authorization.indexOf(',', start)).split(";"));
-        }
-
-        @Test
-        void touchObject_missing_isFalse_andCopiesNothing() {
-            testHttp.script(404, Map.of(), "");
-
-            assertThat(minioClient.touchObject("missing", "application/octet-stream").await().unwrap()).isFalse();
-            assertThat(testHttp.requests).extracting(HttpRequest::method).containsExactly("HEAD");
-        }
-
-        /// The object was deleted or replaced between the HEAD and the copy: the condition fails, nothing was touched.
-        @Test
-        void touchObject_aFailedCondition_isFalse() {
-            testHttp.script(200, Map.of("ETag", List.of(ETAG)), "");
-            testHttp.script(412, Map.of(), PRECONDITION_FAILED_RESPONSE);
-
-            assertThat(minioClient.touchObject("key", "application/octet-stream").await().unwrap()).isFalse();
-        }
-
-        @Test
-        void touchObject_goneBeforeTheCopy_isFalse() {
-            testHttp.script(200, Map.of("ETag", List.of(ETAG)), "");
-            testHttp.script(404, Map.of(), NOT_FOUND_RESPONSE);
-
-            assertThat(minioClient.touchObject("key", "application/octet-stream").await().unwrap()).isFalse();
-        }
-
-        @Test
-        void touchObject_aHeadWithoutEtag_failsWithParseError_andCopiesNothing() {
-            testHttp.script(200, Map.of(), "");
-
-            minioClient.touchObject("key", "application/octet-stream")
-                       .await()
-                       .onSuccess(touched -> fail("Expected a parse error, got " + touched))
-                       .onFailure(cause -> assertThat(cause).isInstanceOf(S3Error.ParseError.class));
-            assertThat(testHttp.requests).extracting(HttpRequest::method).containsExactly("HEAD");
-        }
-
-        /// S3 may answer a copy 200 and report the failure in the body.
-        @Test
-        void touchObject_anErrorInsideA200_fails() {
-            testHttp.script(200, Map.of("ETag", List.of(ETAG)), "");
-            testHttp.script(200, Map.of(), "<Error><Code>InternalError</Code><Message>We encountered an internal error.</Message></Error>");
-
-            minioClient.touchObject("key", "application/octet-stream")
-                       .await()
-                       .onSuccess(touched -> fail("Expected a failure, got " + touched))
-                       .onFailure(cause -> assertThat(cause).isInstanceOf(S3Error.ApiError.class));
-        }
     }
 
     // --- Test HTTP operations ---
 
     static final class TestHttpOperations implements HttpOperations {
         private final AtomicReference<HttpRequest> capturedRequest;
-        /// Every request sent, in order.
-        final List<HttpRequest> requests = new CopyOnWriteArrayList<>();
-        /// Responses served in turn, one per request, before the single response set by the `respondWith` methods.
-        private final Deque<Scripted> scripted = new ConcurrentLinkedDeque<>();
         private int responseStatus;
         private String responseStringBody;
         private byte[] responseBytesBody;
@@ -636,23 +550,10 @@ class S3ClientTest {
             this.responseHeaders = headers;
         }
 
-        /// Queues one response; its body serves a string request as is and a discarding one as [Unit].
-        void script(int status, Map<String, List<String>> headers, String body) {
-            scripted.add(new Scripted(status, headers, body));
-        }
-
         @Override
         @SuppressWarnings("unchecked")
         public <T> Promise<HttpResult<T>> send(HttpRequest request, BodyHandler<T> handler) {
             capturedRequest.set(request);
-            requests.add(request);
-
-            var next = scripted.poll();
-
-            if (next != null) {
-                return Promise.success(next.result(request));
-            }
-
             var body = switch (responseMode) {
                 case STRING -> (T) responseStringBody;
                 case BYTES -> (T) responseBytesBody;
@@ -665,17 +566,6 @@ class S3ClientTest {
         }
 
         enum ResponseMode { STRING, BYTES, UNIT }
-
-        record Scripted(int status, Map<String, List<String>> headers, String body) {
-            @SuppressWarnings("unchecked")
-            <T> HttpResult<T> result(HttpRequest request) {
-                var payload = request.method().equals("HEAD")
-                              ? (T) Unit.unit()
-                              : (T) body;
-
-                return new HttpResult<>(status, HttpHeaders.of(headers, (a, b) -> true), payload);
-            }
-        }
     }
 
     // --- Fixtures ---
@@ -731,16 +621,6 @@ class S3ClientTest {
         <Error>
             <Code>NoSuchBucket</Code>
             <Message>The specified bucket does not exist</Message>
-        </Error>
-        """;
-
-    private static final String ETAG = "\"5d41402abc4b2a76b9719d911017c592\"";
-
-    private static final String PRECONDITION_FAILED_RESPONSE = """
-        <?xml version="1.0" encoding="UTF-8"?>
-        <Error>
-            <Code>PreconditionFailed</Code>
-            <Message>At least one of the pre-conditions you specified did not hold</Message>
         </Error>
         """;
 
