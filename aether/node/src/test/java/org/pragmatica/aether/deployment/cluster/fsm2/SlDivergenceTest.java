@@ -298,7 +298,10 @@ class SlDivergenceTest {
 
             assertThat(exclusions(h)).as("precondition: nothing excluded").isEmpty();
             h.seed(new ArtifactJudgmentKey(ORDERS), new ArtifactJudgmentValue(false, Map.of(), Map.of(), Set.of()));
+            h.drain();
             h.seed(new ArtifactJudgmentKey(ORDERS), new ArtifactJudgmentValue(true, Map.of(), Map.of(), Set.of()));
+            h.drain();
+            assertThat(h.model().judgment(ORDERS).map(ArtifactJudgmentValue::permanentFailure).or(false)).as("precondition: the updates were indexed").isTrue();
             assertThat(h.warns("slice-unresponsive-expired")).isEmpty();
         }
 
