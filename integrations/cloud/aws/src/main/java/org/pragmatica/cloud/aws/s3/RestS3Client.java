@@ -22,6 +22,8 @@ import java.net.http.HttpRequest.BodyPublishers;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -61,6 +63,11 @@ record RestS3Client(S3Config config,
     private static final String SECURITY_TOKEN_HEADER = "x-amz-security-token";
     private static final byte[] EMPTY_BODY = new byte[0];
     private static final Pattern KEY_PATTERN = Pattern.compile("<Key>(.*?)</Key>");
+    private static final Pattern CONTENTS_PATTERN = Pattern.compile("<Contents>(.*?)</Contents>", Pattern.DOTALL);
+    private static final Pattern SIZE_PATTERN = Pattern.compile("<Size>(.*?)</Size>");
+    private static final Pattern LAST_MODIFIED_PATTERN = Pattern.compile("<LastModified>(.*?)</LastModified>");
+    private static final String COPY_SOURCE_HEADER = "x-amz-copy-source";
+    private static final String METADATA_DIRECTIVE_HEADER = "x-amz-metadata-directive";
 
     @Override
     public Promise<Unit> putObject(String key, byte[] content, String contentType) {
@@ -132,6 +139,54 @@ record RestS3Client(S3Config config,
                         .flatMap(RestS3Client::parseListResponse);
     }
 
+    @Override
+    public Promise<Option<ObjectStat>> statObject(String key) {
+        var url = config.objectUrl(key);
+
+        return authorize("HEAD",
+                         url,
+                         Map.of(),
+                         EMPTY_BODY).map(signed -> withHeaders(request(url).method("HEAD",
+                                                                                   BodyPublishers.noBody()),
+                                                               signed))
+                        .flatMap(http::sendDiscarding)
+                        .flatMap(result -> toStat(result, key));
+    }
+
+    @Override
+    public Promise<ObjectListing> listObjectStats(String prefix, Option<String> startAfter, int maxKeys) {
+        var url = buildListUrl(prefix, maxKeys) + startAfter.map(key -> "&start-after=" + AwsSigV4Signer.urlEncode(key))
+                                                            .or("");
+
+        return authorize("GET",
+                         url,
+                         Map.of(),
+                         EMPTY_BODY).map(signed -> withHeaders(request(url).GET(),
+                                                               signed))
+                        .flatMap(http::sendString)
+                        .flatMap(RestS3Client::parseListing);
+    }
+
+    /// The copy source is `{bucket}/{key}` as is: the keys this client is used with (hex block ids under an operator
+    /// prefix) need no encoding.
+    @Override
+    public Promise<Boolean> touchObject(String key, String contentType) {
+        var url = config.objectUrl(key);
+        var headers = Map.of("content-type",
+                             contentType,
+                             COPY_SOURCE_HEADER,
+                             config.bucket() + "/" + key,
+                             METADATA_DIRECTIVE_HEADER,
+                             "REPLACE");
+
+        return authorize("PUT",
+                         url,
+                         headers,
+                         EMPTY_BODY).map(signed -> buildCopyRequest(url, headers, signed))
+                        .flatMap(http::sendString)
+                        .flatMap(result -> toCopied(result, key));
+    }
+
     // --- Signing ---
     /// The headers to add to a request: the SigV4 set, plus the session token when the credentials carry one
     /// (it is part of the signed headers, so it is passed to the signer as well as returned).
@@ -193,6 +248,14 @@ record RestS3Client(S3Config config,
                            signedHeaders);
     }
 
+    private HttpRequest buildCopyRequest(String url, Map<String, String> headers, Map<String, String> signedHeaders) {
+        var builder = request(url).PUT(BodyPublishers.noBody());
+
+        headers.forEach(builder::header);
+
+        return withHeaders(builder, signedHeaders);
+    }
+
     // --- Response handlers (Leaf functions) ---
     private static Promise<Unit> checkPutSuccess(HttpResult<String> result, String key) {
         if (result.isSuccess()) {
@@ -232,6 +295,68 @@ record RestS3Client(S3Config config,
                         .promise();
     }
 
+    /// A 2xx carries the object's `Content-Length` and `Last-Modified` (RFC 1123, whole seconds); a 404 is absence, as
+    /// for [#toPresence]; a 2xx missing either header fails with [S3Error.ParseError].
+    private static Promise<Option<ObjectStat>> toStat(HttpResult<Unit> result, String key) {
+        if (result.isSuccess()) {
+            return statFromHeaders(result, key).map(Option::some)
+                                  .async();
+        }
+
+        return result.statusCode() == 404
+               ? success(none())
+               : S3Error.fromResponse(result.statusCode(),
+                                      "",
+                                      key)
+                        .promise();
+    }
+
+    private static Result<ObjectStat> statFromHeaders(HttpResult<Unit> result, String key) {
+        return Result.all(header(result, "Content-Length", key).flatMap(RestS3Client::parseSize),
+                          header(result, "Last-Modified", key).flatMap(RestS3Client::parseHttpDate))
+                     .map((size, modified) -> ObjectStat.objectStat(key, size, modified));
+    }
+
+    private static Result<String> header(HttpResult<Unit> result, String name, String key) {
+        return result.header(name)
+                     .toResult(new S3Error.ParseError("HEAD " + key + " carries no " + name));
+    }
+
+    private static Result<Long> parseSize(String value) {
+        return Result.lift(_ -> new S3Error.ParseError("size '" + value + "' is not a number"),
+                           () -> Long.parseLong(value.trim()));
+    }
+
+    private static Result<Long> parseHttpDate(String value) {
+        return Result.lift(_ -> new S3Error.ParseError("date '" + value + "' is not an RFC 1123 date"),
+                           () -> DateTimeFormatter.RFC_1123_DATE_TIME.parse(value.trim(), Instant::from)
+                                                                     .toEpochMilli());
+    }
+
+    private static Result<Long> parseIsoDate(String value) {
+        return Result.lift(_ -> new S3Error.ParseError("date '" + value + "' is not an ISO-8601 instant"),
+                           () -> Instant.parse(value.trim())
+                                        .toEpochMilli());
+    }
+
+    /// S3 can answer a copy with 200 and an `<Error>` body when it fails after starting: that is a failure, not a copy.
+    private static Promise<Boolean> toCopied(HttpResult<String> result, String key) {
+        if (result.isSuccess() && !result.body()
+                                         .contains("<Error>")) {
+            return success(true);
+        }
+
+        var error = S3Error.fromResponse(result.isSuccess()
+                                         ? 500
+                                         : result.statusCode(),
+                                         result.body(),
+                                         key);
+
+        return error instanceof S3Error.NotFound
+               ? success(false)
+               : error.promise();
+    }
+
     private static Promise<Unit> checkDeleteSuccess(HttpResult<String> result, String key) {
         if (result.isSuccess() || result.statusCode() == 404) {
             return success(Unit.unit());
@@ -252,6 +377,44 @@ record RestS3Client(S3Config config,
         }
 
         return success(extractKeys(result.body()));
+    }
+
+    private static Promise<ObjectListing> parseListing(HttpResult<String> result) {
+        if (!result.isSuccess()) {
+            return S3Error.fromResponse(result.statusCode(),
+                                        result.body(),
+                                        "")
+                          .promise();
+        }
+
+        return extractListing(result.body()).async();
+    }
+
+    /// Each `<Contents>` element's `Key`, `Size` and `LastModified`, in document order (ascending key order on the
+    /// wire), and `IsTruncated`. An element missing any of the three fails with [S3Error.ParseError].
+    static Result<ObjectListing> extractListing(String xml) {
+        return Result.allOf(CONTENTS_PATTERN.matcher(xml)
+                                            .results()
+                                            .map(m -> m.group(1))
+                                            .map(RestS3Client::objectStat)
+                                            .toList())
+                     .map(objects -> ObjectListing.objectListing(objects,
+                                                                 xml.contains("<IsTruncated>true</IsTruncated>")));
+    }
+
+    private static Result<ObjectStat> objectStat(String contents) {
+        return Result.all(element(contents, KEY_PATTERN),
+                          element(contents, SIZE_PATTERN).flatMap(RestS3Client::parseSize),
+                          element(contents, LAST_MODIFIED_PATTERN).flatMap(RestS3Client::parseIsoDate))
+                     .map(ObjectStat::objectStat);
+    }
+
+    private static Result<String> element(String contents, Pattern pattern) {
+        return Option.from(pattern.matcher(contents)
+                                  .results()
+                                  .map(m -> m.group(1))
+                                  .findFirst())
+                     .toResult(new S3Error.ParseError("listed object lacks " + pattern.pattern()));
     }
 
     // --- URL builders ---

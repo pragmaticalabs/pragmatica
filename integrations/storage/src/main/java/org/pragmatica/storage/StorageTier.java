@@ -36,6 +36,31 @@ public interface StorageTier {
         return false;
     }
 
+    /// What this tier holds of `id` (A2b): its size and when it was last written or refreshed ([BlockStat]), or none when
+    /// the tier does not hold it. A tier that cannot answer fails; it never reports none for "unknown". The default
+    /// refuses with [StorageError.OperationUnsupported].
+    default Promise<Option<BlockStat>> stat(BlockId id) {
+        return StorageError.OperationUnsupported.operationUnsupported(level(), "stat").promise();
+    }
+
+    /// One page of at most `limit` blocks this tier holds in `shard`, after `after` (A2b). Paging and ordering are
+    /// [KeyShard]'s: ascending hex id, the next cursor present only on a full page. A block written or deleted while the
+    /// pages are walked may or may not appear; every block held throughout appears exactly once. A limit below 1 or a
+    /// cursor no scan handed out fails with [StorageError.InvalidScan]. Anchors and other non-block files are never
+    /// listed. The default refuses with [StorageError.OperationUnsupported]: a sweep must not read a tier it cannot list
+    /// as an empty one.
+    default Promise<Page<BlockStat>> scan(KeyShard shard, Option<Cursor> after, int limit) {
+        return StorageError.OperationUnsupported.operationUnsupported(level(), "scan").promise();
+    }
+
+    /// Refreshes the write time [#stat] reports for `id` to the time of this call, without the caller rewriting the
+    /// block's bytes (A2b, G2: the freshness refresh of cluster GC, spec v2 §A1.5). Resolves `true` once the refresh
+    /// would survive what [#put] survives on this tier, `false` when the tier does not hold the block -- nothing is
+    /// created then. The default refuses with [StorageError.OperationUnsupported].
+    default Promise<Boolean> touch(BlockId id) {
+        return StorageError.OperationUnsupported.operationUnsupported(level(), "touch").promise();
+    }
+
     /// Writes `value` as version `version` (at least 0) of anchor `name`, and resolves once that version would survive
     /// what [#put] survives on this tier: on a durable tier, the device (file and directory forced) or the provider's
     /// acknowledgement. Writing a version again replaces it. Every write of one version must carry the same value: that is

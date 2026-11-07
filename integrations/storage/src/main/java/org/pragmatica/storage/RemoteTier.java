@@ -4,6 +4,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 import org.pragmatica.cloud.aws.s3.S3Client;
 import org.pragmatica.cloud.aws.s3.S3Error;
@@ -52,6 +54,8 @@ public final class RemoteTier implements StorageTier {
     private static final String CONTENT_TYPE = "application/octet-stream";
     private static final String PROBE_DIRECTORY = ".aether-probe/";
     private static final int UNBOUNDED = Integer.MAX_VALUE;
+    /// A block object's last key segment: the full lowercase hex of its id ([BlockId#hexString]).
+    private static final Pattern BLOCK_NAME = Pattern.compile("[0-9a-f]{64}");
 
     private final S3Client s3Client;
     private final String keyPrefix;
@@ -135,6 +139,114 @@ public final class RemoteTier implements StorageTier {
         var key = s3Key(id);
 
         return request("HEAD", key, () -> s3Client.headObject(key));
+    }
+
+    /// One HEAD: the object's size and the provider's `Last-Modified`, which has whole-second precision.
+    @Override
+    public Promise<Option<BlockStat>> stat(BlockId id) {
+        var key = s3Key(id);
+
+        return request("HEAD", key, () -> s3Client.statObject(key)).map(found -> found.map(object -> statOf(id, object)));
+    }
+
+    /// One LIST per first-level key prefix of the shard (ascending), each resuming with `start-after`, until the page is
+    /// full; a prefix wholly before the cursor is not listed. A listed object under a block prefix whose key is not a
+    /// block key is skipped. Needs the ascending LIST order the anchors need (see the class doc).
+    @Override
+    public Promise<Page<BlockStat>> scan(KeyShard shard, Option<Cursor> after, int limit) {
+        return KeyShard.pageLimit(limit)
+                       .flatMap(_ -> KeyShard.resumeAfter(after))
+                       .async()
+                       .flatMap(resume -> collect(shard.prefixes(),
+                                                  0,
+                                                  resume,
+                                                  limit,
+                                                  List.of()))
+                       .map(found -> KeyShard.pageOf(found, limit));
+    }
+
+    /// A server-side copy of the object onto itself ([S3Client#touchObject]): the provider rewrites the object and
+    /// stamps a new `Last-Modified`; this node sends no bytes. Resolves on the provider's answer, as [#put] does.
+    @Override
+    public Promise<Boolean> touch(BlockId id) {
+        var key = s3Key(id);
+
+        return request("COPY", key, () -> s3Client.touchObject(key, CONTENT_TYPE));
+    }
+
+    private Promise<List<BlockStat>> collect(List<String> prefixes,
+                                             int index,
+                                             Option<String> resume,
+                                             int limit,
+                                             List<BlockStat> found) {
+        if (index >= prefixes.size() || found.size() >= limit) {
+            return Promise.success(found);
+        }
+
+        var prefix = prefixes.get(index);
+        var before = resume.filter(hex -> prefix.compareTo(hex.substring(0, 2)) < 0)
+                           .isPresent();
+        var listed = before
+                     ? Promise.success(List.<BlockStat> of())
+                     : listUnder(prefix,
+                                 resume.filter(hex -> hex.startsWith(prefix))
+                                       .map(this::blockKey),
+                                 limit - found.size());
+
+        return listed.flatMap(more -> collect(prefixes,
+                                              index + 1,
+                                              resume,
+                                              limit,
+                                              Stream.concat(found.stream(),
+                                                            more.stream())
+                                                    .toList()));
+    }
+
+    private Promise<List<BlockStat>> listUnder(String prefix, Option<String> startAfter, int wanted) {
+        var listPrefix = keyPrefix + prefix + "/";
+
+        return request("LIST",
+                       listPrefix,
+                       () -> s3Client.listObjectStats(listPrefix, startAfter, wanted)).flatMap(listing -> restOf(prefix,
+                                                                                                                 listing,
+                                                                                                                 wanted));
+    }
+
+    /// A provider may end a page early with more to come; the prefix is listed on from the last key until `wanted`
+    /// blocks are found or it says nothing follows.
+    private Promise<List<BlockStat>> restOf(String prefix, S3Client.ObjectListing listing, int wanted) {
+        var stats = listing.objects()
+                           .stream()
+                           .flatMap(object -> blockStatOf(object).stream())
+                           .toList();
+        var more = listing.truncated() && !listing.objects()
+                                                  .isEmpty() && stats.size() < wanted;
+
+        return more
+               ? listUnder(prefix,
+                           some(listing.objects()
+                                       .getLast()
+                                       .key()),
+                           wanted - stats.size()).map(rest -> Stream.concat(stats.stream(),
+                                                                            rest.stream())
+                                                                    .toList())
+               : Promise.success(stats);
+    }
+
+    private Option<BlockStat> blockStatOf(S3Client.ObjectStat object) {
+        var name = object.key().substring(object.key().lastIndexOf('/') + 1);
+
+        return BLOCK_NAME.matcher(name).matches() && object.key().equals(blockKey(name))
+               ? BlockId.fromHex(name).option().map(id -> statOf(id, object))
+               : none();
+    }
+
+    private static BlockStat statOf(BlockId id, S3Client.ObjectStat object) {
+        return BlockStat.blockStat(id, object.size(), object.lastModifiedMillis());
+    }
+
+    private String blockKey(String hex) {
+        return keyPrefix + hex.substring(0, 2) + "/" + hex.substring(2, 4) + "/" + hex;
     }
 
     @Override

@@ -1,10 +1,16 @@
 package org.pragmatica.storage;
 
+import java.io.IOException;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileTime;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import org.pragmatica.lang.io.FileOps;
@@ -56,6 +62,8 @@ public final class LocalDiskTier implements StorageTier {
     /// forcibly resolves the read with `CoreError.Timeout`. Generous: a healthy local-disk
     /// block read completes in milliseconds.
     private static final TimeSpan DEFAULT_READ_TIMEOUT = timeSpan(30).seconds();
+    /// A block file's name: the full lowercase hex of its id ([BlockId#hexString]).
+    private static final Pattern BLOCK_NAME = Pattern.compile("[0-9a-f]{64}");
     /// A block is written to a sibling `<hex>.<n>.partial` file and renamed over the block path
     /// once complete, so the block path only ever holds a whole copy — the previous one until the
     /// rename, the new one after it. Without this the TRUNCATE_EXISTING in-place write destroyed
@@ -261,6 +269,153 @@ public final class LocalDiskTier implements StorageTier {
     @Override
     public Promise<Boolean> exists(BlockId id) {
         return Promise.success(FileOps.exists(blockPath(id)));
+    }
+
+    /// The block file's size and modification time.
+    @Override
+    public Promise<Option<BlockStat>> stat(BlockId id) {
+        return Promise.lift(READ_ERROR,
+                            () -> statFile(id,
+                                           blockPath(id)))
+                      .flatMap(Promise::resolved);
+    }
+
+    /// Walks the shard's first-level directories in ascending order, skipping those wholly before the cursor; each
+    /// directory visited is listed whole and sorted, and only the files a page returns are stat'ed. A file deleted
+    /// between the listing and its stat is skipped, never counted against the page.
+    @Override
+    public Promise<Page<BlockStat>> scan(KeyShard shard, Option<Cursor> after, int limit) {
+        return Promise.lift(READ_ERROR,
+                            () -> scanShard(shard, after, limit))
+                      .flatMap(Promise::resolved);
+    }
+
+    /// Sets the block file's modification time to now and forces the file with its metadata, so the refresh survives a
+    /// power loss as a [#put] does. The bytes are not rewritten.
+    @Override
+    public Promise<Boolean> touch(BlockId id) {
+        return Promise.lift(WRITE_ERROR,
+                            () -> touchFile(blockPath(id)))
+                      .flatMap(Promise::resolved);
+    }
+
+    private Result<Page<BlockStat>> scanShard(KeyShard shard, Option<Cursor> after, int limit) {
+        return KeyShard.pageLimit(limit)
+                       .flatMap(_ -> KeyShard.resumeAfter(after))
+                       .flatMap(resume -> collect(shard.prefixes(),
+                                                  0,
+                                                  resume,
+                                                  limit,
+                                                  List.of()))
+                       .map(found -> KeyShard.pageOf(found, limit));
+    }
+
+    private Result<List<BlockStat>> collect(List<String> prefixes,
+                                            int index,
+                                            Option<String> resume,
+                                            int limit,
+                                            List<BlockStat> found) {
+        if (index >= prefixes.size() || found.size() >= limit) {
+            return Result.success(found);
+        }
+
+        return blocksUnder(prefixes.get(index),
+                           resume,
+                           limit - found.size()).flatMap(more -> collect(prefixes,
+                                                                         index + 1,
+                                                                         resume,
+                                                                         limit,
+                                                                         Stream.concat(found.stream(),
+                                                                                       more.stream())
+                                                                               .toList()));
+    }
+
+    private Result<List<BlockStat>> blocksUnder(String prefix, Option<String> resume, int wanted) {
+        var directory = basePath.resolve(prefix);
+
+        return FileOps.isDirectory(directory) && resume.filter(hex -> prefix.compareTo(hex.substring(0, 2)) < 0)
+                                                       .isEmpty()
+               ? FileOps.walk(directory, FileOps::isRegularFile)
+                        .flatMap(files -> statFirst(files, directory, resume, wanted))
+               : Result.success(List.of());
+    }
+
+    private static Result<List<BlockStat>> statFirst(List<Path> files, Path directory, Option<String> resume, int wanted) {
+        var stats = files.stream()
+                         .filter(file -> isBlockFileUnder(directory, file))
+                         .filter(file -> resume.fold(() -> true,
+                                                     hex -> file.getFileName()
+                                                                .toString()
+                                                                .compareTo(hex) > 0))
+                         .sorted()
+                         .map(LocalDiskTier::statBlockFile)
+                         .filter(stat -> stat.fold(_ -> true, Option::isPresent))
+                         .limit(wanted)
+                         .toList();
+
+        return Result.allOf(stats)
+                     .map(found -> found.stream()
+                                        .flatMap(Option::stream)
+                                        .toList());
+    }
+
+    /// `{dir}/{hex[2:4]}/{hex}` with `{dir}` named `hex[0:2]`: a block, never a partial, a claim or an anchor.
+    private static boolean isBlockFileUnder(Path directory, Path file) {
+        var name = file.getFileName().toString();
+        var shardDirectory = file.getParent();
+        var expectedStart = directory.getFileName().toString() + shardDirectory.getFileName().toString();
+
+        return BLOCK_NAME.matcher(name).matches() && shardDirectory.getParent().equals(directory) && name.startsWith(expectedStart);
+    }
+
+    private static Result<Option<BlockStat>> statBlockFile(Path file) {
+        return BlockId.fromHex(file.getFileName()
+                                   .toString())
+                      .flatMap(id -> statFile(id, file));
+    }
+
+    /// None when no regular file is at `path`, including one deleted while it was being read.
+    private static Result<Option<BlockStat>> statFile(BlockId id, Path path) {
+        return Result.lift(READ_ERROR,
+                           () -> Files.readAttributes(path, BasicFileAttributes.class))
+                     .fold(cause -> absentOr(path, cause),
+                           attributes -> Result.success(statOf(id, attributes)));
+    }
+
+    private static Option<BlockStat> statOf(BlockId id, BasicFileAttributes attributes) {
+        return attributes.isRegularFile()
+               ? some(BlockStat.blockStat(id,
+                                          attributes.size(),
+                                          attributes.lastModifiedTime()
+                                                    .toMillis()))
+               : none();
+    }
+
+    private static <T> Result<Option<T>> absentOr(Path path, Cause cause) {
+        return FileOps.isRegularFile(path)
+               ? cause.result()
+               : Result.success(none());
+    }
+
+    /// False when no regular file is at `path`, including one deleted while it was being touched.
+    private static Result<Boolean> touchFile(Path path) {
+        return FileOps.isRegularFile(path)
+               ? Result.lift(WRITE_ERROR,
+                             () -> Files.setLastModifiedTime(path,
+                                                             FileTime.fromMillis(System.currentTimeMillis())))
+                       .flatMap(_ -> Result.lift(WRITE_ERROR,
+                                                 () -> forceWithMetadata(path)))
+                       .fold(cause -> absentOr(path, cause).map(Option::isPresent),
+                             _ -> Result.success(true))
+               : Result.success(false);
+    }
+
+    private static Unit forceWithMetadata(Path path) throws IOException {
+        try (var channel = FileChannel.open(path, StandardOpenOption.READ)) {
+            channel.force(true);
+        }
+
+        return unit();
     }
 
     @Override

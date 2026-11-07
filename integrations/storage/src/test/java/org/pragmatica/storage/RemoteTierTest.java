@@ -3,6 +3,9 @@ package org.pragmatica.storage;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -159,13 +162,21 @@ class RemoteTierTest {
         }
     }
 
-    /// In-memory S3Client implementation for testing.
+    /// In-memory S3Client implementation for testing. Each PUT and touch stamps the object with [#clock], which a test
+    /// advances; LIST pages in ascending key order as S3 does.
     static final class InMemoryS3Client implements S3Client {
-        private final ConcurrentHashMap<String, byte[]> store = new ConcurrentHashMap<>();
+        private final ConcurrentSkipListMap<String, byte[]> store = new ConcurrentSkipListMap<>();
+        private final ConcurrentHashMap<String, Long> modified = new ConcurrentHashMap<>();
+        final AtomicLong clock = new AtomicLong(1_000_000L);
+        final AtomicInteger puts = new AtomicInteger();
+        /// The most objects one LIST page returns, whatever `maxKeys` asks: a provider may end a page early.
+        final AtomicInteger listPageCap = new AtomicInteger(Integer.MAX_VALUE);
 
         @Override
         public Promise<Unit> putObject(String key, byte[] content, String contentType) {
+            puts.incrementAndGet();
             store.put(key, content.clone());
+            modified.put(key, clock.get());
             return Promise.success(unit());
         }
 
@@ -182,6 +193,7 @@ class RemoteTierTest {
         @Override
         public Promise<Unit> deleteObject(String key) {
             store.remove(key);
+            modified.remove(key);
             return Promise.success(unit());
         }
 
@@ -192,6 +204,29 @@ class RemoteTierTest {
                             .limit(maxKeys)
                             .toList();
             return Promise.success(keys);
+        }
+
+        @Override
+        public Promise<Option<ObjectStat>> statObject(String key) {
+            return Promise.success(option(store.get(key)).map(bytes -> ObjectStat.objectStat(key, bytes.length, modified.get(key))));
+        }
+
+        @Override
+        public Promise<ObjectListing> listObjectStats(String prefix, Option<String> startAfter, int maxKeys) {
+            var keys = store.keySet().stream()
+                            .filter(k -> k.startsWith(prefix))
+                            .filter(k -> startAfter.fold(() -> true, after -> k.compareTo(after) > 0))
+                            .toList();
+            var page = keys.stream()
+                           .limit(Math.min(maxKeys, listPageCap.get()))
+                           .map(k -> ObjectStat.objectStat(k, store.get(k).length, modified.get(k)))
+                           .toList();
+            return Promise.success(ObjectListing.objectListing(page, keys.size() > page.size()));
+        }
+
+        @Override
+        public Promise<Boolean> touchObject(String key, String contentType) {
+            return Promise.success(option(modified.computeIfPresent(key, (_, _) -> clock.get())).isPresent());
         }
 
         boolean containsKey(String key) {

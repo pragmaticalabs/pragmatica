@@ -327,6 +327,23 @@ public interface StorageInstance {
         return AnchorError.NoDurableTier.noDurableTier(name()).promise();
     }
 
+    /// Makes this instance's tier at `level` hold block `id`, written or refreshed no earlier than this call (A2b, G2):
+    /// the re-seed of boot reconciliation and the freshness refresh of cluster GC (spec v2 §A1.5, §A5.3). Neither may go
+    /// through [#put], which deduplicates onto the block's record and writes nothing when one exists.
+    ///
+    /// A tier that holds the block is touched ([StorageTier#touch]); its bytes are not rewritten. A tier that does not is
+    /// written directly with the bytes another tier of this instance holds, hash-checked against `id` first. Waits for a
+    /// write or a collection of the same id in flight here before it starts. Records the tier's presence on the block's
+    /// record if there is one, as an observation ([MetadataStore#observeLifecycle]): tier presence is not snapshot state,
+    /// and no record or reference count is created or changed.
+    ///
+    /// Fails with [StorageError.NoSuchTier] when the instance has no tier at `level`, [StorageError.BlockNotFound] when no
+    /// other tier holds the block, [StorageError.IntegrityError] when the copy found does not hash to `id`, and with the
+    /// tier's failure otherwise. The default refuses with [StorageError.OperationUnsupported].
+    default Promise<Unit> ensureHeld(BlockId id, TierLevel level) {
+        return StorageError.OperationUnsupported.operationUnsupported(level, "ensureHeld").promise();
+    }
+
     /// Instance name.
     String name();
     /// Tier utilization info.
@@ -1260,6 +1277,69 @@ final class DefaultStorageInstance implements StorageInstance {
         }
 
         running.succeed(unit());
+
+        return unit();
+    }
+
+    /// G2: never through [#put] -- see the interface doc. The touch is tried first, so a tier that holds the block costs
+    /// one metadata-only refresh and no read.
+    @Override
+    public Promise<Unit> ensureHeld(BlockId id, TierLevel level) {
+        return Option.from(tiers.stream()
+                                .filter(tier -> tier.level() == level)
+                                .findFirst())
+                     .fold(() -> StorageError.NoSuchTier.noSuchTier(name, level).promise(),
+                           tier -> afterInFlight(id).flatMap(_ -> holdOn(tier, id)));
+    }
+
+    /// A write of the id in flight here ([#writing]) is waited for whatever its outcome -- a failed write undoes the copies
+    /// it created, which must not include this one -- and then a collection ([#afterCollection]).
+    private Promise<Unit> afterInFlight(BlockId id) {
+        return option(writing.get(id)).or(Promise.success(unit()))
+                                      .fold(_ -> afterCollection(id));
+    }
+
+    private Promise<Unit> holdOn(StorageTier tier, BlockId id) {
+        return tier.touch(id)
+                   .flatMap(held -> held
+                                    ? Promise.success(unit())
+                                    : copyOnto(tier, id))
+                   .map(_ -> observePresence(id, tier.level()));
+    }
+
+    private Promise<Unit> copyOnto(StorageTier target, BlockId id) {
+        return verifiedCopy(id, target, 0).flatMap(found -> found.fold(() -> StorageError.BlockNotFound.blockNotFound(id)
+                                                                                                       .promise(),
+                                                                       content -> target.put(id, content)));
+    }
+
+    /// The block's bytes from the first tier other than `target` that holds them, hash-checked against `id`. Unlike a
+    /// read it leaves no cache marker, access or presence behind: it is a copy between this instance's own tiers.
+    private Promise<Option<byte[]>> verifiedCopy(BlockId id, StorageTier target, int tierIndex) {
+        if (tierIndex >= tiers.size()) {
+            return Promise.success(none());
+        }
+
+        var tier = tiers.get(tierIndex);
+
+        return tier == target
+               ? verifiedCopy(id, target, tierIndex + 1)
+               : tier.get(id)
+                     .flatMap(found -> found.fold(() -> verifiedCopy(id, target, tierIndex + 1),
+                                                  content -> hashChecked(id, content)));
+    }
+
+    private static Promise<Option<byte[]>> hashChecked(BlockId id, byte[] content) {
+        return BlockId.blockId(content)
+                      .async()
+                      .flatMap(actual -> actual.equals(id)
+                                         ? Promise.success(some(content))
+                                         : StorageError.IntegrityError.integrityError(id, actual)
+                                                                      .promise());
+    }
+
+    private Unit observePresence(BlockId id, TierLevel level) {
+        metadataStore.observeLifecycle(id, lc -> lc.withTierAdded(level));
 
         return unit();
     }

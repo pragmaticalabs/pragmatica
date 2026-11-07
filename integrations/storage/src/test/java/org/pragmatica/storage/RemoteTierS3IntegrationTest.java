@@ -13,6 +13,7 @@ import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 import java.util.stream.IntStream;
 
@@ -463,6 +464,68 @@ class RemoteTierS3IntegrationTest {
 
         void releaseAll() {
             held.forEach(gate -> gate.succeed(Unit.unit()));
+        }
+    }
+
+    /// Last-Modified has whole-second precision: a refresh is visible only in a later second.
+    private static void waitPastTheNextSecond() {
+        LockSupport.parkNanos(Duration.ofMillis(1_100).toNanos());
+    }
+
+    /// A2b: the scan/stat/touch contract against the real endpoint -- Last-Modified from HEAD and from LIST, start-after
+    /// paging in the endpoint's key order, and the touch as a CopyObject of the object onto itself.
+    @Nested
+    class ScanStatTouch extends TierScanStatTouchContract {
+        @Override
+        protected StorageTier newTier() {
+            return durableTier(s3Client, "it-" + UUID.randomUUID() + "/");
+        }
+
+        @Override
+        protected void age(BlockId id) {
+            waitPastTheNextSecond();
+        }
+    }
+
+    /// G2 on the real endpoint, through [StorageInstance#ensureHeld]: the re-seed of a recorded block lost from the
+    /// bucket lands in it, and the refresh of a held one moves its Last-Modified.
+    @Nested
+    class EnsureHeld {
+        private final byte[] content = "re-seeded into the bucket".getBytes(StandardCharsets.UTF_8);
+
+        private StorageInstance node() {
+            var disk = LocalDiskTier.localDiskTier(dir, 1 << 20).flatMap(LocalDiskTier::open).fold(cause -> fail(cause.message()), d -> d);
+
+            return StorageInstance.storageInstance("a2b-s3", List.of(disk, tier));
+        }
+
+        @Test
+        void reseedOfARecordedButAbsentBlock_landsInTheBucket() {
+            var node = node();
+            var id = node.put(content).await().fold(cause -> fail(cause.message()), blockId -> blockId);
+
+            tier.delete(id).await().onFailure(cause -> fail(cause.message()));
+            assertThat(s3Client.headObject(keyOf(id)).await().fold(cause -> fail(cause.message()), held -> held)).as("precondition").isFalse();
+
+            node.ensureHeld(id, TierLevel.REMOTE).await().onFailure(cause -> fail(cause.message()));
+
+            assertThat(s3Client.getObject(keyOf(id)).await().fold(cause -> fail(cause.message()), found -> found).map(Arrays::toString))
+                .isEqualTo(some(Arrays.toString(content)));
+        }
+
+        @Test
+        void refreshOfAHeldBlock_movesItsLastModified() {
+            var node = node();
+            var id = node.put(content).await().fold(cause -> fail(cause.message()), blockId -> blockId);
+            var before = tier.stat(id).await().fold(cause -> fail(cause.message()), stat -> stat).unwrap();
+
+            waitPastTheNextSecond();
+            node.ensureHeld(id, TierLevel.REMOTE).await().onFailure(cause -> fail(cause.message()));
+
+            var after = tier.stat(id).await().fold(cause -> fail(cause.message()), stat -> stat).unwrap();
+
+            assertThat(after.writtenAtMillis()).isGreaterThan(before.writtenAtMillis());
+            assertThat(after.size()).isEqualTo(before.size());
         }
     }
 }
