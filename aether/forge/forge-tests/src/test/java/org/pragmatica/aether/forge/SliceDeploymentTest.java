@@ -10,11 +10,16 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.update.SplitRule;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.http.HttpOperations;
+import org.pragmatica.lang.io.TimeSpan;
 
 import java.net.URI;
+import java.util.Map;
 import java.net.http.HttpRequest;
 import java.time.Duration;
 
@@ -49,6 +54,7 @@ class SliceDeploymentTest {
     private static final int BASE_APP_HTTP_PORT = 5400;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration DEPLOY_TIMEOUT = Duration.ofSeconds(60);
+    private static final TimeSpan DEPLOY_TIMEOUT_SPAN = TimeSpan.timeSpan(60).seconds();
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final String TEST_ARTIFACT = TestArtifacts.ECHO_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:slice-deploy:1.0.0";
@@ -224,6 +230,52 @@ class SliceDeploymentTest {
                .atMost(DEPLOY_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(() -> committedTarget(leaderPort, 4));
+    }
+
+    /// #2713 a01 through the REAL node wiring: a requirement held while an A/B test runs is recombined when the test ends by ROLLBACK.
+    /// The rollback writes the baseline target while the test is still `ROLLING_BACK` (the combiner refuses it again), so the
+    /// only event left that can resume the held combination is the `ROLLED_BACK` record put, routed by `AetherNode`'s
+    /// `.onPut(AbTestKey.class, controlLoop::onAbTestPut)`. The hold starts at `ACTIVE` (the same `CanaryRunning` refusal): the
+    /// `ROLLING_BACK` window is milliseconds, so a requirement cannot be landed in it deterministically.
+    /// Trigger: the leader's `AbTestManager.rollbackTest` (the manager's own API; the management routes have no rollback, and
+    /// the automatic rollback needs a failing variant deployment on the leader).
+    @Test
+    void abTestRolledBack_recombinesTheRequirementHeldDuringTheTest() {
+        var leaderPort = cluster.getLeaderManagementPort().unwrap();
+        var artifact = Artifact.artifact(TEST_ARTIFACT).unwrap();
+
+        deploy(leaderPort, TEST_ARTIFACT, 3);
+        await().atMost(DEPLOY_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> sliceIsActive(TEST_ARTIFACT));
+
+        var manager = leaderNode().abTestManager();
+        var abTest = manager.createTest(artifact.base(),
+                                        Map.of("variant", artifact.version()),
+                                        SplitRule.HeaderHashSplit.headerHashSplit("X-Request-Id", 2))
+                            .await(DEPLOY_TIMEOUT_SPAN)
+                            .unwrap();
+
+        scale(leaderPort, TEST_ARTIFACT, 4);
+        await().during(Duration.ofSeconds(5))
+               .atMost(DEPLOY_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> !committedTarget(leaderPort, 4));
+
+        manager.rollbackTest(abTest.testId())
+               .await(DEPLOY_TIMEOUT_SPAN)
+               .unwrap();
+
+        await().atMost(DEPLOY_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> committedTarget(leaderPort, 4));
+    }
+
+    private AetherNode leaderNode() {
+        await().atMost(DEPLOY_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> cluster.allNodes().stream().anyMatch(AetherNode::isLeader));
+        return cluster.allNodes().stream().filter(AetherNode::isLeader).findFirst().orElseThrow();
     }
 
     private boolean committedTarget(int port, int expected) {
