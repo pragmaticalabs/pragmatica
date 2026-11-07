@@ -111,6 +111,23 @@ class ReplicaEpochVerificationTest {
         assertThat(manager.readServing(STREAM, PARTITION, 5L, 10).isSuccess()).isTrue();
     }
 
+    /// #2753: the placement role exempts a copy from the read-path doubt only. The ack gate doubts a copy placed OWNER that
+    /// holds records at and above the committed epoch's start it has not compared with that epoch's owner, until a compare
+    /// verifies it.
+    @Test
+    void placementOwner_isExemptOnTheReadPath_butItsAckGateWaitsForTheEpochsVerification() {
+        appendOld(10);
+        committed.set(E2);
+
+        assertThat(manager.unverifiedFrom(STREAM, PARTITION).isEmpty()).as("the placement owner is not doubted on the read path")
+                                                                 .isTrue();
+        assertThat(manager.replicaVerified(STREAM, PARTITION)).as("#2753: the role does not open the ack gate").isFalse();
+
+        manager.markVerifiedForEpoch(STREAM, PARTITION, E2);
+
+        assertThat(manager.replicaVerified(STREAM, PARTITION)).isTrue();
+    }
+
     /// No committed ownership record (epoch ZERO): nothing to doubt.
     @Test
     void noCommittedEpoch_isNeverDoubted() {

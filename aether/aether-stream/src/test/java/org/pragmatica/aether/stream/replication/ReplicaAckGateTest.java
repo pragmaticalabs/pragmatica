@@ -515,12 +515,12 @@ class ReplicaAckGateTest {
         drain(e3LiveSync);
     }
 
-    /// #2753 TRIPWIRE (pins current behaviour, which predates #2599): the gate opens for the OWNER placement role
-    /// (`ReplicaSetController::roleFor`, from HRW placement, not the committed record). While the committed owner is still the
-    /// batch's sender at E2, a stale compare's verification (an epoch captured before E2) runs the release, and the deferral of a
-    /// copy never verified for E2 is sent. When #2753 lands, this pin turns red: flip it to assert that no ack is sent.
+    /// #2753 (the v2735d probe): the gate opens only on a verification for the committed epoch, never on the OWNER placement
+    /// role (`ReplicaSetController::roleFor`, from HRW placement, not the committed record). While the committed owner is still
+    /// the batch's sender at E2, a stale compare's verification (an epoch captured before E2) runs the release, and the deferral
+    /// of a copy never verified for E2 stays held. With the role bypass it was sent (ack 5 under E2).
     @Test
-    void tripwire_2753_ownerRoleOpensTheGate_unverifiedDeferralIsSent() {
+    void ownerRole_staleEpochVerification_doesNotReleaseTheDeferral() {
         unverifiedCopyUnderE2();
         handler.onReplicateEvents(liveBatch(5, 1, E2));
         assertThat(acks).as("deferred").isEmpty();
@@ -528,9 +528,44 @@ class ReplicaAckGateTest {
 
         replica.markVerifiedForEpoch(STREAM, PARTITION, E1);
 
-        assertThat(ackOffsets(E2)).as("#2753 role bypass: no compare verified this copy for E2, yet the deferral is sent. When #2753 "
-                                      + "lands this goes red: flip it to assert no ack is sent")
-                                  .containsExactly(5L);
+        assertThat(replica.replicaVerified(STREAM, PARTITION)).as("verified for E1, not E2, whatever the role").isFalse();
+        assertThat(acks).as("#2753: no compare verified this copy for E2, so its deferral is not sent").isEmpty();
+    }
+
+    /// #2753, the live path: a batch of the committed epoch on a copy placed OWNER but never verified for that epoch is deferred,
+    /// not acked. With the role bypass it was acked at once (5 under E2).
+    @Test
+    void ownerRole_liveBatchOnUnverifiedCopy_isDeferred() {
+        unverifiedCopyUnderE2();
+        replica.placementRoleSupplier((_, _) -> Role.OWNER);
+
+        handler.onReplicateEvents(liveBatch(5, 1, E2));
+
+        assertThat(replica.nextExpectedOffset(STREAM, PARTITION)).as("the batch was applied").isEqualTo(6L);
+        assertThat(acks).as("#2753: the placement role does not open the gate").isEmpty();
+    }
+
+    /// #2753 liveness: a copy placed OWNER and not yet verified is not stalled. Its redrive input reads it unverified (the
+    /// backfill re-drives such a copy at once), and its backfill compares it with the committed owner (the backfill's source),
+    /// which verifies it for E2 and releases the held ack.
+    @Test
+    void ownerRole_unverifiedCopy_isVerifiedByTheCommittedOwnersCompare_andThenAcks() {
+        var ownerLog = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
+
+        ownerLog.createStream(StreamConfig.streamConfig(STREAM));
+        IntStream.range(0, 6).forEach(i -> ownerLog.appendRecovered(STREAM, PARTITION, payload(i), 1000L + i).unwrap());
+        unverifiedCopyUnderE2();
+        replica.placementRoleSupplier((_, _) -> Role.OWNER);
+        handler.onReplicateEvents(liveBatch(5, 1, E2));
+        assertThat(acks).as("deferred").isEmpty();
+        assertThat(replica.quarantineView().verifiedForCurrentEpoch(STREAM, PARTITION)).as("the redrive sees it unverified")
+                                                                                      .isFalse();
+
+        backfill(ownerLog).backfill(STREAM, PARTITION).await();
+
+        assertThat(eventually(() -> replica.replicaVerified(STREAM, PARTITION))).as("the compare verified the copy for E2").isTrue();
+        assertThat(eventually(() -> ackOffsets(E2).contains(5L))).as("the held ack is sent; acks = %s", acks).isTrue();
+        ownerLog.close();
     }
 
     /// R1 TRIPWIRE (pins current behaviour): a compare whose response carries no records (an empty owner) never verifies the
