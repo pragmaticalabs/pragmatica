@@ -9,6 +9,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -93,7 +94,7 @@ class StorageInstanceEnsureHeldTest {
     void reseed_ofABlockNoTierHolds_failsWithBlockNotFound_andWritesNothing() {
         var id = BlockId.blockId("held nowhere".getBytes(StandardCharsets.UTF_8)).unwrap();
 
-        assertThat(node.ensureHeld(id, TierLevel.REMOTE).await().fold(cause -> cause, _ -> null))
+        assertThat(node.ensureHeld(id, TierLevel.REMOTE).await().<Cause>fold(cause -> cause, _ -> null))
             .isInstanceOf(StorageError.BlockNotFound.class);
         assertThat(shared.exists(id).await().unwrap()).isFalse();
     }
@@ -107,7 +108,7 @@ class StorageInstanceEnsureHeldTest {
 
         memory.put(id, "not the content".getBytes(StandardCharsets.UTF_8)).await().unwrap();
 
-        assertThat(corruptNode.ensureHeld(id, TierLevel.REMOTE).await().fold(cause -> cause, _ -> null))
+        assertThat(corruptNode.ensureHeld(id, TierLevel.REMOTE).await().<Cause>fold(cause -> cause, _ -> null))
             .isInstanceOf(StorageError.IntegrityError.class);
         assertThat(shared.exists(id).await().unwrap()).isFalse();
     }
@@ -116,7 +117,7 @@ class StorageInstanceEnsureHeldTest {
     void ensureHeld_onATierTheInstanceLacks_failsWithNoSuchTier() {
         var id = node.put(CONTENT).await().unwrap();
 
-        assertThat(node.ensureHeld(id, TierLevel.MEMORY).await().fold(cause -> cause, _ -> null))
+        assertThat(node.ensureHeld(id, TierLevel.MEMORY).await().<Cause>fold(cause -> cause, _ -> null))
             .isInstanceOf(StorageError.NoSuchTier.class);
     }
 

@@ -505,7 +505,7 @@ class RemoteTierS3IntegrationTest {
             var id = node.put(content).await().fold(cause -> fail(cause.message()), blockId -> blockId);
 
             tier.delete(id).await().onFailure(cause -> fail(cause.message()));
-            assertThat(s3Client.headObject(keyOf(id)).await().fold(cause -> fail(cause.message()), held -> held)).as("precondition").isFalse();
+            assertThat(s3Client.headObject(keyOf(id)).await().<Boolean>fold(cause -> fail(cause.message()), held -> held)).as("precondition").isFalse();
 
             node.ensureHeld(id, TierLevel.REMOTE).await().onFailure(cause -> fail(cause.message()));
 

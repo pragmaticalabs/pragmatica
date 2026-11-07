@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -62,10 +63,10 @@ class StorageTierScanStatTouchDefaultsTest {
     void theDefaults_refuseWithOperationUnsupported() {
         var tier = new BareTier();
 
-        assertThat(tier.stat(ID).await().fold(cause -> cause, _ -> null)).isInstanceOf(StorageError.OperationUnsupported.class);
-        assertThat(tier.scan(KeyShard.all(), Option.none(), 10).await().fold(cause -> cause, _ -> null))
+        assertThat(tier.stat(ID).await().<Cause>fold(cause -> cause, _ -> null)).isInstanceOf(StorageError.OperationUnsupported.class);
+        assertThat(tier.scan(KeyShard.all(), Option.none(), 10).await().<Cause>fold(cause -> cause, _ -> null))
             .isInstanceOf(StorageError.OperationUnsupported.class);
-        assertThat(tier.touch(ID).await().fold(cause -> cause, _ -> null)).isInstanceOf(StorageError.OperationUnsupported.class);
+        assertThat(tier.touch(ID).await().<Cause>fold(cause -> cause, _ -> null)).isInstanceOf(StorageError.OperationUnsupported.class);
     }
 
     /// A proxy answering only the interface's default methods: the instance double every other test builds lacks none.
@@ -77,7 +78,7 @@ class StorageTierScanStatTouchDefaultsTest {
                                                                                                                          method,
                                                                                                                          args));
 
-        assertThat(instance.ensureHeld(ID, TierLevel.REMOTE).await().fold(cause -> cause, _ -> null))
+        assertThat(instance.ensureHeld(ID, TierLevel.REMOTE).await().<Cause>fold(cause -> cause, _ -> null))
             .isInstanceOf(StorageError.OperationUnsupported.class);
     }
 

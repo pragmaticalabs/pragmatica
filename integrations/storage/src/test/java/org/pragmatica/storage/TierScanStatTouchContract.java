@@ -8,6 +8,7 @@ import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -151,8 +152,8 @@ abstract class TierScanStatTouchContract {
         var badLimit = tier.scan(KeyShard.all(), Option.none(), 0).await();
         var badCursor = tier.scan(KeyShard.all(), Option.some(Cursor.cursor("../not-a-block")), 5).await();
 
-        assertThat(badLimit.fold(cause -> cause, _ -> null)).isInstanceOf(StorageError.InvalidScan.class);
-        assertThat(badCursor.fold(cause -> cause, _ -> null)).isInstanceOf(StorageError.InvalidScan.class);
+        assertThat(badLimit.<Cause>fold(cause -> cause, _ -> null)).isInstanceOf(StorageError.InvalidScan.class);
+        assertThat(badCursor.<Cause>fold(cause -> cause, _ -> null)).isInstanceOf(StorageError.InvalidScan.class);
     }
 
     /// Anchors live beside the blocks on the tiers that keep them, and are never listed as blocks.
