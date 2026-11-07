@@ -1386,12 +1386,9 @@ public interface HttpForwarder {
             private static void failHopIfRefused(WriteOutcome outcome,
                                                  Promise<HttpResponseData> hop,
                                                  String requestId) {
-                switch (outcome) {
-                    case WriteOutcome.BackpressureRefused _, WriteOutcome.NoPeerState _, WriteOutcome.EncodeFailed _ -> {
-                        log.debug("Forward [{}] refused before write: {}", requestId, outcome);
-                        hop.fail(Undelivered.SEND_REFUSED);
-                    }
-                    case WriteOutcome.Sent _, WriteOutcome.ConnectionDead _ -> {}
+                if (outcome.provablyNotSent()) {
+                    log.debug("Forward [{}] refused before write: {}", requestId, outcome);
+                    hop.fail(Undelivered.SEND_REFUSED);
                 }
             }
 

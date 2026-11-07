@@ -884,10 +884,9 @@ class SliceInvokerImpl implements SliceInvoker {
     /// `InvokeRequest` is offline-buffered, so a frame reported under either may still be delivered (see
     /// [ClusterNetwork#send(NodeId, org.pragmatica.consensus.ProtocolMessage, TimeSpan)]).
     private static Option<Cause> refusal(WriteOutcome outcome) {
-        return switch (outcome) {
-            case WriteOutcome.BackpressureRefused _, WriteOutcome.NoPeerState _, WriteOutcome.EncodeFailed _ -> Option.some(ForwardError.NotSent.notSent(Causes.cause("Transport refused the invocation request: " + outcome)));
-            case WriteOutcome.Sent _, WriteOutcome.ConnectionDead _ -> Option.none();
-        };
+        return outcome.provablyNotSent()
+               ? Option.some(ForwardError.NotSent.notSent(Causes.cause("Transport refused the invocation request: " + outcome)))
+               : Option.none();
     }
 
     @Override
