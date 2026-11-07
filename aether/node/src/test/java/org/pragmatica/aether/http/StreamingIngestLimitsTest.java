@@ -4,12 +4,16 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http;
 
+import java.nio.ByteBuffer;
+
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.UploadConfig;
+import org.pragmatica.aether.http.upload.CapturingResponse;
 import org.pragmatica.aether.http.upload.TestRequest;
 import org.pragmatica.http.server.Disposition;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.http.StreamingIngestHarness.MIB;
 import static org.pragmatica.aether.http.StreamingIngestHarness.rejection;
 
@@ -49,5 +53,23 @@ class StreamingIngestLimitsTest {
         assertThat(second).as("another 20 MiB does not fit").isInstanceOf(Disposition.Reject.class);
         assertThat(rejection(second).status()).isEqualTo(503);
         assertThat(third).as("5 MiB still fits").isInstanceOf(Disposition.Stream.class);
+    }
+
+    /// Kills the declared length dropped from the stored object's spec: a body shorter than its `Content-Length` (which a
+    /// correct server never delivers) is refused at commit and leaves nothing stored, instead of being stored short.
+    @Test
+    void complete_bodyShorterThanItsDeclaredLength_isRefused_andNothingIsStored() {
+        var harness = StreamingIngestHarness.streaming();
+        var head = TestRequest.post("/api/upload/short", BINARY, 100);
+        var sink = harness.stream(head);
+        var response = CapturingResponse.capturingResponse();
+
+        assertThat(sink.accept(ByteBuffer.wrap(new byte[50])).await(StreamingIngestHarness.TIMEOUT).isSuccess()).isTrue();
+        sink.complete(head, response);
+
+        await().atMost(StreamingIngestHarness.WAIT).until(response::answered);
+        assertThat(response.status()).isGreaterThanOrEqualTo(400);
+        assertThat(harness.router.calls()).isZero();
+        assertThat(harness.stored()).isEmpty();
     }
 }
