@@ -328,7 +328,7 @@ final class MultipartDecoder {
     }
 
     private UploadIngestError refuse(UploadIngestError cause) {
-        refusal = refusal.or(() -> Option.some(cause));
+        refusal = refusal.orElse(() -> Option.some(cause));
 
         return cause;
     }
