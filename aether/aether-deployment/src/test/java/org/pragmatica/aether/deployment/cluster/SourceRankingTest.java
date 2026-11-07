@@ -16,6 +16,7 @@ import java.util.Random;
 import java.util.Set;
 
 import org.pragmatica.aether.config.cluster.CloudProviderName;
+import org.pragmatica.aether.config.cluster.CommunityPlacement;
 import org.pragmatica.aether.config.cluster.CommunityPlacement.Location;
 import org.pragmatica.aether.config.cluster.CostClass;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
@@ -32,6 +33,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 
 class SourceRankingTest {
@@ -112,6 +114,14 @@ class SourceRankingTest {
                              loc("b-docker", "a1"),
                              loc("c-aws", "z1")),
                      shuffled);
+    }
+
+    // rank's total order relies on this: a duplicated (source, zone) pair never reaches it.
+    @Test
+    void communityPlacement_duplicateSourceZone_isRejectedAtParse() {
+        CommunityPlacement.communityPlacement("c1", 3, List.of(loc("a-hetzner", "z1"), loc("a-hetzner", "z1")))
+                          .onSuccess(_ -> fail("duplicate (source, zone) accepted"))
+                          .onFailure(cause -> assertTrue(cause.message().contains("Duplicate source/zone")));
     }
 
     // ---- INV-08: never outside the bindings ----
