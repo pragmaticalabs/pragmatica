@@ -632,11 +632,13 @@ public final class SliceRoutes implements RouteSource {
     private Promise<BlueprintValidationResponse> handleValidateBlueprint(String body) {
         var warnings = BlueprintParser.detectUnrecognizedSections(body);
 
-        return Promise.success(nodeSupplier.get()
-                                           .blueprintService()
-                                           .validate(body)
-                                           .fold(cause -> failedValidationResponse(cause, warnings),
-                                                 blueprint -> successValidationResponse(blueprint, warnings)));
+        // Not an absorbed failure: a refusal IS this route's answer (`valid=false` with the cause's message), so it
+        // is reported to the caller, never dropped. #811: the refusal set is the one a deploy would give.
+        return nodeSupplier.get()
+                           .blueprintService()
+                           .validateDeployable(body)
+                           .map(blueprint -> successValidationResponse(blueprint, warnings))
+                           .recover(cause -> failedValidationResponse(cause, warnings));
     }
 
     private static BlueprintValidationResponse failedValidationResponse(Cause cause, List<String> warnings) {

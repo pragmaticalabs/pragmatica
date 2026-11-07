@@ -497,8 +497,9 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// configuration" gate (the second, the implicit `[json]` section, is at [#noProviderForSectionBinder]): `TopicConfig` is a single-field record whose value the runtime already
     /// knows independently of `resources.toml` (the topic name), so there is nothing to synthesise —
     /// declaring it here, by design, rather than removing it, is #547's Gap-1 resolution. It also
-    /// means `ConfigSectionPreflightValidator`'s deploy-time pre-flight deliberately does not check
-    /// topic/stream sections at all; only generic [SliceTopology.ResourceDep] resources are gated.
+    /// means `ConfigSectionPreflightValidator`'s deploy-time pre-flight does not REQUIRE a topic section to exist;
+    /// only generic [SliceTopology.ResourceDep] resources are gated on presence. A topic section that does exist is
+    /// bound through this same binder at deploy (`TopicSectionPreflight`, #811), so its refusal comes at deploy.
     private static Result<Object> topicNameFallback(String section, Class<?> configType, Result<Object> loaded) {
         return configType.equals(TopicConfig.class)
                ? loaded.fold(cause -> recoverAbsentTopicConfig(section, cause), Result::success)
