@@ -86,6 +86,7 @@ record SliceAllocationEngine(Active active, List<NodeId> eligibleNodes) {
     private boolean reconcilePolicy(Artifact artifact, int desiredInstances, PlacementPolicy policy) {
         var targets = buildAllocationPool().nodesForPolicy(policy);
 
+        active.placementShortfallWatch().observed(artifact, desiredInstances, targets.size());
         if (targets.isEmpty()) {
             return false;
         }
@@ -107,6 +108,7 @@ record SliceAllocationEngine(Active active, List<NodeId> eligibleNodes) {
         var pool = buildAllocationPool();
         var targetNodes = pool.nodesForPolicy(policy);
 
+        active.placementShortfallWatch().observed(artifact, desiredInstances, targetNodes.size());
         if (targetNodes.isEmpty()) {
             log.warn("No eligible nodes for placement {} of {}; retaining requested placement", policy, artifact);
 

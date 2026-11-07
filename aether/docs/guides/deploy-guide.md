@@ -21,14 +21,14 @@ All strategies share a common lifecycle: **start** -> **promote** -> **complete*
 # Immediate deployment
 aether deploy org.example:my-slice:2.0.0
 
-# Canary with 3 instances
-aether deploy org.example:my-slice:2.0.0 --canary -n 3
+# Canary deployment
+aether deploy org.example:my-slice:2.0.0 --canary
 
 # Blue-green deployment
-aether deploy org.example:my-slice:2.0.0 --blue-green -n 3
+aether deploy org.example:my-slice:2.0.0 --blue-green
 
 # Rolling deployment
-aether deploy org.example:my-slice:2.0.0 --rolling -n 3
+aether deploy org.example:my-slice:2.0.0 --rolling
 ```
 
 ## Canary Deployments
@@ -45,7 +45,7 @@ Each stage has a minimum observation period before progression is allowed.
 
 ```bash
 # Start canary
-aether deploy org.example:my-service:2.0.0 --canary -n 3
+aether deploy org.example:my-service:2.0.0 --canary
 
 # Check health comparison
 aether deploy status <id>
@@ -141,7 +141,7 @@ Runs two complete deployment environments simultaneously. Traffic switches atomi
 
 ```bash
 # Deploy green version alongside blue
-aether deploy org.example:my-service:2.0.0 --blue-green -n 3
+aether deploy org.example:my-service:2.0.0 --blue-green
 
 # Verify green is ready
 aether deploy status <id>
@@ -176,7 +176,7 @@ Traffic distribution uses a ratio format: `new:old`
 
 ```bash
 # Start rolling deployment
-aether deploy org.example:my-slice:2.0.0 --rolling -n 3
+aether deploy org.example:my-slice:2.0.0 --rolling
 
 # Promote through traffic stages
 aether deploy promote <id>    # shift to next ratio
@@ -230,7 +230,6 @@ curl -X POST http://localhost:8080/api/v1/deploy \
     "artifactBase": "org.example:my-slice",
     "version": "2.0.0",
     "strategy": "CANARY",
-    "instances": 3,
     "maxErrorRate": 0.01,
     "maxLatencyMs": 500
   }'
@@ -258,7 +257,7 @@ curl -X POST http://localhost:8080/api/v1/deploy/complete/<id>
 Don't jump from 0% to 100%. Use gradual steps and monitor between each:
 
 ```bash
-aether deploy org.example:my-service:2.0.0 --canary -n 3
+aether deploy org.example:my-service:2.0.0 --canary
 # Monitor for 5-10 minutes at each stage
 aether deploy promote <id>
 # Monitor

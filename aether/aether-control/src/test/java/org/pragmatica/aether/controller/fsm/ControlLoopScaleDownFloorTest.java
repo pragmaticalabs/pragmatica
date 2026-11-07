@@ -67,6 +67,7 @@ class ControlLoopScaleDownFloorTest {
         cluster = new ControlLoopOwnerPreservationTest.CapturingClusterNode();
         controlLoop = buildControlLoop();
         ctx = ((ControlLoop.ControlLoopAdapter) controlLoop).ctx();
+        cluster.combineOver(_ -> ctx.observedTarget(SLICE));
         ctx.setTopology(List.of(SELF,
                                 NodeId.nodeId("worker-1").unwrap(),
                                 NodeId.nodeId("n3").unwrap(),

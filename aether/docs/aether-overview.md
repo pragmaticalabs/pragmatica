@@ -107,7 +107,7 @@ The runtime resolves artifacts, loads slices, distributes instances across nodes
 Zero-downtime deployments with multiple strategies:
 
 ```bash
-aether deploy org.example:order-processor:2.0.0 --rolling -n 3
+aether deploy org.example:order-processor:2.0.0 --rolling
 aether deploy promote <id>           # shift to next traffic stage
 aether deploy complete <id>          # 100% to v2, drain v1
 ```

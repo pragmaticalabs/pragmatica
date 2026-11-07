@@ -144,18 +144,55 @@ public class PaymentProcessorSlice implements Slice {
 }
 ```
 
-### CLI Configuration
+### Capacity requirements: how the autoscaler and the operator compose
+
+Each source of capacity demand commits its own **requirement** record for a slice:
+
+| Source | Writer | Expiry |
+|--------|--------|--------|
+| `REACTIVE` | the autoscaler, on every scaling decision | none |
+| `OPERATOR` | `aether scale <artifact> -n <n>`; removed by `aether scale <artifact> --release` | none |
+| `SCHEDULED`, `CAMPAIGN`, `PREDICTIVE`, `RECOVERY` | defined; no writer yet | per record |
+
+The leader's **combiner** derives the slice's target from them:
+
+```
+target = clamp( max(minAvailable, every unexpired requirement), 3, maxInstances )
+```
+
+- The combiner is the only writer of the target's instance count once the target exists, with one exception: an A/B
+  test's canary. A blueprint's declared count seeds the target when it is first created. A redeploy and a rolling update
+  change the target's version and keep its count [mechanism: those writers carry the committed count; the combiner runs on
+  every requirement change, target change, topology change and expiry].
+- An A/B test runs its variant at a fixed 3 instances while the test deploys its variants, is active or is being rolled back (#1721). The
+  combiner and the autoscaler leave that slice alone meanwhile, so a canary never runs at the full target. Concluding or
+  rolling back the test sets the slice to its floor (at least 3), and the combiner then restores the count the committed
+  requirements ask for [mechanism: the combiner skips a slice whose A/B test runs a canary, and re-runs on the test's put]. `CONCLUDING` is
+  outside the hold (a refused conclude must not freeze scaling), so the count can flap once in that window before it converges.
+- `max` takes the largest estimate of the same demand; requirements never add up.
+- The cluster's size does not bound the target (placeable capacity is defined per placement audience in a later
+  release). One node hosts at most one instance of a slice, so a target above the number of eligible nodes in the slice's
+  placement audience leaves the excess unplaced: the leader raises `slice-target-exceeds-placement` (subject: the slice)
+  and re-attempts the rest on every reconcile tick. It clears (`slice-target-placement-restored`) when nodes join or the
+  target falls.
+- Scale-down comes only from the autoscaler's requirement falling, under its cooldown. Releasing the operator requirement,
+  lowering it, or a requirement expiring releases that claim and does not scale the slice down: the same write re-bases
+  the autoscaler's requirement to the current count, so the slice holds its count until the autoscaler lowers it
+  [mechanism: the release, or the combiner's removal of the expired record, and the re-base commit in one leader
+  transaction]. With no unexpired requirement, the current count stands.
+- No slice runs below 3 instances, whatever `maxInstances` says.
+- When a blueprint is deleted or a deployment rolled back, the slice's requirement records are removed in the same
+  transaction as its target, so re-applying the blueprint starts from the blueprint's own count [mechanism: the target
+  removal paths of the default deployment engine carry the requirement removals; a requirement that outlives its target
+  for any other reason is removed by the combiner while the target is absent, retried until it applies]. A cluster
+  running the FSM2 deployment engine removes them only through the combiner [design intent — unverified].
 
 ```bash
-# Set scaling parameters
-aether scale order-processor \
-  --min 2 \
-  --max 10 \
-  --target-cpu 60 \
-  --target-latency 100ms
+# Hold at least 5 instances; the autoscaler can still go higher
+aether scale org.example:order-processor:1.0.0 -n 5
 
-# Disable auto-scaling (manual only)
-aether scale order-processor --auto=false --instances 5
+# Remove the hold
+aether scale org.example:order-processor:1.0.0 --release
 ```
 
 ### Programmatic Configuration

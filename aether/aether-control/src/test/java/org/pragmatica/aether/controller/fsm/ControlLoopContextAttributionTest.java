@@ -31,7 +31,6 @@ import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
 import org.pragmatica.aether.worker.metrics.PerSliceMetrics;
@@ -397,16 +396,15 @@ class ControlLoopContextAttributionTest {
 
         List<Object> putBases() {
             return commands.stream()
-                           .flatMap(FencedTargetWrites::targetKeys)
-                           .filter(key -> key instanceof SliceTargetKey)
-                           .map(key -> (Object)((SliceTargetKey) key).artifactBase())
+                           .flatMap(FencedTargetWrites::reactiveRequirements)
+                           .map(entry -> (Object) entry.getKey())
                            .toList();
         }
 
         int lastTargetInstances() {
             return commands.stream()
-                           .flatMap(FencedTargetWrites::targetValues)
-                           .map(AetherValue.SliceTargetValue::targetInstances)
+                           .flatMap(FencedTargetWrites::reactiveRequirements)
+                           .map(entry -> entry.getValue().instances())
                            .reduce((first, second) -> second)
                            .orElse(-1);
         }

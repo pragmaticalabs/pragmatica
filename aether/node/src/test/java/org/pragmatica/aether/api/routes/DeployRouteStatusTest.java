@@ -296,20 +296,29 @@ class DeployRouteStatusTest {
         }
     }
 
-    /// #1495: a rollout writes `instances` onto every slice target of the blueprint, so the route applies
-    /// the blueprint floor. Absent means 3 (was 1); fewer than 3 is the caller's error and never reaches
-    /// the manager.
+    /// v2713 item 6: a deployment runs over the slice's committed target, whose count the requirement combiner owns, so a requested
+    /// `instances` is refused with a pointer to `POST /api/scale` instead of being silently ignored. Absent, the manager receives the
+    /// default count of 3 (#1495), used only to create a target a slice of the blueprint does not have yet.
     @Nested
-    class InstanceFloor {
+    class InstanceCount {
         @Test
-        void startRoute_instancesTwo_refusedBadRequestBeforeManager() {
+        void startRoute_instancesGiven_refusedBadRequestBeforeManager() {
             var manager = new StubDeploymentManager(NOT_CALLED);
-            var cause = startCauseFrom(manager, rollingRequestWithInstances(2));
+            var cause = startCauseFrom(manager, rollingRequestWithInstances(5));
 
-            assertThat(cause).isEqualTo(DeployRouteError.INSTANCES_BELOW_MINIMUM);
+            assertThat(cause).isEqualTo(DeployRouteError.INSTANCES_NOT_ACCEPTED);
+            assertThat(cause.message()).contains("/api/scale");
             assertThat(statusOf(cause, START_INSTANCE)).isEqualTo(HttpStatus.BAD_REQUEST);
             assertThat(manager.startedWith().get()).as("a refused request must not reach the manager")
                       .isEqualTo(NOT_STARTED);
+        }
+
+        @Test
+        void startRoute_instancesGivenAtDefault_stillRefused() {
+            var manager = new StubDeploymentManager(NOT_CALLED);
+
+            assertThat(startCauseFrom(manager, rollingRequestWithInstances(3))).isEqualTo(DeployRouteError.INSTANCES_NOT_ACCEPTED);
+            assertThat(manager.startedWith().get()).isEqualTo(NOT_STARTED);
         }
 
         @Test
@@ -317,15 +326,6 @@ class DeployRouteStatusTest {
             var manager = new StubDeploymentManager(CONSENSUS_FAILURE);
 
             startCauseFrom(manager, ROLLING_REQUEST);
-
-            assertThat(manager.startedWith().get()).isEqualTo(3);
-        }
-
-        @Test
-        void startRoute_instancesThree_reachesManager() {
-            var manager = new StubDeploymentManager(CONSENSUS_FAILURE);
-
-            startCauseFrom(manager, rollingRequestWithInstances(3));
 
             assertThat(manager.startedWith().get()).isEqualTo(3);
         }

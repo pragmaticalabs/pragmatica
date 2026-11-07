@@ -95,10 +95,10 @@ public interface SystemTags {
                                                        entry.getKey());
 
                           if (previousName != null) {
-                          throw new IllegalStateException("Tag %d is pinned to both %s and %s".formatted(entry.getValue(),
-                                                                                                         previousName,
-                                                                                                         entry.getKey()));
-                      }
+                              throw new IllegalStateException("Tag %d is pinned to both %s and %s".formatted(entry.getValue(),
+                                                                                                             previousName,
+                                                                                                             entry.getKey()));
+                          }
                       });
     }
 
@@ -748,6 +748,11 @@ public interface SystemTags {
         pin(table, 2207, "org.pragmatica.aether.worker.metrics.ArrivalCounts");
         pin(table, 2208, "org.pragmatica.aether.worker.metrics.CapacitySample");
         pin(table, 2209, "org.pragmatica.aether.worker.metrics.CapacityQuality");
+        // rc6 §3.1 (lane f1): the per-source slice capacity requirement. 2207..2209 went to rc6 f3a; every origin branch
+        // tops out at 2209 (scanned 2026-11-05), so these take 2210..2212.
+        pin(table, 2210, "org.pragmatica.aether.slice.kvstore.AetherKey.SliceRequirementKey");
+        pin(table, 2211, "org.pragmatica.aether.slice.kvstore.AetherValue.SliceRequirementValue");
+        pin(table, 2212, "org.pragmatica.aether.slice.kvstore.AetherValue.RequirementKind");
         // rc6 f2a: the workflow run and its conflict-key claims (spec §4.2, §4.3). 2207..2212 are taken by the rc6 f3a and f1 lanes
         // (open, unpushed when this was written on 2026-11-05; origin showed nothing above 2209), so these take 2220..2224 and leave
         // the gap to the other rc6 lanes.
@@ -756,7 +761,12 @@ public interface SystemTags {
         pin(table, 2222, "org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowState");
         pin(table, 2223, "org.pragmatica.aether.slice.kvstore.AetherKey.WorkflowClaimKey");
         pin(table, 2224, "org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowClaimValue");
-        // ---- 2225..16383 RESERVED ----
+        // rc6 f1 (#2713, CTO ruling "AB witness option A"): the per-slice index of live A/B tests the requirement combiner witnesses.
+        // 2225 and up were free at the rc5 tip f43a86ac9d, every open PR head (#2803 rc6/f2b, #2810, #2812, #2809, #2770) and every
+        // origin rc6/* branch, F5c included (scanned 2026-11-06), so these take 2225..2226.
+        pin(table, 2225, "org.pragmatica.aether.slice.kvstore.AetherKey.AbTestBaseKey");
+        pin(table, 2226, "org.pragmatica.aether.slice.kvstore.AetherValue.AbTestBaseValue");
+        // ---- 2227..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

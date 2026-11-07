@@ -143,7 +143,10 @@ public sealed interface ManagementApiResponses {
                       long communityTerm,
                       long announcedAt) {}
 
-    record ScaleResponse(String status, String artifact, int instances) {}
+    /// rc6 §3.1: `instances` is the operator requirement written (0 when `status` is `released`); `target` is the count every
+    /// committed requirement of the slice combines to, which exceeds `instances` when the autoscaler's requirement is higher. The leader
+    /// further bounds the committed target to the cluster's placeable capacity.
+    record ScaleResponse(String status, String artifact, int instances, int target) {}
 
     /// #759 review (C1, C2) — this response is a PUBLISH-TIME SNAPSHOT: `SliceRoutes.deployStatus`
     /// computes it the instant `publishFromArtifact` commits the blueprint, before any node has

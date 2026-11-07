@@ -250,7 +250,7 @@ class UnreachableClusterExitTest {
         var run = runAgainst(scripted(200, "{\"status\":\"ok\"}"), "scale", "com.example:foo", "-n", "3");
 
         assertThat(run.exit).as("exit code; " + run.streams()).isEqualTo(ExitCode.SUCCESS);
-        assertThat(run.out).contains("Scaled com.example:foo to 3 instances");
+        assertThat(run.out).contains("Set the operator instance requirement of com.example:foo to 3");
         assertThat(run.err).isEmpty();
     }
 

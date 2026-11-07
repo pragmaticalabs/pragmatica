@@ -198,6 +198,17 @@ public enum OperatorWarningCode {
                                "deployment",
                                WarningLevel.INFO,
                                SLICE_START_AWAITING_TARGET),
+    /// A slice's committed target asks for more instances than its placement audience has eligible nodes (v2713 item 1). One node
+    /// hosts at most one instance of an artifact, so the excess stays unplaced: the leader places one instance per eligible node and
+    /// re-attempts the rest on every reconcile tick. The subject is the artifact; raised again only when the target or the eligible
+    /// node count changes. Closed by [#SLICE_TARGET_PLACEMENT_RESTORED].
+    SLICE_TARGET_EXCEEDS_PLACEMENT("slice-target-exceeds-placement", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#SLICE_TARGET_EXCEEDS_PLACEMENT], same subject: the target fits the eligible nodes again (nodes joined, or the
+    /// target fell), or the slice is no longer desired. The message says which. Raised only when the warning was.
+    SLICE_TARGET_PLACEMENT_RESTORED("slice-target-placement-restored",
+                                    "deployment",
+                                    WarningLevel.INFO,
+                                    SLICE_TARGET_EXCEEDS_PLACEMENT),
     /// A node replacement (#1543) was committed: a fresh-id node is taking over from the subject (the ORIGINAL node). Raised once,
     /// when the record is first committed. Closed by [#NODE_REPLACEMENT_COMPLETED] or [#NODE_REPLACEMENT_ROLLED_BACK].
     NODE_REPLACEMENT_STARTED("node-replacement-started", "replacement", WarningLevel.INFO),

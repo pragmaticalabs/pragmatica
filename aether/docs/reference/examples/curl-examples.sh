@@ -84,7 +84,6 @@ curl -s -X POST "${AUTH_HEADER[@]}" "$BASE_URL/api/v1/deploy" \
   -d '{
     "blueprint": "org.example:my-slice:2.0.0",
     "strategy": "ROLLING",
-    "instances": 3,
     "thresholds": {"maxErrorRate": 0.01, "maxLatencyMs": 500},
     "cleanupPolicy": "GRACE_PERIOD"
   }' | jq .

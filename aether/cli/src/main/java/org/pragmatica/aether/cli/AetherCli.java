@@ -1324,7 +1324,9 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "scale", description = "Scale a deployed slice")
+    /// rc6 §3.1: `aether scale` sets the slice's OPERATOR requirement, a floor the combiner composes with the autoscaler's
+    /// requirement (the target is the max of them), and `--release` removes it.
+    @Command(name = "scale", description = "Set (or with --release remove) the operator's instance requirement of a deployed slice")
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01"})
     static class ScaleCommand implements Callable<Integer> {
         private static final int POLL_INTERVAL_MS = 2000;
@@ -1335,8 +1337,11 @@ public class AetherCli implements Runnable {
         @Parameters(index = "0", description = "Artifact coordinates (group:artifact:version)")
         private String artifact;
 
-        @CommandLine.Option(names = {"-n", "--instances"}, description = "Target number of instances", required = true)
-        private int instances;
+        @CommandLine.Option(names = {"-n", "--instances"}, description = "Operator instance requirement: the slice runs at least this many while the requirement holds")
+        private Integer instances;
+
+        @CommandLine.Option(names = "--release", description = "Remove the operator instance requirement; the slice keeps its count until the autoscaler's requirement falls")
+        private boolean release;
 
         @CommandLine.Option(names = {"-p", "--placement"}, description = "Placement strategy: CORE_ONLY, WORKER_PREFERRED, WORKER_ONLY")
         private String placement;
@@ -1349,17 +1354,29 @@ public class AetherCli implements Runnable {
 
         @Override
         public Integer call() {
+            if (release == (instances != null)) {
+                System.err.println("Specify exactly one of --instances <n> or --release");
+
+                return ExitCode.ERROR;
+            }
+
             var body = buildScaleBody();
             var response = parent.post(SLICE_SCALE, body);
-            var result = OutputFormatter.printAction(response,
-                                                     parent.outputOptions(),
-                                                     "Scaled " + artifact + " to " + instances + " instances");
+            var result = OutputFormatter.printAction(response, parent.outputOptions(), actionMessage());
 
-            if (result != ExitCode.SUCCESS || !waitForCompletion) {
+            if (result != ExitCode.SUCCESS || !waitForCompletion || release) {
                 return result;
             }
 
             return pollUntilScaled();
+        }
+
+        private String actionMessage() {
+            return release
+                   ? "Released the operator instance requirement of " + artifact
+                   : "Set the operator instance requirement of " + artifact
+                    + " to " + instances
+                    + " (the resulting target is in the response)";
         }
 
         @SuppressWarnings("JBCT-EX-01")
@@ -1407,9 +1424,13 @@ public class AetherCli implements Runnable {
         }
 
         private String buildScaleBody() {
-            var sb = new StringBuilder("{\"artifact\":\"").append(escapeJsonValue(artifact))
-                                                          .append("\",\"instances\":")
-                                                          .append(instances);
+            var sb = new StringBuilder("{\"artifact\":\"").append(escapeJsonValue(artifact)).append("\"");
+
+            if (release) {
+                sb.append(",\"release\":true");
+            } else {
+                sb.append(",\"instances\":").append(instances);
+            }
 
             if (placement != null) {
                 sb.append(",\"placement\":\"").append(escapeJsonValue(placement)).append("\"");

@@ -157,13 +157,14 @@ class AetherClient:
 
     # Deployments
     def start_deployment(self, blueprint: str, strategy: str = "ROLLING",
-                         instances: int = 1, **kwargs) -> dict:
+                         **kwargs) -> dict:
         """Start a deployment. `blueprint` is full artifact coordinates
-        (group:artifact:version), e.g. "org.example:my-slice:2.0.0"."""
+        (group:artifact:version), e.g. "org.example:my-slice:2.0.0".
+        The deployment keeps the slice's committed instance count; set a
+        count with the scale endpoint (an operator requirement)."""
         data = {
             "blueprint": blueprint,
             "strategy": strategy,
-            "instances": instances,
             **kwargs
         }
         return self._post("/api/v1/deploy", data)

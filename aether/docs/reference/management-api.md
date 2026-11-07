@@ -518,6 +518,8 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `entity-ownership-unsettled-mint` (WARNING — the leader minted a durable-entity keyspace's first ownership records over a hosting set that kept changing for the first-mint ceiling (6 tick intervals of time, 30 s); `subject` is the keyspace, the message gives the number of set changes seen. Owners may move once the set settles, each move opening a transient not-held window for that arc; nothing to clear, the state ends when the set has been quiet for 2 tick intervals (10 s), issue #1734)
 - `slice-start-awaiting-target` (WARNING — a LOAD, ACTIVATE or ACTIVE claim this node refused for want of a committed `SliceTarget` has stayed parked for 2 minutes on the node's clock; the park is untouched and is re-driven when the target arrives, issue #1109; `subject` is `<artifact>@<node>`)
 - `slice-start-deferral-ended` (INFO — the recovery: the target arrived, or the parked entry was superseded, removed or dropped as stale; raised only for a subject whose `slice-start-awaiting-target` was raised)
+- `slice-target-exceeds-placement` (WARNING — a slice's committed target asks for more instances than its placement audience (core nodes, or the workers its placement selects) has eligible nodes; one node hosts at most one instance of an artifact, so the leader places one instance per eligible node and the rest stay unplaced, re-attempted on every reconcile tick; since rc6 the requirement combiner does not clamp the target to the cluster (spec §3.1); `subject` is the artifact, raised again only when the target or the eligible node count changes; clear it by adding nodes to the audience, or by releasing the requirement that holds the target up (`aether scale --release`) and letting the autoscaler's requirement fall)
+- `slice-target-placement-restored` (INFO — the recovery: the target fits the eligible nodes again, or the slice is no longer desired; the message says which; raised only for a subject whose `slice-target-exceeds-placement` was raised)
 - `consensus-restore-refused` (CRITICAL — a node failed to restore responder consensus snapshots in three consecutive rounds, whatever the responder, phase or digest; raised once per run of failures; a snapshot is refused as a whole and never partially decoded; a snapshot that failed three times is no longer selected, and no snapshot below its phase is adopted; with no other candidate the node stays out of service in sync with no automatic exit; `subject` is the refusing node, the message names the latest responder, phase, digest and cause; repair or replace the responder's state, or replace the node, issue #2316)
 - `consensus-restore-recovered` (INFO — the recovery: the node restored a readable snapshot; published only after a published `consensus-restore-refused` for the same `subject`)
 - `observer-consensus-lagging` (WARNING — an observer, a node outside the voter roster such as an auto-heal replacement still joining, stopped applying consensus decisions while it catches up or after it lost sight of the quorum; it is not a voter, so this is not a quorum loss and no `QUORUM_LOST` is raised; routing on that node is quiesced until it observes again; `subject` is the node, issue #2306)
@@ -859,9 +861,23 @@ These are the same lifecycle facts surfaced as response headers on a served requ
 
 ### POST /api/v1/scale
 
-Scale a blueprint-deployed slice to a new instance count. The slice must be part of an active blueprint.
+Set, or release, the operator's instance requirement of a blueprint-deployed slice. The slice must be part of an active
+blueprint.
 
-**Request:**
+The operator requirement is a floor. The leader combines it with the slice's other requirements (the autoscaler's, and the
+blueprint's `minAvailable`) into the target: `clamp(max(minAvailable, every unexpired requirement), 3, maxInstances)`.
+Placeable capacity does not bound it yet (spec §3.1); a target above what the slice's placement audience can place is reported
+by the leader as the `slice-target-exceeds-placement` operator warning, and the excess instances stay unplaced until nodes join.
+
+A release, or a lower `instances`, releases the operator's claim without scaling the slice down: the same write re-bases the
+autoscaler's requirement to the committed count, so the target holds until the autoscaler's requirement falls under its own
+cooldown [mechanism: the requirement write and the re-base commit in one leader transaction]. Only the autoscaler's requirement
+falling scales a slice down. The leader is the only writer of the target's instance count, so the operator and the autoscaler never
+overwrite each other's value [mechanism: each source commits its own requirement record; the leader's combiner writes the
+target as a compare-and-set on the target value it read]. When a slice has no target yet, this request creates it at
+`instances`, as before.
+
+**Request (set):**
 ```json
 {
   "artifact": "org.example:my-slice:1.0.0",
@@ -870,20 +886,39 @@ Scale a blueprint-deployed slice to a new instance count. The slice must be part
 }
 ```
 
+**Request (release):**
+```json
+{
+  "artifact": "org.example:my-slice:1.0.0",
+  "release": true
+}
+```
+
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `artifact` | string | Yes | Full artifact coordinates (group:artifact:version) |
-| `instances` | integer | Yes | Target number of instances. At least 3 (#1495: the floor holds at runtime, not only when a blueprint is declared), and at least the slice's `minAvailable`; fewer answers `400` |
-| `placement` | string | No | Placement strategy: `CORE_ONLY` (default), `WORKER_PREFERRED`, `WORKER_ONLY`. When omitted, preserves existing placement or defaults to `CORE_ONLY` for new targets. |
+| `instances` | integer | Unless `release` | The operator requirement. At least 3 (#1495: the floor holds at runtime, not only when a blueprint is declared), at least the slice's `minAvailable`, and at most its `maxInstances`; anything else answers `400` |
+| `placement` | string | No | Placement strategy: `CORE_ONLY` (default), `WORKER_PREFERRED`, `WORKER_ONLY`. When omitted, preserves existing placement or defaults to `CORE_ONLY` for new targets. Not allowed with `release` |
+| `release` | boolean | No | `true` removes the operator requirement. Takes neither `instances` nor `placement` (`400`). Releasing when no operator requirement is committed succeeds and writes nothing |
 
 **Response:**
 ```json
 {
   "status": "scaled",
   "artifact": "org.example:my-slice:1.0.0",
-  "instances": 5
+  "instances": 5,
+  "target": 7
 }
 ```
+
+`instances` is the operator requirement written (`0` when `status` is `released`). `target` is the count the committed
+requirements combine to at response time. It exceeds `instances` while the autoscaler's requirement is higher. It is
+computed without placeable capacity, as the leader computes it. The leader commits the target asynchronously after the
+response. Clock caveat: an expiring requirement is judged on the clock of the node that handled the request, not on the
+leader's, so a term expiring within the clock skew of the two nodes can be counted in `target` and not in the committed
+target, or the reverse.
+
+**Error `400` (above the slice's `maxInstances`):** `Requested 12 instances but the slice's maxInstances is 10`.
 
 **Error (slice not in any blueprint):**
 ```json
@@ -2973,7 +3008,6 @@ Start a new deployment. Requires leader node.
   "artifactBase": "org.example:my-slice",
   "version": "2.0.0",
   "strategy": "ROLLING",
-  "instances": 3,
   "maxErrorRate": 0.01,
   "maxLatencyMs": 500,
   "requireManualApproval": false,
@@ -2986,7 +3020,7 @@ Start a new deployment. Requires leader node.
 | `artifactBase` | string | Yes | Artifact coordinates (group:artifact) |
 | `version` | string | Yes | Target version |
 | `strategy` | string | No | `IMMEDIATE` (default), `CANARY`, `BLUE_GREEN`, `ROLLING` |
-| `instances` | integer | No | Number of new version instances (default: 3). Values below 3 are refused with `400` — the rollout writes this count onto every slice of the blueprint, so it carries the blueprint floor (#1495) |
+| `instances` | integer | No | **Refused with `400` when present** (since rc6). A deployment runs over the slice's committed target, and the leader's requirement combiner owns that target's instance count, so a requested count would be ignored. Set a count with [`POST /api/v1/scale`](#post-apiv1scale) (an operator requirement). A slice of the blueprint that has no target yet is created at 3 (#1495) |
 | `maxErrorRate` | float | No | Max error rate threshold (default: 0.01) |
 | `maxLatencyMs` | integer | No | Max latency threshold in ms (default: 500) |
 | `requireManualApproval` | boolean | No | Require manual approval (default: false) |

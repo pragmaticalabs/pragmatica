@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -41,7 +42,10 @@ import org.pragmatica.cluster.state.kvstore.VersionFenced;
 import org.pragmatica.cluster.state.kvstore.WitnessedRemoval;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Codec;
 import org.pragmatica.serialization.CodecFor;
 
@@ -399,6 +403,56 @@ public sealed interface AetherValue {
                                         maxInstances,
                                         scaleUpThreshold,
                                         scaleDownThreshold);
+        }
+    }
+
+    /// rc6 §3.1: the source of a slice capacity requirement. Each source writes only its own [AetherKey.SliceRequirementKey].
+    /// `REACTIVE` (the autoscaler) and `OPERATOR` (`aether scale`) have writers; `SCHEDULED`, `CAMPAIGN`, `PREDICTIVE` and `RECOVERY`
+    /// are defined for the sources that follow and have no writer yet. The declaration order is the combiner's tie-break order.
+    @Codec
+    enum RequirementKind {
+        REACTIVE,
+        OPERATOR,
+        SCHEDULED,
+        CAMPAIGN,
+        PREDICTIVE,
+        RECOVERY,
+        /// Wire sentinel (#964): an ordinal this node cannot name decodes here. It names no requirement source: it is never written,
+        /// never parsed from a key string, and never read by the combiner, which iterates [#sources()].
+        /// Must stay LAST.
+        UNKNOWN;
+        private static final Fn1<Cause, String> UNKNOWN_KIND = Causes.forOneValue("Unknown slice requirement kind: %s");
+        /// The kinds that name a requirement source, in tie-break order: every constant but the wire sentinel.
+        public static List<RequirementKind> sources() {
+            return Stream.of(values())
+                         .filter(kind -> kind != UNKNOWN)
+                         .toList();
+        }
+        public static Result<RequirementKind> requirementKind(String name) {
+            return sources().stream()
+                          .filter(kind -> kind.name()
+                                              .equals(name))
+                          .findFirst()
+                          .map(Result::success)
+                          .orElseGet(() -> UNKNOWN_KIND.apply(name).result());
+        }
+    }
+
+    /// rc6 §3.1: one committed capacity requirement of a slice: the instance count its source asks for, why, until when (an
+    /// absent expiry never expires), and the store revision the source computed it against (diagnostic; the combiner's write is
+    /// fenced on the target value itself). The combiner takes the max of every unexpired requirement; it never sums them.
+    record SliceRequirementValue(int instances, String reason, Option<Long> expiresAt, long baseTargetRevision) implements AetherValue {
+        public static SliceRequirementValue sliceRequirementValue(int instances,
+                                                                  String reason,
+                                                                  Option<Long> expiresAt,
+                                                                  long baseTargetRevision) {
+            return new SliceRequirementValue(instances, reason, expiresAt, baseTargetRevision);
+        }
+
+        /// Whether the requirement still claims capacity at `nowMs`: it has no expiry, or its expiry is later than `nowMs`.
+        public boolean unexpiredAt(long nowMs) {
+            return expiresAt.map(expiry -> nowMs < expiry)
+                            .or(true);
         }
     }
 
@@ -2515,6 +2569,32 @@ public sealed interface AetherValue {
                                    blueprintId,
                                    createdAt,
                                    updatedAt);
+        }
+
+        /// Whether the test runs a canary on the slice's target: its variants are being deployed, it is active, or it is being rolled
+        /// back (scaling up a variant that is being rolled back is the wrong direction). The canary runs at the fixed variant count
+        /// (#1721), so the requirement combiner and the autoscaler hold that slice while this is true (v2713 item 7).
+        /// `CONCLUDING` is deliberately outside the hold: a refused conclude can leave the test there indefinitely, which must not
+        /// freeze scaling. Known limit: the combiner may write the combined count onto the variant in that window, and the conclude
+        /// write then resets it to the floor (the count flaps, then converges).
+        public boolean runsCanary() {
+            return "DEPLOYING_VARIANTS".equals(state) || "ACTIVE".equals(state) || "ROLLING_BACK".equals(state);
+        }
+
+        /// Whether the test has not ended: every state but `COMPLETED`, `ROLLED_BACK` and `FAILED`, an unknown one included, so a state
+        /// this node cannot name stays in the base's [AbTestBaseValue] rather than leaving it.
+        public boolean isLive() {
+            return ! ("COMPLETED".equals(state) || "ROLLED_BACK".equals(state) || "FAILED".equals(state));
+        }
+    }
+
+    /// #2713: the live A/B tests of one slice ([AetherKey.AbTestBaseKey]), each as `testId=STATE`, sorted by test id and joined with
+    /// `,`. It is a pure function of the base's committed [AbTestValue]s, so it changes on every write that creates a live test, moves
+    /// one to another state or ends one, and the requirement combiner's witness on it refuses a combination read before such a write.
+    /// The entry is removed when the base's last live test ends.
+    record AbTestBaseValue(String liveTests) implements AetherValue {
+        public static AbTestBaseValue abTestBaseValue(String liveTests) {
+            return new AbTestBaseValue(liveTests);
         }
     }
 

@@ -97,6 +97,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
+import org.pragmatica.aether.slice.kvstore.SliceRequirements;
 import org.pragmatica.aether.slice.kvstore.SliceTargetFence;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -323,6 +324,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
         AwaitedTargetWatch awaitedTargetWatch() {
             return new AwaitedTargetWatch(this);
+        }
+
+        PlacementShortfallWatch placementShortfallWatch() {
+            return new PlacementShortfallWatch(this);
         }
 
         StaleEntryCleaner staleEntryCleaner() {
@@ -2129,10 +2134,22 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                                           ArtifactBase base) {
             var key = SliceTargetKey.sliceTargetKey(base);
 
-            return removableTarget(removed, base).map(committed -> new KVCommand.Mutation<AetherKey, AetherValue>(key,
-                                                                                                                  Option.some(committed),
-                                                                                                                  Option.none()))
-                                  .stream();
+            return removableTarget(removed, base).stream()
+                                  .flatMap(committed -> Stream.concat(Stream.of(new KVCommand.Mutation<AetherKey, AetherValue>(key,
+                                                                                                                               Option.some(committed),
+                                                                                                                               Option.none())),
+                                                                      SliceRequirements.requirementRemovals(ctx.kvStore(),
+                                                                                                            base)
+                                                                                       .stream()));
+        }
+
+        /// v2713 item 3: the removal of every committed requirement of `base`, for a writer removing `base`'s target with plain
+        /// removes, so the requirements leave with the target in the same batch and a re-apply never inherits them.
+        private Stream<KVCommand<AetherKey>> requirementRemoveCommands(ArtifactBase base) {
+            return SliceRequirements.requirementRemovals(ctx.kvStore(),
+                                                         base)
+                                    .stream()
+                                    .map(removal -> new KVCommand.Remove<AetherKey>(removal.key()));
         }
 
         /// The committed target of the base unless ANOTHER blueprint owns it. The mirror of a deleted blueprint can still
@@ -3626,6 +3643,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
 
             awaitedTargetWatch().sweep();
+            placementShortfallWatch().sweep();
             log.debug("Performing cluster reconciliation with {} blueprints and {} active nodes",
                       blueprints.size(),
                       activeNodes().size());
@@ -4098,6 +4116,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var consensusCommands = new ArrayList<KVCommand<AetherKey>>();
 
             allSlices.forEach(artifact -> consensusCommands.add(new KVCommand.Remove<>(SliceTargetKey.sliceTargetKey(artifact.base()))));
+            allSlices.stream()
+                     .map(Artifact::base)
+                     .distinct()
+                     .flatMap(this::requirementRemoveCommands)
+                     .forEach(consensusCommands::add);
             consensusCommands.add(new KVCommand.Remove<>(AppBlueprintKey.appBlueprintKey(inflight.id())));
             consensusCommands.add(failedOutcomeCommand(inflight, allSlices, cause));
 
@@ -4424,6 +4447,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
 
             abandoned.forEach(artifact -> commands.add(new KVCommand.Remove<>(SliceTargetKey.sliceTargetKey(artifact.base()))));
+            abandoned.stream()
+                     .map(Artifact::base)
+                     .distinct()
+                     .flatMap(this::requirementRemoveCommands)
+                     .forEach(commands::add);
             commands.add(rolledBackOutcomeCommand(inflight, cause));
 
             return commands;

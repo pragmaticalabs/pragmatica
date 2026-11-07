@@ -81,6 +81,44 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// rc6 §3.1: one capacity-requirement record of a slice, per requirement source. Each source writes only its own key, so the
+    /// autoscaler (`REACTIVE`) and the operator (`OPERATOR`) never contend on one record; the combiner reads every kind of a base and
+    /// is the only writer of the base's [SliceTargetKey] count. Cluster state: an operator's floor survives a cold restart.
+    record SliceRequirementKey(ArtifactBase artifactBase, AetherValue.RequirementKind kind) implements ClusterStateKey {
+        private static final String PREFIX = "slice-requirement/";
+
+        @Override
+        public String asString() {
+            return PREFIX + kind.name() + "/" + artifactBase.asString();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static SliceRequirementKey sliceRequirementKey(ArtifactBase artifactBase,
+                                                              AetherValue.RequirementKind kind) {
+            return new SliceRequirementKey(artifactBase, kind);
+        }
+
+        public static Result<SliceRequirementKey> sliceRequirementKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return SLICE_REQUIREMENT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var rest = key.substring(PREFIX.length());
+            var separator = rest.indexOf('/');
+
+            if (separator <= 0) {
+                return SLICE_REQUIREMENT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return AetherValue.RequirementKind.requirementKind(rest.substring(0, separator)).flatMap(kind -> ArtifactBase.artifactBase(rest.substring(separator + 1)).map(base -> new SliceRequirementKey(base,
+                                                                                                                                                                                                          kind)));
+        }
+    }
+
     /// The versions of one artifact in the built-in artifact store (#1778): a grow-only set whose entries carry
     /// the archived flag, kept in consensus so concurrent publishes are folded by the applier instead of racing
     /// as a read-modify-write on the DHT. The artifact bytes and per-version metadata stay in the DHT. Backed up
@@ -1421,6 +1459,35 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// #2713: the per-slice index of the live A/B tests of one [ArtifactBase]. Written in the SAME transaction as every [AbTestKey]
+    /// write of a test of the base, so the requirement combiner can witness every A/B change of the base, a test created after its read
+    /// included, with one point witness ([AetherValue.AbTestBaseValue]). Absent while the base has no live test.
+    record AbTestBaseKey(ArtifactBase artifactBase) implements ClusterStateKey {
+        private static final String PREFIX = "ab-test-base/";
+
+        @Override
+        public String asString() {
+            return PREFIX + artifactBase.asString();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static AbTestBaseKey abTestBaseKey(ArtifactBase artifactBase) {
+            return new AbTestBaseKey(artifactBase);
+        }
+
+        public static Result<AbTestBaseKey> abTestBaseKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return AB_TEST_BASE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return ArtifactBase.artifactBase(key.substring(PREFIX.length())).map(AbTestBaseKey::new);
+        }
+    }
+
     record NodeArtifactKey(NodeId nodeId, Artifact artifact) implements RuntimeKey {
         private static final String PREFIX = "node-artifact/";
 
@@ -1727,6 +1794,8 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
 
     Fn1<Cause, String> SLICE_TARGET_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice-target key format: %s");
 
+    Fn1<Cause, String> SLICE_REQUIREMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice-requirement key format: %s");
+
     Fn1<Cause, String> ARTIFACT_CONTENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid artifact-content key format: %s");
 
     Fn1<Cause, String> ARTIFACT_VERSIONS_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid artifact-versions key format: %s");
@@ -1767,6 +1836,7 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     Fn1<Cause, String> SCHEMA_MIGRATION_LOCK_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid schema-lock key format: %s");
 
     Fn1<Cause, String> AB_TEST_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid ab-test key format: %s");
+    Fn1<Cause, String> AB_TEST_BASE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid ab-test-base key format: %s");
 
     Fn1<Cause, String> CLUSTER_CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid cluster-config key format: %s");
 

@@ -21,6 +21,10 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.ArtifactBase;
+import org.pragmatica.aether.slice.kvstore.AetherValue.RequirementKind;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceRequirementValue;
+import org.pragmatica.aether.slice.kvstore.SliceRequirements;
 import org.pragmatica.aether.controller.ClusterController;
 import org.pragmatica.aether.controller.ClusterController.BlueprintChange;
 import org.pragmatica.aether.controller.ClusterController.ControlDecisions;
@@ -103,6 +107,7 @@ class ControlLoopOwnerPreservationTest {
         cluster = new CapturingClusterNode();
         controlLoop = buildControlLoop(scaleUpBy(2));
         ctx = ((ControlLoop.ControlLoopAdapter) controlLoop).ctx();
+        cluster.combineOver(_ -> ctx.observedTarget(SLICE));
         ctx.setTopology(List.of(SELF,
                                 WORKER,
                                 NodeId.nodeId("n3").unwrap(),
@@ -330,13 +335,41 @@ class ControlLoopOwnerPreservationTest {
         return ScalingConfig.scalingConfig(WINDOW, 5_000L, 1.5, 0.5, weights).unwrap();
     }
 
+    /// Captures every write. rc6 §3.1: the autoscaler writes its REACTIVE requirement, and the leader's combiner derives the target
+    /// from it. [#sliceTargets] therefore lists, in emission order, each target written directly and, for each REACTIVE requirement,
+    /// the target the combiner commits for it over the slice's observed target ([SliceRequirements#combine], then `withInstances`,
+    /// exactly as `SliceRequirements.combinerTransaction` builds it), so these tests keep pinning what the cluster ends up with.
     static final class CapturingClusterNode implements ClusterNode<KVCommand<AetherKey>> {
         private final List<KVCommand<AetherKey>> commands = new ArrayList<>();
+        private final List<SliceTargetValue> targets = new ArrayList<>();
+        private Function<ArtifactBase, Option<SliceTargetValue>> observed = _ -> Option.none();
+
+        /// The registration the combined target is derived from, read at emission time.
+        void combineOver(Function<ArtifactBase, Option<SliceTargetValue>> observedTarget) {
+            observed = observedTarget;
+        }
 
         List<SliceTargetValue> sliceTargets() {
-            return commands.stream()
-                           .flatMap(FencedTargetWrites::targetValues)
-                           .toList();
+            return List.copyOf(targets);
+        }
+
+        List<KVCommand<AetherKey>> commands() {
+            return List.copyOf(commands);
+        }
+
+        private void capture(KVCommand<AetherKey> command) {
+            commands.add(command);
+            FencedTargetWrites.targetValues(command).forEach(targets::add);
+            FencedTargetWrites.reactiveRequirements(command)
+                              .forEach(entry -> observed.apply(entry.getKey())
+                                                        .onPresent(target -> targets.add(combined(target, entry.getValue()))));
+        }
+
+        private static SliceTargetValue combined(SliceTargetValue target, SliceRequirementValue reactive) {
+            var requirements = List.of(new SliceRequirements.Requirement(RequirementKind.REACTIVE, reactive));
+
+            return target.withInstances(SliceRequirements.combine(target, requirements, 0L, Integer.MAX_VALUE)
+                                                         .or(target.targetInstances()));
         }
 
         @Override public NodeId self() {return SELF;}
@@ -350,7 +383,7 @@ class ControlLoopOwnerPreservationTest {
         @Override
         @SuppressWarnings("unchecked")
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> toApply) {
-            commands.addAll(toApply);
+            toApply.forEach(this::capture);
 
             return (Promise<List<R>>) (Promise<?>) Promise.success(FencedTargetWrites.acceptedResults(toApply));
         }

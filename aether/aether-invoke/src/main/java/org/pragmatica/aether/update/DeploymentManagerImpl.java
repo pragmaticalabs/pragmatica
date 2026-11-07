@@ -316,15 +316,15 @@ final class DeploymentManagerImpl implements DeploymentManager {
         return targetWrite(SliceTargetKey.sliceTargetKey(base), deployment, deployment.newVersion());
     }
 
-    /// The write of the base's target at `version` and the deployment's instance count: over the committed target, or, when none is
-    /// committed, a create witnessed by the deployment's blueprint ([SliceTargetFence#createWrite]).
+    /// The write of the base's target at `version`: over the committed target, carrying its committed count (rc6 §3.1: after a target's
+    /// creation the requirement combiner is the only writer of `targetInstances`), or, when none is committed, a create at the
+    /// deployment's instance count witnessed by the deployment's blueprint ([SliceTargetFence#createWrite]).
     private Result<TargetWrite> targetWrite(SliceTargetKey key, Deployment deployment, Version version) {
         return SliceTargetFence.committedTarget(kvStore, key).fold(() -> createTargetWrite(key, deployment, version),
                                                                    read -> SliceTargetFence.targetWrite(kvStore,
                                                                                                         key,
                                                                                                         Option.some(read),
-                                                                                                        read.withVersion(version)
-                                                                                                            .withInstances(deployment.newInstances())));
+                                                                                                        read.withVersion(version)));
     }
 
     private Result<TargetWrite> createTargetWrite(SliceTargetKey key, Deployment deployment, Version version) {

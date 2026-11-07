@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -13,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.function.Predicate;
 
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
@@ -63,7 +63,8 @@ final class FsmHarness {
     final Settings settings;
     final KVStore<AetherKey, AetherValue> store;
     final MessageRouter.MutableRouter router = MessageRouter.mutable();
-    final ArrayDeque<ClusterInput> mailbox = new ArrayDeque<>();
+    /// Concurrent: a real control loop wired to the store (OrphanBackstopTest) notifies from its scheduler thread.
+    final ConcurrentLinkedDeque<ClusterInput> mailbox = new ConcurrentLinkedDeque<>();
 
     final PriorityQueue<Due> timers = new PriorityQueue<>(Comparator.comparingLong(Due::atNs).thenComparingLong(Due::order));
 

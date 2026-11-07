@@ -31,10 +31,13 @@ import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceRequirementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.RequirementKind;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceRequirementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -200,6 +203,33 @@ class SliceTargetOrderingTest {
         cluster.commitAllInSubmissionOrder();
 
         assertThat(holdsTarget(store)).as("the deleted blueprint's target is removed").isFalse();
+    }
+
+    /// v2713 item 3, probe P2: a blueprint delete removes the slice's requirement records in the same transaction as its target, so a
+    /// re-apply of the blueprint does not inherit the deleted deployment's operator floor of 8; it starts from its own count.
+    @Test
+    void deleteThenReapply_requirementsLeaveWithTheTarget_reapplyInheritsNoFloor() {
+        var operator = SliceRequirementKey.sliceRequirementKey(V1.base(), RequirementKind.OPERATOR);
+
+        publish(blueprintOf(V1, "attempt-1"));
+        cluster.commitAllInSubmissionOrder();
+        store.process(store.createBatch(List.<KVCommand<AetherKey>> of(new KVCommand.Put<>(operator,
+                                                                                            SliceRequirementValue.sliceRequirementValue(8,
+                                                                                                                                        "aether scale",
+                                                                                                                                        Option.none(),
+                                                                                                                                        0L)))));
+
+        delete();
+        cluster.commitAllInSubmissionOrder();
+
+        assertThat(holdsTarget(store)).as("the deleted blueprint's target is removed").isFalse();
+        assertThat(store.get(operator).isEmpty()).as("the operator requirement leaves with the target").isTrue();
+
+        publish(blueprintOf(V1, "attempt-2"));
+        cluster.commitAllInSubmissionOrder();
+
+        assertThat(holdsTarget(store)).as("control: the re-apply committed its target").isTrue();
+        assertThat(store.get(operator).isEmpty()).as("the re-apply inherits no operator floor").isTrue();
     }
 
     /// Two versions of one slice base owned by the deleted blueprint (a rollout in the mirror) are ONE target key: the removal
