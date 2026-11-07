@@ -93,7 +93,8 @@ public sealed interface Strays {
     /// D.6 row 20: the observed row of a condemned stray disappeared. The row going is both the remediation completing and the subject
     /// leaving the model (the node's departure removes its rows through C17b the same way).
     static ClusterModel onRowGone(ClusterModel m, Ctx ctx, SlicePair pair) {
-        return Idx.members(m.strayWarned, pair.artifact())
+        return Idx.members(m.strayWarned,
+                           pair.artifact())
                   .contains(pair.node())
                ? strayGone(m, ctx, pair)
                : m;

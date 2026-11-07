@@ -694,8 +694,7 @@ public sealed interface Outbox {
     /// R-CF.17 parity: a refused WORKER assignment is counted per worker (`Directory.assignmentRefused`). One that gave up on a worker is
     /// not resubmitted (LEGACY does not retry past its bound); the reconcile re-derives the other workers' pending joins.
     private static ClusterModel rederiveAssignment(ClusterModel m, Ctx ctx, TxDraft draft) {
-        return Directory.assignmentRefused(m, ctx, draft)
-                        .isEmpty()
+        return Directory.assignmentRefused(m, ctx, draft).isEmpty()
                ? rederiveByPair(m, ctx, draft)
                : Reconcile.request(m, ctx);
     }

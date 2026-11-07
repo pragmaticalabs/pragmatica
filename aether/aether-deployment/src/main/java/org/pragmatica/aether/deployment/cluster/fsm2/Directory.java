@@ -107,8 +107,7 @@ public sealed interface Directory {
 
     private static ClusterModel countRefusal(ClusterModel m, NodeId node) {
         m.assignmentRefusals = m.assignmentRefusals.put(node,
-                                                        m.assignmentRefusals.get(node)
-                                                                            .or(0) + 1);
+                                                        m.assignmentRefusals.get(node).or(0) + 1);
 
         return m;
     }
@@ -119,8 +118,9 @@ public sealed interface Directory {
         m.unplacedWarned = m.unplacedWarned.add(node);
         ctx.warn(ASSIGNMENT_UNPLACED,
                  node.id(),
-                 "Worker " + node.id() + " has no community: its assignment changed before commit " + MAX_ASSIGNMENT_ATTEMPTS
-                 + " times in a row. It takes one when it is admitted again");
+                 "Worker " + node.id()
+                + " has no community: its assignment changed before commit " + MAX_ASSIGNMENT_ATTEMPTS
+                + " times in a row. It takes one when it is admitted again");
 
         return m;
     }

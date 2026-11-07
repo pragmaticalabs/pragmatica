@@ -221,7 +221,11 @@ public enum OperatorWarningCode {
     /// D.6 row 6: the recovery of [#DEPARTURE_INFERRED], same subject: the inferred departure was confirmed by retiring the identity (R-2.10).
     /// Closes across nodes (CTO ruling A2 on #2831): the open condition is committed state, so a successor leader raises it only for a
     /// subject whose warning a previous leader raised, and publishes it without holding that warning's open mark.
-    DEPARTURE_INFERRED_CONFIRMED("departure-inferred-confirmed", "deployment", WarningLevel.INFO, DEPARTURE_INFERRED, true),
+    DEPARTURE_INFERRED_CONFIRMED("departure-inferred-confirmed",
+                                 "deployment",
+                                 WarningLevel.INFO,
+                                 DEPARTURE_INFERRED,
+                                 true),
     /// D.6 row 8: the recovery of [#DEPARTURE_INFERRED_SUPPRESSED], same subject: the community's breaker cleared, or the community left the
     /// model.
     DEPARTURE_BREAKER_CLEARED("departure-breaker-cleared",

@@ -95,8 +95,10 @@ public sealed interface Slices {
 
         return Judgments.exclusionEnding(m,
                                          pair.artifact(),
-                                         "The instance of " + pair.artifact() + " on " + pair.node().id()
-                                         + " answered UNLOADED; its exclusion is cleared");
+                                         "The instance of " + pair.artifact()
+                                        + " on " + pair.node()
+                                                       .id()
+                                        + " answered UNLOADED; its exclusion is cleared");
     }
 
     // -- activation (C10a, R-3.3.5) --------------------------------------------------------------------------------
@@ -158,7 +160,9 @@ public sealed interface Slices {
         return Judgments.exclusionEnding(m,
                                          pair.artifact(),
                                          Recoveries.gone(pair.artifact().asString(),
-                                                         "the instance on " + pair.node().id() + " is gone; its exclusion is cleared"));
+                                                         "the instance on " + pair.node()
+                                                                                  .id()
+                                                        + " is gone; its exclusion is cleared"));
     }
 
     /// D.6 rows 15/16: a held pair that leaves the hold other than by its release (it failed, or its instance is gone) leaves the hold,
@@ -185,7 +189,9 @@ public sealed interface Slices {
         m.holdSignatures = m.holdSignatures.remove(pair);
         m.heldByArtifact = Idx.remove(m.heldByArtifact, pair.artifact(), pair.node());
         if (!m.heldByArtifact.containsKey(pair.artifact())) {
-            ctx.warn(Recoveries.SCHEMA_HOLD_CLEARED, pair.artifact().asString(), message);
+            ctx.warn(Recoveries.SCHEMA_HOLD_CLEARED,
+                     pair.artifact().asString(),
+                     message);
         }
 
         return m;

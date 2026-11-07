@@ -545,7 +545,8 @@ public sealed interface Indexer {
                                          artifact,
                                          excluding,
                                          m.exclusionEndReasons.get(artifact)
-                                                              .or(() -> Recoveries.gone(artifact.asString(), "its judgment was removed")));
+                                                              .or(() -> Recoveries.gone(artifact.asString(),
+                                                                                        "its judgment was removed")));
     }
 
     private static ClusterModel unindexExclusions(ClusterModel m, Artifact artifact) {

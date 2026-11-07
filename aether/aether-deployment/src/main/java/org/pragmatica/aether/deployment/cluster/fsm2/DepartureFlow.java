@@ -276,7 +276,8 @@ public sealed interface DepartureFlow {
 
         return Judgments.exclusionEnding(m,
                                          artifact,
-                                         Recoveries.gone(artifact.asString(), "node " + node.id() + " departed; its exclusion is cleared"));
+                                         Recoveries.gone(artifact.asString(),
+                                                         "node " + node.id() + " departed; its exclusion is cleared"));
     }
 
     /// An ADMITTED record committed. If it replaced a DEPARTED(STALE), the wrong recording is reversed (C11f, R-2.16).
