@@ -37,7 +37,7 @@ import static org.pragmatica.lang.Option.option;
 public sealed interface SourceRanking {
     record unused() implements SourceRanking {}
 
-    private record Ranked(Location location, SourceProfile profile) {
+    record Ranked(Location location, SourceProfile profile) {
         static Ranked ranked(Location location, SourceProfile profile) {
             return new Ranked(location, profile);
         }
