@@ -32,8 +32,10 @@ public sealed interface Disposition {
     /// without reading the rest.
     record Aggregate(long maxBytes, Option<BodyBounds> bounds, Runnable release) implements Disposition {}
 
-    /// Hand the body to `sink` as it arrives, up to `maxBytes`, instead of aggregating it: the server never holds more than
-    /// the chunk being accepted. `bounds` replaces the listener's general idle and minimum-rate bounds when present.
+    /// Hand the body to `sink` as it arrives, up to `maxBytes`, instead of aggregating it: reading stops while a chunk is
+    /// being accepted, so the server holds at most what one read already delivered (HTTP/1.1: one socket read; HTTP/3: at
+    /// most the stream's flow-control window). `bounds` replaces the listener's general idle and minimum-rate bounds when
+    /// present.
     ///
     /// A body that crosses `maxBytes` (or a `Content-Length` above it) is answered 413, the sink is aborted with
     /// [BodySink.Ended#TOO_LARGE], and the connection is closed without reading the rest. The sink's terminal call is its
