@@ -1,0 +1,264 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
+package org.pragmatica.aether.http;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+
+import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.artifact.ArtifactBase;
+import org.pragmatica.aether.http.handler.UploadHandle;
+import org.pragmatica.aether.http.upload.UploadIngest;
+import org.pragmatica.aether.storage.SliceNamespace;
+import org.pragmatica.http.Headers;
+import org.pragmatica.http.HttpMethod;
+import org.pragmatica.http.QueryParams;
+import org.pragmatica.http.server.Disposition;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.storage.ByteRange;
+import org.pragmatica.storage.ContentStore;
+import org.pragmatica.storage.ObjectRef;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+
+/// U2 part 1: every test of [AppHttpServerIngestGateTest] runs again with `[app-http.upload] streaming_ingest` on, over
+/// HTTP/1.1 and HTTP/3 (U1 parity on the streaming path: auth before body, the per-route limits including chunked, the
+/// part limits, the caps, idle and min-rate bounds), and the tests below pin what streaming adds: the body is stored in
+/// content storage and reaches the slice by reference, a malformed body leaves nothing in the catalog, and the byte budget
+/// is charged with what an upload's writes hold, not with its declared length.
+class AppHttpServerStreamingIngestGateTest extends AppHttpServerIngestGateTest {
+    private static final TimeSpan WAIT = timeSpan(30).seconds();
+    /// What one streamed upload's writes hold at most: (write window + 1) blocks of the default chunk size.
+    private static final long WRITE_BUFFER = 5L * 4 * MIB;
+
+    @Override
+    boolean streamingIngest() {
+        return true;
+    }
+
+    private static byte[] random(int size, long seed) {
+        var bytes = new byte[size];
+
+        new Random(seed).nextBytes(bytes);
+
+        return bytes;
+    }
+
+    private static String sha256(byte[] bytes) throws Exception {
+        return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+    }
+
+    /// The store of the serving slice's namespace, the one the ingress writes into.
+    private ContentStore sliceStore() {
+        var namespace = SliceNamespace.sliceNamespace(ArtifactBase.artifactBase(ARTIFACT)).unwrap();
+
+        return UploadIngest.uploadIngest(contentStorage, timeSpan(1).hours()).store(namespace).unwrap();
+    }
+
+    private static byte[] read(ContentStore store, ObjectRef ref) {
+        var stream = store.open(ref, ByteRange.whole()).await(WAIT).unwrap();
+        var out = new ByteArrayOutputStream();
+
+        for (var next = stream.next().await(WAIT).unwrap(); next.isPresent(); next = stream.next().await(WAIT).unwrap()) {
+            next.onPresent(buffer -> out.writeBytes(copy(buffer)));
+        }
+        stream.close().await(WAIT);
+
+        return out.toByteArray();
+    }
+
+    private static byte[] copy(ByteBuffer buffer) {
+        var bytes = new byte[buffer.remaining()];
+
+        buffer.duplicate().get(bytes);
+
+        return bytes;
+    }
+
+    private int catalogSize() {
+        return sliceStore().list(Option.none(), Option.none(), 1000).await(WAIT).unwrap().items().size();
+    }
+
+    private UploadHandle servedUpload() {
+        var request = lastServed.get();
+
+        assertThat(request).as("the request reached the slice").isNotNull();
+        assertThat(request.body()).as("the body travels by reference, never inline").isEmpty();
+
+        return request.upload().unwrap();
+    }
+
+    private ObjectRef refOf(UploadHandle handle, int file) {
+        return org.pragmatica.aether.http.upload.UploadObjects.objectRef(handle.files().get(file).object()).unwrap();
+    }
+
+    // ---- stored, and handed over by reference
+
+    @Test
+    void binaryUpload_isStoredAndReachesTheSliceByReference_overHttp1() throws Exception {
+        binaryUpload_isStoredAndReachesTheSliceByReference(Protocol.H1);
+    }
+
+    @Test
+    void binaryUpload_isStoredAndReachesTheSliceByReference_overHttp3() throws Exception {
+        binaryUpload_isStoredAndReachesTheSliceByReference(Protocol.H3);
+    }
+
+    private void binaryUpload_isStoredAndReachesTheSliceByReference(Protocol protocol) throws Exception {
+        start(protocol, defaults(), 10 * MIB);
+        var body = random(9 * MIB + 5, 1);
+
+        var reply = client(protocol).postBody("/api/upload/", KEY_A, "application/octet-stream", body);
+
+        assertThat(reply.status()).as(reply.text()).isEqualTo(200);
+        var handle = servedUpload();
+
+        assertThat(handle.files()).hasSize(1);
+        assertThat(handle.files().getFirst().declaredType()).isEqualTo("application/octet-stream");
+        assertThat(handle.files().getFirst().object().size()).isEqualTo(body.length);
+        assertThat(handle.files().getFirst().object().digest()).isEqualTo(sha256(body));
+        assertThat(read(sliceStore(), refOf(handle, 0))).as("the stored bytes are the sent ones").isEqualTo(body);
+        assertThat(uploadAdmissionOf().reservedBytes()).as("the permit was returned").isZero();
+    }
+
+    @Test
+    void multipartUpload_storesEachFile_andKeepsTheFields_overHttp1() throws Exception {
+        multipartUpload_storesEachFile_andKeepsTheFields(Protocol.H1);
+    }
+
+    @Test
+    void multipartUpload_storesEachFile_andKeepsTheFields_overHttp3() throws Exception {
+        multipartUpload_storesEachFile_andKeepsTheFields(Protocol.H3);
+    }
+
+    private void multipartUpload_storesEachFile_andKeepsTheFields(Protocol protocol) throws Exception {
+        start(protocol, defaults(), 10 * MIB);
+        var first = random(5 * MIB + 1, 2);
+        var second = random(10_000, 3);
+        var body = multipart(Part.field("comment", "hello"), new Part("a", "a.bin", first), new Part("b", "b.bin", second));
+
+        var reply = client(protocol).postBody("/api/upload/", KEY_A, MULTIPART, body);
+
+        assertThat(reply.status()).as(reply.text()).isEqualTo(200);
+        var handle = servedUpload();
+
+        assertThat(handle.fields()).isEqualTo(Map.of("comment", List.of("hello")));
+        assertThat(handle.files()).extracting(file -> file.field()).containsExactly("a", "b");
+        assertThat(handle.files().getFirst().fileName()).contains("a.bin");
+        assertThat(read(sliceStore(), refOf(handle, 0))).isEqualTo(first);
+        assertThat(read(sliceStore(), refOf(handle, 1))).isEqualTo(second);
+    }
+
+    // ---- refusals leave nothing behind
+
+    /// Spec §4 U2: malformed multipart is answered 400, the open writer is aborted and no catalog entry is left, here
+    /// with a whole file already committed before the malformed delimiter.
+    @Test
+    void malformedMultipart_answers400_reachesNoSlice_andLeavesNoCatalogEntry_overHttp1() throws Exception {
+        malformedMultipart_answers400_reachesNoSlice_andLeavesNoCatalogEntry(Protocol.H1);
+    }
+
+    @Test
+    void malformedMultipart_answers400_reachesNoSlice_andLeavesNoCatalogEntry_overHttp3() throws Exception {
+        malformedMultipart_answers400_reachesNoSlice_andLeavesNoCatalogEntry(Protocol.H3);
+    }
+
+    private void malformedMultipart_answers400_reachesNoSlice_andLeavesNoCatalogEntry(Protocol protocol) throws Exception {
+        start(protocol, defaults(), 10 * MIB);
+        var valid = multipart(new Part("a", "a.bin", random(2 * MIB, 4)), new Part("b", "b.bin", random(3 * MIB, 5)));
+        var text = new String(valid, StandardCharsets.ISO_8859_1);
+        var cut = text.lastIndexOf("\r\n--" + BOUNDARY + "--");
+        var body = new ByteArrayOutputStream();
+
+        body.write(valid, 0, cut);
+        body.writeBytes(("\r\n--" + BOUNDARY + "!!not-a-delimiter-end").getBytes(StandardCharsets.ISO_8859_1));
+
+        var reply = client(protocol).postBody("/api/upload/", KEY_A, MULTIPART, body.toByteArray());
+
+        assertThat(reply.status()).as(reply.text()).isEqualTo(400);
+        assertThat(served.get()).isZero();
+        awaitEmptyCatalog();
+    }
+
+    @Test
+    void multipartWithoutBoundary_isRefused400OnTheHeaders() throws Exception {
+        start(Protocol.H1, defaults(), 10 * MIB);
+
+        assertThat(classifyUpload("multipart/form-data", 100)).isInstanceOf(Disposition.Reject.class);
+        assertThat(uploadAdmissionOf().reservedBytes()).as("refused before a permit is taken").isZero();
+    }
+
+    private void awaitEmptyCatalog() throws InterruptedException {
+        var deadline = System.nanoTime() + 30_000_000_000L;
+
+        while (catalogSize() != 0 && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertThat(catalogSize()).as("no catalog entry is left for a refused upload").isZero();
+    }
+
+    // ---- the byte budget
+
+    /// A streamed upload reserves what its writes can hold in flight, not its declared length: a 100 MiB declaration
+    /// reserves 20 MiB, a 1 MiB one reserves 1 MiB.
+    @Test
+    void streamedUpload_reservesTheSmallerOfItsLengthAndItsWriteBuffer() throws Exception {
+        start(Protocol.H1, defaults(), 10 * MIB);
+
+        assertThat(classifyUpload("application/octet-stream", 100L * MIB)).isInstanceOf(Disposition.Stream.class);
+        assertThat(uploadAdmissionOf().reservedBytes()).isEqualTo(WRITE_BUFFER);
+        assertThat(classifyUpload("application/octet-stream", MIB)).isInstanceOf(Disposition.Stream.class);
+        assertThat(uploadAdmissionOf().reservedBytes()).isEqualTo(WRITE_BUFFER + MIB);
+    }
+
+    /// Spec §4 U2 (`write_buffer_budget` with 64 concurrent uploads): with the budget at 64 write buffers, 64 uploads each
+    /// declaring 100 MiB are all admitted (6.4 GiB declared), and the 65th is refused on the budget. Charging the declared
+    /// length would admit 12.
+    @Test
+    void sixtyFourConcurrentUploads_fitABudgetOfSixtyFourWriteBuffers_andTheNextIsRefused() throws Exception {
+        start(Protocol.H1,
+              defaults().withMaxInFlightBytes(64 * WRITE_BUFFER).withMaxConcurrent(1000).withMaxConcurrentPerPrincipal(1000),
+              10 * MIB);
+
+        for (var upload = 0; upload < 64; upload++) {
+            assertThat(classifyUpload("application/octet-stream", 100L * MIB)).as("upload %d", upload)
+                                                                                .isInstanceOf(Disposition.Stream.class);
+        }
+        assertThat(uploadAdmissionOf().reservedBytes()).isEqualTo(64 * WRITE_BUFFER);
+        assertThat(classifyUpload("application/octet-stream", 100L * MIB)).as("the budget is spent")
+                                                                            .isInstanceOf(Disposition.Reject.class);
+    }
+
+    /// A streamed body is never held whole, so no in-memory bound applies: a route declaring 4 GiB under an 8 GiB ceiling
+    /// is streamed up to 4 GiB (the aggregating path caps it below 2 GiB).
+    @Test
+    void streamedLimit_isTheRoutesUnderTheCeiling_withNoInMemoryBound() throws Exception {
+        start(Protocol.H1, defaults().withMaxSizeCeiling(8L * 1024 * MIB), 10 * MIB);
+
+        var huge = classify(HttpMethod.POST, "/api/huge/x", Option.some(KEY_A));
+
+        assertThat(huge).isInstanceOf(Disposition.Stream.class);
+        assertThat(((Disposition.Stream) huge).maxBytes()).isEqualTo(4L * 1024 * MIB);
+    }
+
+    private Disposition classifyUpload(String contentType, long length) {
+        var headers = Headers.headers(Map.of("x-api-key",
+                                             List.of(KEY_A),
+                                             "content-type",
+                                             List.of(contentType),
+                                             "content-length",
+                                             List.of(Long.toString(length))));
+
+        return ((AppHttpServerAdapter) server).classify(new Head("req-u2", HttpMethod.POST, "/api/upload/x", headers,
+                                                                 QueryParams.queryParams(Map.of())));
+    }
+}
