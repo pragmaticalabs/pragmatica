@@ -41,6 +41,8 @@ class WorkflowPilotTest {
     private static final Cause CALL_FAILED = Causes.cause("provider call timed out");
     private static final long SETTLE_MS = 10_000L;
     private static final long T0 = 1_000_000L;
+    private static final String PILOT_ID = WorkflowAdmission.runId("pilot", "req-pilot").unwrap();
+    private static final String BROKEN_ID = WorkflowAdmission.runId("broken", "req-broken").unwrap();
 
     /// How the provision call behaves.
     enum Mode {
@@ -105,6 +107,7 @@ class WorkflowPilotTest {
         world = new World();
         clock = new AtomicLong(T0);
         probe = new WarningProbe();
+        cluster.announceTo(() -> true, probe.sink());
         kinds = Map.of("pilot", pilot(world));
     }
 
@@ -136,24 +139,23 @@ class WorkflowPilotTest {
     private WorkflowReconciler reconciler(NodeId self) {
         return WorkflowReconciler.workflowReconciler(cluster.ledger(self),
                                                      kinds,
-                                                     clock::get,
-                                                     probe.sink());
+                                                     clock::get);
     }
 
     private WorkflowRunValue admit() {
         return WorkflowAdmission.workflowAdmission(cluster.ledger(CORE_1),
-                                                   kinds,
-                                                   () -> "wf-pilot")
+                                                   kinds)
                                 .admit("pilot",
                                        Map.of("node", "n1"),
                                        List.of("node:n1"),
-                                       clock.get())
+                                       clock.get(),
+                                       "req-pilot")
                                 .await()
                                 .unwrap();
     }
 
     private WorkflowRunValue committed() {
-        return cluster.run("wf-pilot")
+        return cluster.run(PILOT_ID)
                       .unwrap();
     }
 
@@ -273,11 +275,11 @@ class WorkflowPilotTest {
         assertThat(escalated.detail()).contains("attempt budget of 2", "'node provisioned'");
         assertThat(probe.settled()).hasSize(1);
         assertThat(probe.settled().getFirst().code()).isEqualTo(OperatorWarningCode.WORKFLOW_ESCALATED);
-        assertThat(probe.settled().getFirst().subject()).isEqualTo("wf-pilot");
+        assertThat(probe.settled().getFirst().subject()).isEqualTo(PILOT_ID);
         assertThat(probe.settled().getFirst().code().level()).isEqualTo(WarningLevel.CRITICAL);
         assertThat(probe.settled().getFirst().code().code()).isEqualTo("workflow-escalated");
         assertThat(probe.settled().getFirst().message()).contains("'node provisioned'", "resume", "abandon");
-        assertThat(cluster.claim("node:n1")).isEqualTo(Option.some(new WorkflowClaimValue("wf-pilot")));
+        assertThat(cluster.claim("node:n1")).isEqualTo(Option.some(new WorkflowClaimValue(PILOT_ID)));
         clock.addAndGet(SETTLE_MS * 100);
         tick(leader);
         tick(leader);
@@ -375,17 +377,17 @@ class WorkflowPilotTest {
 
         kinds = Map.of("pilot", pilot(world), "broken", broken);
         WorkflowAdmission.workflowAdmission(cluster.ledger(CORE_1),
-                                            kinds,
-                                            () -> "wf-broken")
+                                            kinds)
                          .admit("broken",
                                 Map.of(),
                                 List.of("node:n9"),
-                                T0 - 1)
+                                T0 - 1,
+                                "req-broken")
                          .await()
                          .unwrap();
         admit();
         tick(reconciler(CORE_1));
         assertThat(committed().state()).isEqualTo(WorkflowState.WAITING);
-        assertThat(cluster.run("wf-broken").unwrap().state()).isEqualTo(WorkflowState.RUNNING);
+        assertThat(cluster.run(BROKEN_ID).unwrap().state()).isEqualTo(WorkflowState.RUNNING);
     }
 }
