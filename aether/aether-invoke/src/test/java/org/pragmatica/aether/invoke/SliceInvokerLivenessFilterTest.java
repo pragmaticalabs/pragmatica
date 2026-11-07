@@ -5,6 +5,8 @@
 package org.pragmatica.aether.invoke;
 
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -29,6 +31,7 @@ import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.Unit.unit;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 
 
 /// #275 (finding 1): slice-to-slice endpoint selection must consult membership liveness. The
@@ -120,16 +123,18 @@ class SliceInvokerLivenessFilterTest {
                   .containsOnly(LIVE);
     }
 
-    /// Failover after a timeout must not retry onto the dead node either: with LIVE timed out and
-    /// DEAD inaccessible there is nothing left, so the call fails without a second send.
+    /// A NotSent re-route (#2807) must not land on the dead node either: with LIVE refusing the write and
+    /// DEAD inaccessible there is nothing left, so the call fails as NoInstanceAccepted and no second send.
     @Test
-    void invokeWithRetry_failoverNeverRetriesOntoAnInaccessibleNode() {
-        var result = invoker.invokeWithRetry(ARTIFACT, METHOD, "request", new TypeToken<String>() {}, 3).await();
+    void invoke_notSentReroute_neverReroutesOntoAnInaccessibleNode() {
+        network.refuse(LIVE);
 
-        assertThat(result.isFailure()).as("nothing answers, so the retried call must fail rather than hang").isTrue();
-        assertThat(network.targets()).as("#275: the failover arm must never send to an inaccessible node")
-                  .isNotEmpty()
-                  .containsOnly(LIVE);
+        var result = invoker.invoke(ARTIFACT, METHOD, "request", new TypeToken<String>() {}).await();
+
+        result.onSuccess(_ -> fail("a refused call with no other accessible instance must fail"))
+              .onFailure(cause -> assertThat(cause).isInstanceOf(SliceInvokerError.NoInstanceAccepted.class));
+        assertThat(network.targets()).as("#275: the re-route must never send to an inaccessible node")
+                  .containsExactly(LIVE);
     }
 
     private static AccessibilityFilter rejecting(NodeId rejected) {
@@ -141,6 +146,11 @@ class SliceInvokerLivenessFilterTest {
     /// Records the target node of every `InvokeRequest` the invoker sends; nothing ever answers.
     private static final class CapturingNetwork extends StubClusterNetwork {
         private final List<NodeId> targets = new CopyOnWriteArrayList<>();
+        private final Set<NodeId> refusing = ConcurrentHashMap.newKeySet();
+
+        void refuse(NodeId node) {
+            refusing.add(node);
+        }
 
         @Override
         public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
@@ -148,7 +158,9 @@ class SliceInvokerLivenessFilterTest {
                 targets.add(nodeId);
             }
 
-            return Promise.success(new WriteOutcome.Sent(nodeId));
+            return Promise.success(refusing.contains(nodeId)
+                                   ? new WriteOutcome.NoPeerState(nodeId)
+                                   : new WriteOutcome.Sent(nodeId));
         }
 
         List<NodeId> targets() {

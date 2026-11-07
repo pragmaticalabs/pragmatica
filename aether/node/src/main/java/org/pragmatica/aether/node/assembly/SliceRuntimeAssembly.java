@@ -327,6 +327,7 @@ public sealed interface SliceRuntimeAssembly {
                                                      deserializer,
                                                      config.timeouts().invocation().invokerTimeout().millis(),
                                                      config.timeouts().observability().invocationCleanup().millis(),
+                                                     config.timeouts().invocation().maxRetries(),
                                                      deploymentManager);
 
         deferredInvoker.setDelegate(sliceInvoker);
