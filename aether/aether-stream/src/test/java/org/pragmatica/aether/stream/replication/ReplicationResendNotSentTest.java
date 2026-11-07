@@ -19,8 +19,6 @@ import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
 
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
@@ -104,9 +102,17 @@ class ReplicationResendNotSentTest {
     }
 
     /// (a) Each provably-not-sent outcome is re-sent, not only backpressure.
-    @ParameterizedTest
-    @ValueSource(strings = {"backpressure", "noPeerState", "encodeFailed"})
-    void replicateEvent_resends_forEveryProvablyNotSentOutcome(String kind) {
+    @Test
+    void replicateEvent_resends_whenTheFirstWriteHasNoPeerState() {
+        assertResentOnce("noPeerState");
+    }
+
+    @Test
+    void replicateEvent_resends_whenTheFirstWriteFailedToEncode() {
+        assertResentOnce("encodeFailed");
+    }
+
+    private void assertResentOnce(String kind) {
         transport.script(notSent(kind));
         manager.replicateEvent(STREAM, PARTITION, OFFSET, new byte[]{1}, 1L, Epoch.ZERO);
 
@@ -150,9 +156,22 @@ class ReplicationResendNotSentTest {
     }
 
     /// (c) A chunk that was written (but not yet acked), or whose fate is unknown, is never re-sent by this path.
-    @ParameterizedTest
-    @ValueSource(strings = {"sent", "connectionDead", "sendFailed"})
-    void replicateEvent_neverResends_whenTheWriteWasOrMayHaveBeenSent(String kind) {
+    @Test
+    void replicateEvent_neverResends_whenTheWriteWasSentButNotAcked() {
+        assertNeverResent("sent");
+    }
+
+    @Test
+    void replicateEvent_neverResends_whenTheConnectionWasDead() {
+        assertNeverResent("connectionDead");
+    }
+
+    @Test
+    void replicateEvent_neverResends_whenTheSendPromiseFailed() {
+        assertNeverResent("sendFailed");
+    }
+
+    private void assertNeverResent(String kind) {
         transport.script(writtenOrUnknown(kind));
         manager.replicateEvent(STREAM, PARTITION, OFFSET, new byte[]{1}, 1L, Epoch.ZERO);
         manager.awaitReplication(STREAM, PARTITION, OFFSET, 1);
