@@ -337,8 +337,14 @@ public sealed interface Blueprints {
                                                     .equals(base))
                         .forEach(artifact -> endAwaited(m, ctx, artifact, "the target was removed"));
         deallocateAll(m, ctx, base, "target-removed");
-        Placement.closeReported(m, ctx, base, Recoveries.gone(base.asString(), "the target was removed"));
-        Failures.closeReported(m, ctx, base, Recoveries.gone(base.asString(), "the target was removed"));
+        Placement.closeReported(m,
+                                ctx,
+                                base,
+                                Recoveries.gone(base.asString(), "the target was removed"));
+        Failures.closeReported(m,
+                               ctx,
+                               base,
+                               Recoveries.gone(base.asString(), "the target was removed"));
 
         return Reconcile.request(m, ctx);
     }

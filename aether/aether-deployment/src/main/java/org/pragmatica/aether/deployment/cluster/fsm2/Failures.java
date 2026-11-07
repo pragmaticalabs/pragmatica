@@ -93,7 +93,9 @@ public sealed interface Failures {
 
     private static ClusterModel closeOne(ClusterModel m, Ctx ctx, Artifact artifact, String why) {
         m.retryExhaustedWarned = m.retryExhaustedWarned.remove(artifact);
-        ctx.warn(Recoveries.RETRY_EXHAUSTED_SETTLED, artifact.asString(), "Retries of " + artifact.asString() + ": " + why);
+        ctx.warn(Recoveries.RETRY_EXHAUSTED_SETTLED,
+                 artifact.asString(),
+                 "Retries of " + artifact.asString() + ": " + why);
 
         return m;
     }

@@ -97,7 +97,8 @@ public sealed interface Strays {
             m.strayWarned = m.strayWarned.remove(pair);
             ctx.warn(Recoveries.STRAY_INSTANCE_REMOVED,
                      pair.artifact().asString(),
-                     Recoveries.gone(pair.artifact().asString(), "the condemned stray instance on " + pair.node().id() + " was removed"));
+                     Recoveries.gone(pair.artifact().asString(),
+                                     "the condemned stray instance on " + pair.node().id() + " was removed"));
         }
 
         return m;

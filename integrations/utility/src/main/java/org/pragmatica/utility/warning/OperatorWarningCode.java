@@ -218,7 +218,10 @@ public enum OperatorWarningCode {
     DEPARTURE_INFERRED_CONFIRMED("departure-inferred-confirmed", "deployment", WarningLevel.INFO, DEPARTURE_INFERRED),
     /// D.6 row 8: the recovery of [#DEPARTURE_INFERRED_SUPPRESSED], same subject: the community's breaker cleared, or the community left the
     /// model.
-    DEPARTURE_BREAKER_CLEARED("departure-breaker-cleared", "deployment", WarningLevel.INFO, DEPARTURE_INFERRED_SUPPRESSED),
+    DEPARTURE_BREAKER_CLEARED("departure-breaker-cleared",
+                              "deployment",
+                              WarningLevel.INFO,
+                              DEPARTURE_INFERRED_SUPPRESSED),
     /// D.6 row 10: the recovery of [#INVALID_PLACEMENT], same subject: the placement parses, or the artifact's target was removed.
     PLACEMENT_VALID("placement-valid", "deployment", WarningLevel.INFO, INVALID_PLACEMENT),
     /// D.6 row 13: the recovery of [#JOIN_UNMATCHED], same subject: the pending join matched a row, or it was dropped.

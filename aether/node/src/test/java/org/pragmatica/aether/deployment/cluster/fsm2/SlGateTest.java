@@ -112,6 +112,76 @@ class SlGateTest {
             h.drain();
             assertThat(goalOf(h, host, ORDERS)).isEqualTo(Option.some(SliceGoal.ACTIVE));
             assertThat(h.warns("schema-hold-cleared")).hasSize(1);
+            assertThat(h.warns("schema-status-readable")).as("never reported unknown: nothing to close").isEmpty();
+        }
+
+        /// D.6 rows 15/16 (know 7cc9e79f61), the subject-gone close. Red when: the instance of a held slice goes and `schema-hold` stays
+        /// open (no `schema-hold-cleared`, same subject, reason subject-gone).
+        @Test
+        void heldInstanceGone_closesTheHold_subjectGone() {
+            var h = heldByPendingSchema();
+            var host = hosts(h, ORDERS).getFirst();
+
+            assertThat(h.warns("schema-hold-cleared")).isEmpty();
+            h.seedRemove(new SliceObservedKey(host, ORDERS));
+            h.drain();
+            var cleared = h.warns("schema-hold-cleared");
+
+            assertThat(cleared).hasSize(1);
+            assertThat(cleared.getFirst().subject()).isEqualTo(ORDERS.asString());
+            assertThat(cleared.getFirst().message()).contains(Recoveries.SUBJECT_GONE);
+        }
+
+        /// D.6 rows 15/16. Red when: a held slice that fails drops its hold silently (the hold signature is cleared with no close).
+        @Test
+        void heldInstanceFails_closesTheHold() {
+            var h = heldByPendingSchema();
+            var host = hosts(h, ORDERS).getFirst();
+
+            node(h, host, 1L).fails(ORDERS, true);
+            h.drain();
+            var cleared = h.warns("schema-hold-cleared");
+
+            assertThat(cleared).hasSize(1);
+            assertThat(cleared.getFirst().subject()).isEqualTo(ORDERS.asString());
+            assertThat(cleared.getFirst().message()).contains("failed");
+        }
+
+        /// D.6 row 17 (know 7cc9e79f61). Red when: a datasource reported `schema-status-unknown` whose status decodes again is not closed
+        /// by `schema-status-readable`, same subject, once.
+        @Test
+        void unknownStatus_closedWhenTheStatusDecodes() {
+            var h = heldByPendingSchema();
+
+            h.seed(new SchemaVersionKey("orders-db"), record(SchemaStatus.UNKNOWN));
+            h.drain();
+            assertThat(h.warns("schema-status-readable")).isEmpty();
+            h.seed(new SchemaVersionKey("orders-db"), record(SchemaStatus.COMPLETED));
+            h.drain();
+            h.seed(new SchemaVersionKey("orders-db"), record(SchemaStatus.COMPLETED));
+            h.drain();
+            var readable = h.warns("schema-status-readable");
+
+            assertThat(readable).hasSize(1);
+            assertThat(readable.getFirst().subject()).isEqualTo("orders-db");
+            assertThat(readable.getFirst().message()).doesNotContain(Recoveries.SUBJECT_GONE);
+        }
+
+        /// D.6 row 17, the subject-gone close. Red when: removing the schema record of a reported datasource leaves the warning open.
+        @Test
+        void unknownStatus_recordRemoved_closesTheWarning_subjectGone() {
+            var h = heldByPendingSchema();
+
+            h.seed(new SchemaVersionKey("orders-db"), record(SchemaStatus.UNKNOWN));
+            h.drain();
+            h.seedRemove(new SchemaVersionKey("orders-db"));
+            h.drain();
+            var readable = h.warns("schema-status-readable");
+
+            assertThat(readable).hasSize(1);
+            assertThat(readable.getFirst().subject()).isEqualTo("orders-db");
+            assertThat(readable.getFirst().message()).contains(Recoveries.SUBJECT_GONE);
+            assertThat(h.model().schemaUnknownWarned.contains("orders-db")).isFalse();
         }
 
         /// NT-21. Red when: FAILED does not route `ActivationBlocked` and an audit line.

@@ -18,6 +18,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.lang.Option;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentApplyValue;
@@ -58,6 +59,56 @@ class GapFailureTest {
         assertThat(h.effects(ClusterEffect.Route.class)).anyMatch(route -> route.event() instanceof RoutedEvent.DeploymentFailed);
         assertThat(h.model().judgment(ORDERS)).as("the counter is cleared and there is no permanent mark: nothing is left to record")
                   .isEqualTo(Option.none());
+    }
+
+    private FsmHarness exhaustedOrders() {
+        var h = LcSupport.leader(DeploymentAtomicity.ALL_OR_NOTHING, 0.5d, CORE_1);
+
+        SlFixtures.seedTarget(h, ORDERS, 1, 1);
+        SlFixtures.seedGoal(h, CORE_1, ORDERS, SliceGoal.LOADED, SlFixtures.G1);
+        SlFixtures.seedRow(h, CORE_1, ORDERS, SliceObservedState.LOADING, SlFixtures.G1, 11L);
+        SlFixtures.seedJudgment(h,
+                                ORDERS,
+                                new ArtifactJudgmentValue(false, Map.of(CORE_1, 5), Map.of(), Set.of()));
+        h.activate();
+        node(h, CORE_1, 11L).fails(ORDERS, false);
+        h.drain();
+        assertThat(h.warns("retry-exhausted-unsettled")).hasSize(1);
+
+        return h;
+    }
+
+    /// D.6 row 14 (know 7cc9e79f61). Red when: an artifact reported `retry-exhausted-unsettled` that has an ACTIVE instance again is not
+    /// closed by `retry-exhausted-settled`, same subject, once; or the close is raised while nothing has changed.
+    @Test
+    void exhaustion_closedWhenAnInstanceIsActiveAgain() {
+        var h = exhaustedOrders();
+
+        h.deliver(new ClusterInput.Reconcile());
+        assertThat(h.warns("retry-exhausted-settled")).as("nothing settled yet").isEmpty();
+        node(h, CORE_1, 11L).writes(ORDERS, SliceObservedState.ACTIVE);
+        h.drain();
+        h.deliver(new ClusterInput.Reconcile());
+        h.deliver(new ClusterInput.Reconcile());
+        var settled = h.warns("retry-exhausted-settled");
+
+        assertThat(settled).hasSize(1);
+        assertThat(settled.getFirst().subject()).isEqualTo(ORDERS.asString());
+        assertThat(settled.getFirst().message()).doesNotContain(Recoveries.SUBJECT_GONE);
+    }
+
+    /// D.6 row 14, the subject-gone close. Red when: removing the target of a reported artifact leaves `retry-exhausted-unsettled` open.
+    @Test
+    void exhaustion_targetRemoved_closesTheWarning_subjectGone() {
+        var h = exhaustedOrders();
+
+        h.seedRemove(new SliceTargetKey(ORDERS.base()));
+        h.drain();
+        var settled = h.warns("retry-exhausted-settled");
+
+        assertThat(settled).hasSize(1);
+        assertThat(settled.getFirst().subject()).isEqualTo(ORDERS.asString());
+        assertThat(settled.getFirst().message()).contains(Recoveries.SUBJECT_GONE);
     }
 
     private static NodeSim node(FsmHarness h, NodeId node, long token) {

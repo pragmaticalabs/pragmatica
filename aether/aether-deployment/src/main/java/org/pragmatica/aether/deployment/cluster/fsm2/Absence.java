@@ -228,7 +228,9 @@ public sealed interface Absence {
 
         if (m.unjudgeableWarned.contains(label)) {
             m.unjudgeableWarned = m.unjudgeableWarned.remove(label);
-            ctx.warn(Recoveries.WORKER_ABSENCE_JUDGEABLE, label, "The " + label + " class can be judged for absence again (" + node.id() + ")");
+            ctx.warn(Recoveries.WORKER_ABSENCE_JUDGEABLE,
+                     label,
+                     "The " + label + " class can be judged for absence again (" + node.id() + ")");
         }
 
         return m;

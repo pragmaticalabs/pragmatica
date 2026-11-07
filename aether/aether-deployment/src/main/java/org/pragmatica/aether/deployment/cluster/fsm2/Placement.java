@@ -68,12 +68,20 @@ public sealed interface Placement {
         // `placement-valid`, or the target is removed).
         Result.lift(() -> PlacementPolicy.valueOf(target.effectivePlacement()))
               .onFailure(cause -> invalid(m, ctx, artifact, target, cause))
-              .onSuccess(policy -> reconcileWithPolicy(placementValid(m, ctx, base), ctx, artifact, target, policy));
+              .onSuccess(policy -> reconcileWithPolicy(placementValid(m, ctx, base),
+                                                       ctx,
+                                                       artifact,
+                                                       target,
+                                                       policy));
 
         return m;
     }
 
-    private static ClusterModel invalid(ClusterModel m, Ctx ctx, Artifact artifact, SliceTargetValue target, Cause cause) {
+    private static ClusterModel invalid(ClusterModel m,
+                                        Ctx ctx,
+                                        Artifact artifact,
+                                        SliceTargetValue target,
+                                        Cause cause) {
         if (!m.invalidPlacementWarned.contains(artifact)) {
             m.invalidPlacementWarned = m.invalidPlacementWarned.add(artifact);
             ctx.warn("invalid-placement",

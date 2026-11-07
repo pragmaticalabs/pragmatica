@@ -110,7 +110,9 @@ public sealed interface Schemas {
     private static ClusterModel readable(ClusterModel m, Ctx ctx, String datasource, String why) {
         if (m.schemaUnknownWarned.contains(datasource)) {
             m.schemaUnknownWarned = m.schemaUnknownWarned.remove(datasource);
-            ctx.warn(Recoveries.SCHEMA_STATUS_READABLE, datasource, "Schema record for datasource " + datasource + ": " + why);
+            ctx.warn(Recoveries.SCHEMA_STATUS_READABLE,
+                     datasource,
+                     "Schema record for datasource " + datasource + ": " + why);
         }
 
         return m;

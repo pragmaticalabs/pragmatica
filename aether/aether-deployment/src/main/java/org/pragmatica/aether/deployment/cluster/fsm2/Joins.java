@@ -152,19 +152,15 @@ public sealed interface Joins {
 
     // -- the table -------------------------------------------------------------------------------------------------
     private static ClusterModel evaluate(ClusterModel m, Ctx ctx, NodeId node, PendingJoin join) {
-        var warned = join.warned() || m.pendingJoins.get(node)
-                                                    .map(PendingJoin::warned)
-                                                    .or(false);
-
-        return matchedIfWarned(evaluateRows(m, ctx, node, join), ctx, node, warned);
+        return matchedIfWarned(evaluateRows(m, ctx, node, join), ctx, node);
     }
 
-    /// D.6 row 13: a join reported unmatched that a row has now matched ends its episode: `join-matched`, same subject. A join that is
-    /// still unmatched keeps its warned pending entry and raises nothing.
-    private static ClusterModel matchedIfWarned(ClusterModel m, Ctx ctx, NodeId node, boolean warned) {
-        if (warned && !m.pendingJoins.get(node)
-                                     .map(PendingJoin::warned)
-                                     .or(false)) {
+    /// D.6 row 13: a join reported unmatched that a row has now matched ends its episode: `join-matched`, same subject. The episode is
+    /// `unmatchedWarned`, not the pending join's `warned` flag, which the tick re-arms to repeat the WARN. A join that is still unmatched
+    /// raises nothing.
+    private static ClusterModel matchedIfWarned(ClusterModel m, Ctx ctx, NodeId node) {
+        if (m.unmatchedWarned.contains(node) && !m.pendingJoins.get(node).map(PendingJoin::warned).or(false)) {
+            m.unmatchedWarned = m.unmatchedWarned.remove(node);
             ctx.warn(Recoveries.JOIN_MATCHED, node.id(), "A join row matched " + node.id() + " again");
         }
 
@@ -333,6 +329,7 @@ public sealed interface Joins {
                                   PendingJoin join,
                                   Option<NodeDepartureValue> record) {
         if (!join.warned()) {
+            m.unmatchedWarned = m.unmatchedWarned.add(node);
             ctx.warn("join-unmatched",
                      node.id(),
                      "No join row matched " + node.id()

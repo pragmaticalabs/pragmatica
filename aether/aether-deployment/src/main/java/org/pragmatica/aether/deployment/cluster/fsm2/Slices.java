@@ -140,10 +140,13 @@ public sealed interface Slices {
 
     /// The observed row of an excluded pair went: its exclusion is cleared now; D.6 rows 18/19: closed with the reason subject-gone.
     private static ClusterModel exclusionGone(ClusterModel m, Ctx ctx, SlicePair pair) {
-        Outbox.artifact(m, pair.artifact(), intent -> intent.withOp(new JudgmentOp.ClearUnresponsive(pair.node())));
+        Outbox.artifact(m,
+                        pair.artifact(),
+                        intent -> intent.withOp(new JudgmentOp.ClearUnresponsive(pair.node())));
         ctx.warn(Recoveries.SLICE_UNRESPONSIVE_EXPIRED,
                  pair.artifact().asString(),
-                 Recoveries.gone(pair.artifact().asString(), "the instance on " + pair.node().id() + " is gone; its exclusion is cleared"));
+                 Recoveries.gone(pair.artifact().asString(),
+                                 "the instance on " + pair.node().id() + " is gone; its exclusion is cleared"));
 
         return m;
     }
@@ -153,7 +156,9 @@ public sealed interface Slices {
     static ClusterModel holdGone(ClusterModel m, Ctx ctx, SlicePair pair, String why) {
         if (m.holdSignatures.containsKey(pair)) {
             m.holdSignatures = m.holdSignatures.remove(pair);
-            ctx.warn(Recoveries.SCHEMA_HOLD_CLEARED, pair.artifact().asString(), "Slice " + pair.artifact() + " schema hold ended: " + why);
+            ctx.warn(Recoveries.SCHEMA_HOLD_CLEARED,
+                     pair.artifact().asString(),
+                     "Slice " + pair.artifact() + " schema hold ended: " + why);
         }
 
         return m;
@@ -273,7 +278,11 @@ public sealed interface Slices {
                    .filter(judgment -> judgment.unresponsive()
                                                .containsKey(pair.node()))
                    .onPresent(_ -> exclusionGone(m, ctx, pair));
-        holdGone(m, ctx, pair, Recoveries.gone(pair.artifact().asString(), "the instance on " + pair.node().id() + " is gone"));
+        holdGone(m,
+                 ctx,
+                 pair,
+                 Recoveries.gone(pair.artifact().asString(),
+                                 "the instance on " + pair.node().id() + " is gone"));
         Strays.onRowGone(m, ctx, pair);
         var goal = m.desired.get(pair);
 

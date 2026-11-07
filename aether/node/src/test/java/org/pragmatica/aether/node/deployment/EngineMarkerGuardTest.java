@@ -77,6 +77,12 @@ class EngineMarkerGuardTest {
         return warnings.stream().filter(w -> w.code() == OperatorWarningCode.DEPLOYMENT_ENGINE_MISMATCH).toList();
     }
 
+    private List<OperatorWarning> matchedWarnings() {
+        quiesce();
+
+        return warnings.stream().filter(w -> w.code() == OperatorWarningCode.DEPLOYMENT_ENGINE_MATCHED).toList();
+    }
+
     /// The sink publishes in order on its own thread: a sentinel offered now is published after every warning offered before it.
     private void quiesce() {
         var sentinel = OperatorWarning.operatorWarning(OperatorWarningCode.SWIM_KILL_GATE_HELD, "sentinel", "sentinel");
@@ -548,6 +554,79 @@ class EngineMarkerGuardTest {
             clock.advance(WINDOW_MS);
             assertThat(exits).hasSize(1);
             assertThat(mismatchWarnings().getFirst().message()).contains("configured for LEGACY").contains("engine=FSM2");
+        }
+    }
+
+    /// D.6 row 1 (know 7cc9e79f61): `deployment-engine-mismatch` is closed by `deployment-engine-matched`, same subject (the node), when its
+    /// window ends without a refusal, and with the reason `node-refused-itself` when the node refuses itself (its subject leaves).
+    @Nested
+    class D6Recovery {
+        /// Red when: a mismatch that clears inside the window raises no `deployment-engine-matched` for the node, or raises it twice.
+        @Test
+        void aMismatchThatClearsInsideTheWindow_closesTheWarning() {
+            var guard = guard(DeploymentEngine.FSM2);
+
+            marker = Option.some(LEGACY_MARKER);
+            incarnation = true;
+            guard.evaluate();
+            assertThat(mismatchWarnings()).as("the opener").hasSize(1);
+            assertThat(matchedWarnings()).as("not before the condition ends").isEmpty();
+            marker = Option.some(FSM2_MARKER);
+            guard.evaluate();
+            guard.evaluate();
+
+            assertThat(matchedWarnings()).hasSize(1);
+            assertThat(matchedWarnings().getFirst().subject()).isEqualTo(SELF.id());
+            assertThat(matchedWarnings().getFirst().message()).doesNotContain(EngineMarkerGuard.REFUSED_ITSELF);
+        }
+
+        /// Red when: a window that ends because the cluster's engine is undecided again leaves the warning open.
+        @Test
+        void aMismatchThatTurnsUndecided_closesTheWarning() {
+            var guard = guard(DeploymentEngine.FSM2);
+
+            marker = Option.some(LEGACY_MARKER);
+            incarnation = true;
+            guard.evaluate();
+            marker = Option.none();
+            incarnation = false;
+            guard.evaluate();
+
+            assertThat(guard.state()).isEqualTo(State.WAITING);
+            assertThat(matchedWarnings()).hasSize(1);
+        }
+
+        /// Subject gone. Red when: the node that refuses itself exits without closing its warning, or the close lacks the reason.
+        @Test
+        void aRefusal_closesTheWarning_withTheReasonNodeRefusedItself() {
+            var guard = guard(DeploymentEngine.FSM2);
+
+            marker = Option.some(LEGACY_MARKER);
+            incarnation = true;
+            guard.evaluate();
+            clock.advance(WINDOW_MS);
+
+            assertThat(exits).hasSize(1);
+            assertThat(matchedWarnings()).hasSize(1);
+            assertThat(matchedWarnings().getFirst().subject()).isEqualTo(SELF.id());
+            assertThat(matchedWarnings().getFirst().message()).contains(EngineMarkerGuard.REFUSED_ITSELF);
+        }
+
+        /// Red when: a recovery is raised for a window that was never reported (no leader observed yet), or for a node that never mismatched.
+        @Test
+        void anUnreportedMismatch_orAMatchingNode_raisesNoRecovery() {
+            var guard = guard(DeploymentEngine.FSM2);
+
+            marker = Option.some(LEGACY_MARKER);
+            incarnation = true;
+            leader = Option.none();
+            guard.evaluate();
+            marker = Option.some(FSM2_MARKER);
+            guard.evaluate();
+
+            assertThat(guard.state()).isEqualTo(State.OPEN);
+            assertThat(mismatchWarnings()).isEmpty();
+            assertThat(matchedWarnings()).isEmpty();
         }
     }
 }

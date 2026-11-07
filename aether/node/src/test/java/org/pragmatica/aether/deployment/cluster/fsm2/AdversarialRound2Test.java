@@ -125,6 +125,58 @@ class AdversarialRound2Test {
         assertThat(w.present(new ActivationDirectiveKey(worker))).isFalse();
     }
 
+    private static CommunityPlacement policyFor(String source) {
+        return new CommunityPlacement("p", 4, List.of(new Location(source, Option.none(), 0, 1)));
+    }
+
+    private MbWorld unplacedWorker(NodeId worker) {
+        var w = MbWorld.world(CORE_1, CORE_2, CORE_3)
+                       .seams(seams -> seams.withCommunityPolicies(Map.of("p", policyFor("other-source")))
+                                            .withMemberSource(Map.of(worker, "east")))
+                       .activate();
+
+        w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, 21L)));
+        assertThat(w.h.warns("worker-no-community-policy")).hasSize(1);
+        assertThat(w.h.warns("worker-community-policy-matched")).as("still unplaced").isEmpty();
+
+        return w;
+    }
+
+    /// D.6 row 22 (know 7cc9e79f61). Red when: a worker reported `worker-no-community-policy` that a later J5 (its rejoin after a policy
+    /// was added) places is not closed by
+    /// `worker-community-policy-matched`, same subject, once.
+    @Test
+    void workerMatchingNoPolicy_isClosed_whenAPolicyLaterAcceptsIt() {
+        var worker = node("worker-1");
+        var w = unplacedWorker(worker);
+
+        w.refreshSeams(seams -> seams.withCommunityPolicies(Map.of("p", policyFor("east"))));
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.warns("worker-community-policy-matched")).as("a refresh alone runs no J5: the join is not pending").isEmpty();
+        w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, 21L)));
+        var matched = w.h.warns("worker-community-policy-matched");
+
+        assertThat(w.present(new ActivationDirectiveKey(worker))).as("placed").isTrue();
+        assertThat(matched).hasSize(1);
+        assertThat(matched.getFirst().subject()).isEqualTo(worker.id());
+        assertThat(matched.getFirst().message()).doesNotContain(Recoveries.SUBJECT_GONE);
+    }
+
+    /// D.6 row 22, the subject-gone close. Red when: a reported worker departs before any policy matches and the warning stays open.
+    @Test
+    void workerMatchingNoPolicy_departs_closesTheWarning_subjectGone() {
+        var worker = node("worker-1");
+        var w = unplacedWorker(worker);
+
+        w.h.deliver(new ClusterInput.WorkerLeave(worker));
+        var matched = w.h.warns("worker-community-policy-matched");
+
+        assertThat(matched).hasSize(1);
+        assertThat(matched.getFirst().subject()).isEqualTo(worker.id());
+        assertThat(matched.getFirst().message()).contains(Recoveries.SUBJECT_GONE);
+        assertThat(w.h.model().noPolicyWarned.contains(worker)).isFalse();
+    }
+
     /// Red when: a settlement for a submission the FSM no longer holds is dropped without a trace (it is counted as `settled_unknown`).
     @Test
     void settlementOfAnUnknownSubmission_isCounted() {

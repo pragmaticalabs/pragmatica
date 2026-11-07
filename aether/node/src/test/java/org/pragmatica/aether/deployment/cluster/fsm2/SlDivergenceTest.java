@@ -113,6 +113,47 @@ class SlDivergenceTest {
             assertThat(h.model().judgment(ORDERS).map(ArtifactJudgmentValue::unresponsive).or(Map.of())).containsKey(CORE_1);
             assertThat(h.warns("slice-unresponsive")).hasSize(1);
         }
+
+        private FsmHarness excluded() {
+            var h = stuckLoading();
+
+            at(h, T_LOAD + 1);
+            at(h, T_LOAD);
+            at(h, T_LOAD);
+            assertThat(h.warns("slice-unresponsive")).hasSize(1);
+            assertThat(h.model().judgment(ORDERS).map(ArtifactJudgmentValue::unresponsive).or(Map.of())).containsKey(CORE_1);
+            assertThat(h.warns("slice-unresponsive-expired")).as("not before the expiry or the subject going").isEmpty();
+
+            return h;
+        }
+
+        /// D.6 rows 18/19 (know 7cc9e79f61), the subject-gone close. Red when: the observed row of an excluded pair goes and
+        /// `slice-unresponsive` stays open (no `slice-unresponsive-expired`, same subject, reason subject-gone).
+        @Test
+        void excludedInstanceGone_closesTheWarning_subjectGone() {
+            var h = excluded();
+
+            h.seedRemove(new SliceObservedKey(CORE_1, ORDERS));
+            h.drain();
+            var expired = h.warns("slice-unresponsive-expired");
+
+            assertThat(expired).hasSize(1);
+            assertThat(expired.getFirst().subject()).isEqualTo(ORDERS.asString());
+            assertThat(expired.getFirst().message()).contains(Recoveries.SUBJECT_GONE);
+        }
+
+        /// D.6 rows 18/19, the subject-gone close on a departure. Red when: the excluded node departs and the warning stays open.
+        @Test
+        void excludedNodeDeparts_closesTheWarning_subjectGone() {
+            var h = excluded();
+
+            h.deliver(new ClusterInput.NodeRemoved(CORE_1));
+            var expired = h.warns("slice-unresponsive-expired");
+
+            assertThat(expired).isNotEmpty();
+            assertThat(expired.getFirst().subject()).isEqualTo(ORDERS.asString());
+            assertThat(expired.getFirst().message()).contains(Recoveries.SUBJECT_GONE);
+        }
     }
 
     @Nested

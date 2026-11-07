@@ -160,6 +160,9 @@ public final class ClusterModel {
     PSet<String> growthBlocked = PSet.empty(scans);
     /// D.6 row 22: workers reported `worker-no-community-policy` whose episode is open.
     PSet<NodeId> noPolicyWarned = PSet.empty(scans);
+    /// D.6 row 13: nodes whose pending join was reported `join-unmatched` and whose episode is open (the tick's re-arm of the WARN does not
+    /// end it).
+    PSet<NodeId> unmatchedWarned = PSet.empty(scans);
     /// D.6 row 10: artifacts reported `invalid-placement` whose episode is open (the warning is raised once per episode).
     PSet<Artifact> invalidPlacementWarned = PSet.empty(scans);
     /// D.6 row 14: artifacts reported `retry-exhausted-unsettled` whose episode is open.
@@ -267,6 +270,7 @@ public final class ClusterModel {
         c.suppressedWarned = suppressedWarned.rebound(meter);
         c.growthBlocked = growthBlocked.rebound(meter);
         c.noPolicyWarned = noPolicyWarned.rebound(meter);
+        c.unmatchedWarned = unmatchedWarned.rebound(meter);
         c.invalidPlacementWarned = invalidPlacementWarned.rebound(meter);
         c.retryExhaustedWarned = retryExhaustedWarned.rebound(meter);
         c.schemaUnknownWarned = schemaUnknownWarned.rebound(meter);

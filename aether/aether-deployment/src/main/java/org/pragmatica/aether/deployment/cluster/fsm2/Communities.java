@@ -36,8 +36,7 @@ public sealed interface Communities {
     }
 
     private static ClusterModel evaluate(ClusterModel m, Ctx ctx, String id, CommunityValue community) {
-        var floor = CommunityPolicies.current(m, ctx)
-                                     .viabilityFloor();
+        var floor = CommunityPolicies.current(m, ctx).viabilityFloor();
         var next = next(community.state(), liveMembers(m, id), floor);
 
         if (next != community.state()) {

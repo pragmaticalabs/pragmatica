@@ -5,8 +5,10 @@
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
 /// The recovery codes of the cluster FSM's standing warnings, as the owner ruled the D.6 table (spec 9.4, know 7cc9e79f61). Each recovery
-/// is raised with the warning's own subject, only for a subject whose warning this leader raised, and closes it in one of two ways: the
-/// condition ended, or (reason [#SUBJECT_GONE]) the subject left the FSM's model, so abandonment closes the warning as success does.
+/// is raised with the warning's own subject and closes it in one of two ways: the condition ended, or (reason [#SUBJECT_GONE]) the subject
+/// left the FSM's model, so abandonment closes the warning as success does. A recovery whose opener leaves a leader-local mark is raised
+/// only for a subject in this leader's open set; the recoveries read from committed state (an inferred departure record for rows 6/7, an
+/// unresponsive exclusion for rows 18/19) also close a warning a previous leader raised.
 ///
 /// Limit: the open sets are leader-local, like every warned set of the model. A warning raised by a deposed leader is not closed by its
 /// successor, and the event layer would not publish a recovery from a node that never published the warning (#752).

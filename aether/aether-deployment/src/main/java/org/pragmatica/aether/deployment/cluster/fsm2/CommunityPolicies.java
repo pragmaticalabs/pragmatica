@@ -11,6 +11,7 @@ import org.pragmatica.aether.config.cluster.CommunityPolicy;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.lang.Option;
 
+
 /// The community policy the leader acts on (R-CF.16..18, #241, legacy `CommunityPolicyView`): the `[community_policy]` of the
 /// COMMITTED cluster config when it carries one, otherwise the node-level sizing (`Settings`) with growth off. Reading it from the
 /// committed config is what keeps a failover to a differently configured leader from changing the target or the floor of an existing
@@ -32,9 +33,13 @@ public sealed interface CommunityPolicies {
     /// The `[community_policy]` of a committed cluster config, none when it carries none or does not parse.
     static Option<CommunityPolicy> committed(ClusterConfigValue value) {
         return value.tomlContent()
-                    .flatMap(toml -> ClusterBootstrapConfigParser.parse(toml)
-                                                                 .option()
-                                                                 .flatMap(ClusterBootstrapConfig::communityPolicy));
+                    .flatMap(CommunityPolicies::parsed);
+    }
+
+    private static Option<CommunityPolicy> parsed(String toml) {
+        return ClusterBootstrapConfigParser.parse(toml)
+                                           .option()
+                                           .flatMap(ClusterBootstrapConfig::communityPolicy);
     }
 
     record unused() implements CommunityPolicies {}

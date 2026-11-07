@@ -46,6 +46,7 @@ public sealed interface Directory {
     /// R-CF.17: the legacy growth warnings, same codes and subject (the source), so an operator's alert reads both engines alike.
     String GROWTH_BLOCKED = "community-growth-blocked";
     String GROWTH_RESUMED = "community-growth-resumed";
+
     // -- C13 -------------------------------------------------------------------------------------------------------
     static ClusterModel onDirectivePut(ClusterModel m, Ctx ctx, NodeId node, ActivationDirectiveValue value) {
         Indexer.indexDirective(m, node, value);
@@ -219,7 +220,9 @@ public sealed interface Directory {
     private static ClusterModel policyMatched(ClusterModel m, Ctx ctx, NodeId node) {
         if (m.noPolicyWarned.contains(node) && directiveInFlight(m, node)) {
             m.noPolicyWarned = m.noPolicyWarned.remove(node);
-            ctx.warn(Recoveries.WORKER_COMMUNITY_POLICY_MATCHED, node.id(), "A community policy now accepts worker " + node.id());
+            ctx.warn(Recoveries.WORKER_COMMUNITY_POLICY_MATCHED,
+                     node.id(),
+                     "A community policy now accepts worker " + node.id());
         }
 
         return m;
@@ -267,8 +270,9 @@ public sealed interface Directory {
     }
 
     // FER (degrade forward): a worker whose source matches no reserved and no configured community policy gets no directive now and is
-    // reported. Guarantee: the failure is visible, never silent. Mechanism: the warning below; a later input for the node (a seams refresh
-    // that adds a policy, a rejoin) runs J5 again.
+    // reported. Guarantee: the failure is visible, never silent. Mechanism: the warning below, closed by worker-community-policy-matched
+    // (D.6 row 22). No join stays pending for the worker (no directive is queued), so only its next join runs J5 again: a seams refresh
+    // that adds a policy places it at that rejoin, not by itself.
     private static ClusterModel unplaceable(ClusterModel m, Ctx ctx, NodeId node, String source) {
         m.noPolicyWarned = m.noPolicyWarned.add(node);
         ctx.warn("worker-no-community-policy",
@@ -288,12 +292,7 @@ public sealed interface Directory {
 
         return policy.growth()
                ? grow(m, ctx, node, source, policy)
-               : commit(m,
-                        ctx,
-                        node,
-                        source + Joins.WORKER_COMMUNITY_SUFFIX,
-                        source,
-                        policy.maxSize());
+               : commit(m, ctx, node, source + Joins.WORKER_COMMUNITY_SUFFIX, source, policy.maxSize());
     }
 
     /// The growth decision (R-CF.17), the legacy `decideAndAdmit`. The legacy admission ledger serialized read, decide and register under a
@@ -333,14 +332,21 @@ public sealed interface Directory {
     // failure is visible, never silent, and the worker is not placed work as a community member. Mechanism: the warning below, closed by
     // community-growth-resumed on the next admission for the source; a refusal queues no directive, so the worker takes a community when it
     // joins again (the legacy behaviour), not by a leader retry.
-    private static ClusterModel refuseGrowth(ClusterModel m, Ctx ctx, NodeId node, String source, CommunityPolicy policy) {
+    private static ClusterModel refuseGrowth(ClusterModel m,
+                                             Ctx ctx,
+                                             NodeId node,
+                                             String source,
+                                             CommunityPolicy policy) {
         m.growthBlocked = m.growthBlocked.add(source);
         ctx.warn(GROWTH_BLOCKED,
                  source,
-                 "No community can take worker " + node.id() + " of source " + source + ": its communities are at the "
-                 + CommunityPolicy.CEILING + " ceiling and the source is at the bound of " + policy.maxCommunities() + " (max_size "
-                 + policy.maxSize() + "). Raise community_policy.max_communities or max_size, or add worker capacity under another source; "
-                 + "the worker takes a community when it rejoins");
+                 "No community can take worker " + node.id()
+                + " of source " + source
+                + ": its communities are at the " + CommunityPolicy.CEILING
+                + " ceiling and the source is at the bound of " + policy.maxCommunities()
+                + " (max_size " + policy.maxSize()
+                + "). Raise community_policy.max_communities or max_size, or add worker capacity under another source; "
+                + "the worker takes a community when it rejoins");
 
         return m;
     }
@@ -355,28 +361,42 @@ public sealed interface Directory {
                                      .stream()
                                      .filter(entry -> isDerivedOf(source,
                                                                   entry.getKey()))
-                                     .map(entry -> CommunityGrowthPolicy.Candidate.candidate(entry.getKey(),
-                                                                                             entry.getValue()
-                                                                                                  .state(),
-                                                                                             liveLoad(m,
-                                                                                                      entry.getKey()) + inFlight.getOrDefault(entry.getKey(),
-                                                                                                                                              0)));
+                                     .map(entry -> committedCandidate(m,
+                                                                      inFlight,
+                                                                      entry.getKey(),
+                                                                      entry.getValue()));
         var minting = inFlight.entrySet()
                               .stream()
-                              .filter(entry -> isDerivedOf(source,
-                                                           entry.getKey()) && !m.communities.containsKey(entry.getKey()))
-                              .map(entry -> CommunityGrowthPolicy.Candidate.candidate(entry.getKey(),
-                                                                                      CommunityState.FORMING,
-                                                                                      entry.getValue()));
+                              .filter(entry -> isMinting(m,
+                                                         source,
+                                                         entry.getKey()))
+                              .map(entry -> mintingCandidate(entry.getKey(),
+                                                             entry.getValue()));
 
         return Stream.concat(committed, minting)
                      .sorted(Comparator.comparing(CommunityGrowthPolicy.Candidate::id))
                      .toList();
     }
 
+    private static CommunityGrowthPolicy.Candidate committedCandidate(ClusterModel m,
+                                                                      Map<String, Integer> inFlight,
+                                                                      String communityId,
+                                                                      CommunityValue value) {
+        return CommunityGrowthPolicy.Candidate.candidate(communityId,
+                                                         value.state(),
+                                                         liveLoad(m, communityId) + inFlight.getOrDefault(communityId, 0));
+    }
+
+    private static boolean isMinting(ClusterModel m, String source, String communityId) {
+        return isDerivedOf(source, communityId) && !m.communities.containsKey(communityId);
+    }
+
+    private static CommunityGrowthPolicy.Candidate mintingCandidate(String communityId, int load) {
+        return CommunityGrowthPolicy.Candidate.candidate(communityId, CommunityState.FORMING, load);
+    }
+
     private static boolean isDerivedOf(String source, String communityId) {
-        return CommunityGrowthPolicy.derivedIndex(source, communityId)
-                                    .isPresent();
+        return CommunityGrowthPolicy.derivedIndex(source, communityId).isPresent();
     }
 
     private static int liveLoad(ClusterModel m, String communityId) {
@@ -388,38 +408,46 @@ public sealed interface Directory {
     }
 
     private static boolean holdsSlot(ClusterModel m, NodeId node) {
-        return !m.departed.contains(node) && !m.departing.containsKey(node) && !m.absentSince.containsKey(node);
+        return ! m.departed.contains(node)
+               && !m.departing.containsKey(node)
+               && !m.absentSince.containsKey(node);
     }
 
     /// One in-flight assignment: a WORKER directive in a DIRECTIVE draft (queued or submitted) whose directive is not visible yet.
-    record Assignment(NodeId node, String communityId) {}
+    record Assignment(NodeId node, String communityId) {
+        static Assignment assignment(NodeId node, String communityId) {
+            return new Assignment(node, communityId);
+        }
+    }
 
     /// The in-flight assignments per community, each node counted once however many drafts carry it.
     static Map<String, Integer> inFlightByCommunity(ClusterModel m) {
-        return drafts(m).filter(draft -> draft.kind() == SubmitKind.DIRECTIVE)
-                        .flatMap(draft -> draft.mutations()
-                                               .stream())
-                        .flatMap(mutation -> pendingAssignment(m, mutation).stream())
-                        .distinct()
-                        .collect(Collectors.toMap(Assignment::communityId, _ -> 1, Integer::sum));
+        return directiveMutations(m).flatMap(mutation -> pendingAssignment(m, mutation).stream())
+                                 .distinct()
+                                 .collect(Collectors.toMap(Assignment::communityId, _ -> 1, Integer::sum));
     }
 
-    private static Option<Assignment> pendingAssignment(ClusterModel m, KVCommand.Mutation<AetherKey, AetherValue> mutation) {
+    private static Stream<KVCommand.Mutation<AetherKey, AetherValue>> directiveMutations(ClusterModel m) {
+        return drafts(m).filter(draft -> draft.kind() == SubmitKind.DIRECTIVE)
+                     .flatMap(draft -> draft.mutations()
+                                            .stream());
+    }
+
+    private static Option<Assignment> pendingAssignment(ClusterModel m,
+                                                        KVCommand.Mutation<AetherKey, AetherValue> mutation) {
         return mutation.key() instanceof ActivationDirectiveKey(var node) && !m.directives.containsKey(node)
                ? mutation.replacement()
                          .filter(ActivationDirectiveValue.class::isInstance)
                          .map(ActivationDirectiveValue.class::cast)
                          .filter(Rows::isCommunityWorker)
-                         .map(directive -> new Assignment(node,
-                                                          directive.communityId()))
+                         .map(directive -> Assignment.assignment(node,
+                                                                 directive.communityId()))
                : Option.none();
     }
 
     private static Stream<TxDraft> drafts(ClusterModel m) {
-        return Stream.concat(m.submitted.values()
-                                        .stream()
-                                        .flatMap(submitted -> submitted.drafts()
-                                                                       .stream()),
+        return Stream.concat(m.submitted.values().stream().flatMap(submitted -> submitted.drafts()
+                                                                                         .stream()),
                              m.outbox.stream());
     }
 
