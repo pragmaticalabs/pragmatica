@@ -262,10 +262,17 @@ class RabiaReorderedDeliveryTest {
                                                                                                      .containsExactly(scenario.covered()));
 
         var next = Batch.create(cluster.machines.getFirst().serializer(), List.of(new TestCommand("agreed-meanwhile")));
-        cluster.engines.get(1).handleNewBatch(new NewBatch<>(cluster.members.get(1), next));
+        var voterOne = cluster.engines.get(1);
+        var phaseBefore = voterOne.currentPhaseForTesting().value();
+        voterOne.handleNewBatch(new NewBatch<>(cluster.members.get(1), next));
         cluster.settle();
-        assertThat(cluster.engines.get(1).consecutiveEmptySlotsWithPending())
-            .as("voter 1 had nothing pending through the empty slots, so its count starts at 0").isZero();
+        // settle() may let voter 1 decide a slot at once from votes it already holds, now with `next` pending, so the count
+        // can legitimately be 1: it is bounded by the slots decided since `next` arrived, never by the earlier empty slots
+        // (carried over, it would be above 20 here).
+        var slotsSinceNext = voterOne.currentPhaseForTesting().value() - phaseBefore;
+        assertThat(voterOne.consecutiveEmptySlotsWithPending())
+            .as("voter 1 had nothing pending through the empty slots, so only slots decided since its batch arrived count")
+            .isLessThanOrEqualTo(slotsSinceNext);
 
         cluster.blocked = _ -> false;
         cluster.pumpUntil(() -> scenario.recovering().pendingBatchCountForTesting() == 0);
