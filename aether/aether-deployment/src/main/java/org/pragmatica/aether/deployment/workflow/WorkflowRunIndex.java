@@ -159,8 +159,9 @@ public final class WorkflowRunIndex {
     ///   `after` is `RUNNING` or `WAITING`. Unreachable in f2b (no resume verb); tested by committing a `resumed(...)` value directly.
     ///
     /// Seeding (N13, v2803c F2). [#reseed] rebuilds `openIncidents` from the COMMITTED `ESCALATED` runs in the index. The owner wiring
-    /// calls it when this node starts to own the events partition, on every owner change, and after a state restore (a restore applies
-    /// no listener call, so a run that escalated before the snapshot was never seen). Without it a new owner would resolve nothing.
+    /// that a later lane (L1b) adds is to call it when this node starts to own the events partition, on every owner change, and after a
+    /// state restore (a restore applies no listener call, so a run that escalated before the snapshot was never seen). Without it a new
+    /// owner would resolve nothing. At this head [#reseed] has no production caller: it is exercised by the unit tests only.
     /// The committed run records, durably, that it escalated ([WorkflowRunValue#wasEscalated]: a `detail` marker set by the transition
     /// into `ESCALATED` and kept through resume and the terminal commit). So [#reseed] also raises RESOLVED, with the outcome, for every
     /// marked run in the index that is already terminal: an old owner that died between the terminal commit and its RESOLVED no longer

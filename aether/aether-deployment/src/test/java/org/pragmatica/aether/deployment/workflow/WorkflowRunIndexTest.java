@@ -501,6 +501,28 @@ class WorkflowRunIndexTest {
         assertThat(codes(probe.settled())).containsExactly(OperatorWarningCode.WORKFLOW_ESCALATED, OperatorWarningCode.WORKFLOW_RESOLVED);
     }
 
+    /// x05: the resolved-ids memory shrinks to the runs still in the index at each reseed, so an id that left the index and came back
+    /// terminal is resolved again (a pruned and re-created run id is a new incident).
+    @Test
+    void announcer_reseed_runIdLeftTheIndexAndReturnedTerminal_raisesResolvedAgain() {
+        var index = WorkflowRunIndex.workflowRunIndex();
+        var escalated = run("wf-a", 10L).in(WorkflowState.ESCALATED, "incident");
+        var terminal = escalated.in(WorkflowState.DONE, "");
+        var announcer = WorkflowRunIndex.announcer(index, () -> true, probe.sink());
+
+        index.onTransition(announcer);
+        index.put(escalated);
+        index.put(terminal);
+        announcer.reseed();
+        index.remove("wf-a");
+        announcer.reseed();
+        index.put(terminal);
+        announcer.reseed();
+        assertThat(codes(probe.settled())).containsExactly(OperatorWarningCode.WORKFLOW_ESCALATED,
+                                                           OperatorWarningCode.WORKFLOW_RESOLVED,
+                                                           OperatorWarningCode.WORKFLOW_RESOLVED);
+    }
+
     /// fixD: two reseeds of a terminal marked run that was never resolved raise one RESOLVED, and a non-owner raises none.
     @Test
     void announcer_reseed_twiceForAnUnresolvedTerminal_raisesOnce_andNotOnANonOwner() {
