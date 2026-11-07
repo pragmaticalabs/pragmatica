@@ -28,6 +28,7 @@ import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -270,11 +271,28 @@ class ReplicationResendNotSentTest {
     @Test
     void replicateEvent_stopsResending_afterTheAckDeadline_withTheProductionClock() throws Exception {
         var sends = new AtomicInteger();
-        ReplicationTransport refusing = (target, message) -> {
+
+        assertStopsAfterTheDeadline(sends, ReplicationManager.replicationManager(OWNER, registry, refusingTransport(sends)));
+    }
+
+    /// (h2) The same bound through the constructor that takes a `betweenSteps` hook and the shared scheduler: its clock
+    /// default is `System::nanoTime` too, and a frozen one re-sends for ever.
+    @Test
+    void replicateEvent_stopsResending_afterTheAckDeadline_withTheBetweenStepsConstructorClock() throws Exception {
+        var sends = new AtomicInteger();
+        var seam = new DefaultReplicationManager(OWNER, registry, refusingTransport(sends), () -> {}, SharedScheduler::schedule);
+
+        assertStopsAfterTheDeadline(sends, seam);
+    }
+
+    private static ReplicationTransport refusingTransport(AtomicInteger sends) {
+        return (target, message) -> {
             sends.incrementAndGet();
             return Promise.success(new WriteOutcome.BackpressureRefused(target));
         };
-        var production = ReplicationManager.replicationManager(OWNER, registry, refusing);
+    }
+
+    private void assertStopsAfterTheDeadline(AtomicInteger sends, ReplicationManager production) throws Exception {
         var timedOut = new CountDownLatch(1);
 
         try {
