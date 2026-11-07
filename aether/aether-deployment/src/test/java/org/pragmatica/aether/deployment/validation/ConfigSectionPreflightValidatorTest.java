@@ -13,6 +13,7 @@ import org.pragmatica.aether.slice.topology.SliceTopology.ResourceDep;
 import org.pragmatica.aether.slice.topology.SliceTopology.TopicPub;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.source.MapConfigSource;
+import org.pragmatica.config.source.TomlConfigSource;
 import org.pragmatica.lang.Option;
 
 import java.util.HashMap;
@@ -290,6 +291,21 @@ class ConfigSectionPreflightValidatorTest {
 
             result.onSuccess(_ -> fail("the jar layer is bound at load even with no node composite — expected failure"))
                   .onFailure(cause -> assertThat(cause.message()).contains("replication-factor"));
+        }
+
+        /// The key is held only by the node composite (the jar ships no resources.toml), so a check that does not read
+        /// the composite layer would fail open here.
+        @Test
+        void validate_dashedKeyInNodeCompositeOnly_fails() {
+            var topology = topologyWithPublishTopic("orders-api", "order-events");
+            var source = TomlConfigSource.tomlConfigSource(DASHED_KEY_TOML).unwrap();
+            var composite = ConfigurationProvider.builder().withSource(source).build();
+            var result = ConfigSectionPreflightValidator.validate(List.of(jarWithoutResourcesToml(topology)),
+                                                                  Option.some(composite));
+
+            result.onSuccess(_ -> fail("a dashed key held by the node composite must refuse the deploy"))
+                  .onFailure(cause -> assertThat(cause.message()).contains("orders-api")
+                                                                  .contains("replication-factor"));
         }
 
         @Test
