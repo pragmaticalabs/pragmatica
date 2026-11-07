@@ -131,8 +131,10 @@ final class BodyStream {
         return accepting.isPresent() || !waiting.isEmpty();
     }
 
+    /// Accepts the next waiting chunk unless one is outstanding. Never reached once a terminal call was decided: `offer`
+    /// and `end` check for that, and the settling of an `accept` reaches it only on success with no abort pending.
     private void pump() {
-        if (ended || accepting.isPresent()) {
+        if (accepting.isPresent()) {
             return;
         }
 

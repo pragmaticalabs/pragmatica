@@ -20,7 +20,9 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -64,6 +66,7 @@ final class RecordingSink implements BodySink {
     private final AtomicLong maxSample = new AtomicLong(Long.MIN_VALUE);
     private final List<String> terminals = new CopyOnWriteArrayList<>();
     private final List<String> violations = new CopyOnWriteArrayList<>();
+    private final Set<String> acceptThreads = ConcurrentHashMap.newKeySet();
     private final CompletableFuture<HttpRequest> completed = new CompletableFuture<>();
     private final CompletableFuture<String> ended = new CompletableFuture<>();
     private volatile long nanosPerByte;
@@ -107,6 +110,7 @@ final class RecordingSink implements BodySink {
         var now = outstanding.incrementAndGet();
         var size = chunk.remaining();
 
+        acceptThreads.add(Thread.currentThread().getName());
         maxOutstanding.accumulateAndGet(now, Math::max);
         maxChunk.accumulateAndGet(size, Math::max);
         maxSample.accumulateAndGet(sampler.getAsLong(), Math::max);
@@ -195,6 +199,12 @@ final class RecordingSink implements BodySink {
 
     long accepts() {
         return accepts.get();
+    }
+
+    /// The threads `accept` was called on: the server calls it on the channel's event loop only, never on the thread
+    /// that resolved the previous `accept`.
+    Set<String> acceptThreads() {
+        return acceptThreads;
     }
 
     int maxOutstanding() {

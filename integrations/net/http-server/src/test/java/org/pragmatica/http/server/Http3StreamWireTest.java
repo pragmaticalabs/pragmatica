@@ -128,6 +128,7 @@ class Http3StreamWireTest {
                           sink.maxChunk(),
                           sink.maxSample() - baseline);
         assertThat(sink.maxOutstanding()).as("at most one accept outstanding").isEqualTo(1);
+        assertThat(sink.acceptThreads()).as("every accept on the channel's event loop").hasSize(1);
         assertThat(sink.maxChunk()).as("largest chunk one accept was given").isLessThanOrEqualTo(CHUNK_BOUND);
         assertThat(sink.maxSample() - baseline).as("direct memory gained (baseline %d, %d accepts, largest chunk %d)",
                                                    baseline,
