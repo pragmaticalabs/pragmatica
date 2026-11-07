@@ -151,14 +151,26 @@ class StreamNoWalRestartOffsetTest {
         index = new SegmentIndex();
         index.rebuildFromRefs(metadataStore);
         startOwnerOn(index);
-        var seededVisible = visible();
-
         assertThat(manager.mayServeAsOwner(STREAM, PARTITION)).as("control: an owner admission ran").isTrue();
 
-        assertThat(seededVisible).as("the seed itself, before any admission could raise it").isEqualTo(index.lastSealedOffset(STREAM, PARTITION));
         assertThat(visible()).as("seeded at the sealed floor, as before PR-2f").isEqualTo(index.lastSealedOffset(STREAM, PARTITION));
         assertThat(ackedMarkersUnder(storageDir)).as("no .acked file anywhere").isZero();
         assertThat(ackedMarkersUnder(snapshotDir)).isZero();
+    }
+
+    /// The seed itself, with a confirmation factor that does not lift visible to durable on its own: the floor, not -1.
+    @Test
+    void noWalRestart_underAConfirmationFactorOfTwo_seedsVisibleAtTheSealedFloor() {
+        index = new SegmentIndex();
+        startOwnerOn(index);
+        publish(PUBLISHED);
+        awaitSealedThrough(SEALED_THROUGH);
+        manager.close();
+        index = new SegmentIndex();
+        index.rebuildFromRefs(metadataStore);
+        startOwnerOn(index, RefDurability.LIVE, config(3, 2));
+
+        assertThat(visible()).as("nothing but the seed can have set it: no ack, no admission").isEqualTo(SEALED_THROUGH);
     }
 
     /// Over-seeding guard: a no-WAL stream that never sealed anything still starts at offset 0.
@@ -180,6 +192,10 @@ class StreamNoWalRestartOffsetTest {
     }
 
     private void startOwnerOn(SegmentIndex segmentIndex, RefDurability refDurability) {
+        startOwnerOn(segmentIndex, refDurability, config());
+    }
+
+    private void startOwnerOn(SegmentIndex segmentIndex, RefDurability refDurability, StreamConfig streamConfig) {
         ReplicaRegistry registry = replicaRegistry();
 
         registry.registerReplica(STREAM, PARTITION, SELF);
@@ -188,7 +204,7 @@ class StreamNoWalRestartOffsetTest {
                                          replicationManager(SELF, registry),
                                          Option.none(),
                                          segmentIndex::lastSealedOffset);
-        manager.createStream(config()).onFailure(cause -> fail(cause.message()));
+        manager.createStream(streamConfig).onFailure(cause -> fail(cause.message()));
     }
 
     /// No periodic trigger fires in a test: only the forced snapshots are on disk.
@@ -207,14 +223,18 @@ class StreamNoWalRestartOffsetTest {
     }
 
     private static StreamConfig config() {
+        return config(1, 1);
+    }
+
+    private static StreamConfig config(int replicationFactor, int confirmationFactor) {
         return StreamConfig.streamConfig(STREAM,
                                          1,
                                          RetentionPolicy.retentionPolicy(RING_CAPACITY, 1_048_576L, 60_000L),
                                          "earliest",
                                          1_048_576L,
                                          ConsistencyMode.EVENTUAL,
-                                         1,
-                                         1,
+                                         replicationFactor,
+                                         confirmationFactor,
                                          StreamCompression.NONE,
                                          Option.none());
     }
