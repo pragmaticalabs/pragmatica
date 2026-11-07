@@ -756,7 +756,12 @@ public interface SystemTags {
         pin(table, 2222, "org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowState");
         pin(table, 2223, "org.pragmatica.aether.slice.kvstore.AetherKey.WorkflowClaimKey");
         pin(table, 2224, "org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowClaimValue");
-        // ---- 2225..16383 RESERVED ----
+        // U2 (streaming upload ingest): the stored-upload handles an ingress attaches to HttpRequestContext, so a forward
+        // carries a reference instead of the body. 2890..2892 as assigned for U2, not the next free slot.
+        pin(table, 2890, "org.pragmatica.aether.http.handler.ObjectHandle");
+        pin(table, 2891, "org.pragmatica.aether.http.handler.FileHandle");
+        pin(table, 2892, "org.pragmatica.aether.http.handler.UploadHandle");
+        // ---- 2225..2889 and 2893..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

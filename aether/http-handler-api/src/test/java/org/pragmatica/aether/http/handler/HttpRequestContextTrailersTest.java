@@ -8,6 +8,7 @@ import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
+import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -24,7 +25,8 @@ class HttpRequestContextTrailersTest {
                                                         new byte[0],
                                                         null,
                                                         "req",
-                                                        SecurityContext.securityContext()))
+                                                        SecurityContext.securityContext(),
+                                                        Option.none()))
             .isInstanceOf(NullPointerException.class)
             .hasMessage("trailers");
     }
