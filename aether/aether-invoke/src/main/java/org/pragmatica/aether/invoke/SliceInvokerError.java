@@ -6,25 +6,13 @@ package org.pragmatica.aether.invoke;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 
 public sealed interface SliceInvokerError extends Cause {
-    record AllInstancesFailedError(Artifact artifact, MethodName method, String details) implements SliceInvokerError {
-        public static AllInstancesFailedError allInstancesFailedError(Artifact artifact,
-                                                                      MethodName method,
-                                                                      String details) {
-            return new AllInstancesFailedError(artifact, method, details);
-        }
-
-        @Override
-        public String message() {
-            return "All instances failed for " + artifact + ":" + method + " - " + details;
-        }
-    }
-
     record InvocationError(Artifact artifact, MethodName method, Cause cause) implements SliceInvokerError {
         public static InvocationError invocationError(Artifact artifact, MethodName method, Cause cause) {
             return new InvocationError(artifact, method, cause);
@@ -63,6 +51,35 @@ public sealed interface SliceInvokerError extends Cause {
                  + ":" + method
                  + ": no response within the invocation timeout (" + timeout.message()
                  + ")";
+        }
+    }
+
+    /// #2807: the target node departed while the call waited for its response. The request was handed to the transport,
+    /// so it may have run there: the outcome is UNKNOWN, and the invoker never re-sends it to another instance, because a
+    /// non-idempotent call must not run twice.
+    record TargetDeparted(NodeId targetNode) implements SliceInvokerError {
+        public static TargetDeparted targetDeparted(NodeId targetNode) {
+            return new TargetDeparted(targetNode);
+        }
+
+        @Override
+        public String message() {
+            return "Target node " + targetNode + " departed after the request was sent: outcome unknown, not re-sent";
+        }
+    }
+
+    /// #2807: every instance the typed call could be routed to refused the request at the transport, so this call
+    /// reached no callee. It is a failure of THIS slice-to-slice hop only: it is deliberately not an HttpError and keeps
+    /// the refusal out of `source()`, so a route that returns it makes no claim about the caller's own effects (the
+    /// outer handler may have applied some before it made this call) and never tells a client to retry.
+    record NoInstanceAccepted(Artifact artifact, MethodName method, Cause refusal) implements SliceInvokerError {
+        public static NoInstanceAccepted noInstanceAccepted(Artifact artifact, MethodName method, Cause refusal) {
+            return new NoInstanceAccepted(artifact, method, refusal);
+        }
+
+        @Override
+        public String message() {
+            return "No instance of " + artifact + ":" + method + " accepted the request: " + refusal.message();
         }
     }
 

@@ -650,15 +650,6 @@ class PublisherFactoryTest {
         }
 
         @Override
-        public <R> Promise<R> invokeWithRetry(Artifact slice,
-                                              MethodName method,
-                                              Object request,
-                                              TypeToken<R> responseType,
-                                              int maxRetries) {
-            return invoke(slice, method, request, responseType);
-        }
-
-        @Override
         public <R> Promise<R> invokeLocal(Artifact slice,
                                           MethodName method,
                                           Object request,
