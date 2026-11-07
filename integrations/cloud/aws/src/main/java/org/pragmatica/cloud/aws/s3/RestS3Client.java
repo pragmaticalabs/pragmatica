@@ -179,10 +179,7 @@ record RestS3Client(S3Config config,
                              METADATA_DIRECTIVE_HEADER,
                              "REPLACE");
 
-        return authorize("PUT",
-                         url,
-                         headers,
-                         EMPTY_BODY).map(signed -> buildCopyRequest(url, headers, signed))
+        return authorize("PUT", url, headers, EMPTY_BODY).map(signed -> buildCopyRequest(url, headers, signed))
                         .flatMap(http::sendString)
                         .flatMap(result -> toCopied(result, key));
     }
@@ -313,10 +310,8 @@ record RestS3Client(S3Config config,
 
     private static Result<ObjectStat> statFromHeaders(HttpResult<Unit> result, String key) {
         return header(result, "Content-Length", key).flatMap(RestS3Client::parseSize)
-                                                   .flatMap(size -> header(result, "Last-Modified", key).flatMap(RestS3Client::parseHttpDate)
-                                                                                                       .map(modified -> ObjectStat.objectStat(key,
-                                                                                                                                              size,
-                                                                                                                                              modified)));
+                     .flatMap(size -> header(result, "Last-Modified", key).flatMap(RestS3Client::parseHttpDate)
+                                            .map(modified -> ObjectStat.objectStat(key, size, modified)));
     }
 
     private static Result<String> header(HttpResult<Unit> result, String name, String key) {
@@ -331,20 +326,19 @@ record RestS3Client(S3Config config,
 
     private static Result<Long> parseHttpDate(String value) {
         return Result.lift(_ -> new S3Error.ParseError("date '" + value + "' is not an RFC 1123 date"),
-                           () -> DateTimeFormatter.RFC_1123_DATE_TIME.parse(value.trim(), Instant::from)
+                           () -> DateTimeFormatter.RFC_1123_DATE_TIME.parse(value.trim(),
+                                                                            Instant::from)
                                                                      .toEpochMilli());
     }
 
     private static Result<Long> parseIsoDate(String value) {
         return Result.lift(_ -> new S3Error.ParseError("date '" + value + "' is not an ISO-8601 instant"),
-                           () -> Instant.parse(value.trim())
-                                        .toEpochMilli());
+                           () -> Instant.parse(value.trim()).toEpochMilli());
     }
 
     /// S3 can answer a copy with 200 and an `<Error>` body when it fails after starting: that is a failure, not a copy.
     private static Promise<Boolean> toCopied(HttpResult<String> result, String key) {
-        if (result.isSuccess() && !result.body()
-                                         .contains("<Error>")) {
+        if (result.isSuccess() && !result.body().contains("<Error>")) {
             return success(true);
         }
 
@@ -400,29 +394,22 @@ record RestS3Client(S3Config config,
                                             .results()
                                             .map(m -> m.group(1))
                                             .map(RestS3Client::objectStat)
-                                            .toList())
-                     .map(objects -> ObjectListing.objectListing(objects,
-                                                                 xml.contains("<IsTruncated>true</IsTruncated>")));
+                                            .toList()).map(objects -> ObjectListing.objectListing(objects,
+                                                                                                  xml.contains("<IsTruncated>true</IsTruncated>")));
     }
 
     private static Result<ObjectStat> objectStat(String contents) {
         return element(contents, KEY_PATTERN).flatMap(key -> element(contents, SIZE_PATTERN).flatMap(RestS3Client::parseSize)
-                                                                                    .flatMap(size -> objectStatOf(contents,
-                                                                                                                  key,
-                                                                                                                  size)));
+                                                                    .flatMap(size -> objectStatOf(contents, key, size)));
     }
 
     private static Result<ObjectStat> objectStatOf(String contents, String key, long size) {
         return element(contents, LAST_MODIFIED_PATTERN).flatMap(RestS3Client::parseIsoDate)
-                                                       .map(modified -> ObjectStat.objectStat(key, size, modified));
+                      .map(modified -> ObjectStat.objectStat(key, size, modified));
     }
 
     private static Result<String> element(String contents, Pattern pattern) {
-        return Option.from(pattern.matcher(contents)
-                                  .results()
-                                  .map(m -> m.group(1))
-                                  .findFirst())
-                     .toResult(new S3Error.ParseError("listed object lacks " + pattern.pattern()));
+        return Option.from(pattern.matcher(contents).results().map(m -> m.group(1)).findFirst()).toResult(new S3Error.ParseError("listed object lacks " + pattern.pattern()));
     }
 
     // --- URL builders ---

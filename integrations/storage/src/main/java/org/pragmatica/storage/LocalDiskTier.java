@@ -1,6 +1,5 @@
 package org.pragmatica.storage;
 
-import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -274,10 +273,7 @@ public final class LocalDiskTier implements StorageTier {
     /// The block file's size and modification time.
     @Override
     public Promise<Option<BlockStat>> stat(BlockId id) {
-        return Promise.lift(READ_ERROR,
-                            () -> statFile(id,
-                                           blockPath(id)))
-                      .flatMap(Promise::resolved);
+        return Promise.lift(READ_ERROR, () -> statFile(id, blockPath(id))).flatMap(Promise::resolved);
     }
 
     /// Walks the shard's first-level directories in ascending order, skipping those wholly before the cursor; each
@@ -285,18 +281,14 @@ public final class LocalDiskTier implements StorageTier {
     /// between the listing and its stat is skipped, never counted against the page.
     @Override
     public Promise<Page<BlockStat>> scan(KeyShard shard, Option<Cursor> after, int limit) {
-        return Promise.lift(READ_ERROR,
-                            () -> scanShard(shard, after, limit))
-                      .flatMap(Promise::resolved);
+        return Promise.lift(READ_ERROR, () -> scanShard(shard, after, limit)).flatMap(Promise::resolved);
     }
 
     /// Sets the block file's modification time to now and forces the file with its metadata, so the refresh survives a
     /// power loss as a [#put] does. The bytes are not rewritten.
     @Override
     public Promise<Boolean> touch(BlockId id) {
-        return Promise.lift(WRITE_ERROR,
-                            () -> touchFile(blockPath(id)))
-                      .flatMap(Promise::resolved);
+        return Promise.lift(WRITE_ERROR, () -> touchFile(blockPath(id))).flatMap(Promise::resolved);
     }
 
     private Result<Page<BlockStat>> scanShard(KeyShard shard, Option<Cursor> after, int limit) {
@@ -319,15 +311,13 @@ public final class LocalDiskTier implements StorageTier {
             return Result.success(found);
         }
 
-        return blocksUnder(prefixes.get(index),
-                           resume,
-                           limit - found.size()).flatMap(more -> collect(prefixes,
-                                                                         index + 1,
-                                                                         resume,
-                                                                         limit,
-                                                                         Stream.concat(found.stream(),
-                                                                                       more.stream())
-                                                                               .toList()));
+        return blocksUnder(prefixes.get(index), resume, limit - found.size()).flatMap(more -> collect(prefixes,
+                                                                                                      index + 1,
+                                                                                                      resume,
+                                                                                                      limit,
+                                                                                                      Stream.concat(found.stream(),
+                                                                                                                    more.stream())
+                                                                                                            .toList()));
     }
 
     private Result<List<BlockStat>> blocksUnder(String prefix, Option<String> resume, int wanted) {
@@ -335,12 +325,17 @@ public final class LocalDiskTier implements StorageTier {
 
         return FileOps.isDirectory(directory) && resume.filter(hex -> prefix.compareTo(hex.substring(0, 2)) < 0)
                                                        .isEmpty()
-               ? FileOps.walk(directory, FileOps::isRegularFile)
-                        .flatMap(files -> statFirst(files, directory, resume, wanted))
+               ? FileOps.walk(directory, FileOps::isRegularFile).flatMap(files -> statFirst(files,
+                                                                                            directory,
+                                                                                            resume,
+                                                                                            wanted))
                : Result.success(List.of());
     }
 
-    private static Result<List<BlockStat>> statFirst(List<Path> files, Path directory, Option<String> resume, int wanted) {
+    private static Result<List<BlockStat>> statFirst(List<Path> files,
+                                                     Path directory,
+                                                     Option<String> resume,
+                                                     int wanted) {
         var stats = files.stream()
                          .filter(file -> isBlockFileUnder(directory, file))
                          .filter(file -> resume.fold(() -> true,
@@ -353,10 +348,9 @@ public final class LocalDiskTier implements StorageTier {
                          .limit(wanted)
                          .toList();
 
-        return Result.allOf(stats)
-                     .map(found -> found.stream()
-                                        .flatMap(Option::stream)
-                                        .toList());
+        return Result.allOf(stats).map(found -> found.stream()
+                                                     .flatMap(Option::stream)
+                                                     .toList());
     }
 
     /// `{dir}/{hex[2:4]}/{hex}` with `{dir}` named `hex[0:2]`: a block, never a partial, a claim or an anchor.
@@ -365,13 +359,14 @@ public final class LocalDiskTier implements StorageTier {
         var shardDirectory = file.getParent();
         var expectedStart = directory.getFileName().toString() + shardDirectory.getFileName().toString();
 
-        return BLOCK_NAME.matcher(name).matches() && shardDirectory.getParent().equals(directory) && name.startsWith(expectedStart);
+        return BLOCK_NAME.matcher(name).matches()
+               && shardDirectory.getParent()
+                                .equals(directory)
+               && name.startsWith(expectedStart);
     }
 
     private static Result<Option<BlockStat>> statBlockFile(Path file) {
-        return BlockId.fromHex(file.getFileName()
-                                   .toString())
-                      .flatMap(id -> statFile(id, file));
+        return BlockId.fromHex(file.getFileName().toString()).flatMap(id -> statFile(id, file));
     }
 
     /// None when no regular file is at `path`, including one deleted while it was being read.
@@ -386,8 +381,7 @@ public final class LocalDiskTier implements StorageTier {
         return attributes.isRegularFile()
                ? some(BlockStat.blockStat(id,
                                           attributes.size(),
-                                          attributes.lastModifiedTime()
-                                                    .toMillis()))
+                                          attributes.lastModifiedTime().toMillis()))
                : none();
     }
 
@@ -403,19 +397,24 @@ public final class LocalDiskTier implements StorageTier {
                ? Result.lift(WRITE_ERROR,
                              () -> Files.setLastModifiedTime(path,
                                                              FileTime.fromMillis(System.currentTimeMillis())))
-                       .flatMap(_ -> Result.lift(WRITE_ERROR,
-                                                 () -> forceWithMetadata(path)))
+                       .flatMap(_ -> forceWithMetadata(path))
                        .fold(cause -> absentOr(path, cause).map(Option::isPresent),
                              _ -> Result.success(true))
                : Result.success(false);
     }
 
-    private static Unit forceWithMetadata(Path path) throws IOException {
-        try (var channel = FileChannel.open(path, StandardOpenOption.READ)) {
-            channel.force(true);
-        }
+    private static Result<Unit> forceWithMetadata(Path path) {
+        return Result.lift(WRITE_ERROR,
+                           () -> FileChannel.open(path, StandardOpenOption.READ))
+                     .flatMap(LocalDiskTier::forceThenClose);
+    }
 
-        return unit();
+    /// The channel is closed whatever the force's outcome; a failed force is the failure reported.
+    private static Result<Unit> forceThenClose(FileChannel channel) {
+        var forced = Result.lift(WRITE_ERROR, () -> channel.force(true));
+        var closed = Result.lift(WRITE_ERROR, channel::close);
+
+        return forced.flatMap(_ -> closed);
     }
 
     @Override

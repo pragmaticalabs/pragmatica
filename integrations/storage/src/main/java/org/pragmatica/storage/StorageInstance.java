@@ -1285,18 +1285,22 @@ final class DefaultStorageInstance implements StorageInstance {
     /// one metadata-only refresh and no read.
     @Override
     public Promise<Unit> ensureHeld(BlockId id, TierLevel level) {
-        return Option.from(tiers.stream()
-                                .filter(tier -> tier.level() == level)
-                                .findFirst())
-                     .fold(() -> StorageError.NoSuchTier.noSuchTier(name, level).promise(),
-                           tier -> afterInFlight(id).flatMap(_ -> holdOn(tier, id)));
+        return tierAt(level).fold(() -> noSuchTier(level), tier -> afterInFlight(id).flatMap(_ -> holdOn(tier, id)));
+    }
+
+    private Option<StorageTier> tierAt(TierLevel level) {
+        return Option.from(tiers.stream().filter(tier -> tier.level() == level).findFirst());
+    }
+
+    private Promise<Unit> noSuchTier(TierLevel level) {
+        return StorageError.NoSuchTier.noSuchTier(name, level).promise();
     }
 
     /// A write of the id in flight here ([#writing]) is waited for whatever its outcome -- a failed write undoes the copies
     /// it created, which must not include this one -- and then a collection ([#afterCollection]).
     private Promise<Unit> afterInFlight(BlockId id) {
         return option(writing.get(id)).or(Promise.success(unit()))
-                                      .fold(_ -> afterCollection(id));
+                     .fold(_ -> afterCollection(id));
     }
 
     private Promise<Unit> holdOn(StorageTier tier, BlockId id) {
@@ -1304,12 +1308,12 @@ final class DefaultStorageInstance implements StorageInstance {
                    .flatMap(held -> held
                                     ? Promise.success(unit())
                                     : copyOnto(tier, id))
-                   .map(_ -> observePresence(id, tier.level()));
+                   .map(_ -> observePresence(id,
+                                             tier.level()));
     }
 
     private Promise<Unit> copyOnto(StorageTier target, BlockId id) {
-        return verifiedCopy(id, target, 0).flatMap(found -> found.fold(() -> StorageError.BlockNotFound.blockNotFound(id)
-                                                                                                       .promise(),
+        return verifiedCopy(id, target, 0).flatMap(found -> found.fold(() -> StorageError.BlockNotFound.blockNotFound(id).promise(),
                                                                        content -> target.put(id, content)));
     }
 
@@ -1334,8 +1338,7 @@ final class DefaultStorageInstance implements StorageInstance {
                       .async()
                       .flatMap(actual -> actual.equals(id)
                                          ? Promise.success(some(content))
-                                         : StorageError.IntegrityError.integrityError(id, actual)
-                                                                      .promise());
+                                         : StorageError.IntegrityError.integrityError(id, actual).promise());
     }
 
     private Unit observePresence(BlockId id, TierLevel level) {

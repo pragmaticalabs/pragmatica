@@ -98,7 +98,8 @@ public final class MemoryTier implements StorageTier {
     public Promise<Page<BlockStat>> scan(KeyShard shard, Option<Cursor> after, int limit) {
         return KeyShard.pageLimit(limit)
                        .flatMap(_ -> KeyShard.resumeAfter(after))
-                       .map(resume -> KeyShard.pageOf(blocksAfter(shard, resume), limit))
+                       .map(resume -> KeyShard.pageOf(blocksAfter(shard, resume),
+                                                      limit))
                        .async();
     }
 
@@ -109,8 +110,11 @@ public final class MemoryTier implements StorageTier {
                     .map(entry -> statOf(entry.getKey(),
                                          entry.getValue()))
                     .filter(stat -> resume.fold(() -> true,
-                                                hex -> stat.id().hexString().compareTo(hex) > 0))
-                    .sorted(Comparator.comparing(stat -> stat.id().hexString()))
+                                                hex -> stat.id()
+                                                           .hexString()
+                                                           .compareTo(hex) > 0))
+                    .sorted(Comparator.comparing(stat -> stat.id()
+                                                             .hexString()))
                     .toList();
     }
 

@@ -184,49 +184,37 @@ public final class RemoteTier implements StorageTier {
         }
 
         var prefix = prefixes.get(index);
-        var before = resume.filter(hex -> prefix.compareTo(hex.substring(0, 2)) < 0)
-                           .isPresent();
+        var before = resume.filter(hex -> prefix.compareTo(hex.substring(0, 2)) < 0).isPresent();
         var listed = before
                      ? Promise.success(List.<BlockStat> of())
                      : listUnder(prefix,
-                                 resume.filter(hex -> hex.startsWith(prefix))
-                                       .map(this::blockKey),
+                                 resume.filter(hex -> hex.startsWith(prefix)).map(this::blockKey),
                                  limit - found.size());
 
         return listed.flatMap(more -> collect(prefixes,
                                               index + 1,
                                               resume,
                                               limit,
-                                              Stream.concat(found.stream(),
-                                                            more.stream())
-                                                    .toList()));
+                                              Stream.concat(found.stream(), more.stream()).toList()));
     }
 
     private Promise<List<BlockStat>> listUnder(String prefix, Option<String> startAfter, int wanted) {
         var listPrefix = keyPrefix + prefix + "/";
 
-        return request("LIST",
-                       listPrefix,
-                       () -> s3Client.listObjectStats(listPrefix, startAfter, wanted)).flatMap(listing -> restOf(prefix,
-                                                                                                                 listing,
-                                                                                                                 wanted));
+        return request("LIST", listPrefix, () -> s3Client.listObjectStats(listPrefix, startAfter, wanted)).flatMap(listing -> restOf(prefix,
+                                                                                                                                     listing,
+                                                                                                                                     wanted));
     }
 
     /// A provider may end a page early with more to come; the prefix is listed on from the last key until `wanted`
     /// blocks are found or it says nothing follows.
     private Promise<List<BlockStat>> restOf(String prefix, S3Client.ObjectListing listing, int wanted) {
-        var stats = listing.objects()
-                           .stream()
-                           .flatMap(object -> blockStatOf(object).stream())
-                           .toList();
-        var more = listing.truncated() && !listing.objects()
-                                                  .isEmpty() && stats.size() < wanted;
+        var stats = listing.objects().stream().flatMap(object -> blockStatOf(object).stream()).toList();
+        var more = listing.truncated() && !listing.objects().isEmpty() && stats.size() < wanted;
 
         return more
                ? listUnder(prefix,
-                           some(listing.objects()
-                                       .getLast()
-                                       .key()),
+                           some(listing.objects().getLast().key()),
                            wanted - stats.size()).map(rest -> Stream.concat(stats.stream(),
                                                                             rest.stream())
                                                                     .toList())
@@ -236,8 +224,11 @@ public final class RemoteTier implements StorageTier {
     private Option<BlockStat> blockStatOf(S3Client.ObjectStat object) {
         var name = object.key().substring(object.key().lastIndexOf('/') + 1);
 
-        return BLOCK_NAME.matcher(name).matches() && object.key().equals(blockKey(name))
-               ? BlockId.fromHex(name).option().map(id -> statOf(id, object))
+        return BLOCK_NAME.matcher(name).matches() && object.key()
+                                                           .equals(blockKey(name))
+               ? BlockId.fromHex(name)
+                        .option()
+                        .map(id -> statOf(id, object))
                : none();
     }
 

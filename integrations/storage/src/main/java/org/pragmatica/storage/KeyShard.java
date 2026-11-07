@@ -12,6 +12,7 @@ import org.pragmatica.lang.Verify;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
+
 /// One of `count` disjoint shards of the block-id space, decided by the first byte of the block's hash (A2b): first byte
 /// `b` belongs to shard `b * count / 256`. A shard covers a contiguous run of first bytes, so a tier that lays blocks out
 /// by the first two hex characters ([LocalDiskTier] directories, [RemoteTier] key prefixes) visits only that run. The
@@ -38,8 +39,8 @@ public record KeyShard(int index, int count) {
                                                  Verify.Is::between,
                                                  0,
                                                  count - 1,
-                                                 StorageError.InvalidScan.invalidScan("shard " + index + " is outside 0.." + (count
-                                                                                                                              - 1))))
+                                                 StorageError.InvalidScan.invalidScan("shard " + index
+                                                                                     + " is outside 0.." + (count - 1))))
                      .map(_ -> new KeyShard(index, count));
     }
 
@@ -49,7 +50,7 @@ public record KeyShard(int index, int count) {
     }
 
     public boolean contains(BlockId id) {
-        return shardOf(id.hash()[0] & 0xFF) == index;
+        return shardOf(id.hash() [0] & 0xFF) == index;
     }
 
     /// The two-hex-character first-byte prefixes of this shard, in ascending order.
@@ -88,9 +89,7 @@ public record KeyShard(int index, int count) {
     /// The page of `limit` taken from `ascending`, which holds this shard's blocks after the cursor in ascending hex order
     /// (more than `limit` of them is fine: only the first `limit` are returned).
     static Page<BlockStat> pageOf(List<BlockStat> ascending, int limit) {
-        var items = ascending.stream()
-                             .limit(limit)
-                             .toList();
+        var items = ascending.stream().limit(limit).toList();
 
         return Page.page(items, nextCursor(items, limit));
     }
