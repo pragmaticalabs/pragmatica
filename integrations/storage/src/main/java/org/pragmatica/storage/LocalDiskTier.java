@@ -83,6 +83,8 @@ public final class LocalDiskTier implements StorageTier {
     private final Option<Fn1<Result<Option<byte[]>>, BlockId>> readerOverride;
     private final Fn2<Result<Unit>, Path, byte[]> writer;
     private final Fn1<Result<Unit>, Path> directoryForcer;
+    /// Sees every path a [#scan] lists, after the listing and before any stat of it; a no-op outside tests.
+    private final Fn1<Unit, Path> listingObserver;
     private final AtomicReference<Option<MountClaim>> claim = new AtomicReference<>(none());
     /// The smallest put refused for want of space in the current full episode; [#NO_REFUSAL] when none is open.
     private final AtomicLong smallestRefused = new AtomicLong(NO_REFUSAL);
@@ -94,13 +96,15 @@ public final class LocalDiskTier implements StorageTier {
                           TimeSpan readTimeout,
                           Option<Fn1<Result<Option<byte[]>>, BlockId>> readerOverride,
                           Option<Fn2<Result<Unit>, Path, byte[]>> writerOverride,
-                          Option<Fn1<Result<Unit>, Path>> directoryForcerOverride) {
+                          Option<Fn1<Result<Unit>, Path>> directoryForcerOverride,
+                          Fn1<Unit, Path> listingObserver) {
         this.basePath = basePath;
         this.maxBytes = maxBytes;
         this.readTimeout = readTimeout;
         this.readerOverride = readerOverride;
         this.writer = writerOverride.or(FileOps::writeBytesForced);
         this.directoryForcer = directoryForcerOverride.or(FileOps::forceDirectory);
+        this.listingObserver = listingObserver;
     }
 
     public static Result<LocalDiskTier> localDiskTier(Path basePath, long maxBytes) {
@@ -138,12 +142,25 @@ public final class LocalDiskTier implements StorageTier {
                                                Option<Fn1<Result<Option<byte[]>>, BlockId>> readerOverride,
                                                Option<Fn2<Result<Unit>, Path, byte[]>> writerOverride,
                                                Option<Fn1<Result<Unit>, Path>> directoryForcerOverride) {
+        return localDiskTier(basePath, maxBytes, readTimeout, readerOverride, writerOverride, directoryForcerOverride, _ -> unit());
+    }
+
+    /// Variant that also hands every path a [#scan] lists to `listingObserver`, after the listing and before any stat of
+    /// it, for tests that remove files at that point (a block deleted or a partial renamed while the shard is listed).
+    static Result<LocalDiskTier> localDiskTier(Path basePath,
+                                               long maxBytes,
+                                               TimeSpan readTimeout,
+                                               Option<Fn1<Result<Option<byte[]>>, BlockId>> readerOverride,
+                                               Option<Fn2<Result<Unit>, Path, byte[]>> writerOverride,
+                                               Option<Fn1<Result<Unit>, Path>> directoryForcerOverride,
+                                               Fn1<Unit, Path> listingObserver) {
         return Result.success(new LocalDiskTier(basePath,
                                                 maxBytes,
                                                 readTimeout,
                                                 readerOverride,
                                                 writerOverride,
-                                                directoryForcerOverride)).onSuccess(LocalDiskTier::countUsedBytes);
+                                                directoryForcerOverride,
+                                                listingObserver)).onSuccess(LocalDiskTier::countUsedBytes);
     }
 
     /// Take the tier's directory into use: create the base directory durably if it is missing, remove the
@@ -325,11 +342,17 @@ public final class LocalDiskTier implements StorageTier {
 
         return FileOps.isDirectory(directory) && resume.filter(hex -> prefix.compareTo(hex.substring(0, 2)) < 0)
                                                        .isEmpty()
-               ? FileOps.walk(directory, FileOps::isRegularFile).flatMap(files -> statFirst(files,
+               ? FileOps.walk(directory, this::listedRegularFile).flatMap(files -> statFirst(files,
                                                                                             directory,
                                                                                             resume,
                                                                                             wanted))
                : Result.success(List.of());
+    }
+
+    private boolean listedRegularFile(Path path) {
+        listingObserver.apply(path);
+
+        return FileOps.isRegularFile(path);
     }
 
     private static Result<List<BlockStat>> statFirst(List<Path> files,
