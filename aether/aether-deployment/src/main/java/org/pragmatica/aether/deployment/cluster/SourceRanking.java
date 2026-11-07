@@ -34,8 +34,8 @@ import static org.pragmatica.lang.Option.option;
 /// distinct locations: it relies on (source, zone) being unique within the candidates, which `CommunityPlacement`
 /// enforces at parse time ("Duplicate source/zone in community"); `rank` does not re-check it, and a duplicated
 /// pair would tie and keep input order) and the result is a subset of `candidates` (the only names it can emit).
-public final class SourceRanking {
-    private SourceRanking() {}
+public sealed interface SourceRanking {
+    record unused() implements SourceRanking {}
 
     private record Ranked(Location location, SourceProfile profile) {
         static Ranked ranked(Location location, SourceProfile profile) {
