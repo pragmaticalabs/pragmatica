@@ -136,6 +136,17 @@ in one rolling upgrade), treat that as unverified and validate it yourself; the 
 canary-wait step is the best available safety net today. See also
 [`known-limitations.md`](known-limitations.md#node-binary-version-skew--no-join-time-version-check-yet).
 
+### Upgrade note: flag day for consumer cursors (#1961, PR-5a)
+
+Crossing this release is a flag day for stream consumer cursors: the
+> advance-only cursor-checkpoint arm lives in the consensus applier, so it holds only when every node runs a build that has
+> it. While any node runs an older build, that node's applier can admit a late lower checkpoint that upgraded nodes refuse,
+> so the cursor can regress (the pre-fix #1961 behaviour) and replicas' KV values for it can differ until the next advancing
+> commit. The consequence is at most redelivery (at-least-once). Nothing refuses a mixed cluster yet: #666 (a version field
+> on `Hello` and a join-time mismatch policy) is open and is the tracker. The procedure available today is the
+> replacement-based rolling upgrade (`aether cluster upgrade --wait`); cursor regression stays possible until every node
+> runs the new build. Pre-GA there are no users to migrate.
+
 ### Upgrade note: no rollback past the content-store trusted-ref change (#2263)
 
 **Rolling a node back to a binary from before #2263 is unsupported.** Upgrading is safe: names written before it stay

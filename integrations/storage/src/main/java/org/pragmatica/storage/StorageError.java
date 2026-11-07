@@ -170,4 +170,44 @@ public sealed interface StorageError extends Cause {
             return "Invalid seal range [" + fromOffset + "-" + toOffset + "]";
         }
     }
+
+    /// A tier asked for an operation it does not provide (A2b): [StorageTier#scan], [StorageTier#stat] or
+    /// [StorageTier#touch] on a tier that keeps no enumeration or no write time of its blocks -- the in-memory DHT tier
+    /// today. Never read as "nothing there": a sweep or a freshness check that cannot ask the tier must not act as if the
+    /// tier were empty or the block stale.
+    record OperationUnsupported(TierLevel tier, String operation) implements StorageError {
+        static OperationUnsupported operationUnsupported(TierLevel tier, String operation) {
+            return new OperationUnsupported(tier, operation);
+        }
+
+        @Override
+        public String message() {
+            return "Tier " + tier + " does not support " + operation;
+        }
+    }
+
+    /// A [StorageTier#scan] or [KeyShard] request that names nothing valid: a shard outside its count, a count outside
+    /// 1..256, a page limit below 1, or a cursor no scan handed out.
+    record InvalidScan(String detail) implements StorageError {
+        static InvalidScan invalidScan(String detail) {
+            return new InvalidScan(detail);
+        }
+
+        @Override
+        public String message() {
+            return "Invalid scan: " + detail;
+        }
+    }
+
+    /// [StorageInstance#ensureHeld] for a tier level the instance does not have.
+    record NoSuchTier(String instanceName, TierLevel tier) implements StorageError {
+        static NoSuchTier noSuchTier(String instanceName, TierLevel tier) {
+            return new NoSuchTier(instanceName, tier);
+        }
+
+        @Override
+        public String message() {
+            return "Storage instance '" + instanceName + "' has no " + tier + " tier";
+        }
+    }
 }

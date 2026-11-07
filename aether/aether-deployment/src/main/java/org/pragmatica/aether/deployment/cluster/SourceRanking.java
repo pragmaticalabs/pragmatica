@@ -31,11 +31,13 @@ import static org.pragmatica.lang.Option.option;
 /// `CommunityPlacementReconciler.locationOrder()`.
 ///
 /// Guarantees: deterministic for identical arguments (no clock, no map iteration; key 4 is a total order on
-/// distinct locations) and the result is a subset of `candidates` (the only names it can emit).
-public final class SourceRanking {
-    private SourceRanking() {}
+/// distinct locations: it relies on (source, zone) being unique within the candidates, which `CommunityPlacement`
+/// enforces at parse time ("Duplicate source/zone in community"); `rank` does not re-check it, and a duplicated
+/// pair would tie and keep input order) and the result is a subset of `candidates` (the only names it can emit).
+public sealed interface SourceRanking {
+    record unused() implements SourceRanking {}
 
-    private record Ranked(Location location, SourceProfile profile) {
+    record Ranked(Location location, SourceProfile profile) {
         static Ranked ranked(Location location, SourceProfile profile) {
             return new Ranked(location, profile);
         }

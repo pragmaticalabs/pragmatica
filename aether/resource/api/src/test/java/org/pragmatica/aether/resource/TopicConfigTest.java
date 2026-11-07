@@ -20,6 +20,7 @@ import org.pragmatica.config.source.TomlConfigSource;
 import org.pragmatica.lang.parse.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
@@ -34,8 +35,8 @@ import static org.pragmatica.lang.Option.some;
 ///
 /// The TOML round-trip tests bind through the actual production path
 /// (`TomlConfigSource` -> `ConfigurationProvider` -> `ProviderBasedConfigService`), not a
-/// test-only shortcut — `TomlConfigService` has no production caller, so a test built on it would
-/// prove nothing about runtime behavior (#738 post-GO correction).
+/// test-only shortcut (#738 post-GO correction). `ProviderBasedConfigService` is the only reflective binder
+/// under `src/main` (#810: the second one, which no production code called, is deleted).
 class TopicConfigTest {
     private static final ReplicationContext BUILT_IN = ReplicationContext.BUILT_IN;
 
@@ -547,6 +548,30 @@ class TopicConfigTest {
                             assertThat(cause).isInstanceOf(ConfigError.UnknownKey.class);
                             assertThat(cause.message()).doesNotContain("did you mean");
                         });
+    }
+
+    /// #810 (NT-177): one reflective binder exists. A topic section binds through
+    /// `TomlConfigSource` -> `ConfigurationProvider` -> `ProviderBasedConfigService` -- the path the runtime and the
+    /// deploy preflight take -- including the `TopicConfig.topicConfig` factory, and the second binder is gone.
+    @Test
+    void topicConfigBindsThroughProviderBasedService() {
+        var bound = serviceFrom("""
+                                [orders]
+                                topic_name = "orders"
+                                durability = "durable"
+                                partitions = 3
+                                """).config("orders", TopicConfig.class)
+                                    .unwrap();
+        var refused = serviceFrom("""
+                                  [orders]
+                                  topic_name = ""
+                                  """).config("orders", TopicConfig.class);
+
+        assertThat(bound.partitions()).isEqualTo(some(3));
+        assertThat(refused.isFailure()).as("the validating factory ran: a blank topic name is refused").isTrue();
+        assertThatThrownBy(() -> Class.forName("org.pragmatica.config.TomlConfigService"))
+                .as("the second reflective binder no production code called is deleted")
+                .isInstanceOf(ClassNotFoundException.class);
     }
 
     private static ConfigService serviceFrom(String toml) {

@@ -35,6 +35,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse.BodyHandler;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -442,6 +443,78 @@ class S3ClientTest {
         assertThat(cause).isInstanceOf(S3Error.AccessDenied.class);
     }
 
+    /// A2b: HEAD with its size and Last-Modified, and a LIST page with each object's size and Last-Modified.
+    @Nested
+    class ObjectStats {
+        @Test
+        void statObject_readsContentLengthAndLastModified() {
+            testHttp.respondWithUnit(200);
+            testHttp.respondWithHeaders(Map.of("Content-Length", List.of("1234"),
+                                               "Last-Modified", List.of("Wed, 21 Oct 2015 07:28:00 GMT")));
+
+            var stat = minioClient.statObject("blocks/ab/cd/key").await().unwrap().unwrap();
+
+            assertThat(stat).isEqualTo(S3Client.ObjectStat.objectStat("blocks/ab/cd/key", 1234, 1445412480000L));
+            assertThat(capturedRequest.get().method()).isEqualTo("HEAD");
+        }
+
+        @Test
+        void statObject_missing_isNone_andAnyOtherFailureFails() {
+            testHttp.respondWithUnit(404);
+            assertThat(minioClient.statObject("missing").await().unwrap().isEmpty()).isTrue();
+
+            testHttp.respondWithUnit(503);
+            assertThat(minioClient.statObject("unavailable").await().isFailure()).isTrue();
+        }
+
+        @Test
+        void statObject_withoutLastModified_failsWithParseError() {
+            testHttp.respondWithUnit(200);
+            testHttp.respondWithHeaders(Map.of("Content-Length", List.of("5")));
+
+            minioClient.statObject("no-date")
+                       .await()
+                       .onSuccess(stat -> fail("Expected a parse error, got " + stat))
+                       .onFailure(cause -> assertThat(cause).isInstanceOf(S3Error.ParseError.class));
+        }
+
+        @Test
+        void listObjectStats_readsKeySizeAndLastModified_andSendsStartAfter() {
+            testHttp.respondWithString(200, LIST_OBJECTS_RESPONSE.replace("<IsTruncated>false</IsTruncated>",
+                                                                          "<IsTruncated>true</IsTruncated>"));
+
+            var listing = minioClient.listObjectStats("data/", Option.some("data/file0.txt"), 2).await().unwrap();
+
+            assertThat(listing.objects()).containsExactly(S3Client.ObjectStat.objectStat("data/file1.txt", 1024, 1735689600000L),
+                                                          S3Client.ObjectStat.objectStat("data/file2.txt", 2048, 1735776000000L));
+            assertThat(listing.truncated()).isTrue();
+            assertThat(capturedRequest.get().uri().getRawQuery().split("&")).contains("start-after=data%2Ffile0.txt",
+                                                                                      "max-keys=2",
+                                                                                      "prefix=data%2F");
+        }
+
+        @Test
+        void listObjectStats_anObjectWithoutLastModified_failsWithParseError() {
+            testHttp.respondWithString(200, LIST_OBJECTS_RESPONSE.replaceFirst("<LastModified>[^<]*</LastModified>", ""));
+
+            minioClient.listObjectStats("data/", Option.none(), 10)
+                       .await()
+                       .onSuccess(listing -> fail("Expected a parse error, got " + listing))
+                       .onFailure(cause -> assertThat(cause.stream()).hasAtLeastOneElementOfType(S3Error.ParseError.class));
+        }
+
+        @Test
+        void listObjectStats_empty_isAnEmptyLastPage() {
+            testHttp.respondWithString(200, EMPTY_LIST_RESPONSE);
+
+            var listing = minioClient.listObjectStats("nonexistent/", Option.none(), 10).await().unwrap();
+
+            assertThat(listing.objects()).isEmpty();
+            assertThat(listing.truncated()).isFalse();
+            assertThat(capturedRequest.get().uri().getRawQuery()).doesNotContain("start-after");
+        }
+    }
+
     // --- Test HTTP operations ---
 
     static final class TestHttpOperations implements HttpOperations {
@@ -450,6 +523,7 @@ class S3ClientTest {
         private String responseStringBody;
         private byte[] responseBytesBody;
         private ResponseMode responseMode = ResponseMode.STRING;
+        private Map<String, List<String>> responseHeaders = Map.of();
 
         TestHttpOperations(AtomicReference<HttpRequest> capturedRequest) {
             this.capturedRequest = capturedRequest;
@@ -472,6 +546,10 @@ class S3ClientTest {
             this.responseMode = ResponseMode.UNIT;
         }
 
+        void respondWithHeaders(Map<String, List<String>> headers) {
+            this.responseHeaders = headers;
+        }
+
         @Override
         @SuppressWarnings("unchecked")
         public <T> Promise<HttpResult<T>> send(HttpRequest request, BodyHandler<T> handler) {
@@ -482,7 +560,7 @@ class S3ClientTest {
                 case UNIT -> (T) Unit.unit();
             };
             var result = new HttpResult<>(responseStatus,
-                                          HttpHeaders.of(Map.of(), (a, b) -> true),
+                                          HttpHeaders.of(responseHeaders, (a, b) -> true),
                                           body);
             return Promise.success(result);
         }

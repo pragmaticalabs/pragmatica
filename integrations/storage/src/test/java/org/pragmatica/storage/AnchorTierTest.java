@@ -587,6 +587,20 @@ class AnchorTierTest {
                                           .toList());
         }
 
+        @Override
+        public Promise<Option<ObjectStat>> statObject(String key) {
+            return unsupported();
+        }
+
+        @Override
+        public Promise<ObjectListing> listObjectStats(String prefix, Option<String> startAfter, int maxKeys) {
+            return unsupported();
+        }
+
+        private static <T> Promise<T> unsupported() {
+            return new S3Error.ApiError(501, "NotImplemented", "not used by these tests").promise();
+        }
+
         void flipLastByte(String key) {
             objects.computeIfPresent(key, (_, bytes) -> {
                 var copy = bytes.clone();

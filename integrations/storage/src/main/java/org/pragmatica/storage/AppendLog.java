@@ -23,6 +23,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
+import org.pragmatica.lang.Functions.Fn3;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -30,6 +31,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.FileError;
 import org.pragmatica.lang.io.FileOps;
+import org.pragmatica.lang.utils.Causes;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -62,6 +64,14 @@ import static org.pragmatica.lang.Unit.unit;
 /// force ([EpochHistory]); the record framing below is unchanged by it. An epoch is an opaque [EpochKey]:
 /// the caller encodes it and supplies its order ([EpochOrder]), so the log knows nothing of what an owner
 /// epoch is made of (#1596).
+///
+/// ## Acked marker (#2201 B-04/B-17, I-05)
+/// Beside the log sits `<log>.acked` ([AckedMarker]): the highest offset the owner had made visible, which a restarted
+/// owner may restore without waiting for its replicas to re-ack ([#recordAckedMarker], [#takeAckedRestore]). A log this
+/// class CREATES is born with a durable `-1` marker; a log that has none (written by an older build), or whose marker is
+/// torn or CRC-bad, has no marker. The marker is never above `max(lastOffset, sealed floor)`: a raise above it is refused,
+/// [#truncateSuffix] lowers it durably BEFORE it cuts, and [#clampAckedMarker] lowers it to the caller's head at open. It
+/// is never a write offset, so the offset-order rule below does not read it.
 ///
 /// ## Seal-gated truncation (#1567)
 /// [#truncate] never discards past [#sealedThrough], and only [StorageInstance#seal] advances that
@@ -199,6 +209,11 @@ public final class AppendLog implements AutoCloseable {
     private volatile Option<Runnable> failStopRecoveryListener = Option.none();  // the closing report of an earlier fail-stop (D-01)
     private volatile boolean failStopMarked;  // the mark of an earlier fail-stop was found at open; cleared by the first successful force
     private final EpochHistory epochs;
+    private final AckedMarker acked;
+    /// Serialises every marker change; a cut takes it inside `writeLock` and `syncLock` and holds it across the shortening,
+    /// so a raise that reads the bound under it never sees the head from before a cut it lost the race to.
+    private final Object markerLock = new Object();
+    private volatile Supplier<Result<Unit>> cutWindowProbe = Result::unitResult;  // test seam: runs between the marker lowering and the cut
     private final TornTailSink sink;
 
     private AppendLog(Path file,
@@ -206,9 +221,11 @@ public final class AppendLog implements AutoCloseable {
                       long writePosition,
                       long lastOffset,
                       EpochHistory epochs,
+                      AckedMarker acked,
                       TornTailSink sink) {
         this.file = file;
         this.epochs = epochs;
+        this.acked = acked;
         this.sink = sink;
         this.channel = channel;
         this.writePosition = writePosition;
@@ -242,12 +259,22 @@ public final class AppendLog implements AutoCloseable {
 
     /// Test seam: `sidecarWriter` writes (and forces) the epoch history's temp file ([EpochHistory]).
     static Result<AppendLog> open(Path file, TornTailSink sink, Fn2<Result<Unit>, Path, byte[]> sidecarWriter) {
+        return open(file, sink, sidecarWriter, FileOps::writeBytesForced);
+    }
+
+    /// Test seam: as above, and `markerWriter` writes (and forces) the temp file of every durable acked-marker write
+    /// ([AckedMarker]).
+    static Result<AppendLog> open(Path file,
+                                  TornTailSink sink,
+                                  Fn2<Result<Unit>, Path, byte[]> sidecarWriter,
+                                  Fn2<Result<Unit>, Path, byte[]> markerWriter) {
         var absolute = file.toAbsolutePath();
 
         return FileOps.createDirectoriesDurable(absolute.getParent()).flatMap(_ -> openDurably(absolute,
                                                                                                Files.exists(absolute),
                                                                                                sink,
-                                                                                               sidecarWriter));
+                                                                                               sidecarWriter,
+                                                                                               markerWriter));
     }
 
     /// What a log file holds, read without opening, recovering or writing it (#1569 A3/A4): the lowest and
@@ -346,10 +373,35 @@ public final class AppendLog implements AutoCloseable {
     private static Result<AppendLog> openDurably(Path file,
                                                  boolean existed,
                                                  TornTailSink sink,
-                                                 Fn2<Result<Unit>, Path, byte[]> sidecarWriter) {
+                                                 Fn2<Result<Unit>, Path, byte[]> sidecarWriter,
+                                                 Fn2<Result<Unit>, Path, byte[]> markerWriter) {
         return existed
-               ? recover(file, sink, sidecarWriter)
-               : recover(file, sink, sidecarWriter).flatMap(AppendLog::forceCreatedEntry);
+               ? recover(file, sink, sidecarWriter, markerWriter)
+               : recover(file, sink, sidecarWriter, markerWriter).flatMap(AppendLog::bornWithMarker)
+                        .flatMap(AppendLog::forceCreatedEntry);
+    }
+
+    /// A log this call CREATES has acked nothing: it is born with a durable `-1` marker (know `6665558916`, S6), so a
+    /// prefix sealed before anything is acknowledged is not visible after a restart.
+    ///
+    /// FER (degrade forward): a born marker that cannot be written is a WARN and the log opens anyway, holding whatever
+    /// marker the volume now has -- two opens of one new log race to the same temp file (a duplicate create that loses the
+    /// install race opens the winner's log), and the loser's rename then fails. A log left with no marker gets no #1463
+    /// lowering on its next restart: the stated residual of a log with no marker, never an exposure the build did not have.
+    private static Result<AppendLog> bornWithMarker(AppendLog log) {
+        synchronized (log.markerLock) {
+            return log.acked.create()
+                            .onFailure(log::bornMarkerFailed)
+                            .recover(_ -> log.acked.reload(log.file))
+                            .map(_ -> log);
+        }
+    }
+
+    @Contract
+    private void bornMarkerFailed(Cause cause) {
+        log.warn("Append log {} was created without its acked marker; it reads the marker the volume holds: {}",
+                 file,
+                 cause.message());
     }
 
     /// A failed force closes the log it just opened: its file may not survive a power loss, so it is
@@ -446,7 +498,10 @@ public final class AppendLog implements AutoCloseable {
     /// common offset were never acknowledged, so they leave the log instead of coming back at the next restart.
     /// `keepThrough` at or above the last offset changes nothing; `-1` empties the log.
     ///
-    /// Order: the shortened file is forced WITH its metadata first, the epoch history is rewritten second. A crash
+    /// Order: an acked marker above `keepThrough` is lowered to it durably (file and directory forced) BEFORE anything is
+    /// cut, and a marker that cannot be lowered refuses the cut; a crash after the lowering leaves a marker at or below
+    /// `keepThrough` over a file that may still be longer, which is safe. Then the shortened file is forced WITH its
+    /// metadata, and the epoch history is rewritten last. A crash
     /// between them leaves an epoch entry above the head, which the head-bounded trim at open removes
     /// ([#truncateEpochsAboveHead]); a crash before the force may bring the tail back, which the next comparison
     /// with the owner detects again, so the operation is idempotent.
@@ -477,11 +532,28 @@ public final class AppendLog implements AutoCloseable {
                                                                                                         truncatedUpto)).result();
         }
 
+        synchronized (markerLock) {
+            return lowerAckedMarker(keepThrough).flatMap(_ -> cutWindowProbe.get())
+                                   .flatMap(_ -> cutRecords(keepThrough));
+        }
+    }
+
+    private Result<Unit> cutRecords(long keepThrough) {
         return keepThrough >= lastOffset
                ? epochs.truncateAbove(keepThrough)
                : readRegion().map(buf -> keptPrefix(buf, keepThrough))
                            .flatMap(this::shorten)
                            .flatMap(_ -> epochs.truncateAbove(keepThrough));
+    }
+
+    /// Runs under `markerLock`. The lowered marker names the epoch the history attributes `ceiling` to.
+    private Result<Unit> lowerAckedMarker(long ceiling) {
+        return acked.lowerTo(new AckedMark(attributedEpoch(ceiling), ceiling));
+    }
+
+    @Contract
+    void cutWindowProbe(Supplier<Result<Unit>> probe) {
+        cutWindowProbe = probe;
     }
 
     /// The byte length of the leading run of records with `offset <= keepThrough`, and the last offset in it.
@@ -582,17 +654,93 @@ public final class AppendLog implements AutoCloseable {
         }
     }
 
-    /// Delete the log's files -- the log, its epoch history, any stale temp and its fail-stop mark -- after [#close], when the
-    /// log itself is being discarded (a deleted stream). The mark goes too, so a log later created at the same path does not report
-    /// the recovery of a fail-stop it never had. Best effort per file; the first failure is returned.
+    /// Delete the log's files -- the log, its epoch history, its acked marker, any stale temp and its fail-stop mark -- after
+    /// [#close], when the log itself is being discarded (a deleted stream). The mark goes too, so a log later created at the same
+    /// path does not report the recovery of a fail-stop it never had. Best effort per file; the first failure is returned.
     public Result<Unit> deleteFiles() {
         var sidecar = EpochHistory.sidecarOf(file);
+        var marker = acked.sidecar();
 
         return Result.allOf(FileOps.deleteIfExists(file),
                             FileOps.deleteIfExists(sidecar),
                             FileOps.deleteIfExists(sidecar.resolveSibling(sidecar.getFileName() + ".tmp")),
-                            FileOps.deleteIfExists(failStopMarkOf(file)))
+                            FileOps.deleteIfExists(failStopMarkOf(file)),
+                            FileOps.deleteIfExists(marker),
+                            FileOps.deleteIfExists(AckedMarker.tempOf(marker)))
                      .mapToUnit();
+    }
+
+    /// The acked marker as last written or read, [Option#none] when the log has none. Reads memory only.
+    public Option<AckedMark> ackedMarker() {
+        return acked.mark();
+    }
+
+    /// READ-ONLY: the acked marker of the log at `file` as it is on the volume, without opening the log; [Option#none]
+    /// when it has none, or when it is torn or damaged.
+    public static Option<AckedMark> readAckedMarker(Path file) {
+        return AckedMarker.read(file.toAbsolutePath());
+    }
+
+    /// Raise the acked marker to `offset` (the owner's visible position), attributed to the epoch the history attributes
+    /// `offset` to. Written through a temp file and a rename, NOT forced: a power loss may lose the last raise, and the
+    /// records it covered then wait for replica re-acks. A no-op unless `offset` exceeds the last marker written, read, or
+    /// set as the [#ackedMarkerBaseline]. Refused unwritten when closed, and with [WalError.AckedMarkerAboveHead] above
+    /// `max(lastOffset, sealed floor)`. The bound is read under the marker lock, which a cut holds until it has shortened
+    /// the log, so a raise never lands above a cut it raced with. Off the write section: it takes neither `writeLock` nor
+    /// `syncLock`.
+    public Result<Unit> recordAckedMarker(long offset) {
+        return closed
+               ? WalError.General.WAL_CLOSED.result()
+               : raiseAckedMarker(offset);
+    }
+
+    private Result<Unit> raiseAckedMarker(long offset) {
+        synchronized (markerLock) {
+            return acked.advance(new AckedMark(attributedEpoch(offset), offset),
+                                 Math.max(lastOffset, sealedFloor.getAsLong()));
+        }
+    }
+
+    /// The visible position the caller seeded its ring at: a later [#recordAckedMarker] must exceed it, so a log with no
+    /// marker (written by an older build) is never given one that only repeats its own seed.
+    public Unit ackedMarkerBaseline(long seededVisible) {
+        synchronized (markerLock) {
+            return acked.baseline(seededVisible);
+        }
+    }
+
+    /// Lower the acked marker, durably, to the larger of `knownHead` and the last written offset (S3, know `6665558916`):
+    /// the caller's head of the log's data -- a log whose sealed prefix was compacted away reopens with no records while
+    /// the data continues in sealed blocks -- so a crash that left the marker above the data cannot vouch for records the
+    /// log no longer reaches. A marker at or below the bound, or none, is left unwritten.
+    public Result<Unit> clampAckedMarker(long knownHead) {
+        synchronized (writeLock) {
+            synchronized (markerLock) {
+                return lowerAckedMarker(Math.max(knownHead, lastOffset));
+            }
+        }
+    }
+
+    /// The marker read at open, once per log: the first call returns it -- as lowered since by a cut or [#clampAckedMarker],
+    /// or raised by a later write -- and every later call [Option#none]. A log with no marker, or a `-1` one, has nothing
+    /// to restore.
+    public Option<AckedMark> takeAckedRestore() {
+        return acked.takeRestore();
+    }
+
+    /// Whether [#takeAckedRestore] would still return the open-time marker. One volatile read, so an owner admission can
+    /// skip the restore in O(1) once it has run.
+    public boolean hasAckedRestore() {
+        return acked.restorePending();
+    }
+
+    /// The owner epoch the history attributes `offset` to: the last entry starting at or below it, [Option#none] when none
+    /// does. Reads memory only.
+    public Option<EpochKey> attributedEpoch(long offset) {
+        return Option.from(epochs.entries()
+                                 .stream()
+                                 .filter(entry -> entry.startOffset() <= offset)
+                                 .reduce((_, later) -> later)).map(EpochStart::key);
     }
 
     /// READ-ONLY (#1569 A3): the owner-epoch history of the log at `file` as it is on the volume, without
@@ -1083,8 +1231,9 @@ public final class AppendLog implements AutoCloseable {
     // === open / recovery ===
     private static Result<AppendLog> recover(Path file,
                                              TornTailSink sink,
-                                             Fn2<Result<Unit>, Path, byte[]> sidecarWriter) {
-        return openChannel(file).flatMap(channel -> recoverFrom(file, channel, sink, sidecarWriter));
+                                             Fn2<Result<Unit>, Path, byte[]> sidecarWriter,
+                                             Fn2<Result<Unit>, Path, byte[]> markerWriter) {
+        return openChannel(file).flatMap(channel -> recoverFrom(file, channel, sink, sidecarWriter, markerWriter));
     }
 
     /// The epoch history is loaded before the torn tail is cut: a sidecar that cannot be read refuses the
@@ -1093,16 +1242,22 @@ public final class AppendLog implements AutoCloseable {
     private static Result<AppendLog> recoverFrom(Path file,
                                                  FileChannel channel,
                                                  TornTailSink sink,
-                                                 Fn2<Result<Unit>, Path, byte[]> sidecarWriter) {
+                                                 Fn2<Result<Unit>, Path, byte[]> sidecarWriter,
+                                                 Fn2<Result<Unit>, Path, byte[]> markerWriter) {
         return EpochHistory.load(file, sidecarWriter)
                            .onFailure(_ -> closeQuietly(file, channel))
-                           .flatMap(history -> recoverWith(file, channel, sink, history));
+                           .flatMap(history -> recoverWith(file,
+                                                           channel,
+                                                           sink,
+                                                           history,
+                                                           AckedMarker.load(file, markerWriter, FileOps::writeBytes)));
     }
 
     private static Result<AppendLog> recoverWith(Path file,
                                                  FileChannel channel,
                                                  TornTailSink sink,
-                                                 EpochHistory history) {
+                                                 EpochHistory history,
+                                                 AckedMarker acked) {
         return FileOps.readBytes(file)
                       .map(AppendLog::extentOf)
                       .onSuccess(extent -> reportTornTail(file, extent, sink))
@@ -1111,6 +1266,7 @@ public final class AppendLog implements AutoCloseable {
                                                           new ScanResult(extent.validBytes(),
                                                                          extent.headOffset()),
                                                           history,
+                                                          acked,
                                                           sink));
     }
 
@@ -1136,6 +1292,7 @@ public final class AppendLog implements AutoCloseable {
                                                       FileChannel channel,
                                                       ScanResult result,
                                                       EpochHistory history,
+                                                      AckedMarker acked,
                                                       TornTailSink sink) {
         return Result.lift(t -> new WalError.OpenFailed(file,
                                                         t.getMessage()),
@@ -1145,6 +1302,7 @@ public final class AppendLog implements AutoCloseable {
                                              result.validEnd(),
                                              result.lastOffset(),
                                              history,
+                                             acked,
                                              sink));
     }
 
@@ -1356,6 +1514,10 @@ public final class AppendLog implements AutoCloseable {
     /// Owner epoch `key` began writing the log at `startOffset`.
     public record EpochStart(EpochKey key, long startOffset) {}
 
+    /// The owner had made every offset up to `offset` visible, and the log's history attributed `offset` to `epoch`
+    /// ([Option#none] when no entry did, and for the `-1` marker a log is born with).
+    public record AckedMark(Option<EpochKey> epoch, long offset) {}
+
     /// An owner epoch as the log's caller encodes it (#1596): an opaque token of printable, non-space
     /// characters. Equality is token equality; order is the caller's ([EpochOrder]).
     public record EpochKey(String token) {
@@ -1511,6 +1673,26 @@ public final class AppendLog implements AutoCloseable {
             public String message() {
                 return "Epoch history %s could not be written durably: %s".formatted(sidecar, detail);
             }
+        }
+
+        /// The acked marker could not be written ([AckedMarker]); the file it replaces is untouched. A raise that fails is
+        /// ignored by its caller; a lowering that fails refuses the cut it precedes.
+        @SuppressWarnings("JBCT-CAUSE-04")
+        record AckedMarkerWriteFailed(Path sidecar, Cause origin, String message) implements WalError, Cause.Wrapped {
+            static final Fn2<AckedMarkerWriteFailed, Path, Cause> FACTORY = Causes.forTwoValues("Acked marker %s could not be written",
+                                                                                                AckedMarkerWriteFailed::new);
+        }
+
+        /// A raise of the acked marker above the highest offset the log's data reaches: refused unwritten.
+        record AckedMarkerAboveHead(Path sidecar, long offset, long bound, String message) implements WalError {
+            static final Fn3<AckedMarkerAboveHead, Path, Long, Long> FACTORY = Causes.forThreeValues("Acked marker %s refused: offset %d is above the log's head %d",
+                                                                                                     AckedMarkerAboveHead::new);
+        }
+
+        /// The acked marker on the volume is torn or damaged: it is read as no marker.
+        record AckedMarkerCorrupt(Path sidecar, String detail, String message) implements WalError {
+            static final Fn2<AckedMarkerCorrupt, Path, String> FACTORY = Causes.forTwoValues("Acked marker %s is damaged: %s",
+                                                                                             AckedMarkerCorrupt::new);
         }
     }
 }

@@ -22,6 +22,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import io.netty.bootstrap.Bootstrap;
+import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
@@ -82,6 +83,16 @@ final class Http3TestClient {
     @FunctionalInterface
     interface RequestWriter {
         void write(QuicStreamChannel stream) throws Exception;
+    }
+
+    /// #2746: writes `frame` as the request's last, its bytes carrying the stream's `FIN` ([QuicStreamFinisher]), as the
+    /// server's response writer does. `shutdownOutput()` after the last write sends a FIN-only frame instead, which
+    /// quiche does not retransmit when its loss is detected together with earlier data's: the request then never ends,
+    /// and the exchange reads `closed` once the connection idles out.
+    static ChannelFuture finishWith(QuicStreamChannel stream, Object frame) {
+        stream.pipeline().addFirst(QuicStreamFinisher.INSTANCE);
+
+        return QuicStreamFinisher.writeAndFinish(stream.pipeline().lastContext(), frame);
     }
 
     /// The header section of a `POST /` request, for [#exchange]'s writers to start with.

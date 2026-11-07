@@ -13,6 +13,7 @@ import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 import java.util.stream.IntStream;
 
@@ -22,6 +23,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.cloud.aws.AwsConfig;
 import org.pragmatica.cloud.aws.AwsCredentials;
@@ -463,6 +465,202 @@ class RemoteTierS3IntegrationTest {
 
         void releaseAll() {
             held.forEach(gate -> gate.succeed(Unit.unit()));
+        }
+    }
+
+    /// Last-Modified has whole-second precision: a refresh is visible only in a later second.
+    private static void waitPastTheNextSecond() {
+        LockSupport.parkNanos(Duration.ofMillis(1_100).toNanos());
+    }
+
+    /// A2b: the scan/stat/touch contract against the real endpoint -- Last-Modified from HEAD and from LIST, start-after
+    /// paging in the endpoint's key order, and the touch as a marker object listed right after its block.
+    @Nested
+    class ScanStatTouch extends TierScanStatTouchContract {
+        @Override
+        protected StorageTier newTier() {
+            return durableTier(s3Client, "it-" + UUID.randomUUID() + "/");
+        }
+
+        @Override
+        protected void age(BlockId id) {
+            waitPastTheNextSecond();
+        }
+    }
+
+    /// G2 on the real endpoint, through [StorageInstance#ensureHeld]: the re-seed of a recorded block lost from the
+    /// bucket lands in it, and the refresh of a held one moves its Last-Modified.
+    @Nested
+    class EnsureHeld {
+        private final byte[] content = "re-seeded into the bucket".getBytes(StandardCharsets.UTF_8);
+
+        private StorageInstance node() {
+            var disk = LocalDiskTier.localDiskTier(dir, 1 << 20).flatMap(LocalDiskTier::open).fold(cause -> fail(cause.message()), d -> d);
+
+            return StorageInstance.storageInstance("a2b-s3", List.of(disk, tier));
+        }
+
+        @Test
+        void reseedOfARecordedButAbsentBlock_landsInTheBucket() {
+            var node = node();
+            var id = node.put(content).await().fold(cause -> fail(cause.message()), blockId -> blockId);
+
+            tier.delete(id).await().onFailure(cause -> fail(cause.message()));
+            assertThat(s3Client.headObject(keyOf(id)).await().<Boolean>fold(cause -> fail(cause.message()), held -> held)).as("precondition").isFalse();
+
+            node.ensureHeld(id, TierLevel.REMOTE).await().onFailure(cause -> fail(cause.message()));
+
+            assertThat(s3Client.getObject(keyOf(id)).await().fold(cause -> fail(cause.message()), found -> found).map(Arrays::toString))
+                .isEqualTo(some(Arrays.toString(content)));
+        }
+
+        @Test
+        void refreshOfAHeldBlock_movesItsLastModified() {
+            var node = node();
+            var id = node.put(content).await().fold(cause -> fail(cause.message()), blockId -> blockId);
+            var before = tier.stat(id).await().fold(cause -> fail(cause.message()), stat -> stat).unwrap();
+
+            waitPastTheNextSecond();
+            node.ensureHeld(id, TierLevel.REMOTE).await().onFailure(cause -> fail(cause.message()));
+
+            var after = tier.stat(id).await().fold(cause -> fail(cause.message()), stat -> stat).unwrap();
+
+            assertThat(after.writtenAtMillis()).isGreaterThan(before.writtenAtMillis());
+            assertThat(after.size()).isEqualTo(before.size());
+        }
+    }
+
+    /// v2829 FIX 5: a touch racing a delete of the same block never brings the block back. The S3 touch never writes
+    /// the block object -- it HEADs it and writes a marker beside it -- so no ordering of the two can recreate it: at worst
+    /// the marker outlives the block. Two shapes, 50 rounds each: the touch and the delete issued together, and the
+    /// delete sent the moment the touch sends its write, after its HEAD. A touch that wrote the block -- a copy of the
+    /// object onto itself, even conditional on its ETag -- left it in 35 and 43 of 50 rounds of the second shape on
+    /// MinIO.
+    @Nested
+    class TouchRacingDelete {
+        private static final int ROUNDS = 50;
+
+        @Test
+        void touchIssuedWithADelete_neverResurrectsTheBlock() {
+            var resurrected = IntStream.range(0, ROUNDS).filter(this::resurrectsTogether).boxed().toList();
+
+            assertThat(resurrected).as("rounds that left the deleted block in the bucket, of %d", ROUNDS).isEmpty();
+        }
+
+        @Test
+        void deleteSentAtTheTouchWrite_neverResurrectsTheBlock() {
+            var http = new DeleteOnWriteHttp(JdkHttpOperations.jdkHttpOperations(), tier);
+            var racing = durableTier(clientWith(http), prefix);
+            var resurrected = IntStream.range(0, ROUNDS).filter(round -> resurrectsAtWrite(racing, http, round)).boxed().toList();
+
+            assertThat(http.deletes).as("every round raced a delete against the touch's write").hasSize(ROUNDS);
+            assertThat(resurrected).as("rounds that left the deleted block in the bucket, of %d", ROUNDS).isEmpty();
+        }
+
+        private boolean resurrectsTogether(int round) {
+            var id = stored("touch issued with a delete " + round);
+            var touch = tier.touch(id);
+            var delete = tier.delete(id);
+
+            touch.await().onFailure(cause -> fail("round " + round + ": touch failed: " + cause.message()));
+            delete.await().onFailure(cause -> fail("round " + round + ": delete failed: " + cause.message()));
+
+            return held(id);
+        }
+
+        private boolean resurrectsAtWrite(RemoteTier racing, DeleteOnWriteHttp http, int round) {
+            var id = stored("delete sent at the touch write " + round);
+
+            racing.touch(id).await().onFailure(cause -> fail("round " + round + ": touch failed: " + cause.message()));
+            http.deletes.getLast().await().onFailure(cause -> fail("round " + round + ": delete failed: " + cause.message()));
+
+            return held(id);
+        }
+
+        private BlockId stored(String text) {
+            var content = text.getBytes(StandardCharsets.UTF_8);
+            var id = blockIdOf(content);
+
+            tier.put(id, content).await().onFailure(cause -> fail(cause.message()));
+
+            return id;
+        }
+
+        private boolean held(BlockId id) {
+            return s3Client.headObject(keyOf(id)).await().<Boolean>fold(cause -> fail(cause.message()), found -> found);
+        }
+    }
+
+    /// The touch on the real endpoint: it writes a marker beside the block and never the block; on an absent block it
+    /// writes nothing; scan lists no marker; delete removes the marker too.
+    @Nested
+    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    class TouchMarker {
+        @Test
+        void touch_writesAMarker_andScanListsOnlyTheBlock() {
+            var content = "marked, not rewritten".getBytes(StandardCharsets.UTF_8);
+            var id = blockIdOf(content);
+
+            tier.put(id, content).await().onFailure(cause -> fail(cause.message()));
+
+            var written = s3Client.statObject(keyOf(id)).await().fold(cause -> fail(cause.message()), stat -> stat).unwrap();
+
+            waitPastTheNextSecond();
+            assertThat(tier.touch(id).await().<Boolean>fold(cause -> fail(cause.message()), touched -> touched)).isTrue();
+
+            assertThat(s3Client.statObject(keyOf(id)).await().fold(cause -> fail(cause.message()), stat -> stat).unwrap())
+                .as("the block object is not rewritten")
+                .isEqualTo(written);
+            assertThat(s3Client.headObject(keyOf(id) + ".touched").await().<Boolean>fold(cause -> fail(cause.message()), found -> found))
+                .isTrue();
+            assertThat(tier.scan(KeyShard.all(), Option.none(), 10).await().fold(cause -> fail(cause.message()), page -> page).items())
+                .extracting(BlockStat::id)
+                .containsExactly(id);
+        }
+
+        @Test
+        void touch_ofAnAbsentBlock_isFalse_andWritesNoMarker() {
+            var id = blockIdOf("never stored on the endpoint".getBytes(StandardCharsets.UTF_8));
+
+            assertThat(tier.touch(id).await().<Boolean>fold(cause -> fail(cause.message()), touched -> touched)).isFalse();
+            assertThat(s3Client.listObjects(prefix, 10).await().<List<String>>fold(cause -> fail(cause.message()), keys -> keys)).isEmpty();
+        }
+
+        @Test
+        void delete_removesTheMarker() {
+            var content = "touched, then deleted on the endpoint".getBytes(StandardCharsets.UTF_8);
+            var id = blockIdOf(content);
+
+            tier.put(id, content).await().onFailure(cause -> fail(cause.message()));
+            tier.touch(id).await().onFailure(cause -> fail(cause.message()));
+            tier.delete(id).await().onFailure(cause -> fail(cause.message()));
+
+            assertThat(s3Client.listObjects(prefix, 10).await().<List<String>>fold(cause -> fail(cause.message()), keys -> keys)).isEmpty();
+        }
+    }
+
+    /// Delegates to a real transport; the moment a PUT is sent -- the touch's only write -- sends a delete of the block
+    /// it names (the PUT's key without a `.touched` suffix) through `deleting`, without waiting for it.
+    static final class DeleteOnWriteHttp implements HttpOperations {
+        private final HttpOperations delegate;
+        private final RemoteTier deleting;
+        final List<Promise<Unit>> deletes = new CopyOnWriteArrayList<>();
+
+        DeleteOnWriteHttp(HttpOperations delegate, RemoteTier deleting) {
+            this.delegate = delegate;
+            this.deleting = deleting;
+        }
+
+        @Override
+        public <T> Promise<HttpResult<T>> send(HttpRequest request, BodyHandler<T> handler) {
+            if (request.method().equals("PUT")) {
+                var path = request.uri().getPath();
+                var hex = path.substring(path.lastIndexOf('/') + 1).replace(".touched", "");
+
+                deletes.add(deleting.delete(BlockId.fromHex(hex).fold(cause -> fail(cause.message()), id -> id)));
+            }
+
+            return delegate.send(request, handler);
         }
     }
 }

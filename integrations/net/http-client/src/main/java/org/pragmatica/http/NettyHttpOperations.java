@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -307,7 +308,9 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
         writeHttp3Request(streamChannel, request);
     }
 
-    private static void writeHttp3Request(QuicStreamChannel streamChannel, HttpRequest request) {
+    /// Package-private for `NettyHttpOperationsFinLossTest`, which writes a request on a stream it opened itself.
+    @Contract
+    static void writeHttp3Request(QuicStreamChannel streamChannel, HttpRequest request) {
         var uri = request.uri();
         var headers = new DefaultHttp3Headers();
 
@@ -317,16 +320,26 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
         headers.authority(hostOf(request, uri.getHost()));
         headers.scheme(option(uri.getScheme()).or("https"));
         request.headers().map().forEach((name, values) -> values.forEach(v -> setUnlessHost(headers, name, v)));
-        streamChannel.write(new DefaultHttp3HeadersFrame(headers));
         var body = requestBody(request);
 
+        streamChannel.pipeline().addFirst(QuicStreamFinisher.INSTANCE);
+        writeAndFinish(streamChannel, new DefaultHttp3HeadersFrame(headers), body);
+    }
+
+    /// #2746: the request's last bytes carry the stream's `FIN` (the body's last DATA frame, or the HEADERS frame of a
+    /// request without a body); a FIN-only frame after them is lost for good when quiche detects its loss together with
+    /// earlier data's ([QuicStreamFinisher]).
+    @Contract
+    private static void writeAndFinish(QuicStreamChannel streamChannel,
+                                       DefaultHttp3HeadersFrame headers,
+                                       ByteBuf body) {
         if (body.isReadable()) {
-            streamChannel.write(new DefaultHttp3DataFrame(body));
+            streamChannel.write(headers);
+            QuicStreamFinisher.writeAndFinish(streamChannel, new DefaultHttp3DataFrame(body));
         } else {
             body.release();
+            QuicStreamFinisher.writeAndFinish(streamChannel, headers);
         }
-
-        streamChannel.writeAndFlush(Unpooled.EMPTY_BUFFER).addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
     }
 
     // --- Shared Helpers ---

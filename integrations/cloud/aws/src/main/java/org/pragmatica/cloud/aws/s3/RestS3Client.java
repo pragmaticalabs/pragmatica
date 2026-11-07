@@ -22,6 +22,8 @@ import java.net.http.HttpRequest.BodyPublishers;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -61,6 +63,9 @@ record RestS3Client(S3Config config,
     private static final String SECURITY_TOKEN_HEADER = "x-amz-security-token";
     private static final byte[] EMPTY_BODY = new byte[0];
     private static final Pattern KEY_PATTERN = Pattern.compile("<Key>(.*?)</Key>");
+    private static final Pattern CONTENTS_PATTERN = Pattern.compile("<Contents>(.*?)</Contents>", Pattern.DOTALL);
+    private static final Pattern SIZE_PATTERN = Pattern.compile("<Size>(.*?)</Size>");
+    private static final Pattern LAST_MODIFIED_PATTERN = Pattern.compile("<LastModified>(.*?)</LastModified>");
 
     @Override
     public Promise<Unit> putObject(String key, byte[] content, String contentType) {
@@ -130,6 +135,37 @@ record RestS3Client(S3Config config,
                                                                signed))
                         .flatMap(http::sendString)
                         .flatMap(RestS3Client::parseListResponse);
+    }
+
+    @Override
+    public Promise<Option<ObjectStat>> statObject(String key) {
+        return head(key).flatMap(result -> toStat(result, key));
+    }
+
+    private Promise<HttpResult<Unit>> head(String key) {
+        var url = config.objectUrl(key);
+
+        return authorize("HEAD",
+                         url,
+                         Map.of(),
+                         EMPTY_BODY).map(signed -> withHeaders(request(url).method("HEAD",
+                                                                                   BodyPublishers.noBody()),
+                                                               signed))
+                        .flatMap(http::sendDiscarding);
+    }
+
+    @Override
+    public Promise<ObjectListing> listObjectStats(String prefix, Option<String> startAfter, int maxKeys) {
+        var url = buildListUrl(prefix, maxKeys) + startAfter.map(key -> "&start-after=" + AwsSigV4Signer.urlEncode(key))
+                                                            .or("");
+
+        return authorize("GET",
+                         url,
+                         Map.of(),
+                         EMPTY_BODY).map(signed -> withHeaders(request(url).GET(),
+                                                               signed))
+                        .flatMap(http::sendString)
+                        .flatMap(RestS3Client::parseListing);
     }
 
     // --- Signing ---
@@ -232,6 +268,50 @@ record RestS3Client(S3Config config,
                         .promise();
     }
 
+    /// A 2xx carries the object's `Content-Length` and `Last-Modified` (RFC 1123, whole seconds); a 404 is absence, as
+    /// for [#toPresence]; a 2xx missing either header fails with [S3Error.ParseError].
+    private static Promise<Option<ObjectStat>> toStat(HttpResult<Unit> result, String key) {
+        if (result.isSuccess()) {
+            return statFromHeaders(result, key).map(Option::some)
+                                  .async();
+        }
+
+        return result.statusCode() == 404
+               ? success(none())
+               : S3Error.fromResponse(result.statusCode(),
+                                      "",
+                                      key)
+                        .promise();
+    }
+
+    private static Result<ObjectStat> statFromHeaders(HttpResult<Unit> result, String key) {
+        return header(result, "Content-Length", key).flatMap(RestS3Client::parseSize)
+                     .flatMap(size -> header(result, "Last-Modified", key).flatMap(RestS3Client::parseHttpDate)
+                                            .map(modified -> ObjectStat.objectStat(key, size, modified)));
+    }
+
+    private static Result<String> header(HttpResult<Unit> result, String name, String key) {
+        return result.header(name)
+                     .toResult(new S3Error.ParseError("HEAD " + key + " carries no " + name));
+    }
+
+    private static Result<Long> parseSize(String value) {
+        return Result.lift(_ -> new S3Error.ParseError("size '" + value + "' is not a number"),
+                           () -> Long.parseLong(value.trim()));
+    }
+
+    private static Result<Long> parseHttpDate(String value) {
+        return Result.lift(_ -> new S3Error.ParseError("date '" + value + "' is not an RFC 1123 date"),
+                           () -> DateTimeFormatter.RFC_1123_DATE_TIME.parse(value.trim(),
+                                                                            Instant::from)
+                                                                     .toEpochMilli());
+    }
+
+    private static Result<Long> parseIsoDate(String value) {
+        return Result.lift(_ -> new S3Error.ParseError("date '" + value + "' is not an ISO-8601 instant"),
+                           () -> Instant.parse(value.trim()).toEpochMilli());
+    }
+
     private static Promise<Unit> checkDeleteSuccess(HttpResult<String> result, String key) {
         if (result.isSuccess() || result.statusCode() == 404) {
             return success(Unit.unit());
@@ -252,6 +332,43 @@ record RestS3Client(S3Config config,
         }
 
         return success(extractKeys(result.body()));
+    }
+
+    private static Promise<ObjectListing> parseListing(HttpResult<String> result) {
+        if (!result.isSuccess()) {
+            return S3Error.fromResponse(result.statusCode(),
+                                        result.body(),
+                                        "")
+                          .promise();
+        }
+
+        return extractListing(result.body()).async();
+    }
+
+    /// Each `<Contents>` element's `Key`, `Size` and `LastModified`, in document order (ascending key order on the
+    /// wire), and `IsTruncated`. Every element missing any of the three adds an [S3Error.ParseError] to the failure, one
+    /// composite cause ([org.pragmatica.lang.Cause#stream]).
+    static Result<ObjectListing> extractListing(String xml) {
+        return Result.allOf(CONTENTS_PATTERN.matcher(xml)
+                                            .results()
+                                            .map(m -> m.group(1))
+                                            .map(RestS3Client::objectStat)
+                                            .toList()).map(objects -> ObjectListing.objectListing(objects,
+                                                                                                  xml.contains("<IsTruncated>true</IsTruncated>")));
+    }
+
+    private static Result<ObjectStat> objectStat(String contents) {
+        return element(contents, KEY_PATTERN).flatMap(key -> element(contents, SIZE_PATTERN).flatMap(RestS3Client::parseSize)
+                                                                    .flatMap(size -> objectStatOf(contents, key, size)));
+    }
+
+    private static Result<ObjectStat> objectStatOf(String contents, String key, long size) {
+        return element(contents, LAST_MODIFIED_PATTERN).flatMap(RestS3Client::parseIsoDate)
+                      .map(modified -> ObjectStat.objectStat(key, size, modified));
+    }
+
+    private static Result<String> element(String contents, Pattern pattern) {
+        return Option.from(pattern.matcher(contents).results().map(m -> m.group(1)).findFirst()).toResult(new S3Error.ParseError("listed object lacks " + pattern.pattern()));
     }
 
     // --- URL builders ---

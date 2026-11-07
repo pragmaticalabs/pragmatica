@@ -8,7 +8,6 @@ import java.util.List;
 
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.RewindEpoch;
@@ -30,15 +29,14 @@ import org.pragmatica.serialization.Serializer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// Streams audit A-09 (#2201): the applier has no monotonic guard on the consensus cursor. `StreamCursorCheckpointValue` is fenced by the
-/// assignment token and by the rewind epoch, but it is not `MonotonicFenced`, so a checkpoint at a LOWER offset, under the same token and the same
-/// rewind epoch, replaces a higher one: a timed-out periodic commit that lands late (acknowledged in `ConsumerRuntimeState`), or a write from a
-/// stale tenure at the same epoch, steps the cluster cursor back. The effect is redelivery (inside at-least-once), accepted so far on purpose so
-/// that an operator rewind works.
+/// Streams audit A-09 (#2201), fixed by overhaul PR-5a (#1961): `StreamCursorCheckpointValue` is fenced by the assignment token, by the
+/// rewind epoch, and now by the scoped advance-only arm (`ScopedMonotonic`), so a checkpoint at a LOWER offset, under the same token and the
+/// same rewind epoch, no longer replaces a higher one: a timed-out periodic commit that lands late (#1961), or a write from a stale tenure at
+/// the same epoch, cannot step the cluster cursor back.
 ///
-/// What must stay true under any fix: the rewind still works, so a regression at the SAME rewind epoch is the defect and a regression carrying a
-/// STRICTLY NEWER rewind epoch is the feature (a control, GREEN now and after the fix). The real applier (`KVStore`) over the real keys and values;
-/// TRIPWIRE (enabled, GREEN) beside the REAL assertion (`@Disabled`, RED today).
+/// What must stay true: the rewind still works, so a regression at the SAME rewind epoch is the defect and a regression carrying a STRICTLY
+/// NEWER rewind epoch is the feature (the control, GREEN before and after the fix). The real applier (`KVStore`) over the real keys and values.
+/// The A-09 tripwire was deleted when the real assertion flipped; NT-81 and NT-113 live in `CursorCheckpointAdvanceOnlyTest`.
 class CursorCheckpointRegressionTripwireTest {
     private static final String GROUP = "orders-onOrderEvent";
     private static final String STREAM = "orders";
@@ -49,7 +47,6 @@ class CursorCheckpointRegressionTripwireTest {
     private static final RewindEpoch REWOUND = RewindEpoch.rewindEpoch(0L, 1L, 1L);
     private static final ConsumerAssignmentKey ASSIGNMENT_KEY = ConsumerAssignmentKey.consumerAssignmentKey(STREAM, PARTITION, GROUP);
     private static final StreamCursorCheckpointKey CHECKPOINT_KEY = StreamCursorCheckpointKey.streamCursorCheckpointKey(STREAM, PARTITION, GROUP);
-    private static final String ENABLE = "A-09 tripwire: the applier now refuses a cursor checkpoint that regresses its offset at the same rewind epoch; delete this tripwire and enable the real assertion beside it (#2201)";
 
     private KVStore<AetherKey, AetherValue> kv;
 
@@ -60,15 +57,6 @@ class CursorCheckpointRegressionTripwireTest {
     }
 
     @Test
-    void checkpoint_atALowerOffset_underTheSameTokenAndRewindEpoch_replacesTheHigherOne_tripwire() {
-        put(CHECKPOINT_KEY, StreamCursorCheckpointValue.streamCursorCheckpointValue(100L, TOKEN));
-        put(CHECKPOINT_KEY, StreamCursorCheckpointValue.streamCursorCheckpointValue(40L, TOKEN));
-
-        assertThat(committedOffset()).as(ENABLE).isEqualTo(Option.some(40L));
-    }
-
-    @Disabled("A-09 real assertion, RED today: a cursor checkpoint must not regress the committed offset at the same rewind epoch (#2201)")
-    @Test
     void checkpoint_atALowerOffset_underTheSameTokenAndRewindEpoch_isRefused() {
         put(CHECKPOINT_KEY, StreamCursorCheckpointValue.streamCursorCheckpointValue(100L, TOKEN));
         put(CHECKPOINT_KEY, StreamCursorCheckpointValue.streamCursorCheckpointValue(40L, TOKEN));
@@ -76,7 +64,7 @@ class CursorCheckpointRegressionTripwireTest {
         assertThat(committedOffset()).isEqualTo(Option.some(100L));
     }
 
-    /// Control, GREEN now and after any fix: an operator rewind (a rewind record at a strictly newer rewind epoch) still moves the cursor back, and the
+    /// Control, GREEN before and after the fix: an operator rewind (a rewind record at a strictly newer rewind epoch) still moves the cursor back, and the
     /// checkpoints of the rewound consumer then advance from there.
     @Test
     void rewindRecord_atAStrictlyNewerRewindEpoch_stillMovesTheCursorBack_control() {
