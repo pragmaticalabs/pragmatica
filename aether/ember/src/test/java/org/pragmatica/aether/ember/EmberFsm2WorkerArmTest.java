@@ -116,9 +116,13 @@ class EmberFsm2WorkerArmTest {
                        () -> leader().kvStore().getTyped(new AetherKey.ActivationDirectiveKey(workerId), AetherValue.class).isPresent());
         awaitCondition(workerId.id() + " reports ready", worker::isReady);
         awaitCondition("B4: the node FSM of " + workerId.id() + " is active", () -> nodeFsmActive(worker));
-        assertThat(appliedNodeInputs(worker, "QuorumEstablished")).as("B4: %s entered on its genuine edge, not only by the B3 level heal",
-                                                                      workerId.id())
-                                                                  .isPositive();
+        // The B4 edge (QuorumEstablished) and the B3 level heal (ReconcileActivation) are two entry paths that race: the 5 s heal tick may land between the
+        // engine's passive-client-ready flag and the B4 hook, and then the heal enters and the edge is skipped_active. Which wins is not a property of the
+        // worker arm (#2842), so this pins what is: the node FSM entered exactly once. That the genuine edge enters is pinned deterministically in
+        // Fsm2SystemTest (aWorker_entersOnThePassiveClientSwitch_andStepsOnlyItsOwnGoal).
+        assertThat(appliedNodeInputs(worker, "QuorumEstablished") + appliedNodeInputs(worker, "ReconcileActivation"))
+                .as("B4/B3: %s entered the node FSM exactly once, by the edge or the level heal", workerId.id())
+                .isEqualTo(1.0);
         assertThat(worker.deploymentWiring().system().map(Fsm2System::worker)).as("the worker runs the node half").isEqualTo(Option.some(true));
 
         return workerId;
