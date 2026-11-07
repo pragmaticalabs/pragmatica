@@ -58,10 +58,10 @@ class RestoreWindowMintForgeTest {
     private static final int APP_OFFSET = 80;
     /// #2817: probed, not fixed. The old literals (33900/34000/34100) sat inside the Linux ephemeral range
     /// (32768-60999), where any concurrent module's outbound connection can hold the port ("Failed to bind to port
-    /// 34100"). This scan is below that floor; step 100. Registered in TEST_PORT_ALLOCATION.md.
+    /// 34100"). This scan is below that floor; step 50 (the probe binds every port of a candidate, so an overlapping block is skipped). Registered in TEST_PORT_ALLOCATION.md.
     private static final int FIRST_CANDIDATE_BASE = 10400;
     private static final int LAST_CANDIDATE_BASE = 10800;
-    private static final int CANDIDATE_STEP = 100;
+    private static final int CANDIDATE_STEP = 50;
     /// The probe releases each port before the cluster binds it, so a start can still lose one to a concurrent process.
     private static final int START_ATTEMPTS = 5;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
