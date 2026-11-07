@@ -2820,7 +2820,7 @@ class ClusterEventAggregatorTest {
     }
 
     /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the three consumer pairs of #2201
-    /// C-16 (behind the ring, the hole, and the cursor expiry), the oversized-event refusal and the
+    /// C-16 (behind the ring, the hole, and the cursor expiry), the 13 FSM2 recoveries of the D.6 ruling (#2761), the oversized-event refusal and the
     /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the refused consensus restore of #2316, a stream partition's WAL fail-stop of #2201); every other code keeps the plain 60 s throttle.
     /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the departure sole-copy pair of #2034); every other code keeps the plain 60 s throttle.
     /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the refused consensus restore of #2316); every other code keeps the plain 60 s throttle.
@@ -2905,6 +2905,20 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.KV_DISPATCH_CAUGHT_UP,
                 OperatorWarningCode.KV_DISPATCH_SLOW_HANDLER_RETURNED,
                 OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED,
+                // the 13 FSM2 recoveries of the D.6 ruling (#2761, know 7cc9e79f61)
+                OperatorWarningCode.DEPARTURE_INFERRED_REVERSED,
+                OperatorWarningCode.SCHEMA_HOLD_CLEARED,
+                OperatorWarningCode.SLICE_UNRESPONSIVE_EXPIRED,
+                OperatorWarningCode.DEPLOYMENT_ENGINE_MATCHED,
+                OperatorWarningCode.DEPARTURE_INFERRED_CONFIRMED,
+                OperatorWarningCode.DEPARTURE_BREAKER_CLEARED,
+                OperatorWarningCode.PLACEMENT_VALID,
+                OperatorWarningCode.JOIN_MATCHED,
+                OperatorWarningCode.RETRY_EXHAUSTED_SETTLED,
+                OperatorWarningCode.SCHEMA_STATUS_READABLE,
+                OperatorWarningCode.STRAY_INSTANCE_REMOVED,
+                OperatorWarningCode.WORKER_ABSENCE_JUDGEABLE,
+                OperatorWarningCode.WORKER_COMMUNITY_POLICY_MATCHED,
             });
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(new OperatorWarningCode[]{
@@ -2978,6 +2992,19 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.KV_DISPATCH_LAGGING,
                 OperatorWarningCode.KV_DISPATCH_SLOW_HANDLER,
                 OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK,
+                // the 12 FSM2 openers the D.6 recoveries close (#2761)
+                OperatorWarningCode.DEPARTURE_INFERRED,
+                OperatorWarningCode.DEPARTURE_INFERRED_SUPPRESSED,
+                OperatorWarningCode.DEPLOYMENT_ENGINE_MISMATCH,
+                OperatorWarningCode.INVALID_PLACEMENT,
+                OperatorWarningCode.JOIN_UNMATCHED,
+                OperatorWarningCode.RETRY_EXHAUSTED_UNSETTLED,
+                OperatorWarningCode.SCHEMA_HOLD,
+                OperatorWarningCode.SCHEMA_STATUS_UNKNOWN,
+                OperatorWarningCode.SLICE_UNRESPONSIVE,
+                OperatorWarningCode.STRAY_INSTANCE,
+                OperatorWarningCode.WORKER_ABSENCE_UNJUDGEABLE,
+                OperatorWarningCode.WORKER_NO_COMMUNITY_POLICY,
             });
         var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);
