@@ -25,6 +25,7 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
+import org.pragmatica.aether.slice.generation.CursorScope;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.consensus.NodeId;
@@ -36,6 +37,7 @@ import org.pragmatica.cluster.state.kvstore.GrowOnlyMergeable;
 import org.pragmatica.cluster.state.kvstore.HolderBound;
 import org.pragmatica.cluster.state.kvstore.HolderFenced;
 import org.pragmatica.cluster.state.kvstore.OwnerFenced;
+import org.pragmatica.cluster.state.kvstore.ScopedMonotonic;
 import org.pragmatica.cluster.state.kvstore.LeaderAuthorized;
 import org.pragmatica.cluster.state.kvstore.VersionFenced;
 import org.pragmatica.cluster.state.kvstore.WitnessedRemoval;
@@ -2555,13 +2557,16 @@ public sealed interface AetherValue {
         }
     }
 
-    /// Consensus-visible consumer cursor (#488), guarded TWICE by the applier: `token` names the committed
+    /// Consensus-visible consumer cursor (#488), guarded THREE times by the applier: `token` names the committed
     /// assignment it was written under (#1271 — admitted only while that token is the committed
-    /// [ConsumerAssignmentValue]'s, `AssignmentGuarded`), and `rewindIncarnation`/`rewindGeneration`/
+    /// [ConsumerAssignmentValue]'s, `AssignmentGuarded`), `rewindIncarnation`/`rewindGeneration`/
     /// `rewindSequence` are the [RewindEpoch] it was committed under (#1333 — through [EpochBearing] a put stamped with a STRICTLY
     /// older epoch is refused, so a zombie consumer's pre-rewind checkpoint cannot move the cursor forward
-    /// again; `0/0` for a group never rewound). The two arms are pure predicates the applier ORs, so a
-    /// checkpoint lands only when BOTH admit it, whichever is evaluated first.
+    /// again; `0/0` for a group never rewound), and through [ScopedMonotonic] the committed offset never decreases
+    /// inside one [CursorScope] `(rewind epoch, owner epoch)` (#1961, I-18 — a late periodic commit or a stale tenure's
+    /// write at the same scope cannot step the cursor back; a strictly newer scope, an operator rewind or a KIP-320
+    /// re-seek, may). The arms are pure predicates the applier ORs, so a checkpoint lands only when ALL admit it,
+    /// whichever is evaluated first.
     ///
     /// `rewind` marks the REWIND RECORD itself — the put a projection rebuild makes to move the group's
     /// cursor under a freshly minted epoch. It MINTS that epoch ([EpochBearing#mintsEpoch]), so the applier
@@ -2575,10 +2580,21 @@ public sealed interface AetherValue {
                                        long rewindGeneration,
                                        long rewindSequence,
                                        boolean rewind,
-                                       Epoch ownerEpoch) implements AetherValue, AssignmentTokenBearing, EpochBearing<RewindEpoch> {
+                                       Epoch ownerEpoch) implements AetherValue, AssignmentTokenBearing, EpochBearing<RewindEpoch>, ScopedMonotonic<CursorScope> {
         @Override
         public Object guardToken() {
             return token;
+        }
+
+        /// The advance-only scope (#1961, I-18), derived from the components; never encoded.
+        @Override
+        public CursorScope scope() {
+            return CursorScope.cursorScope(rewindEpoch(), ownerEpoch);
+        }
+
+        @Override
+        public long watermark() {
+            return committedOffset;
         }
 
         public static StreamCursorCheckpointValue streamCursorCheckpointValue(long committedOffset,

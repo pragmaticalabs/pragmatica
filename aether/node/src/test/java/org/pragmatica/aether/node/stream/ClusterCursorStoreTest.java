@@ -954,8 +954,9 @@ class ClusterCursorStoreTest {
         }
     }
 
-    /// #2590 P0.3 (X-4): a late stale checkpoint against the real applier, an enabled tripwire of today's behaviour with the
-    /// #2590 P2 assertion `@Disabled` beside it.
+    /// #2590 P0.3 (X-4): a late stale checkpoint against the real applier. The enabled tripwire of the old behaviour was deleted when
+    /// the overhaul's PR-5a (#1961) made the cursor checkpoint advance-only inside its `(rewind epoch, owner epoch)` scope; the
+    /// assertion below checks the committed offset only, so #2590 P2's `Covered` outcome vocabulary is not asserted here.
     @Nested
     class TodaysCursorExposures {
         private KVStore<AetherKey, AetherValue> kv;
@@ -975,20 +976,10 @@ class ClusterCursorStoreTest {
                      .map(StreamCursorCheckpointValue::committedOffset);
         }
 
-        /// X-4: a checkpoint delayed in flight lands after a later one, under the same token and the same rewind epoch. Neither fence
-        /// compares offsets, so the applier admits it and the committed cursor moves backwards.
+        /// X-4: a checkpoint delayed in flight lands after a later one, under the same token and the same rewind epoch; the scoped
+        /// advance-only arm refuses it and the higher cursor stands.
         @Test
-        void apply_lateStaleCheckpointSameEpochs_regressesCommittedOffset() {
-            apply(ClusterCursorStore.checkpointCommand(CHECKPOINT_KEY, 200L, SELF_TOKEN, RewindEpoch.NONE));
-            apply(ClusterCursorStore.checkpointCommand(CHECKPOINT_KEY, 100L, SELF_TOKEN, RewindEpoch.NONE));
-
-            assertThat(committedOffset()).describedAs("X-4 fixed? If #2590 P2 has landed, enable `apply_lateStaleCheckpointSameEpochs_isRefusedCovered` and delete this tripwire")
-                                         .isEqualTo(Option.some(100L));
-        }
-
-        @Disabled("#2590 P2: enable when a cursor record below the committed one is refused as Covered, ported onto the P2 cursor store if ClusterCursorStore and the legacy key are gone; delete the _regressesCommittedOffset tripwire then")
-        @Test
-        void apply_lateStaleCheckpointSameEpochs_isRefusedCovered() {
+        void apply_lateStaleCheckpointSameEpochs_isRefused() {
             apply(ClusterCursorStore.checkpointCommand(CHECKPOINT_KEY, 200L, SELF_TOKEN, RewindEpoch.NONE));
             apply(ClusterCursorStore.checkpointCommand(CHECKPOINT_KEY, 100L, SELF_TOKEN, RewindEpoch.NONE));
 

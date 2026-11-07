@@ -575,7 +575,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// a mutation (a `Put` value or a `Remove` witness) is rejected when it is either a stale-epoch write
     /// to any [EpochBearing] value (ownership fence, and the H4 leader fence through [LeaderValue]), a non-successor write to a [VersionFenced] value (lost-update fence,
     /// RFC-0018 #570), a regressive write to a [MonotonicFenced] value (running-max fence,
-    /// #700), a write to an [AssignmentGuarded] key by anything but its committed assignee (#1271), or a write that would erase a committed
+    /// #700), a same-scope regressive or older-scope write to a [ScopedMonotonic] value (scoped advance-only fence, #1961), a write to an [AssignmentGuarded] key by anything but its committed assignee (#1271), or a write that would erase a committed
     /// [LeaderAuthorized] or [OwnerFenced] marker (fence-drop arms), or a write that would change the committed non-empty community of a [CommunityFenced] value (#1840), or a write that would replace the committed life of an [IncarnationFenced] value (#1278), or a release of a [HolderFenced] hold by anyone but its committed holder, or a holder-bound write to a [HolderGuarded] key made after that holder was superseded (#1155). All arms are pure functions of the committed storage content and the
     /// incoming value alone, so every replica decides identically inside the consensus applier.
     /// Snapshot restore ([#restoreSnapshot]) intentionally bypasses all fences: a restored snapshot
@@ -584,7 +584,8 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         return dropsOwnerFence(key, incoming) || dropsLeaderAuthorization(key, incoming) || staleEpochWrite(key,
                                                                                                             incoming) || staleSuccessorWrite(key,
                                                                                                                                              incoming) || regressiveWatermarkWrite(key,
-                                                                                                                                                                                   incoming) || unassignedWrite(key,
+                                                                                                                                                                                   incoming) || regressiveScopedWrite(key,
+                                                                                                                                                                                                                      incoming) || unassignedWrite(key,
                                                                                                                                                                                                                 incoming) || reassignsCommunity(key,
                                                                                                                                                                                                                                                 incoming) || reincarnates(key,
                                                                                                                                                                                                                                                                           incoming) || releasesUnheld(key,
@@ -747,6 +748,34 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         return incoming instanceof MonotonicFenced in
                && storage.get(key) instanceof MonotonicFenced stored
                && in.fenceWatermark() < stored.fenceWatermark();
+    }
+
+    /// Scoped advance-only fence (#1961, I-18): a [ScopedMonotonic] value is rejected iff its scope is STRICTLY LOWER than
+    /// the committed one, or EQUAL with a STRICTLY LOWER watermark. A strictly newer scope may lower the watermark (an
+    /// operator rewind, a KIP-320 re-seek); an equal scope at an equal watermark is accepted, as in the running-max arm.
+    /// Scopes of different classes are never compared, so no comparison can throw inside the applier. First write passes
+    /// (no committed scope yet). Deterministic like the arms above: reads only committed storage and the incoming value.
+    /// A rejected write mutates nothing and emits NO notification (see [ScopedMonotonic]).
+    private boolean regressiveScopedWrite(K key, Object incoming) {
+        return incoming instanceof ScopedMonotonic<?> in
+               && storage.get(key) instanceof ScopedMonotonic<?> stored
+               && sameScopeKind(in, stored)
+               && incomingScopeRegresses(in, stored);
+    }
+
+    /// Every caller of [#incomingScopeRegresses] checks this first, which is what makes its scope cast safe.
+    private static boolean sameScopeKind(ScopedMonotonic<?> incoming, ScopedMonotonic<?> stored) {
+        return incoming.scope().getClass() == stored.scope().getClass();
+    }
+
+    /// Captures the scope type variable so the [Comparable#compareTo] is fully type-checked (never reflective). The cast
+    /// of the stored scope is safe only after [#sameScopeKind], which every caller checks first.
+    @SuppressWarnings("unchecked")
+    private static <S extends Comparable<S>> boolean incomingScopeRegresses(ScopedMonotonic<S> incoming,
+                                                                            ScopedMonotonic<?> stored) {
+        var comparison = incoming.scope().compareTo((S) stored.scope());
+
+        return comparison < 0 || comparison == 0 && incoming.watermark() < stored.watermark();
     }
 
     /// Cross-key assignment fence (#1271): a write to an [AssignmentGuarded] key is rejected unless the
