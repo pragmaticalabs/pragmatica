@@ -284,11 +284,13 @@ final class MultipartDecoder {
                : headerBlock.size() >= 4 && headerTail == HEADER_END_BITS;
     }
 
+    /// A nested part is refused before the part count is checked, as on the aggregated path: a nested part at the cap is
+    /// answered 400, not 413.
     private void startPart(PartHeaders headers, List<Event> events) {
-        if (++parts > partCap) {
-            refuse(limitExceeded("the part count", partCap));
-        } else if (headers.isNested()) {
+        if (headers.isNested()) {
             refuse(UploadIngestError.Malformed.NESTED_MULTIPART);
+        } else if (++parts > partCap) {
+            refuse(limitExceeded("the part count", partCap));
         } else if (headers.isFile()) {
             startFile(headers, events);
         } else {

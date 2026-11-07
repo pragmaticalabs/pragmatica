@@ -1072,7 +1072,7 @@ class AppHttpServerIngestGateTest {
         return out.toByteArray();
     }
 
-    private int statusOf(Protocol protocol, String path, byte[] body) throws Exception {
+    int statusOf(Protocol protocol, String path, byte[] body) throws Exception {
         return client(protocol).postBody(path, KEY_A, MULTIPART, body).status();
     }
 

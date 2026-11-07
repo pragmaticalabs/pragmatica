@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.http.handler.UploadHandle;
@@ -99,6 +100,177 @@ class AppHttpServerStreamingIngestGateTest extends AppHttpServerIngestGateTest {
 
     private ObjectRef refOf(UploadHandle handle, int file) {
         return org.pragmatica.aether.http.upload.UploadObjects.objectRef(handle.files().get(file).object()).unwrap();
+    }
+
+    // ---- U1 tests whose expectation the streaming path changes, each replaced with what streaming promises
+
+    private static final String NO_PART_WORKER = "U2: the streaming path has no part-limit worker; the decoder enforces the part "
+                                                 + "limits as the body streams (MultipartDecoderTest, the maxFiles/maxFileSize/"
+                                                 + "maxFields/maxFieldSize tests of this class)";
+
+    @Override
+    @Test
+    @Disabled(NO_PART_WORKER)
+    void partLimitedMultipart_isCheckedAndDispatchedOffTheEventLoop_overHttp1() {}
+
+    @Override
+    @Test
+    @Disabled(NO_PART_WORKER)
+    void partLimitedMultipart_isCheckedAndDispatchedOffTheEventLoop_overHttp3() {}
+
+    @Override
+    @Test
+    @Disabled(NO_PART_WORKER)
+    void partLimitExecutorFull_isRefused503_andTheAcceptedOnesAreAnswered_overHttp1() {}
+
+    @Override
+    @Test
+    @Disabled(NO_PART_WORKER)
+    void partLimitExecutorFull_isRefused503_andTheAcceptedOnesAreAnswered_overHttp3() {}
+
+    @Override
+    @Test
+    @Disabled(NO_PART_WORKER)
+    void aFailureOnThePartLimitWorker_isAnswered500_overHttp1() {}
+
+    @Override
+    @Test
+    @Disabled(NO_PART_WORKER)
+    void aFailureOnThePartLimitWorker_isAnswered500_overHttp3() {}
+
+    private static final String RESERVES_WRITE_BUFFER = "U2: a streamed upload reserves the smaller of its length and its write "
+                                                        + "buffer, not its declared length: "
+                                                        + "streamedUpload_reservesTheSmallerOfItsLengthAndItsWriteBuffer";
+
+    @Override
+    @Test
+    @Disabled(RESERVES_WRITE_BUFFER)
+    void byteBudget_reservesTheDeclaredLength_theRouteLimitWhenUndeclared_nothingForAnEmptyBody_overHttp1() {}
+
+    @Override
+    @Test
+    @Disabled(RESERVES_WRITE_BUFFER)
+    void byteBudget_reservesTheDeclaredLength_theRouteLimitWhenUndeclared_nothingForAnEmptyBody_overHttp3() {}
+
+    /// Streaming has no in-memory bound (see [#streamedLimit_isTheRoutesUnderTheCeiling_withNoInMemoryBound]): a length
+    /// over the route's 4 GiB is still refused on the head, and a length that overflows any int with it.
+    @Override
+    @Test
+    void contentLengthOverTwoGiB_isRefused413OnTheHead_withoutOverflow_overHttp1() throws Exception {
+        lengthOverTheRoutesLimit_isRefused413OnTheHead(Protocol.H1);
+    }
+
+    @Override
+    @Test
+    void contentLengthOverTwoGiB_isRefused413OnTheHead_withoutOverflow_overHttp3() throws Exception {
+        lengthOverTheRoutesLimit_isRefused413OnTheHead(Protocol.H3);
+    }
+
+    private void lengthOverTheRoutesLimit_isRefused413OnTheHead(Protocol protocol) throws Exception {
+        start(protocol, defaults().withMaxSizeCeiling(8L * 1024 * MIB), 10 * MIB);
+        var client = client(protocol);
+
+        assertThat(client.postDeclaredOnly("/api/huge/", KEY_A, 4L * 1024 * MIB + 1).status()).as("one byte over the route's 4 GiB")
+                                                                                         .isEqualTo(413);
+        assertThat(client.postDeclaredOnly("/api/huge/", KEY_A, Long.MAX_VALUE).status()).isIn(400, 413);
+        assertThat(served.get()).isZero();
+    }
+
+    /// The streaming path stores the body, so it must decode it: a body declared multipart that does not decode is refused
+    /// 400 (spec §4 U2) instead of being left to the handler; a body that is not multipart is stored as one object.
+    @Override
+    @Test
+    void aBodyThatIsNotDecodableMultipart_isLeftToTheHandler_overHttp1() throws Exception {
+        undecodableMultipart_isRefused400_andABinaryBodyIsStored(Protocol.H1);
+    }
+
+    @Override
+    @Test
+    void aBodyThatIsNotDecodableMultipart_isLeftToTheHandler_overHttp3() throws Exception {
+        undecodableMultipart_isRefused400_andABinaryBodyIsStored(Protocol.H3);
+    }
+
+    private void undecodableMultipart_isRefused400_andABinaryBodyIsStored(Protocol protocol) throws Exception {
+        start(protocol, defaults(), 10 * MIB);
+        var client = client(protocol);
+
+        assertThat(client.postBody("/api/files/", KEY_A, "application/octet-stream", new byte[4096]).status()).as("not multipart: stored")
+                                                                                                             .isEqualTo(200);
+        assertThat(servedUpload().files()).hasSize(1);
+        assertThat(client.postBody("/api/files/", KEY_A, MULTIPART, "not a multipart body".getBytes(StandardCharsets.UTF_8)).status())
+            .as("multipart that does not decode").isEqualTo(400);
+        assertThat(served.get()).isEqualTo(1);
+    }
+
+    /// A nested part is refused 400 on every upload route when streaming, including one without part limits, and before
+    /// the part cap (128 fields, then the nested part: 400, not 413).
+    @Override
+    @Test
+    void aNestedMultipartPart_onAPartLimitedRoute_isRefused400_overHttp1() throws Exception {
+        nestedPart_isRefused400_onEveryUploadRoute(Protocol.H1);
+    }
+
+    @Override
+    @Test
+    void aNestedMultipartPart_onAPartLimitedRoute_isRefused400_overHttp3() throws Exception {
+        nestedPart_isRefused400_onEveryUploadRoute(Protocol.H3);
+    }
+
+    private void nestedPart_isRefused400_onEveryUploadRoute(Protocol protocol) throws Exception {
+        start(protocol, defaults(), 10 * MIB);
+        var nested = ("--" + BOUNDARY + "\r\nContent-Disposition: form-data; name=\"n\"\r\nContent-Type: multipart/mixed; boundary=IN"
+                      + "\r\n\r\n--IN\r\nContent-Disposition: file; filename=\"f.bin\"\r\n\r\nx\r\n--IN--\r\n\r\n--" + BOUNDARY
+                      + "--\r\n").getBytes(StandardCharsets.ISO_8859_1);
+        var cap = new Part[128];
+
+        for (var index = 0; index < cap.length; index++) {
+            cap[index] = Part.field("f" + index, "v");
+        }
+
+        var fields = multipart(cap);
+        var capThenNested = new ByteArrayOutputStream();
+
+        capThenNested.write(fields, 0, fields.length - ("--" + BOUNDARY + "--\r\n").length());
+        capThenNested.writeBytes(nested);
+
+        assertThat(statusOf(protocol, "/api/files/", capThenNested.toByteArray())).as("128 fields, then a nested part").isEqualTo(400);
+        assertThat(statusOf(protocol, "/api/files/", nested)).isEqualTo(400);
+        assertThat(statusOf(protocol, "/api/upload/", nested)).as("a route without part limits too").isEqualTo(400);
+        assertThat(served.get()).as("never dispatched").isZero();
+        awaitEmptyCatalog();
+    }
+
+    /// Routes that are not upload routes are untouched by streaming; an upload route without part limits is held to the
+    /// decoder's part cap (128), since the body is decoded at the ingress and no handler sees it.
+    @Override
+    @Test
+    void routeWithoutUploadLimits_behavesAsBefore_overHttp1() throws Exception {
+        routeWithoutUploadLimits_isUntouched_andTheUploadRouteKeepsThePartCap(Protocol.H1);
+    }
+
+    @Override
+    @Test
+    void routeWithoutUploadLimits_behavesAsBefore_overHttp3() throws Exception {
+        routeWithoutUploadLimits_isUntouched_andTheUploadRouteKeepsThePartCap(Protocol.H3);
+    }
+
+    private void routeWithoutUploadLimits_isUntouched_andTheUploadRouteKeepsThePartCap(Protocol protocol) throws Exception {
+        start(protocol, defaults(), 256 * 1024);
+        var overTheCap = new Part[200];
+
+        for (var index = 0; index < overTheCap.length; index++) {
+            overTheCap[index] = Part.field("f" + index, "v");
+        }
+
+        var plain = client(protocol).postBody("/api/undeclared/", KEY_A, MULTIPART, multipart(overTheCap));
+
+        assertThat(plain.status()).as("not an upload route: the body is aggregated and left to the handler").isEqualTo(200);
+        assertThat(lastServed.get().upload().isEmpty()).as("and nothing was stored for it").isTrue();
+        assertThat(client(protocol).postBody("/api/upload/", KEY_A, MULTIPART, multipart(overTheCap)).status())
+            .as("an upload route without part limits: 200 parts cross the decoder's cap of 128").isEqualTo(413);
+        assertThat(client(protocol).post("/api/undeclared/", Option.some(KEY_A), 512 * 1024, Mode.DECLARED).status()).isEqualTo(413);
+        assertThat(client(protocol).post("/api/undeclared/", Option.none(), 16, Mode.DECLARED).status()).isEqualTo(401);
+        assertThat(served.get()).isEqualTo(1);
     }
 
     // ---- stored, and handed over by reference
