@@ -40,6 +40,7 @@ class AppHttpServerStreamingIngestGateTest extends AppHttpServerIngestGateTest {
     private static final TimeSpan WAIT = timeSpan(30).seconds();
     /// What one streamed upload's writes hold at most: (write window + 1) blocks of the default chunk size.
     private static final long WRITE_BUFFER = 5L * 4 * MIB;
+    private static final TimeSpan UNCLAIMED_TTL = timeSpan(2).hours();
 
     @Override
     boolean streamingIngest() {
@@ -286,7 +287,7 @@ class AppHttpServerStreamingIngestGateTest extends AppHttpServerIngestGateTest {
     }
 
     private void binaryUpload_isStoredAndReachesTheSliceByReference(Protocol protocol) throws Exception {
-        start(protocol, defaults(), 10 * MIB);
+        start(protocol, defaults().withUnclaimedTtl(UNCLAIMED_TTL), 10 * MIB);
         var body = random(9 * MIB + 5, 1);
 
         var reply = client(protocol).postBody("/api/upload/", KEY_A, "application/octet-stream", body);
@@ -300,6 +301,18 @@ class AppHttpServerStreamingIngestGateTest extends AppHttpServerIngestGateTest {
         assertThat(handle.files().getFirst().object().digest()).isEqualTo(sha256(body));
         assertThat(read(sliceStore(), refOf(handle, 0))).as("the stored bytes are the sent ones").isEqualTo(body);
         assertThat(uploadAdmissionOf().reservedBytes()).as("the permit was returned").isZero();
+        assertExpiresAfterTheUnclaimedTtl(refOf(handle, 0));
+    }
+
+    /// The stored upload carries `unclaimed_ttl` as its expiry (metadata only until A4): fixed at ingest, so it lies at
+    /// most the ingest duration before `createdAt + ttl`.
+    private void assertExpiresAfterTheUnclaimedTtl(ObjectRef ref) {
+        var meta = sliceStore().stat(ref.id()).await(WAIT).unwrap().unwrap().meta();
+        var expected = meta.createdAt().plus(UNCLAIMED_TTL.duration());
+
+        assertThat(meta.expiresAt().toOptional()).as("expiresAt = ingest time + unclaimed_ttl")
+                                                 .hasValueSatisfying(expiresAt -> assertThat(expiresAt).isBetween(expected.minusSeconds(60),
+                                                                                                                  expected.plusSeconds(1)));
     }
 
     @Test
@@ -313,7 +326,7 @@ class AppHttpServerStreamingIngestGateTest extends AppHttpServerIngestGateTest {
     }
 
     private void multipartUpload_storesEachFile_andKeepsTheFields(Protocol protocol) throws Exception {
-        start(protocol, defaults(), 10 * MIB);
+        start(protocol, defaults().withUnclaimedTtl(UNCLAIMED_TTL), 10 * MIB);
         var first = random(5 * MIB + 1, 2);
         var second = random(10_000, 3);
         var body = multipart(Part.field("comment", "hello"), new Part("a", "a.bin", first), new Part("b", "b.bin", second));
@@ -328,6 +341,8 @@ class AppHttpServerStreamingIngestGateTest extends AppHttpServerIngestGateTest {
         assertThat(handle.files().getFirst().fileName().toOptional()).contains("a.bin");
         assertThat(read(sliceStore(), refOf(handle, 0))).isEqualTo(first);
         assertThat(read(sliceStore(), refOf(handle, 1))).isEqualTo(second);
+        assertExpiresAfterTheUnclaimedTtl(refOf(handle, 0));
+        assertExpiresAfterTheUnclaimedTtl(refOf(handle, 1));
     }
 
     // ---- refusals leave nothing behind

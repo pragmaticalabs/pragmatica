@@ -116,4 +116,56 @@ class UploadConfigTest {
         assertThat(base.withMaxInFlightBytes(9).minBodyRate()).isEqualTo(UploadConfig.DEFAULT_MIN_BODY_RATE);
         assertThat(base.withMaxInFlightBytes(9).maxInFlightBytes()).isEqualTo(9);
     }
+
+    /// U2 ships OFF (know 74c6c0810a): nothing reclaims a stored upload until cluster GC (A4).
+    @Test
+    void absentSection_leavesStreamingIngestOff_withATwentyFourHourUnclaimedTtl() {
+        var upload = load("").appHttp().upload();
+
+        assertThat(upload.streamingIngest()).isFalse();
+        assertThat(upload.unclaimedTtl().millis()).isEqualTo(24L * 60 * 60 * 1000);
+    }
+
+    @Test
+    void streamingKeys_areParsed() {
+        var upload = load("""
+                          [app-http.upload]
+                          streaming_ingest = true
+                          unclaimed_ttl = "2h"
+                          """).appHttp().upload();
+
+        assertThat(upload.streamingIngest()).isTrue();
+        assertThat(upload.unclaimedTtl().millis()).isEqualTo(2L * 60 * 60 * 1000);
+    }
+
+    @Test
+    void nonPositiveUnclaimedTtl_isRefusedByValidation_named() {
+        var result = ConfigLoader.loadFromString(MINIMAL_CLUSTER + """
+
+                                                 [app-http]
+                                                 enabled = "true"
+
+                                                 [app-http.upload]
+                                                 unclaimed_ttl = "0s"
+                                                 """);
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).contains("unclaimed_ttl"));
+    }
+
+    @Test
+    void everyWith_keepsTheStreamingFields() {
+        var base = UploadConfig.DEFAULT.withStreamingIngest(true)
+                                       .withUnclaimedTtl(UploadConfig.DEFAULT_IDLE_TIMEOUT);
+
+        assertThat(base.withMaxConcurrent(2).streamingIngest()).isTrue();
+        assertThat(base.withMaxConcurrentPerPrincipal(2).streamingIngest()).isTrue();
+        assertThat(base.withMaxSizeCeiling(2).streamingIngest()).isTrue();
+        assertThat(base.withIdleTimeout(base.idleTimeout()).streamingIngest()).isTrue();
+        assertThat(base.withMinBodyRate(2).streamingIngest()).isTrue();
+        assertThat(base.withMaxInFlightBytes(9).streamingIngest()).isTrue();
+        assertThat(base.withMaxInFlightBytes(9).unclaimedTtl()).isEqualTo(UploadConfig.DEFAULT_IDLE_TIMEOUT);
+        assertThat(base.withStreamingIngest(false).unclaimedTtl()).isEqualTo(UploadConfig.DEFAULT_IDLE_TIMEOUT);
+        assertThat(base.withUnclaimedTtl(UploadConfig.DEFAULT_UNCLAIMED_TTL).streamingIngest()).isTrue();
+    }
 }
