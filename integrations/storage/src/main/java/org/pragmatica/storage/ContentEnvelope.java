@@ -9,7 +9,8 @@ import static org.pragmatica.lang.Option.some;
 
 
 /// The content store's typed envelope around every value it keeps: a fixed marker, then one kind byte, then the payload.
-/// Kind `M` is a [ContentManifest], `E` an object entry, `N` a name binding. The kind byte is believed only for a value
+/// Kind `M` is a [ContentManifest], `E` an object entry, `N` a name binding, `P` and `R` a
+/// cluster catalog's page and root. The kind byte is believed only for a value
 /// the store reached through a ref it wrote itself; caller bytes are chunk blocks, which carry no envelope and are reached
 /// only through a manifest, so no upload is ever read as an envelope whatever its bytes begin with.
 sealed interface ContentEnvelope {
@@ -20,6 +21,10 @@ sealed interface ContentEnvelope {
     byte ENTRY = 'E';
     /// A name binding of the v2 store: the id of the object a name points at.
     byte NAME = 'N';
+    /// A page of a cluster catalog tree ([CatalogPage]).
+    byte PAGE = 'P';
+    /// The root block of a cluster catalog ([CatalogRoot]).
+    byte ROOT = 'R';
 
     static byte[] marker() {
         return new byte[]{0x00, 'A', 'H', 'S', 'E', 0x02};
