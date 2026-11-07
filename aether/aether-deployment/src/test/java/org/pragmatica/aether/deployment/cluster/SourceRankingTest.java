@@ -95,6 +95,25 @@ class SourceRankingTest {
                                         NO_COUNTS));
     }
 
+    // The golden list pins locationOrder() itself: editing the oracle (not only rank) goes red here.
+    @Test
+    void locationOrder_goldenList_pinsTodaysOrder() {
+        var shuffled = new ArrayList<>(List.of(loc("b-docker", null),
+                                               loc("a-hetzner", "z2"),
+                                               loc("c-aws", "z1"),
+                                               loc("a-hetzner", "z1"),
+                                               loc("b-docker", "a1")));
+
+        shuffled.sort(PlacementReconciler.locationOrder());
+
+        assertEquals(List.of(loc("a-hetzner", "z1"),
+                             loc("a-hetzner", "z2"),
+                             loc("b-docker", null),
+                             loc("b-docker", "a1"),
+                             loc("c-aws", "z1")),
+                     shuffled);
+    }
+
     // ---- INV-08: never outside the bindings ----
     @Test
     void rank_randomInputs_isSubsetOfCandidates() {
