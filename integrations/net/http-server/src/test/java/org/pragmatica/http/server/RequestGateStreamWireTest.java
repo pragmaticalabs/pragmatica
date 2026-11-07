@@ -127,6 +127,11 @@ class RequestGateStreamWireTest {
             assertThat(sink.bytes()).isEqualTo(size);
             assertThat(sink.sha()).isEqualTo(sent);
             assertThat(answer).endsWith("received " + size + " sha " + sent);
+            System.out.printf("BOUNDS %s: accepts=%d maxChunk=%d directGained=%d%n",
+                              getClass().getSimpleName(),
+                              sink.accepts(),
+                              sink.maxChunk(),
+                              sink.maxSample() - baseline);
             assertThat(sink.maxOutstanding()).as("at most one accept outstanding").isEqualTo(1);
             assertThat(sink.maxChunk()).as("largest chunk one accept was given").isLessThanOrEqualTo(CHUNK_BOUND);
             assertThat(sink.maxSample() - baseline).as("direct memory the server gained (baseline %d, %d accepts)", baseline, sink.accepts())

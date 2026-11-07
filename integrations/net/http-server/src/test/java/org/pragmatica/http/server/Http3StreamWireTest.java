@@ -121,6 +121,11 @@ class Http3StreamWireTest {
         assertThat(sink.bytes()).isEqualTo(size);
         assertThat(sink.sha()).isEqualTo(sent.get());
         assertThat(answer.body()).isEqualTo("received " + size + " sha " + sent.get());
+        System.out.printf("BOUNDS %s: accepts=%d maxChunk=%d directGained=%d%n",
+                          getClass().getSimpleName(),
+                          sink.accepts(),
+                          sink.maxChunk(),
+                          sink.maxSample() - baseline);
         assertThat(sink.maxOutstanding()).as("at most one accept outstanding").isEqualTo(1);
         assertThat(sink.maxChunk()).as("largest chunk one accept was given").isLessThanOrEqualTo(CHUNK_BOUND);
         assertThat(sink.maxSample() - baseline).as("direct memory gained (baseline %d, %d accepts, largest chunk %d)",

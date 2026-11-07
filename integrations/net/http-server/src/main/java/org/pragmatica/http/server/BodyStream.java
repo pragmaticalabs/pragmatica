@@ -145,8 +145,10 @@ final class BodyStream {
         var next = waiting.poll();
 
         accepting = some(next);
+        // A dependent step runs on the thread that resolves the promise, so the resolution reaches the loop in one hop;
+        // an `onResult` handler would first go through the promise's own async executor.
         sink.accept(next.view())
-            .onResult(result -> executor.execute(() -> settled(next, result)));
+            .withResult(result -> executor.execute(() -> settled(next, result)));
     }
 
     private void drained() {
