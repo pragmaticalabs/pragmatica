@@ -25,6 +25,5 @@ package org.pragmatica.cluster.state.kvstore;
 /// @param <S> the scope; its natural order is the order in which scopes are minted
 public interface ScopedMonotonic<S extends Comparable<S>> {
     S scope();
-
     long watermark();
 }

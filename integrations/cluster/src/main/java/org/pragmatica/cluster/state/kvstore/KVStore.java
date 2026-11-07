@@ -586,11 +586,11 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
                                                                                                                                              incoming) || regressiveWatermarkWrite(key,
                                                                                                                                                                                    incoming) || regressiveScopedWrite(key,
                                                                                                                                                                                                                       incoming) || unassignedWrite(key,
-                                                                                                                                                                                                                incoming) || reassignsCommunity(key,
-                                                                                                                                                                                                                                                incoming) || reincarnates(key,
-                                                                                                                                                                                                                                                                          incoming) || releasesUnheld(key,
-                                                                                                                                                                                                                                                                                                      incoming) || writesUnheld(key,
-                                                                                                                                                                                                                                                                                                                                incoming);
+                                                                                                                                                                                                                                                   incoming) || reassignsCommunity(key,
+                                                                                                                                                                                                                                                                                   incoming) || reincarnates(key,
+                                                                                                                                                                                                                                                                                                             incoming) || releasesUnheld(key,
+                                                                                                                                                                                                                                                                                                                                         incoming) || writesUnheld(key,
+                                                                                                                                                                                                                                                                                                                                                                   incoming);
     }
 
     /// #1155: a release of a [HolderFenced] hold by anyone but the holder of the committed hold; see that type.
@@ -765,7 +765,9 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
     /// Every caller of [#incomingScopeRegresses] checks this first, which is what makes its scope cast safe.
     private static boolean sameScopeKind(ScopedMonotonic<?> incoming, ScopedMonotonic<?> stored) {
-        return incoming.scope().getClass() == stored.scope().getClass();
+        return incoming.scope()
+                       .getClass() == stored.scope()
+                                            .getClass();
     }
 
     /// Captures the scope type variable so the [Comparable#compareTo] is fully type-checked (never reflective). The cast
