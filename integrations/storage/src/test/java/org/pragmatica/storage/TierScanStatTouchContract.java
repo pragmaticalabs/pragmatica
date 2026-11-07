@@ -166,7 +166,7 @@ abstract class TierScanStatTouchContract {
         assertThat(scanAll(KeyShard.all(), 10)).containsExactly(id);
     }
 
-    /// A scan reports the time a touch set, as [StorageTier#stat] does, and lists a touched block once -- on S3, where
+    /// A scan reports the time a touch set, as [StorageTier#stat] does (to the second), and lists a touched block once -- on S3, where
     /// the touch is a marker object beside the block, at every page size, so a marker can open the page after its block.
     @Test
     void scan_listsATouchedBlockOnce_withTheTimeStatReports() {
@@ -190,9 +190,18 @@ abstract class TierScanStatTouchContract {
 
             assertThat(scanned.stream().map(BlockStat::id).toList()).as("page size %d", limit)
                                                                    .containsExactlyInAnyOrderElementsOf(ids);
-            scanned.forEach(stat -> assertThat(stat).as("page size %d", limit)
-                                                    .isEqualTo(tier.stat(stat.id()).await().unwrap().unwrap()));
+            scanned.forEach(stat -> assertThat(inWholeSeconds(stat)).as("page size %d", limit)
+                                                                    .isEqualTo(inWholeSeconds(tier.stat(stat.id())
+                                                                                                  .await()
+                                                                                                  .unwrap()
+                                                                                                  .unwrap())));
         }
+    }
+
+    /// S3 reports `Last-Modified` in whole seconds on a HEAD and in milliseconds on a LIST, so a scan and a stat agree to
+    /// the second.
+    private static BlockStat inWholeSeconds(BlockStat stat) {
+        return BlockStat.blockStat(stat.id(), stat.size(), stat.writtenAtMillis() / 1000 * 1000);
     }
 
     protected List<BlockId> scanAll(KeyShard shard, int limit) {
