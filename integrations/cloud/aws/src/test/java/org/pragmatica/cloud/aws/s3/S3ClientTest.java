@@ -489,9 +489,9 @@ class S3ClientTest {
             assertThat(listing.objects()).containsExactly(S3Client.ObjectStat.objectStat("data/file1.txt", 1024, 1735689600000L),
                                                           S3Client.ObjectStat.objectStat("data/file2.txt", 2048, 1735776000000L));
             assertThat(listing.truncated()).isTrue();
-            assertThat(capturedRequest.get().uri().getRawQuery()).contains("start-after=data%2Ffile0.txt")
-                                                                 .contains("max-keys=2")
-                                                                 .contains("prefix=data%2F");
+            assertThat(capturedRequest.get().uri().getRawQuery().split("&")).contains("start-after=data%2Ffile0.txt",
+                                                                                      "max-keys=2",
+                                                                                      "prefix=data%2F");
         }
 
         @Test
