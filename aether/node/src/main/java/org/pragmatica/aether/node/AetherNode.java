@@ -2995,6 +2995,8 @@ public interface AetherNode extends ManageableNode {
         var taskGroupOwnerResolver = appHttpServerOut.taskGroupOwnerResolver();
         var workerEndpointDirectory = appHttpServerOut.workerEndpointDirectory();
         var appHttpServer = appHttpServerOut.appHttpServer();
+        // U2: `[app-http.upload] streaming_ingest` writes upload bodies to the node's content storage.
+        appHttpServer.setUploadStorage(contentStorage);
         var storageMaintenanceOut = StorageAssembly.storageMaintenance(new StorageAssembly.StorageMaintenanceInputs(config,
                                                                                                                     storageSetups,
                                                                                                                     operatorWarningSink));

@@ -9,6 +9,7 @@ import java.util.Objects;
 
 import org.pragmatica.aether.http.handler.security.Role;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.Codec;
 
@@ -20,6 +21,9 @@ import static org.pragmatica.lang.Result.success;
 /// #2310: `trailers` carries the request's trailer fields (RFC 9110 §6.5), as the receiving transport delivered them
 /// with the forbidden names already discarded, so a forwarded request reaches its slice with them. Empty when the
 /// client sent none.
+///
+/// U2: `upload` carries the files and fields an ingress already stored for a streamed upload, by reference; such a request
+/// has an empty `body`. Empty for every other request.
 @Codec
 public record HttpRequestContext(String path,
                                  String method,
@@ -28,7 +32,8 @@ public record HttpRequestContext(String path,
                                  byte[] body,
                                  Map<String, List<String>> trailers,
                                  String requestId,
-                                 SecurityContext security) {
+                                 SecurityContext security,
+                                 Option<UploadHandle> upload) {
     private static final byte[] EMPTY_BODY = new byte[0];
 
     public HttpRequestContext {
@@ -39,6 +44,7 @@ public record HttpRequestContext(String path,
         Objects.requireNonNull(trailers, "trailers");
         Objects.requireNonNull(requestId, "requestId");
         Objects.requireNonNull(security, "security");
+        Objects.requireNonNull(upload, "upload");
         if (body == null || body.length == 0) {
             body = EMPTY_BODY;
         }
@@ -86,6 +92,19 @@ public record HttpRequestContext(String path,
                                                         Map<String, List<String>> trailers,
                                                         String requestId,
                                                         SecurityContext security) {
+        return httpRequestContext(path, method, queryParams, headers, body, trailers, requestId, security, Option.none());
+    }
+
+    /// U2: a request whose upload the ingress already stored; its body is empty.
+    public static HttpRequestContext httpRequestContext(String path,
+                                                        String method,
+                                                        Map<String, List<String>> queryParams,
+                                                        Map<String, List<String>> headers,
+                                                        byte[] body,
+                                                        Map<String, List<String>> trailers,
+                                                        String requestId,
+                                                        SecurityContext security,
+                                                        Option<UploadHandle> upload) {
         return Result.all(success(path),
                           success(method),
                           success(queryParams),
@@ -93,13 +112,14 @@ public record HttpRequestContext(String path,
                           success(body),
                           success(trailers),
                           success(requestId),
-                          success(security))
+                          success(security),
+                          success(upload))
                      .map(HttpRequestContext::new)
                      .unwrap();
     }
 
     public HttpRequestContext withSecurity(SecurityContext newSecurity) {
-        return httpRequestContext(path, method, queryParams, headers, body, trailers, requestId, newSecurity);
+        return httpRequestContext(path, method, queryParams, headers, body, trailers, requestId, newSecurity, upload);
     }
 
     public boolean isAuthenticated() {

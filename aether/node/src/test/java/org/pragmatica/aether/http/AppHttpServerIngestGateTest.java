@@ -8,7 +8,10 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -55,6 +58,8 @@ import org.pragmatica.aether.http.HttpRoutePublisher.LocalRouteInfo;
 import org.pragmatica.aether.http.adapter.RouteDecorator;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
+import org.pragmatica.storage.LocalDiskTier;
+import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.aether.http.handler.HttpRequestHandler;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
@@ -100,40 +105,67 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// - upload bounds from config: `idle_timeout` and a route's `max_duration` answer 408.
 @Timeout(180)
 class AppHttpServerIngestGateTest {
-    private static final int MIB = 1024 * 1024;
+    static final int MIB = 1024 * 1024;
     /// A port is probed free and bound a moment later, and another process (a module in the `-T 1C` reactor) can take it in
     /// between: "Address already in use" on a port nothing in this test holds. A start that fails is retried on a new port.
     private static final int START_ATTEMPTS = 5;
     private static final String ROUTE_TABLE_PROPAGATING = "Route table propagating";
     private static final Pattern CONTENT_LENGTH = Pattern.compile("(?im)^content-length:\\s*(\\d+)");
-    private static final String KEY_A = "key-a";
-    private static final String KEY_B = "key-b";
-    private static final Artifact ARTIFACT = Artifact.artifact("com.example:svc:1.0.0").unwrap();
+    static final String KEY_A = "key-a";
+    static final String KEY_B = "key-b";
+    static final Artifact ARTIFACT = Artifact.artifact("com.example:svc:1.0.0").unwrap();
 
     enum Protocol {
         H1,
         H3
     }
 
-    private final AtomicInteger served = new AtomicInteger();
-    private final AtomicLong servedBytes = new AtomicLong();
+    final AtomicInteger served = new AtomicInteger();
+    final AtomicLong servedBytes = new AtomicLong();
     private final AtomicReference<String> dispatchThread = new AtomicReference<>("");
     private final AtomicInteger entered = new AtomicInteger();
     private volatile CountDownLatch gate = new CountDownLatch(0);
     private volatile boolean failDispatch;
     private volatile String sliceRequestId = "";
     private final HttpRouteRegistry registry = HttpRouteRegistry.httpRouteRegistry();
-    private AppHttpServer server;
+    AppHttpServer server;
     private int port;
+    /// U2: the node's content storage, bound on every server this test starts; `[app-http.upload] streaming_ingest`
+    /// decides whether upload routes write to it. Bound with the flag off too, so the U1 tests here also pin that the flag,
+    /// not the binding, selects the streaming path.
+    StorageInstance contentStorage;
+    private Path contentDir;
+    /// The last request a slice was handed.
+    final AtomicReference<HttpRequestContext> lastServed = new AtomicReference<>();
+
+    /// Whether this run turns `[app-http.upload] streaming_ingest` on: off here (U1 behaviour), on in
+    /// [AppHttpServerStreamingIngestGateTest], which runs every test of this class again on the streaming path.
+    boolean streamingIngest() {
+        return false;
+    }
 
     @AfterEach
-    void stop() {
+    void stop() throws IOException {
         if (server != null) {
             server.stop().await(timeSpan(30).seconds());
         }
+        if (contentDir != null) {
+            try (var paths = Files.walk(contentDir)) {
+                paths.sorted(Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
+            }
+        }
     }
 
-    private void start(Protocol protocol, UploadConfig upload, int maxRequestSize) throws IOException {
+    private StorageInstance contentStorage() throws IOException {
+        if (contentStorage == null) {
+            contentDir = Files.createTempDirectory("u2-content");
+            contentStorage = StorageInstance.storageInstance("content",
+                                                             List.of(LocalDiskTier.localDiskTier(contentDir, 8L * 1024 * MIB).unwrap()));
+        }
+        return contentStorage;
+    }
+
+    void start(Protocol protocol, UploadConfig upload, int maxRequestSize) throws IOException {
         start(protocol, upload, maxRequestSize, SecurityMode.API_KEY);
     }
 
@@ -164,7 +196,7 @@ class AppHttpServerIngestGateTest {
                                                  Option.none(),
                                                  protocol == Protocol.H1
                                                  ? HttpProtocol.H1
-                                                 : HttpProtocol.H3).unwrap().withUpload(upload);
+                                                 : HttpProtocol.H3).unwrap().withUpload(upload.withStreamingIngest(streamingIngest()));
         var router = new CountingRouter();
         var publisher = new IngestGateRoutes(router, SecurityPolicy.apiKeyRequired());
 
@@ -183,20 +215,21 @@ class AppHttpServerIngestGateTest {
                                              Option.none(),
                                              Option.none(),
                                              Option.<DeploymentManager> none());
+        server.setUploadStorage(contentStorage());
         return server.start()
                      .await(timeSpan(30).seconds())
                      .onFailure(cause -> failures.add("port " + port + ": " + cause.message()))
                      .isSuccess();
     }
 
-    private static UploadConfig defaults() {
+    static UploadConfig defaults() {
         return UploadConfig.DEFAULT;
     }
 
     /// Republishes the route table until a request for `path` is no longer answered "Route table propagating". The table
     /// published when the listener bound is read before the routes a test registers and can be installed after the test's
     /// own publish, replacing it; the server says so (503, "retry after a moment") and the next publish repairs it.
-    private void publishRouteTableUntilServed(Protocol protocol, String path) throws Exception {
+    void publishRouteTableUntilServed(Protocol protocol, String path) throws Exception {
         var client = client(protocol);
         var reply = new Reply(0, "");
 
@@ -504,28 +537,33 @@ class AppHttpServerIngestGateTest {
         assertThat(((Disposition.Aggregate) health).maxBytes()).isEqualTo(10L * MIB);
     }
 
-    private Disposition classify(HttpMethod method, String path, Option<String> key) {
+    Disposition classify(HttpMethod method, String path, Option<String> key) {
         var headers = key.map(value -> Map.of("x-api-key", List.of(value))).or(Map.<String, List<String>>of());
         var head = new Head("req-head", method, path, Headers.headers(headers), QueryParams.queryParams(Map.of()));
 
         return ((AppHttpServerAdapter) server).classify(head);
     }
 
-    private Disposition.Aggregate aggregate(String path) {
+    /// What an admitted request was given: aggregated (U1, or U2 with `streaming_ingest` off) or streamed (U2 on).
+    private record Admitted(long maxBytes, Option<BodyBounds> bounds, Disposition disposition) {}
+
+    private Admitted aggregate(String path) {
         return switch (classify(HttpMethod.POST, path, Option.some(KEY_A))) {
-            case Disposition.Aggregate aggregate -> aggregate;
+            case Disposition.Aggregate aggregate -> new Admitted(aggregate.maxBytes(), aggregate.bounds(), aggregate);
+            case Disposition.Stream stream when streamingIngest() -> new Admitted(stream.maxBytes(), stream.bounds(), stream);
             case Disposition.Reject _ -> throw new AssertionError("control: " + path + " with a valid key is admitted");
+            case Disposition.Stream _ -> throw new AssertionError("control: " + path + " is not streamed with streaming_ingest off");
         };
     }
 
-    private static BodyBounds boundsOf(Disposition.Aggregate aggregate) {
-        return aggregate.bounds().fold(() -> {
-                                           throw new AssertionError("an upload route has its own bounds");
-                                       },
-                                       bounds -> bounds);
+    private static BodyBounds boundsOf(Admitted admitted) {
+        return admitted.bounds().fold(() -> {
+                                          throw new AssertionError("an upload route has its own bounds");
+                                      },
+                                      bounds -> bounds);
     }
 
-    private record Head(String requestId, HttpMethod method, String path, Headers headers, QueryParams queryParams) implements HttpRequest {
+    record Head(String requestId, HttpMethod method, String path, Headers headers, QueryParams queryParams) implements HttpRequest {
         @Override
         public byte[] body() {
             return new byte[0];
@@ -534,7 +572,7 @@ class AppHttpServerIngestGateTest {
 
     // ---- the slice and its routes
 
-    private enum Mode {
+    enum Mode {
         /// Content-Length (HTTP/1.1) or content-length (HTTP/3) declared, body sent.
         DECLARED,
         /// HTTP/1.1: chunked. HTTP/3: no content-length.
@@ -543,13 +581,13 @@ class AppHttpServerIngestGateTest {
         EXPECT_CONTINUE_NOT_SENT
     }
 
-    private record Reply(int status, String text) {}
+    record Reply(int status, String text) {}
 
     private record Streamed(int status, long sent) {}
 
     private record Held(List<Integer> duringStatuses, int afterReleaseStatus, String firstRefusalText) {}
 
-    private interface Client {
+    interface Client {
         Reply post(String path, Option<String> key, int size, Mode mode) throws Exception;
 
         Streamed postStreaming(String path, Option<String> key, int size) throws Exception;
@@ -567,7 +605,7 @@ class AppHttpServerIngestGateTest {
         Reply postDeclaredOnly(String path, String key, long length) throws Exception;
     }
 
-    private Client client(Protocol protocol) {
+    Client client(Protocol protocol) {
         return protocol == Protocol.H1
                ? new H1Client()
                : new H3Client();
@@ -591,7 +629,10 @@ class AppHttpServerIngestGateTest {
                 throw new IllegalStateException("dispatch failed");
             }
             served.incrementAndGet();
-            servedBytes.set(request.body().length);
+            lastServed.set(request);
+            servedBytes.set(request.upload()
+                                   .map(upload -> upload.files().stream().mapToLong(file -> file.object().size()).sum())
+                                   .or((long) request.body().length));
 
             return Promise.success(sliceRequestId.isEmpty()
                                    ? HttpResponseData.httpResponseData(200, "served")
@@ -996,10 +1037,10 @@ class AppHttpServerIngestGateTest {
 
     // ---- multipart part limits: checked on the decoded body, 413 on a breach
 
-    private static final String BOUNDARY = "gate-boundary";
-    private static final String MULTIPART = "multipart/form-data; boundary=" + BOUNDARY;
+    static final String BOUNDARY = "gate-boundary";
+    static final String MULTIPART = "multipart/form-data; boundary=" + BOUNDARY;
 
-    private record Part(String name, String filename, byte[] content) {
+    record Part(String name, String filename, byte[] content) {
         static Part file(String name, int bytes) {
             return new Part(name, name + ".bin", new byte[bytes]);
         }
@@ -1009,7 +1050,7 @@ class AppHttpServerIngestGateTest {
         }
     }
 
-    private static byte[] multipart(Part... parts) {
+    static byte[] multipart(Part... parts) {
         var out = new ByteArrayOutputStream();
 
         for (var part : parts) {
@@ -1031,7 +1072,7 @@ class AppHttpServerIngestGateTest {
         return out.toByteArray();
     }
 
-    private int statusOf(Protocol protocol, String path, byte[] body) throws Exception {
+    int statusOf(Protocol protocol, String path, byte[] body) throws Exception {
         return client(protocol).postBody(path, KEY_A, MULTIPART, body).status();
     }
 
@@ -1247,7 +1288,7 @@ class AppHttpServerIngestGateTest {
         assertThat(plain.maxBytes()).as("the listener's own max_request_size").isEqualTo(64 * 1024);
         assertThat(plain.bounds()).as("the listener's general bounds, not the upload ones").isEqualTo(Option.empty());
         assertThat(classify(HttpMethod.POST, "/api/undeclared/y", Option.some(KEY_B))).as("no permit taken, so none to refuse").isInstanceOf(Disposition.Aggregate.class);
-        assertThat(permit.release()).isNotNull();
+        assertThat(permit.disposition()).isNotNull();
     }
 
     @Test
@@ -1482,7 +1523,7 @@ class AppHttpServerIngestGateTest {
         assertThat(client.post("/api/huge/", Option.some(KEY_A), 1024, Mode.DECLARED).status()).as("control: a small body on the same route").isEqualTo(200);
     }
 
-    private UploadAdmission uploadAdmissionOf() {
+    UploadAdmission uploadAdmissionOf() {
         return ((AppHttpServerAdapter) server).uploadAdmissionForTest();
     }
 

@@ -507,7 +507,9 @@ public final class ConfigLoader {
                                                   defaults.maxConcurrentPerPrincipal()),
                                          parseTimeSpan(doc, section, "idle_timeout", defaults.idleTimeout()),
                                          parseDataSize(doc, section, "min_body_rate", defaults.minBodyRate()),
-                                         parseDataSize(doc, section, "max_in_flight_size", defaults.maxInFlightBytes()));
+                                         parseDataSize(doc, section, "max_in_flight_size", defaults.maxInFlightBytes()),
+                                         doc.getBoolean(section, "streaming_ingest").or(defaults.streamingIngest()),
+                                         parseTimeSpan(doc, section, "unclaimed_ttl", defaults.unclaimedTtl()));
     }
 
     private static final Set<String> UPLOAD_KEYS = Set.of("max_size_ceiling",
@@ -515,7 +517,9 @@ public final class ConfigLoader {
                                                           "max_concurrent_per_principal",
                                                           "idle_timeout",
                                                           "min_body_rate",
-                                                          "max_in_flight_size");
+                                                          "max_in_flight_size",
+                                                          "streaming_ingest",
+                                                          "unclaimed_ttl");
 
     /// A mistyped `[app-http.upload]` key (`max_concurent = 8`) would leave the cap at its default with nothing to say
     /// so, so it is refused, naming the keys that exist.
