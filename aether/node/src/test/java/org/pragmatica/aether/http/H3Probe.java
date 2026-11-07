@@ -12,7 +12,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 import io.netty.bootstrap.Bootstrap;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
@@ -26,6 +28,7 @@ import io.netty.handler.codec.http3.Http3ClientConnectionHandler;
 import io.netty.handler.codec.http3.Http3DataFrame;
 import io.netty.handler.codec.http3.Http3HeadersFrame;
 import io.netty.handler.codec.http3.Http3RequestStreamInboundHandler;
+import io.netty.handler.codec.quic.DefaultQuicStreamFrame;
 import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicSslContextBuilder;
 import io.netty.handler.codec.quic.QuicStreamChannel;
@@ -83,6 +86,23 @@ public final class H3Probe {
     public static String getStatus(int port) throws Exception {
         return exchange(port, stream -> stream.writeAndFlush(requestHeaders(port, "GET"))
                                               .addListener(QuicStreamChannel.SHUTDOWN_OUTPUT)).status();
+    }
+
+    /// #2746: writes `body` as the request's last DATA frame, with the stream's `FIN` in the same QUIC STREAM frame.
+    /// `shutdownOutput()` after the last write sends a FIN-only frame instead, which quiche (netty-codec-native-quic
+    /// 4.2.18) does not retransmit when its loss is detected together with earlier data's: the request then never ends,
+    /// and the exchange reads `closed` once the connection idles out. The HTTP/3 frame codec cannot set `FIN`, so the
+    /// frame (type 0x00, a four-byte varint length, the body) is encoded here and written past it.
+    public static ChannelFuture writeLastData(QuicStreamChannel stream, byte[] body) {
+        var frame = Unpooled.buffer(5 + body.length);
+
+        frame.writeByte(0x00);
+        frame.writeInt(0x8000_0000 | body.length);
+        frame.writeBytes(body);
+
+        return stream.pipeline()
+                     .firstContext()
+                     .writeAndFlush(new DefaultQuicStreamFrame(frame, true));
     }
 
     /// The header section of a `<method> /` request, for [#exchange]'s writers to start with.

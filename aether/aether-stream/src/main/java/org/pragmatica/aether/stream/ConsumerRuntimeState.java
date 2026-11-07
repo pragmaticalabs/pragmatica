@@ -627,10 +627,12 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     }
 
     /// #1403 (v-str-1914 F1): the fetch waits for the detach flushes of the same key still pending on this node, so the
-    /// successor resumes from the old consumer's final cursor and no detach flush lands after it starts. Not covered: a
-    /// periodic commit that outlived its own `PERIODIC_COMMIT_BOUND` is abandoned by the flush's chain, and its store
-    /// write can still land late and move the cursor backwards (pre-existing, not introduced by this gate). Neither skipping that flush (it would drop the old handler's progress) nor a store-side max-fence (it would
-    /// refuse a legitimate operator rewind) is used.
+    /// successor resumes from the old consumer's final cursor and no detach flush lands after it starts. Not covered by
+    /// this gate: a periodic commit that outlived its own `PERIODIC_COMMIT_BOUND` is abandoned by the flush's chain, and
+    /// its store write can still land late. Its consensus checkpoint is refused by the applier's scoped advance-only arm
+    /// (#1961: a lower offset inside the same `(rewind epoch, owner epoch)` scope, or any offset in an older scope, does
+    /// not land, while an operator rewind or a KIP-320 re-seek mints a newer scope and still does). The node-local cursor
+    /// ref is a plain replace and can still be lowered; a resume ranks it against the cluster cursor by (epoch, offset).
     private void loadCursorAndStart(ConsumerKey key, ConsumerState state) {
         cursorStore.onPresent(store -> option(pendingDetachFlushes.get(key)).map(detaches -> detaches.settled)
                                              .or(NO_PREDECESSOR)

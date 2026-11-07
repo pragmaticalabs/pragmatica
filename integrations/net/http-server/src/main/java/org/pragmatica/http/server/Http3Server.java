@@ -50,6 +50,7 @@ import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
@@ -273,9 +274,12 @@ final class Http3Server {
         }
 
         /// #2386: the frame-boundary guard goes first, ahead of Netty's frame codec, so it sees the stream's bytes.
+        /// #2746: the [QuicStreamFinisher] goes ahead of the codec too (behind the guard, which handles no writes), so the
+        /// response's last bytes carry the stream's `FIN`.
         @Contract
         @Override
         protected void initChannel(Channel ch) {
+            ch.pipeline().addFirst(QuicStreamFinisher.INSTANCE);
             ch.pipeline().addFirst(new Http3FrameBoundaryGuard());
             streamWriteInterceptor.onPresent(interceptor -> ch.pipeline()
                                                               .addLast(interceptor.get()));
@@ -712,17 +716,24 @@ final class Http3Server {
                           body);
         }
 
-        /// The HEADERS frame and the body, then a clean `FIN` once the last write succeeds. Any failed write resets the
-        /// stream instead, once.
+        /// The HEADERS frame and the body, the last of them carrying a clean `FIN`: the body's DATA frame, or the HEADERS
+        /// frame when the body is empty. #2746: never a FIN-only frame after them, which quiche loses for good when its
+        /// loss is detected together with earlier data's ([QuicStreamFinisher]). Any failed write resets the stream
+        /// instead, once.
         private Promise<Unit> commit(Http3Headers headers, byte[] body) {
-            ctx.write(new DefaultHttp3HeadersFrame(headers)).addListener(this::resetOnFailure);
             var last = body.length > 0
-                       ? ctx.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(body)))
-                       : ctx.writeAndFlush(Unpooled.EMPTY_BUFFER);
+                       ? writeHeadersThenFinishWith(headers, body)
+                       : QuicStreamFinisher.writeAndFinish(ctx, new DefaultHttp3HeadersFrame(headers));
 
             last.addListener(this::finishOrReset);
 
             return flushed;
+        }
+
+        private ChannelFuture writeHeadersThenFinishWith(Http3Headers headers, byte[] body) {
+            ctx.write(new DefaultHttp3HeadersFrame(headers)).addListener(this::resetOnFailure);
+
+            return QuicStreamFinisher.writeAndFinish(ctx, new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(body)));
         }
 
         private void resetOnFailure(Future<? super Void> future) {
@@ -735,7 +746,6 @@ final class Http3Server {
             if (!future.isSuccess()) {
                 reset(future.cause());
             } else if (!reset.get()) {
-                ((QuicStreamChannel) ctx.channel()).shutdownOutput();
                 flushed.succeed(Unit.unit());
             }
         }

@@ -127,8 +127,8 @@ class Http3ServerBoundsTest {
 
     private void body(QuicStreamChannel stream, int size) {
         stream.write(Http3TestClient.postHeaders(port));
-        stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[size])))
-              .addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
+        // #2746: the last frame carries the FIN; a FIN-only frame after it can be lost for good
+        Http3TestClient.finishWith(stream, new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[size])));
     }
 
     /// A first body frame, then nothing: the stream stays open with its body incomplete.

@@ -253,8 +253,10 @@ final class DefaultPromotionManager implements PromotionManager {
         return new PromotionResult(1, contentLength, 0);
     }
 
+    /// The copy is tier presence, and tier presence is not snapshot state (spec v2 §9, C-08 under read promotion): an
+    /// observation, so N promoted reads move the snapshot trigger by nothing.
     private void updateMetadataAfterPromotion(BlockId blockId, TierLevel targetLevel) {
-        metadataStore.computeLifecycle(blockId, lc -> lc.withTierAdded(targetLevel));
+        metadataStore.observeLifecycle(blockId, lc -> lc.withTierAdded(targetLevel));
     }
 
     private boolean isAtTargetWatermark(StorageTier tier) {
