@@ -55,9 +55,9 @@ class RequestGateStreamWireTest {
     /// is ever given more.
     private static final long CHUNK_BOUND = 8 * KIB;
     /// The direct memory the server may gain while a slow sink takes 64 MiB: reading stops while a chunk is pending, so
-    /// it holds about one socket read (at most 64 KiB) plus the allocator's chunk granularity. A server that kept
-    /// reading would hold most of the 64 MiB.
-    private static final long HELD_BOUND = 16L * MIB;
+    /// it holds about one socket read (at most 64 KiB) plus the allocator's chunk granularity. Measured on bigboy at
+    /// 01f03be4e3: 128 KiB. A server that kept reading would hold most of the 64 MiB.
+    private static final long HELD_BOUND = 2L * MIB;
 
     private final List<RecordingSink> sinks = new CopyOnWriteArrayList<>();
     private volatile Supplier<RecordingSink> nextSink = RecordingSink::new;

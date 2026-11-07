@@ -132,6 +132,8 @@ class Http3StreamTest {
         assertThat(sink.maxPending()).isEqualTo(1);
         assertThat(sink.violations()).isEmpty();
         assertThat(handler.holdsBodyBuffer()).isFalse();
+        channel.close();
+        assertThat(sink.terminals()).as("the teardown after completion adds no abort").containsExactly("complete");
         channel.finishAndReleaseAll();
     }
 

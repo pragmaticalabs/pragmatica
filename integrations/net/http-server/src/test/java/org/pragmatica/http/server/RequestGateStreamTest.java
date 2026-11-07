@@ -160,8 +160,148 @@ class RequestGateStreamTest {
         assertThat(sink.violations()).isEmpty();
         assertThat(gate(channel).holdsBodyBuffer()).isFalse();
         assertThat(passedOn).as("nothing of a streamed request reaches the aggregator").isEmpty();
+        channel.close();
+        assertThat(sink.terminals()).as("the close after completion adds no abort").containsExactly("complete");
         answer.release();
         channel.finishAndReleaseAll();
+    }
+
+    /// A composite buffer is handed over one component at a time, without copying, and released when the last of its
+    /// views was accepted.
+    @Test
+    void compositeChunk_isAcceptedOneViewPerComponent_andReleasedAfterTheLast() {
+        var channel = channel();
+        var composite = Unpooled.compositeBuffer().addComponents(true, bytes(300), bytes(200));
+
+        channel.writeInbound(head("/up", "Content-Length", "5000"));
+        channel.writeInbound(new DefaultHttpContent(composite));
+        sink.succeedNext();
+        channel.runPendingTasks();
+
+        assertThat(sink.chunkSizes()).containsExactly(300, 200);
+        assertThat(composite.refCnt()).as("still held for the second view").isEqualTo(1);
+
+        sink.succeedNext();
+        channel.runPendingTasks();
+
+        assertThat(composite.refCnt()).isZero();
+        assertThat(reading(channel)).isTrue();
+        channel.finishAndReleaseAll();
+    }
+
+    /// A body with no bytes completes at once; its empty buffer is released, and reading is off while the sink answers.
+    @Test
+    void emptyBody_completesAtOnce_releasesItsBuffer_andReadingIsOffWhileTheSinkAnswers() {
+        var channel = channel();
+        var empty = Unpooled.buffer(0);
+
+        channel.writeInbound(head("/up"));
+        channel.writeInbound(new DefaultLastHttpContent(empty));
+
+        assertThat(sink.terminals()).containsExactly("complete");
+        assertThat(sink.chunkSizes()).as("an empty chunk is not offered").isEmpty();
+        assertThat(empty.refCnt()).isZero();
+        assertThat(reading(channel)).as("reading is off while the sink answers").isFalse();
+        channel.finishAndReleaseAll();
+    }
+
+    /// The body's bounds end with the body: a sink that takes its time answering is not cut by the idle bound.
+    @Test
+    void bodyBounds_endWithTheBody_soASlowAnswerIsNotRefused() {
+        var channel = channel(1_000_000,
+                              Option.some(BodyBounds.bodyBounds(timeSpan(30).seconds(),
+                                                                BodyRateLimit.bodyRateLimit(0, timeSpan(1).seconds(), timeSpan(1).seconds()),
+                                                                timeSpan(0).seconds())));
+
+        channel.writeInbound(head("/up", "Content-Length", "10"));
+        channel.writeInbound(new DefaultLastHttpContent(bytes(10)));
+        sink.succeedNext();
+        channel.runPendingTasks();
+        channel.advanceTimeBy(60, TimeUnit.SECONDS);
+        channel.runScheduledPendingTasks();
+
+        assertThat(channel.<Object>readOutbound()).as("no 408 while the sink answers").isNull();
+        assertThat(sink.terminals()).containsExactly("complete");
+        channel.finishAndReleaseAll();
+    }
+
+    /// With reading off, nothing else ends a connection whose sink never answers: the response timeout does, with 504,
+    /// for the response `complete` hands over and for the one `fail` hands over.
+    @Test
+    void sinkThatNeverAnswers_isAnswered504AfterTheResponseTimeout_onCompleteAndOnFail() {
+        var completed = channel();
+
+        ResponseSequence.install(completed, timeSpan(5).seconds());
+        completed.writeInbound(head("/up", "Content-Length", "10"));
+        completed.writeInbound(new DefaultLastHttpContent(bytes(10)));
+        sink.succeedNext();
+        completed.runPendingTasks();
+        completed.advanceTimeBy(6, TimeUnit.SECONDS);
+        completed.runScheduledPendingTasks();
+        var timedOut = response(completed);
+
+        assertThat(timedOut.status().code()).isEqualTo(504);
+        timedOut.release();
+        completed.finishAndReleaseAll();
+
+        var failed = channel();
+
+        ResponseSequence.install(failed, timeSpan(5).seconds());
+        failed.writeInbound(head("/up", "Content-Length", "10"));
+        failed.writeInbound(new DefaultLastHttpContent(bytes(10)));
+        sink.failNext();
+        failed.runPendingTasks();
+        failed.advanceTimeBy(6, TimeUnit.SECONDS);
+        failed.runScheduledPendingTasks();
+        var failTimedOut = response(failed);
+
+        assertThat(failTimedOut.status().code()).isEqualTo(504);
+        assertThat(sink.terminals()).containsExactly("complete", "fail");
+        failTimedOut.release();
+        failed.finishAndReleaseAll();
+    }
+
+    /// A pipelined streamed request replayed with a chunk of its body: reading stays off until that chunk is accepted.
+    @Test
+    void pipelinedStreamedRequest_replayedWithAChunk_keepsReadingOffUntilItIsAccepted() {
+        var channel = channel();
+
+        channel.writeInbound(head("/up", "Content-Length", "5"));
+        channel.writeInbound(new DefaultLastHttpContent(bytes(5)));
+        sink.succeedNext();
+        channel.runPendingTasks();
+        channel.writeInbound(head("/up", "Content-Length", "5000"));
+        channel.writeInbound(new DefaultHttpContent(bytes(100)));
+        sink.writer().onPresent(writer -> writer.okText("done"));
+        ReferenceCountUtil.release(channel.readOutbound());
+
+        assertThat(sink.chunkSizes()).as("the replayed chunk is being accepted").containsExactly(5, 100);
+        assertThat(reading(channel)).as("reading stays off while it is").isFalse();
+
+        sink.succeedNext();
+        channel.runPendingTasks();
+
+        assertThat(reading(channel)).isTrue();
+        channel.finishAndReleaseAll();
+    }
+
+    /// Messages held while the sink answers are released when the connection is lost.
+    @Test
+    void heldMessages_areReleasedWhenTheConnectionIsLost() {
+        var channel = channel();
+        var nextBody = new DefaultLastHttpContent(bytes(3));
+
+        channel.writeInbound(head("/up", "Content-Length", "5"));
+        channel.writeInbound(new DefaultLastHttpContent(bytes(5)));
+        sink.succeedNext();
+        channel.runPendingTasks();
+        channel.writeInbound(head("/agg", "Content-Length", "3"));
+        channel.writeInbound(nextBody);
+        channel.close();
+
+        assertThat(nextBody.refCnt()).isZero();
+        assertThat(gate(channel).holdsBodyBuffer()).isFalse();
+        assertThat(sink.terminals()).containsExactly("complete");
     }
 
     /// The connection is lost while an accept is outstanding: what waits is released at once, the outstanding buffer when

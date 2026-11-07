@@ -49,9 +49,10 @@ class Http3StreamWireTest {
     /// chunk is pending, so QUIC grants no more credit and no accept is ever given more than this.
     private static final long CHUNK_BOUND = 1_000_000;
     /// The direct memory the server may gain while a slow sink takes 64 MiB: about one stream window plus the allocator's
-    /// chunk granularity (the in-process client shares the allocator, and its sending is bounded by the same window). A
-    /// server that kept reading would hold most of the 64 MiB.
-    private static final long HELD_BOUND = 24L * MIB;
+    /// chunk granularity (the in-process client shares the allocator, and its sending is bounded by the same window).
+    /// Measured on bigboy at 01f03be4e3: 2.25 MiB, with no accept given more than 36,931 bytes. A server that kept
+    /// reading would hold most of the 64 MiB.
+    private static final long HELD_BOUND = 8L * MIB;
 
     private final List<RecordingSink> sinks = new CopyOnWriteArrayList<>();
     private volatile Supplier<RecordingSink> nextSink = RecordingSink::new;
