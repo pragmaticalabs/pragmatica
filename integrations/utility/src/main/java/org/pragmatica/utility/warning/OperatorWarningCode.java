@@ -926,14 +926,27 @@ public enum OperatorWarningCode {
     /// A workflow exhausted its attempt, elapsed-time or effect budget and stopped as ESCALATED (rc6 §4.4). The subject is the
     /// workflow id; the message names the budget, the postcondition that was not observed and the recovery verbs (resume or
     /// abandon). The workflow keeps its conflict-key claims until an operator resolves it, because the effect it issued last may
-    /// still be in flight. Raised AT MOST ONCE, by the leader that committed the escalation; [#WORKFLOW_RESOLVED] closes it. The event is lost when
-    /// that leader dies between the accepted commit and the raise, and when the commit's answer is slower than the reconciler's bound
-    /// or fails after being applied (the run is then already ESCALATED and inactive, so nothing re-raises it). The committed run keeps
-    /// the incident as its detail in every case.
+    /// still be in flight. Guarantee per operation. RAISE: at most once per owner tenure; an owner hand-off can duplicate or lose it. The
+    /// mechanism is the raise being derived from the applied record (never from a commit's answer) on the node whose cluster-events owner
+    /// gate is true when IT applies the transition; the replay bit (a replayed put announces nothing) and the (before, after) pair looked up
+    /// by run id (a redelivered identical transition raises nothing) dedupe within a tenure. The gate is the live placement of the events
+    /// partition, read at each node's own apply time and not at a log index, so across a hand-off the old owner can apply before it gives up
+    /// and the new owner after it took over (two raises), or the new owner before it took over and the old after it gave up (none); before
+    /// the controller reference is bound the gate reads false on every node (#957), and an owner that dies between apply and raise loses
+    /// it. The committed run keeps the incident as its `detail` in every case, so only the event can be lost; [#WORKFLOW_RESOLVED] closes
+    /// it, and is published even if the raise was lost. [verified: unit level, the announcer against a stubbed gate; not a live cluster]
     WORKFLOW_ESCALATED("workflow-escalated", "workflow", WarningLevel.CRITICAL),
-    /// The recovery of [#WORKFLOW_ESCALATED], same subject (rc6 §4.4): an operator resumed or abandoned the escalated workflow.
-    /// INFO; declared here with its pair (the owner rule), raised by the operator surface that resolves a run (f2b), not by the engine core.
-    WORKFLOW_RESOLVED("workflow-resolved", "workflow", WarningLevel.INFO, WORKFLOW_ESCALATED),
+    /// The recovery of [#WORKFLOW_ESCALATED], same subject (rc6 §4.4, CTO ruling Q4): an ESCALATED workflow reached a terminal state, DONE
+    /// or FAILED (the message names the outcome: DONE, FAILED or ABANDONED, the last when the failed run's detail carries the abandon cause). A resume does NOT resolve it, see [#WORKFLOW_RESUMED]. INFO;
+    /// raised at most once per run per ESCALATED episode within an owner tenure (same raise guarantee, same gate and same hand-off
+    /// duplicate-or-lose conditions as [#WORKFLOW_ESCALATED]); the close itself is published by any owner (`closesAcrossNodes`).
+    /// Closes across nodes: the open state is the committed run state, so the cluster-events owner that applies the terminal state may be
+    /// a different node (or process) than the one that raised the ESCALATED, which holds no open state for it (#2062).
+    WORKFLOW_RESOLVED("workflow-resolved", "workflow", WarningLevel.INFO, WORKFLOW_ESCALATED, true),
+    /// A workflow left ESCALATED by an operator resume and is RUNNING or WAITING again (rc6 §4.4, CTO ruling Q4). A point event with no
+    /// recovery pairing: it does not close [#WORKFLOW_ESCALATED] (only a terminal state does), and a run that escalates again while the
+    /// incident is open raises no second [#WORKFLOW_ESCALATED] (deduped by run id). Subject is the workflow id. INFO; same raise guarantee as [#WORKFLOW_ESCALATED] (at most once per owner tenure; a hand-off can duplicate or lose it).
+    WORKFLOW_RESUMED("workflow-resumed", "workflow", WarningLevel.INFO),
     /// The recovery of [#CONFIG_WATCH_CALLBACK_FAILED], same subject (#774): the next delivery bound and (when it called back) succeeded.
     /// INFO, published only after a published failure for the subject (#752 mechanism).
     CONFIG_WATCH_CALLBACK_RECOVERED("config-watch-callback-recovered",
