@@ -119,7 +119,8 @@ class ReplicaEpochVerificationTest {
         appendOld(10);
         committed.set(E2);
 
-        assertThat(manager.unverifiedFrom(STREAM, PARTITION)).as("the placement owner is not doubted on the read path").isEmpty();
+        assertThat(manager.unverifiedFrom(STREAM, PARTITION).isEmpty()).as("the placement owner is not doubted on the read path")
+                                                                 .isTrue();
         assertThat(manager.replicaVerified(STREAM, PARTITION)).as("#2753: the role does not open the ack gate").isFalse();
 
         manager.markVerifiedForEpoch(STREAM, PARTITION, E2);
