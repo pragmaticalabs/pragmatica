@@ -321,6 +321,8 @@ public final class ReplicationBatcher implements AutoCloseable {
                                       snapshot.timestamps(),
                                       snapshot.ownerEpoch());
 
+        // #2820: no re-send of a provably-not-sent outcome here, unlike DefaultReplicationManager#sendChunk: no
+        // production assembly wires the batcher (StreamAssembly builds the direct manager), so the ruling covers that path.
         replicas.forEach(replica -> transport.send(replica, message, DefaultReplicationManager.DEFAULT_ACK_TIMEOUT));
     }
 
