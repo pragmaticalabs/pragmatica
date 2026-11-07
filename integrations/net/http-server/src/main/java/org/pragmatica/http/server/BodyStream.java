@@ -171,7 +171,7 @@ final class BodyStream {
 
     private void proceed(Result<Unit> result) {
         switch (result) {
-            case Result.Success<Unit> _ -> pump();
+            case Result.Success<Unit>_ -> pump();
             case Result.Failure<Unit> failure -> failed(failure.cause());
         }
     }
