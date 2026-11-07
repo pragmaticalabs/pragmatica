@@ -115,14 +115,14 @@ class CommunityPlacementRankingWiringTest {
 
     private void seed(KVCommand command) { store.process(store.createBatch(List.of(command))); }
 
-    private void install(String config) {
+    private void install(String config, long configVersion) {
         seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT,
-            new AetherValue.ClusterConfigValue(Option.some(config), "test", "1.0.0", List.of(), 3, 3, "forge", 1, 0)));
+            new AetherValue.ClusterConfigValue(Option.some(config), "test", "1.0.0", List.of(), 3, 3, "forge", configVersion, 0)));
     }
 
     private void start(String config) {
         seed(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(CORE, 1)));
-        install(config);
+        install(config, 1);
     }
 
     private Option<CommunityPlacementOperationValue> operation() {
@@ -260,7 +260,7 @@ class CommunityPlacementRankingWiringTest {
         var hookRan = new boolean[1];
 
         start(before);
-        beforeCommit = () -> { hookRan[0] = true; install(after); };
+        beforeCommit = () -> { hookRan[0] = true; install(after, 2); };
         reconciler.reconcile().await().unwrap();
 
         assertThat(operation().isEmpty()).as("the commit that ranked a-dk first against the old config is rejected; operation=%s hookRan=%s", operation(), hookRan[0]).isTrue();
