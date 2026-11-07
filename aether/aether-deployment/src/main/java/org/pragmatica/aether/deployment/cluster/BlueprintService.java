@@ -177,6 +177,15 @@ public interface BlueprintService {
     List<ExpandedBlueprint> list();
     Promise<Unit> delete(BlueprintId id);
     Result<Blueprint> validate(String dsl);
+
+    /// #811: [#validate] plus everything a publish would refuse BEFORE it stores anything: the blueprint's slices are
+    /// expanded from the repository and run through the same preflight as [#publish] (pub/sub, topic tier, route
+    /// collisions, config sections including topic sections, replication). Nothing is stored. The default answers what
+    /// [#validate] answers, for implementations with no repository to expand against.
+    default Promise<Blueprint> validateDeployable(String dsl) {
+        return validate(dsl).async();
+    }
+
     Cause ARTIFACT_STORE_NOT_CONFIGURED = Causes.cause("ArtifactStore not configured");
 
     static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
@@ -595,6 +604,18 @@ class BlueprintServiceInstance implements BlueprintService {
     @Override
     public Result<Blueprint> validate(String dsl) {
         return BlueprintParser.parse(dsl);
+    }
+
+    @Override
+    public Promise<Blueprint> validateDeployable(String dsl) {
+        return validate(dsl).async()
+                       .flatMap(this::preflightWithoutStoring);
+    }
+
+    private Promise<Blueprint> preflightWithoutStoring(Blueprint blueprint) {
+        return BlueprintExpander.expand(blueprint, repository)
+                                .flatMap(this::validatePubSub)
+                                .map(_ -> blueprint);
     }
 
     private Promise<PublishedBlueprint> expandAndStoreArtifact(BlueprintArtifact blueprintArtifact,
