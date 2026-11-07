@@ -117,8 +117,11 @@ class ReplicaDivergentTailRepairTest {
 
         assertThat(manager.behindCommittedOwner(STREAM, PARTITION)).as("control: announced 9 and visible 9 before the cut").isFalse();
 
+        // The first run finds the divergence and quarantines; the next run cuts before it refetches (PartitionBackfill.repairThenRun).
+        backfill(owner(5, 3, new AtomicLong()));
         backfill(owner(5, 3, new AtomicLong()));
 
+        assertThat(texts(0, 20)).as("control: the cut ran and the owner's records were refetched").containsExactly("c0", "c1", "c2", "owner-3", "owner-4");
         assertThat(manager.committedThrough(STREAM, PARTITION)).as("control: the cut lowered the reported position to 2").isEqualTo(2L);
         assertThat(manager.visibleBounds(STREAM, PARTITION).map(bounds -> bounds.visibleHead()).or(-2L)).as("control: visible is at the cut")
                                                                                                          .isEqualTo(2L);
