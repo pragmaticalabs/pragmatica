@@ -137,7 +137,7 @@ class EmberOwnerRestartAckedTailTripwireTest {
         var router = StreamTripwireSupport.component(owner, "streamWriteRouter", StreamWriteRouter.class);
 
         for (var i = 0; i < LAGGED; i++) {
-            var offset = router.publish(ENGINE_KEY, PARTITION, ("lagged-" + i).getBytes(StandardCharsets.UTF_8), System.currentTimeMillis()).await(PUBLISH_BOUND);
+            var offset = StreamTripwireSupport.publishOnceActivated(router, ENGINE_KEY, ("lagged-" + i).getBytes(StandardCharsets.UTF_8));
 
             assertThat(offset.isSuccess()).as("acknowledged lagging publish %d: %s", i, offset).isTrue();
         }
