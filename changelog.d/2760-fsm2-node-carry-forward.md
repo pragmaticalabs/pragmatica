@@ -6,11 +6,18 @@
   `[verified: aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/wiring/SliceLegBuildersGoldenTest.java]`
   (builder-level parity against the legacy builders, not a live-path test).
 - **The FSM2 cluster mirror held no topic rows, so a departed node's topic rows stayed in the KV** (#1337, R-CF.15): the
-  mirror now indexes `TopicSubscriptionKey` and `TopicPublisherKey`, the departure batch removes the departed node's rows
-  at their committed values, and the reconcile sweep removes a row of a departed node that commits late, as legacy's
-  node-removal batch and stale sweep do.
-  `[verified: aether/node/src/test/java/org/pragmatica/aether/deployment/cluster/fsm2/Rc5ParityTripwireTest.java]`
-  (in-JVM FSM harness).
+  mirror now indexes `TopicSubscriptionKey` and `TopicPublisherKey`; the departure batch, the departed-row cleanup and the
+  departure record's removal remove the node's rows at their committed values (an inferred departure removes them only
+  once its record commits); and every reconcile pass on the leader removes a committed topic row whose node is neither a
+  counted core nor a WORKER-directive node and is neither departing nor departed, at its committed value, as legacy's
+  node-removal batch and stale sweep do. Nothing is swept while the core membership is unwired.
+  `[verified: aether/node/src/test/java/org/pragmatica/aether/deployment/cluster/fsm2/Rc5ParityTripwireTest.java,
+  aether/node/src/test/java/org/pragmatica/aether/deployment/cluster/fsm2/TopicRowRemovalTest.java]`
+  (in-JVM FSM harness, including a row left by a removal batch lost across a leader change).
+- **A config change applied before the FSM2 system attached was dropped silently** (#2757): it is now counted as
+  `aether_deployment_fsm2_dropped_total{point="B5.ConfigApplied.preAttach"}`. The drop loses no value
+  `[mechanism: no slice is registered for config before attach; registration reads the current value]`.
+  `[verified: aether/node/src/test/java/org/pragmatica/aether/node/deployment/Fsm2SystemTest.java]` (the count).
 - **A routed slice's `[json]` settings section was not registered for config updates under FSM2** (#2394 carried
   forward, R-CF.22/29): a committed `json.*` change now reaches the slice factory's `notifyConfigUpdate` with section `json`.
   `[verified: aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/wiring/ConfigCarryForwardChainTest.java]`
