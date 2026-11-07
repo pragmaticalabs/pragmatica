@@ -421,8 +421,9 @@ class WorkflowRunIndexTest {
     }
 
     /// N13: the seeding reads the committed state: a run that is no longer ESCALATED in the index is not an open incident any more.
+    /// fixD: it escalated (marked) and is terminal, so the reseed closes the incident itself; the later terminal put adds nothing.
     @Test
-    void announcer_reseed_dropsAnIncidentWhoseRunIsNoLongerEscalatedInCommittedState() {
+    void announcer_reseed_closesAnIncidentWhoseRunIsTerminalInCommittedState_once() {
         var index = WorkflowRunIndex.workflowRunIndex();
         var escalated = run("wf-a", 10L).in(WorkflowState.ESCALATED, "incident");
         var announcer = WorkflowRunIndex.announcer(index, () -> true, probe.sink());
@@ -432,7 +433,104 @@ class WorkflowRunIndexTest {
         index.restoreFrom(() -> Map.of(new WorkflowRunKey("wf-a"), escalated.in(WorkflowState.DONE, "")));
         announcer.reseed();
         index.put(escalated.in(WorkflowState.DONE, ""));
-        assertThat(codes(probe.settled())).containsExactly(OperatorWarningCode.WORKFLOW_ESCALATED);
+        assertThat(codes(probe.settled())).containsExactly(OperatorWarningCode.WORKFLOW_ESCALATED, OperatorWarningCode.WORKFLOW_RESOLVED);
+    }
+
+    /// fixD: ESCALATED raised, the run goes terminal, the old owner dies before RESOLVED (the terminal is applied while this node is
+    /// not the owner), then the node owns the partition and reseeds: the reseed closes the incident with the subject and outcome.
+    @Test
+    void announcer_reseed_afterTerminalAppliedWithoutAnOwner_raisesResolvedWithTheOutcome() {
+        assertThat(reseedResolution(run("wf-a", 10L).in(WorkflowState.ESCALATED, "incident").in(WorkflowState.DONE, "")).message())
+            .contains("outcome DONE");
+        assertThat(reseedResolution(run("wf-a", 10L).in(WorkflowState.ESCALATED, "incident").in(WorkflowState.FAILED, "gone")).message())
+            .contains("outcome FAILED");
+        var abandoned = reseedResolution(run("wf-a", 10L).in(WorkflowState.ESCALATED, "incident").abandoned("operator gave up"));
+
+        assertThat(abandoned.message()).contains("outcome ABANDONED");
+        assertThat(abandoned.subject()).as("the subject closes the incident").isEqualTo("wf-a");
+        assertThat(abandoned.code()).isEqualTo(OperatorWarningCode.WORKFLOW_RESOLVED);
+    }
+
+    private OperatorWarning reseedResolution(WorkflowRunValue terminal) {
+        var index = WorkflowRunIndex.workflowRunIndex();
+        var owner = new AtomicBoolean(true);
+        var announcer = WorkflowRunIndex.announcer(index, owner::get, probe.sink());
+        var escalated = run("wf-a", 10L).in(WorkflowState.ESCALATED, "incident");
+
+        index.onTransition(announcer);
+        index.put(escalated);
+        owner.set(false);
+        index.put(terminal);
+        owner.set(true);
+        probe.settled();
+        announcer.reseed();
+        var raised = probe.settled();
+
+        assertThat(raised.stream().map(OperatorWarning::code).toList()).contains(OperatorWarningCode.WORKFLOW_RESOLVED);
+
+        return raised.getLast();
+    }
+
+    /// fixD control: a run that never escalated carries no mark, so a reseed raises nothing for it, terminal or not.
+    @Test
+    void announcer_reseed_runThatNeverEscalated_raisesNothing() {
+        var index = WorkflowRunIndex.workflowRunIndex();
+        var announcer = WorkflowRunIndex.announcer(index, () -> true, probe.sink());
+
+        index.onTransition(announcer);
+        index.put(run("wf-done", 10L).in(WorkflowState.DONE, ""));
+        index.put(run("wf-failed", 11L).in(WorkflowState.FAILED, "x"));
+        index.put(run("wf-live", 12L));
+        announcer.reseed();
+        assertThat(probe.settled()).isEmpty();
+    }
+
+    /// fixD idempotence: the RESOLVED was already raised live, so a reseed raises none; a second reseed raises none either. (The
+    /// aggregator would publish a repeated RESOLVED again, so the dedupe is the announcer's.)
+    @Test
+    void announcer_reseed_afterResolvedWasAlreadyRaised_raisesNothingMore() {
+        var index = WorkflowRunIndex.workflowRunIndex();
+        var escalated = run("wf-a", 10L).in(WorkflowState.ESCALATED, "incident");
+        var announcer = WorkflowRunIndex.announcer(index, () -> true, probe.sink());
+
+        index.onTransition(announcer);
+        index.put(escalated);
+        index.put(escalated.in(WorkflowState.DONE, ""));
+        announcer.reseed();
+        announcer.reseed();
+        assertThat(codes(probe.settled())).containsExactly(OperatorWarningCode.WORKFLOW_ESCALATED, OperatorWarningCode.WORKFLOW_RESOLVED);
+    }
+
+    /// fixD: two reseeds of a terminal marked run that was never resolved raise one RESOLVED, and a non-owner raises none.
+    @Test
+    void announcer_reseed_twiceForAnUnresolvedTerminal_raisesOnce_andNotOnANonOwner() {
+        var index = WorkflowRunIndex.workflowRunIndex();
+        var owner = new AtomicBoolean(false);
+        var announcer = WorkflowRunIndex.announcer(index, owner::get, probe.sink());
+
+        index.onTransition(announcer);
+        index.restoreFrom(() -> Map.of(new WorkflowRunKey("wf-a"), run("wf-a", 10L).in(WorkflowState.ESCALATED, "i").in(WorkflowState.DONE, "")));
+        announcer.reseed();
+        assertThat(probe.settled()).isEmpty();
+        owner.set(true);
+        announcer.reseed();
+        announcer.reseed();
+        assertThat(codes(probe.settled())).containsExactly(OperatorWarningCode.WORKFLOW_RESOLVED);
+    }
+
+    /// fixD: a run resumed after escalating is active again with its incident still open (the mark is kept): it is seeded as open, so
+    /// the terminal commit that follows the takeover resolves it.
+    @Test
+    void announcer_reseed_resumedMarkedRun_isSeededOpen_andResolvedByTheTerminal() {
+        var index = WorkflowRunIndex.workflowRunIndex();
+        var resumed = run("wf-a", 10L).in(WorkflowState.ESCALATED, "i").resumed(99_000L);
+        var announcer = WorkflowRunIndex.announcer(index, () -> true, probe.sink());
+
+        index.onTransition(announcer);
+        index.restoreFrom(() -> Map.of(new WorkflowRunKey("wf-a"), resumed));
+        announcer.reseed();
+        index.put(resumed.in(WorkflowState.DONE, ""));
+        assertThat(codes(probe.settled())).containsExactly(OperatorWarningCode.WORKFLOW_RESOLVED);
     }
 
     /// End to end over the real store route: the ledger's resume commit of an escalated run raises RESUMED.

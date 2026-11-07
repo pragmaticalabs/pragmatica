@@ -13,6 +13,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey.WorkflowRunKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowRunValue;
@@ -160,9 +161,16 @@ public final class WorkflowRunIndex {
     /// Seeding (N13, v2803c F2). [#reseed] rebuilds `openIncidents` from the COMMITTED `ESCALATED` runs in the index. The owner wiring
     /// calls it when this node starts to own the events partition, on every owner change, and after a state restore (a restore applies
     /// no listener call, so a run that escalated before the snapshot was never seen). Without it a new owner would resolve nothing.
-    /// It re-derives a RESOLVED whose terminal commit arrives after the takeover; a terminal commit applied BEFORE the takeover by a node
-    /// that never raised its RESOLVED is not recoverable from committed state (the run no longer records that it escalated), and its
-    /// ESCALATED stays open until the operator closes it.
+    /// The committed run records, durably, that it escalated ([WorkflowRunValue#wasEscalated]: a `detail` marker set by the transition
+    /// into `ESCALATED` and kept through resume and the terminal commit). So [#reseed] also raises RESOLVED, with the outcome, for every
+    /// marked run in the index that is already terminal: an old owner that died between the terminal commit and its RESOLVED no longer
+    /// leaves the incident open (fixD). The index holds the runs within retention. A marked run that was resumed and is active again
+    /// has an open incident and is seeded as open.
+    ///
+    /// Idempotence is on THIS side: the aggregator does not make a repeated RESOLVED a no-op (`closesAcrossNodes` re-opens the key before
+    /// closing it, ClusterEventAggregator `onRecovery`). The announcer remembers the ids it raised RESOLVED for (live or reseeded) and
+    /// raises none twice. A hand-off remains at-least-once: a new owner cannot know whether the old one raised before dying, so a
+    /// duplicate INFO is possible, a lost close is not.
     ///
     /// Guarantee per operation. RAISE: at most once per owner tenure; an owner hand-off can duplicate or lose it. Mechanism: the raise is
     /// derived from the applied run and the open-incident set, never from a commit's answer, so a slow or failed answer does not lose
@@ -177,6 +185,7 @@ public final class WorkflowRunIndex {
         private final BooleanSupplier ownsClusterEvents;
         private final OperatorWarningSink warnings;
         private final Set<String> openIncidents = new HashSet<>();
+        private final Set<String> resolvedRaised = new HashSet<>();
 
         private Announcer(WorkflowRunIndex index, BooleanSupplier ownsClusterEvents, OperatorWarningSink warnings) {
             this.index = index;
@@ -193,12 +202,28 @@ public final class WorkflowRunIndex {
                    : Unit.unit();
         }
 
-        /// Rebuild the open incidents from the committed `ESCALATED` runs in the index (the seeding, N13).
+        /// Rebuild the open incidents from the committed runs in the index (the seeding, N13): `ESCALATED` runs and marked active runs
+        /// are open; when this node owns the events partition, every marked terminal run not yet resolved by this announcer gets its
+        /// RESOLVED now, with its outcome.
         public synchronized Unit reseed() {
+            var runs = index.runs();
+
             openIncidents.clear();
-            index.runs().stream().filter(WorkflowRunIndex::escalated).forEach(run -> openIncidents.add(run.id()));
+            resolvedRaised.retainAll(runs.stream().map(WorkflowRunValue::id).collect(Collectors.toSet()));
+            runs.stream().filter(WorkflowRunIndex::incidentOpen).forEach(run -> openIncidents.add(run.id()));
+            runs.stream().filter(WorkflowRunIndex::resolvedIncident).filter(this::unresolved).forEach(this::resolveOnReseed);
 
             return Unit.unit();
+        }
+
+        private boolean unresolved(WorkflowRunValue run) {
+            return !resolvedRaised.contains(run.id());
+        }
+
+        private Unit resolveOnReseed(WorkflowRunValue run) {
+            return ownsClusterEvents.getAsBoolean()
+                   ? raise(Step.RESOLVE, run)
+                   : Unit.unit();
         }
 
         private synchronized Step track(WorkflowRunValue after) {
@@ -216,6 +241,18 @@ public final class WorkflowRunIndex {
             };
         }
 
+        private synchronized Unit resolve(WorkflowRunValue terminal) {
+            resolvedRaised.add(terminal.id());
+
+            return OperatorWarnings.raise(LOG,
+                                          warnings,
+                                          OperatorWarningCode.WORKFLOW_RESOLVED,
+                                          terminal.id(),
+                                          "Workflow {} left ESCALATED with outcome {}",
+                                          terminal.id(),
+                                          outcomeOf(terminal));
+        }
+
         private Unit raise(Step step, WorkflowRunValue after) {
             return switch (step) {
                 case ESCALATE -> OperatorWarnings.raise(LOG,
@@ -223,14 +260,8 @@ public final class WorkflowRunIndex {
                                                         OperatorWarningCode.WORKFLOW_ESCALATED,
                                                         after.id(),
                                                         "{}",
-                                                        after.detail());
-                case RESOLVE -> OperatorWarnings.raise(LOG,
-                                                       warnings,
-                                                       OperatorWarningCode.WORKFLOW_RESOLVED,
-                                                       after.id(),
-                                                       "Workflow {} left ESCALATED with outcome {}",
-                                                       after.id(),
-                                                       outcomeOf(after));
+                                                        after.reason());
+                case RESOLVE -> resolve(after);
                 case RESUME -> OperatorWarnings.raise(LOG,
                                                       warnings,
                                                       OperatorWarningCode.WORKFLOW_RESUMED,
@@ -266,7 +297,13 @@ public final class WorkflowRunIndex {
                  : Outcome.FAILED;
     }
 
-    private static boolean escalated(WorkflowRunValue run) {
-        return run.state() == WorkflowState.ESCALATED;
+    /// An open incident in committed state: the run is `ESCALATED`, or it was resumed after escalating and is active again.
+    private static boolean incidentOpen(WorkflowRunValue run) {
+        return run.state() == WorkflowState.ESCALATED || run.wasEscalated() && run.active();
+    }
+
+    /// A terminal run that escalated: its incident is closed in committed state.
+    private static boolean resolvedIncident(WorkflowRunValue run) {
+        return run.wasEscalated() && run.releasesClaims();
     }
 }
