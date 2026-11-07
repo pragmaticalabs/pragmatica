@@ -6649,6 +6649,8 @@ max_concurrent_per_principal = 8     # Default: 8. Uploads in flight for one pri
 idle_timeout = "30s"                 # Default: 30s. A body that delivers no byte for this long is refused.
 min_body_rate = "1KB"                # Default: 1KB per second, after a first 30 s, averaged over each following 30 s.
 max_in_flight_size = "512MB"         # Default: a quarter of the JVM's maximum heap. Declared body bytes in flight on this node.
+streaming_ingest = false             # Default: false. Write upload bodies to content storage as they arrive (see below).
+unclaimed_ttl = "24h"                # Default: 24h. The expiry recorded on a stored upload; nothing acts on it yet.
 ```
 
 | Condition | Answer |
@@ -6657,7 +6659,7 @@ max_in_flight_size = "512MB"         # Default: a quarter of the JVM's maximum h
 | the declared bytes of the uploads in flight would pass `max_in_flight_size` | `503 Service Unavailable` with `Retry-After: 5`, on the headers |
 | the body is idle for `idle_timeout`, below `min_body_rate`, or past the route's `max_duration` (default 6 hours) | `408 Request Timeout`, then the connection is closed (over HTTP/3, the stream's input is reset) |
 
-A slot is held from the request headers until the body has been received (or the request ends without it), so the caps bound the bodies being buffered at once. The byte budget is taken the same way: an upload reserves its `Content-Length` (the route's limit in force when it declares none; never more than the budget itself, so one upload larger than the budget runs alone) and returns it with its slot. All six keys must be positive; an unknown key in `[app-http.upload]` refuses the configuration. Routes that are not upload routes keep the general `read_timeout` and `min_body_rate` above.
+A slot is held from the request headers until the body has been received (or the request ends without it), so the caps bound the bodies being buffered at once. The byte budget is taken the same way: an upload reserves its `Content-Length` (the route's limit in force when it declares none; never more than the budget itself, so one upload larger than the budget runs alone) and returns it with its slot. The six size, count and duration keys above `streaming_ingest`, and `unclaimed_ttl`, must be positive; an unknown key in `[app-http.upload]` refuses the configuration. Routes that are not upload routes keep the general `read_timeout` and `min_body_rate` above.
 
 Per-route keys, on an inline-table route in `routes.toml`:
 
@@ -6685,6 +6687,15 @@ When the node's own upload cap (`max_concurrent`) is reached, the first refused 
 
 - Aggregating the body into one array holds the event loop that carries the upload's connection. Another connection on that loop saw a worst stall of 41-53 ms, 172-190 ms and 318-434 ms for bodies of 100, 300 and 500 MiB (three uploads each, on a quiet 16-core host). This is the remaining stall; the multipart part-limit check adds none of its own, because it runs off the loop.
 - A multipart body of 500 MiB needed about 1.6 GiB of heap and 1 GiB of direct memory in the same measurement. Size `max_size`, `max_concurrent`, `max_in_flight_size` and the node's heap together; the 256 MiB ceiling and the byte budget keep the defaults inside a node's heap, they do not make a smaller heap safe.
+
+**Streaming ingest (`streaming_ingest`, off by default).** With `streaming_ingest = true`, an upload route's body is no longer read into memory. The node that accepts the connection writes it, as it arrives, to the node's `content` storage, then dispatches the request with an empty body and a reference to what it stored (`HttpRequestContext.upload`): one object for a body that is not multipart, one object per file part of a `multipart/form-data` body, whose text fields travel with the reference. A request forwarded to the node that hosts the slice carries the reference, a few hundred bytes, not the body. The limits differ from the aggregated path as follows:
+
+- The limit in force is the smaller of the route's `max_size` (or `max_request_size`) and `max_size_ceiling`; the 2 GiB in-memory bound does not apply. Raise `max_size_ceiling` to accept larger uploads.
+- An upload reserves, from `max_in_flight_size`, the smaller of its `Content-Length` and five storage chunks (20 MiB at the default chunk size): the most it holds in memory while its writes are in flight. It returns them when its body has been stored and the request handed on, or when the upload fails.
+- The part keys (`max_files`, `max_file_size`, `max_fields`, `max_field_size`) are enforced while the body streams; a breach is answered `413`. When a route does not declare `max_field_size`, the text fields of one body may total 1 MiB. A malformed multipart body (no `boundary`, an unreadable part header block, a nested `multipart/*` part, no closing delimiter) is answered `400`.
+- A storage failure is answered `503` (`storage-unavailable`), or `507` when a storage tier is full. Any failure, including a client that goes away, aborts the object being written and deletes the objects already stored for that request.
+
+**Nothing reclaims a stored upload yet.** A stored upload records an expiry of `unclaimed_ttl` after ingest, but nothing acts on it until cluster garbage collection exists: an object a slice never deletes stays in content storage, and its space is not given back. This is why `streaming_ingest` is off by default and should stay off where storage space matters. Turning it off again stops new stored uploads; it does not remove the ones already stored.
 
 ### Multipart File Upload
 
