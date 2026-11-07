@@ -136,7 +136,14 @@ final class DefaultReplicationManager implements ReplicationManager {
                                       ReplicationTransport transport,
                                       Option<ReplicationBatcher> batcher,
                                       EarliestRetainedOffset earliestRetained) {
-        this(governorId, registry, transport, batcher, earliestRetained, NO_OP, SharedScheduler::schedule, System::nanoTime);
+        this(governorId,
+             registry,
+             transport,
+             batcher,
+             earliestRetained,
+             NO_OP,
+             SharedScheduler::schedule,
+             System::nanoTime);
     }
 
     private DefaultReplicationManager(NodeId governorId,
@@ -598,13 +605,14 @@ final class DefaultReplicationManager implements ReplicationManager {
 
         if (backoff.nanos() >= remainingNanos) {
             log.warn("Replicate of {}[{}]@{} to replica {} on lane {} not written before the ack deadline, last outcome {}; "
-                     + "giving up re-sending",
+                    + "giving up re-sending",
                      message.streamName(),
                      message.partition(),
                      message.fromOffset(),
                      replica,
                      message.streamType(),
                      outcome);
+
             return;
         }
 
@@ -612,16 +620,17 @@ final class DefaultReplicationManager implements ReplicationManager {
     }
 
     @Contract
-    private void resend(NodeId replica, ReplicationMessage.ReplicateEvents message, long deadlineNanos, TimeSpan backoff) {
-        var remaining = TimeSpan.timeSpan(Math.max(0, deadlineNanos - nanoClock.getAsLong()))
-                                .nanos();
+    private void resend(NodeId replica,
+                        ReplicationMessage.ReplicateEvents message,
+                        long deadlineNanos,
+                        TimeSpan backoff) {
+        var remaining = TimeSpan.timeSpan(Math.max(0, deadlineNanos - nanoClock.getAsLong())).nanos();
 
         sendUntilWritten(replica, message, remaining, deadlineNanos, nextBackoff(backoff));
     }
 
     private static TimeSpan nextBackoff(TimeSpan backoff) {
-        return TimeSpan.timeSpan(Math.min(backoff.nanos() * 2, MAX_RESEND_BACKOFF.nanos()))
-                       .nanos();
+        return TimeSpan.timeSpan(Math.min(backoff.nanos() * 2, MAX_RESEND_BACKOFF.nanos())).nanos();
     }
 
     /// Exclusive end of the chunk starting at `start`: as many events as fit the accounting budget, and at least
