@@ -196,6 +196,20 @@ class ReplicationResendNotSentTest {
         assertThat(pendingResends()).as("no re-send past the deadline").isEmpty();
     }
 
+    /// (b) The deadline boundary: a re-send whose backoff equals the time left would leave exactly at the deadline, when the
+    /// publish's own timer fires, so it is not scheduled. Here 40 ms remain after the second refusal and the next backoff is 40 ms.
+    @Test
+    void replicateEvent_stopsResending_whenTheNextBackoffEqualsTheTimeLeft() {
+        transport.refuseAll();
+        manager.replicateEvent(STREAM, PARTITION, OFFSET, new byte[]{1}, 1L, Epoch.ZERO);
+
+        clock.set(DEADLINE_NANOS - TimeUnit.MILLISECONDS.toNanos(60));
+        runNextResend();
+
+        assertThat(transport.attempts()).hasSize(2);
+        assertThat(pendingResends()).as("no re-send at the deadline instant").isEmpty();
+    }
+
     private static Function<NodeId, Promise<WriteOutcome>> notSent(String kind) {
         return switch (kind) {
             case "backpressure" -> node -> Promise.success(new WriteOutcome.BackpressureRefused(node));
