@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Predicate;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -273,6 +274,32 @@ class SlDivergenceTest {
 
             assertThat(expired).hasSize(1);
             assertThat(expired.getFirst().message()).contains(Recoveries.SUBJECT_GONE);
+        }
+
+        /// D.6 rows 18/19 via the indexer: a judgment UPDATE (not a removal) that leaves the artifact with no exclusion closes the warning.
+        /// Red when: `Indexer.indexJudgment` does not read the exclusion before the update, so the some-to-none transition is missed.
+        @Test
+        void judgmentUpdatedToNoExclusion_closesTheWarningOnce() {
+            var h = excluded();
+
+            h.seed(new ArtifactJudgmentKey(ORDERS), new ArtifactJudgmentValue(false, Map.of(), Map.of(), Set.of()));
+            h.drain();
+            var expired = h.warns("slice-unresponsive-expired");
+
+            assertThat(expired).hasSize(1);
+            assertThat(expired.getFirst().subject()).isEqualTo(ORDERS.asString());
+        }
+
+        /// D.6 rows 18/19: a judgment update with no exclusion before it and none after raises no recovery. Red when: the close is not gated
+        /// on the prior exclusion (`Judgments.exclusionsEnded` raises on every update that holds none).
+        @Test
+        void judgmentUpdatedWithNoPriorExclusion_raisesNothing() {
+            var h = stuckLoading();
+
+            assertThat(exclusions(h)).as("precondition: nothing excluded").isEmpty();
+            h.seed(new ArtifactJudgmentKey(ORDERS), new ArtifactJudgmentValue(false, Map.of(), Map.of(), Set.of()));
+            h.seed(new ArtifactJudgmentKey(ORDERS), new ArtifactJudgmentValue(true, Map.of(), Map.of(), Set.of()));
+            assertThat(h.warns("slice-unresponsive-expired")).isEmpty();
         }
 
         /// Commits the held submissions that mutate a key `matching`, each settled with the applier's verdict.
