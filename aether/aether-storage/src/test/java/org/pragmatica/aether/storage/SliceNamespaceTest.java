@@ -70,4 +70,12 @@ class SliceNamespaceTest {
         assertThat(value).hasSize(63)
                          .isEqualTo(group + ".s");
     }
+
+    /// The derivation is persistent: a stored object stays reachable only while every node derives the same namespace for
+    /// its slice, so the exact value of a hashed name is pinned (the digest is of `groupId:artifactId`).
+    @Test
+    void sliceNamespace_longName_isStableAcrossReleases() {
+        assertThat(namespaceOf("com.example." + "a".repeat(60) + ":svc").value())
+            .isEqualTo("com.example.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-9e470980228900f7");
+    }
 }
