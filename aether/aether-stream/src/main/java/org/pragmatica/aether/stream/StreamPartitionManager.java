@@ -923,11 +923,20 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// committed epoch, and this copy holds records at or above that epoch's start that it has not compared with its owner.
     /// Evaluated lazily at the first call after the committed epoch advances: a copy whose head is still below the start then
     /// holds nothing from the old lineage at or above it, and stays trusted; a head that reached the start by then is doubted
-    /// (conservative: its backfill compare clears it). The owner itself is never doubted here.
+    /// (conservative: its backfill compare clears it). The placement owner is never doubted here; the ack gate is
+    /// ([#replicaVerified]).
     public Option<Long> unverifiedFrom(String streamName, int partition) {
+        return placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER
+               ? none()
+               : doubtedFrom(streamName, partition);
+    }
+
+    /// The offset from which this copy has not been compared with the committed owner of the current epoch, whatever its
+    /// placement role, or none when there is no committed epoch or the copy is trusted for it ([#unverifiedFrom]).
+    private Option<Long> doubtedFrom(String streamName, int partition) {
         var epoch = ownerEpochSource.currentOwnerEpoch(streamName, partition);
 
-        if (epoch.equals(Epoch.ZERO) || placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER) {
+        if (epoch.equals(Epoch.ZERO)) {
             return none();
         }
 
@@ -950,9 +959,13 @@ public final class StreamPartitionManager implements AutoCloseable {
                        .verified();
     }
 
-    /// Whether this node may acknowledge to the owner what it holds ([#unverifiedFrom]).
+    /// Whether this node may acknowledge to the owner what it holds. #2753: only a verification for the
+    /// committed epoch opens it, never the placement role. That role comes from HRW placement, not from the committed record,
+    /// so a node placed OWNER while the committed owner still sends at the current epoch is a follower whose copy may hold an
+    /// older lineage. Its backfill compares it with the committed owner (`PartitionBackfill` sources from that owner), which
+    /// verifies it.
     public boolean replicaVerified(String streamName, int partition) {
-        return unverifiedFrom(streamName, partition).isEmpty();
+        return doubtedFrom(streamName, partition).isEmpty();
     }
 
     /// A backfill compared this copy with the committed owner of `epoch` (captured BEFORE the compare, so an epoch that advanced
