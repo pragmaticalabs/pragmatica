@@ -63,6 +63,10 @@ class StorageInstanceEnsureHeldTest {
         var id = node.put(CONTENT).await().unwrap();
 
         shared.delete(id).await().unwrap();
+        // The record forgets the shared copy too, so the presence asserted below can only come from the re-seed.
+        store.observeLifecycle(id, lc -> lc.withTierRemoved(TierLevel.REMOTE));
+
+        assertThat(store.getLifecycle(id).unwrap().presentIn()).as("precondition").doesNotContain(TierLevel.REMOTE);
 
         var before = store.getLifecycle(id).unwrap();
         var epoch = store.currentEpoch();
