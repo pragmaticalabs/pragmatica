@@ -451,26 +451,37 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(lifecycleManager.terminateCount.get()).isZero();
     }
 
-    /// A source-admission refusal stays visible: it is a deferral for the reconciler, but it is counted, recorded as the last provisioning
-    /// failure and trips the circuit after the cap (3), as every refused provision did before admission became a typed refusal. A permanent
-    /// refusal (fleet limit reached) must not retry invisibly for ever.
+    /// A source-admission refusal stays visible (recorded as the last provisioning failure, told to the operator) but is not a provider
+    /// failure: it never counts toward the source's breaker (spec §8.3) and is paced by its own backoff window, so the source is not asked
+    /// again inside the window and is asked again once it elapses. Pre-#2711 it tripped the shared circuit after three.
     @Test
-    void sourceAdmissionDeferral_isCounted_recordedAndTripsTheCircuitAfterThree() {
-        ctm.activate();
+    void sourceAdmissionDeferral_isRecorded_neverCounted_andIsPacedByItsOwnBackoff() {
+        var clock = new AtomicLong(1_000L);
+        var paced = ctmWithDrainGrace(timeSpan(10).seconds(), drainCommandSinkCalls::add, stubLiveness(), clock::get);
+        var members = Set.of(SELF, PEER_A, PEER_B);
+
+        paced.activate();
         lifecycleManager.deferProvision = true;
-        for (int attempt = 0; attempt < 3; attempt++) {
-            var disposition = ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await().unwrap();
+        for (int attempt = 0; attempt < 5; attempt++) {
+            var disposition = paced.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await().unwrap();
             assertThat(disposition).isEqualTo(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.CAPACITY_ADMISSION));
         }
-        assertThat(ctm.circuitBreakerState().consecutiveFailures()).isEqualTo(3);
-        assertThat(ctm.circuitBreakerState().tripped()).isTrue();
-        assertThat(ctm.lastProvisionFailure().map(ClusterTopologyManager.LastProvisionFailure::cause).or(""))
+
+        assertThat(lifecycleManager.provisionCount.get()).as("inside the backoff window the source is asked once, not hot-retried").isEqualTo(1);
+        assertThat(paced.circuitBreakerState().consecutiveFailures()).as("a refusal is not a provider failure").isZero();
+        assertThat(paced.circuitBreakerState().tripped()).isFalse();
+        assertThat(paced.circuitBreakerStates()).isEmpty();
+        assertThat(paced.lastProvisionFailure().map(ClusterTopologyManager.LastProvisionFailure::cause).or(""))
                 .isEqualTo(CapacityControlledLifecycle.AdmissionFailure.CAPACITY_UNAVAILABLE.message());
 
-        var suppressed = ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await().unwrap();
+        clock.addAndGet(9_999);
+        paced.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        assertThat(lifecycleManager.provisionCount.get()).as("one millisecond short of the window").isEqualTo(1);
 
-        assertThat(suppressed).isEqualTo(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.CIRCUIT_OPEN));
-        assertThat(lifecycleManager.provisionCount.get()).as("the open circuit stops reaching admission").isEqualTo(3);
+        clock.addAndGet(1);
+        paced.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        assertThat(lifecycleManager.provisionCount.get()).as("the window elapsed: the source is asked again").isEqualTo(2);
+        assertThat(paced.circuitBreakerState().consecutiveFailures()).as("still never counted").isZero();
     }
 
     /// The deferral is an operator event, raised once per run of deferrals, and its recovery follows when a replacement is dispatched.
@@ -478,17 +489,21 @@ class ClusterTopologyManagerActuatorTest {
     void sourceAdmissionDeferral_raisesOneOperatorEvent_andRecoversOnDispatch() {
         var events = new java.util.concurrent.CopyOnWriteArrayList<String>();
         var members = Set.of(SELF, PEER_A, PEER_B);
+        var clock = new AtomicLong(1_000L);
+        var timed = ctmWithDrainGrace(timeSpan(10).seconds(), drainCommandSinkCalls::add, stubLiveness(), clock::get);
 
-        ctm.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(warning -> events.add(warning.code().code())));
-        ctm.activate();
+        timed.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(warning -> events.add(warning.code().code())));
+        timed.activate();
         lifecycleManager.deferProvision = true;
-        ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
-        ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        timed.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        clock.addAndGet(10_000);
+        timed.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
         org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> !events.isEmpty());
         assertThat(events).as("one event for the run, not one per deferral").containsExactly("provision-admission-deferred");
 
         lifecycleManager.deferProvision = false;
-        ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        clock.addAndGet(10_000);
+        timed.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
         org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> events.size() == 2);
         assertThat(events).containsExactly("provision-admission-deferred", "provision-admission-resumed");
     }
@@ -517,6 +532,7 @@ class ClusterTopologyManagerActuatorTest {
         ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
         assertThat(ctm.inventoryWait().isPresent()).as("an admission past the inventory ends the wait").isFalse();
 
+        ctm.resetCircuitBreaker("test");
         lifecycleManager.deferCause = CapacityControlledLifecycle.AdmissionFailure.INVENTORY_UNAVAILABLE;
         ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
         assertThat(ctm.inventoryWait().isPresent()).isTrue();
@@ -545,6 +561,68 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(ctm.inventoryWait().isPresent()).isTrue();
         ctm.deactivate();
         assertThat(ctm.inventoryWait().isPresent()).as("the activation that waited has ended").isFalse();
+    }
+
+    /// v2711 survivor 9 (c07): a reset of one source is a change of circumstance too; it ends the recorded inventory wait and resets the
+    /// provisioner's state, exactly as the reset of every source does.
+    @Test
+    void resetOfOneSource_endsTheInventoryWait_andResetsTheProvisionerState() {
+        var resets = new java.util.concurrent.atomic.AtomicInteger();
+
+        ctm.activate();
+        lifecycleManager.onResetProvisionerState(resets::incrementAndGet);
+        lifecycleManager.deferProvision = true;
+        lifecycleManager.deferCause = CapacityControlledLifecycle.AdmissionFailure.INVENTORY_UNAVAILABLE;
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
+        assertThat(ctm.inventoryWait().isPresent()).isTrue();
+
+        ctm.resetCircuitBreaker("test", Option.some(org.pragmatica.aether.environment.SourceName.DEFAULT));
+
+        assertThat(ctm.inventoryWait().isPresent()).as("the wait ended with the reset").isFalse();
+        assertThat(resets.get()).as("the provisioner state was reset once").isEqualTo(1);
+    }
+
+    /// v2711 survivor 9 (c01): a joined node belongs to the source its replacement was provisioned in, even when the lifecycle's committed
+    /// placement names another one; the join closes that source's breaker and leaves the other's.
+    @Test
+    void nodeReady_closesTheBreakerOfTheSourceItsReplacementWasProvisionedIn() {
+        var members = Set.of(SELF, PEER_A, PEER_B);
+        var first = org.pragmatica.aether.environment.SourceName.sourceName("eu-1").unwrap();
+        var second = org.pragmatica.aether.environment.SourceName.sourceName("eu-2").unwrap();
+        var replacement = NodeId.randomNodeId();
+        lifecycleManager.committedSources.put(PEER_A, first);
+        lifecycleManager.committedSources.put(PEER_B, second);
+        lifecycleManager.committedSources.put(replacement, second);
+
+        ctm.activate();
+        lifecycleManager.failProvisions();
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.some(PEER_A), members, NodeRole.CORE).await();
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.some(PEER_B), members, NodeRole.CORE).await();
+        assertThat(ctm.circuitBreakerStates().keySet()).containsExactly("eu-1", "eu-2");
+        lifecycleManager.allowProvisions();
+        var disposition = ctm.provisionReplacement(replacement, Option.some(PEER_A), members, NodeRole.CORE).await();
+        ctm.onNodeReady(replacement);
+
+        assertThat(disposition.unwrap()).isInstanceOf(ProvisionDisposition.Dispatched.class);
+        assertThat(ctm.circuitBreakerStates().keySet()).as("the replacement's source closed, not the committed one").containsExactly("eu-2");
+    }
+
+    /// v2711 survivor 9 (c01): a joined node that was no replacement belongs to the source committed for it.
+    @Test
+    void nodeReady_withoutAReplacement_closesTheBreakerOfItsCommittedSource() {
+        var members = Set.of(SELF, PEER_A, PEER_B);
+        var first = org.pragmatica.aether.environment.SourceName.sourceName("eu-1").unwrap();
+        var second = org.pragmatica.aether.environment.SourceName.sourceName("eu-2").unwrap();
+        lifecycleManager.committedSources.put(PEER_A, first);
+        lifecycleManager.committedSources.put(PEER_B, second);
+        ctm.activate();
+        lifecycleManager.failProvisions();
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.some(PEER_A), members, NodeRole.CORE).await();
+        ctm.provisionReplacement(NodeId.randomNodeId(), Option.some(PEER_B), members, NodeRole.CORE).await();
+
+        ctm.onNodeReady(PEER_A);
+
+        assertThat(ctm.circuitBreakerStates().keySet()).as("its committed source closed, the other kept").containsExactly("eu-2");
     }
 
     /// The operator events of the lifecycle (the release of an abandoned dispatch) reach the sink the node gives the manager: the manager
@@ -2749,6 +2827,13 @@ class ClusterTopologyManagerActuatorTest {
 
         void failProvisions() {
             failProvision.set(true);
+        }
+
+        /// The committed placement the lifecycle reports for a node (a test double of the capacity ledger); empty for an unlisted node.
+        private final ConcurrentHashMap<NodeId, org.pragmatica.aether.environment.SourceName> committedSources = new ConcurrentHashMap<>();
+
+        @Override public Option<org.pragmatica.aether.environment.SourceName> committedSourceOf(NodeId nodeId) {
+            return Option.option(committedSources.get(nodeId));
         }
 
         private volatile org.pragmatica.lang.Cause provisionFailure = org.pragmatica.lang.utils.Causes.cause("stub provision failure");

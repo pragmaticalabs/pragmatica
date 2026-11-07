@@ -38,8 +38,8 @@ All configurable timeouts in a single table, grouped by TOML section.
 |----------|---------|-------------|
 | `timeout` | `15s` | Maximum time for a single slice invocation |
 | `invoker_timeout` | `20s` | Outer timeout wrapping invocation + retry overhead |
-| `retry_base_delay` | `100ms` | Base delay between invocation retries (exponential backoff) |
-| `max_retries` | `3` | Maximum number of invocation retry attempts |
+| `retry_base_delay` | `100ms` | Not read by any invocation path: a NotSent re-route goes to another instance at once, with no backoff |
+| `max_retries` | `3` | Most NotSent re-routes of one slice-to-slice call (see "Retry behavior" below). It never re-sends a call that may have run; `0` or less disables re-routing |
 
 ### `[timeouts.forwarding]`
 
@@ -218,7 +218,26 @@ Client Request
 
 The 5-second gap between `invoker_timeout` and `timeout` accommodates retry delays and routing overhead. The forwarding timeout is shorter because it covers only the network hop, not the execution.
 
-**Retry behavior:** On invocation failure, the system retries up to `max_retries` (3) times with exponential backoff starting from `retry_base_delay` (100ms). Forwarding failures retry up to `forwarding.max_retries` (3) times with a fixed `retry_delay` (200ms). Retries on node departure are immediate (event-driven, no delay).
+**Retry behavior (slice-to-slice invocation, #2807).** The runtime never re-sends a slice-to-slice call that may
+have reached its target. The guarantee, per outcome of a typed request/response call:
+
+- **Not sent** (the transport refused the write: back-pressure, no peer state, or an encode failure): the call
+  fails at once with `ForwardError.NotSent` instead of waiting out its timeout, and is re-routed to another
+  instance chosen by the normal endpoint selection, excluding every instance that refused it. At most
+  `max_retries` (default 3) re-routes per call, and none once the caller's deadline has passed. When no other
+  instance is left, the call fails with the `NotSent` itself. `[mechanism: a refused WriteOutcome proves the
+  frame never left this node (ClusterNetwork.send contract); SliceInvoker re-routes only on ForwardError.NotSent]`
+  `[verified: aether/aether-invoke/src/test/java/org/pragmatica/aether/invoke/SliceInvokerNotSentRerouteTest.java,
+  unit level with a stub transport]`
+- **Outcome unknown** (the write was accepted, including a dead connection whose frame sits in the offline buffer,
+  and no answer arrived in time): one timeout failure, never re-sent.
+- **Target departed after the send:** one `SliceInvokerError.TargetDeparted` failure, never re-sent.
+- **The callee answered with a failure:** surfaced as it is, never re-sent.
+
+A caller that knows its operation is idempotent may retry an unknown outcome itself; the runtime does not,
+because a non-idempotent call must not run twice. Fire-and-forget calls and completion-awaited calls (scheduled
+tasks) are never re-routed. Forwarding failures retry up to `forwarding.max_retries` (3) times with a fixed
+`retry_delay` (200ms), under the forwarding path's own rules.
 
 **The request budget caps the forward chain.** The per-layer timeouts above are ceilings for a single
 attempt; without a shared budget they *stack* — hops × retries × downstream forwards can add up to

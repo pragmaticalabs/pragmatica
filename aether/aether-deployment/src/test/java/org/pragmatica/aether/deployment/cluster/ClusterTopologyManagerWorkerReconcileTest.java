@@ -136,6 +136,8 @@ class ClusterTopologyManagerWorkerReconcileTest {
     private WorkerRecordingLifecycleManager lifecycleManager;
     private AtomicReference<Option<ClusterConfigValue>> configRef;
     private ClusterTopologyManager ctm;
+    private final AtomicReference<Option<AetherValue.AutoHealStateValue>> autoHealRef = new AtomicReference<>(Option.none());
+    private final java.util.List<String> warnings = new java.util.concurrent.CopyOnWriteArrayList<>();
     private TopologyObserver observer;
     private StubSnapshotSource snapshotSource;
 
@@ -165,8 +167,9 @@ class ClusterTopologyManagerWorkerReconcileTest {
                                                             () -> AetherValue.ClusterPhase.NORMAL,
                                                             _ -> {},
                                                             _ -> {},
-                                                            Option::none,
+                                                            autoHealRef::get,
                                                             liveness);
+        built.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(warning -> warnings.add(warning.code().code())));
         var placements = new java.util.concurrent.ConcurrentHashMap<AetherKey, AetherValue>();
         built.setHierarchyStateWriter(HierarchyStateWriter.hierarchyStateWriter(
             () -> Option.some(new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1)),
@@ -204,8 +207,352 @@ class ClusterTopologyManagerWorkerReconcileTest {
                                                          System.currentTimeMillis())));
     }
 
+    private void commitConfigVersion(long version, AetherValue.TopologyEntry... entries) {
+        configRef.set(Option.some(new ClusterConfigValue(Option.none(), CLUSTER, "1.0.0", List.of(entries), 3, 9, "test", version,
+                                                         System.currentTimeMillis())));
+    }
+
+    /// Disables auto-heal against the configuration seeded now, recording each worker source/role's count as the disable does.
+    private void disableAutoHealAtConfigVersion(long version) {
+        var scaling = configRef.get()
+                               .map(value -> value.desiredTopology()
+                                                  .stream()
+                                                  .collect(java.util.stream.Collectors.toMap(e -> "worker " + e.sourceName() + "/" + e.role(),
+                                                                                             AetherValue.TopologyEntry::count)))
+                               .or(Map.of());
+        autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.disabledAt("test", version, scaling)));
+    }
+
     private static AetherValue.TopologyEntry entry(String source, String role, int count) {
         return new AetherValue.TopologyEntry(source, role, count);
+    }
+
+    /// Spec §8.4 — auto-heal disabled: the worker path provisions nothing for a deficit that was already committed, and tells the operator once.
+    @Test
+    void reconcile_workerDeficit_autoHealDisabled_provisionsNothing_andWarnsOncePerHold() {
+        seedTopology(entry("primary", "core", 3), entry("primary", "worker", 2));
+        disableAutoHealAtConfigVersion(1L);
+        ctm.activate();
+
+        ctm.reconcileWorkerTopology();
+        ctm.reconcileWorkerTopology();
+
+        assertThat(lifecycleManager.provisionedNodeIds()).isEmpty();
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> !warnings.isEmpty());
+        assertThat(warnings).as("one event for the run of holds").containsExactly("auto-heal-scaling-held");
+    }
+
+    @Test
+    void reconcile_workerSurplus_autoHealDisabled_requestsNoRetirement() {
+        var requested = captureRetirementRequests();
+        seedTopology(entry("primary", "core", 3), entry("primary", "worker", 1));
+        lifecycleManager.preExisting(workerInstance("primary", "primary-worker-0"), workerInstance("primary", "primary-worker-1"));
+        disableAutoHealAtConfigVersion(1L);
+        ctm.activate();
+
+        ctm.reconcileWorkerTopology();
+
+        assertThat(requested).isEmpty();
+        assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+    }
+
+    /// Exception (b): a desired count CHANGED after the disable is explicit operator intent and is acted on while auto-heal stays disabled.
+    @Test
+    void reconcile_workerDeficit_countCommittedWhileDisabled_isProvisioned() {
+        seedTopology(entry("primary", "core", 3), entry("primary", "worker", 2));
+        disableAutoHealAtConfigVersion(1L);
+        commitConfigVersion(2L, entry("primary", "core", 3), entry("primary", "worker", 3));
+        ctm.activate();
+
+        ctm.reconcileWorkerTopology();
+
+        assertThat(lifecycleManager.provisionedNodeIds()).hasSize(3);
+    }
+
+    /// Spec §8.4 (v2711 finding 2): a configuration commit that leaves this source/role's count unchanged is not intent for it. The hold
+    /// stays, so the deficit that was already there is not corrected on the cluster's own initiative.
+    @Test
+    void reconcile_workerDeficit_unrelatedConfigCommitWhileDisabled_staysHeld() {
+        seedTopology(entry("primary", "core", 3), entry("primary", "worker", 2));
+        disableAutoHealAtConfigVersion(1L);
+        ctm.activate();
+        ctm.reconcileWorkerTopology();
+        commitConfigVersion(2L, entry("primary", "core", 3), entry("primary", "worker", 2));
+
+        ctm.reconcileWorkerTopology();
+
+        assertThat(lifecycleManager.provisionedNodeIds()).as("an unchanged count releases nothing").isEmpty();
+    }
+
+    /// The release is per source/role: changing one source's count releases that source only; the other's deficit stays held.
+    @Test
+    void reconcile_twoWorkerSources_countChangedForOneWhileDisabled_releasesOnlyThatSource() {
+        seedTopology(entry("primary", "core", 3), entry("primary", "worker", 1), entry("secondary", "worker", 1));
+        disableAutoHealAtConfigVersion(1L);
+        commitConfigVersion(2L, entry("primary", "core", 3), entry("primary", "worker", 1), entry("secondary", "worker", 2));
+        ctm.activate();
+
+        ctm.reconcileWorkerTopology();
+
+        assertThat(lifecycleManager.provisionedSourceNames()).as("activate() already runs one pass").containsOnly("secondary");
+    }
+
+    /// v2711 finding 7 (i): releasing a held subject announces its resume, so the held event does not stay open while the path acts.
+    @Test
+    void reconcile_heldSubjectReleasedByAChangedCount_raisesResumed() {
+        seedTopology(entry("primary", "core", 3), entry("primary", "worker", 1));
+        disableAutoHealAtConfigVersion(1L);
+        ctm.activate();
+        ctm.reconcileWorkerTopology();
+        commitConfigVersion(2L, entry("primary", "core", 3), entry("primary", "worker", 2));
+
+        ctm.reconcileWorkerTopology();
+
+        assertThat(lifecycleManager.provisionedNodeIds()).as("released: the deficit is filled").hasSize(2);
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 2);
+        assertThat(warnings).containsExactly("auto-heal-scaling-held", "auto-heal-scaling-resumed");
+    }
+
+    /// The community subject is held on its own `target_size`: unchanged it stays held, changed it is released.
+    @Test
+    void scalingHeld_community_followsItsOwnTargetSize() {
+        var manager = (ClusterTopologyManagerRecord) ctm;
+        seedConfig(communityToml(1), entry("pool", "core", 3));
+        autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.disabledAt("test", 1L, Map.of("community stable", 1))));
+
+        assertThat(manager.scalingHeld("community stable")).as("target_size unchanged").isTrue();
+
+        seedConfig(communityToml(2), entry("pool", "core", 3));
+
+        assertThat(manager.scalingHeld("community stable")).as("target_size changed while disabled").isFalse();
+    }
+
+    /// v2711 survivor 9 (c34): with no auto-heal record at all, auto-heal is enabled, and every subject held earlier is announced as resumed
+    /// by the one call, not only the subject asked about.
+    @Test
+    void scalingHeld_noStateRecord_isEnabled_andResumesEveryHeldSubject() {
+        var manager = (ClusterTopologyManagerRecord) ctm;
+        var worker = ClusterTopologyManagerRecord.workerSubject("pool", "worker");
+        seedConfig(communityToml(1), entry("pool", "core", 3), entry("pool", "worker", 1));
+        autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.disabledAt("test", 1L, Map.of("community stable", 1, worker, 1))));
+        assertThat(manager.scalingHeld("community stable")).isTrue();
+        assertThat(manager.scalingHeld(worker)).isTrue();
+
+        autoHealRef.set(Option.none());
+
+        assertThat(manager.scalingHeld("community stable")).as("no record: enabled").isFalse();
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 4);
+        assertThat(warnings).containsExactly("auto-heal-scaling-held",
+                                             "auto-heal-scaling-held",
+                                             "auto-heal-scaling-resumed",
+                                             "auto-heal-scaling-resumed");
+    }
+
+    /// v2711 survivor 9 (c39): a deactivation ends the holds of that activation; the next activation holds, and warns, afresh.
+    @Test
+    void deactivate_endsTheHolds_soTheNextActivationWarnsAgain() {
+        var manager = (ClusterTopologyManagerRecord) ctm;
+        seedConfig(communityToml(1), entry("pool", "core", 3));
+        autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.disabledAt("test", 1L, Map.of("community stable", 1))));
+        ctm.activate();
+        assertThat(manager.scalingHeld("community stable")).isTrue();
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 1);
+
+        ctm.deactivate();
+        ctm.activate();
+        assertThat(manager.scalingHeld("community stable")).isTrue();
+
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 2);
+        assertThat(warnings).containsExactly("auto-heal-scaling-held", "auto-heal-scaling-held");
+    }
+
+    /// v2711 survivor 5 (c49): installing the community reconciler hands it the CTM's own auto-heal hold, so the community path honours a
+    /// disable; without that wiring the reconciler's default hold answers "never held".
+    @Test
+    void installCommunityPlacement_handsTheReconcilerTheAutoHealHold() {
+        var manager = (ClusterTopologyManagerRecord) ctm;
+        var installed = new java.util.concurrent.atomic.AtomicReference<java.util.function.Predicate<String>>();
+        seedConfig(communityToml(1), entry("pool", "core", 3));
+        autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.disabledAt("test", 1L, Map.of("community stable", 1))));
+
+        manager.installCommunityPlacement(new CommunityPlacementReconciler() {
+            public Promise<org.pragmatica.lang.Unit> reconcile() { return Promise.unitPromise(); }
+            public Promise<org.pragmatica.lang.Unit> requestRetirement(NodeId node, AetherValue.TopologyEntry entry) {
+                return Promise.unitPromise();
+            }
+            public Promise<Boolean> onDrainCompleted(NodeId node, String operation) { return Promise.success(false); }
+            public org.pragmatica.lang.Unit holdAutonomy(java.util.function.Predicate<String> held) {
+                installed.set(held);
+                return org.pragmatica.lang.Unit.unit();
+            }
+        });
+
+        assertThat(installed.get()).as("the reconciler was handed a hold").isNotNull();
+        assertThat(installed.get().test(CommunityPlacementReconciler.holdSubject("stable"))).as("disabled, target_size unchanged").isTrue();
+
+        seedConfig(communityToml(2), entry("pool", "core", 3));
+
+        assertThat(installed.get().test(CommunityPlacementReconciler.holdSubject("stable"))).as("target_size changed while disabled").isFalse();
+    }
+
+    /// v2711 finding 7 (ii): a hold that lands while the resume drains the set is either resumed by that drain or stays held for the next
+    /// one; it is never cleared without its resume (a `forEach` then `clear` loses it).
+    @Test
+    void drainHeld_aHoldAddedDuringTheDrain_isResumedOrStaysHeld() {
+        var held = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
+        var resumed = new CopyOnWriteArrayList<String>();
+        held.add("worker primary/worker");
+
+        ClusterTopologyManagerRecord.drainHeld(held, subject -> resumeAndRaceAHold(subject, held, resumed));
+
+        assertThat(resumed.contains("community stable") || held.contains("community stable"))
+                .as("the concurrent hold keeps its pairing")
+                .isTrue();
+        assertThat(resumed).contains("worker primary/worker");
+    }
+
+    /// v2711c (c24): the pairing, pinned for any iteration order. Every subject removed raises exactly one resume; a hold added during
+    /// the drain is drained with its resume or stays held; nothing is removed silently, twice, or both resumed and held.
+    @Test
+    void drainHeld_pairsEveryRemovalWithOneResume_whateverTheIterationOrder() {
+        var snapshotOrder = new java.util.concurrent.CopyOnWriteArraySet<String>();
+        var hashOrder = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
+
+        assertPaired(snapshotOrder);
+        assertPaired(hashOrder);
+    }
+
+    private static void assertPaired(Set<String> held) {
+        var everHeld = new java.util.concurrent.CopyOnWriteArraySet<String>();
+        var resumed = new CopyOnWriteArrayList<String>();
+        var added = new java.util.concurrent.atomic.AtomicInteger();
+
+        for (var i = 0; i < 8; i++) {
+            held.add("original-" + i);
+            everHeld.add("original-" + i);
+        }
+        ClusterTopologyManagerRecord.drainHeld(held, subject -> {
+            resumed.add(subject);
+            if (subject.startsWith("original-")) {
+                var late = "late-" + added.getAndIncrement();
+                everHeld.add(late);
+                held.add(late);
+            }
+        });
+
+        var accounted = new java.util.HashSet<>(resumed);
+
+        accounted.addAll(held);
+        assertThat(accounted).as("resumed + still held is every subject ever held").isEqualTo(everHeld);
+        assertThat(resumed).as("no duplicate resume").doesNotHaveDuplicates();
+        assertThat(held).as("a resumed subject is not held").doesNotContainAnyElementsOf(resumed);
+        assertThat(resumed).as("every original is resumed").containsAll(everHeld.stream().filter(s -> s.startsWith("original-")).toList());
+    }
+
+    /// v2711c (c25): releasing a subject that is not held (never held, or removed by a competing release) raises no resume.
+    @Test
+    void releaseHeld_aSubjectNotHeld_raisesNoResume() {
+        var held = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
+        var resumed = new CopyOnWriteArrayList<String>();
+
+        held.add("held one");
+        ClusterTopologyManagerRecord.releaseHeld(held, "never held", resumed::add);
+        assertThat(resumed).as("not held: no resume").isEmpty();
+        assertThat(held).containsExactly("held one");
+
+        ClusterTopologyManagerRecord.releaseHeld(held, "held one", resumed::add);
+        ClusterTopologyManagerRecord.releaseHeld(held, "held one", resumed::add);
+        assertThat(resumed).as("released once, resumed once").containsExactly("held one");
+    }
+
+    private static void resumeAndRaceAHold(String subject, Set<String> held, List<String> resumed) {
+        resumed.add(subject);
+        held.add("community stable");
+    }
+
+    /// v2711 finding 6: a source is declared by the committed configuration's desired topology or by its `[source.*]` tables; any other
+    /// name, or no configuration at all, is not.
+    @Test
+    void declaresSource_committedSourcesOnly() {
+        assertThat(ctm.declaresSource(sourceName("primary"))).as("no committed configuration").isFalse();
+        seedTopology(entry("primary", "core", 3));
+        assertThat(ctm.declaresSource(sourceName("primary"))).as("a desired-topology source").isTrue();
+        assertThat(ctm.declaresSource(sourceName("prmary"))).as("a typo").isFalse();
+        seedConfig(communityToml(1));
+        assertThat(ctm.declaresSource(sourceName("pool"))).as("a [source.*] table").isTrue();
+    }
+
+    /// v2711c (c04): a committed, parseable configuration that does not declare the source does not declare it (the reset of it is
+    /// refused by the route, which asks this).
+    @Test
+    void declaresSource_aParseableConfigThatDoesNotDeclareIt_isNotDeclared() {
+        seedConfig(communityToml(1));
+
+        assertThat(ctm.declaresSource(sourceName("pool"))).as("declared by [source.pool]").isTrue();
+        assertThat(ctm.declaresSource(sourceName("prmary"))).as("a typo of a name the TOML does not declare").isFalse();
+        assertThat(ctm.declaresSource(sourceName("elsewhere"))).as("another source").isFalse();
+    }
+
+    private static org.pragmatica.aether.environment.SourceName sourceName(String name) {
+        return org.pragmatica.aether.environment.SourceName.sourceName(name).unwrap();
+    }
+
+    private static String communityToml(int targetSize) {
+        return """
+            config_version = "1.0.0"
+            [cluster]
+            name = "test"
+            version = "1.0.0"
+            [source.pool]
+            type = "forge"
+            zones = ["old", "new"]
+            [source.pool.core]
+            count = 3
+            [source.pool.worker]
+            count = 1
+            [community.stable]
+            target_size = %d
+            [community.stable.placement.destination]
+            source = "pool"
+            zone = "new"
+            """.formatted(targetSize);
+    }
+
+    @Test
+    void reconcile_workerSurplus_countCommittedWhileDisabled_isRetired() {
+        var requested = captureRetirementRequests();
+        seedTopology(entry("primary", "core", 3), entry("primary", "worker", 2));
+        lifecycleManager.preExisting(workerInstance("primary", "primary-worker-0"), workerInstance("primary", "primary-worker-1"));
+        disableAutoHealAtConfigVersion(1L);
+        commitConfigVersion(2L, entry("primary", "core", 3), entry("primary", "worker", 1));
+        ctm.activate();
+
+        ctm.reconcileWorkerTopology();
+
+        assertThat(requested).as("activate() already runs one pass, so the request may repeat")
+                             .containsOnly("primary-worker-1");
+    }
+
+    /// Re-enabling resumes the path and tells the operator; disabling again re-arms the hold and its event.
+    @Test
+    void reconcile_autoHealReenabled_resumes_andADisableAfterwardsHoldsAndWarnsAgain() {
+        seedTopology(entry("primary", "core", 3), entry("primary", "worker", 1));
+        disableAutoHealAtConfigVersion(1L);
+        ctm.activate();
+        ctm.reconcileWorkerTopology();
+        autoHealRef.set(Option.some(AetherValue.AutoHealStateValue.autoHealStateValue(true, "test")));
+
+        ctm.reconcileWorkerTopology();
+
+        assertThat(lifecycleManager.provisionedNodeIds()).as("resumed: the deficit is filled").hasSize(1);
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 2);
+        assertThat(warnings).containsExactly("auto-heal-scaling-held", "auto-heal-scaling-resumed");
+        seedTopology(entry("primary", "core", 3), entry("primary", "worker", 3));
+        disableAutoHealAtConfigVersion(1L);
+        ctm.reconcileWorkerTopology();
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() == 3);
+        assertThat(warnings.getLast()).isEqualTo("auto-heal-scaling-held");
+        assertThat(lifecycleManager.provisionedNodeIds()).as("held again: nothing more is provisioned").hasSize(1);
     }
 
     /// #1601: a new worker is seeded with the LIVE installed voters. PEER_B is a configured voter the observer

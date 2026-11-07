@@ -114,6 +114,12 @@ public final class Fsm2Routes {
     public void register(KVNotificationRouter.Builder<AetherKey, AetherValue> builder) {
         CLUSTER_PUT_FAMILIES.forEach(type -> registerPut(builder, type));
         CLUSTER_REMOVE_FAMILIES.forEach(type -> registerRemove(builder, type));
+        registerNode(builder);
+    }
+
+    /// Registers the node FSM's routes only: a worker runs the node FSM and no cluster FSM (F3, P3-D).
+    @Contract
+    public void registerNode(KVNotificationRouter.Builder<AetherKey, AetherValue> builder) {
         builder.onPut(SliceDesiredKey.class, this::desiredPut)
                .onRemove(SliceDesiredKey.class, this::desiredRemove)
                .onPut(SliceObservedKey.class, this::observedPut)

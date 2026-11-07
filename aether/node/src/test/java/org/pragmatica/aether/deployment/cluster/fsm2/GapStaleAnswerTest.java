@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Map;
+import java.util.Set;
 
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
@@ -33,7 +34,7 @@ class GapStaleAnswerTest {
         SlFixtures.seedGoal(h, CORE_1, ORDERS, SliceGoal.ACTIVE, gen(2));
         SlFixtures.seedJudgment(h,
                                 ORDERS,
-                                new ArtifactJudgmentValue(false, Map.of(CORE_1, 2), Map.of()));
+                                new ArtifactJudgmentValue(false, Map.of(CORE_1, 2), Map.of(), Set.of()));
         h.activate();
         new NodeSim(h, CORE_1, process(11L)).writes(ORDERS, SliceObservedState.ACTIVE, gen(1));
         h.drain();

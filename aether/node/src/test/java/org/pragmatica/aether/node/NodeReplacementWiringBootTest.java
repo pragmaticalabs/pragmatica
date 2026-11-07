@@ -82,20 +82,30 @@ class NodeReplacementWiringBootTest {
                .untilAsserted(() -> assertThat(((NodeReplacementWiring.Wired) node.nodeReplacementService()).readyAll()).contains(self));
     }
 
+    /// The node's post-restore listener (`nodeReplacements.restore(kvStore.snapshot())`) runs on the quorum-activation thread AFTER `start()`
+    /// has returned, and replaces the whole index from the replicated store, which holds no pairing here. A pairing put straight into the
+    /// index (a one-node cluster never elects a leader, so none is committed) can therefore be wiped between the put and the read (#2781).
+    /// So the put is repeated until the reconcilers' views hold it: each attempt is put-then-assert, every assertion keeps its full
+    /// strength, and the wait is bounded on the real condition, the restore having run, not on a sleep.
     @Test
     @Timeout(value = 120, unit = SECONDS)
     void connectReconcilers_ran_theReconcilersHoldThePairings() {
         node = bootedNode();
-        // A one-node cluster never elects a leader, so the pairing is put straight into the index the node's reconcilers read.
-        ((NodeReplacementWiring.Wired) node.nodeReplacementService()).pairings()
-                                                                     .put(new AetherKey.NodeReplacementKey(self),
-                                                                          new AetherValue.NodeReplacementValue(FRESH, "core", AetherValue.NodeReplacementPhase.JOINING, 0L));
+        var pairings = ((NodeReplacementWiring.Wired) node.nodeReplacementService()).pairings();
         var leaderReconciler = (LeaderReconciler) accessor(node, "leaderReconciler");
         var placement = ((ClusterTopologyManager) accessor(node, "clusterTopologyManagerInstance")).installedCommunityPlacement().unwrap();
 
-        assertThat(leaderReconciler.surgeReplacementsView()).as("the leader reconciler counts the pairing's CORE replacement as capacity").containsExactly(FRESH);
-        assertThat(placement.surgeView()).as("the placement reconciler is told the surge").containsExactly(FRESH);
-        assertThat(placement.protectedView()).as("and which nodes a reduction must not remove").containsExactlyInAnyOrder(self, FRESH);
+        await().atMost(30, SECONDS).alias("the reconcilers' views hold the pairing")
+               .untilAsserted(() -> {
+                   if (pairings.recordFor(self).isEmpty()) {
+                       pairings.put(new AetherKey.NodeReplacementKey(self),
+                                    new AetherValue.NodeReplacementValue(FRESH, "core", AetherValue.NodeReplacementPhase.JOINING, 0L));
+                   }
+
+                   assertThat(leaderReconciler.surgeReplacementsView()).as("the leader reconciler counts the pairing's CORE replacement as capacity").containsExactly(FRESH);
+                   assertThat(placement.surgeView()).as("the placement reconciler is told the surge").containsExactly(FRESH);
+                   assertThat(placement.protectedView()).as("and which nodes a reduction must not remove").containsExactlyInAnyOrder(self, FRESH);
+               });
     }
 
     /// #2062 (M5): the node hands its operator-warning sink to the topology manager, so "the termination of a retired node's instance is not

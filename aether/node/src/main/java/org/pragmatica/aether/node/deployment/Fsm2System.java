@@ -29,6 +29,7 @@ import org.pragmatica.aether.deployment.wiring.FsmTimers;
 import org.pragmatica.aether.deployment.wiring.KvSnapshotter;
 import org.pragmatica.aether.deployment.wiring.LocalOpExecutor;
 import org.pragmatica.aether.deployment.wiring.NodeFsmInterpreter;
+import org.pragmatica.aether.deployment.wiring.ReplayRule;
 import org.pragmatica.aether.deployment.wiring.SliceRuntimeAdapter;
 import org.pragmatica.aether.deployment.wiring.Submitter;
 import org.pragmatica.aether.node.AetherNodeConfig;
@@ -36,6 +37,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation;
 import org.pragmatica.cluster.node.ClusterNode;
+import org.pragmatica.cluster.node.ForwardingClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
@@ -61,8 +63,10 @@ import org.slf4j.LoggerFactory;
 /// quorum loss run, within a bound), then the cluster interpreter deactivates and closes and the node interpreter closes (2c). The mailbox
 /// depths are watched by a [BacklogSampler] (N-5).
 ///
-/// **No worker.** A worker never gets a `Fsm2System` (N-3): the worker paths are unwired in phase 3, and an interpreter handed to a node that
-/// has no revision to filter by would apply the wrong replay rule.
+/// **The worker half (F3, P3-D).** A worker runs the node FSM only. Its interpreter applies the worker replay rule ([ReplayRule#WORKER], design
+/// D8) over the replica feed (know `23ca0fd65f` D.2), and its write-attempt timer outlasts the forwarder's timeout, not the engine's `applyTimeout`
+/// (W-35 worker arm, G-6, MT-31). Its entry edge is the passive-client switch ([#onPassiveClientReady], B4). The cluster interpreter, the seam
+/// cadence and the membership inputs are constructed and never started: a worker is never the leader, and no cluster input is bound for it.
 public final class Fsm2System {
     private static final Logger log = LoggerFactory.getLogger(Fsm2System.class);
     private static final String NODE_ENTRY = "node-entry";
@@ -85,7 +89,8 @@ public final class Fsm2System {
                                 SeamPoller.Sources seamSources,
                                 AdmissionSeam admissions,
                                 EngineMarkerGuard guard,
-                                FsmTimers.TimerService clock) {}
+                                FsmTimers.TimerService clock,
+                                boolean worker) {}
 
     private final NodeFsmInterpreter node;
     private final ClusterFsmInterpreter cluster;
@@ -100,6 +105,8 @@ public final class Fsm2System {
     private final NodeId self;
     private final Collaborators collaborators;
     private final SliceRuntimeAdapter adapter;
+    private final boolean worker;
+    private final NodeFsmConfig nodeConfig;
 
     private Fsm2System(NodeFsmInterpreter node,
                        ClusterFsmInterpreter cluster,
@@ -112,7 +119,11 @@ public final class Fsm2System {
                        LocalOpExecutor localOps,
                        NodeId self,
                        Collaborators collaborators,
-                       SliceRuntimeAdapter adapter) {
+                       SliceRuntimeAdapter adapter,
+                       boolean worker,
+                       NodeFsmConfig nodeConfig) {
+        this.worker = worker;
+        this.nodeConfig = nodeConfig;
         this.self = self;
         this.adapter = adapter;
         this.collaborators = collaborators;
@@ -132,10 +143,24 @@ public final class Fsm2System {
     /// submitting path's (design 12 item 5, P3-Q27, D11): a write attempt outlasts the engine's own verdict by a margin, so that verdict always
     /// arrives first (W-35, core arm).
     public static NodeFsmConfig nodeFsmConfig(AetherNodeConfig config, ProcessIncarnation process) {
+        return nodeFsmConfig(config, process, false);
+    }
+
+    /// As above, for a core or a worker. A worker's writes go through the `ForwardingClusterNode`, which gives up after its own
+    /// `forwardApplyTimeout()`, so that is the submitting path's timeout there (W-35 worker arm, G-6 (a), MT-31).
+    public static NodeFsmConfig nodeFsmConfig(AetherNodeConfig config, ProcessIncarnation process, boolean worker) {
         return NodeFsmConfig.nodeFsmConfig(config.self(),
                                            process)
                             .withTimings(NodeFsmTimings.nodeFsmTimings(config.timeouts().deployment(),
-                                                                       config.protocol().applyTimeout()));
+                                                                       submitTimeout(config, worker)));
+    }
+
+    /// The timeout of the path a node's writes go through: RE's `applyTimeout` on a core, the forwarder's on a worker.
+    static TimeSpan submitTimeout(AetherNodeConfig config, boolean worker) {
+        return worker
+               ? ForwardingClusterNode.forwardApplyTimeout()
+               : config.protocol()
+                       .applyTimeout();
     }
 
     /// How long a dead core can stay listed in this leader's core view beyond SWIM's own suspicion window (cluster assessment delta 3).
@@ -217,7 +242,7 @@ public final class Fsm2System {
         var reader = Submitter.CommittedReader.committedReader(c.store());
         var submitter = Submitter.submitter(c.cluster(), reader);
         var snapshotter = KvSnapshotter.kvSnapshotter(c.store());
-        var nodeConfig = nodeFsmConfig(c.config(), c.process());
+        var nodeConfig = nodeFsmConfig(c.config(), c.process(), c.worker());
         var runtime = SliceRuntimeAdapter.sliceRuntimeAdapter(c.adapter());
         var localOps = LocalOpExecutor.localOpExecutor(runtime,
                                                        c.clock(),
@@ -234,7 +259,10 @@ public final class Fsm2System {
                                                                                       translator.nodeSink(),
                                                                                       c.selfReady(),
                                                                                       translator.stepObserver()),
-                                                         stopWaitMs);
+                                                         stopWaitMs,
+                                                         c.worker()
+                                                         ? ReplayRule.WORKER
+                                                         : ReplayRule.CORE);
         var poller = new SeamPollerHolder();
         var settings = clusterSettings(c.config(), c.process(), c.swim(), c.splitTimeout());
         var fsm = ClusterFsm.clusterFsm(settings, System::currentTimeMillis, System::nanoTime);
@@ -273,7 +301,9 @@ public final class Fsm2System {
                               localOps,
                               c.config().self(),
                               c,
-                              runtime);
+                              runtime,
+                              c.worker(),
+                              nodeConfig);
     }
 
     private static SeamPoller.Sink pollerSink(ClusterFsmInterpreter cluster) {
@@ -331,19 +361,33 @@ public final class Fsm2System {
         return adapter;
     }
 
+    /// The node FSM's configuration as built, so a test can read which path's timeout the write-attempt bound came from (W-35, MT-31).
+    public NodeFsmConfig nodeFsmConfig() {
+        return nodeConfig;
+    }
+
     /// What the system was built from, so a test can read that the node handed it its real route publisher, invoker and router (v-2204 F4).
     public Collaborators collaborators() {
         return collaborators;
     }
 
     // -- lifecycle ---------------------------------------------------------------------------------------------------
-    /// Starts both consumers, the seam cadence and the backlog sampler.
+    /// Starts both consumers, the seam cadence and the backlog sampler; on a worker only the node consumer and the backlog sampler (the cluster half
+    /// is never started there).
     @Contract
     public void start() {
         node.start();
-        cluster.start();
-        seams.start();
+        if (!worker) {
+            cluster.start();
+            seams.start();
+        }
+
         backlog.start();
+    }
+
+    /// Whether this is a worker's system: the node half only.
+    public boolean worker() {
+        return worker;
     }
 
     /// Design 7, 2a and 2b: the node's `SUSPEND` drain, run between the PASSIVE edge and the router quiesce. The node interpreter resolves a marker
@@ -423,6 +467,14 @@ public final class Fsm2System {
         if (consensusActive.getAsBoolean()) {
             guard.whenOpen(NODE_ENTRY_HEAL, () -> node.requestEntry(true));
         }
+    }
+
+    // -- B4: the passive-client switch (a worker's entry edge) -------------------------------------------------------
+    /// A worker became a ready passive client: its replica is installed and its writes forward to the cores (`WorkerHierarchyAssembly`
+    /// `becomeForwarding`). This is the worker's genuine entry edge, gated like the core's quorum edge; an active node skips it.
+    @Contract
+    public void onPassiveClientReady() {
+        guard.whenOpen(NODE_ENTRY, () -> node.requestEntry(false));
     }
 
     // -- B12: the drain report ----------------------------------------------------------------------------------------

@@ -5,6 +5,7 @@ package org.pragmatica.aether.slice.kvstore;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.BeforeEach;
@@ -115,7 +116,7 @@ class DeploymentFsmKvMarkersTest {
     class Declarations {
         @Test
         void leaderAuthorizedValues_areExactlyDesiredJudgmentAndDeparture() {
-            var judgment = new ArtifactJudgmentValue(false, Map.of(), Map.of());
+            var judgment = new ArtifactJudgmentValue(false, Map.of(), Map.of(), Set.of());
             var departure = new NodeDepartureValue(DepartureState.ADMITTED, 1L, PROCESS, Option.none(), 1L);
 
             assertThat(desired(SliceGoal.LOADED, 1L)).isInstanceOf(LeaderAuthorized.class);
@@ -168,10 +169,10 @@ class DeploymentFsmKvMarkersTest {
         @Test
         void artifactJudgment_enforcedByTheApplier() {
             assertLeaderOnly(ArtifactJudgmentKey.artifactJudgmentKey(ARTIFACT),
-                             new ArtifactJudgmentValue(false, Map.of(NODE, 1), Map.of()),
+                             new ArtifactJudgmentValue(false, Map.of(NODE, 1), Map.of(), Set.of()),
                              new ArtifactJudgmentValue(true,
                                                        Map.of(NODE, 3),
-                                                       Map.of(OTHER_NODE, new UnresponsiveEntry(new Generation(5L, 2L), SliceGoal.ACTIVE, 1L))));
+                                                       Map.of(OTHER_NODE, new UnresponsiveEntry(new Generation(5L, 2L), SliceGoal.ACTIVE, 1L)), Set.of()));
         }
 
         @Test

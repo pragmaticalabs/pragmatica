@@ -81,7 +81,7 @@ plus one real-wiring test (`withSlice(...:account, ...)` with faked resources) w
 
 ## 5. Non-goals
 
-Cluster semantics: routing, failover/retry (`invokeWithRetry`), affinity, weighted deployment routing. Consensus, membership, transport, deploy FSM. Codec/serialization round-trip (deferred toggle, §8 Q4). The dead post-GA #604 transaction-aspect wiring — explicitly not coupled. Multi-version graphs.
+Cluster semantics: routing, failover (NotSent-only re-route, #2807), affinity, weighted deployment routing. Consensus, membership, transport, deploy FSM. Codec/serialization round-trip (deferred toggle, §8 Q4). The dead post-GA #604 transaction-aspect wiring — explicitly not coupled. Multi-version graphs.
 
 ## 6. Compatibility
 

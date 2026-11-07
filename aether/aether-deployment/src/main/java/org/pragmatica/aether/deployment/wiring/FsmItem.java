@@ -34,6 +34,10 @@ sealed interface FsmItem<I, K> {
     /// must be re-incarnated (design 4.4).
     record Restored<I, K>() implements FsmItem<I, K> {}
 
+    /// A worker's replica snapshot install at `revision` (design D8): signalled by the install itself, before its burst, and whether or not the
+    /// burst is empty.
+    record Install<I, K>(long revision) implements FsmItem<I, K> {}
+
     /// The `Close` of the interpreter: cancel timers, stop the consumer (design 7, item 22).
     record Close<I, K>(CountDownLatch done) implements FsmItem<I, K> {}
 }

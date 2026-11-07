@@ -14,7 +14,7 @@ import org.pragmatica.lang.Unit;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// F1 mutation survivor pins (run s1, `nodedep-DeploymentWiring-12` and `-27`): under FSM2 the B3 activation driver and the B13 stop take the FSM2
-/// path only once a system is attached. Before that (and on an FSM2 worker, where `attach` is refused) the driver is the dropped legacy gate and
+/// path only once a system is attached. Before that the driver is the dropped legacy gate and
 /// the stop runs the legacy deactivation it is handed. Red when either guard's `&&` is widened to `||`, which takes the FSM2 path with no system
 /// behind it: the driver is recorded as the FSM2 target and does nothing, and the stop does nothing. Every existing FSM2 test attaches a system
 /// first, so none of them reaches this branch.

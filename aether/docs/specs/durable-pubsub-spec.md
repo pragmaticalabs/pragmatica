@@ -11,7 +11,7 @@
 
 Pub-sub today is a fire-and-forget RPC fan-out with an API that implies more:
 
-- Delivery is `SliceInvoker.invoke` per subscriber group (`TopicPublisher.java:45`) — no retry (`invoke`, not `invokeWithRetry`), no persistence, no redelivery. Authoritative: `guarantees.md` §22 — *at-most-once, none (never persisted), best-effort*.
+- Delivery is `SliceInvoker.invoke` per subscriber group (`TopicPublisher.java:45`) — no resend after a send (`invoke` re-routes to another subscriber instance only a request the transport refused to write, #2807, so nothing runs twice), no persistence, no redelivery. Authoritative: `guarantees.md` §22 — *at-most-once, none (never persisted), best-effort*.
 - Four drop points: (i) zero subscribers → `publish` returns **success** while delivering nothing (`TopicPublisher.java:31-33`); (ii) subscriber down / RPC failure → dropped; (iii) subscriber crash between receive and process → dropped; (iv) nothing is ever queued or persisted.
 - The subscriber handler shape `Fn1<Promise<Unit>, T>` (`TypedSubscriber.java:33`) and the publisher's aggregated `Promise<Unit>` imply the runtime acts on failure. It does not: the failure only propagates to a publisher that structurally **cannot** act on it (re-publish would duplicate to already-succeeded groups; round-robin retargets retries; the publisher's continuation has usually moved on, leaving a dangling in-flight promise whose failure lands nowhere).
 

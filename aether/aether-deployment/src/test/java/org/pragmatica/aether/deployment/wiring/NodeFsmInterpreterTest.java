@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
@@ -280,6 +281,199 @@ class NodeFsmInterpreterTest {
                 rig.settle();
 
                 assertThat(rig.localOps.count(LocalStep.NOTIFY_CONFIG)).isGreaterThan(before);
+            }
+        }
+    }
+
+    /// The worker replay rule (CTO ruling D8, know `5b4db3a518`): every replica install resets the watermark to its revision and its burst is
+    /// stepped as the authoritative diff; what follows the burst, and the same install replayed again, dedupe against that revision. The core
+    /// rule is [SnapshotRevision]'s.
+    @Nested
+    class WorkerReplay {
+        /// A new history installed BELOW the entry revision: its burst (two inputs, so the open burst is what steps the second) is stepped, a
+        /// later fact at or below the install's revision is dropped, the same install replayed after its burst closed is dropped, and the next
+        /// revision is stepped. Mutations: a monotone `max` watermark with no reset drops the burst and the next revision; a reset on every KV
+        /// input steps the later fact; a burst not kept open drops its second input; a burst not closed by a plain input steps the replay again.
+        @Test
+        void anInstallBelowTheEntryRevision_isStepped_andWhatFollowsDedupesAgainstIt() {
+            try (var rig = new NodeRig(ReplayRule.WORKER)) {
+                var entered = rig.permit(ORDERS).goal(ORDERS, SliceGoal.LOADED).applier.slot();
+
+                rig.enter();
+                assertThat(entered).as("the install below lands under the entry watermark").isGreaterThan(1L);
+                var desired = rig.countOf("DesiredPut");
+                var targets = rig.countOf("TargetPut");
+
+                rig.interpreter.installedAt(1L);
+                rig.interpreter.deliverKv(new NodeFsmInput.DesiredPut(BILLING, desired(SliceGoal.LOADED)), 1L, true);
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), 1L, true);
+                rig.interpreter.deliverKv(new NodeFsmInput.DesiredPut(AUDIT, desired(SliceGoal.LOADED)), 1L, false);
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(AUDIT.base(), AUDIT.version()), 1L, true);
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(ORDERS.base(), ORDERS.version()), 2L, false);
+                rig.settle();
+
+                assertThat(rig.countOf("DesiredPut")).as("the burst's goal is stepped").isEqualTo(desired + 1);
+                assertThat(rig.countOf("TargetPut")).as("the burst's second input and the next revision are stepped").isEqualTo(targets + 2);
+                assertThat(rig.metric("DesiredPut", "dropped_revision")).as("a later fact at the install's revision is in it").isEqualTo(1);
+                assertThat(rig.metric("TargetPut", "dropped_revision")).as("the same install, replayed after its burst closed").isEqualTo(1);
+            }
+        }
+
+        /// The entry snapshot is the install the FSM has read: a burst at its revision that follows the entry is that install's, and dropped.
+        /// Mutation: the entry not recording its revision as the install's (the burst is stepped as a new install).
+        @Test
+        void aBurstAtTheEntryRevision_afterTheEntry_isDropped() {
+            try (var rig = new NodeRig(ReplayRule.WORKER)) {
+                var entered = rig.permit(ORDERS).goal(ORDERS, SliceGoal.LOADED).applier.slot();
+
+                rig.enter();
+                var targets = rig.countOf("TargetPut");
+
+                rig.interpreter.installedAt(entered);
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), entered, true);
+                rig.settle();
+
+                assertThat(rig.countOf("TargetPut")).as("the entry snapshot already holds it").isEqualTo(targets);
+                assertThat(rig.metric("TargetPut", "dropped_revision")).isEqualTo(1);
+            }
+        }
+
+        /// The install just read is not opened again: after install R's burst was closed by a live input, the same signal at R is a no-op, so a
+        /// replayed input at R is dropped against the watermark. Mutation: the install signal not recording its revision as
+        /// the install's (the repeated signal resets the watermark to R and reopens the burst, and the replayed input is stepped).
+        @Test
+        void theSameInstallSignalledAgain_isNotOpenedAgain() {
+            try (var rig = new NodeRig(ReplayRule.WORKER)) {
+                var entered = rig.permit(ORDERS).goal(ORDERS, SliceGoal.LOADED).applier.slot();
+
+                rig.enter();
+                rig.interpreter.installedAt(entered + 5);
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), entered + 5, true);
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(ORDERS.base(), ORDERS.version()), entered + 6, false);
+                rig.settle();
+                var targets = rig.countOf("TargetPut");
+
+                rig.interpreter.installedAt(entered + 5);
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(AUDIT.base(), AUDIT.version()), entered + 5, true);
+                rig.settle();
+
+                assertThat(rig.countOf("TargetPut")).as("the repeated install opened no burst").isEqualTo(targets);
+                assertThat(rig.metric("TargetPut", "dropped_revision")).isEqualTo(1);
+            }
+        }
+
+        /// A burst open before the entry is closed by it: the same revision after the entry is the install the snapshot read, and dropped.
+        /// Mutation: the entry not closing the open burst (the input is stepped as its continuation).
+        @Test
+        void aBurstOpenBeforeTheEntry_isClosedByIt() {
+            try (var rig = new NodeRig(ReplayRule.WORKER)) {
+                var entered = rig.permit(ORDERS).goal(ORDERS, SliceGoal.LOADED).applier.slot();
+
+                // the store's own deliveries are plain inputs and would close the burst: let them all reach the consumer first
+                await().atMost(Duration.ofSeconds(10)).until(() -> !rig.store.hasPendingNotifications());
+                rig.settle();
+                rig.interpreter.installedAt(entered);
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(AUDIT.base(), AUDIT.version()), entered, true);
+                rig.settle();
+
+                // the entry's own writes loop back as plain deliveries, which would close the burst too: park the consumer so the entry
+                // and the same-revision input are queued back to back, ahead of them
+                var gate = new CountDownLatch(1);
+                rig.gate = gate;
+                var parked = rig.countOf("ConfigChanged");
+                rig.interpreter.deliver(new NodeFsmInput.ConfigChanged("hold"));
+                rig.awaitThat(() -> rig.countOf("ConfigChanged") > parked);
+                var targets = rig.countOf("TargetPut");
+                rig.interpreter.requestEntry(false);
+                rig.interpreter.installedAt(entered);
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), entered, true);
+                gate.countDown();
+                rig.settle();
+                rig.gate = null;
+
+                assertThat(rig.countOf("TargetPut")).as("the entry snapshot already holds it").isEqualTo(targets);
+                assertThat(rig.metric("TargetPut", "dropped_revision")).isEqualTo(1);
+            }
+        }
+
+        /// Control for both: a burst ABOVE the entry revision is stepped too, and the core rule still drops the same burst (`dropped_replay`).
+        @Test
+        void anInstallAboveTheEntryRevision_isStepped_andACoreStillDropsIt() {
+            try (var worker = new NodeRig(ReplayRule.WORKER); var core = new NodeRig()) {
+                var entered = worker.permit(ORDERS).goal(ORDERS, SliceGoal.LOADED).applier.slot();
+
+                worker.enter();
+                core.permit(ORDERS).goal(ORDERS, SliceGoal.LOADED).enter();
+                var stepped = worker.countOf("TargetPut");
+                var coreStepped = core.countOf("TargetPut");
+
+                worker.interpreter.installedAt(entered + 5);
+                worker.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), entered + 5, true);
+                core.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), entered + 5, true);
+                worker.settle();
+                core.settle();
+
+                assertThat(worker.countOf("TargetPut")).isEqualTo(stepped + 1);
+                assertThat(core.countOf("TargetPut")).as("the core rule is unchanged").isEqualTo(coreStepped);
+                assertThat(core.metric("TargetPut", "dropped_replay")).isEqualTo(1);
+            }
+        }
+
+        /// F1 (v2770c, probe E1): an install whose burst is EMPTY still resets the watermark to its revision (D8: EVERY install). Install 1 is high
+        /// with a one-input burst; install 2 is at revision 1 with no burst at all; the live input at revision 3 is then stepped. Mutation: the
+        /// install signal not resetting (the reset inferred from a burst item), and the live input is dropped against install 1's revision.
+        @Test
+        void anInstallWithAnEmptyBurst_resetsTheWatermark() {
+            try (var rig = new NodeRig(ReplayRule.WORKER)) {
+                var entered = rig.permit(ORDERS).goal(ORDERS, SliceGoal.LOADED).applier.slot();
+
+                rig.enter();
+                rig.interpreter.installedAt(entered + 50);
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), entered + 50, true);
+                rig.interpreter.installedAt(1L);
+                rig.settle();
+                var targets = rig.countOf("TargetPut");
+
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(AUDIT.base(), AUDIT.version()), 3L, false);
+                rig.settle();
+
+                assertThat(rig.countOf("TargetPut")).as("the live input of the new life, above the empty install's revision").isEqualTo(targets + 1);
+                assertThat(rig.metric("TargetPut", "dropped_revision")).isZero();
+            }
+        }
+
+        /// F3 (v2770c): `NO_INSTALL` is below every revision, revision 0 included. A worker's first install, at revision 0 and before any entry, is
+        /// read as an install and its burst is stepped. Mutation: the sentinel set to 0 (the install is taken for one already read, and the burst, at
+        /// the fresh watermark 0, is dropped).
+        @Test
+        void aFirstInstallAtRevisionZero_beforeAnyEntry_stepsItsBurst() {
+            try (var rig = new NodeRig(ReplayRule.WORKER)) {
+                var targets = rig.countOf("TargetPut");
+
+                rig.interpreter.installedAt(0L);
+                rig.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), 0L, true);
+                rig.settle();
+
+                assertThat(rig.countOf("TargetPut")).isEqualTo(targets + 1);
+                assertThat(rig.metric("TargetPut", "dropped_revision")).isZero();
+            }
+        }
+
+        /// A core never reads an install signal: its drop rule is untouched, so the install signal alone changes nothing there.
+        @Test
+        void aCoreIgnoresTheInstallSignal() {
+            try (var core = new NodeRig()) {
+                var entered = core.permit(ORDERS).goal(ORDERS, SliceGoal.LOADED).applier.slot();
+
+                core.enter();
+                core.interpreter.installedAt(1L);
+                var targets = core.countOf("TargetPut");
+
+                core.interpreter.deliverKv(new NodeFsmInput.TargetPut(BILLING.base(), BILLING.version()), entered, false);
+                core.settle();
+
+                assertThat(core.countOf("TargetPut")).as("still at or below the entry snapshot").isEqualTo(targets);
+                assertThat(core.metric("TargetPut", "dropped_revision")).isEqualTo(1);
             }
         }
     }

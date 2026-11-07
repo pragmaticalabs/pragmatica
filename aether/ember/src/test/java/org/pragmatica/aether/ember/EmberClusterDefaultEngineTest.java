@@ -19,14 +19,25 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// started-cluster assertion on "default engine is LEGACY" stays green under the mutant (measured, `EmberClusterDefaultEngineTest` first form,
 /// 1 case green on the mutant). The fallback is read exactly when the selector FAILED (a value naming no engine); `start` then refuses, so the field
 /// is observable only on a constructed, never-started cluster. The field is private and has no accessor, so it is read by reflection.
+@PortBudget
 class EmberClusterDefaultEngineTest {
+    private static final int NODES = 3;
+    private static final int MGMT_OFFSET = 40;
+    private static final int APP_HTTP_OFFSET = 80;
+
     @Test
     void fallbackEngine_whenTheSelectorNamesNoEngine_isLegacy() throws Exception {
         var previous = System.getProperty(EngineSelector.PROPERTY);
 
         System.setProperty(EngineSelector.PROPERTY, "no-such-engine");
         try {
-            var cluster = emberCluster(3, 41000, 41040, 41080, "eng-fallback");
+            var base = EmberTestPorts.freeBase(new EmberTestPorts.Block(EmberTestPorts.POOL_FIRST,
+                                                                        EmberTestPorts.POOL_LAST,
+                                                                        EmberTestPorts.POOL_STEP,
+                                                                        NODES,
+                                                                        MGMT_OFFSET,
+                                                                        APP_HTTP_OFFSET));
+            var cluster = emberCluster(NODES, base, base + MGMT_OFFSET, base + APP_HTTP_OFFSET, "eng-fallback");
 
             assertThat(engineField(cluster).get()).isEqualTo(DeploymentEngine.LEGACY);
         } finally {

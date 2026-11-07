@@ -21,13 +21,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.config.BackupConfig.RestoreMode;
 import org.pragmatica.aether.node.AetherNode;
-import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.ember.StreamTripwireSupport.PARTITION;
@@ -62,11 +60,9 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.sleepQuietly;
 class EmberOwnerRestartAckedTailTripwireTest {
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(180).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(90).seconds();
-    private static final TimeSpan PUBLISH_BOUND = TimeSpan.timeSpan(30).seconds();
     private static final int ACKED = 20;
     private static final long ACKED_TAIL = ACKED - 1;
     private static final long ISR_BUDGET_MS = 90_000L;
-    private static final long ACTIVATION_BOUND_MS = 120_000L;
     private static final long REBUILD_BUDGET_MS = 240_000L;
     private static final long HOLD_MS = 15_000L;
     private static final long CATCH_UP_BOUND_MS = 60_000L;
@@ -152,7 +148,7 @@ class EmberOwnerRestartAckedTailTripwireTest {
         var router = StreamTripwireSupport.component(firstOwner, "streamWriteRouter", StreamWriteRouter.class);
 
         for (var i = 0; i < ACKED; i++) {
-            var offset = publishOnceActivated(router, ("acked-" + i).getBytes(StandardCharsets.UTF_8));
+            var offset = StreamTripwireSupport.publishOnceActivated(router, ENGINE_KEY, ("acked-" + i).getBytes(StandardCharsets.UTF_8));
 
             assertThat(offset.isSuccess()).as("acknowledged publish %d: %s", i, offset).isTrue();
         }
@@ -174,25 +170,6 @@ class EmberOwnerRestartAckedTailTripwireTest {
         }
 
         return restoredOwner().unwrap();
-    }
-
-    /// A full in-sync set does not mean the owner finished its activation: until it does, a publish is refused with the transient
-    /// `OwnerNotActivated` and nothing is appended (#2774: the first publish of a loaded CI shard was refused). Retries on exactly that
-    /// refusal, within [#ACTIVATION_BOUND_MS]; any other outcome is returned as it is.
-    private static Result<Long> publishOnceActivated(StreamWriteRouter router, byte[] payload) {
-        var deadline = System.currentTimeMillis() + ACTIVATION_BOUND_MS;
-        var outcome = router.publish(ENGINE_KEY, PARTITION, payload, System.currentTimeMillis()).await(PUBLISH_BOUND);
-
-        while (notActivated(outcome) && System.currentTimeMillis() < deadline) {
-            sleepQuietly(200L);
-            outcome = router.publish(ENGINE_KEY, PARTITION, payload, System.currentTimeMillis()).await(PUBLISH_BOUND);
-        }
-
-        return outcome;
-    }
-
-    private static boolean notActivated(Result<Long> outcome) {
-        return outcome.fold(cause -> cause instanceof StreamError.OwnerNotActivated, _ -> false);
     }
 
     private final AtomicBoolean installerDone = new AtomicBoolean(false);

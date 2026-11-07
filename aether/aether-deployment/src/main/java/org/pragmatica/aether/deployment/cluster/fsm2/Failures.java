@@ -59,7 +59,7 @@ public sealed interface Failures {
 
         Outbox.artifact(m,
                         artifact,
-                        intent -> intent.withOp(new JudgmentOp.Fatal()));
+                        intent -> intent.withOp(new JudgmentOp.Fatal(Outcomes.declaringAttempts(m, artifact))));
         routeFailed(m, ctx, pair, reason);
 
         return ctx.settings()

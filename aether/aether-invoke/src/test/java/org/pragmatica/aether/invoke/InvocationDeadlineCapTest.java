@@ -221,25 +221,6 @@ class InvocationDeadlineCapTest {
         }
     }
 
-    /// The failover arm (`invokeWithRetry`) sends through its own site; it too must carry the caller's wait.
-    @Test
-    void invokeWithRetry_underBoundedDeadline_handsTheTransportTheRemainingBudget() {
-        var network = new TtlRecordingNetwork();
-        var invoker = remoteInvoker(network);
-
-        try {
-            Deadline.runWith(Deadline.fromWireMillis(BUDGET_MILLIS),
-                             () -> invoker.invokeWithRetry(ARTIFACT, METHOD, "request", new TypeToken<String>() {}, 1))
-                    .await(TimeSpan.timeSpan(2).seconds());
-
-            assertThat(network.plainRequests()).isEmpty();
-            assertThat(network.boundedRequests()).isNotEmpty();
-            assertThat(network.boundedRequests().getFirst().lifetime().millis()).isPositive().isLessThanOrEqualTo(BUDGET_MILLIS);
-        } finally {
-            invoker.stop().await();
-        }
-    }
-
     /// Records HOW each invocation request was handed to the transport: with a lifetime, or plain.
     private static final class TtlRecordingNetwork extends StubClusterNetwork {
         record Bounded(ProtocolMessage message, TimeSpan lifetime) {}

@@ -92,7 +92,7 @@ class EmberConsumerPathTripwireTest {
         StreamTripwireSupport.createStream(owner, StreamTripwireSupport.smallRingStream(controlStream, 1, RING_EVENTS, 3_600_000L));
         StreamTripwireSupport.awaitFullIsr(cluster, controlKey, ISR_BUDGET_MS);
         for (var i = 0; i < 10; i++) {
-            assertThat(StreamTripwireSupport.publishVia(cluster.getLeaderManagementPort().or(-1), controlStream, "ctl-" + i).acked()).isTrue();
+            assertThat(StreamTripwireSupport.publishViaOnceActivated(cluster.getLeaderManagementPort().or(-1), controlStream, "ctl-" + i).acked()).isTrue();
         }
 
         var delivered = new ConcurrentSkipListSet<Long>();
@@ -189,7 +189,7 @@ class EmberConsumerPathTripwireTest {
 
         owner = cluster.getNode(record.owner().id()).unwrap();
         for (var i = 0; i < PUBLISHED; i++) {
-            var response = StreamTripwireSupport.publishVia(cluster.getLeaderManagementPort().or(-1), stream, "event-" + i);
+            var response = StreamTripwireSupport.publishViaOnceActivated(cluster.getLeaderManagementPort().or(-1), stream, "event-" + i);
 
             assertThat(response.acked()).as("publish %d: %s", i, response.body()).isTrue();
         }

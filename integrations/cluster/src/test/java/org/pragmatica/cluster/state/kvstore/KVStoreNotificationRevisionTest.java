@@ -196,4 +196,50 @@ class KVStoreNotificationRevisionTest {
 
         assertThat(seen).containsExactly(10L);
     }
+
+    /// D8 (v2770c F1): the install is signalled by the replay item itself, with the store's committed revision, BEFORE its burst and also when
+    /// the burst is empty. Mutation: the dispatcher not calling the listener (or calling it from the burst's first message).
+    @Test
+    void replayStart_isSignalled_withTheCommittedRevision_evenWhenTheBurstIsEmpty() {
+        var events = new ArrayList<String>();
+
+        recordPuts();
+        store.processCommitted(store.createBatch(List.of(new KVCommand.Put<>(FIRST, "one"))), 8);
+        store.onReplayStart(revision -> events.add("install@" + revision));
+
+        store.replayNotifications();
+
+        assertThat(events).containsExactly("install@8");
+    }
+
+    /// The signal precedes the burst, for a committed restore (the install's revision) and for a plain `restoreSnapshot` (the unchanged one, the
+    /// metadata channel's path, v2770c F2).
+    @Test
+    void replayStart_precedesTheBurst_forBothInstallPaths() {
+        var keyCodec = new SliceCodec.TypeCodec<>(CodecKey.class,
+                                                  SliceCodec.deterministicTag(CodecKey.class.getName()),
+                                                  (codec, buf, value) -> codec.write(buf, value.id()),
+                                                  (codec, buf) -> new CodecKey((String) codec.read(buf)));
+        var codecs = new ArrayList<SliceCodec.TypeCodec<?>>();
+
+        codecs.add(keyCodec);
+        codecs.addAll(KvstoreCodecs.CODECS);
+        var codec = SliceCodec.sliceCodec(frameworkCodecs(), codecs);
+        var source = new KVStore<CodecKey, String>(MessageRouter.mutable(), codec, codec);
+        var targetRouter = MessageRouter.mutable();
+        var target = new KVStore<CodecKey, String>(targetRouter, codec, codec);
+        var events = new ArrayList<String>();
+
+        source.process(source.createBatch(List.of(new KVCommand.Put<>(new CodecKey("k"), "v"))));
+        targetRouter.addRoute(KVStoreNotification.ValuePut.class,
+                              (KVStoreNotification.ValuePut<CodecKey, String> put) -> events.add("put"));
+        target.onReplayStart(revision -> events.add("install@" + revision));
+        target.restoreCommittedSnapshot(source.makeSnapshot().unwrap(), 10);
+        target.replayNotifications();
+        source.process(source.createBatch(List.of(new KVCommand.Put<>(new CodecKey("k2"), "v2"))));
+        target.restoreSnapshot(source.makeSnapshot().unwrap());
+        target.replayNotifications();
+
+        assertThat(events).containsExactly("install@10", "put", "install@10", "put");
+    }
 }

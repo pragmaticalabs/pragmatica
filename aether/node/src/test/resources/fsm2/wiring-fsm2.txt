@@ -55,9 +55,9 @@ B1.node.SliceDesiredKey -> fsm2:Fsm2Routes
 B1.node.SliceObservedKey -> fsm2:Fsm2Routes
 B1.node.SliceTargetKey -> fsm2:Fsm2Routes
 B1.node.VersionRoutingKey -> fsm2:Fsm2Routes
-B10.WorkerAdmission -> dropped
-B10.cdm.WorkerJoin -> dropped
-B11.PlacementRedrive -> dropped
+B10.WorkerAdmission -> fsm2:MembershipInputs.onWorkerJoin
+B10.cdm.WorkerJoin -> fsm2:MembershipInputs.onWorkerJoin
+B11.PlacementRedrive -> fsm2:MembershipInputs.onWorkerJoin
 B12.DrainReport -> fsm2:Fsm2System.onNodeDraining
 B13.Stop -> fsm2:Fsm2System.deactivateCluster
 B13.StopDrain -> fsm2:Fsm2System.drainNode
@@ -86,5 +86,5 @@ B9.cdm.NodeJoining -> dropped
 B9.cdm.NodeRemoved -> dropped
 B9.cdm.NodeShuttingDown -> dropped
 B9.cdm.SelfShutdown -> dropped
-B9.cdm.WorkerLeave -> dropped
+B9.cdm.WorkerLeave -> fsm2:MembershipInputs.onWorkerLeave
 B9.ndm.NodeShuttingDown -> dropped

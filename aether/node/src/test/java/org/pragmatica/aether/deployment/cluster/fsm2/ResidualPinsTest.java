@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
@@ -131,8 +132,8 @@ class ResidualPinsTest {
     @Test
     void refusedBlueprintRemoval_isResentAtTheValuesTheMirrorHasNow() {
         var h = deployed(1);
-        var first = new ArtifactJudgmentValue(false, Map.of(CORE_1, 1), Map.of());
-        var moved = new ArtifactJudgmentValue(false, Map.of(CORE_1, 2), Map.of());
+        var first = new ArtifactJudgmentValue(false, Map.of(CORE_1, 1), Map.of(), Set.of());
+        var moved = new ArtifactJudgmentValue(false, Map.of(CORE_1, 2), Map.of(), Set.of());
 
         h.seed(new ArtifactJudgmentKey(ORDERS), first);
         h.drain();

@@ -349,7 +349,7 @@ class ClusterFsmInterpreterTest {
 
                 assertThat(model(rig).isDeparted(ClusterRig.CORE_2)).as("MT-26: seeded from the Rebuild view it would already be joined").isTrue();
 
-                rig.clock.advance(coreSuspicionMs());
+                rig.clock.jump(coreSuspicionMs());
                 rig.settle();
 
                 assertThat(model(rig).isDeparted(ClusterRig.CORE_2)).as("control: a full window after Rebuild supersedes the record").isFalse();
@@ -384,7 +384,7 @@ class ClusterFsmInterpreterTest {
                 assertThat(model(rig).seams().coreView()).as("the sample reached the model").isEqualTo(Option.some(Set.of(SELF, ClusterRig.CORE_2)));
                 assertThat(model(rig).isDeparted(ClusterRig.CORE_2)).isTrue();
 
-                rig.clock.advance(coreSuspicionMs());
+                rig.clock.jump(coreSuspicionMs());
                 rig.settle();
 
                 assertThat(model(rig).isDeparted(ClusterRig.CORE_2)).as("the window ran from the delivered sample").isFalse();

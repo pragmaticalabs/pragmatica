@@ -20,6 +20,8 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.cluster.CommunityPlacement;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
 import org.pragmatica.aether.deployment.cluster.fsm2.Seams;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.lang.Option;
@@ -319,6 +321,33 @@ class SeamPollerTest {
 
         assertThat(inputs.get(0)).isEqualTo(new ClusterInput.NodeRemoved(PEER));
         assertThat(((ClusterInput.NodeJoined) inputs.get(1)).admission().tokenKnown()).as("0 carries no process identity (C8)").isFalse();
+    }
+
+    // -- W-23 (worker arms, B9/B10, #2762) ------------------------------------------------------------------------------------
+    @Test
+    void workerJoin_carriesTheAdmission_withTheTokenTheRegistryHasNow() {
+        tokens.put(PEER, 42L);
+        var inputs = new ArrayList<ClusterInput>();
+        var membership = MembershipInputs.membershipInputs(inputs::add, AdmissionSeam.admissionSeam(node -> tokens.getOrDefault(node, 0L), _ -> 6L), poller());
+
+        membership.onWorkerJoin(WorkerJoinDecision.workerJoinDecision(PEER, "worker", HlcTimestamp.ZERO));
+
+        assertThat(inputs).hasSize(1);
+        var joined = (ClusterInput.WorkerJoin) inputs.get(0);
+
+        assertThat(joined.node()).isEqualTo(PEER);
+        assertThat(joined.admission().token()).as("W-23: admission(n) is attached to a worker's join").isEqualTo(42L);
+        assertThat(joined.admission().process().bootIncarnation()).isEqualTo(6L);
+    }
+
+    @Test
+    void workerLeave_isDeliveredAsTheClusterFsmsWorkerLeave() {
+        var inputs = new ArrayList<ClusterInput>();
+        var membership = MembershipInputs.membershipInputs(inputs::add, AdmissionSeam.admissionSeam(_ -> 0L, _ -> 0L), poller());
+
+        membership.onWorkerLeave(WorkerLeaveDecision.workerLeaveDecision(PEER, HlcTimestamp.ZERO));
+
+        assertThat(inputs).containsExactly(new ClusterInput.WorkerLeave(PEER));
     }
 
     @Test

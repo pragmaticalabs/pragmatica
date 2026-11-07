@@ -123,7 +123,7 @@ class OutboxSurvivorPinsTest {
         var m = new ClusterModel();
         var judgment = new KVCommand.Mutation<AetherKey, AetherValue>(new ArtifactJudgmentKey(ORDERS),
                                                                       Option.none(),
-                                                                      Option.some(new ArtifactJudgmentValue(true, Map.of(), Map.of())));
+                                                                      Option.some(new ArtifactJudgmentValue(true, Map.of(), Map.of(), Set.of())));
         var draft = new TxDraft(SubmitKind.GOALS,
                                 new ArtifactJudgmentKey(ORDERS),
                                 List.of(desiredPut(Option.none()), judgment),

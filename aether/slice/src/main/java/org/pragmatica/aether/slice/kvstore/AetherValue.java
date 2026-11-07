@@ -4,12 +4,14 @@
 package org.pragmatica.aether.slice.kvstore;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -1932,19 +1934,36 @@ public sealed interface AetherValue {
     /// zero; a node behind on apply answers the previous value until then. Absence of a record for the
     /// singleton key means auto-heal is enabled (the pre-#685 default) — never persisted as an explicit
     /// "enabled" record.
-    record AutoHealStateValue(boolean enabled, String reason, long updatedAt) implements AetherValue {
+    ///
+    /// `disabledAtConfigVersion` is the committed cluster-configuration version the disable was written against (`0` for an enable and
+    /// for a disable written with no configuration), and `disabledAtScaling` holds, from that same configuration, the desired count of
+    /// every worker source/role and the `target_size` of every declared community, keyed by the subject the hold is raised for. Spec §8.4:
+    /// a subject stays held while its own committed value equals the one recorded here; a value an operator commits WHILE disabled differs
+    /// and is explicit intent, acted on while auto-heal stays disabled. A commit that leaves a subject's value unchanged releases nothing.
+    record AutoHealStateValue(boolean enabled,
+                              String reason,
+                              long updatedAt,
+                              long disabledAtConfigVersion,
+                              Map<String, Integer> disabledAtScaling) implements AetherValue {
         public AutoHealStateValue {
             if (reason == null) {
                 reason = "";
             }
+
+            disabledAtScaling = Map.copyOf(disabledAtScaling);
         }
 
         public static AutoHealStateValue autoHealStateValue(boolean enabled, String reason) {
-            return new AutoHealStateValue(enabled, reason, System.currentTimeMillis());
+            return new AutoHealStateValue(enabled, reason, System.currentTimeMillis(), 0L, Map.of());
         }
 
         public static AutoHealStateValue autoHealStateValue(boolean enabled, String reason, long updatedAt) {
-            return new AutoHealStateValue(enabled, reason, updatedAt);
+            return new AutoHealStateValue(enabled, reason, updatedAt, 0L, Map.of());
+        }
+
+        /// A disable that records the configuration it was written against: its version and each subject's scaling value in it.
+        public static AutoHealStateValue disabledAt(String reason, long configVersion, Map<String, Integer> scaling) {
+            return new AutoHealStateValue(false, reason, System.currentTimeMillis(), configVersion, scaling);
         }
     }
 
@@ -4412,12 +4431,20 @@ public sealed interface AetherValue {
     /// `retries` is the transient-failure count **per node** (R-3.3.7: "the counter for (artifact, node)"). It replaces
     /// phase 1's single `int`: one count per artifact would let transient failures on different nodes add up to a
     /// cluster-wide condemnation of a slice healthy elsewhere, which is the wrongful condemnation #922 removed.
+    ///
+    /// `judgedAttempts` (#2759, CF-8) names the attempts the permanent mark judged: the [AppBlueprintValue#attemptId]
+    /// of every blueprint declaring the artifact when the mark was decided. Under ALL_OR_NOTHING the mark rolls back
+    /// only an open apply of one of these attempts, so a republish (a fresh attempt) is never rolled back by an older
+    /// mark, whichever of its publish batch and the judgment removal commits first. Empty when there is no mark. Held sorted, so
+    /// equal values encode to equal bytes.
     record ArtifactJudgmentValue(boolean permanentFailure,
                                  Map<NodeId, Integer> retries,
-                                 Map<NodeId, UnresponsiveEntry> unresponsive) implements AetherValue, LeaderAuthorized {
+                                 Map<NodeId, UnresponsiveEntry> unresponsive,
+                                 Set<String> judgedAttempts) implements AetherValue, LeaderAuthorized {
         public ArtifactJudgmentValue {
             retries = Map.copyOf(retries);
             unresponsive = Map.copyOf(unresponsive);
+            judgedAttempts = Collections.unmodifiableSortedSet(new TreeSet<>(judgedAttempts));
         }
     }
 

@@ -37,7 +37,8 @@ import org.pragmatica.lang.Unit;
 ///
 /// **Entry (NI-1, NI-6).** [#requestEntry] enqueues a marker; when the consumer reaches it and the model is still Dormant it reads the
 /// snapshot at a revision (`KvSnapshotter`) and steps `QuorumEstablished` (or `ReconcileActivation` for the level-heal driver). The
-/// revision becomes the watermark below which KV-sourced inputs are dropped (the snapshot holds them).
+/// revision becomes the watermark below which KV-sourced inputs are dropped (the snapshot holds them). A replay-flagged input is dropped on a
+/// core and stepped as a fact on a worker ([ReplayRule]).
 ///
 /// **Stop (design 7).** [#drain] resolves once the consumer has handled everything queued before it, the `SUSPEND`s of a quorum loss among
 /// it, and the local-op executor has run them; `close()` then cancels the timers and stops the consumer.
@@ -59,18 +60,23 @@ public final class NodeFsmInterpreter extends FsmRuntime<NodeFsmInput, TimerId, 
     private final Parts parts;
     private volatile NodeFsmModel model = NodeFsmModel.nodeFsmModel();
 
-    private NodeFsmInterpreter(Parts parts, long stopWaitMs) {
-        super("deploy-fsm-node", parts.clock(), stopWaitMs);
+    private NodeFsmInterpreter(Parts parts, long stopWaitMs, ReplayRule replayRule) {
+        super("deploy-fsm-node", parts.clock(), stopWaitMs, replayRule);
         this.parts = parts;
     }
 
     public static NodeFsmInterpreter nodeFsmInterpreter(Parts parts) {
-        return new NodeFsmInterpreter(parts, STOP_WAIT_MS);
+        return new NodeFsmInterpreter(parts, STOP_WAIT_MS, ReplayRule.CORE);
     }
 
     /// As above, with the wait a `close()` gives the consumer (design 7, 2b) set explicitly.
     public static NodeFsmInterpreter nodeFsmInterpreter(Parts parts, long stopWaitMs) {
-        return new NodeFsmInterpreter(parts, stopWaitMs);
+        return new NodeFsmInterpreter(parts, stopWaitMs, ReplayRule.CORE);
+    }
+
+    /// As above, with the replay rule of the node's role (design D8): [ReplayRule#CORE] on a core, [ReplayRule#WORKER] on a worker.
+    public static NodeFsmInterpreter nodeFsmInterpreter(Parts parts, long stopWaitMs, ReplayRule replayRule) {
+        return new NodeFsmInterpreter(parts, stopWaitMs, replayRule);
     }
 
     /// The model after the last step: read-only, for observers (the tracer's sampler reads an instance's record from it).
