@@ -51,7 +51,7 @@ class IngestSinkLifecycleTest {
         assertThat(refused.status()).isEqualTo(503);
         assertThat(refused.headerValue("Retry-After").unwrap()).isEqualTo(String.valueOf(UploadConfig.RETRY_AFTER_SECONDS));
 
-        assertThat(feed(first, body, randomSizes(1))).isEmpty();
+        assertThat(feed(first, body, randomSizes(1)).isEmpty()).isTrue();
         first.complete(head, response);
         assertThat(response.status()).isEqualTo(200);
 
@@ -68,7 +68,7 @@ class IngestSinkLifecycleTest {
         var head = TestRequest.post(UPLOAD, BINARY_TYPE, body.length);
         var sink = harness.stream(head);
 
-        assertThat(feed(sink, body, 0, body.length / 2, randomSizes(2))).isEmpty();
+        assertThat(feed(sink, body, 0, body.length / 2, randomSizes(2)).isEmpty()).isTrue();
         assertThat(harness.classify(head)).as("control: the aborted upload held the budget").isInstanceOf(Disposition.Reject.class);
 
         sink.abort(BodySink.Ended.DISCONNECTED);
@@ -88,7 +88,7 @@ class IngestSinkLifecycleTest {
         var head = TestRequest.post(UPLOAD, body.contentType(), bytes.length);
         var sink = harness.stream(head);
 
-        assertThat(feed(sink, bytes, 0, cut + 1000, randomSizes(3))).isEmpty();
+        assertThat(feed(sink, bytes, 0, cut + 1000, randomSizes(3)).isEmpty()).isTrue();
         assertThat(harness.stored()).as("control: the first file was committed").hasSize(1);
 
         sink.abort(BodySink.Ended.TIMED_OUT);
@@ -109,7 +109,7 @@ class IngestSinkLifecycleTest {
         var body = randomBytes(8192, 5);
         var sink = harness.stream(TestRequest.post(UPLOAD, BINARY_TYPE, body.length));
 
-        assertThat(feed(sink, body, randomSizes(4))).isEmpty();
+        assertThat(feed(sink, body, randomSizes(4)).isEmpty()).isTrue();
         sink.complete(TestRequest.post("/gone/blob", BINARY_TYPE, body.length), response);
 
         assertThat(response.status()).as("answered as a request without a route").isIn(404, 503);
@@ -125,7 +125,7 @@ class IngestSinkLifecycleTest {
         var head = TestRequest.post(UPLOAD, BINARY_TYPE, body.length);
         var sink = harness.stream(head);
 
-        assertThat(feed(sink, body, randomSizes(4))).isEmpty();
+        assertThat(feed(sink, body, randomSizes(4)).isEmpty()).isTrue();
         sink.complete(head, response);
 
         assertThat(response.status()).isEqualTo(200);

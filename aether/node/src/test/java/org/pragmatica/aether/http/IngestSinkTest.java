@@ -179,7 +179,7 @@ class IngestSinkTest {
         var before = Instant.now();
         var sink = harness.stream(head);
 
-        assertThat(feed(sink, body, sizes)).isEmpty();
+        assertThat(feed(sink, body, sizes).isEmpty()).isTrue();
         sink.complete(head, response);
 
         assertThat(response.status()).as("the slice answered").isEqualTo(200);
@@ -223,7 +223,7 @@ class IngestSinkTest {
         var head = TestRequest.post(UPLOAD, body.contentType(), bytes.length);
         var sink = harness.stream(head);
 
-        assertThat(feed(sink, bytes, sizes)).isEmpty();
+        assertThat(feed(sink, bytes, sizes).isEmpty()).isTrue();
         sink.complete(head, response);
 
         assertThat(response.status()).isEqualTo(200);
@@ -249,7 +249,7 @@ class IngestSinkTest {
         var head = TestRequest.post(path, body.contentType(), bytes.length);
         var sink = harness.stream(head);
 
-        assertThat(feed(sink, bytes, 0, cut, randomSizes(5))).as("control: the first file is accepted").isEmpty();
+        assertThat(feed(sink, bytes, 0, cut, randomSizes(5)).isEmpty()).as("control: the first file is accepted").isTrue();
         assertThat(harness.stored()).as("control: the first file was committed before the refusal").hasSize(1);
 
         var refusal = feed(sink, bytes, cut, bytes.length, randomSizes(6));
