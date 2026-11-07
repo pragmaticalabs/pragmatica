@@ -24,6 +24,7 @@ import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamWriteRouter;
+import org.pragmatica.aether.stream.forward.StreamForwardMessage;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.io.TimeSpan;
@@ -100,9 +101,9 @@ class EmberOwnerRestartAckedTailTripwireTest {
     /// - Arm (a): before any announcement from the owner in this life, the non-owner forwards (red with condition (a) of
     ///   `StreamPartitionManager.behindCommittedOwner` mutated out: its held copy serves `[]`).
     /// - The owner's visible head reaches the acked tail with replica acks still held off.
-    /// - Arm (b): acks flow again, the non-owner's inbound replication data is dropped, the owner's ISR drops it, and a pressure
-    ///   record plus [#LAGGED] more events are acknowledged by the owner and the third node, so the non-owner holds an
-    ///   announcement above its own visible position. Its GOVERNOR read is forwarded (red with condition (b) mutated out: its
+    /// - Arm (b): acks flow again, the non-owner's inbound replication data and its backfill catch-up reads are dropped, the
+    ///   owner's ISR drops it, and a pressure record plus [#LAGGED] more events are acknowledged by the owner and the third
+    ///   node, so the non-owner holds an announcement above its own visible position. Its GOVERNOR read is forwarded (red with condition (b) mutated out: its
     ///   copy serves at most the first [#ACKED]).
     @Test
     @Timeout(1200)
@@ -128,7 +129,8 @@ class EmberOwnerRestartAckedTailTripwireTest {
                                              .hasSize((int) tail + 1);
     }
 
-    /// Arm (b) setup: release the replica acks, starve `nonOwner` of replication data for the stream, wait until the owner's
+    /// Arm (b) setup: release the replica acks, starve `nonOwner` of replication data and of its backfill catch-up reads for the
+    /// stream (without the latter its backfill reaches the owner's head within one round, so it never lags), wait until the owner's
     /// committed ISR excludes it, and acknowledge [#LAGGED] more events. A confirmation needs EVERY member of the committed ISR
     /// other than the owner (`DefaultReplicationManager.isrAckSet`, #1730), so while the starved copy is in the ISR no publish is
     /// acknowledged (each ends `PublishOutcomeUnknown(REPLICATION_TIMEOUT)`); the third node's ack suffices only after the
@@ -262,6 +264,9 @@ class EmberOwnerRestartAckedTailTripwireTest {
         if (receiver == starved.get() && carriesStreamData(message)) {
             return false;
         }
+        if (isCatchupReadBy(starved.get(), message)) {
+            return false;
+        }
         if (dropAcks.get() && message instanceof ReplicationMessage.ReplicateAck ack && ENGINE_KEY.equals(ack.streamName())) {
             droppedAcks.incrementAndGet();
 
@@ -279,6 +284,14 @@ class EmberOwnerRestartAckedTailTripwireTest {
             case ReplicationMessage.CatchupResponse response -> ENGINE_KEY.equals(response.streamName());
             default -> false;
         };
+    }
+
+    /// The starved copy's backfill catch-up read for the stream, dropped where it arrives: `PartitionBackfill` repairs a
+    /// lagging copy through the forward path (`ReadForward` with `catchup`), not through replication data, and within one
+    /// backfill round it would bring the copy back to the owner's head. A consumer read (`catchup` false) still passes.
+    private static boolean isCatchupReadBy(AetherNode starvedNode, Object message) {
+        return starvedNode != null && message instanceof StreamForwardMessage.ReadForward read && read.catchup()
+               && ENGINE_KEY.equals(read.streamName()) && read.sender().equals(starvedNode.self());
     }
 
     private Option<AetherNode> restoredOwner() {

@@ -11,6 +11,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.zip.CRC32;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -343,6 +344,8 @@ class AppendLogAckedMarkerTest {
                                    written.substring(0, written.length() / 2),
                                    written.replace(" 4 ", " 5 "),
                                    written.replace("v1", "v9"),
+                                   withValidChecksum(written, "v1", "v9"),
+                                   withValidChecksum(written, "aether-append-log-acked", "aether-append-log-other"),
                                    "")) {
             Files.writeString(marker(), damaged);
 
@@ -353,6 +356,16 @@ class AppendLogAckedMarkerTest {
             assertThat(AppendLog.readAckedMarker(file())).isEqualTo(Option.none());
             reopened.close();
         }
+    }
+
+    /// `written` with `from` replaced in its body and the checksum recomputed: only the header check can refuse it.
+    private static String withValidChecksum(String written, String from, String to) {
+        var body = written.substring(0, written.lastIndexOf(' ')).replace(from, to);
+        var crc = new CRC32();
+
+        crc.update(body.getBytes(StandardCharsets.UTF_8));
+
+        return body + " " + Long.toHexString(crc.getValue()) + "\n";
     }
 
     // ---- deleteFiles ----------------------------------------------------------------------------------------------------
