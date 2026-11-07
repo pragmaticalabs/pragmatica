@@ -89,13 +89,24 @@ public sealed interface Backstop {
     private static ClusterModel announceBreaker(ClusterModel m, Ctx ctx, String community) {
         return breakerHolds(m, community)
                ? warnOnce(countHeldBack(m, ctx, community), ctx, community)
-               : clearWarned(m, community);
+               : clearWarned(m, ctx, community, "the breaker no longer holds");
     }
 
-    private static ClusterModel clearWarned(ClusterModel m, String community) {
-        m.suppressedWarned = m.suppressedWarned.remove(community);
+    /// D.6 row 8: the breaker of a reported community cleared: `departure-breaker-cleared`, same subject, once per episode.
+    private static ClusterModel clearWarned(ClusterModel m, Ctx ctx, String community, String why) {
+        if (m.suppressedWarned.contains(community)) {
+            m.suppressedWarned = m.suppressedWarned.remove(community);
+            ctx.warn(Recoveries.DEPARTURE_BREAKER_CLEARED, community, "Community " + community + ": " + why);
+        }
 
         return m;
+    }
+
+    /// A community record was removed (C14): its breaker episode, if reported, is closed with the reason subject-gone (D.6 row 8).
+    static ClusterModel onCommunityRemove(ClusterModel m, Ctx ctx, String community) {
+        clearWarned(m, ctx, community, Recoveries.gone(community, "its community record was removed"));
+
+        return Indexer.removeCommunity(m, community);
     }
 
     private static ClusterModel countHeldBack(ClusterModel m, Ctx ctx, String community) {

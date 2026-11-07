@@ -138,6 +138,27 @@ public sealed interface Slices {
         return m;
     }
 
+    /// The observed row of an excluded pair went: its exclusion is cleared now; D.6 rows 18/19: closed with the reason subject-gone.
+    private static ClusterModel exclusionGone(ClusterModel m, Ctx ctx, SlicePair pair) {
+        Outbox.artifact(m, pair.artifact(), intent -> intent.withOp(new JudgmentOp.ClearUnresponsive(pair.node())));
+        ctx.warn(Recoveries.SLICE_UNRESPONSIVE_EXPIRED,
+                 pair.artifact().asString(),
+                 Recoveries.gone(pair.artifact().asString(), "the instance on " + pair.node().id() + " is gone; its exclusion is cleared"));
+
+        return m;
+    }
+
+    /// D.6 rows 15/16: a held pair that leaves the hold other than by its release (it failed, or its instance is gone) closes the hold
+    /// with `schema-hold-cleared`, the reason being `why`. A pair with no hold raises nothing.
+    static ClusterModel holdGone(ClusterModel m, Ctx ctx, SlicePair pair, String why) {
+        if (m.holdSignatures.containsKey(pair)) {
+            m.holdSignatures = m.holdSignatures.remove(pair);
+            ctx.warn(Recoveries.SCHEMA_HOLD_CLEARED, pair.artifact().asString(), "Slice " + pair.artifact() + " schema hold ended: " + why);
+        }
+
+        return m;
+    }
+
     private static ClusterModel releaseHold(ClusterModel m, Ctx ctx, SlicePair pair) {
         m.holdSignatures.get(pair).onPresent(_ -> announceRelease(m, ctx, pair));
 
@@ -146,7 +167,7 @@ public sealed interface Slices {
 
     private static ClusterModel announceRelease(ClusterModel m, Ctx ctx, SlicePair pair) {
         m.holdSignatures = m.holdSignatures.remove(pair);
-        ctx.warn("schema-hold-cleared",
+        ctx.warn(Recoveries.SCHEMA_HOLD_CLEARED,
                  pair.artifact().asString(),
                  "Slice " + pair.artifact() + " schema hold cleared, resuming activation");
 
@@ -251,9 +272,9 @@ public sealed interface Slices {
         m.judgments.get(pair.artifact())
                    .filter(judgment -> judgment.unresponsive()
                                                .containsKey(pair.node()))
-                   .onPresent(_ -> Outbox.artifact(m,
-                                                   pair.artifact(),
-                                                   intent -> intent.withOp(new JudgmentOp.ClearUnresponsive(pair.node()))));
+                   .onPresent(_ -> exclusionGone(m, ctx, pair));
+        holdGone(m, ctx, pair, Recoveries.gone(pair.artifact().asString(), "the instance on " + pair.node().id() + " is gone"));
+        Strays.onRowGone(m, ctx, pair);
         var goal = m.desired.get(pair);
 
         if (goal.map(value -> value.goal() == SliceGoal.UNLOADED).or(false)) {

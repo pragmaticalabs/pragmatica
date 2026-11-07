@@ -81,12 +81,26 @@ public sealed interface Strays {
     }
 
     private static ClusterModel condemn(ClusterModel m, Ctx ctx, SlicePair pair) {
+        m.strayWarned = m.strayWarned.add(pair);
         ctx.warn("stray-instance",
                  pair.artifact().asString(),
                  "Condemning stray instance of " + pair.artifact() + " on " + pair.node().id());
         ctx.metric("aether_deployment_fsm_stray_total", Map.of("fsm", "cluster", "action", "condemn"));
 
         return Outbox.goal(m, pair, SliceGoal.UNLOADED, GoalMode.FRESH, Option.none(), "stray");
+    }
+
+    /// D.6 row 20: the observed row of a condemned stray disappeared: `stray-instance-removed`, same subject. The row going is both the
+    /// remediation completing and the subject leaving the model (the node's departure removes its rows through C17b the same way).
+    static ClusterModel onRowGone(ClusterModel m, Ctx ctx, SlicePair pair) {
+        if (m.strayWarned.contains(pair)) {
+            m.strayWarned = m.strayWarned.remove(pair);
+            ctx.warn(Recoveries.STRAY_INSTANCE_REMOVED,
+                     pair.artifact().asString(),
+                     Recoveries.gone(pair.artifact().asString(), "the condemned stray instance on " + pair.node().id() + " was removed"));
+        }
+
+        return m;
     }
 
     record unused() implements Strays {}

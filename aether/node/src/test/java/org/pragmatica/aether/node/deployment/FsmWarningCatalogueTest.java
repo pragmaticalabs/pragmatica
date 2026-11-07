@@ -25,8 +25,9 @@ import org.pragmatica.utility.warning.WarningLevel;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// Every code the deployment FSMs raise as a `Warn` effect is in the `OperatorWarningCode` catalogue, with subsystem `deployment` and level
-/// WARNING (owner ruling s37; report 3.7 item 1, PR C obligation 4). The codes are read from the FSM sources: the first argument of `ctx.warn`,
+/// Every code the deployment FSMs raise as a `Warn` effect is in the `OperatorWarningCode` catalogue, with subsystem `deployment` (the #241
+/// growth pair keeps the legacy `community-growth`) and level WARNING exactly when the code has a recovery, else INFO (owner ruling s37 as
+/// amended by D.6, know 7cc9e79f61; report 3.7 item 1, PR C obligation 4). The codes are read from the FSM sources: the first argument of `ctx.warn`,
 /// the code of a `refuse(...)`, the `Warn` constructors, and the string constants those sites name. A new FSM warning without a catalogue entry
 /// is red here, and the translator's unmapped path (`EffectTranslatorTest`) stays for a code that is not in the catalogue.
 class FsmWarningCatalogueTest {
@@ -37,6 +38,8 @@ class FsmWarningCatalogueTest {
     /// warn site names it, whatever the constant is called (v-2204 N2: the list of three names this replaced hid a fourth).
     private static final Pattern CONSTANT = Pattern.compile("String\\s+([A-Z][A-Z0-9_]*)\\s*=\\s*\"([a-z0-9]+(?:-[a-z0-9]+)+)\"");
     private static final Pattern WARN_SITE = Pattern.compile("(?:ctx\\.warn|ctx\\.warnResolved|refuse|new (?:Cluster|NodeFsm)Effect\\.Warn(?:Resolved)?)\\(");
+    /// R-CF.17 (#241): the growth warnings FSM2 raises under the legacy engine's codes and subsystem, so both engines report alike.
+    private static final Set<String> SHARED_WITH_LEGACY = Set.of("community-growth-blocked", "community-growth-resumed");
     private static final Pattern IDENTIFIER = Pattern.compile("\\b[A-Z][A-Z0-9_]+\\b");
 
     /// The codes the sources under `roots` raise, and the number of files read.
@@ -80,9 +83,10 @@ class FsmWarningCatalogueTest {
         assertThat(scan.codes()).as("the scan found the codes the FSMs raise").hasSizeGreaterThanOrEqualTo(24);
         assertThat(scan.codes()).as("codes raised by a FSM and missing from OperatorWarningCode").allMatch(catalogue::containsKey);
         scan.codes().forEach(code -> {
-            assertThat(catalogue.get(code).subsystem()).as(code).isEqualTo("deployment");
-            // A code that is the recovery of another keeps its INFO level (the catalogue's own convention, e.g. slice-start-deferral-ended).
-            assertThat(catalogue.get(code).level()).as(code).isEqualTo(catalogue.get(code).recoveryOf().isPresent() ? WarningLevel.INFO : WarningLevel.WARNING);
+            assertThat(catalogue.get(code).subsystem()).as(code).isEqualTo(SHARED_WITH_LEGACY.contains(code) ? "community-growth" : "deployment");
+            // D.6 (know 7cc9e79f61, amending s37): a FSM WARNING is a standing condition and has an INFO recovery; a recovery, a one-shot
+            // refusal or a past event is INFO. Never CRITICAL.
+            assertThat(catalogue.get(code).level()).as(code).isEqualTo(catalogue.get(code).hasRecovery() ? WarningLevel.WARNING : WarningLevel.INFO);
         });
     }
 

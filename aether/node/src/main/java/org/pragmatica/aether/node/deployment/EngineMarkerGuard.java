@@ -58,6 +58,8 @@ import org.slf4j.LoggerFactory;
 /// (`BackupRestoreCoordinator`, W-34). The worker arms are deferred (report 1.2).
 public final class EngineMarkerGuard {
     private static final Logger log = LoggerFactory.getLogger(EngineMarkerGuard.class);
+    /// D.6 row 1: the reason of the recovery raised when the node refuses itself (its subject leaves).
+    static final String REFUSED_ITSELF = "node-refused-itself";
 
     /// What the guard reads from the committed mirror, on every evaluation.
     public interface Reader {
@@ -286,7 +288,7 @@ public final class EngineMarkerGuard {
     }
 
     private void open() {
-        endWindow();
+        closeWindow("the configured engine matches the cluster's committed state");
         if (state != State.OPEN) {
             state = State.OPEN;
             drain();
@@ -294,7 +296,7 @@ public final class EngineMarkerGuard {
     }
 
     private void waiting() {
-        endWindow();
+        closeWindow("the cluster's committed engine is undecided again");
         state = State.WAITING;
     }
 
@@ -340,7 +342,30 @@ public final class EngineMarkerGuard {
         log.error("[{}] {} The node refuses itself and exits.",
                   OperatorWarningCode.DEPLOYMENT_ENGINE_MISMATCH.code(),
                   reason);
+        matched(REFUSED_ITSELF);
         exit.accept(reason);
+    }
+
+    /// D.6 row 1: a reported mismatch window that ends without a refusal closes with `deployment-engine-matched`, same subject; a window
+    /// never reported (no leader yet) closes silently.
+    private void closeWindow(String why) {
+        if (state == State.MISMATCH_WINDOW) {
+            matched(why);
+        }
+
+        endWindow();
+    }
+
+    /// The recovery of the window's warning: the condition ended (`why`), or the node refused itself and exits (`node-refused-itself`), so
+    /// the warning is closed either way. Raised before the exit: whether it reaches the cluster event log before the process ends is not
+    /// guaranteed (the sink hands it off asynchronously).
+    private Unit matched(String why) {
+        return OperatorWarnings.raise(log,
+                                      warnings,
+                                      OperatorWarningCode.DEPLOYMENT_ENGINE_MATCHED,
+                                      self.id(),
+                                      "Deployment engine mismatch window ended: {}",
+                                      why);
     }
 
     private void endWindow() {

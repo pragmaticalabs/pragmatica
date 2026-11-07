@@ -196,9 +196,9 @@ public sealed interface Absence {
         }
 
         switch (verdict(m, ctx, node)) {
-            case ABSENT -> markAbsent(m, ctx, node);
+            case ABSENT -> markAbsent(judgeable(m, ctx, node), ctx, node);
             case UNJUDGEABLE -> unjudgeable(m, ctx, node);
-            case PRESENT -> reappeared(m, ctx, node);
+            case PRESENT -> reappeared(judgeable(m, ctx, node), ctx, node);
             case EXEMPT -> clear(m, node);
         }
 
@@ -220,7 +220,21 @@ public sealed interface Absence {
         return m;
     }
 
-    /// `worker-absence-unjudgeable`: once per Active incarnation per class (C10).
+    /// D.6 row 21: a node of a reported class was judged (present or absent): the class's signals are back, so its episode closes with
+    /// `worker-absence-judgeable`, same subject. The subject is a fixed class label, which never leaves the FSM's model, so this recovery has
+    /// no subject-gone arm; a class whose nodes all leave stays open until a node of it is judged again.
+    private static ClusterModel judgeable(ClusterModel m, Ctx ctx, NodeId node) {
+        var label = labelOf(classOf(m, node));
+
+        if (m.unjudgeableWarned.contains(label)) {
+            m.unjudgeableWarned = m.unjudgeableWarned.remove(label);
+            ctx.warn(Recoveries.WORKER_ABSENCE_JUDGEABLE, label, "The " + label + " class can be judged for absence again (" + node.id() + ")");
+        }
+
+        return m;
+    }
+
+    /// `worker-absence-unjudgeable`: once per episode per class (C10), until a node of the class is judged again.
     private static ClusterModel unjudgeable(ClusterModel m, Ctx ctx, NodeId node) {
         var label = labelOf(classOf(m, node));
 

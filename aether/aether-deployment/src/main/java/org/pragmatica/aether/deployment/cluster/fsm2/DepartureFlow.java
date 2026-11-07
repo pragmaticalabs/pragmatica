@@ -13,6 +13,7 @@ import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.PendingDeparture;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.PendingJoin;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.TxDraft;
 import org.pragmatica.aether.deployment.cluster.fsm2.TimerId.Kind;
@@ -78,7 +79,8 @@ public sealed interface DepartureFlow {
                                                            ctx.monoNs(),
                                                            admissionEpochInFlight(m, node)));
         dropGoalsOf(m, node);
-        m.pendingJoins = m.pendingJoins.remove(node);
+        dropPendingJoin(m, ctx, node);
+        Directory.policyGone(m, ctx, node);
         if (!inferred) {
             Absence.clear(m, node);
         }
@@ -86,6 +88,19 @@ public sealed interface DepartureFlow {
         Outbox.direct(m, departureDraft(m, ctx, node, admission, expected, cause, inferred, 0));
 
         return Reconcile.request(m, ctx);
+    }
+
+    /// A leaving node's pending join is dropped; one reported unmatched is closed with the reason subject-gone (D.6 row 13).
+    private static ClusterModel dropPendingJoin(ClusterModel m, Ctx ctx, NodeId node) {
+        if (m.pendingJoins.get(node)
+                          .map(PendingJoin::warned)
+                          .or(false)) {
+            ctx.warn(Recoveries.JOIN_MATCHED, node.id(), Recoveries.gone(node.id(), "the node departed and its pending join was dropped"));
+        }
+
+        m.pendingJoins = m.pendingJoins.remove(node);
+
+        return m;
     }
 
     /// The pairs of a node that is leaving get no new goals.
@@ -202,6 +217,9 @@ public sealed interface DepartureFlow {
     }
 
     static ClusterModel onRecordRemove(ClusterModel m, Ctx ctx, NodeId node) {
+        m.records.get(node)
+         .filter(DepartureFlow::isInferred)
+         .onPresent(record -> confirmed(m, ctx, node, record));
         Indexer.removeRecord(m, node);
         resolveInFlight(m, ctx, node);
         Joins.reevaluate(m, ctx, node);
@@ -244,21 +262,45 @@ public sealed interface DepartureFlow {
         Absence.clear(m, node);
         Idx.members(m.unresponsiveByNode, node)
            .toList()
-           .forEach(artifact -> Outbox.artifact(m,
-                                                artifact,
-                                                intent -> intent.withOp(new JudgmentOp.ClearUnresponsive(node))));
+           .forEach(artifact -> exclusionGone(m, ctx, node, artifact));
         // C17b runs from the reconcile this step queues (step 10): the committed transaction notifies its mutations in
         // order, so the desired and route removals of C17 arrive after the record, and a cleanup built now would expect
         // values that are about to go and be refused as a whole.
         return m;
     }
 
+    /// A departed node's exclusion is cleared now, not at its expiry; D.6 rows 18/19: closed with the reason subject-gone.
+    private static ClusterModel exclusionGone(ClusterModel m, Ctx ctx, NodeId node, Artifact artifact) {
+        Outbox.artifact(m, artifact, intent -> intent.withOp(new JudgmentOp.ClearUnresponsive(node)));
+        ctx.warn(Recoveries.SLICE_UNRESPONSIVE_EXPIRED,
+                 artifact.asString(),
+                 Recoveries.gone(artifact.asString(), "node " + node.id() + " departed; its exclusion is cleared"));
+
+        return m;
+    }
+
     /// An ADMITTED record committed. If it replaced a DEPARTED(STALE), the wrong recording is reversed (C11f, R-2.16).
     private static ClusterModel admitted(ClusterModel m, Ctx ctx, NodeId node, Option<NodeDepartureValue> previous) {
-        previous.filter(record -> record.state() == DepartureState.DEPARTED && record.cause()
-                                                                                     .map(DepartureCause.STALE::equals)
-                                                                                     .or(false))
+        previous.filter(DepartureFlow::isInferred)
                 .onPresent(record -> reversed(m, ctx, node, record));
+
+        return m;
+    }
+
+    private static boolean isInferred(NodeDepartureValue record) {
+        return record.state() == DepartureState.DEPARTED && record.cause()
+                                                                  .map(DepartureCause.STALE::equals)
+                                                                  .or(false);
+    }
+
+    /// D.6 row 6: an inferred departure (DEPARTED, STALE) whose record is retired (R-2.10) was a real one: `departure-inferred-confirmed`,
+    /// same subject. The retirement is also the subject leaving the model, so this one emission is both the success and the subject-gone
+    /// close. A reversal (`departure-inferred-reversed`, row 7) closes the other way.
+    private static ClusterModel confirmed(ClusterModel m, Ctx ctx, NodeId node, NodeDepartureValue record) {
+        ctx.warn(Recoveries.DEPARTURE_INFERRED_CONFIRMED,
+                 node.id(),
+                 Recoveries.gone(node.id(),
+                                 "recorded departed (STALE) at " + record.decidedAt() + ", its identity was retired; the inferred departure stands"));
 
         return m;
     }
@@ -266,7 +308,7 @@ public sealed interface DepartureFlow {
     private static ClusterModel reversed(ClusterModel m, Ctx ctx, NodeId node, NodeDepartureValue record) {
         var replacements = Idx.members(m.desiredByNode, node).size();
 
-        ctx.warn("departure-inferred-reversed",
+        ctx.warn(Recoveries.DEPARTURE_INFERRED_REVERSED,
                  node.id(),
                  "Worker " + node.id()
                 + " recorded departed (STALE) at " + record.decidedAt()

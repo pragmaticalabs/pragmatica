@@ -11,6 +11,7 @@ import java.util.Set;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
+import org.pragmatica.aether.config.cluster.CommunityPolicy;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -120,6 +121,9 @@ public final class ClusterModel {
     PMap<NodeId, NodePlacementValue> nodePlacements = PMap.empty(scans);
     PMap<String, CommunityPlacementOperationValue> placementOps = PMap.empty(scans);
     Option<ClusterConfigValue> clusterConfig = Option.none();
+    /// R-CF.16..18 (#241): the `[community_policy]` of the committed cluster config, parsed once per indexed config; none when the config
+    /// carries none (or does not parse). `CommunityPolicies.current` falls back to the node-level sizing.
+    Option<CommunityPolicy> communityPolicy = Option.none();
     PMap<NodeId, Long> admittedAt = PMap.empty(scans);
     PMap<String, PSet<NodeId>> assignedByCommunity = PMap.empty(scans);
     PMap<String, CommunityValue> communities = PMap.empty(scans);
@@ -150,6 +154,20 @@ public final class ClusterModel {
     PMap<NodeId, Long> absentSince = PMap.empty(scans);
     PSet<String> unjudgeableWarned = PSet.empty(scans);
     PSet<String> suppressedWarned = PSet.empty(scans);
+    /// R-CF.17 (#241): the sources a refused derived-community join was reported for (`community-growth-blocked`); an admission for the
+    /// source removes it and raises the recovery. The serialized half of the legacy admission ledger: its in-flight half is the DIRECTIVE
+    /// drafts themselves (`Directory.inFlightByCommunity`).
+    PSet<String> growthBlocked = PSet.empty(scans);
+    /// D.6 row 22: workers reported `worker-no-community-policy` whose episode is open.
+    PSet<NodeId> noPolicyWarned = PSet.empty(scans);
+    /// D.6 row 10: artifacts reported `invalid-placement` whose episode is open (the warning is raised once per episode).
+    PSet<Artifact> invalidPlacementWarned = PSet.empty(scans);
+    /// D.6 row 14: artifacts reported `retry-exhausted-unsettled` whose episode is open.
+    PSet<Artifact> retryExhaustedWarned = PSet.empty(scans);
+    /// D.6 row 17: datasources reported `schema-status-unknown` whose episode is open.
+    PSet<String> schemaUnknownWarned = PSet.empty(scans);
+    /// D.6 row 20: condemned stray instances reported `stray-instance`, until their observed row disappears.
+    PSet<SlicePair> strayWarned = PSet.empty(scans);
     /// Datasources whose FAILED record was committed while suspended: announced once on the resume (`Schemas.announceWithheld`).
     PSet<String> withheldBlocked = PSet.empty(scans);
     // -- the write side (5.7) --------------------------------------------------------------------------------------
@@ -225,6 +243,7 @@ public final class ClusterModel {
         c.nodePlacements = nodePlacements.rebound(meter);
         c.placementOps = placementOps.rebound(meter);
         c.clusterConfig = clusterConfig;
+        c.communityPolicy = communityPolicy;
         c.admittedAt = admittedAt.rebound(meter);
         c.assignedByCommunity = assignedByCommunity.rebound(meter);
         c.communities = communities.rebound(meter);
@@ -246,6 +265,12 @@ public final class ClusterModel {
         c.absentSince = absentSince.rebound(meter);
         c.unjudgeableWarned = unjudgeableWarned.rebound(meter);
         c.suppressedWarned = suppressedWarned.rebound(meter);
+        c.growthBlocked = growthBlocked.rebound(meter);
+        c.noPolicyWarned = noPolicyWarned.rebound(meter);
+        c.invalidPlacementWarned = invalidPlacementWarned.rebound(meter);
+        c.retryExhaustedWarned = retryExhaustedWarned.rebound(meter);
+        c.schemaUnknownWarned = schemaUnknownWarned.rebound(meter);
+        c.strayWarned = strayWarned.rebound(meter);
         c.withheldBlocked = withheldBlocked.rebound(meter);
         c.submitted = submitted.rebound(meter);
         c.outbox = outbox;

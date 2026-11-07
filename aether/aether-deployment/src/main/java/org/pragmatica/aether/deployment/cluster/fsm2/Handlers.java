@@ -133,9 +133,9 @@ public sealed interface Handlers {
                                                              SlicePair.slicePair(k.nodeId(), k.artifact()));
             case ActivationDirectiveKey k -> Directory.onDirectiveRemove(m, ctx, k.nodeId());
             case GovernorAnnouncementKey k -> Directory.onAnnouncementRemove(m, ctx, k.communityId());
-            case CommunityKey k -> Indexer.removeCommunity(m, k.communityId());
+            case CommunityKey k -> Backstop.onCommunityRemove(m, ctx, k.communityId());
             case NodeDepartureKey k -> DepartureFlow.onRecordRemove(m, ctx, k.nodeId());
-            case SchemaVersionKey k -> Indexer.removeSchema(m, k.datasourceName());
+            case SchemaVersionKey k -> Schemas.onRemove(m, ctx, k.datasourceName());
             case DeploymentApplyKey k -> Indexer.removeApply(m, k.blueprintId());
             case DeploymentOutcomeKey k -> Indexer.removeOutcome(m, k.blueprintId());
             default -> Judgments.onRemove(m, ctx, key);

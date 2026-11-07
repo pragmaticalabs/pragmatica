@@ -152,6 +152,26 @@ public sealed interface Joins {
 
     // -- the table -------------------------------------------------------------------------------------------------
     private static ClusterModel evaluate(ClusterModel m, Ctx ctx, NodeId node, PendingJoin join) {
+        var warned = join.warned() || m.pendingJoins.get(node)
+                                                    .map(PendingJoin::warned)
+                                                    .or(false);
+
+        return matchedIfWarned(evaluateRows(m, ctx, node, join), ctx, node, warned);
+    }
+
+    /// D.6 row 13: a join reported unmatched that a row has now matched ends its episode: `join-matched`, same subject. A join that is
+    /// still unmatched keeps its warned pending entry and raises nothing.
+    private static ClusterModel matchedIfWarned(ClusterModel m, Ctx ctx, NodeId node, boolean warned) {
+        if (warned && !m.pendingJoins.get(node)
+                                     .map(PendingJoin::warned)
+                                     .or(false)) {
+            ctx.warn(Recoveries.JOIN_MATCHED, node.id(), "A join row matched " + node.id() + " again");
+        }
+
+        return m;
+    }
+
+    private static ClusterModel evaluateRows(ClusterModel m, Ctx ctx, NodeId node, PendingJoin join) {
         m.pendingJoins = m.pendingJoins.remove(node);
         var admission = join.admission();
         var record = m.records.get(node);

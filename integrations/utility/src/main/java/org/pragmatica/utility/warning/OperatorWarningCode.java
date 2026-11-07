@@ -151,34 +151,91 @@ public enum OperatorWarningCode {
     /// reconciliation failed and the node's reservation is not known to be in step with the ledger. Never log-only. The subject is the node.
     EXTERNAL_REJOIN_UNRECONCILED("external-rejoin-unreconciled", "deployment", WarningLevel.WARNING),
     /// A node's configured deployment engine disagrees with the engine the cluster committed (phase-3 design 8.2): the node refuses itself and
-    /// exits when its window ends unless the mismatch clears. The message names the evidence and the recovery. Subject is the node.
+    /// exits when its window ends unless the mismatch clears. The message names the evidence and the recovery. Subject is the node. Closed
+    /// by [#DEPLOYMENT_ENGINE_MATCHED] (D.6 row 1).
     DEPLOYMENT_ENGINE_MISMATCH("deployment-engine-mismatch", "deployment", WarningLevel.WARNING),
-    /// The deployment FSMs' warnings (phase-3 design 4.2, 5.2; owner ruling s37): every code the node FSM and the cluster FSM raise as a `Warn`
-    /// effect, so an operator reads it in the cluster event log and not only in the log. Subsystem `deployment`, level WARNING, as ruled. The text
-    /// of each is the FSM's own message; the subject names the node, artifact or datasource it is about. `FsmWarningCatalogueTest` enumerates the
-    /// codes the FSM sources raise against this list, so a new FSM warning without an entry here is a red test.
-    ACTIVATION_UNPERMITTED("activation-unpermitted", "deployment", WarningLevel.WARNING),
-    BLUEPRINT_DELETE_REFUSED("blueprint-delete-refused", "deployment", WarningLevel.WARNING),
-    BLUEPRINT_REJECTED("blueprint-rejected", "deployment", WarningLevel.WARNING),
-    BOOT_TOKEN_ABSENT("boot-token-absent", "deployment", WarningLevel.WARNING),
+    /// The deployment FSMs' warnings (phase-3 design 4.2, 5.2; owner ruling s37, AMENDED by the owner's D.6 ruling of 2026-11-03, know
+    /// 7cc9e79f61, spec 9.4): every code the node FSM and the cluster FSM raise as a `Warn` effect, so an operator reads it in the cluster event
+    /// log and not only in the log. Subsystem `deployment`. A standing condition is a WARNING closed by an INFO recovery of the same subject; a
+    /// one-shot refusal or a past event is INFO (D.6 rows 2-5, 9, 11, 12, 23). Every recovery is also raised, with the reason `subject-gone`
+    /// in its text, when its subject leaves the FSM's model, so success and abandonment close the same warning. The text of each is the FSM's
+    /// own message; the subject names the node, artifact, datasource, community or class it is about. `FsmWarningCatalogueTest` enumerates
+    /// the codes the FSM sources raise against this list, so a new FSM warning without an entry here is a red test.
+    /// D.6 row 2: a one-shot refusal (#1068); a later permitting blueprint is a new activation, not a clearing.
+    ACTIVATION_UNPERMITTED("activation-unpermitted", "deployment", WarningLevel.INFO),
+    /// D.6 row 3: refuses an operator command and leaves the model unchanged; the retry succeeds or reports again.
+    BLUEPRINT_DELETE_REFUSED("blueprint-delete-refused", "deployment", WarningLevel.INFO),
+    /// D.6 row 4: rejects an operator command and retains nothing.
+    BLUEPRINT_REJECTED("blueprint-rejected", "deployment", WarningLevel.INFO),
+    /// D.6 row 5: the boot token is fixed for the process lifetime; a restart is a new incarnation.
+    BOOT_TOKEN_ABSENT("boot-token-absent", "deployment", WarningLevel.INFO),
+    /// D.6 row 6: the backstop recorded a node DEPARTED (STALE) after an absence beyond its class bound. Subject is the node. Closed by
+    /// [#DEPARTURE_INFERRED_REVERSED] (the node came back) or [#DEPARTURE_INFERRED_CONFIRMED] (its identity was retired).
     DEPARTURE_INFERRED("departure-inferred", "deployment", WarningLevel.WARNING),
-    DEPARTURE_INFERRED_REVERSED("departure-inferred-reversed", "deployment", WarningLevel.WARNING),
+    /// D.6 row 7: the recovery of [#DEPARTURE_INFERRED], same subject: ADMITTED was committed over the inferred DEPARTED.
+    DEPARTURE_INFERRED_REVERSED("departure-inferred-reversed", "deployment", WarningLevel.INFO, DEPARTURE_INFERRED),
+    /// D.6 row 8: a community's departure breaker holds inferred departures. Subject is the community. Closed by
+    /// [#DEPARTURE_BREAKER_CLEARED].
     DEPARTURE_INFERRED_SUPPRESSED("departure-inferred-suppressed", "deployment", WarningLevel.WARNING),
-    IDENTITY_PROCESS_MISMATCH("identity-process-mismatch", "deployment", WarningLevel.WARNING),
+    /// D.6 row 9: records a past identity event; nothing returns to normal.
+    IDENTITY_PROCESS_MISMATCH("identity-process-mismatch", "deployment", WarningLevel.INFO),
+    /// D.6 row 10: an artifact's placement does not parse, so its target is unplaced; once per episode. Subject is the artifact. Closed by
+    /// [#PLACEMENT_VALID].
     INVALID_PLACEMENT("invalid-placement", "deployment", WarningLevel.WARNING),
-    JOIN_REFUSED_PROCESS("join-refused-process", "deployment", WarningLevel.WARNING),
-    JOIN_REFUSED_SUPERSEDED("join-refused-superseded", "deployment", WarningLevel.WARNING),
+    /// D.6 row 11: the refused process does not return under that id.
+    JOIN_REFUSED_PROCESS("join-refused-process", "deployment", WarningLevel.INFO),
+    /// D.6 row 12: supersession is permanent for that incarnation.
+    JOIN_REFUSED_SUPERSEDED("join-refused-superseded", "deployment", WarningLevel.INFO),
+    /// D.6 row 13: no join row matched a pending join; once per episode. Subject is the node. Closed by [#JOIN_MATCHED].
     JOIN_UNMATCHED("join-unmatched", "deployment", WarningLevel.WARNING),
+    /// D.6 row 14: retries exhausted and the judgment not settled at once. Subject is the artifact. Closed by [#RETRY_EXHAUSTED_SETTLED].
     RETRY_EXHAUSTED_UNSETTLED("retry-exhausted-unsettled", "deployment", WarningLevel.WARNING),
+    /// D.6 row 15: a slice is held LOADED on a schema migration; once per hold signature. Subject is the slice. Closed by
+    /// [#SCHEMA_HOLD_CLEARED].
     SCHEMA_HOLD("schema-hold", "deployment", WarningLevel.WARNING),
-    SCHEMA_HOLD_CLEARED("schema-hold-cleared", "deployment", WarningLevel.WARNING),
+    /// D.6 row 16: the recovery of [#SCHEMA_HOLD], same subject: the hold was released, or its slice left the model.
+    SCHEMA_HOLD_CLEARED("schema-hold-cleared", "deployment", WarningLevel.INFO, SCHEMA_HOLD),
+    /// D.6 row 17: a datasource's schema status does not decode (#964). Subject is the datasource. Closed by [#SCHEMA_STATUS_READABLE].
     SCHEMA_STATUS_UNKNOWN("schema-status-unknown", "deployment", WarningLevel.WARNING),
+    /// D.6 row 18: a goal went unanswered in time; the node is excluded for the artifact. Closed by [#SLICE_UNRESPONSIVE_EXPIRED].
     SLICE_UNRESPONSIVE("slice-unresponsive", "deployment", WarningLevel.WARNING),
-    SLICE_UNRESPONSIVE_EXPIRED("slice-unresponsive-expired", "deployment", WarningLevel.WARNING),
+    /// D.6 row 19: the recovery of [#SLICE_UNRESPONSIVE], same subject: the exclusion expired, or its node left the model.
+    SLICE_UNRESPONSIVE_EXPIRED("slice-unresponsive-expired", "deployment", WarningLevel.INFO, SLICE_UNRESPONSIVE),
+    /// D.6 row 20: a non-adoptable instance with no goal was condemned. Subject is the artifact. Closed by [#STRAY_INSTANCE_REMOVED].
     STRAY_INSTANCE("stray-instance", "deployment", WarningLevel.WARNING),
+    /// D.6 row 21: absence cannot be judged for a node class (signals missing, stale or unwired); once per episode. Subject is the class.
+    /// Closed by [#WORKER_ABSENCE_JUDGEABLE].
     WORKER_ABSENCE_UNJUDGEABLE("worker-absence-unjudgeable", "deployment", WarningLevel.WARNING),
+    /// D.6 row 22: no community policy accepts a worker, so it gets no directive. Subject is the node. Closed by
+    /// [#WORKER_COMMUNITY_POLICY_MATCHED].
     WORKER_NO_COMMUNITY_POLICY("worker-no-community-policy", "deployment", WarningLevel.WARNING),
-    WORKER_READMITTED_ON_EVIDENCE("worker-readmitted-on-evidence", "deployment", WarningLevel.WARNING),
+    /// D.6 row 23: reports a one-shot re-admission; never a recovery of [#DEPARTURE_INFERRED] (a STALE record never reaches its branch).
+    WORKER_READMITTED_ON_EVIDENCE("worker-readmitted-on-evidence", "deployment", WarningLevel.INFO),
+    /// D.6 row 1: the recovery of [#DEPLOYMENT_ENGINE_MISMATCH], same subject (the node): the configured engine matches the committed one
+    /// again before the window expired, or (reason `node-refused-itself`) the node refused itself and exits.
+    DEPLOYMENT_ENGINE_MATCHED("deployment-engine-matched", "deployment", WarningLevel.INFO, DEPLOYMENT_ENGINE_MISMATCH),
+    /// D.6 row 6: the recovery of [#DEPARTURE_INFERRED], same subject: the inferred departure was confirmed by retiring the identity (R-2.10).
+    DEPARTURE_INFERRED_CONFIRMED("departure-inferred-confirmed", "deployment", WarningLevel.INFO, DEPARTURE_INFERRED),
+    /// D.6 row 8: the recovery of [#DEPARTURE_INFERRED_SUPPRESSED], same subject: the community's breaker cleared, or the community left the
+    /// model.
+    DEPARTURE_BREAKER_CLEARED("departure-breaker-cleared", "deployment", WarningLevel.INFO, DEPARTURE_INFERRED_SUPPRESSED),
+    /// D.6 row 10: the recovery of [#INVALID_PLACEMENT], same subject: the placement parses, or the artifact's target was removed.
+    PLACEMENT_VALID("placement-valid", "deployment", WarningLevel.INFO, INVALID_PLACEMENT),
+    /// D.6 row 13: the recovery of [#JOIN_UNMATCHED], same subject: the pending join matched a row, or it was dropped.
+    JOIN_MATCHED("join-matched", "deployment", WarningLevel.INFO, JOIN_UNMATCHED),
+    /// D.6 row 14: the recovery of [#RETRY_EXHAUSTED_UNSETTLED], same subject: the judgment settled, or the artifact's target was removed.
+    RETRY_EXHAUSTED_SETTLED("retry-exhausted-settled", "deployment", WarningLevel.INFO, RETRY_EXHAUSTED_UNSETTLED),
+    /// D.6 row 17: the recovery of [#SCHEMA_STATUS_UNKNOWN], same subject: the status decodes, or the datasource's record was removed.
+    SCHEMA_STATUS_READABLE("schema-status-readable", "deployment", WarningLevel.INFO, SCHEMA_STATUS_UNKNOWN),
+    /// D.6 row 20: the recovery of [#STRAY_INSTANCE], same subject: the condemned observed row disappeared.
+    STRAY_INSTANCE_REMOVED("stray-instance-removed", "deployment", WarningLevel.INFO, STRAY_INSTANCE),
+    /// D.6 row 21: the recovery of [#WORKER_ABSENCE_UNJUDGEABLE], same subject: absence can be judged again for the class.
+    WORKER_ABSENCE_JUDGEABLE("worker-absence-judgeable", "deployment", WarningLevel.INFO, WORKER_ABSENCE_UNJUDGEABLE),
+    /// D.6 row 22: the recovery of [#WORKER_NO_COMMUNITY_POLICY], same subject: a later J5 placed the worker, or it departed first.
+    WORKER_COMMUNITY_POLICY_MATCHED("worker-community-policy-matched",
+                                    "deployment",
+                                    WarningLevel.INFO,
+                                    WORKER_NO_COMMUNITY_POLICY),
     /// A deployment FSM's mailbox holds more than 10,000 inputs (phase-3 design 3.1, N-5): the mailboxes are unbounded by design, so a consumer that
     /// cannot keep up is reported here and nowhere else. The subject is `<node>/<fsm>`, the message names the depth. Closed by
     /// [#DEPLOYMENT_FSM_BACKLOG_CLEARED].

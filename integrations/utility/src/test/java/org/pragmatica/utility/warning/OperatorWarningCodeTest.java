@@ -25,7 +25,6 @@ import java.util.stream.Stream;
 
 import org.pragmatica.lang.Option;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -181,16 +180,7 @@ class OperatorWarningCodeTest {
         assertThat(FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER).as("the two frozen lists are disjoint").doesNotContainAnyElementsOf(UNCLOSED_BEFORE_THE_RULE);
     }
 
-    /// FSM2 cutover tripwire: while any FSM2 code lacks a recovery this stays green and the test beside it is disabled. When the
-    /// list is empty this goes red: enable [#fsm2CutoverUnblocked_everyFsm2CodeHasARecovery] and delete this one.
-    @Test
-    void fsm2CutoverBlocked_whileAnFsm2CodeLacksARecovery() {
-        assertThat(FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER).as("FSM2 cutover blocked: %d codes lack a recovery",
-                                                              FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER.size())
-                                                          .isNotEmpty();
-    }
-
-    @Disabled("FSM2 cutover blocked: the FSM2 warning codes lack a recovery")
+    /// FSM2 cutover: every FSM2 code has a recovery or is INFO (the owner's D.6 ruling, know 7cc9e79f61), so the frozen list is empty.
     @Test
     void fsm2CutoverUnblocked_everyFsm2CodeHasARecovery() {
         assertThat(FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER).as("FSM2 cutover blocked: %d codes lack a recovery",
@@ -410,30 +400,71 @@ class OperatorWarningCodeTest {
     /// the recovery rule, so they are NOT on [#UNCLOSED_BEFORE_THE_RULE]: FSM2 is not the active deployment engine in rc5, and each
     /// of these must gain a recovery, be re-levelled, or be removed before the FSM2 cutover. Frozen and shrink-only, like the list
     /// above; [#fsm2CutoverBlocked_whileAnFsm2CodeLacksARecovery] keeps the cutover blocked while it is not empty.
-    private static final Set<OperatorWarningCode> FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER = Set.of(
-        OperatorWarningCode.DEPLOYMENT_ENGINE_MISMATCH,
-        OperatorWarningCode.ACTIVATION_UNPERMITTED,
-        OperatorWarningCode.BLUEPRINT_DELETE_REFUSED,
-        OperatorWarningCode.BLUEPRINT_REJECTED,
-        OperatorWarningCode.BOOT_TOKEN_ABSENT,
-        OperatorWarningCode.DEPARTURE_INFERRED,
-        OperatorWarningCode.DEPARTURE_INFERRED_REVERSED,
-        OperatorWarningCode.DEPARTURE_INFERRED_SUPPRESSED,
-        OperatorWarningCode.IDENTITY_PROCESS_MISMATCH,
-        OperatorWarningCode.INVALID_PLACEMENT,
-        OperatorWarningCode.JOIN_REFUSED_PROCESS,
-        OperatorWarningCode.JOIN_REFUSED_SUPERSEDED,
-        OperatorWarningCode.JOIN_UNMATCHED,
-        OperatorWarningCode.RETRY_EXHAUSTED_UNSETTLED,
-        OperatorWarningCode.SCHEMA_HOLD,
-        OperatorWarningCode.SCHEMA_HOLD_CLEARED,
-        OperatorWarningCode.SCHEMA_STATUS_UNKNOWN,
-        OperatorWarningCode.SLICE_UNRESPONSIVE,
-        OperatorWarningCode.SLICE_UNRESPONSIVE_EXPIRED,
-        OperatorWarningCode.STRAY_INSTANCE,
-        OperatorWarningCode.WORKER_ABSENCE_UNJUDGEABLE,
-        OperatorWarningCode.WORKER_NO_COMMUNITY_POLICY,
-        OperatorWarningCode.WORKER_READMITTED_ON_EVIDENCE);
+    /// Emptied by the owner's D.6 ruling (know 7cc9e79f61, spec 9.4): it may never grow again.
+    private static final Set<OperatorWarningCode> FSM2_AWAITING_RECOVERY_BEFORE_CUTOVER = Set.of();
+
+    /// The D.6 table as ruled (spec 9.4, know 7cc9e79f61): rows re-levelled to INFO with no recovery.
+    private static final Set<OperatorWarningCode> D6_INFO_ONE_SHOT = Set.of(OperatorWarningCode.ACTIVATION_UNPERMITTED,
+                                                                          OperatorWarningCode.BLUEPRINT_DELETE_REFUSED,
+                                                                          OperatorWarningCode.BLUEPRINT_REJECTED,
+                                                                          OperatorWarningCode.BOOT_TOKEN_ABSENT,
+                                                                          OperatorWarningCode.IDENTITY_PROCESS_MISMATCH,
+                                                                          OperatorWarningCode.JOIN_REFUSED_PROCESS,
+                                                                          OperatorWarningCode.JOIN_REFUSED_SUPERSEDED,
+                                                                          OperatorWarningCode.WORKER_READMITTED_ON_EVIDENCE);
+
+    /// The D.6 table as ruled: each recovery (INFO) and the WARNING it closes; rows 7, 16 and 19 are the re-levelled recoveries of 6, 15, 18.
+    private static final Map<OperatorWarningCode, OperatorWarningCode> D6_RECOVERIES = Map.ofEntries(Map.entry(OperatorWarningCode.DEPLOYMENT_ENGINE_MATCHED,
+                                                                                                             OperatorWarningCode.DEPLOYMENT_ENGINE_MISMATCH),
+                                                                                                   Map.entry(OperatorWarningCode.DEPARTURE_INFERRED_REVERSED,
+                                                                                                             OperatorWarningCode.DEPARTURE_INFERRED),
+                                                                                                   Map.entry(OperatorWarningCode.DEPARTURE_INFERRED_CONFIRMED,
+                                                                                                             OperatorWarningCode.DEPARTURE_INFERRED),
+                                                                                                   Map.entry(OperatorWarningCode.DEPARTURE_BREAKER_CLEARED,
+                                                                                                             OperatorWarningCode.DEPARTURE_INFERRED_SUPPRESSED),
+                                                                                                   Map.entry(OperatorWarningCode.PLACEMENT_VALID,
+                                                                                                             OperatorWarningCode.INVALID_PLACEMENT),
+                                                                                                   Map.entry(OperatorWarningCode.JOIN_MATCHED,
+                                                                                                             OperatorWarningCode.JOIN_UNMATCHED),
+                                                                                                   Map.entry(OperatorWarningCode.RETRY_EXHAUSTED_SETTLED,
+                                                                                                             OperatorWarningCode.RETRY_EXHAUSTED_UNSETTLED),
+                                                                                                   Map.entry(OperatorWarningCode.SCHEMA_HOLD_CLEARED,
+                                                                                                             OperatorWarningCode.SCHEMA_HOLD),
+                                                                                                   Map.entry(OperatorWarningCode.SCHEMA_STATUS_READABLE,
+                                                                                                             OperatorWarningCode.SCHEMA_STATUS_UNKNOWN),
+                                                                                                   Map.entry(OperatorWarningCode.SLICE_UNRESPONSIVE_EXPIRED,
+                                                                                                             OperatorWarningCode.SLICE_UNRESPONSIVE),
+                                                                                                   Map.entry(OperatorWarningCode.STRAY_INSTANCE_REMOVED,
+                                                                                                             OperatorWarningCode.STRAY_INSTANCE),
+                                                                                                   Map.entry(OperatorWarningCode.WORKER_ABSENCE_JUDGEABLE,
+                                                                                                             OperatorWarningCode.WORKER_ABSENCE_UNJUDGEABLE),
+                                                                                                   Map.entry(OperatorWarningCode.WORKER_COMMUNITY_POLICY_MATCHED,
+                                                                                                             OperatorWarningCode.WORKER_NO_COMMUNITY_POLICY));
+
+    /// D.6 (know 7cc9e79f61): the 11 re-levelled rows are INFO (8 one-shots and the 3 recoveries), every recovery closes the row the table
+    /// names, each closed condition is a deployment WARNING, and the wire strings of the 10 new codes are pinned.
+    @Test
+    void d6Ruling_levelsAndRecoveries_matchTheRuledTable() {
+        assertThat(D6_INFO_ONE_SHOT).allMatch(code -> code.level() == WarningLevel.INFO && code.recoveryOf().isEmpty() && !code.hasRecovery());
+        D6_RECOVERIES.forEach((recovery, opener) -> {
+            assertThat(recovery.level()).as(recovery.code()).isEqualTo(WarningLevel.INFO);
+            assertThat(recovery.recoveryOf()).as(recovery.code()).isEqualTo(Option.some(opener));
+            assertThat(recovery.subsystem()).as(recovery.code()).isEqualTo("deployment");
+            assertThat(opener.level()).as(opener.code()).isEqualTo(WarningLevel.WARNING);
+        });
+        assertThat(D6_RECOVERIES.keySet().stream().map(OperatorWarningCode::code)).contains("deployment-engine-matched",
+                                                                                            "departure-inferred-confirmed",
+                                                                                            "departure-breaker-cleared",
+                                                                                            "placement-valid",
+                                                                                            "join-matched",
+                                                                                            "retry-exhausted-settled",
+                                                                                            "schema-status-readable",
+                                                                                            "stray-instance-removed",
+                                                                                            "worker-absence-judgeable",
+                                                                                            "worker-community-policy-matched");
+        assertThat(D6_RECOVERIES.values().stream().distinct().count() + D6_INFO_ONE_SHOT.size() + 3).as("the 23 rows: 12 closed conditions, 8 one-shots, the 3 re-levelled recoveries (rows 7, 16, 19)")
+                                                                                     .isEqualTo(23);
+    }
 
     /// #752: a recovery code closes a condition of its own subsystem, and a condition is not itself a recovery, so a
     /// recovery is never itself waiting for one.
