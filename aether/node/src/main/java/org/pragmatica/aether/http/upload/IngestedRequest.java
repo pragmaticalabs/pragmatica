@@ -12,6 +12,8 @@ import org.pragmatica.http.QueryParams;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 
 /// A request whose body the ingress already stored (U2): the head and trailers the server delivered, with an empty body,
 /// and the [UploadHandle] of what was stored. It travels the normal dispatch path, where the conversion to the slice's
@@ -31,8 +33,8 @@ public record IngestedRequest(HttpRequest head, UploadHandle upload, Runnable di
     /// The stored upload `request` carries, if the ingress stored its body.
     public static Option<UploadHandle> uploadOf(HttpRequest request) {
         return request instanceof IngestedRequest ingested
-               ? Option.some(ingested.upload())
-               : Option.none();
+               ? some(ingested.upload())
+               : none();
     }
 
     /// Deletes what the ingress stored for `request`, if it stored anything: the request will reach no slice.

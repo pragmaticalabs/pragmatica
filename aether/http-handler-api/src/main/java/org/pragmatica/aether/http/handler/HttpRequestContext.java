@@ -13,6 +13,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.Codec;
 
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Result.success;
 
 
@@ -92,7 +93,7 @@ public record HttpRequestContext(String path,
                                                         Map<String, List<String>> trailers,
                                                         String requestId,
                                                         SecurityContext security) {
-        return httpRequestContext(path, method, queryParams, headers, body, trailers, requestId, security, Option.none());
+        return httpRequestContext(path, method, queryParams, headers, body, trailers, requestId, security, none());
     }
 
     /// U2: a request whose upload the ingress already stored; its body is empty.
