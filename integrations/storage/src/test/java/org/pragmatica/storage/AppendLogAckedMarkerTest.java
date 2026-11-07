@@ -64,6 +64,18 @@ class AppendLogAckedMarkerTest {
         wal.close();
     }
 
+    /// The duplicate-create race: another opener installed the born marker, then this opener's own write lost. The log
+    /// holds what the volume now holds, not what it read before its write.
+    @Test
+    void open_ofANewLog_whoseBornMarkerWriteLostTheRace_holdsTheMarkerTheWinnerInstalled() {
+        var wal = AppendLog.open(file(), AppendLog.TornTailSink.logOnly(), FileOps::writeBytesForced, installedByAnotherOpenerThenFailing())
+                           .onFailure(cause -> fail("the open was refused: " + cause.message()))
+                           .unwrap();
+
+        assertThat(wal.ackedMarker()).as("the winner's -1 marker, re-read after the lost write").isEqualTo(Option.some(new AppendLog.AckedMark(Option.none(), -1L)));
+        wal.close();
+    }
+
     /// Two opens of the same new log at once both succeed (the duplicate-create race of a stream partition).
     @Test
     void concurrentOpensOfOneNewLog_bothSucceed() throws Exception {
@@ -397,6 +409,12 @@ class AppendLogAckedMarkerTest {
         }
 
         return wal;
+    }
+
+    /// A born-marker writer standing for the winner of a duplicate create: its marker lands on the sidecar, this write fails.
+    private Fn2<Result<Unit>, Path, byte[]> installedByAnotherOpenerThenFailing() {
+        return (_, content) -> FileOps.writeBytesForced(AckedMarker.sidecarOf(file()), content)
+                                      .flatMap(_ -> Causes.cause("lost the install race").<Unit> result());
     }
 
     /// A durable marker writer that fails while `failing` is set (so the log can be created first).

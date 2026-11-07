@@ -426,6 +426,32 @@ class ReadCommittedStreamTest {
             assertThat(sent).as("the tick reports the empty log to both replicas, so they stop forwarding").hasSize(2);
             assertThat(sent).allSatisfy(message -> assertThat(message.committedThrough()).isEqualTo(-1L));
         }
+
+        @Test
+        void repeatVisible_aReplicaWithAnEmptyLog_announcesNothing() throws Exception {
+            var sent = new CopyOnWriteArrayList<ReplicationMessage.CommitAdvance>();
+            var senders = new CopyOnWriteArrayList<Thread>();
+            var replication = replicationManager(SELF, registryWithPeers(), AcceptingReplicationTransport.accepting((target, message) -> record(sent, senders, target, message)));
+
+            manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication);
+            manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
+            createStream(manager, 3, 3);
+            manager.repeatVisible();
+            Thread.sleep(500);
+
+            assertThat(sent).as("only the owner speaks for the log: a replica's -1 would tell its peers nothing is acknowledged").isEmpty();
+
+            manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.OWNER);
+            manager.repeatVisible();
+
+            var deadline = System.currentTimeMillis() + 5_000L;
+
+            while (sent.size() < 2 && System.currentTimeMillis() < deadline) {
+                Thread.sleep(20);
+            }
+
+            assertThat(sent).as("control: the same manager and transport announce once it is the owner").hasSize(2);
+        }
     }
 
     private static void record(List<ReplicationMessage.CommitAdvance> sent,

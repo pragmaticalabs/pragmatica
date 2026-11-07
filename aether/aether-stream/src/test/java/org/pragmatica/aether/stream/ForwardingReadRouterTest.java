@@ -227,6 +227,30 @@ class ForwardingReadRouterTest {
               .onSuccess(events -> assertThat(events).containsExactly("committed-served"));
     }
 
+    /// The committed record can name this very node (it is the owner of record but the copy is stale): forwarding to itself
+    /// is no hop, so the read goes to the HRW owner instead.
+    @Test
+    void route_forwardsToTheHrwOwner_whenGovernorCopyIsBehindAndTheCommittedOwnerIsSelf() {
+        var router = ForwardingReadRouter.forwardingReadRouter(Option.none(),
+                                                               SELF,
+                                                               Option.some(forwardClientServingOnly(OWNER, "owner-served")),
+                                                               ReadPreference.GOVERNOR,
+                                                               owner(OWNER),
+                                                               successReader("local"),
+                                                               ForwardingReadRouterTest::decode,
+                                                               StreamReadForwardMetrics.NOOP,
+                                                               Option.some((_, _) -> Option.some(new CommittedStreamOwnerSource.CommittedOwner(SELF,
+                                                                                                                                              Epoch.ZERO))),
+                                                               Option.none(),
+                                                               Option.none(),
+                                                               (_, _) -> true);
+
+        router.route(STREAM, PARTITION, 0, 10)
+              .await()
+              .onFailure(ForwardingReadRouterTest::failUnexpected)
+              .onSuccess(events -> assertThat(events).containsExactly("owner-served"));
+    }
+
     private static ForwardingReadRouter<String> staleRouter(boolean behind, OwnerResolver ownerResolver) {
         return ForwardingReadRouter.forwardingReadRouter(Option.none(),
                                                          SELF,

@@ -151,8 +151,11 @@ class StreamNoWalRestartOffsetTest {
         index = new SegmentIndex();
         index.rebuildFromRefs(metadataStore);
         startOwnerOn(index);
+        var seededVisible = visible();
+
         assertThat(manager.mayServeAsOwner(STREAM, PARTITION)).as("control: an owner admission ran").isTrue();
 
+        assertThat(seededVisible).as("the seed itself, before any admission could raise it").isEqualTo(index.lastSealedOffset(STREAM, PARTITION));
         assertThat(visible()).as("seeded at the sealed floor, as before PR-2f").isEqualTo(index.lastSealedOffset(STREAM, PARTITION));
         assertThat(ackedMarkersUnder(storageDir)).as("no .acked file anywhere").isZero();
         assertThat(ackedMarkersUnder(snapshotDir)).isZero();
