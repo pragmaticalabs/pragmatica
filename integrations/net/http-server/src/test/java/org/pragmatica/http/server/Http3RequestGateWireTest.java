@@ -25,7 +25,6 @@ import io.netty.handler.codec.http3.DefaultHttp3HeadersFrame;
 import io.netty.handler.codec.http3.Http3;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
@@ -117,8 +116,6 @@ class Http3RequestGateWireTest {
                               .isLessThan(20L * MIB);
     }
 
-    // quarantine: #2605 flaky in CI only (3 hits on unrelated PRs); 44/44 isolated class runs green on cloudbb-d1, no mechanism found
-    @Tag("quarantine")
     @Test
     void sameBody_passesTheBigRoute_andIsRefused413OnTheSmallRoute_withAndWithoutContentLength() throws Exception {
         start();
@@ -141,8 +138,6 @@ class Http3RequestGateWireTest {
         assertThat(invocations.get()).as("neither refused request reached the handler").isEqualTo(2);
     }
 
-    // quarantine: #2605 flaky in CI only (3 hits on unrelated PRs); 44/44 isolated class runs green on cloudbb-d1, no mechanism found
-    @Tag("quarantine")
     @Test
     void bodyAtTheLimitPasses_oneByteOverIsRefused() throws Exception {
         start();
