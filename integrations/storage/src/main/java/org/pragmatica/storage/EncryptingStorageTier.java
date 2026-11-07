@@ -374,6 +374,22 @@ public final class EncryptingStorageTier implements StorageTier {
         return delegate.exists(id);
     }
 
+    /// The delegate's answer: blocks are stored under their plaintext id, so the size is the framed ciphertext's.
+    @Override
+    public Promise<Option<BlockStat>> stat(BlockId id) {
+        return delegate.stat(id);
+    }
+
+    @Override
+    public Promise<Page<BlockStat>> scan(KeyShard shard, Option<Cursor> after, int limit) {
+        return delegate.scan(shard, after, limit);
+    }
+
+    @Override
+    public Promise<Boolean> touch(BlockId id) {
+        return delegate.touch(id);
+    }
+
     @Override
     public TierLevel level() {
         return delegate.level();
