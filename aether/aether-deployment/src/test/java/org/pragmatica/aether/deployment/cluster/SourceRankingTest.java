@@ -245,7 +245,7 @@ class SourceRankingTest {
     }
 
     @Test
-    void rank_freeAndReserved_shareRank_ownerRulingQ4() {
+    void rank_free_sharesReservedRank_ownerQ4() {
         // Owner ruling Q4, know ea915292bf: FREE and RESERVED both rank 0, so name decides between them.
         var sources = Map.of("a-ondemand",
                              with(hetzner("a-ondemand"), 100, CostClass.ONDEMAND),
