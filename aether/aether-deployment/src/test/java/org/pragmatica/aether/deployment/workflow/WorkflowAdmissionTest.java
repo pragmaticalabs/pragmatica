@@ -4,21 +4,27 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.workflow;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.aether.deployment.workflow.WorkflowAdmission.AdmissionRefusal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowClaimValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowRunValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowState;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -45,26 +51,35 @@ class WorkflowAdmissionTest {
     private WorkflowTestCluster cluster;
     private WorkflowLedger ledger;
     private WorkflowAdmission admission;
-    private AtomicInteger ids;
+    private static final Cause BOOM = Causes.cause("boom");
+    private static final TimeSpan BOUND = TimeSpan.timeSpan(150).millis();
+
+    private AtomicInteger requests;
 
     @BeforeEach
     void setUp() {
         cluster = new WorkflowTestCluster();
         ledger = cluster.ledger(CORE_1);
-        ids = new AtomicInteger();
+        requests = new AtomicInteger();
         admission = admission(ledger);
     }
 
-    private WorkflowAdmission admission(WorkflowLedger over) {
-        return WorkflowAdmission.workflowAdmission(over, Map.of("pilot", PILOT), () -> "wf-" + ids.incrementAndGet());
+    private static WorkflowAdmission admission(WorkflowLedger over) {
+        return WorkflowAdmission.workflowAdmission(over, Map.of("pilot", PILOT), BOUND);
     }
 
+    /// Admits as a NEW request: request keys are `req-1`, `req-2`, … in call order, so the n-th run's id is [#id] of n.
     private Result<WorkflowRunValue> admit(List<String> keys) {
         return admission.admit("pilot",
                                Map.of("node", "n1"),
                                keys,
-                               1_000L)
+                               1_000L,
+                               "req-" + requests.incrementAndGet())
                         .await();
+    }
+
+    private static String id(int request) {
+        return WorkflowAdmission.runId("pilot", "req-" + request).unwrap();
     }
 
     private static Cause refusal(Result<?> result) {
@@ -78,12 +93,12 @@ class WorkflowAdmissionTest {
     void admit_createsTheRunAndClaimsEveryKey_inOneTransaction() {
         var run = admit(List.of("node:n1", "slice:a")).unwrap();
 
-        assertThat(run.id()).isEqualTo("wf-1");
+        assertThat(run.id()).isEqualTo(id(1));
         assertThat(run.state()).isEqualTo(WorkflowState.RUNNING);
         assertThat(run.deadline()).as("deadline = now + the kind's elapsed budget").isEqualTo(61_000L);
-        assertThat(cluster.run("wf-1")).isEqualTo(Option.some(run));
-        assertThat(cluster.claim("node:n1")).isEqualTo(Option.some(new WorkflowClaimValue("wf-1")));
-        assertThat(cluster.claim("slice:a")).isEqualTo(Option.some(new WorkflowClaimValue("wf-1")));
+        assertThat(cluster.run(id(1))).isEqualTo(Option.some(run));
+        assertThat(cluster.claim("node:n1")).isEqualTo(Option.some(new WorkflowClaimValue(id(1))));
+        assertThat(cluster.claim("slice:a")).isEqualTo(Option.some(new WorkflowClaimValue(id(1))));
     }
 
     /// The overlap is the LAST key of the second admission.
@@ -92,12 +107,12 @@ class WorkflowAdmissionTest {
         admit(List.of("node:n1", "node:n2")).unwrap();
         var refused = refusal(admit(List.of("node:n3", "node:n2")));
 
-        assertThat(refused).isEqualTo(new AdmissionRefusal.ConflictKeyHeld("node:n2", "wf-1"));
-        assertThat(refused.message()).contains("node:n2", "wf-1");
-        assertThat(cluster.run("wf-2")).as("the refused run is not created").isEqualTo(Option.none());
+        assertThat(refused).isEqualTo(new AdmissionRefusal.ConflictKeyHeld("node:n2", id(1)));
+        assertThat(refused.message()).contains("node:n2", id(1));
+        assertThat(cluster.run(id(2))).as("the refused run is not created").isEqualTo(Option.none());
         assertThat(cluster.claim("node:n3")).as("all-or-nothing: the free key is not claimed either")
                   .isEqualTo(Option.none());
-        assertThat(cluster.claim("node:n2")).isEqualTo(Option.some(new WorkflowClaimValue("wf-1")));
+        assertThat(cluster.claim("node:n2")).isEqualTo(Option.some(new WorkflowClaimValue(id(1))));
     }
 
     /// The overlap is the FIRST key of the second admission.
@@ -105,17 +120,17 @@ class WorkflowAdmissionTest {
     void admit_overlappingOnItsFirstKey_isRefusedWhole_namingTheHolder() {
         admit(List.of("node:n1", "node:n2")).unwrap();
         assertThat(refusal(admit(List.of("node:n1", "node:n4")))).isEqualTo(new AdmissionRefusal.ConflictKeyHeld("node:n1",
-                                                                                                                 "wf-1"));
+                                                                                                                 id(1)));
         assertThat(cluster.claim("node:n4")).isEqualTo(Option.none());
-        assertThat(cluster.claim("node:n1")).isEqualTo(Option.some(new WorkflowClaimValue("wf-1")));
+        assertThat(cluster.claim("node:n1")).isEqualTo(Option.some(new WorkflowClaimValue(id(1))));
     }
 
     @Test
     void admit_disjointKeys_admitsBoth() {
         admit(List.of("node:n1")).unwrap();
         admit(List.of("node:n2")).unwrap();
-        assertThat(cluster.claim("node:n1")).isEqualTo(Option.some(new WorkflowClaimValue("wf-1")));
-        assertThat(cluster.claim("node:n2")).isEqualTo(Option.some(new WorkflowClaimValue("wf-2")));
+        assertThat(cluster.claim("node:n1")).isEqualTo(Option.some(new WorkflowClaimValue(id(1))));
+        assertThat(cluster.claim("node:n2")).isEqualTo(Option.some(new WorkflowClaimValue(id(2))));
     }
 
     /// Two admissions racing on overlapping keys, from two threads released together, 200 rounds: exactly one is admitted and the
@@ -214,7 +229,7 @@ class WorkflowAdmissionTest {
 
     @Test
     void admit_refusesAnUnknownKind() {
-        var refused = admission.admit("nope", Map.of(), List.of("node:n1"), 1L).await();
+        var refused = admission.admit("nope", Map.of(), List.of("node:n1"), 1L, "req-x").await();
 
         assertThat(refusal(refused)).isEqualTo(new AdmissionRefusal.UnknownKind("nope"));
         assertThat(cluster.claim("node:n1")).isEqualTo(Option.none());
@@ -232,7 +247,7 @@ class WorkflowAdmissionTest {
     void admit_onANodeThatIsNotTheCommittedLeader_isRefused() {
         var follower = admission(cluster.ledger(CORE_2));
 
-        assertThat(refusal(follower.admit("pilot", Map.of(), List.of("node:n1"), 1L).await())).isEqualTo(AdmissionRefusal.NOT_LEADER);
+        assertThat(refusal(follower.admit("pilot", Map.of(), List.of("node:n1"), 1L, "req-x").await())).isEqualTo(AdmissionRefusal.NOT_LEADER);
         assertThat(cluster.claim("node:n1")).isEqualTo(Option.none());
     }
 
@@ -243,7 +258,8 @@ class WorkflowAdmissionTest {
         assertThat(admission(cluster.ledger(CORE_2)).admit("pilot",
                                                            Map.of(),
                                                            List.of("node:n1"),
-                                                           1L)
+                                                           1L,
+                                                           "req-x")
                             .await()
                             .isSuccess()).isTrue();
     }
@@ -257,15 +273,184 @@ class WorkflowAdmissionTest {
         assertThat(cluster.run(run.id()).unwrap().startedAt()).isEqualTo(1_000L);
     }
 
-    @Test
-    void admit_withTheDefaultIdFactory_givesDistinctWfPrefixedIds() {
-        var defaults = WorkflowAdmission.workflowAdmission(ledger, Map.of("pilot", PILOT));
-        var first = defaults.admit("pilot", Map.of(), List.of("node:n1"), 1L).await().unwrap();
-        var second = defaults.admit("pilot", Map.of(), List.of("node:n2"), 1L).await().unwrap();
+    //--- keyed admission (f2b §5): the run id is the request's, so a retry names the same run
 
-        assertThat(first.id()).startsWith("wf-");
-        assertThat(second.id()).startsWith("wf-");
-        assertThat(first.id()).isNotEqualTo(second.id());
+    @Test
+    void runId_isWfAndTheFirst16HexOfSha256OverKindNulRequestKey() throws Exception {
+        var hash = MessageDigest.getInstance("SHA-256")
+                                .digest("pilot\0req-1".getBytes(StandardCharsets.UTF_8));
+
+        assertThat(WorkflowAdmission.runId("pilot", "req-1").unwrap()).isEqualTo("wf-" + HexFormat.of()
+                                                                                              .formatHex(hash)
+                                                                                              .substring(0, 16));
+        assertThat(WorkflowAdmission.runId("pilot", "req-1").unwrap()).as("deterministic").isEqualTo(WorkflowAdmission.runId("pilot", "req-1").unwrap());
+        assertThat(WorkflowAdmission.runId("other", "req-1").unwrap()).as("the kind is part of the id").isNotEqualTo(id(1));
+        assertThat(WorkflowAdmission.runId("ab", "c").unwrap()).as("the separator keeps the parts apart").isNotEqualTo(WorkflowAdmission.runId("a", "bc").unwrap());
+    }
+
+    /// F3 (v2803): the NUL separator's premise is enforced, not assumed: ("a\0b", "c") and ("a", "b\0c") would share an id.
+    @Test
+    void runId_aKindHoldingNul_isRefused() {
+        assertThat(WorkflowAdmission.runId("a\0b", "c").isFailure()).isTrue();
+        assertThat(refusal(WorkflowAdmission.runId("a\0b", "c"))).isEqualTo(new AdmissionRefusal.InvalidKindName("a\0b"));
+        assertThat(WorkflowAdmission.runId("a", "b\0c").isSuccess()).as("a NUL in the request key is harmless").isTrue();
+    }
+
+    /// F5 (v2803): the read-back compares kind and params only, so equal params with other conflict keys answer the first run.
+    @Test
+    void admit_sameRequestKeyWithEqualParamsButOtherConflictKeys_answersTheFirstRun() {
+        var first = admission.admit("pilot", Map.of(), List.of("node:n1"), 1L, "req-f5").await().unwrap();
+        var again = admission.admit("pilot", Map.of(), List.of("node:n2"), 2L, "req-f5").await();
+
+        assertThat(again.unwrap()).isEqualTo(first);
+        assertThat(cluster.claim("node:n2")).as("the second request's keys are not claimed").isEqualTo(Option.none());
+    }
+
+    /// The client never saw the first answer and resends the same request: the applier refuses the second create (the run key
+    /// exists), and the read-back answers THE SAME run as a success, admitting nothing new.
+    @Test
+    void admit_lostAnswer_retry_returnsSameRun() {
+        var first = admission.admit("pilot", Map.of("node", "n1"), List.of("node:n1"), 1_000L, "req-a").await().unwrap();
+        var retried = admission.admit("pilot", Map.of("node", "n1"), List.of("node:n1"), 2_000L, "req-a").await();
+
+        assertThat(retried.isSuccess()).as("the retry is answered with the existing run: " + retried).isTrue();
+        assertThat(retried.unwrap()).isEqualTo(first);
+        assertThat(ledger.runs()).as("one run, not two").containsExactly(first);
+        assertThat(cluster.claim("node:n1")).isEqualTo(Option.some(new WorkflowClaimValue(first.id())));
+    }
+
+    /// The run moved on before the retry arrived: the retry answers the run as it is committed now.
+    @Test
+    void admit_retryAfterTheRunMoved_returnsTheCommittedRun() {
+        var first = admission.admit("pilot", Map.of("node", "n1"), List.of("node:n1"), 1_000L, "req-a").await().unwrap();
+        var waiting = first.issued("post", 1_500L);
+
+        assertThat(ledger.commit(first, waiting).await().unwrap()).isTrue();
+        assertThat(admission.admit("pilot", Map.of("node", "n1"), List.of("node:n1"), 2_000L, "req-a").await().unwrap()).isEqualTo(waiting);
+    }
+
+    @Test
+    void admit_sameRequestKeyWithDifferentParams_isRequestKeyReused() {
+        var first = admission.admit("pilot", Map.of("node", "n1"), List.of("node:n1"), 1_000L, "req-a").await().unwrap();
+        var reused = refusal(admission.admit("pilot", Map.of("node", "n2"), List.of("node:n2"), 2_000L, "req-a").await());
+
+        assertThat(reused).isEqualTo(new AdmissionRefusal.RequestKeyReused("req-a", first.id()));
+        assertThat(reused.message()).contains("req-a", first.id());
+        assertThat(cluster.claim("node:n2")).as("nothing of the second request is claimed").isEqualTo(Option.none());
+        assertThat(cluster.run(first.id())).isEqualTo(Option.some(first));
+    }
+
+    /// p5: the read-back compares the kind too. The run committed under this request's id is of another kind with the same params
+    /// (reachable only by an id collision or a foreign writer), so it is not "the same request": RequestKeyReused, not that run.
+    @Test
+    void admit_sameRequestKeyAndParamsButOtherKindCommitted_isRequestKeyReused() {
+        var id = WorkflowAdmission.runId("pilot", "req-a").unwrap();
+        var foreign = WorkflowRunValue.admitted(id, "other", Map.of("node", "n1"), List.of("node:n1"), 1_000L, 2_000L);
+
+        assertThat(ledger.create(foreign).await().unwrap()).isTrue();
+        var reused = refusal(admission.admit("pilot", Map.of("node", "n1"), List.of("node:n1"), 2_000L, "req-a").await());
+
+        assertThat(reused).isEqualTo(new AdmissionRefusal.RequestKeyReused("req-a", id));
+    }
+
+    @Test
+    void admit_blankRequestKey_isRefused_andClaimsNothing() {
+        assertThat(refusal(admission.admit("pilot", Map.of(), List.of("node:n1"), 1L, " ").await())).isEqualTo(AdmissionRefusal.INVALID_REQUEST_KEY);
+        assertThat(cluster.claim("node:n1")).isEqualTo(Option.none());
+    }
+
+    //--- the create's bound (f2b §5): an unanswered create is uncertain, and the keyed read-back resolves it
+
+    /// A ledger over the real one whose create is answered by `answer` (given the real ledger and the run), not by the applier.
+    private WorkflowLedger answering(Fn1<Promise<Boolean>, WorkflowRunValue> answer) {
+        return new WorkflowLedger() {
+            @Override
+            public List<WorkflowRunValue> runs() {
+                return ledger.runs();
+            }
+
+            @Override
+            public Option<WorkflowRunValue> run(String id) {
+                return ledger.run(id);
+            }
+
+            @Override
+            public Option<WorkflowClaimValue> claim(String conflictKey) {
+                return ledger.claim(conflictKey);
+            }
+
+            @Override
+            public boolean leads() {
+                return ledger.leads();
+            }
+
+            @Override
+            public Promise<Boolean> create(WorkflowRunValue run) {
+                return answer.apply(run);
+            }
+
+            @Override
+            public Promise<Boolean> commit(WorkflowRunValue expected, WorkflowRunValue next) {
+                return ledger.commit(expected, next);
+            }
+        };
+    }
+
+    private Promise<Boolean> appliedThen(WorkflowRunValue run, Promise<Boolean> answer) {
+        ledger.create(run).await();
+
+        return answer;
+    }
+
+    @Test
+    void admit_createAppliedButNeverAnswered_endsAtTheBound_withTheRun() {
+        var admitted = admission(answering(run -> appliedThen(run, Promise.promise()))).admit("pilot",
+                                                                                             Map.of("node", "n1"),
+                                                                                             List.of("node:n1"),
+                                                                                             1_000L,
+                                                                                             "req-a")
+                                                                                      .await(TimeSpan.timeSpan(10).seconds());
+
+        assertThat(admitted.isSuccess()).as("resolved by the read-back: " + admitted).isTrue();
+        assertThat(admitted.unwrap().id()).isEqualTo(WorkflowAdmission.runId("pilot", "req-a").unwrap());
+    }
+
+    @Test
+    void admit_createAppliedButAnswerFailed_answersTheRun() {
+        var admitted = admission(answering(run -> appliedThen(run, BOOM.promise()))).admit("pilot",
+                                                                                           Map.of("node", "n1"),
+                                                                                           List.of("node:n1"),
+                                                                                           1_000L,
+                                                                                           "req-a")
+                                                                                    .await();
+
+        assertThat(admitted.isSuccess()).as("resolved by the read-back: " + admitted).isTrue();
+    }
+
+    /// Nothing is visible when the bound expires: the outcome is unknown, so the refusal is Unanswered, never NotAdmitted.
+    @Test
+    void admit_createNeverAnsweredAndNotVisible_isUnanswered() {
+        var refused = refusal(admission(answering(_ -> Promise.promise())).admit("pilot",
+                                                                                Map.of("node", "n1"),
+                                                                                List.of("node:n1"),
+                                                                                1_000L,
+                                                                                "req-a")
+                                                                         .await(TimeSpan.timeSpan(10).seconds()));
+        var id = WorkflowAdmission.runId("pilot", "req-a").unwrap();
+
+        assertThat(refused).isEqualTo(new AdmissionRefusal.Unanswered(id));
+        assertThat(refused.message()).contains(id, "same request key");
+    }
+
+    /// Promise.timeout fails the promise it is called on: the bound is armed on a derived promise, so a ledger that answers a
+    /// shared promise does not have it failed for its other subscribers.
+    @Test
+    void admit_createAnsweringASharedPromise_doesNotFailIt() {
+        var shared = Promise.<Boolean> promise();
+
+        admission(answering(_ -> shared)).admit("pilot", Map.of(), List.of("node:n1"), 1_000L, "req-a")
+                                         .await(TimeSpan.timeSpan(10).seconds());
+        assertThat(shared.isResolved()).isFalse();
     }
 
     /// The applier refused, but when the claims are read back nobody holds any key of the run (the holder released in between, or
@@ -276,6 +461,11 @@ class WorkflowAdmissionTest {
             @Override
             public List<WorkflowRunValue> runs() {
                 return List.of();
+            }
+
+            @Override
+            public Option<WorkflowRunValue> run(String id) {
+                return Option.none();
             }
 
             @Override
@@ -298,8 +488,136 @@ class WorkflowAdmissionTest {
                 return Promise.success(false);
             }
         };
-        var refused = refusal(admission(refusing).admit("pilot", Map.of(), List.of("node:n1"), 1L).await());
+        var refused = refusal(admission(refusing).admit("pilot", Map.of(), List.of("node:n1"), 1L, "req-1").await());
 
-        assertThat(refused).isEqualTo(new AdmissionRefusal.NotAdmitted("wf-1"));
+        assertThat(refused).isEqualTo(new AdmissionRefusal.NotAdmitted(id(1)));
+    }
+
+    //--- f2b v2803 P1/P2/P2b: one request key names one run across concurrency and a leader change
+
+    /// Eight submitters race ONE request key behind a barrier: the key is the identity, so every one is answered the SAME run, and
+    /// exactly one run and one claim exist. A non-keyed admission (a fresh id per call) would refuse seven on the held claim.
+    @Test
+    void admit_eightConcurrentAdmissionsOfOneRequestKey_areAllAnsweredTheSameRun() throws Exception {
+        for (int round = 0; round < 50; round++) {
+            setUp();
+            var barrier = new CyclicBarrier(8);
+            var results = new ArrayList<Result<WorkflowRunValue>>();
+            var threads = new ArrayList<Thread>();
+
+            for (int n = 0; n < 8; n++) {
+                threads.add(Thread.ofPlatform().start(() -> raceOneKey(barrier, results)));
+            }
+
+            for (var thread : threads) {
+                thread.join();
+            }
+
+            var expected = WorkflowAdmission.runId("pilot", "req-same").unwrap();
+
+            assertThat(results).as("round " + round).hasSize(8);
+            assertThat(results.stream().filter(Result::isSuccess)).as("round " + round + ": every submitter succeeded: " + results).hasSize(8);
+            assertThat(results.stream().map(result -> result.unwrap().id()).distinct().toList()).as("round " + round).containsExactly(expected);
+            assertThat(ledger.runs()).as("round " + round + ": one run").hasSize(1);
+            assertThat(cluster.claim("node:n1")).as("round " + round).isEqualTo(Option.some(new WorkflowClaimValue(expected)));
+        }
+    }
+
+    private void raceOneKey(CyclicBarrier barrier, List<Result<WorkflowRunValue>> results) {
+        try {
+            barrier.await();
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+
+        var result = admission.admit("pilot", Map.of("node", "n1"), List.of("node:n1"), 1_000L, "req-same").await();
+
+        synchronized (results) {
+            results.add(result);
+        }
+    }
+
+    /// The leader admits, leadership moves, and the NEW leader receives the retry of the same request key: it is answered the
+    /// first run, and nothing is admitted twice.
+    @Test
+    void admit_retryOfARequestKeyOnANewLeader_answersTheFirstRun() {
+        var first = admission.admit("pilot", Map.of("node", "n1"), List.of("node:n1"), 1_000L, "req-a").await().unwrap();
+
+        cluster.lead(CORE_2);
+
+        var retried = admission(cluster.ledger(CORE_2)).admit("pilot", Map.of("node", "n1"), List.of("node:n1"), 2_000L, "req-a").await();
+
+        assertThat(retried.isSuccess()).as("answered by the new leader: " + retried).isTrue();
+        assertThat(retried.unwrap()).isEqualTo(first);
+        assertThat(ledger.runs()).as("one run").containsExactly(first);
+        assertThat(cluster.claim("node:n1")).isEqualTo(Option.some(new WorkflowClaimValue(first.id())));
+    }
+
+    /// The old leader's create is in flight (captured, unapplied) when leadership moves and the new leader admits the same request
+    /// key. The stale create then reaches the applier: it is refused (its leader record is stale), and the old caller's read-back
+    /// answers the NEW leader's run. One run, one claim.
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void admit_staleCreateFromTheOldLeader_isRefused_andTheOldCallerIsAnsweredTheNewLeadersRun() {
+        var captured = new AtomicReference<List<?>>();
+        var held = Promise.<List<Object>>promise();
+        var oldLeader = WorkflowAdmission.workflowAdmission(cluster.ledger(CORE_1,
+                                                                           commands -> {
+                                                                               captured.set(commands);
+                                                                               return held;
+                                                                           }),
+                                                            Map.of("pilot", PILOT),
+                                                            TimeSpan.timeSpan(30).seconds());
+        var oldCall = oldLeader.admit("pilot", Map.of("node", "n1"), List.of("node:n1"), 1_000L, "req-a");
+
+        assertThat(captured.get()).as("the old leader's create is in flight").isNotNull();
+
+        cluster.lead(CORE_2);
+
+        var newRun = admission(cluster.ledger(CORE_2)).admit("pilot", Map.of("node", "n1"), List.of("node:n1"), 2_000L, "req-a")
+                                                      .await()
+                                                      .unwrap();
+
+        held.succeed(cluster.apply((List) captured.get()));
+
+        var answered = oldCall.await(TimeSpan.timeSpan(10).seconds());
+
+        assertThat(answered.isSuccess()).as("the old caller is answered by the read-back: " + answered).isTrue();
+        assertThat(answered.unwrap()).isEqualTo(newRun);
+        assertThat(ledger.runs()).as("one run").containsExactly(newRun);
+        assertThat(cluster.claim("node:n1")).isEqualTo(Option.some(new WorkflowClaimValue(newRun.id())));
+    }
+
+    /// a07w: the two-argument factory must hand DEFAULT_BOUND to the admission, not a shorter bound; a create answered 400 ms late is
+    /// still admitted. A factory passing 1 ms ends at the bound with nothing visible, so this goes red.
+    @Test
+    void defaultFactory_waitsForASlowCreate_pastAShortBound() {
+        var admitted = WorkflowAdmission.workflowAdmission(answering(this::answeredLate), Map.of("pilot", PILOT))
+                                        .admit("pilot", Map.of("node", "n1"), List.of("node:n1"), 1_000L, "req-a")
+                                        .await(TimeSpan.timeSpan(10).seconds());
+
+        assertThat(admitted.isSuccess()).as("a slow create is waited for: " + admitted).isTrue();
+    }
+
+    private Promise<Boolean> answeredLate(WorkflowRunValue run) {
+        var answer = Promise.<Boolean> promise();
+
+        Thread.startVirtualThread(() -> applyAfterDelay(run, answer));
+        return answer;
+    }
+
+    private void applyAfterDelay(WorkflowRunValue run, Promise<Boolean> answer) {
+        try {
+            Thread.sleep(400);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        ledger.create(run).onSuccess(answer::succeed);
+    }
+
+    /// a07: the default create bound is 30 s; a shorter default would turn a slow consensus answer into Unanswered.
+    @Test
+    void defaultBound_isThirtySeconds() {
+        assertThat(WorkflowAdmission.DEFAULT_BOUND).isEqualTo(TimeSpan.timeSpan(30).seconds());
     }
 }

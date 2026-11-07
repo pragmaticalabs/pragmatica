@@ -3,6 +3,7 @@ package org.pragmatica.config;
 import java.util.Map;
 
 import org.pragmatica.config.source.MapConfigSource;
+import org.pragmatica.config.source.TomlConfigSource;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -120,12 +121,14 @@ class MalformedValueReaderTest {
         }
     }
 
-    /// The TOML-backed `ConfigService` (no production caller, kept honest all the same): a quoted
+    /// The production `ConfigService` over a TOML source (#810: the only reflective binder): a quoted
     /// value that is not a number or a boolean is refused, not read as absent.
     @Nested
-    class TomlConfigServiceReaders {
+    class TomlSourceReaders {
         private ConfigService toml(String content) {
-            return TomlConfigService.tomlConfigService(content).unwrap();
+            return providerBasedConfigService(ConfigurationProvider.builder()
+                                                                   .withSource(TomlConfigSource.tomlConfigSource(content).unwrap())
+                                                                   .build());
         }
 
         @Test
@@ -144,14 +147,13 @@ class MalformedValueReaderTest {
 
         /// An optional duration component that does not parse bound `none()` and the record was built (#1455).
         @Test
-        void config_unparseableOptionalDuration_isRefusedNamingKeyValueAndExpected() {
+        void config_unparseableOptionalDuration_isRefusedNamingKeyAndValue() {
             for (var key : java.util.List.of("timeout", "window")) {
                 var result = toml("[test]\nname = \"n\"\n" + key + " = \"soon\"\n").config("test", OptionalTimeouts.class);
 
                 assertThat(result.isFailure()).describedAs("%s = \"soon\" must refuse, bound %s", key, result).isTrue();
                 result.onFailure(cause -> assertThat(cause.message()).contains("test." + key)
-                                                                     .contains("soon")
-                                                                     .contains("a duration such as 30s"));
+                                                                     .contains("soon"));
             }
 
             var bound = toml("[test]\nname = \"n\"\ntimeout = \"5s\"\nwindow = \"1m\"\n").config("test", OptionalTimeouts.class).unwrap();

@@ -1,0 +1,53 @@
+# Wire-tag range ledger for SystemTags (#2822). One reservation per line:
+#
+#   <from>..<to> <owner> <date> <note>
+#
+# <from>..<to> is an inclusive range of SYSTEM tags; owner is one token (lane or PR); date is ISO (the day
+# the reservation was committed); the note is free text. Blank lines and lines starting with '#' are ignored.
+#
+# Rule: RESERVE FIRST, then ALLOCATE inside the range. A lane commits its ledger line (its own small PR, or
+# with the CTO's ack) BEFORE it pins a tag in SystemTags.java. SystemTagsLedgerTest fails a pin that lies
+# outside every reservation, and fails two reservations that overlap. A reservation may be wider than what
+# is pinned today (the unpinned tail is the owner's); it never overlaps another. SystemTags stays the single
+# authority for the numbers: this file says who may take a number, SystemTags says which type has it.
+#
+# Allocated before the ledger (owner "pre-ledger"): compressed from SystemTags' own block comments to the
+# extent actually pinned on 2026-11-07. Numbers inside those extents that are not pinned stay reserved.
+0..20 pre-ledger 2026-11-07 framework primitives (SliceCodec.TAG_*), never in the SystemTags table
+21..23 pre-ledger 2026-11-07 allocated before the ledger: consensus core
+24..35 pre-ledger 2026-11-07 allocated before the ledger: Rabia consensus protocol
+36..42 pre-ledger 2026-11-07 allocated before the ledger: cluster network protocol
+43..43 pre-ledger 2026-11-07 allocated before the ledger: TCP transport
+44..53 pre-ledger 2026-11-07 allocated before the ledger: SWIM membership gossip
+54..68 pre-ledger 2026-11-07 allocated before the ledger: DHT protocol
+69..74 pre-ledger 2026-11-07 allocated before the ledger: replicated KV commands
+75..84 pre-ledger 2026-11-07 allocated before the ledger: cluster health and metrics gossip
+85..90 pre-ledger 2026-11-07 allocated before the ledger: worker protocol (89 and 90 reused, see SystemTags)
+91..101 pre-ledger 2026-11-07 allocated before the ledger: stream replication and forwarding
+102..109 pre-ledger 2026-11-07 allocated before the ledger: value objects nested in the above
+110..127 pre-ledger 2026-11-07 allocated before the ledger: durable topic envelopes, Rabia section-4 retired pins; the last one-byte slots
+192..196 pre-ledger 2026-11-07 allocated before the ledger: artifact coordinates
+256..293 pre-ledger 2026-11-07 allocated before the ledger: cluster events
+512..522 pre-ledger 2026-11-07 allocated before the ledger: HTTP handling and forwarding
+640..643 pre-ledger 2026-11-07 allocated before the ledger: slice invocation (two retired DHTNotification pins)
+704..712 pre-ledger 2026-11-07 allocated before the ledger: slice core types
+832..841 pre-ledger 2026-11-07 allocated before the ledger: generation and community topology
+960..968 pre-ledger 2026-11-07 allocated before the ledger: blueprints
+1088..1137 pre-ledger 2026-11-07 allocated before the ledger: AetherKey records
+1600..1659 pre-ledger 2026-11-07 allocated before the ledger: AetherValue records
+1660..1673 pre-ledger 2026-11-07 allocated before the ledger: entity owner-forwarding, cluster command forwarding, deployment outcome
+1674..1722 pre-ledger 2026-11-07 allocated before the ledger: auto-heal flag, voting journal (retired), scheduled-task pause, incarnation, restore marker, pre-vote
+1740..1756 pre-ledger 2026-11-07 allocated before the ledger: community lifecycle events, stream failover and ISR events, scheduled-task fire events
+2112..2206 pre-ledger 2026-11-07 allocated before the ledger: DHT replication, rolling upgrade, deployment state machine, DHT repair, scheduled-task claim, topics, prefetch, W-OBS, stream registry, O3-1, ledger livelock, control-log append
+2207..2209 rc6-f3a 2026-11-05 arrival counters and capacity sample (merged on rc5)
+# rc6 f1 (#2713, open): 2210..2212 SliceRequirementKey, SliceRequirementValue, RequirementKind; 2225..2226 AbTestBaseKey, AbTestBaseValue.
+2210..2212 rc6-f1 2026-11-05 #2713 slice requirement records (open PR rc6/f1)
+2220..2224 rc6-f2a 2026-11-05 workflow run and conflict-key claims (merged on rc5)
+2225..2226 rc6-f1 2026-11-06 #2713 AbTestBaseKey and AbTestBaseValue (open PR rc6/f1)
+# Lane reservations of 2026-11-07, ahead of any pin.
+2830..2839 fsm-f2b 2026-11-07 #2760
+2840..2849 fsm-f2c 2026-11-07 #2761
+2850..2859 streams-5a 2026-11-07 #1961
+2870..2879 ahse-A2b 2026-11-07 ahse lane A2b
+2880..2889 ahse-A3-1 2026-11-07 #2450
+2890..2899 ahse-U2 2026-11-07 ahse lane U2
