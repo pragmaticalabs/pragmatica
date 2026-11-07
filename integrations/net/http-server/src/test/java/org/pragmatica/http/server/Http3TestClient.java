@@ -156,6 +156,10 @@ final class Http3TestClient {
                 trace.add("connected");
                 quic.closeFuture().addListener(_ -> reader.finish("quic-closed"));
 
+                // #2746: connection statistics every 500 ms, so a silent connection shows whether the server's packets
+                // stopped arriving or the client's stopped being acknowledged
+                var sampler = group.next()
+                                   .scheduleAtFixedRate(() -> sampleStats(quic, trace), 500, 500, TimeUnit.MILLISECONDS);
                 var stream = Http3.newRequestStream(quic, reader).sync().getNow();
 
                 trace.add("stream-open");
@@ -163,6 +167,8 @@ final class Http3TestClient {
                 trace.add("request-written");
 
                 var result = outcome.await(reader, peerClose);
+
+                sampler.cancel(false);
 
                 quic.close().sync();
 
@@ -172,6 +178,13 @@ final class Http3TestClient {
             }
         } finally {
             group.shutdownGracefully(0, 1, TimeUnit.SECONDS).syncUninterruptibly();
+        }
+    }
+
+    private static void sampleStats(QuicChannel quic, Trace trace) {
+        if (quic.isActive()) {
+            quic.collectStats(quic.eventLoop().<io.netty.handler.codec.quic.QuicConnectionStats>newPromise())
+                .addListener(done -> trace.add("stats(" + done.getNow() + ")"));
         }
     }
 
