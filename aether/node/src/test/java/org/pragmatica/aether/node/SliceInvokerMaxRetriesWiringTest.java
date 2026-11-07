@@ -27,6 +27,7 @@ import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.dht.DistributedDHTClient;
+import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
@@ -59,6 +60,9 @@ class SliceInvokerMaxRetriesWiringTest {
                                           defaults.deployment(),
                                           defaults.rollingUpdate(),
                                           defaults.cluster(),
+                                          defaults.consensus(),
+                                          defaults.election(),
+                                          defaults.swim(),
                                           defaults.observability(),
                                           defaults.dht(),
                                           defaults.worker(),
@@ -66,7 +70,10 @@ class SliceInvokerMaxRetriesWiringTest {
                                           defaults.repository(),
                                           defaults.scaling(),
                                           defaults.storageMaintenance());
-        var config = AetherNodeContentStorageWarnBootTest.minimalConfig(Option.none(), Option.none(), tempDir)
+        var config = AetherNodeContentStorageWarnBootTest.minimalConfig(Option.none(),
+                                                                                    Option.none(),
+                                                                                    ConfigurationProvider.builder().build(),
+                                                                                    tempDir)
                                                          .withTimeouts(timeouts);
         var setup = new AetherNode.ResourceProviderSetup(mock(ResourceProviderFacade.class),
                                                          Option.none(),
