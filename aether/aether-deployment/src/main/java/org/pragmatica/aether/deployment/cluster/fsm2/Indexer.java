@@ -122,6 +122,8 @@ public sealed interface Indexer {
             case AetherKey.ClusterConfigKey _ -> value instanceof ClusterConfigValue v
                                                  ? indexClusterConfig(m, v)
                                                  : m;
+            case AetherKey.TopicSubscriptionKey k -> indexTopicRow(m, k, k.nodeId(), value);
+            case AetherKey.TopicPublisherKey k -> indexTopicRow(m, k, k.nodeId(), value);
             default -> m;
         };
     }
@@ -149,6 +151,8 @@ public sealed interface Indexer {
                                                            SlicePair.slicePair(k.nodeId(), k.artifact()));
             case AetherKey.NodePlacementKey k -> removeNodePlacement(m, k.nodeId());
             case AetherKey.CommunityPlacementOperationKey k -> removePlacementOp(m, k.communityId());
+            case AetherKey.TopicSubscriptionKey k -> removeTopicRow(m, k, k.nodeId());
+            case AetherKey.TopicPublisherKey k -> removeTopicRow(m, k, k.nodeId());
             default -> m;
         };
     }
@@ -582,6 +586,21 @@ public sealed interface Indexer {
     static ClusterModel removeRoutes(ClusterModel m, SlicePair pair) {
         m.routes = m.routes.remove(pair);
         m.routesByNode = Idx.remove(m.routesByNode, pair.node(), pair.artifact());
+
+        return m;
+    }
+
+    /// #1337 (R-CF.15): a node-scoped topic row, kept at its committed value for the departure cleanup.
+    static ClusterModel indexTopicRow(ClusterModel m, AetherKey key, NodeId node, AetherValue value) {
+        m.topicRows = m.topicRows.put(key, value);
+        m.topicRowsByNode = Idx.add(m.topicRowsByNode, node, key);
+
+        return m;
+    }
+
+    static ClusterModel removeTopicRow(ClusterModel m, AetherKey key, NodeId node) {
+        m.topicRows = m.topicRows.remove(key);
+        m.topicRowsByNode = Idx.remove(m.topicRowsByNode, node, key);
 
         return m;
     }

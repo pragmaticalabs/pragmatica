@@ -632,6 +632,8 @@ public sealed interface Outbox {
             case AetherKey.ActivationDirectiveKey k -> m.directives.get(k.nodeId()).map(v -> (AetherValue) v);
             case AetherKey.CommunityKey k -> m.communities.get(k.communityId()).map(v -> (AetherValue) v);
             case AetherKey.SchemaVersionKey k -> m.schemas.get(k.datasourceName()).map(v -> (AetherValue) v);
+            case AetherKey.TopicSubscriptionKey k -> m.topicRows.get(k);
+            case AetherKey.TopicPublisherKey k -> m.topicRows.get(k);
             default -> Option.none();
         };
     }
