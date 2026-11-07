@@ -329,6 +329,7 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
     /// #2746: the request's last bytes carry the stream's `FIN` (the body's last DATA frame, or the HEADERS frame of a
     /// request without a body); a FIN-only frame after them is lost for good when quiche detects its loss together with
     /// earlier data's ([QuicStreamFinisher]).
+    @Contract
     private static void writeAndFinish(QuicStreamChannel streamChannel,
                                        DefaultHttp3HeadersFrame headers,
                                        ByteBuf body) {
