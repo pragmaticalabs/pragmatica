@@ -28,7 +28,6 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.pragmatica.aether.ember.StreamTripwireSupport.PARTITION;
 import static org.pragmatica.aether.ember.StreamTripwireSupport.engineKey;
 import static org.pragmatica.aether.ember.StreamTripwireSupport.sleepQuietly;
 
@@ -50,7 +49,6 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.sleepQuietly;
 class EmberForwardedPublishLoopTripwireTest {
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
-    private static final TimeSpan PUBLISH_BOUND = TimeSpan.timeSpan(30).seconds();
     private static final long ISR_BUDGET_MS = 90_000L;
     private static final int FORWARDED_PUBLISHES = 400;
     private static final String STREAM = "c04";
@@ -159,7 +157,7 @@ class EmberForwardedPublishLoopTripwireTest {
         var router = StreamTripwireSupport.component(replica, "streamWriteRouter", StreamWriteRouter.class);
 
         for (var i = 0; i < FORWARDED_PUBLISHES; i++) {
-            var offset = router.publish(ENGINE_KEY, PARTITION, ("forwarded-" + i).getBytes(StandardCharsets.UTF_8), System.currentTimeMillis()).await(PUBLISH_BOUND);
+            var offset = StreamTripwireSupport.publishOnceActivated(router, ENGINE_KEY, ("forwarded-" + i).getBytes(StandardCharsets.UTF_8));
 
             assertThat(offset.isSuccess()).as("forwarded publish %d via the non-owner %s: %s", i, replica.self().id(), offset).isTrue();
         }

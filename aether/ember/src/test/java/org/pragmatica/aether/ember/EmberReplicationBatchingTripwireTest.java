@@ -174,8 +174,7 @@ class EmberReplicationBatchingTripwireTest {
 
     private void publishRun(StreamWriteRouter router, int caller, int count) {
         for (var i = 0; i < count; i++) {
-            var offset = router.publish(ENGINE_KEY, PARTITION, ("single-" + caller + "-" + i).getBytes(StandardCharsets.UTF_8), System.currentTimeMillis())
-                               .await(PUBLISH_BOUND);
+            var offset = StreamTripwireSupport.publishOnceActivated(router, ENGINE_KEY, ("single-" + caller + "-" + i).getBytes(StandardCharsets.UTF_8));
 
             assertThat(offset.isSuccess()).as("single publish %d/%d: %s", caller, i, offset).isTrue();
         }

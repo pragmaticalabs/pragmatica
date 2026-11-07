@@ -132,6 +132,20 @@ class ReplicaFilterTripwireTest {
                                                                                                          .isFalse();
     }
 
+    /// F3 (P3-D, know `23ca0fd65f` D.2): the node FSM's two key families reach a worker over the replica feed: its goals (`SliceDesiredKey`) and
+    /// the observed rows, its own echo included (`SliceObservedKey`). The cluster FSM's own families do not. MT: either family moved back to
+    /// EXCLUDE is red here.
+    @Test
+    void theNodeFsmKeys_areIncluded_andTheClusterFsmKeysAreNot() {
+        var filter = ReplicaFilter.replicaFilter();
+
+        assertThat(filter.excludes(AetherKey.SliceDesiredKey.sliceDesiredKey(CORE, ARTIFACT))).as("a worker's goals").isFalse();
+        assertThat(filter.excludes(AetherKey.SliceObservedKey.sliceObservedKey(CORE, ARTIFACT))).as("the observed rows, the own echo included").isFalse();
+        assertThat(filter.excludes(instanceOf(AetherKey.DeploymentApplyKey.class))).as("cluster FSM only").isTrue();
+        assertThat(filter.excludes(instanceOf(AetherKey.ArtifactJudgmentKey.class))).as("cluster FSM only").isTrue();
+        assertThat(filter.excludes(instanceOf(AetherKey.NodeDepartureKey.class))).as("cluster FSM only").isTrue();
+    }
+
     @Disabled("enable at W3/W4 (worker replica): when the worker holds a full replica minus the exclusion set, re-point workerView at the filtered replica")
     @Test
     void replicaHoldsEveryKeyOutsideTheFilter_andNoneInsideIt() {
@@ -241,10 +255,10 @@ class ReplicaFilterTripwireTest {
     }
 
     /// TW-O15, the full classification: every `AetherKey` class in the sealed hierarchy, not a sample, is classified, and the EXCLUDE set is
-    /// exactly the stream cursor checkpoints, the cluster configuration and the five deployment-rewrite keys (EXCLUDED until P3-D). Mutation: move any other class (say `SliceTargetKey`) to EXCLUDE,
-    /// and the set has a third member.
+    /// exactly the stream cursor checkpoints, the cluster configuration and the three cluster-FSM-only deployment keys (P3-D, F3). Mutation: move
+    /// any other class (say `SliceTargetKey`) to EXCLUDE, and the set has an extra member.
     @Test
-    void everyAetherKeyClass_isIncluded_exceptTheCheckpointsTheConfigurationAndTheDeploymentRewriteKeys() {
+    void everyAetherKeyClass_isIncluded_exceptTheCheckpointsTheConfigurationAndTheClusterFsmKeys() {
         var classes = everyAetherKeyClass();
         var excluded = classes.stream()
                               .filter(keyClass -> ReplicaFilter.replicaFilter().excludes(instanceOf(keyClass)))
@@ -255,7 +269,7 @@ class ReplicaFilterTripwireTest {
                            .hasSizeGreaterThan(60)
                            .extracting(Class::getSimpleName)
                            .containsAll(unscopedKeys().keySet());
-        assertThat(excluded).as("the EXCLUDE set, over every AetherKey class").containsExactlyInAnyOrder("StreamCursorCheckpointKey", "ClusterConfigKey", "SliceDesiredKey", "SliceObservedKey", "DeploymentApplyKey", "ArtifactJudgmentKey", "NodeDepartureKey");
+        assertThat(excluded).as("the EXCLUDE set, over every AetherKey class").containsExactlyInAnyOrder("StreamCursorCheckpointKey", "ClusterConfigKey", "DeploymentApplyKey", "ArtifactJudgmentKey", "NodeDepartureKey");
     }
 
     /// The ring's byte measure sizes a key by `asString()` (R-07). `StructuredKey` gives a default for key families with no canonical text;

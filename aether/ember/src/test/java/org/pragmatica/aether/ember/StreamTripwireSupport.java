@@ -21,6 +21,7 @@ import java.util.Comparator;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
@@ -32,10 +33,14 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.stream.StreamCreateOutcome;
+import org.pragmatica.aether.stream.StreamError;
+import org.pragmatica.aether.stream.StreamWriteRouter;
+import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.stream.segment.RetentionEnforcer;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.testlogging.LogCapture;
 
@@ -111,6 +116,63 @@ final class StreamTripwireSupport {
 
     static Response publishVia(int mgmtPort, String stream, String data) {
         return post(mgmtPort, "/api/v1/streams/" + NAMESPACE + "/" + stream + "/" + VERSION + "/publish", "{\"data\":\"" + data + "\"}");
+    }
+
+    /// The bound on one publish attempt of [#publishOnceActivated].
+    static final TimeSpan PUBLISH_ATTEMPT_BOUND = TimeSpan.timeSpan(30).seconds();
+    /// How long [#publishOnceActivated] keeps retrying a publish refused with `OwnerNotActivated`.
+    static final long ACTIVATION_BOUND_MS = 120_000L;
+    private static final long ACTIVATION_RETRY_PAUSE_MS = 200L;
+
+    /// The first acknowledged publish after [#awaitFullIsr] (#2774, #2808). A full in-sync set does not mean the owner finished its
+    /// activation: until it does, a publish is refused with the transient `OwnerNotActivated`. That refusal is raised by the owner's
+    /// write admission (`StreamPartitionManager#admitOwnerWrite`) before the ring, the WAL or any replica is touched, so nothing is
+    /// appended and a retry cannot duplicate a record. Retries on exactly that refusal, within [#ACTIVATION_BOUND_MS]; any other
+    /// outcome (success, or any other failure) is returned as it is, so a test that asserts a different refusal keeps seeing it.
+    static Result<Long> publishOnceActivated(StreamWriteRouter router, String engineKey, byte[] payload) {
+        return publishOnceActivated(() -> router.publish(engineKey, PARTITION, payload, System.currentTimeMillis()));
+    }
+
+    /// As [#publishOnceActivated(StreamWriteRouter, String, byte[])] for a publish the caller builds (one fresh attempt per call).
+    static Result<Long> publishOnceActivated(Supplier<Promise<Long>> attempt) {
+        var deadline = System.currentTimeMillis() + ACTIVATION_BOUND_MS;
+        var outcome = attempt.get().await(PUBLISH_ATTEMPT_BOUND);
+
+        while (notActivated(outcome) && System.currentTimeMillis() < deadline) {
+            sleepQuietly(ACTIVATION_RETRY_PAUSE_MS);
+            outcome = attempt.get().await(PUBLISH_ATTEMPT_BOUND);
+        }
+
+        return outcome;
+    }
+
+    /// As [#publishVia] for the management-API publish: retried while the answer is the 503 that carries `OwnerNotActivated`
+    /// (the route answers a pre-append refusal as 503 "refused before writing" with the cause message, whether this node or the
+    /// owner it forwarded to raised it); any other answer is returned as it is.
+    static Response publishViaOnceActivated(int mgmtPort, String stream, String data) {
+        var deadline = System.currentTimeMillis() + ACTIVATION_BOUND_MS;
+        var response = publishVia(mgmtPort, stream, data);
+
+        while (notActivated(response) && System.currentTimeMillis() < deadline) {
+            sleepQuietly(ACTIVATION_RETRY_PAUSE_MS);
+            response = publishVia(mgmtPort, stream, data);
+        }
+
+        return response;
+    }
+
+    private static boolean notActivated(Response response) {
+        return response.status() == 503 && StreamError.OwnerNotActivated.describes(response.body());
+    }
+
+    /// The refusal as the publisher sees it: raised on this node, or forwarded from the owner as a string only.
+    private static boolean notActivated(Result<Long> outcome) {
+        return outcome.fold(StreamTripwireSupport::isActivationRefusal, _ -> false);
+    }
+
+    private static boolean isActivationRefusal(Cause cause) {
+        return cause instanceof StreamError.OwnerNotActivated
+               || cause instanceof StreamForwardError.RemotePublishRetryable retryable && StreamError.OwnerNotActivated.describes(retryable.detail());
     }
 
     static void awaitLeader(EmberCluster cluster) {

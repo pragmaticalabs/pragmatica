@@ -9,6 +9,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
+import java.util.function.LongConsumer;
 
 import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.consensus.StateMachine.Batch;
@@ -934,6 +935,15 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
                ? awaitDelivered(seq).await()
                                .unwrap()
                : Unit.unit();
+    }
+
+    /// Registers the listener told the revision of every replay item ([#replayNotifications()]) on the delivering thread, before the item's burst
+    /// is delivered and whether or not the burst is empty: the snapshot install itself, not something to infer from its burst. The revision is the
+    /// store's committed revision at the replay: the install's for a `restoreCommittedSnapshot`, the unchanged one for a `restoreSnapshot`. One
+    /// listener; a second registration replaces the first.
+    @Contract
+    public void onReplayStart(LongConsumer listener) {
+        dispatcher.onReplayStart(listener);
     }
 
     /// The replay item carries no notifications: its burst is computed when the delivery loop dequeues it (§3.7).

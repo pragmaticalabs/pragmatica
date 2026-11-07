@@ -1,0 +1,2 @@
+### Fixed (2026-11-07 — #2813: ClusterFsmInterpreterTest liveness-window flake)
+- Test-only: `ManualTimerService.jump` moves the injected clock to the target before firing due timers, so the consumer thread never steps a window-completing tick at a time short of the advanced window; `SeamDelivery` tests that advance a full liveness window use it `[verified: aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/wiring/ClusterFsmInterpreterTest.java]`.

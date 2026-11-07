@@ -5,13 +5,15 @@
 package org.pragmatica.aether.node.deployment;
 
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.lang.Contract;
 
 
-/// The membership decisions the cluster FSM consumes, **cores only** (phase-3 design 5.1, B9, CI-8): `NodeJoined` and `NodeRemoved`, each
-/// with the admission membership attaches (`admission(n)`, W-23). After each input is enqueued the seam poller samples, so the fresh sample
-/// is appended behind it (review M1).
+/// The membership decisions the cluster FSM consumes (phase-3 design 5.1, B9, B10, CI-7, CI-8, CI-9): a core's `NodeJoined` and `NodeRemoved`, and a
+/// worker's `WorkerJoin` and `WorkerLeave` (#2762); each join carries the admission membership attaches (`admission(n)`, W-23). After each input is
+/// enqueued the seam poller samples, so the fresh sample is appended behind it (review M1).
 ///
 /// The arms the cluster FSM has no variant for (`NodeDecommissioned`, `NodeJoining`, `NodeDraining`, `NodeFailedDrain`, `NodeShuttingDown`;
 /// C4, `c9e1d1747`) are deliberately not here, and `DeploymentWiring` binds nothing to them under FSM2 (MT-16, NT-116).
@@ -47,6 +49,21 @@ public final class MembershipInputs {
     @Contract
     public void onNodeRemoved(MembershipDecision.NodeRemoved decision) {
         target.deliver(new ClusterInput.NodeRemoved(decision.nodeId()));
+        seams.afterMembershipInput();
+    }
+
+    /// CI-7: membership admitted a worker (B10), or a worker's placement record re-drives its join (B11).
+    @Contract
+    public void onWorkerJoin(WorkerJoinDecision decision) {
+        target.deliver(new ClusterInput.WorkerJoin(decision.nodeId(),
+                                                   admissions.admission(decision.nodeId())));
+        seams.afterMembershipInput();
+    }
+
+    /// CI-9: a worker left (B9).
+    @Contract
+    public void onWorkerLeave(WorkerLeaveDecision decision) {
+        target.deliver(new ClusterInput.WorkerLeave(decision.nodeId()));
         seams.afterMembershipInput();
     }
 }

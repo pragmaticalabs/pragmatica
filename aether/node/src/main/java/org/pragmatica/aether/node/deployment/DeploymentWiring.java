@@ -16,10 +16,14 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmInput;
 import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.aether.deployment.wiring.FsmTimers;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
@@ -39,6 +43,8 @@ import org.pragmatica.messaging.MessageRouter;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 
+import static org.pragmatica.lang.Promise.promise;
+
 
 /// **The only place an engine-dependent hook is bound** (phase-3 design 8.3, D2, W-15, W-32). Every deployment hook of the node that differs
 /// between the legacy and the FSM2 engine goes through here, and each binding is recorded as `<branch point> -> <target>`; the record is compared
@@ -54,11 +60,13 @@ import io.micrometer.core.instrument.MeterRegistry;
 /// both engines: a node whose engine disagrees with the cluster's activates neither engine's FSMs during its window (design 8.2).
 ///
 /// **N-2, discharged.** `ConfigChanged` (B5) reaches the node interpreter on a FSM2 core: the adapter executes every `LocalStep`, `NOTIFY_CONFIG`
-/// included (its switch is exhaustive, so a step it could not run is a compile error), and the hook is bound without a condition. A worker's
-/// hook stays a counted drop (N-3).
+/// included (its switch is exhaustive, so a step it could not run is a compile error), and the hook is bound without a condition, on a core
+/// and on a worker (#2757).
 ///
-/// **N-3.** A worker never gets a [Fsm2System]: [#attach] refuses one, and the worker's FSM2-side bindings are counted drops (workers are unwired
-/// in phase 3).
+/// **The worker arm (F3, P3-D; replaces N-3).** A FSM2 worker gets the node half of a [Fsm2System]: the node FSM's KV routes (B1.node, over the
+/// replica feed, know `23ca0fd65f` D.2), the quorum edge (B2), the level-heal (B3), the passive-client switch as its entry edge (B4), the config
+/// hook (B5), the self-ready signal (B6) and the stop drain (B13). Every cluster-side hook (B1.cluster, B7, B8, B9, B12, B14, B16) stays
+/// unbound or a counted drop on a worker: a worker never leads.
 public final class DeploymentWiring {
     private static final String LEGACY_TARGET = "legacy";
     private static final String DROPPED_TARGET = "dropped";
@@ -87,7 +95,7 @@ public final class DeploymentWiring {
         this.guard = guard;
         this.admissions = node.admissions();
         bindings.put("B13.Stop", engineTarget("fsm2:Fsm2System.deactivateCluster"));
-        bindings.put("B13.StopDrain", engineTarget("fsm2:Fsm2System.drainNode"));
+        bindings.put("B13.StopDrain", nodeTarget("fsm2:Fsm2System.drainNode"));
         bindings.put("B16.Seams", engineTarget("fsm2:SeamPoller"));
         bindings.put("B20.LineageMint", "marker=" + engine);
         this.routes = Fsm2Routes.fsm2Routes(routeTargets(node, this::deliverToNode, this::deliverToCluster));
@@ -128,15 +136,34 @@ public final class DeploymentWiring {
         // thread, a wiring bug) maps to 0, which FsmRuntime drops and counts as dropped_revision (watermark >= 0): the fail-safe Fsm2Routes
         // documents. NodeFsmInterpreterTest (aRevisionZeroKvInput_againstAFreshWatermark_isDropped_notStepped) pins the drop; the binding itself is
         // pinned by DeploymentWiringProductionBindingTest; Fsm2RoutesTest pins only that the stamp reads 0 outside the dispatch.
-        return deploymentWiring(config.deploymentEngine(),
-                                worker,
-                                registry,
-                                guard,
-                                new Node(config.self(),
-                                         () -> store.notificationRevision()
-                                                    .or(0L),
-                                         store::isReplaying,
-                                         admissions));
+        var wiring = deploymentWiring(config.deploymentEngine(),
+                                      worker,
+                                      registry,
+                                      guard,
+                                      new Node(config.self(),
+                                               () -> store.notificationRevision()
+                                                          .or(0L),
+                                               store::isReplaying,
+                                               admissions));
+
+        return listeningForInstalls(wiring, store);
+    }
+
+    /// D8: on an FSM2 worker every replay item of the store, the replica feed's and the metadata channel's alike, tells the node FSM which snapshot it
+    /// installs. A core registers nothing: its interpreter drops replay-flagged inputs.
+    static DeploymentWiring listeningForInstalls(DeploymentWiring wiring, KVStore<AetherKey, AetherValue> store) {
+        if (wiring.isFsm2() && wiring.worker) {
+            store.onReplayStart(wiring::snapshotInstalled);
+        }
+
+        return wiring;
+    }
+
+    /// A replica snapshot was installed in the worker's store at `revision`; the node FSM resets its replay watermark to it (ruling D8).
+    @Contract
+    void snapshotInstalled(long revision) {
+        system.onPresent(fsm2 -> fsm2.nodeInterpreter()
+                                     .installedAt(revision));
     }
 
     /// The routes resolve the interpreters when an input arrives, not when the routes are built: the system is assembled after the route table
@@ -161,10 +188,17 @@ public final class DeploymentWiring {
                      .or(false);
     }
 
-    /// The target of a hook whose FSM2 side exists only on a core: the FSM2 target there, a drop on a FSM2 worker (N-3), the legacy one otherwise.
+    /// The target of a hook whose FSM2 side exists only on a core: the FSM2 target there, a drop on a FSM2 worker (a worker never leads), the legacy one otherwise.
     private String engineTarget(String fsm2Target) {
         return isFsm2()
                ? fsm2TargetOrDrop(fsm2Target)
+               : LEGACY_TARGET;
+    }
+
+    /// The target of a hook the node FSM serves, on a core and on a worker alike: the FSM2 target under FSM2, the legacy one otherwise.
+    private String nodeTarget(String fsm2Target) {
+        return isFsm2()
+               ? fsm2Target
                : LEGACY_TARGET;
     }
 
@@ -197,10 +231,11 @@ public final class DeploymentWiring {
     }
 
     // -- the FSM2 engine -------------------------------------------------------------------------------------------
-    /// Attaches the assembled FSM2 system. Refused for a worker (N-3) and under LEGACY.
+    /// Attaches the assembled FSM2 system: a core's whole system, a worker's node half. Refused under LEGACY, and refused when the system's role
+    /// is not the node's (a core's system handed to a worker, or the reverse).
     @Contract
     public void attach(Fsm2System assembled) {
-        if (isFsm2() && !worker) {
+        if (isFsm2() && assembled.worker() == worker) {
             system = Option.some(assembled);
             bindings.put("B15.construction", "fsm2:Fsm2System");
             bindings.put("B6.SelfReady", "fsm2:SelfReady effect");
@@ -258,10 +293,12 @@ public final class DeploymentWiring {
     }
 
     // -- FSM2 hooks --------------------------------------------------------------------------------------------------
-    /// B1, B8: the KV routes of both FSMs. Under LEGACY nothing is registered; for a worker nothing either (N-3).
+    /// B1, B8: the KV routes of both FSMs. Under LEGACY nothing is registered; for a worker the node FSM's routes only.
     @Contract
     public void registerKv(KVNotificationRouter.Builder<AetherKey, AetherValue> builder) {
-        if (isFsm2() && !worker) {
+        if (isFsm2() && worker) {
+            registerNodeKv(builder);
+        } else if (isFsm2()) {
             registerFsm2Kv(builder);
         }
     }
@@ -272,21 +309,37 @@ public final class DeploymentWiring {
                                                                      "fsm2:Fsm2Routes"));
         Fsm2Routes.CLUSTER_REMOVE_FAMILIES.forEach(type -> bindings.put("B1.cluster." + type.getSimpleName() + ".remove",
                                                                         "fsm2:Fsm2Routes"));
+        recordNodeRoutes();
+    }
+
+    private void registerNodeKv(KVNotificationRouter.Builder<AetherKey, AetherValue> builder) {
+        routes.registerNode(builder);
+        recordNodeRoutes();
+    }
+
+    private void recordNodeRoutes() {
         List.of("SliceDesiredKey", "SliceObservedKey", "SliceTargetKey", "VersionRoutingKey").forEach(family -> bindings.put("B1.node." + family,
                                                                                                                              "fsm2:Fsm2Routes"));
     }
 
-    /// B2, B7, B8, B9: the message routes the FSM2 engine consumes. Under LEGACY none.
+    /// B2, B7, B8, B9: the message routes the FSM2 engine consumes. Under LEGACY none; for a worker the quorum edge (B2) only.
     @Contract
     public void registerEntries(List<MessageRouter.Entry<?>> entries) {
-        if (isFsm2() && !worker) {
+        if (isFsm2() && worker) {
+            registerQuorumEdge(entries);
+        } else if (isFsm2()) {
             registerFsm2Entries(entries);
         }
     }
 
-    private void registerFsm2Entries(List<MessageRouter.Entry<?>> entries) {
+    private void registerQuorumEdge(List<MessageRouter.Entry<?>> entries) {
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class,
                                               notification -> system.onPresent(fsm2 -> fsm2.onClusterStateNotification(notification))));
+        bindings.put("B2.ClusterStateNotification", "fsm2:Fsm2System.onClusterStateNotification");
+    }
+
+    private void registerFsm2Entries(List<MessageRouter.Entry<?>> entries) {
+        registerQuorumEdge(entries);
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               change -> system.onPresent(fsm2 -> fsm2.onLeaderChange(change))));
         entries.addAll(routes.leaderEntries());
@@ -296,7 +349,6 @@ public final class DeploymentWiring {
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
                                               decision -> system.onPresent(fsm2 -> fsm2.membership()
                                                                                        .onNodeRemoved(decision))));
-        bindings.put("B2.ClusterStateNotification", "fsm2:Fsm2System.onClusterStateNotification");
         bindings.put("B7.LeaderChange", "fsm2:Fsm2System.onLeaderChange");
         bindings.put("B8.LeaderKey", "fsm2:Fsm2Routes.leaderEntries");
         bindings.put("B9.NodeJoined", "fsm2:MembershipInputs");
@@ -321,9 +373,21 @@ public final class DeploymentWiring {
         return Unit.unit();
     }
 
-    /// B5: a config applied. Under FSM2 on a core, the node interpreter's `ConfigChanged` (NI-5); on a worker a counted drop (N-3).
+    /// B4: the passive-client switch. Under FSM2 on a worker, the worker's entry edge ([Fsm2System#onPassiveClientReady], resolved when it fires:
+    /// the hook is built before the system is attached); on a FSM2 core a counted drop; under LEGACY the legacy reconcile, gated.
+    public Runnable passiveClientSwitch(Runnable legacy) {
+        return isFsm2() && worker
+               ? recorded("B4.PassiveClientSwitch", "fsm2:Fsm2System.onPassiveClientReady", this::passiveClientReady)
+               : legacyGated("B4.PassiveClientSwitch", legacy);
+    }
+
+    private void passiveClientReady() {
+        system.onPresent(Fsm2System::onPassiveClientReady);
+    }
+
+    /// B5: a config applied. Under FSM2, on a core and on a worker (#2757), the node interpreter's `ConfigChanged` (NI-5).
     public Consumer<String> configApplied(Consumer<String> legacy) {
-        return isFsm2() && !worker
+        return isFsm2()
                ? recorded("B5.ConfigApplied", "fsm2:NodeFsmInput.ConfigChanged", this::configChanged)
                : legacy("B5.ConfigApplied", legacy);
     }
@@ -333,7 +397,7 @@ public final class DeploymentWiring {
                                      .deliver(new NodeFsmInput.ConfigChanged(key)));
     }
 
-    /// B12: a node reported itself DRAINING. Under FSM2 on a core, the cluster interpreter's `NodeDraining` (CI-10); on a worker a counted drop (N-3);
+    /// B12: a node reported itself DRAINING. Under FSM2 on a core, the cluster interpreter's `NodeDraining` (CI-10); on a worker a counted drop (a worker runs no cluster FSM);
     /// under LEGACY the legacy eviction target, unchanged. The membership FSM's acknowledgement is not part of this hook and runs under both engines.
     public Consumer<NodeId> drainReport(Consumer<NodeId> legacy) {
         return isFsm2() && !worker
@@ -345,8 +409,49 @@ public final class DeploymentWiring {
         system.onPresent(fsm2 -> fsm2.onNodeDraining(node));
     }
 
+    /// B10: membership admitted a worker (the direct admission call and the `WorkerJoinDecision` route). Under FSM2 on a core, the cluster
+    /// interpreter's `WorkerJoin` (CI-7) with the admission membership attaches; on a worker a counted drop (a worker runs no cluster FSM); under
+    /// LEGACY the legacy target, unchanged.
+    public Consumer<WorkerJoinDecision> workerJoin(String point, Consumer<WorkerJoinDecision> legacy) {
+        return isFsm2() && !worker
+               ? recorded(point, "fsm2:MembershipInputs.onWorkerJoin", this::workerJoined)
+               : legacy(point, legacy);
+    }
+
+    private void workerJoined(WorkerJoinDecision decision) {
+        system.onPresent(fsm2 -> fsm2.membership()
+                                     .onWorkerJoin(decision));
+    }
+
+    /// B11: a worker's placement record was written. Under FSM2 on a core, translated to the cluster interpreter's `WorkerJoin` (design 8.3), as
+    /// the legacy re-drive translates it to `onWorkerJoin`; on a worker a counted drop; under LEGACY the legacy target, unchanged.
+    public Consumer<ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue>> placementRedrive(Consumer<ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue>> legacy) {
+        return isFsm2() && !worker
+               ? recorded("B11.PlacementRedrive", "fsm2:MembershipInputs.onWorkerJoin", this::placementPut)
+               : legacy("B11.PlacementRedrive", legacy);
+    }
+
+    private void placementPut(ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue> put) {
+        workerJoined(WorkerJoinDecision.workerJoinDecision(put.cause().key().nodeId(),
+                                                           "worker",
+                                                           HlcTimestamp.ZERO));
+    }
+
+    /// B9 (worker arm): a worker left. Under FSM2 on a core, the cluster interpreter's `WorkerLeave` (CI-9); on a worker a counted drop; under
+    /// LEGACY the legacy target, unchanged.
+    public Consumer<WorkerLeaveDecision> workerLeave(Consumer<WorkerLeaveDecision> legacy) {
+        return isFsm2() && !worker
+               ? recorded("B9.cdm.WorkerLeave", "fsm2:MembershipInputs.onWorkerLeave", this::workerLeft)
+               : legacy("B9.cdm.WorkerLeave", legacy);
+    }
+
+    private void workerLeft(WorkerLeaveDecision decision) {
+        system.onPresent(fsm2 -> fsm2.membership()
+                                     .onWorkerLeave(decision));
+    }
+
     /// B14: the committed snapshot was restored (`onStateRestored`). Under FSM2 on a core, the leader FSM's re-incarnation rule; on a worker a counted
-    /// drop (N-3); under LEGACY nothing is added to what the node registers itself (`refreshCommittedLeader` and the rest), recorded as legacy.
+    /// drop (the node FSM needs nothing, design 4.4); under LEGACY nothing is added to what the node registers itself (`refreshCommittedLeader` and the rest), recorded as legacy.
     public Runnable stateRestored() {
         return isFsm2() && !worker
                ? recorded("B14.StateRestored", "fsm2:Fsm2System.onStateRestored", this::restored)
@@ -459,28 +564,30 @@ public final class DeploymentWiring {
     /// Under LEGACY the drain is a no-op and the order is the one the node always had.
     ///
     /// #2688: `delivered` is taken right after PASSIVE is routed and resolves once the reactions that edge queued (the `LeaderChange` the FSM routes onto
-    /// a react executor) have run; the quiesce, which would drop them, waits for it. The returned promise resolves after the quiesce. The quiesce and
-    /// whatever the caller chains on the returned promise run on a pooled thread, never on the thread that resolved `delivered`: that is the react
-    /// executor whose reactions it waited for, or the shared timeout scheduler when the caller bounded the wait, and the node's teardown chained here
-    /// blocks (the final cursor commits are awaited, bounded).
+    /// a react executor) have run; the quiesce, which would drop them, waits for it. The returned promise resolves after the quiesce. The quiesce is
+    /// itself the pooled step, started once `delivered` has resolved, so the quiesce runs on a pooled
+    /// thread in every ordering (`delivered` resolved before this call or after it), never on the thread that resolved `delivered` and never on the
+    /// caller. A continuation the caller chains on the returned promise runs on that pooled thread, or on the caller's own thread if the quiesce has
+    /// already finished, and never on the thread that resolved `delivered`: that is the react executor whose reactions it waited for, or the shared timeout scheduler when the caller bounded the wait, and the node's
+    /// teardown chained here blocks (the final cursor commits are awaited, bounded). Promise continuations run inline on the resolving thread, so a
+    /// hop that only started a pooled task and then mapped its result could still run the quiesce inline when the task finished first (#2806).
     public Promise<Unit> leaveQuorum(Runnable routePassive, Supplier<Promise<Unit>> delivered, Runnable quiesce) {
         routePassive.run();
         var reactionsRun = delivered.get();
 
         system.onPresent(Fsm2System::drainNode);
 
-        return reactionsRun.flatMap(DeploymentWiring::handedOff)
-                           .map(unit -> quiesced(quiesce));
+        return reactionsRun.flatMap(unit -> quiescedOnPool(quiesce));
     }
 
-    private static Promise<Unit> handedOff(Unit unit) {
-        return Promise.promise(Result::unitResult);
+    private static Promise<Unit> quiescedOnPool(Runnable quiesce) {
+        return promise(() -> quiesced(quiesce));
     }
 
-    private static Unit quiesced(Runnable quiesce) {
+    private static Result<Unit> quiesced(Runnable quiesce) {
         quiesce.run();
 
-        return Unit.unit();
+        return Result.unitResult();
     }
 
     /// The first step of the stop sequence (B13): under LEGACY the legacy deactivation; under FSM2 the cluster interpreter deactivates and closes.

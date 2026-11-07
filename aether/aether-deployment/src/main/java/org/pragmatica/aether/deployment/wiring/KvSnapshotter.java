@@ -54,8 +54,9 @@ import org.pragmatica.lang.Option;
 /// added to `F2/Indexer` is covered without a second list here. The seams and the admissions come from the callers' suppliers, read on the
 /// same (consumer) thread right after the cut.
 ///
-/// A worker's store has no revision (its `committedRevision` is 0 for its whole life), so this is the **core** snapshot; the worker rule
-/// (an install sequence, design 4.4 D-1) is a separate piece that this tracer does not wire.
+/// **Workers.** A worker's store is a replica fed by a core (know `23ca0fd65f` D.2): it carries the cores' revisions (`KVStore.applyEffects`
+/// sets `slot + 1`, a replica install the snapshot's revision), so the same cut and the same revision dedupe hold there. What differs on a
+/// worker is the replay rule (`ReplayRule.WORKER`): a re-subscription's replay burst is stepped as facts, not dropped.
 public final class KvSnapshotter {
     /// A snapshot and the revision it was cut at.
     public record Cut<S>(S snapshot, long revision) {}
