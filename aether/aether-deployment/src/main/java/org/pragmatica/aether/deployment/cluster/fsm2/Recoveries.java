@@ -6,12 +6,18 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 /// The recovery codes of the cluster FSM's standing warnings, as the owner ruled the D.6 table (spec 9.4, know 7cc9e79f61). Each recovery
 /// is raised with the warning's own subject and closes it in one of two ways: the condition ended, or (reason [#SUBJECT_GONE]) the subject
-/// left the FSM's model, so abandonment closes the warning as success does. A recovery whose opener leaves a leader-local mark is raised
-/// only for a subject in this leader's open set; the recoveries read from committed state (an inferred departure record for rows 6/7, an
-/// unresponsive exclusion for rows 18/19) also close a warning a previous leader raised.
+/// left the FSM's model, so abandonment closes the warning as success does. A warning whose subject covers several instances (rows 15/16,
+/// 18/19 and 20: the artifact) is closed only when the last of them leaves. A recovery whose opener leaves a leader-local mark is raised
+/// only for a subject in this leader's open set; rows 18/19 are raised from the committed exclusions (`Judgments`).
 ///
-/// Limit: the open sets are leader-local, like every warned set of the model. A warning raised by a deposed leader is not closed by its
-/// successor, and the event layer would not publish a recovery from a node that never published the warning (#752).
+/// Across a leader change (CTO ruling A2 on #2831): the recoveries of rows 6/7 and 19 close across nodes (`closesAcrossNodes`), because
+/// their open condition is committed state (the inferred-departure record, the committed exclusions); a successor raises them from that
+/// state and its event layer publishes them although it never saw the warning. The other families are leader-local: a successor raises
+/// their warning again where it re-evaluates the condition and finds it holding, and then closes it itself.
+///
+/// Limit (#2834): the open sets of the leader-local families are not committed. A warning a deposed leader raised is never closed by its
+/// successor when the condition ended before the successor saw it, or when the successor does not raise it again (a family raised only at
+/// an event, such as an exhaustion or a join).
 public sealed interface Recoveries {
     /// The reason text of a recovery raised because its subject left the FSM's model.
     String SUBJECT_GONE = "subject-gone";

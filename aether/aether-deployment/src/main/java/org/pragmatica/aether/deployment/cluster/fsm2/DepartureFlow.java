@@ -80,6 +80,7 @@ public sealed interface DepartureFlow {
         dropGoalsOf(m, node);
         dropPendingJoin(m, ctx, node);
         Directory.policyGone(m, ctx, node);
+        Directory.assignmentGone(m, ctx, node);
         if (!inferred) {
             Absence.clear(m, node);
         }
@@ -258,23 +259,24 @@ public sealed interface DepartureFlow {
     /// transition one mailbox item later].
     private static ClusterModel departed(ClusterModel m, Ctx ctx, NodeId node) {
         Absence.clear(m, node);
-        Idx.members(m.unresponsiveByNode, node).toList().forEach(artifact -> exclusionGone(m, ctx, node, artifact));
+        Idx.members(m.unresponsiveByNode, node).toList().forEach(artifact -> exclusionGone(m, node, artifact));
         // C17b runs from the reconcile this step queues (step 10): the committed transaction notifies its mutations in
         // order, so the desired and route removals of C17 arrive after the record, and a cleanup built now would expect
         // values that are about to go and be refused as a whole.
         return m;
     }
 
-    /// A departed node's exclusion is cleared now, not at its expiry; D.6 rows 18/19: closed with the reason subject-gone.
-    private static ClusterModel exclusionGone(ClusterModel m, Ctx ctx, NodeId node, Artifact artifact) {
+    /// A departed node's exclusion is cleared now, not at its expiry. D.6 rows 18/19: the reason is subject-gone; the recovery is raised once
+    /// the artifact's committed exclusions reach none (`Judgments.exclusionsEnded`), so the C17b removal of the node's rows, which clears
+    /// the same exclusion again (`Slices.onObservedRemove`), does not raise a second one.
+    private static ClusterModel exclusionGone(ClusterModel m, NodeId node, Artifact artifact) {
         Outbox.artifact(m,
                         artifact,
                         intent -> intent.withOp(new JudgmentOp.ClearUnresponsive(node)));
-        ctx.warn(Recoveries.SLICE_UNRESPONSIVE_EXPIRED,
-                 artifact.asString(),
-                 Recoveries.gone(artifact.asString(), "node " + node.id() + " departed; its exclusion is cleared"));
 
-        return m;
+        return Judgments.exclusionEnding(m,
+                                         artifact,
+                                         Recoveries.gone(artifact.asString(), "node " + node.id() + " departed; its exclusion is cleared"));
     }
 
     /// An ADMITTED record committed. If it replaced a DEPARTED(STALE), the wrong recording is reversed (C11f, R-2.16).

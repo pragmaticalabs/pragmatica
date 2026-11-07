@@ -173,7 +173,9 @@ public enum OperatorWarningCode {
     /// [#DEPARTURE_INFERRED_REVERSED] (the node came back) or [#DEPARTURE_INFERRED_CONFIRMED] (its identity was retired).
     DEPARTURE_INFERRED("departure-inferred", "deployment", WarningLevel.WARNING),
     /// D.6 row 7: the recovery of [#DEPARTURE_INFERRED], same subject: ADMITTED was committed over the inferred DEPARTED.
-    DEPARTURE_INFERRED_REVERSED("departure-inferred-reversed", "deployment", WarningLevel.INFO, DEPARTURE_INFERRED),
+    /// Closes across nodes (CTO ruling A2 on #2831): the open condition is committed state, so a successor leader raises it only for a
+    /// subject whose warning a previous leader raised, and publishes it without holding that warning's open mark.
+    DEPARTURE_INFERRED_REVERSED("departure-inferred-reversed", "deployment", WarningLevel.INFO, DEPARTURE_INFERRED, true),
     /// D.6 row 8: a community's departure breaker holds inferred departures. Subject is the community. Closed by
     /// [#DEPARTURE_BREAKER_CLEARED].
     DEPARTURE_INFERRED_SUPPRESSED("departure-inferred-suppressed", "deployment", WarningLevel.WARNING),
@@ -200,7 +202,9 @@ public enum OperatorWarningCode {
     /// D.6 row 18: a goal went unanswered in time; the node is excluded for the artifact. Closed by [#SLICE_UNRESPONSIVE_EXPIRED].
     SLICE_UNRESPONSIVE("slice-unresponsive", "deployment", WarningLevel.WARNING),
     /// D.6 row 19: the recovery of [#SLICE_UNRESPONSIVE], same subject: the exclusion expired, or its node left the model.
-    SLICE_UNRESPONSIVE_EXPIRED("slice-unresponsive-expired", "deployment", WarningLevel.INFO, SLICE_UNRESPONSIVE),
+    /// Closes across nodes (CTO ruling A2 on #2831): the open condition is committed state, so a successor leader raises it only for a
+    /// subject whose warning a previous leader raised, and publishes it without holding that warning's open mark.
+    SLICE_UNRESPONSIVE_EXPIRED("slice-unresponsive-expired", "deployment", WarningLevel.INFO, SLICE_UNRESPONSIVE, true),
     /// D.6 row 20: a non-adoptable instance with no goal was condemned. Subject is the artifact. Closed by [#STRAY_INSTANCE_REMOVED].
     STRAY_INSTANCE("stray-instance", "deployment", WarningLevel.WARNING),
     /// D.6 row 21: absence cannot be judged for a node class (signals missing, stale or unwired); once per episode. Subject is the class.
@@ -215,7 +219,9 @@ public enum OperatorWarningCode {
     /// again before the window expired, or (reason `node-refused-itself`) the node refused itself and exits.
     DEPLOYMENT_ENGINE_MATCHED("deployment-engine-matched", "deployment", WarningLevel.INFO, DEPLOYMENT_ENGINE_MISMATCH),
     /// D.6 row 6: the recovery of [#DEPARTURE_INFERRED], same subject: the inferred departure was confirmed by retiring the identity (R-2.10).
-    DEPARTURE_INFERRED_CONFIRMED("departure-inferred-confirmed", "deployment", WarningLevel.INFO, DEPARTURE_INFERRED),
+    /// Closes across nodes (CTO ruling A2 on #2831): the open condition is committed state, so a successor leader raises it only for a
+    /// subject whose warning a previous leader raised, and publishes it without holding that warning's open mark.
+    DEPARTURE_INFERRED_CONFIRMED("departure-inferred-confirmed", "deployment", WarningLevel.INFO, DEPARTURE_INFERRED, true),
     /// D.6 row 8: the recovery of [#DEPARTURE_INFERRED_SUPPRESSED], same subject: the community's breaker cleared, or the community left the
     /// model.
     DEPARTURE_BREAKER_CLEARED("departure-breaker-cleared",

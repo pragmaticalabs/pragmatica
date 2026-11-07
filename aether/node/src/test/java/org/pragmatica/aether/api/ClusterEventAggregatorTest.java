@@ -2036,6 +2036,10 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED,
                 OperatorWarningCode.STORAGE_WAL_WRITABLE,
                 OperatorWarningCode.WORKFLOW_RESOLVED,
+                // CTO ruling A2 on #2831 (O3): the FSM2 recoveries whose open condition is committed state
+                OperatorWarningCode.DEPARTURE_INFERRED_REVERSED,
+                OperatorWarningCode.DEPARTURE_INFERRED_CONFIRMED,
+                OperatorWarningCode.SLICE_UNRESPONSIVE_EXPIRED,
             });
     }
 

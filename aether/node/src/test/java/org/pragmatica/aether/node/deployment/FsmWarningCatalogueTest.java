@@ -12,6 +12,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Pattern;
@@ -38,8 +39,12 @@ class FsmWarningCatalogueTest {
     /// warn site names it, whatever the constant is called (v-2204 N2: the list of three names this replaced hid a fourth).
     private static final Pattern CONSTANT = Pattern.compile("String\\s+([A-Z][A-Z0-9_]*)\\s*=\\s*\"([a-z0-9]+(?:-[a-z0-9]+)+)\"");
     private static final Pattern WARN_SITE = Pattern.compile("(?:ctx\\.warn|ctx\\.warnResolved|refuse|new (?:Cluster|NodeFsm)Effect\\.Warn(?:Resolved)?)\\(");
-    /// R-CF.17 (#241): the growth warnings FSM2 raises under the legacy engine's codes and subsystem, so both engines report alike.
-    private static final Set<String> SHARED_WITH_LEGACY = Set.of("community-growth-blocked", "community-growth-resumed");
+    /// R-CF.17 (#241): the growth and assignment warnings FSM2 raises under the legacy engine's codes and subsystems, so both engines report
+    /// alike (code to subsystem).
+    private static final Map<String, String> SHARED_WITH_LEGACY = Map.of("community-growth-blocked", "community-growth",
+                                                                         "community-growth-resumed", "community-growth",
+                                                                         "community-assignment-unplaced", "community-assignment",
+                                                                         "community-assignment-placed", "community-assignment");
     private static final Pattern IDENTIFIER = Pattern.compile("\\b[A-Z][A-Z0-9_]+\\b");
 
     /// The codes the sources under `roots` raise, and the number of files read.
@@ -83,7 +88,7 @@ class FsmWarningCatalogueTest {
         assertThat(scan.codes()).as("the scan found the codes the FSMs raise").hasSizeGreaterThanOrEqualTo(24);
         assertThat(scan.codes()).as("codes raised by a FSM and missing from OperatorWarningCode").allMatch(catalogue::containsKey);
         scan.codes().forEach(code -> {
-            assertThat(catalogue.get(code).subsystem()).as(code).isEqualTo(SHARED_WITH_LEGACY.contains(code) ? "community-growth" : "deployment");
+            assertThat(catalogue.get(code).subsystem()).as(code).isEqualTo(SHARED_WITH_LEGACY.getOrDefault(code, "deployment"));
             // D.6 (know 7cc9e79f61, amending s37): a FSM WARNING is a standing condition and has an INFO recovery; a recovery, a one-shot
             // refusal or a past event is INFO. Never CRITICAL.
             assertThat(catalogue.get(code).level()).as(code).isEqualTo(catalogue.get(code).hasRecovery() ? WarningLevel.WARNING : WarningLevel.INFO);

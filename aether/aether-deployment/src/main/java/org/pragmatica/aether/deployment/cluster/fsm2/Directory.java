@@ -46,13 +46,97 @@ public sealed interface Directory {
     /// R-CF.17: the legacy growth warnings, same codes and subject (the source), so an operator's alert reads both engines alike.
     String GROWTH_BLOCKED = "community-growth-blocked";
     String GROWTH_RESUMED = "community-growth-resumed";
+    /// R-CF.17 parity (LEGACY `ClusterDeploymentState.retryOrReport`): the same codes and subject (the worker).
+    String ASSIGNMENT_UNPLACED = "community-assignment-unplaced";
+    String ASSIGNMENT_PLACED = "community-assignment-placed";
+    /// R-CF.17 parity: the refused WORKER assignment commits in a row after which the leader gives up on the worker, as LEGACY's
+    /// `CommunityAdmissionLedger.MAX_ATTEMPTS` (a parity test pins the two equal).
+    int MAX_ASSIGNMENT_ATTEMPTS = 3;
 
     // -- C13 -------------------------------------------------------------------------------------------------------
     static ClusterModel onDirectivePut(ClusterModel m, Ctx ctx, NodeId node, ActivationDirectiveValue value) {
         Indexer.indexDirective(m, node, value);
         Absence.refresh(m, ctx, node);
 
-        return Reconcile.request(m, ctx);
+        return Reconcile.request(placed(m, ctx, node), ctx);
+    }
+
+    /// R-CF.17 parity (LEGACY `confirmPlaced`): the worker's directive committed. Its run of refused assignments ends, and a worker
+    /// reported `community-assignment-unplaced` is reported `community-assignment-placed`, same subject.
+    private static ClusterModel placed(ClusterModel m, Ctx ctx, NodeId node) {
+        m.assignmentRefusals = m.assignmentRefusals.remove(node);
+        if (m.unplacedWarned.contains(node)) {
+            m.unplacedWarned = m.unplacedWarned.remove(node);
+            ctx.warn(ASSIGNMENT_PLACED, node.id(), "Worker " + node.id() + " was assigned a community");
+        }
+
+        return m;
+    }
+
+    /// R-CF.17 parity (LEGACY `settleAssignment` / `retryOrReport`): a WORKER assignment commit was refused (the community moved between
+    /// the decision and the commit). Each worker it carries counts one more refusal in a row. Below [#MAX_ASSIGNMENT_ATTEMPTS] its
+    /// community is decided afresh, as before; at the bound the leader gives up on it: `community-assignment-unplaced`, subject the
+    /// worker, and its pending join is dropped, so it takes a community when it is admitted again. Answers the workers given up on.
+    static List<NodeId> assignmentRefused(ClusterModel m, Ctx ctx, TxDraft draft) {
+        var workers = assignedWorkers(draft).toList();
+
+        workers.forEach(node -> countRefusal(m, node));
+        var gaveUp = workers.stream()
+                            .filter(node -> m.assignmentRefusals.get(node)
+                                                                .or(0) >= MAX_ASSIGNMENT_ATTEMPTS)
+                            .toList();
+
+        gaveUp.forEach(node -> giveUp(m, ctx, node));
+
+        return gaveUp;
+    }
+
+    private static Stream<NodeId> assignedWorkers(TxDraft draft) {
+        return draft.mutations()
+                    .stream()
+                    .filter(mutation -> mutation.replacement()
+                                                .filter(ActivationDirectiveValue.class::isInstance)
+                                                .map(ActivationDirectiveValue.class::cast)
+                                                .filter(Rows::isCommunityWorker)
+                                                .isPresent())
+                    .map(mutation -> mutation.key())
+                    .filter(ActivationDirectiveKey.class::isInstance)
+                    .map(key -> ((ActivationDirectiveKey) key).nodeId())
+                    .distinct();
+    }
+
+    private static ClusterModel countRefusal(ClusterModel m, NodeId node) {
+        m.assignmentRefusals = m.assignmentRefusals.put(node,
+                                                        m.assignmentRefusals.get(node)
+                                                                            .or(0) + 1);
+
+        return m;
+    }
+
+    private static ClusterModel giveUp(ClusterModel m, Ctx ctx, NodeId node) {
+        m.assignmentRefusals = m.assignmentRefusals.remove(node);
+        m.pendingJoins = m.pendingJoins.remove(node);
+        m.unplacedWarned = m.unplacedWarned.add(node);
+        ctx.warn(ASSIGNMENT_UNPLACED,
+                 node.id(),
+                 "Worker " + node.id() + " has no community: its assignment changed before commit " + MAX_ASSIGNMENT_ATTEMPTS
+                 + " times in a row. It takes one when it is admitted again");
+
+        return m;
+    }
+
+    /// R-CF.17 parity: a departing worker's run of refusals is dropped; one reported unplaced is closed with the reason subject-gone (the
+    /// D.6 convention of FSM2's recoveries; LEGACY leaves it open).
+    static ClusterModel assignmentGone(ClusterModel m, Ctx ctx, NodeId node) {
+        m.assignmentRefusals = m.assignmentRefusals.remove(node);
+        if (m.unplacedWarned.contains(node)) {
+            m.unplacedWarned = m.unplacedWarned.remove(node);
+            ctx.warn(ASSIGNMENT_PLACED,
+                     node.id(),
+                     Recoveries.gone(node.id(), "the worker departed before it was assigned a community"));
+        }
+
+        return m;
     }
 
     /// C13 on Remove: a node that is departed gets R-4.3.3: its departure record goes with its rows, in one transaction.

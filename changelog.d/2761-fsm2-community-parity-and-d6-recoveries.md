@@ -15,6 +15,15 @@
   `worker-community-policy-matched`). Each recovery is also raised, with `subject-gone` in its text, when its subject leaves
   the FSM's model. `invalid-placement` is now raised once per episode instead of on every reconcile pass.
   `[mechanism: one raise, recovery and subject-gone unit test per row; OperatorWarningCodeTest pins the ruled table]`
-- Limit: the open sets are leader-local. A warning raised by a deposed leader is closed by its successor only for the
-  recoveries read from committed state (rows 6/7, 18/19). `deployment-engine-matched` with `node-refused-itself` is raised
-  just before the node exits and may not reach the cluster event log. `[design intent — unverified]`
+- **A leader change.** `departure-inferred-reversed`, `departure-inferred-confirmed` and `slice-unresponsive-expired` close
+  across nodes: their open condition is committed state, so a successor leader raises them and its event layer publishes
+  them although the warning was raised by its predecessor. A leader-local warning is raised again by the successor where the
+  condition still holds, and closed by it. `[mechanism: LeaderChangeRecoveriesTest, the FSM through each leader's real
+  ClusterEventAggregator; not exercised multi-node]`
+- Limit (#2834): the other open sets are leader-local. A warning a deposed leader raised stays open when its condition ended
+  before the successor saw it, or when the successor does not raise it again (a family raised only at an event). Recovery
+  action: none in this release; the event log shows the opener without its close. `deployment-engine-matched` with
+  `node-refused-itself` is raised just before the node exits and may not reach the cluster event log. `[design intent — unverified]`
+- **CF-17 parity:** a worker's refused community assignment is retried up to 3 times and then reported as
+  `community-assignment-unplaced`, closed by `community-assignment-placed` (the legacy codes) or when the worker departs.
+  `[mechanism: unit tests CommunityGrowthLedgerTest]`

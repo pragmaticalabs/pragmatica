@@ -88,6 +88,9 @@ public final class ClusterModel {
     PMap<String, SchemaMigrationLockValue> schemaLocks = PMap.empty(scans);
     PMap<String, PSet<BlueprintId>> blockingSchemasByOwner = PMap.empty(scans);
     PMap<SlicePair, String> holdSignatures = PMap.empty(scans);
+    /// D.6 rows 15/16: the held nodes of each artifact (the pairs of `holdSignatures`); `schema-hold` is raised with the artifact as its
+    /// subject, so `schema-hold-cleared` is raised only when the last held node of the artifact leaves the hold.
+    PMap<Artifact, PSet<NodeId>> heldByArtifact = PMap.empty(scans);
     PMap<BlueprintId, DeploymentApplyValue> applies = PMap.empty(scans);
     PMap<BlueprintId, DeploymentOutcomeValue> outcomes = PMap.empty(scans);
     PMap<Artifact, ArtifactJudgmentValue> judgments = PMap.empty(scans);
@@ -169,8 +172,16 @@ public final class ClusterModel {
     PSet<Artifact> retryExhaustedWarned = PSet.empty(scans);
     /// D.6 row 17: datasources reported `schema-status-unknown` whose episode is open.
     PSet<String> schemaUnknownWarned = PSet.empty(scans);
-    /// D.6 row 20: condemned stray instances reported `stray-instance`, until their observed row disappears.
-    PSet<SlicePair> strayWarned = PSet.empty(scans);
+    /// D.6 row 20: condemned stray instances reported `stray-instance`, until their observed row disappears, as the nodes of each artifact
+    /// (the warning's subject): `stray-instance-removed` is raised only when the last condemned instance of the artifact is gone.
+    PMap<Artifact, PSet<NodeId>> strayWarned = PMap.empty(scans);
+    /// D.6 rows 18/19: why the exclusion of an artifact's node was last cleared by this leader (an expiry, or its subject leaving); the
+    /// `slice-unresponsive-expired` raised when the artifact's committed exclusions reach none carries it.
+    PMap<Artifact, String> exclusionEndReasons = PMap.empty(scans);
+    /// R-CF.17 parity (LEGACY `CommunityAdmissionLedger`): the refused WORKER assignment commits of each worker, in a row.
+    PMap<NodeId, Integer> assignmentRefusals = PMap.empty(scans);
+    /// R-CF.17 parity: workers reported `community-assignment-unplaced` and not yet placed.
+    PSet<NodeId> unplacedWarned = PSet.empty(scans);
     /// Datasources whose FAILED record was committed while suspended: announced once on the resume (`Schemas.announceWithheld`).
     PSet<String> withheldBlocked = PSet.empty(scans);
     // -- the write side (5.7) --------------------------------------------------------------------------------------
@@ -215,6 +226,7 @@ public final class ClusterModel {
         c.schemaLocks = schemaLocks.rebound(meter);
         c.blockingSchemasByOwner = blockingSchemasByOwner.rebound(meter);
         c.holdSignatures = holdSignatures.rebound(meter);
+        c.heldByArtifact = heldByArtifact.rebound(meter);
         c.applies = applies.rebound(meter);
         c.outcomes = outcomes.rebound(meter);
         c.judgments = judgments.rebound(meter);
@@ -275,6 +287,9 @@ public final class ClusterModel {
         c.retryExhaustedWarned = retryExhaustedWarned.rebound(meter);
         c.schemaUnknownWarned = schemaUnknownWarned.rebound(meter);
         c.strayWarned = strayWarned.rebound(meter);
+        c.exclusionEndReasons = exclusionEndReasons.rebound(meter);
+        c.assignmentRefusals = assignmentRefusals.rebound(meter);
+        c.unplacedWarned = unplacedWarned.rebound(meter);
         c.withheldBlocked = withheldBlocked.rebound(meter);
         c.submitted = submitted.rebound(meter);
         c.outbox = outbox;

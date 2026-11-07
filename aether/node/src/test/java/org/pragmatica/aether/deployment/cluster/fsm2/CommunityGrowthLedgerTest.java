@@ -13,6 +13,7 @@ import org.pragmatica.aether.config.CommunitySizing;
 import org.pragmatica.aether.config.cluster.CommunityPolicy;
 import org.pragmatica.aether.deployment.cluster.CommunityGrowthPolicy;
 import org.pragmatica.aether.deployment.cluster.CommunityPolicyView;
+import org.pragmatica.aether.deployment.cluster.fsm.CommunityAdmissionLedger;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
@@ -204,5 +205,182 @@ class CommunityGrowthLedgerTest {
 
         assertThat(communityOf(w, W4)).isEqualTo("east-w-0");
         assertThat(w.stored(new CommunityKey("east-w-0")).map(value -> ((AetherValue.CommunityValue) value).targetSize())).isEqualTo(Option.some(3));
+    }
+
+    // -- R-CF.17 parity: the bounded retry of a refused assignment commit (LEGACY ClusterDeploymentState.retryOrReport) ----------------
+    /// `east-w-0` exists; the assignment writes are held so that each can be refused after the community it read moved.
+    private static MbWorld eastWithACommunity() {
+        var w = eastUnder(GROWTH_MAX_3);
+
+        w.h.seedQuietly(new CommunityKey("east-w-0"), community("east", 3, CommunityState.ACTIVE));
+
+        return w.activate();
+    }
+
+    private static ClusterEffect.Submit heldAssignment(MbWorld w) {
+        return w.h.held.values()
+                       .stream()
+                       .filter(submit -> submit.transaction()
+                                               .mutations()
+                                               .stream()
+                                               .anyMatch(mutation -> mutation.key()
+                                                                             .equals(new ActivationDirectiveKey(W1))))
+                       .findFirst()
+                       .orElseThrow();
+    }
+
+    /// The held assignment of W1 is refused: the community it read moved before its commit (as LEGACY's "changed before commit").
+    private static void refuseTheAssignment(MbWorld w, int targetSize) {
+        var submit = heldAssignment(w);
+
+        w.h.held.remove(submit.correlationId());
+        w.h.seed(new CommunityKey("east-w-0"), community("east", targetSize, CommunityState.ACTIVE));
+        w.h.settleHeld(submit, w.h.refused(submit));
+    }
+
+    /// The held assignment of W1 is refused with nothing it read moved: without the bound it would be resubmitted unchanged.
+    private static void refuseUnmoved(MbWorld w) {
+        var submit = heldAssignment(w);
+
+        w.h.held.remove(submit.correlationId());
+        w.h.settleHeld(submit, w.h.refused(submit));
+    }
+
+    /// The FSM2 bound is LEGACY's.
+    @Test
+    void theAssignmentBound_isLegacysMaxAttempts() {
+        assertThat(Directory.MAX_ASSIGNMENT_ATTEMPTS).isEqualTo(CommunityAdmissionLedger.MAX_ATTEMPTS);
+    }
+
+    /// R-CF.17 parity (CTO ruling on #2831). LEGACY decides a refused assignment afresh up to `MAX_ATTEMPTS` times in a row, then raises
+    /// `community-assignment-unplaced` (subject the worker) and stops; a later admission that places the worker raises
+    /// `community-assignment-placed`, same subject. Red when: FSM2 retries without bound, raises the report before the bound or not at it,
+    /// keeps re-deciding after it, or does not close it when the worker is placed.
+    @Test
+    void refusedAssignment_isRetriedUpToTheBound_thenReportedUnplaced_andClosedWhenPlaced() {
+        var w = eastWithACommunity();
+
+        w.h.policy = FsmHarness.SettlePolicy.HOLD;
+        w.h.deliver(join(w, W1, 21L));
+        for (var refusal = 1; refusal < Directory.MAX_ASSIGNMENT_ATTEMPTS; refusal++) {
+            refuseTheAssignment(w, 3 + refusal);
+            assertThat(w.h.warns(Directory.ASSIGNMENT_UNPLACED)).as("not before the bound (refusal " + refusal + ")").isEmpty();
+            assertThat(heldAssignment(w)).as("decided afresh").isNotNull();
+        }
+
+        refuseUnmoved(w);
+        var unplaced = w.h.warns(Directory.ASSIGNMENT_UNPLACED);
+
+        assertThat(unplaced).as("reported at the bound").hasSize(1);
+        assertThat(unplaced.getFirst().subject()).isEqualTo(W1.id());
+        w.h.advanceBySeconds(60);
+        assertThat(w.h.held.values()
+                           .stream()
+                           .filter(submit -> submit.transaction()
+                                                   .mutations()
+                                                   .stream()
+                                                   .anyMatch(mutation -> mutation.key()
+                                                                                 .equals(new ActivationDirectiveKey(W1))))).as("no further decision after the bound")
+                                                                                                                             .isEmpty();
+        assertThat(w.h.warns(Directory.ASSIGNMENT_PLACED)).isEmpty();
+        w.h.deliver(join(w, W1, 22L));
+        refuseTheAssignment(w, 4 + Directory.MAX_ASSIGNMENT_ATTEMPTS);
+        assertThat(w.h.warns(Directory.ASSIGNMENT_UNPLACED)).as("the count restarted when the leader gave up").hasSize(1);
+        var submit = heldAssignment(w);
+
+        w.h.held.remove(submit.correlationId());
+        w.h.policy = FsmHarness.SettlePolicy.APPLY;
+        w.h.settleHeld(submit, w.h.applyTransaction(submit));
+        assertThat(communityOf(w, W1)).as("placed when admitted again").isEqualTo("east-w-0");
+        var placed = w.h.warns(Directory.ASSIGNMENT_PLACED);
+
+        assertThat(placed).hasSize(1);
+        assertThat(placed.getFirst().subject()).isEqualTo(W1.id());
+    }
+
+    /// R-CF.17 parity. Red when: a refusal below the bound followed by an accepted commit leaves the count running (LEGACY's count is
+    /// "in a row"), or an accepted assignment that was never reported raises `community-assignment-placed`.
+    @Test
+    void anAcceptedAssignment_resetsTheCount_andRaisesNothing() {
+        var w = eastWithACommunity();
+
+        w.h.policy = FsmHarness.SettlePolicy.HOLD;
+        w.h.deliver(join(w, W1, 21L));
+        refuseTheAssignment(w, 4);
+        var submit = heldAssignment(w);
+
+        w.h.held.remove(submit.correlationId());
+        w.h.policy = FsmHarness.SettlePolicy.APPLY;
+        w.h.settleHeld(submit, w.h.applyTransaction(submit));
+        assertThat(communityOf(w, W1)).isEqualTo("east-w-0");
+        assertThat(w.h.model().assignmentRefusals.containsKey(W1)).as("the run of refusals ended").isFalse();
+        assertThat(w.h.warns(Directory.ASSIGNMENT_UNPLACED)).isEmpty();
+        assertThat(w.h.warns(Directory.ASSIGNMENT_PLACED)).isEmpty();
+    }
+
+    /// R-CF.17 parity, the FSM2 subject-gone close (D.6 convention). Red when: a worker reported unplaced that departs leaves the report
+    /// open, or its run of refusals stays in the model.
+    @Test
+    void unplacedWorker_departs_closesTheReport_subjectGone() {
+        var w = eastWithACommunity();
+
+        w.h.policy = FsmHarness.SettlePolicy.HOLD;
+        w.h.deliver(join(w, W1, 21L));
+        for (var refusal = 0; refusal < Directory.MAX_ASSIGNMENT_ATTEMPTS; refusal++) {
+            refuseUnmoved(w);
+        }
+
+        assertThat(w.h.warns(Directory.ASSIGNMENT_UNPLACED)).hasSize(1);
+        w.h.policy = FsmHarness.SettlePolicy.APPLY;
+        w.h.deliver(new ClusterInput.NodeRemoved(W1));
+        var placed = w.h.warns(Directory.ASSIGNMENT_PLACED);
+
+        assertThat(placed).hasSize(1);
+        assertThat(placed.getFirst().subject()).isEqualTo(W1.id());
+        assertThat(placed.getFirst().message()).contains(Recoveries.SUBJECT_GONE);
+        assertThat(w.h.model().unplacedWarned.contains(W1)).isFalse();
+    }
+
+    /// R-CF.17 parity: LEGACY bounds only the WORKER assignment. Red when: refusals of a core's CORE directive are counted, so the core is
+    /// given up on (its pending join dropped) and reported `community-assignment-unplaced`.
+    @Test
+    void refusedCoreDirectives_areNotCounted() {
+        var w = eastWithACommunity();
+        var core = node("core-9");
+
+        w.h.policy = FsmHarness.SettlePolicy.HOLD;
+        w.h.deliver(new ClusterInput.NodeJoined(core, w.admit(core, 0x9L)));
+        for (var refusal = 0; refusal < Directory.MAX_ASSIGNMENT_ATTEMPTS; refusal++) {
+            var submit = w.h.held.values()
+                                 .stream()
+                                 .filter(held -> held.transaction()
+                                                     .mutations()
+                                                     .stream()
+                                                     .anyMatch(mutation -> mutation.key()
+                                                                                   .equals(new ActivationDirectiveKey(core))))
+                                 .findFirst()
+                                 .orElseThrow();
+
+            w.h.held.remove(submit.correlationId());
+            w.h.settleHeld(submit, w.h.refused(submit));
+        }
+
+        assertThat(w.h.warns(Directory.ASSIGNMENT_UNPLACED)).isEmpty();
+        assertThat(w.h.model().assignmentRefusals.containsKey(core)).isFalse();
+    }
+
+    /// R-CF.17 parity. Red when: a departing worker's run of refusals stays in the model.
+    @Test
+    void refusedWorker_departs_dropsItsCount() {
+        var w = eastWithACommunity();
+
+        w.h.policy = FsmHarness.SettlePolicy.HOLD;
+        w.h.deliver(join(w, W1, 21L));
+        refuseUnmoved(w);
+        assertThat(w.h.model().assignmentRefusals.containsKey(W1)).as("precondition: one refusal counted").isTrue();
+        w.h.policy = FsmHarness.SettlePolicy.APPLY;
+        w.h.deliver(new ClusterInput.NodeRemoved(W1));
+        assertThat(w.h.model().assignmentRefusals.containsKey(W1)).isFalse();
+        assertThat(w.h.warns(Directory.ASSIGNMENT_PLACED)).as("never reported: nothing to close").isEmpty();
     }
 }

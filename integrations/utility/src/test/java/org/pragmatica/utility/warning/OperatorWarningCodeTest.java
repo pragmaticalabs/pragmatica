@@ -477,6 +477,17 @@ class OperatorWarningCodeTest {
                                                                                      .isEqualTo(23);
     }
 
+    /// CTO ruling A2 on #2831 (O3): of the D.6 recoveries, exactly those whose open condition is committed state close across nodes (rows 6/7,
+    /// the inferred-departure record; row 19, the committed exclusions), so a successor leader publishes them. The leader-local families do
+    /// not; their stale opens after a leader change are #2834. Red when: a committed-family recovery is refused by a successor, or a
+    /// leader-local recovery is published by a node that never raised its warning.
+    @Test
+    void d6Ruling_onlyTheCommittedStateRecoveries_closeAcrossNodes() {
+        assertThat(D6_RECOVERIES.keySet().stream().filter(OperatorWarningCode::closesAcrossNodes)).containsExactlyInAnyOrder(OperatorWarningCode.DEPARTURE_INFERRED_REVERSED,
+                                                                                                                          OperatorWarningCode.DEPARTURE_INFERRED_CONFIRMED,
+                                                                                                                          OperatorWarningCode.SLICE_UNRESPONSIVE_EXPIRED);
+    }
+
     /// #752: a recovery code closes a condition of its own subsystem, and a condition is not itself a recovery, so a
     /// recovery is never itself waiting for one.
     @Test
