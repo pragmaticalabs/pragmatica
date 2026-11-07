@@ -8,6 +8,7 @@ import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
@@ -16,6 +17,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// The A2b contract of [StorageTier#stat], [StorageTier#scan] and [StorageTier#touch], run against every tier that
 /// provides them (memory, local disk, S3 over an in-memory client and over MinIO). Each subclass builds a fresh, empty
 /// tier and says how to make a block's write time older than a touch made now would set.
+@Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
 abstract class TierScanStatTouchContract {
     private static final int BLOCKS = 40;
 

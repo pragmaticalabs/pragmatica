@@ -23,6 +23,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.cloud.aws.AwsConfig;
 import org.pragmatica.cloud.aws.AwsCredentials;
@@ -593,6 +594,7 @@ class RemoteTierS3IntegrationTest {
     /// The touch on the real endpoint: it writes a marker beside the block and never the block; on an absent block it
     /// writes nothing; scan lists no marker; delete removes the marker too.
     @Nested
+    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
     class TouchMarker {
         @Test
         void touch_writesAMarker_andScanListsOnlyTheBlock() {
