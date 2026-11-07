@@ -288,6 +288,55 @@ class JoinTableTest {
                   .isEqualTo(1);
     }
 
+    private MbWorld unmatchedCore2() {
+        var w = world();
+
+        w.directive(CORE_2, ActivationDirectiveValue.core()).activate();
+        w.unforeseen(CORE_2);
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admit(CORE_2, A)));
+        assertThat(w.h.warns("join-unmatched")).hasSize(1);
+
+        return w;
+    }
+
+    // D.6 row 13 (know 7cc9e79f61)
+    // Red when: a pending join reported join-unmatched that a row later matches does not close it with join-matched, same subject, once;
+    // or join-matched is raised while the join is still unmatched.
+    @Test
+    void j9_unmatchedJoin_thatARowLaterMatches_isClosed() {
+        var w = unmatchedCore2();
+
+        w.h.advance(w.h.settings.timing().tick() + 1);
+        assertThat(w.h.warns("join-unmatched")).as("the tick re-arms the WARN").hasSize(2);
+        assertThat(w.h.warns("join-matched")).as("still unmatched, across the re-arm").isEmpty();
+        var model = w.h.model();
+
+        model.unforeseenJoins = model.unforeseenJoins.remove(CORE_2);
+        w.h.advance(w.h.settings.timing().tick() + 1);
+        w.h.advance(w.h.settings.timing().tick() + 1);
+        var matched = w.h.warns("join-matched");
+
+        assertThat(matched).hasSize(1);
+        assertThat(matched.getFirst().subject()).isEqualTo(CORE_2.id());
+        assertThat(matched.getFirst().message()).doesNotContain(Recoveries.SUBJECT_GONE);
+    }
+
+    // D.6 row 13, the subject-gone close
+    // Red when: the node of a pending join reported join-unmatched departs and the join is dropped without join-matched, same subject,
+    // reason subject-gone.
+    @Test
+    void j9_unmatchedJoin_droppedByTheDeparture_isClosed_subjectGone() {
+        var w = unmatchedCore2();
+
+        w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
+        var matched = w.h.warns("join-matched");
+
+        assertThat(w.h.model().pendingJoins.containsKey(CORE_2)).isFalse();
+        assertThat(matched).hasSize(1);
+        assertThat(matched.getFirst().subject()).isEqualTo(CORE_2.id());
+        assertThat(matched.getFirst().message()).contains(Recoveries.SUBJECT_GONE);
+    }
+
     // J7 / J3, evaluation cadence (CTO ruling, session 35: once per reconcile pass)
     // Red when: the deferred joins are evaluated on the 30 s tick only. A worker deferred by J7 (departed record, no directive) is
     // evaluated by the pass its directive's arrival queues; with the directive present J3 re-admits it at once.

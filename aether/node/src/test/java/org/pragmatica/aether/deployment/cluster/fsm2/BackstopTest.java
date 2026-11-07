@@ -241,6 +241,65 @@ class BackstopTest {
 
         assertThat(verdict).as("C17b is refused: its witness moved").isInstanceOf(Settlement.Refused.class);
         assertThat(w.present(new SliceObservedKey(W1, ORDERS))).isTrue();
+        assertThat(w.h.warns("departure-inferred-reversed")).as("D.6 row 7: the reversal closes departure-inferred").hasSize(1);
+        assertThat(w.h.warns("departure-inferred-confirmed")).as("a reversed departure is never confirmed").isEmpty();
+    }
+
+    // D.6 row 6 (know 7cc9e79f61), the subject-gone close
+    // Red when: an inferred departure whose record is retired (R-2.10) does not close departure-inferred with departure-inferred-confirmed,
+    // same subject, reason subject-gone; or the confirmation is raised while the record still stands.
+    @Test
+    void inferredDeparture_isConfirmed_whenItsIdentityIsRetired() {
+        var w = lostDeparture();
+
+        w.evolve(C, GOV, ALIVE_WITHOUT_W1, WITHOUT_W1, 5_000L);
+        var since = w.since(W1).or(0L);
+
+        w.evolveUntil(since + bounds().workerRemoval() + 1_000_000L + 31_000_000_000L, C, GOV, ALIVE_WITHOUT_W1, WITHOUT_W1);
+        assertThat(w.h.warns("departure-inferred")).hasSize(1);
+        assertThat(w.h.warns("departure-inferred-confirmed")).as("not while the record stands").isEmpty();
+        w.h.seedRemove(new ActivationDirectiveKey(W1));
+        w.h.drain();
+        assertThat(w.recordOf(W1).isEmpty()).as("the identity is retired").isTrue();
+        var confirmed = w.h.warns("departure-inferred-confirmed");
+
+        assertThat(confirmed).hasSize(1);
+        assertThat(confirmed.getFirst().subject()).isEqualTo(W1.id());
+        assertThat(confirmed.getFirst().message()).contains(Recoveries.SUBJECT_GONE);
+    }
+
+    // D.6 row 21 (know 7cc9e79f61). The subject is a class label, which never leaves the model, so there is no subject-gone arm.
+    // Red when: a class reported worker-absence-unjudgeable is not closed by worker-absence-judgeable, same subject, once a node of it is
+    // judged again; or the recovery is raised while the class is still unjudgeable.
+    @Test
+    void unjudgeableClass_isClosed_whenANodeOfItIsJudgedAgain() {
+        var w = MbWorld.world(CORE_1);
+        var w6 = node("w6");
+
+        w.admit(CORE_1, 0x1111L);
+        w.workers(C, 10, Set.of(), w6);
+        w.instance(w6, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(w6)).target(ORDERS, 1, "WORKERS_ONLY");
+        w.seams(s -> s.withLocalAlive(Option.none()));
+        w.activate();
+        for (var i = 0; i < 4; i++) {
+            w.announce(C, GOV, w6);
+            w.h.advance(30_000L);
+        }
+
+        var opener = w.h.warns("worker-absence-unjudgeable");
+
+        assertThat(opener).hasSize(1);
+        assertThat(w.h.warns("worker-absence-judgeable")).as("still unjudgeable").isEmpty();
+        w.refreshSeams(s -> s.withLocalAlive(Option.some(Set.of(w6))));
+        for (var i = 0; i < 4; i++) {
+            w.announce(C, GOV, w6);
+            w.h.advance(30_000L);
+        }
+
+        var judgeable = w.h.warns("worker-absence-judgeable");
+
+        assertThat(judgeable).hasSize(1);
+        assertThat(judgeable.getFirst().subject()).isEqualTo(opener.getFirst().subject());
     }
 
     // NT-126 (d)

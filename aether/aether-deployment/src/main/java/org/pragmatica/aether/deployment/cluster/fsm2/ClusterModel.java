@@ -11,6 +11,7 @@ import java.util.Set;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
+import org.pragmatica.aether.config.cluster.CommunityPolicy;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -87,6 +88,9 @@ public final class ClusterModel {
     PMap<String, SchemaMigrationLockValue> schemaLocks = PMap.empty(scans);
     PMap<String, PSet<BlueprintId>> blockingSchemasByOwner = PMap.empty(scans);
     PMap<SlicePair, String> holdSignatures = PMap.empty(scans);
+    /// D.6 rows 15/16: the held nodes of each artifact (the pairs of `holdSignatures`); `schema-hold` is raised with the artifact as its
+    /// subject, so `schema-hold-cleared` is raised only when the last held node of the artifact leaves the hold.
+    PMap<Artifact, PSet<NodeId>> heldByArtifact = PMap.empty(scans);
     PMap<BlueprintId, DeploymentApplyValue> applies = PMap.empty(scans);
     PMap<BlueprintId, DeploymentOutcomeValue> outcomes = PMap.empty(scans);
     PMap<Artifact, ArtifactJudgmentValue> judgments = PMap.empty(scans);
@@ -120,6 +124,9 @@ public final class ClusterModel {
     PMap<NodeId, NodePlacementValue> nodePlacements = PMap.empty(scans);
     PMap<String, CommunityPlacementOperationValue> placementOps = PMap.empty(scans);
     Option<ClusterConfigValue> clusterConfig = Option.none();
+    /// R-CF.16..18 (#241): the `[community_policy]` of the committed cluster config, parsed once per indexed config; none when the config
+    /// carries none (or does not parse). `CommunityPolicies.current` falls back to the node-level sizing.
+    Option<CommunityPolicy> communityPolicy = Option.none();
     PMap<NodeId, Long> admittedAt = PMap.empty(scans);
     PMap<String, PSet<NodeId>> assignedByCommunity = PMap.empty(scans);
     PMap<String, CommunityValue> communities = PMap.empty(scans);
@@ -150,6 +157,31 @@ public final class ClusterModel {
     PMap<NodeId, Long> absentSince = PMap.empty(scans);
     PSet<String> unjudgeableWarned = PSet.empty(scans);
     PSet<String> suppressedWarned = PSet.empty(scans);
+    /// R-CF.17 (#241): the sources a refused derived-community join was reported for (`community-growth-blocked`); an admission for the
+    /// source removes it and raises the recovery. The serialized half of the legacy admission ledger: its in-flight half is the DIRECTIVE
+    /// drafts themselves (`Directory.inFlightByCommunity`).
+    PSet<String> growthBlocked = PSet.empty(scans);
+    /// D.6 row 22: workers reported `worker-no-community-policy` whose episode is open.
+    PSet<NodeId> noPolicyWarned = PSet.empty(scans);
+    /// D.6 row 13: nodes whose pending join was reported `join-unmatched` and whose episode is open (the tick's re-arm of the WARN does not
+    /// end it).
+    PSet<NodeId> unmatchedWarned = PSet.empty(scans);
+    /// D.6 row 10: artifacts reported `invalid-placement` whose episode is open (the warning is raised once per episode).
+    PSet<Artifact> invalidPlacementWarned = PSet.empty(scans);
+    /// D.6 row 14: artifacts reported `retry-exhausted-unsettled` whose episode is open.
+    PSet<Artifact> retryExhaustedWarned = PSet.empty(scans);
+    /// D.6 row 17: datasources reported `schema-status-unknown` whose episode is open.
+    PSet<String> schemaUnknownWarned = PSet.empty(scans);
+    /// D.6 row 20: condemned stray instances reported `stray-instance`, until their observed row disappears, as the nodes of each artifact
+    /// (the warning's subject): `stray-instance-removed` is raised only when the last condemned instance of the artifact is gone.
+    PMap<Artifact, PSet<NodeId>> strayWarned = PMap.empty(scans);
+    /// D.6 rows 18/19: why the exclusion of an artifact's node was last cleared by this leader (an expiry, or its subject leaving); the
+    /// `slice-unresponsive-expired` raised when the artifact's committed exclusions reach none carries it.
+    PMap<Artifact, String> exclusionEndReasons = PMap.empty(scans);
+    /// R-CF.17 parity (LEGACY `CommunityAdmissionLedger`): the refused WORKER assignment commits of each worker, in a row.
+    PMap<NodeId, Integer> assignmentRefusals = PMap.empty(scans);
+    /// R-CF.17 parity: workers reported `community-assignment-unplaced` and not yet placed.
+    PSet<NodeId> unplacedWarned = PSet.empty(scans);
     /// Datasources whose FAILED record was committed while suspended: announced once on the resume (`Schemas.announceWithheld`).
     PSet<String> withheldBlocked = PSet.empty(scans);
     // -- the write side (5.7) --------------------------------------------------------------------------------------
@@ -194,6 +226,7 @@ public final class ClusterModel {
         c.schemaLocks = schemaLocks.rebound(meter);
         c.blockingSchemasByOwner = blockingSchemasByOwner.rebound(meter);
         c.holdSignatures = holdSignatures.rebound(meter);
+        c.heldByArtifact = heldByArtifact.rebound(meter);
         c.applies = applies.rebound(meter);
         c.outcomes = outcomes.rebound(meter);
         c.judgments = judgments.rebound(meter);
@@ -225,6 +258,7 @@ public final class ClusterModel {
         c.nodePlacements = nodePlacements.rebound(meter);
         c.placementOps = placementOps.rebound(meter);
         c.clusterConfig = clusterConfig;
+        c.communityPolicy = communityPolicy;
         c.admittedAt = admittedAt.rebound(meter);
         c.assignedByCommunity = assignedByCommunity.rebound(meter);
         c.communities = communities.rebound(meter);
@@ -246,6 +280,16 @@ public final class ClusterModel {
         c.absentSince = absentSince.rebound(meter);
         c.unjudgeableWarned = unjudgeableWarned.rebound(meter);
         c.suppressedWarned = suppressedWarned.rebound(meter);
+        c.growthBlocked = growthBlocked.rebound(meter);
+        c.noPolicyWarned = noPolicyWarned.rebound(meter);
+        c.unmatchedWarned = unmatchedWarned.rebound(meter);
+        c.invalidPlacementWarned = invalidPlacementWarned.rebound(meter);
+        c.retryExhaustedWarned = retryExhaustedWarned.rebound(meter);
+        c.schemaUnknownWarned = schemaUnknownWarned.rebound(meter);
+        c.strayWarned = strayWarned.rebound(meter);
+        c.exclusionEndReasons = exclusionEndReasons.rebound(meter);
+        c.assignmentRefusals = assignmentRefusals.rebound(meter);
+        c.unplacedWarned = unplacedWarned.rebound(meter);
         c.withheldBlocked = withheldBlocked.rebound(meter);
         c.submitted = submitted.rebound(meter);
         c.outbox = outbox;

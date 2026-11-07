@@ -288,9 +288,15 @@ class SettingsSourcedTest {
         h.advance(3 * 12_000L + 31_000L);
         assertThat(h.store.get(new ArtifactJudgmentKey(ORDERS)).isPresent()).as("precondition: retracted after 3T of the configured bound").isTrue();
         h.advance(10 * 12_000L - 60_000L);
-        assertThat(h.warns("slice-unresponsive-expired")).as("not before 10T").isEmpty();
+        assertThat(expiries(h)).as("not before 10T").isZero();
         h.advance(2 * 60_000L);
-        assertThat(h.warns("slice-unresponsive-expired")).as("10 x the configured bound, long before 10 x 120 s").isNotEmpty();
+        assertThat(expiries(h)).as("10 x the configured bound, long before 10 x 120 s").isPositive();
+    }
+
+    /// The exclusions expired (the expiry itself, not `slice-unresponsive-expired`: since #2831 that closes only when no node of the
+    /// artifact is excluded, and the instance re-placed on another core here is excluded in turn).
+    private static long expiries(FsmHarness h) {
+        return h.metricTotal("aether_deployment_fsm_divergence_total", tags -> "expire".equals(tags.get("stage")));
     }
 
     // Red when: any `with*` of Settings loses a field that an earlier call set: every wither is applied last, after all the others.
