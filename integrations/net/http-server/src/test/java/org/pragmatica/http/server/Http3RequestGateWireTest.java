@@ -225,17 +225,17 @@ class Http3RequestGateWireTest {
 
         while (remaining > 0 && stream.isActive()) {
             var frame = Math.min(chunk, remaining);
-            var written = stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[frame])));
+            var data = new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[frame]));
+            // #2746: the last frame carries the FIN; a FIN-only frame after it can be lost for good
+            var written = frame == remaining
+                          ? Http3TestClient.finishWith(stream, data)
+                          : stream.writeAndFlush(data);
 
             if (!awaitWrite(written)) {
                 return;
             }
 
             remaining -= frame;
-        }
-
-        if (stream.isActive()) {
-            stream.shutdownOutput();
         }
     }
 

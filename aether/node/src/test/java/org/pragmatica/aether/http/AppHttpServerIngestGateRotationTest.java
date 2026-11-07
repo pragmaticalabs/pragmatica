@@ -6,9 +6,6 @@ package org.pragmatica.aether.http;
 
 import java.util.Map;
 
-import io.netty.buffer.Unpooled;
-import io.netty.handler.codec.http3.DefaultHttp3DataFrame;
-import io.netty.handler.codec.quic.QuicStreamChannel;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -109,8 +106,8 @@ class AppHttpServerIngestGateRotationTest {
             headers.headers().path(path);
             headers.headers().add("content-length", String.valueOf(size));
             stream.write(headers);
-            stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[size])))
-                  .addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
+            // #2746: the last frame carries the FIN; a FIN-only frame after it can be lost for good
+            H3Probe.writeLastData(stream, new byte[size]);
         }).statusCode());
     }
 

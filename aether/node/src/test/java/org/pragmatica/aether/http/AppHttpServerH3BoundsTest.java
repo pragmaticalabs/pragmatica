@@ -100,8 +100,8 @@ class AppHttpServerH3BoundsTest {
 
     private static void body(QuicStreamChannel stream, int port, int size) {
         stream.write(H3Probe.requestHeaders(port, "POST"));
-        stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[size])))
-              .addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
+        // #2746: the last frame carries the FIN; a FIN-only frame after it can be lost for good
+        H3Probe.writeLastData(stream, new byte[size]);
     }
 
     /// A first body frame, then nothing: the stream stays open with its body incomplete.
