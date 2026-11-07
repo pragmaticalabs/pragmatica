@@ -175,7 +175,7 @@ final class RequestGate extends ChannelInboundHandlerAdapter {
     @Contract
     @Override
     public void userEventTriggered(ChannelHandlerContext ctx, Object evt) {
-        if (!(evt instanceof IdleStateEvent idle && idle.state() == IdleState.READER_IDLE && holdsReading(ctx))) {
+        if (! (evt instanceof IdleStateEvent idle && idle.state() == IdleState.READER_IDLE && holdsReading(ctx))) {
             ctx.fireUserEventTriggered(evt);
         }
     }
@@ -249,10 +249,9 @@ final class RequestGate extends ChannelInboundHandlerAdapter {
     /// What the request handler answers 400 before any handler runs (#2419, #2386), checked here for a streamed request,
     /// which never reaches it.
     private static boolean isMalformed(io.netty.handler.codec.http.HttpRequest head) {
-        return RequestTarget.requestTarget(head.uri())
-                            .isFailure() || head.headers()
-                                                .getAll(HttpHeaderNames.HOST)
-                                                .size() > 1;
+        return RequestTarget.requestTarget(head.uri()).isFailure() || head.headers()
+                                                                          .getAll(HttpHeaderNames.HOST)
+                                                                          .size() > 1;
     }
 
     /// A chunk of a streamed body: counted against the bounds, then handed to the body stream with its buffer.
@@ -282,9 +281,7 @@ final class RequestGate extends ChannelInboundHandlerAdapter {
     private void endBody(ChannelHandlerContext ctx, HttpHeaders trailers) {
         bodyEnded = true;
         stopGuard();
-        ctx.channel()
-           .config()
-           .setAutoRead(false);
+        ctx.channel().config().setAutoRead(false);
         stream.onPresent(streamed -> streamed.body()
                                              .end(() -> complete(ctx, streamed, trailers)));
     }
@@ -298,8 +295,7 @@ final class RequestGate extends ChannelInboundHandlerAdapter {
                                                              () -> responded(ctx, keepAlive));
 
         writer.guard();
-        streamed.sink()
-                .complete(request, writer);
+        streamed.sink().complete(request, writer);
     }
 
     /// The sink's response was written: a keep-alive connection reads on, starting with what the decoder delivered
@@ -323,9 +319,7 @@ final class RequestGate extends ChannelInboundHandlerAdapter {
         }
 
         if (!bodyEnded && !refused && !streamHoldsBuffer()) {
-            ctx.channel()
-               .config()
-               .setAutoRead(true);
+            ctx.channel().config().setAutoRead(true);
         }
     }
 
@@ -421,7 +415,11 @@ final class RequestGate extends ChannelInboundHandlerAdapter {
     private boolean answerAndClose(ChannelHandlerContext ctx, Consumer<ResponseWriter> respond, boolean guarded) {
         refused = true;
         stopGuard();
-        var writer = new NettyHttpServer.NettyResponseWriter(ctx, IdGenerator.generate("req"), false, () -> {}, true);
+        var writer = new NettyHttpServer.NettyResponseWriter(ctx,
+                                                             IdGenerator.generate("req"),
+                                                             false,
+                                                             () -> {},
+                                                             true);
 
         if (guarded) {
             writer.guard();

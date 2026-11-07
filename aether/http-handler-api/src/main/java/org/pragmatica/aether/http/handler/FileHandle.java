@@ -6,6 +6,7 @@ package org.pragmatica.aether.http.handler;
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.Codec;
 
+
 /// One uploaded file, stored by the ingress before the request was dispatched (U2).
 ///
 /// @param field        the multipart field the file came in, or `""` for a body that was not multipart [G: the empty name]
@@ -14,7 +15,10 @@ import org.pragmatica.serialization.Codec;
 /// @param object       where the bytes are
 @Codec
 public record FileHandle(String field, Option<String> fileName, String declaredType, ObjectHandle object) {
-    public static FileHandle fileHandle(String field, Option<String> fileName, String declaredType, ObjectHandle object) {
+    public static FileHandle fileHandle(String field,
+                                        Option<String> fileName,
+                                        String declaredType,
+                                        ObjectHandle object) {
         return new FileHandle(field, fileName, declaredType, object);
     }
 }

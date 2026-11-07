@@ -145,12 +145,13 @@ final class BodyStream {
         var next = waiting.poll();
 
         accepting = some(next);
-        sink.accept(next.view())
-            .onResult(result -> executor.execute(() -> settled(next, result)));
+        sink.accept(next.view()).onResult(result -> executor.execute(() -> settled(next, result)));
     }
 
     private void drained() {
-        onEnd.apply(() -> channel.config().setAutoRead(true), this::complete);
+        onEnd.apply(() -> channel.config()
+                                 .setAutoRead(true),
+                    this::complete);
     }
 
     private void complete(Runnable complete) {
@@ -166,7 +167,7 @@ final class BodyStream {
 
     private void proceed(Result<Unit> result) {
         switch (result) {
-            case Result.Success<Unit> _ -> pump();
+            case Result.Success<Unit>_ -> pump();
             case Result.Failure<Unit>(var cause) -> failed(cause);
         }
     }
@@ -178,7 +179,8 @@ final class BodyStream {
     }
 
     private void releaseWaiting() {
-        waiting.forEach(piece -> piece.owner().release());
+        waiting.forEach(piece -> piece.owner()
+                                      .release());
         waiting.clear();
     }
 }

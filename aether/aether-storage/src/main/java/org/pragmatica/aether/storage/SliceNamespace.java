@@ -12,6 +12,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.storage.Namespace;
 import org.pragmatica.storage.Sha256;
 
+
 /// The content-store namespace a slice's stored objects live in (U2, spec §B2.1 [G: the derivation]): its
 /// `groupId.artifactId`, lower-cased, with every character outside `[a-z0-9._-]` replaced by `-`. A name that is not a
 /// valid [Namespace] as it stands (longer than 63 characters) keeps its first 46 characters, then `-` and the first 16 hex
@@ -28,23 +29,22 @@ public sealed interface SliceNamespace {
     static Result<Namespace> sliceNamespace(ArtifactBase base) {
         var plain = plainName(base);
 
-        return Namespace.namespace(plain)
-                        .orElse(() -> hashedNamespace(plain, base));
+        return Namespace.namespace(plain).orElse(() -> hashedNamespace(plain, base));
     }
 
     private static String plainName(ArtifactBase base) {
         var joined = (base.groupId().id() + "." + base.artifactId().id()).toLowerCase(Locale.ROOT);
 
-        return OUTSIDE_ALPHABET.matcher(joined)
-                               .replaceAll("-");
+        return OUTSIDE_ALPHABET.matcher(joined).replaceAll("-");
     }
 
     private static Result<Namespace> hashedNamespace(String plain, ArtifactBase base) {
-        return Sha256.sha256(base.asString()
-                                 .getBytes(StandardCharsets.UTF_8))
-                     .map(digest -> plain.substring(0, Math.min(PREFIX_LENGTH, plain.length())) + "-"
-                                    + digest.hexString()
-                                            .substring(0, DIGEST_HEX_LENGTH))
+        return Sha256.sha256(base.asString().getBytes(StandardCharsets.UTF_8))
+                     .map(digest -> plain.substring(0,
+                                                    Math.min(PREFIX_LENGTH,
+                                                             plain.length()))
+                                   + "-" + digest.hexString()
+                                                 .substring(0, DIGEST_HEX_LENGTH))
                      .flatMap(Namespace::namespace);
     }
 

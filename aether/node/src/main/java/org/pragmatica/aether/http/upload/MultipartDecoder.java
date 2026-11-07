@@ -20,6 +20,7 @@ import org.pragmatica.lang.Unit;
 
 import static org.pragmatica.aether.http.upload.UploadIngestError.LimitExceeded.limitExceeded;
 
+
 /// A push-style `multipart/form-data` decoder (RFC 7578, framing per RFC 2046 §5.1.1) for a body that arrives in chunks
 /// split anywhere: inside a delimiter, inside a part's header block, inside the two bytes after a delimiter (U2).
 ///
@@ -43,7 +44,9 @@ final class MultipartDecoder {
     static final int MAX_HEADER_BYTES = 8 * 1024;
     /// The aggregated path's part cap (`MultipartParser.DEFAULT_MAX_PARTS`), kept equal by value: that parser goes away.
     static final long DEFAULT_MAX_PARTS = 128;
+
     private static final byte[] CRLF = {'\r', '\n'};
+
     private static final int CRLF_BITS = 0x0D0A;
     private static final int HEADER_END_BITS = 0x0D0A0D0A;
     private static final byte[] NO_BYTES = new byte[0];
@@ -96,7 +99,8 @@ final class MultipartDecoder {
     private MultipartDecoder(byte[] delimiter, UploadSpec spec) {
         this.delimiter = delimiter;
         this.spec = spec;
-        this.partCap = Math.max(DEFAULT_MAX_PARTS, spec.maxFiles() + spec.maxFields());
+        this.partCap = Math.max(DEFAULT_MAX_PARTS,
+                                spec.maxFiles() + spec.maxFields());
     }
 
     /// A decoder for a body of `contentType`, under the part limits of `spec`; refused when the type carries no usable
@@ -113,8 +117,7 @@ final class MultipartDecoder {
 
     /// Whether `contentType` is `multipart/form-data`, whatever its case and parameters.
     static boolean isFormData(String contentType) {
-        return HeaderParameters.mediaType(contentType)
-                               .equals("multipart/form-data");
+        return HeaderParameters.mediaType(contentType).equals("multipart/form-data");
     }
 
     /// The events `chunk` completes, or the refusal it reached. The returned [Event.FileData] slices share `chunk`'s
@@ -124,7 +127,6 @@ final class MultipartDecoder {
         var input = new Input(carry, chunk);
 
         carry = NO_BYTES;
-
         var position = 0;
 
         while (refusal.isEmpty() && position < input.length()) {
@@ -186,21 +188,18 @@ final class MultipartDecoder {
 
     private void fileContent(Input input, int from, int to, List<Event> events) {
         partBytes += to - from;
-
         if (spec.maxFileBytes() > 0 && partBytes > spec.maxFileBytes()) {
             refuse(limitExceeded("max_file_size", spec.maxFileBytes()));
 
             return;
         }
 
-        input.slices(from, to)
-             .forEach(slice -> events.add(new Event.FileData(slice)));
+        input.slices(from, to).forEach(slice -> events.add(new Event.FileData(slice)));
     }
 
     private void fieldContent(Input input, int from, int to) {
         partBytes += to - from;
         fieldsTotal += to - from;
-
         if (spec.maxFieldBytes() > 0 && partBytes > spec.maxFieldBytes()) {
             refuse(limitExceeded("max_field_size", spec.maxFieldBytes()));
 
@@ -307,8 +306,7 @@ final class MultipartDecoder {
 
         open(Kind.FILE, headers.name());
         events.add(new Event.FileStart(headers.name(),
-                                       headers.fileName()
-                                              .filter(fileName -> !fileName.isEmpty()),
+                                       headers.fileName().filter(fileName -> !fileName.isEmpty()),
                                        headers.contentType()));
     }
 
@@ -434,11 +432,8 @@ final class MultipartDecoder {
                     return UploadIngestError.Malformed.BAD_HEADERS.result();
                 }
 
-                fields.put(line.substring(0, colon)
-                               .strip()
-                               .toLowerCase(Locale.ROOT),
-                           line.substring(colon + 1)
-                               .strip());
+                fields.put(line.substring(0, colon).strip().toLowerCase(Locale.ROOT),
+                           line.substring(colon + 1).strip());
             }
 
             return Result.success(fields);
@@ -446,8 +441,7 @@ final class MultipartDecoder {
 
         private static Result<PartHeaders> fromFields(Map<String, String> fields) {
             var disposition = Option.option(fields.get("content-disposition"));
-            var name = disposition.filter(value -> HeaderParameters.mediaType(value)
-                                                                   .equals("form-data"))
+            var name = disposition.filter(value -> HeaderParameters.mediaType(value).equals("form-data"))
                                   .flatMap(value -> HeaderParameters.parameter(value, "name"));
 
             return name.map(fieldName -> new PartHeaders(fieldName,

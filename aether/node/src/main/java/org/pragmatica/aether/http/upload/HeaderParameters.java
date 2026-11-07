@@ -7,6 +7,7 @@ import java.util.Locale;
 
 import org.pragmatica.lang.Option;
 
+
 /// Reads a header value of the form `type; name=value; name="quoted value"` (Content-Type, Content-Disposition): its
 /// leading token, and one parameter by name. A quoted value may contain `;` and backslash-escaped characters (RFC 9110
 /// §5.6.4). The extended `name*=` form (RFC 8187) is not read: a client that sends it sends the plain form too.
@@ -18,7 +19,7 @@ sealed interface HeaderParameters {
         return (semicolon < 0
                 ? value
                 : value.substring(0, semicolon)).strip()
-                                                 .toLowerCase(Locale.ROOT);
+                                                .toLowerCase(Locale.ROOT);
     }
 
     /// The parameter `name` (matched case-insensitively), unquoted, or empty when the value does not carry it.
@@ -28,8 +29,7 @@ sealed interface HeaderParameters {
         while (position >= 0 && position < value.length()) {
             var parsed = Parameter.at(value, position + 1);
 
-            if (parsed.name()
-                      .equalsIgnoreCase(name)) {
+            if (parsed.name().equalsIgnoreCase(name)) {
                 return Option.some(parsed.value());
             }
 
@@ -46,13 +46,14 @@ sealed interface HeaderParameters {
             var semicolon = text.indexOf(';', start);
 
             if (equals < 0 || (semicolon >= 0 && semicolon < equals)) {
-                return new Parameter("", "", semicolon < 0
-                                             ? text.length()
-                                             : semicolon);
+                return new Parameter("",
+                                     "",
+                                     semicolon < 0
+                                     ? text.length()
+                                     : semicolon);
             }
 
-            var name = text.substring(start, equals)
-                           .strip();
+            var name = text.substring(start, equals).strip();
             var valueStart = skipSpaces(text, equals + 1);
 
             return valueStart < text.length() && text.charAt(valueStart) == '"'
@@ -76,7 +77,9 @@ sealed interface HeaderParameters {
                       ? text.length()
                       : semicolon;
 
-            return new Parameter(name, text.substring(from, end).strip(), end);
+            return new Parameter(name,
+                                 text.substring(from, end).strip(),
+                                 end);
         }
 
         private static Parameter quoted(String text, String name, int from) {
