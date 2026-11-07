@@ -117,6 +117,23 @@ class IngestSinkLifecycleTest {
         await().atMost(WAIT).until(() -> harness.stored().isEmpty());
     }
 
+    /// Kills the discard removed from the dispatch-time security refusal: the request is completed with a path whose route
+    /// requires a role the node cannot authenticate (no security mode), so dispatch refuses it without a slice, and the
+    /// object the ingress stored for it is deleted.
+    @Test
+    void dispatch_whenTheRequestIsRefusedOnDispatch_deletesTheStoredUpload() {
+        var harness = StreamingIngestHarness.streaming();
+        var body = randomBytes(8192, 6);
+        var sink = harness.stream(TestRequest.post(UPLOAD, BINARY_TYPE, body.length));
+
+        assertThat(feed(sink, body, randomSizes(4)).isEmpty()).isTrue();
+        sink.complete(TestRequest.post("/api/admin/blob", BINARY_TYPE, body.length), response);
+
+        assertThat(response.status()).as("refused on dispatch").isGreaterThanOrEqualTo(400);
+        assertThat(harness.router.calls()).isZero();
+        await().atMost(WAIT).until(() -> harness.stored().isEmpty());
+    }
+
     /// Control for the test above: the same upload completed on its route is kept for the slice.
     @Test
     void dispatch_onItsRoute_keepsTheStoredUploadForTheSlice() {
