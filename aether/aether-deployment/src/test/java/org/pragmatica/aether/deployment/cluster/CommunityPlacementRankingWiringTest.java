@@ -69,8 +69,11 @@ class CommunityPlacementRankingWiringTest {
     private final CommunityPlacementReconciler reconciler = CommunityPlacementReconciler.communityPlacementReconciler(CORE, store,
         commands -> {
             var hook = beforeCommit;
-            beforeCommit = () -> {};
-            hook.run();
+
+            if (commands.toString().contains("CommunityPlacementOperationKey")) {
+                beforeCommit = () -> {};
+                hook.run();
+            }
             return Promise.success(store.process(store.createBatch(commands)));
         }, () -> true,
         ready::contains, () -> Set.of(CORE), () -> 10, actuator, _ -> {}, (_, _) -> {}, org.pragmatica.lang.io.TimeSpan.timeSpan(60_000L).millis());
