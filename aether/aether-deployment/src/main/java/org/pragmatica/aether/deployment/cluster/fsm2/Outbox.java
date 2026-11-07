@@ -688,6 +688,8 @@ public sealed interface Outbox {
             case ORPHAN_TARGET -> m;
             // CF-8 (V2771b): a refused stale-mark removal is derived again by the next tick's sweep (`Outcomes.sweep`), from the mirror's current judgment.
             case STALE_MARK -> m;
+            // #1337 parity: a refused stale topic-row removal is derived again by the next pass's sweep (`DepartureFlow.sweepStaleTopicRows`).
+            case STALE_TOPIC_ROW -> m;
             default -> rederiveByPair(m, ctx, draft);
         };
     }

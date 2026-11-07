@@ -492,6 +492,7 @@ public final class ClusterModel {
         ORPHAN,
         ORPHAN_TARGET,
         STALE_MARK,
+        STALE_TOPIC_ROW,
         DIVERGENCE
     }
 

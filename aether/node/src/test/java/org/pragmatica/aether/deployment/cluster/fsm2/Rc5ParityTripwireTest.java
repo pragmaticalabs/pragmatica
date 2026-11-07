@@ -67,7 +67,8 @@ class Rc5ParityTripwireTest {
     // -- #1337, cluster side: a departed node's topic rows -----------------------------------------------------------------
     // Legacy (rc5 6fc194e39): the node-removal batch removes the departed node's TopicSubscription and TopicPublisher rows
     // (`ClusterDeploymentState.topicRowCommandsForNode`), and the periodic sweep removes any left behind
-    // (`StaleEntryCleaner.cleanupStaleTopicRows`). FSM2 (F2b) mirrors the topic rows and its C17/C17b remove them with the node's other rows.
+    // (`StaleEntryCleaner.cleanupStaleTopicRows`). FSM2 (F2b) mirrors the topic rows; C17, C17b and R-4.3.3 remove them with the node's other
+    // rows, and `DepartureFlow.sweepStaleTopicRows` is the stale sweep (pinned in TopicRowRemovalTest).
     private static final ResourceAddress ORDERS_TOPIC = ResourceAddress.resourceAddress("org.example", "orders", "1.0.0").unwrap();
     private static final TopicSubscriptionKey SUBSCRIPTION = TopicSubscriptionKey.topicSubscriptionKey(ORDERS_TOPIC,
                                                                                                        ORDERS,

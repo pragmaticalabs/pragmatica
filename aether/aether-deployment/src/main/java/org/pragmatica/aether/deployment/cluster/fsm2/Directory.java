@@ -59,7 +59,8 @@ public sealed interface Directory {
     }
 
     /// R-4.3.3: `Remove(NodeDepartureKey)` expecting the DEPARTED value, plus the observed rows at their exact values and any
-    /// remaining desired and route keys.
+    /// remaining desired, route and topic-row (#1337) keys. The topic rows ride here because the node leaves `departed` with its record, so
+    /// the C17b tick sweep never reaches a row this transaction leaves.
     private static ClusterModel removeDeparted(ClusterModel m, Ctx ctx, NodeId node) {
         return Reconcile.request(submitRemovals(m, node), ctx);
     }
@@ -71,7 +72,8 @@ public sealed interface Directory {
                                                        record)),
                          DepartureFlow.observedRemovals(m, node),
                          DepartureFlow.desiredRemovals(m, node),
-                         DepartureFlow.routeRemovals(m, node))
+                         DepartureFlow.routeRemovals(m, node),
+                         DepartureFlow.topicRowRemovals(m, node))
                      .flatMap(List::stream)
                      .toList();
     }
