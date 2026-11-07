@@ -219,20 +219,39 @@ class CommunityPlacementRankingWiringTest {
     // ---- fallback = forbid (section 2.4) ----
     private static final String THREE = HEAD + "%s" + docker("a-dk", "") + docker("b-dk", "") + community(4, "a-dk", "b-dk", "c-dk");
 
+    private void refuse(String config, String source, long refusedAt) {
+        var location = policy(config).locations().stream().filter(l -> l.source().equals(source)).findFirst().orElseThrow();
+        var key = new AetherKey.CommunityPlacementAvailabilityKey("stable", source, location.zone());
+        var authority = new LeaderValue(CORE, 1);
+
+        seed(new KVCommand.LeaderTransaction<>(key, "refusal-" + source, authority, List.of(), List.of(
+            new KVCommand.Mutation<AetherKey, AetherValue>(key, Option.none(), Option.some(
+                new AetherValue.CommunityPlacementAvailabilityValue(CommunityPlacementAvailability.policyIdentity(policy(config)),
+                    "binding", new NodeId("ghost"), refusedAt, 1))))));
+    }
+
     private void cRefusedWithAMembersTwoAndB(String cExtra) {
         var config = THREE.formatted(docker("c-dk", cExtra));
-        var location = policy(config).locations().stream().filter(l -> l.source().equals("c-dk")).findFirst().orElseThrow();
-        var key = new AetherKey.CommunityPlacementAvailabilityKey("stable", "c-dk", location.zone());
-        var authority = new LeaderValue(CORE, 1);
 
         start(config);
         member(new NodeId("a1"), "a-dk");
         member(new NodeId("a2"), "a-dk");
         member(new NodeId("b1"), "b-dk");
-        seed(new KVCommand.LeaderTransaction<>(key, "refusal", authority, List.of(), List.of(
-            new KVCommand.Mutation<AetherKey, AetherValue>(key, Option.none(), Option.some(
-                new AetherValue.CommunityPlacementAvailabilityValue(CommunityPlacementAvailability.policyIdentity(policy(config)),
-                    "binding", new NodeId("ghost"), System.currentTimeMillis(), 1))))));
+        refuse(config, "c-dk", System.currentTimeMillis());
+    }
+
+    /// Both locations are refused long ago, so both are due for a probe: the probe is chosen by the same ranking.
+    @ParameterizedTest
+    @ValueSource(strings = {"", "preference = 10"})
+    void reserve_probeIsRankedByPreference(String bExtra) {
+        var config = HEAD + docker("a-dk", "") + docker("b-dk", bExtra) + community(2, "a-dk", "b-dk");
+
+        start(config);
+        refuse(config, "a-dk", 1L);
+        refuse(config, "b-dk", 1L);
+        reconciler.reconcile().await().unwrap();
+
+        assertThat(current().targetSource()).isEqualTo(bExtra.isEmpty() ? "a-dk" : "b-dk");
     }
 
     @Test
