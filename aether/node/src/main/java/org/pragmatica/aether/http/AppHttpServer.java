@@ -1204,6 +1204,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     /// Package-private so the gate tests can dispatch a stored upload whose route or security changed after its head.
+    @Contract
     void handleRequest(HttpRequest request, ResponseWriter response) {
         var requestId = request.requestId();
 
