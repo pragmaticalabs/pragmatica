@@ -80,7 +80,6 @@ public final class ForwardingReadRouter<E> {
     @FunctionalInterface
     public interface StaleReplica {
         boolean behindOwner(String streamName, int partition);
-
         StaleReplica NEVER = (_, _) -> false;
     }
 

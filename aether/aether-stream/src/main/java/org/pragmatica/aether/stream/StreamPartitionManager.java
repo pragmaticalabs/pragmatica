@@ -907,8 +907,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     @Contract
     private void restoreTrustedMarker(String streamName, int partition, AppendLog wal) {
-        wal.takeAckedRestore()
-           .onPresent(marker -> restoreMarker(streamName, partition, wal, marker));
+        wal.takeAckedRestore().onPresent(marker -> restoreMarker(streamName, partition, wal, marker));
     }
 
     /// The marker is taken once per ring incarnation, so its verdict is logged once: an operator reading a restart that
@@ -921,9 +920,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                  streamName,
                  partition,
                  marker.offset(),
-                 marker.epoch()
-                       .map(AppendLog.EpochKey::token)
-                       .or("none"),
+                 marker.epoch().map(AppendLog.EpochKey::token).or("none"),
                  trusted
                  ? "trusted at owner admission: visible raised to it"
                  : "not trusted at owner admission: visible waits for replica re-acks");
@@ -2521,7 +2518,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         if (placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER) {
             replicationManager.announceCommitted(streamName,
                                                  partition,
-                                                 -1L,
+                                                 - 1L,
                                                  ownerEpochSource.currentOwnerEpoch(streamName, partition));
         }
     }
@@ -2625,7 +2622,9 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         return reported.epoch()
                        .equals(known.epoch())
-               ? new CommittedMark(known.epoch(), Math.max(known.through(), reported.through()), true)
+               ? new CommittedMark(known.epoch(),
+                                   Math.max(known.through(), reported.through()),
+                                   true)
                : known;
     }
 
