@@ -348,6 +348,32 @@ class WorkflowReconcilerTest {
         return answer;
     }
 
+    /// r03w: the three-argument factory must hand DEFAULT_BOUND to the reconciler; a commit answered 400 ms late is still accepted and
+    /// its effect performed. A factory passing 1 ms drops the late answer (no effect), so this goes red.
+    @Test
+    void defaultFactory_waitsForASlowCommit_pastAShortBound() {
+        admit("wf-1", "a");
+        commits = this::answeredLate;
+        tick(WorkflowReconciler.workflowReconciler(ledger(), Map.of("k", kind), () -> T0));
+        assertThat(actions.get()).as("the late accepted commit was waited for").isEqualTo(1);
+    }
+
+    private Promise<Boolean> answeredLate(WorkflowRunValue before, WorkflowRunValue next) {
+        var answer = Promise.<Boolean> promise();
+
+        Thread.startVirtualThread(() -> commitAfterDelay(before, next, answer));
+        return answer;
+    }
+
+    private void commitAfterDelay(WorkflowRunValue before, WorkflowRunValue next, Promise<Boolean> answer) {
+        try {
+            Thread.sleep(400);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        real.commit(before, next).onSuccess(answer::succeed);
+    }
+
     /// r03: the default commit/effect bound is 30 s; a shorter default would drop a slow but successful answer.
     @Test
     void defaultBound_isThirtySeconds() {

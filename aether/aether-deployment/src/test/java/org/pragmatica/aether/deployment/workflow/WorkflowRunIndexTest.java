@@ -88,7 +88,7 @@ class WorkflowRunIndexTest {
 
         index.onTransition(WorkflowRunIndex.announcer(index, () -> true, probe.sink()));
         index.put(stale);
-        index.restore(Map.<Object, Object> of(new WorkflowRunKey("wf-a"),
+        index.restoreFrom(() -> Map.<Object, Object> of(new WorkflowRunKey("wf-a"),
                              restored,
                              new WorkflowClaimKey("k:wf-a"),
                              new WorkflowClaimValue("wf-a"),
@@ -292,6 +292,7 @@ class WorkflowRunIndexTest {
 
         assertThat(codes(raised)).containsExactly(OperatorWarningCode.WORKFLOW_ESCALATED, OperatorWarningCode.WORKFLOW_RESOLVED);
         assertThat(raised.getLast().message()).contains("outcome DONE");
+        assertThat(raised.getLast().subject()).as("the subject closes the incident").isEqualTo("wf-a");
     }
 
     /// CTO ruling Q4: at most one RESOLVED per run per episode; a redelivered terminal commit has a terminal before.
@@ -333,6 +334,7 @@ class WorkflowRunIndexTest {
 
         assertThat(codes(raised)).containsExactly(OperatorWarningCode.WORKFLOW_ESCALATED, OperatorWarningCode.WORKFLOW_RESOLVED);
         assertThat(raised.getLast().message()).contains("outcome ABANDONED");
+        assertThat(raised.getLast().subject()).as("the subject closes the incident").isEqualTo("wf-a");
     }
 
     /// A FAILED run whose detail is not an abandon cause stays outcome FAILED.
@@ -344,7 +346,26 @@ class WorkflowRunIndexTest {
         index.onTransition(WorkflowRunIndex.announcer(index, () -> true, probe.sink()));
         index.put(escalated);
         index.put(escalated.in(WorkflowState.FAILED, "precondition can never hold"));
-        assertThat(probe.settled().getLast().message()).contains("outcome FAILED");
+        var raised = probe.settled();
+
+        assertThat(raised.getLast().message()).contains("outcome FAILED");
+        assertThat(raised.getLast().subject()).as("the subject closes the incident").isEqualTo("wf-a");
+    }
+
+    /// x07: ESCALATED to WAITING is a resume too: INFO WORKFLOW_RESUMED naming the new state, never RESOLVED.
+    @Test
+    void announcer_escalatedRunBackToWaiting_raisesResumed_notResolved() {
+        var index = WorkflowRunIndex.workflowRunIndex();
+        var escalated = run("wf-a", 10L).in(WorkflowState.ESCALATED, "incident");
+
+        index.onTransition(WorkflowRunIndex.announcer(index, () -> true, probe.sink()));
+        index.put(escalated);
+        index.put(escalated.in(WorkflowState.WAITING, ""));
+        var raised = probe.settled();
+
+        assertThat(codes(raised)).containsExactly(OperatorWarningCode.WORKFLOW_ESCALATED, OperatorWarningCode.WORKFLOW_RESUMED);
+        assertThat(raised.getLast().subject()).isEqualTo("wf-a");
+        assertThat(raised.getLast().message()).contains("WAITING");
     }
 
     /// Q4 / v2803c F1: re-escalating a run whose incident is still open (a resume leaves it open) does NOT raise a second ESCALATED;
@@ -374,7 +395,7 @@ class WorkflowRunIndexTest {
         var announcer = WorkflowRunIndex.announcer(index, owner::get, probe.sink());
 
         index.onTransition(announcer);
-        index.restore(Map.of(new WorkflowRunKey("wf-a"), escalated));
+        index.restoreFrom(() -> Map.of(new WorkflowRunKey("wf-a"), escalated));
         owner.set(true);
         announcer.reseed();
         index.put(escalated.in(WorkflowState.DONE, ""));
@@ -393,7 +414,7 @@ class WorkflowRunIndexTest {
         var announcer = WorkflowRunIndex.announcer(index, () -> true, probe.sink());
 
         index.onTransition(announcer);
-        index.restore(Map.of(new WorkflowRunKey("wf-a"), escalated));
+        index.restoreFrom(() -> Map.of(new WorkflowRunKey("wf-a"), escalated));
         announcer.reseed();
         index.put(escalated);
         assertThat(probe.settled()).isEmpty();
@@ -408,7 +429,7 @@ class WorkflowRunIndexTest {
 
         index.onTransition(announcer);
         index.put(escalated);
-        index.restore(Map.of(new WorkflowRunKey("wf-a"), escalated.in(WorkflowState.DONE, "")));
+        index.restoreFrom(() -> Map.of(new WorkflowRunKey("wf-a"), escalated.in(WorkflowState.DONE, "")));
         announcer.reseed();
         index.put(escalated.in(WorkflowState.DONE, ""));
         assertThat(codes(probe.settled())).containsExactly(OperatorWarningCode.WORKFLOW_ESCALATED);

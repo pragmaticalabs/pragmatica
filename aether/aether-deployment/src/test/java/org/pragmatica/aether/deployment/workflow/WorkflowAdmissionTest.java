@@ -340,6 +340,19 @@ class WorkflowAdmissionTest {
         assertThat(cluster.run(first.id())).isEqualTo(Option.some(first));
     }
 
+    /// p5: the read-back compares the kind too. The run committed under this request's id is of another kind with the same params
+    /// (reachable only by an id collision or a foreign writer), so it is not "the same request": RequestKeyReused, not that run.
+    @Test
+    void admit_sameRequestKeyAndParamsButOtherKindCommitted_isRequestKeyReused() {
+        var id = WorkflowAdmission.runId("pilot", "req-a").unwrap();
+        var foreign = WorkflowRunValue.admitted(id, "other", Map.of("node", "n1"), List.of("node:n1"), 1_000L, 2_000L);
+
+        assertThat(ledger.create(foreign).await().unwrap()).isTrue();
+        var reused = refusal(admission.admit("pilot", Map.of("node", "n1"), List.of("node:n1"), 2_000L, "req-a").await());
+
+        assertThat(reused).isEqualTo(new AdmissionRefusal.RequestKeyReused("req-a", id));
+    }
+
     @Test
     void admit_blankRequestKey_isRefused_andClaimsNothing() {
         assertThat(refusal(admission.admit("pilot", Map.of(), List.of("node:n1"), 1L, " ").await())).isEqualTo(AdmissionRefusal.INVALID_REQUEST_KEY);
@@ -573,6 +586,33 @@ class WorkflowAdmissionTest {
         assertThat(answered.unwrap()).isEqualTo(newRun);
         assertThat(ledger.runs()).as("one run").containsExactly(newRun);
         assertThat(cluster.claim("node:n1")).isEqualTo(Option.some(new WorkflowClaimValue(newRun.id())));
+    }
+
+    /// a07w: the two-argument factory must hand DEFAULT_BOUND to the admission, not a shorter bound; a create answered 400 ms late is
+    /// still admitted. A factory passing 1 ms ends at the bound with nothing visible, so this goes red.
+    @Test
+    void defaultFactory_waitsForASlowCreate_pastAShortBound() {
+        var admitted = WorkflowAdmission.workflowAdmission(answering(this::answeredLate), Map.of("pilot", PILOT))
+                                        .admit("pilot", Map.of("node", "n1"), List.of("node:n1"), 1_000L, "req-a")
+                                        .await(TimeSpan.timeSpan(10).seconds());
+
+        assertThat(admitted.isSuccess()).as("a slow create is waited for: " + admitted).isTrue();
+    }
+
+    private Promise<Boolean> answeredLate(WorkflowRunValue run) {
+        var answer = Promise.<Boolean> promise();
+
+        Thread.startVirtualThread(() -> applyAfterDelay(run, answer));
+        return answer;
+    }
+
+    private void applyAfterDelay(WorkflowRunValue run, Promise<Boolean> answer) {
+        try {
+            Thread.sleep(400);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        ledger.create(run).onSuccess(answer::succeed);
     }
 
     /// a07: the default create bound is 30 s; a shorter default would turn a slow consensus answer into Unanswered.

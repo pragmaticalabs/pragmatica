@@ -31,7 +31,7 @@ import org.slf4j.LoggerFactory;
 
 /// rc6 f2b §5: every node's view of the committed workflow runs, fed by the KV put/remove route of `WorkflowRunKey` (the same route
 /// shape as the node replacement index: [#absorbPut] and [#absorbRemove]), and restored from a KV snapshot on state restore
-/// ([#restore]). [WorkflowLedger#runs] reads it, so a reconciler tick costs the retained runs, not a copy of the whole store.
+/// ([#restoreFrom]). [WorkflowLedger#runs] reads it, so a reconciler tick costs the retained runs, not a copy of the whole store.
 ///
 /// It is also the one place a run's transition is seen exactly as the cluster committed it, on every node: the listener gets
 /// (before, after, replayed) for every applied put, which is where the operator events of a transition are derived ([#announcer]).
@@ -96,21 +96,15 @@ public final class WorkflowRunIndex {
     }
 
     /// Replace the whole view from a KV snapshot (state restore): any entry that is not a run is ignored. No event is raised: a
-    /// restore is not a transition. The snapshot is already taken, so a put absorbed between taking it and this call is overwritten;
-    /// a caller that can race live puts uses [#restoreFrom].
-    public synchronized Unit restore(Map<?, ?> snapshot) {
+    /// restore is not a transition. The snapshot is taken INSIDE the index's lock: a put absorbed meanwhile waits for the lock and is
+    /// applied after the restore, so a restore never overwrites a newer put (v2803 F4).
+    public synchronized Unit restoreFrom(Supplier<Map<?, ?>> snapshot) {
         var updated = new HashMap<String, WorkflowRunValue>();
 
-        snapshot.forEach((key, value) -> collectRun(updated, key, value));
+        snapshot.get().forEach((key, value) -> collectRun(updated, key, value));
         runs = Map.copyOf(updated);
 
         return Unit.unit();
-    }
-
-    /// As [#restore], but the snapshot is taken INSIDE the index's lock: a put absorbed meanwhile waits for the lock and is applied
-    /// after the restore, so a restore never overwrites a newer put (v2803 F4).
-    public synchronized Unit restoreFrom(Supplier<Map<?, ?>> snapshot) {
-        return restore(snapshot.get());
     }
 
     private static Unit collectRun(Map<String, WorkflowRunValue> target, Object key, Object value) {
