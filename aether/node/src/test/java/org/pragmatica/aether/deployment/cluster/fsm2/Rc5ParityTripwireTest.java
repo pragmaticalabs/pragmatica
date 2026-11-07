@@ -189,11 +189,13 @@ class Rc5ParityTripwireTest {
     @Test
     void aRemovedTopicRow_leavesTheRowMap_andTheByNodeIndex() {
         var w = departingNodeWithTopicRows();
-        var m = w.h.model();
 
-        assertThat(Idx.members(m.topicRowsByNode, CORE_2).toList()).as("control: both rows indexed under the node").containsExactlyInAnyOrder(SUBSCRIPTION, PUBLISHER);
+        assertThat(Idx.members(w.h.model().topicRowsByNode, CORE_2).toList()).as("control: both rows indexed under the node").containsExactlyInAnyOrder(SUBSCRIPTION, PUBLISHER);
         w.h.seedRemove(SUBSCRIPTION);
         w.h.seedRemove(PUBLISHER);
+        w.h.drain();
+
+        var m = w.h.model();
 
         assertThat(List.of(m.topicRows.get(SUBSCRIPTION).isPresent(), m.topicRows.get(PUBLISHER).isPresent())).as("the row map").containsExactly(false, false);
         assertThat(Idx.members(m.topicRowsByNode, CORE_2).toList()).as("the by-node index").isEmpty();
