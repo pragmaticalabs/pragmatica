@@ -1,6 +1,7 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: BUSL-1.1
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http.upload;
 
 import java.nio.ByteBuffer;
@@ -46,7 +47,7 @@ import static org.pragmatica.lang.Unit.unit;
 ///   aborted and every object already committed for the request is deleted, so nothing it stored stays in the catalog.
 ///   The client is answered the refusal's status ([UploadIngestError#status]); after an abort the server answers.
 /// - **Permit.** `permit` (the upload's admission) is run exactly once, on whichever terminal path ends the request:
-///   after the request was handed to `dispatch`, after a refusal was answered and its clean-up settled, or after an
+///   as the stored request is handed to `dispatch` (returned first, so a dispatch that throws cannot keep it), after a refusal was answered and its clean-up settled, or after an
 ///   abort's clean-up settled [G: release after the hand-off, not after the slice answers].
 ///
 /// The server makes one call at a time, each after the previous `accept` resolved, so the state below is touched by one
@@ -236,8 +237,8 @@ public final class IngestSink implements BodySink {
 
     // ---- terminal paths ----
     private void handOff(HttpRequest request, UploadHandle handle, ResponseWriter response) {
-        dispatch.dispatch(IngestedRequest.ingestedRequest(request, handle, this::discardStored), response);
         release();
+        dispatch.dispatch(IngestedRequest.ingestedRequest(request, handle, this::discardStored), response);
     }
 
     private void refuseAndClean(Cause cause, ResponseWriter response) {
