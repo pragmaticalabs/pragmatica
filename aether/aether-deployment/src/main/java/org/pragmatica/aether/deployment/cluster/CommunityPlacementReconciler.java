@@ -797,7 +797,7 @@ record PlacementReconciler(NodeId self,
     /// rc6 f5c: the first location of `candidates` by [SourceRanking] (no deadline, no `max_nodes` counts: Lane B).
     /// With every new profile field at its default this is today's [#locationOrder()] first element.
     private Option<CommunityPlacement.Location> bestRanked(ClusterBootstrapConfig config,
-                                                                       List<CommunityPlacement.Location> candidates) {
+                                                           List<CommunityPlacement.Location> candidates) {
         return Option.from(SourceRanking.rank(candidates,
                                               config.sources(),
                                               NodeRole.WORKER,

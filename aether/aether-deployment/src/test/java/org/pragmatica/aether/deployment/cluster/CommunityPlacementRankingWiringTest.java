@@ -161,47 +161,47 @@ class CommunityPlacementRankingWiringTest {
     // ---- wiring pins (design section 3) ----
     @Test
     void reserve_dockerAndHetznerDefaultFields_reservesLocationOrderFirst() {
-        var config = HEAD + hetzner("a_hz", "") + docker("b_dk", "") + community(2, "a_hz", "b_dk");
+        var config = HEAD + hetzner("a-hz", "") + docker("b-dk", "") + community(2, "a-hz", "b-dk");
         var oracle = policy(config).locations().stream().sorted(PlacementReconciler.locationOrder()).findFirst().orElseThrow();
 
         start(config);
         reconciler.reconcile().await().unwrap();
 
-        assertThat(current().targetSource()).isEqualTo(oracle.source()).isEqualTo("a_hz");
+        assertThat(current().targetSource()).isEqualTo(oracle.source()).isEqualTo("a-hz");
     }
 
     @Test
     void reserve_spotAndOndemandCloud_prefersOndemand() {
-        start(HEAD + hetzner("a_spot", "cost_class = \"spot\"") + hetzner("b_od", "") + community(2, "a_spot", "b_od"));
+        start(HEAD + hetzner("a-spot", "cost_class = \"spot\"") + hetzner("b-od", "") + community(2, "a-spot", "b-od"));
         reconciler.reconcile().await().unwrap();
 
-        assertThat(current().targetSource()).isEqualTo("b_od");
+        assertThat(current().targetSource()).isEqualTo("b-od");
     }
 
     // ---- behaviour ----
     @Test
     void reserve_preferenceChangesWhichShortLocationFillsFirst_finalCountsUnchanged() {
-        var plain = HEAD + docker("a_dk", "") + docker("b_dk", "") + community(2, "a_dk", "b_dk");
+        var plain = HEAD + docker("a-dk", "") + docker("b-dk", "") + community(2, "a-dk", "b-dk");
 
         start(plain);
         var plainOrder = fill(2);
         var plainCounts = policy(plain).desiredCounts();
         var plainOperations = providerOperations.size();
 
-        assertThat(plainOrder).containsExactly("a_dk", "b_dk");
+        assertThat(plainOrder).containsExactly("a-dk", "b-dk");
 
-        var preferred = HEAD + docker("a_dk", "") + docker("b_dk", "preference = 10") + community(2, "a_dk", "b_dk");
+        var preferred = HEAD + docker("a-dk", "") + docker("b-dk", "preference = 10") + community(2, "a-dk", "b-dk");
         var other = new CommunityPlacementRankingWiringTest();
 
         other.start(preferred);
         var preferredOrder = other.fill(2);
         other.reconciler.reconcile().await().unwrap();
 
-        assertThat(preferredOrder).containsExactly("b_dk", "a_dk");
+        assertThat(preferredOrder).containsExactly("b-dk", "a-dk");
         assertThat(policy(preferred).desiredCounts()).isEqualTo(plainCounts);
         assertThat(other.providerOperations).as("full after one member per location: no third operation").hasSize(plainOperations);
         assertThat(other.providerOperations.stream().map(CommunityPlacementOperationValue::targetSource).sorted().toList())
-            .containsExactly("a_dk", "b_dk");
+            .containsExactly("a-dk", "b-dk");
     }
 
     @ParameterizedTest
@@ -214,18 +214,18 @@ class CommunityPlacementRankingWiringTest {
     }
 
     // ---- fallback = forbid (section 2.4) ----
-    private static final String THREE = HEAD + "%s" + docker("a_dk", "") + docker("b_dk", "") + community(4, "a_dk", "b_dk", "c_dk");
+    private static final String THREE = HEAD + "%s" + docker("a-dk", "") + docker("b-dk", "") + community(4, "a-dk", "b-dk", "c-dk");
 
     private void cRefusedWithAMembersTwoAndB(String cExtra) {
-        var config = THREE.formatted(docker("c_dk", cExtra));
-        var location = policy(config).locations().stream().filter(l -> l.source().equals("c_dk")).findFirst().orElseThrow();
-        var key = new AetherKey.CommunityPlacementAvailabilityKey("stable", "c_dk", location.zone());
+        var config = THREE.formatted(docker("c-dk", cExtra));
+        var location = policy(config).locations().stream().filter(l -> l.source().equals("c-dk")).findFirst().orElseThrow();
+        var key = new AetherKey.CommunityPlacementAvailabilityKey("stable", "c-dk", location.zone());
         var authority = new LeaderValue(CORE, 1);
 
         start(config);
-        member(new NodeId("a1"), "a_dk");
-        member(new NodeId("a2"), "a_dk");
-        member(new NodeId("b1"), "b_dk");
+        member(new NodeId("a1"), "a-dk");
+        member(new NodeId("a2"), "a-dk");
+        member(new NodeId("b1"), "b-dk");
         seed(new KVCommand.LeaderTransaction<>(key, "refusal", authority, List.of(), List.of(
             new KVCommand.Mutation<AetherKey, AetherValue>(key, Option.none(), Option.some(
                 new AetherValue.CommunityPlacementAvailabilityValue(CommunityPlacementAvailability.policyIdentity(policy(config)),
@@ -245,23 +245,23 @@ class CommunityPlacementRankingWiringTest {
         cRefusedWithAMembersTwoAndB("fallback = \"allow\"");
         reconciler.reconcile().await().unwrap();
 
-        assertThat(current().targetSource()).as("c's share spills by weight: a=2, b=2").isEqualTo("b_dk");
+        assertThat(current().targetSource()).as("c's share spills by weight: a=2, b=2").isEqualTo("b-dk");
     }
 
     // ---- config change between snapshot and commit (section 4.3) ----
     @Test
     void reserve_configChangedBetweenSnapshotAndCommit_isRejectedAndNextPassReRanks() {
-        var before = HEAD + docker("a_dk", "") + docker("b_dk", "") + community(2, "a_dk", "b_dk");
-        var after = HEAD + docker("a_dk", "") + docker("b_dk", "preference = 10") + community(2, "a_dk", "b_dk");
+        var before = HEAD + docker("a-dk", "") + docker("b-dk", "") + community(2, "a-dk", "b-dk");
+        var after = HEAD + docker("a-dk", "") + docker("b-dk", "preference = 10") + community(2, "a-dk", "b-dk");
 
         start(before);
         beforeCommit = () -> install(after);
         reconciler.reconcile().await().unwrap();
 
-        assertThat(operation().isEmpty()).as("the commit that ranked a_dk first against the old config is rejected").isTrue();
+        assertThat(operation().isEmpty()).as("the commit that ranked a-dk first against the old config is rejected").isTrue();
 
         reconciler.reconcile().await().unwrap();
 
-        assertThat(current().targetSource()).as("the next pass re-ranks against the new config").isEqualTo("b_dk");
+        assertThat(current().targetSource()).as("the next pass re-ranks against the new config").isEqualTo("b-dk");
     }
 }
