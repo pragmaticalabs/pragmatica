@@ -391,6 +391,15 @@ class ReadCommittedStreamTest {
         }
 
         @Test
+        void behindCommittedOwner_aBatchBeforeAnyAnnouncement_isNotAnAnnouncement() {
+            manager = replicaWithRecords(2);
+            manager.appendRecovered(STREAM, PARTITION, 2L, "r2".getBytes(UTF_8), 3L, EPOCH_1).onFailure(cause -> fail(cause.message()));
+
+            assertThat(visibleOffset(manager)).as("control: nothing announced, so nothing is visible on the copy").isEqualTo(-1L);
+            assertThat(manager.behindCommittedOwner(STREAM, PARTITION)).as("a batch is not an announcement: (a) still holds").isTrue();
+        }
+
+        @Test
         void behindCommittedOwner_onTheOwner_isFalse() {
             manager = streamPartitionManager(Long.MAX_VALUE);
             createStream(manager, 3, 2);

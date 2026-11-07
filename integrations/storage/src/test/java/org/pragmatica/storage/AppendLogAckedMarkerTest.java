@@ -127,6 +127,17 @@ class AppendLogAckedMarkerTest {
     }
 
     @Test
+    void recordAckedMarker_atAnEpochsFirstOffset_isAttributedToThatEpoch() {
+        var wal = filledInTwoEpochs();
+
+        wal.recordAckedMarker(2).onFailure(c -> fail(c.message()));
+        assertThat(wal.ackedMarker()).as("control: the last offset of epoch 1").isEqualTo(Option.some(mark("1", 2)));
+        wal.recordAckedMarker(3).onFailure(c -> fail(c.message()));
+        assertThat(wal.ackedMarker()).as("epoch 3 starts at offset 3, so offset 3 is epoch 3's").isEqualTo(Option.some(mark("3", 3)));
+        wal.close();
+    }
+
+    @Test
     void recordAckedMarker_atAnOffsetTheHistoryDoesNotReach_hasNoEpoch() {
         var wal = AppendLog.open(file()).unwrap();
 

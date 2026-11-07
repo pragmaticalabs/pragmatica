@@ -100,9 +100,10 @@ class EmberOwnerRestartAckedTailTripwireTest {
     /// - Arm (a): before any announcement from the owner in this life, the non-owner forwards (red with condition (a) of
     ///   `StreamPartitionManager.behindCommittedOwner` mutated out: its held copy serves `[]`).
     /// - The owner's visible head reaches the acked tail with replica acks still held off.
-    /// - Arm (b): acks flow again, the non-owner's inbound replication data is dropped and [#LAGGED] more events are
-    ///   acknowledged by the third node, so the non-owner holds an announcement above its own visible position. Its GOVERNOR
-    ///   read is forwarded (red with condition (b) mutated out: its copy serves at most the first [#ACKED]).
+    /// - Arm (b): acks flow again, the non-owner's inbound replication data is dropped, the owner's ISR drops it, and a pressure
+    ///   record plus [#LAGGED] more events are acknowledged by the owner and the third node, so the non-owner holds an
+    ///   announcement above its own visible position. Its GOVERNOR read is forwarded (red with condition (b) mutated out: its
+    ///   copy serves at most the first [#ACKED]).
     @Test
     @Timeout(1200)
     void everyReadAfterColdRestart_coversTheAckedTailWithoutReplicaAcks() {
@@ -127,24 +128,42 @@ class EmberOwnerRestartAckedTailTripwireTest {
                                              .hasSize((int) tail + 1);
     }
 
-    /// Arm (b) setup: release the replica acks, starve `nonOwner` of replication data for the stream, and acknowledge
-    /// [#LAGGED] more events (the third node's ack is the one the confirmation factor needs). Returns the new acked tail once
-    /// `nonOwner` holds an announcement covering it.
+    /// Arm (b) setup: release the replica acks, starve `nonOwner` of replication data for the stream, wait until the owner's
+    /// committed ISR excludes it, and acknowledge [#LAGGED] more events. A confirmation needs EVERY member of the committed ISR
+    /// other than the owner (`DefaultReplicationManager.isrAckSet`, #1730), so while the starved copy is in the ISR no publish is
+    /// acknowledged (each ends `PublishOutcomeUnknown(REPLICATION_TIMEOUT)`); the third node's ack suffices only after the
+    /// owner's `IsrMonitor` shrinks the ISR. That shrink needs the owner's head above the starved copy for `isr_lag_max`, so one
+    /// pressure record is published first: it is appended to the owner's ring whatever its outcome, and it is acknowledged by
+    /// the shrink (the third node holds it). Announcements still reach `nonOwner` outside the ISR: `announceCommitted` sends to
+    /// the registered replica set, not the ISR, and the starvation filter does not drop `CommitAdvance`. Returns the new acked
+    /// tail once `nonOwner` holds an announcement covering it.
     private long publishLagging(AetherNode owner, AetherNode nonOwner) {
         starved.set(nonOwner);
         dropAcks.set(false);
 
         var router = StreamTripwireSupport.component(owner, "streamWriteRouter", StreamWriteRouter.class);
+        var pressure = StreamTripwireSupport.publishOnceActivated(router, ENGINE_KEY, "pressure".getBytes(StandardCharsets.UTF_8));
+
+        assertThat(ringHead(owner)).as("control (arm b): the pressure record (outcome %s) is in the owner's ring, past the starved copy", pressure)
+                                   .isEqualTo(ACKED_TAIL + 1);
+
+        var shrunk = StreamTripwireSupport.awaitIsr(cluster, ENGINE_KEY, 2, ISR_BUDGET_MS);
+
+        assertThat(shrunk.isr()).as("control (arm b): the owner's ISR dropped the starved non-owner").doesNotContain(nonOwner.self());
+
+        var tail = -1L;
 
         for (var i = 0; i < LAGGED; i++) {
             var offset = StreamTripwireSupport.publishOnceActivated(router, ENGINE_KEY, ("lagged-" + i).getBytes(StandardCharsets.UTF_8));
 
             assertThat(offset.isSuccess()).as("acknowledged lagging publish %d: %s", i, offset).isTrue();
+            tail = offset.unwrap();
         }
+        assertThat(tail).as("control (arm b): the lagged publishes follow the pressure record").isEqualTo(ACKED_TAIL + 1 + LAGGED);
 
-        var tail = ACKED_TAIL + LAGGED;
+        var acked = tail;
 
-        awaitUntil(() -> committedThrough(nonOwner) >= tail, 30_000L, "the owner's announcement of the new tail reaches the starved non-owner");
+        awaitUntil(() -> committedThrough(nonOwner) >= acked, 30_000L, "the owner's announcement of the new tail reaches the starved non-owner outside the ISR");
 
         return tail;
     }
