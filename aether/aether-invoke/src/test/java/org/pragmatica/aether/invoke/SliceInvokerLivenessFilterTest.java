@@ -12,7 +12,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
 import org.pragmatica.aether.http.forward.AccessibilityFilter;
-import org.pragmatica.aether.http.forward.ForwardError;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.SliceBridge;
@@ -125,7 +124,7 @@ class SliceInvokerLivenessFilterTest {
     }
 
     /// A NotSent re-route (#2807) must not land on the dead node either: with LIVE refusing the write and
-    /// DEAD inaccessible there is nothing left, so the call fails with the refusal and no second send.
+    /// DEAD inaccessible there is nothing left, so the call fails as NoInstanceAccepted and no second send.
     @Test
     void invoke_notSentReroute_neverReroutesOntoAnInaccessibleNode() {
         network.refuse(LIVE);
@@ -133,7 +132,7 @@ class SliceInvokerLivenessFilterTest {
         var result = invoker.invoke(ARTIFACT, METHOD, "request", new TypeToken<String>() {}).await();
 
         result.onSuccess(_ -> fail("a refused call with no other accessible instance must fail"))
-              .onFailure(cause -> assertThat(cause).isInstanceOf(ForwardError.NotSent.class));
+              .onFailure(cause -> assertThat(cause).isInstanceOf(SliceInvokerError.NoInstanceAccepted.class));
         assertThat(network.targets()).as("#275: the re-route must never send to an inaccessible node")
                   .containsExactly(LIVE);
     }
