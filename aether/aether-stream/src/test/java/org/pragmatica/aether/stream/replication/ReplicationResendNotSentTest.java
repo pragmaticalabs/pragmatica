@@ -77,7 +77,7 @@ class ReplicationResendNotSentTest {
     /// and the publish completes. The replica receives the chunk exactly once, carrying the original offset and epoch.
     @Test
     void replicateEvent_resendsOnce_whenFirstWriteIsRefusedUnderBackpressure() {
-        transport.script(WriteOutcome.BackpressureRefused::new);
+        transport.script(notSent("backpressure"));
         manager.replicateEvent(STREAM, PARTITION, OFFSET, new byte[]{1}, 1L, Epoch.ZERO);
         var publish = manager.awaitReplication(STREAM, PARTITION, OFFSET, 1);
 
