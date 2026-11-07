@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -17,6 +18,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /// [LocalDiskTier#scan] while files vanish under it (v2829 FIX 3 and 4). A put renames its `.partial` over the block path
 /// and a delete removes the block, both at any moment of a scan; the scan must neither fail for a file that went away nor
@@ -136,6 +138,22 @@ class LocalDiskTierScanVanishTest {
 
         assertThat(idsOf(page)).containsExactly(blocks.get(2), blocks.get(3), blocks.get(4), blocks.get(5));
         assertThat(page.next().isPresent()).as("a full page carries a cursor").isTrue();
+    }
+
+    /// A subdirectory that is there but cannot be listed fails the scan: only one that is gone lists as empty, because a
+    /// sweep must never read a tier it cannot list as an empty one.
+    @Test
+    void scan_aSubdirectoryThatCannotBeListed_failsTheScan() throws IOException {
+        var tier = tierRemoving(List.of(), Option.none());
+
+        Files.setPosixFilePermissions(shard, PosixFilePermissions.fromString("---------"));
+        try {
+            assumeFalse(Files.isReadable(shard), "the user running the test reads any directory (root)");
+
+            assertThat(tier.scan(KeyShard.all(), Option.none(), 100).await().isFailure()).isTrue();
+        } finally {
+            Files.setPosixFilePermissions(shard, PosixFilePermissions.fromString("rwx------"));
+        }
     }
 
     /// Control: with nothing removed, the observer sees the listing and the scan returns every block.

@@ -158,6 +158,65 @@ class StorageInstanceEnsureHeldTest {
         assertThat(shared.get(id).await().unwrap().unwrap()).isEqualTo(CONTENT);
     }
 
+    /// Only a refusal of the touch (a tier with no write times) turns into a write; a touch that fails for any other
+    /// reason fails the call and writes nothing.
+    @Test
+    void aTouchThatFails_failsEnsureHeld_andWritesNothing() {
+        var local = MemoryTier.memoryTier(1 << 20, TierLevel.LOCAL_DISK);
+        var remote = new FailingTouchTier(MemoryTier.memoryTier(1 << 20, TierLevel.REMOTE));
+        var failingNode = StorageInstance.storageInstance("g2-touch-fails", List.of(local, remote));
+        var id = BlockId.blockId(CONTENT).unwrap();
+
+        local.put(id, CONTENT).await().unwrap();
+
+        assertThat(failingNode.ensureHeld(id, TierLevel.REMOTE).await().<Cause>fold(cause -> cause, _ -> null))
+            .isInstanceOf(StorageError.WriteError.class);
+        assertThat(remote.exists(id).await().unwrap()).as("nothing written").isFalse();
+    }
+
+    /// A tier whose touch fails with a write error.
+    private record FailingTouchTier(MemoryTier inner) implements StorageTier {
+        @Override
+        public Promise<Option<byte[]>> get(BlockId id) {
+            return inner.get(id);
+        }
+
+        @Override
+        public Promise<Unit> put(BlockId id, byte[] content) {
+            return inner.put(id, content);
+        }
+
+        @Override
+        public Promise<Unit> delete(BlockId id) {
+            return inner.delete(id);
+        }
+
+        @Override
+        public Promise<Boolean> exists(BlockId id) {
+            return inner.exists(id);
+        }
+
+        @Override
+        public Promise<Boolean> touch(BlockId id) {
+            return StorageError.WriteError.writeError("touch failed").promise();
+        }
+
+        @Override
+        public TierLevel level() {
+            return inner.level();
+        }
+
+        @Override
+        public long usedBytes() {
+            return inner.usedBytes();
+        }
+
+        @Override
+        public long maxBytes() {
+            return inner.maxBytes();
+        }
+    }
+
     /// A durable tier whose writes wait for `gate`.
     private record GatedTier(MemoryTier inner, Promise<Unit> gate) implements StorageTier {
         @Override
