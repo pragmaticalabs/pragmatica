@@ -112,6 +112,138 @@ class SlGateTest {
             h.drain();
             assertThat(goalOf(h, host, ORDERS)).isEqualTo(Option.some(SliceGoal.ACTIVE));
             assertThat(h.warns("schema-hold-cleared")).hasSize(1);
+            assertThat(h.warns("schema-status-readable")).as("never reported unknown: nothing to close").isEmpty();
+        }
+
+        /// D.6 rows 15/16 (know 7cc9e79f61), the subject-gone close. Red when: the instance of a held slice goes and `schema-hold` stays
+        /// open (no `schema-hold-cleared`, same subject, reason subject-gone).
+        @Test
+        void heldInstanceGone_closesTheHold_subjectGone() {
+            var h = heldByPendingSchema();
+            var host = hosts(h, ORDERS).getFirst();
+
+            assertThat(h.warns("schema-hold-cleared")).isEmpty();
+            h.seedRemove(new SliceObservedKey(host, ORDERS));
+            h.drain();
+            var cleared = h.warns("schema-hold-cleared");
+
+            assertThat(cleared).hasSize(1);
+            assertThat(cleared.getFirst().subject()).isEqualTo(ORDERS.asString());
+            assertThat(cleared.getFirst().message()).contains(Recoveries.SUBJECT_GONE);
+        }
+
+        private FsmHarness heldTwiceByPendingSchema() {
+            var h = threeCores();
+
+            h.activate();
+            publish(h, blueprint(APP, false, ATTEMPT, slice(ORDERS, 2, 1, Set.of())), Option.none());
+            h.seed(new SchemaVersionKey("orders-db"), record(SchemaStatus.PENDING));
+            h.drain();
+            var token = 1L;
+
+            for (var host : hosts(h, ORDERS)) {
+                node(h, host, token++).follows(ORDERS);
+                h.drain();
+            }
+
+            assertThat(h.model().holdSignatures.size()).as("precondition: two instances held").isEqualTo(2);
+
+            return h;
+        }
+
+        /// D.6 rows 15/16, CTO ruling on #2831 (v2831a probe p4). `schema-hold` has the artifact as its subject, so it closes only when the
+        /// hold set of the artifact is empty. Red when: one of two held instances going raises `schema-hold-cleared` while the other is still
+        /// held, or the last one going does not raise it exactly once.
+        @Test
+        void twoHeldInstances_oneGone_keepsTheHoldOpen_untilTheLastGoes() {
+            var h = heldTwiceByPendingSchema();
+            var hosts = hosts(h, ORDERS);
+
+            h.seedRemove(new SliceObservedKey(hosts.getFirst(), ORDERS));
+            h.drain();
+            assertThat(h.model().holdSignatures.size()).as("the other instance is still held").isEqualTo(1);
+            assertThat(h.warns("schema-hold-cleared")).as("not while an instance of the artifact is held").isEmpty();
+            h.seedRemove(new SliceObservedKey(hosts.get(1), ORDERS));
+            h.drain();
+            var cleared = h.warns("schema-hold-cleared");
+
+            assertThat(cleared).as("once, when the last held instance goes").hasSize(1);
+            assertThat(cleared.getFirst().subject()).isEqualTo(ORDERS.asString());
+            assertThat(cleared.getFirst().message()).contains(Recoveries.SUBJECT_GONE);
+        }
+
+        /// D.6 rows 15/16, CTO ruling on #2831. Red when: the release of two held instances raises `schema-hold-cleared` per instance (the
+        /// first while the other is still held) instead of once.
+        @Test
+        void twoHeldInstances_released_closesTheHoldOnce() {
+            var h = heldTwiceByPendingSchema();
+
+            h.seed(new SchemaVersionKey("orders-db"), record(SchemaStatus.COMPLETED));
+            h.drain();
+            assertThat(hosts(h, ORDERS)).allMatch(host -> goalOf(h, host, ORDERS).equals(Option.some(SliceGoal.ACTIVE)));
+            assertThat(h.warns("schema-hold-cleared")).hasSize(1);
+        }
+
+        /// D.6 rows 15/16, CTO ruling on #2831. Red when: one of two held instances failing closes the hold while the other is still held.
+        @Test
+        void twoHeldInstances_oneFails_keepsTheHoldOpen() {
+            var h = heldTwiceByPendingSchema();
+
+            node(h, hosts(h, ORDERS).getFirst(), 1L).fails(ORDERS, true);
+            h.drain();
+            assertThat(h.warns("schema-hold-cleared")).isEmpty();
+        }
+
+        /// D.6 rows 15/16. Red when: a held slice that fails drops its hold silently (the hold signature is cleared with no close).
+        @Test
+        void heldInstanceFails_closesTheHold() {
+            var h = heldByPendingSchema();
+            var host = hosts(h, ORDERS).getFirst();
+
+            node(h, host, 1L).fails(ORDERS, true);
+            h.drain();
+            var cleared = h.warns("schema-hold-cleared");
+
+            assertThat(cleared).hasSize(1);
+            assertThat(cleared.getFirst().subject()).isEqualTo(ORDERS.asString());
+            assertThat(cleared.getFirst().message()).contains("failed");
+        }
+
+        /// D.6 row 17 (know 7cc9e79f61). Red when: a datasource reported `schema-status-unknown` whose status decodes again is not closed
+        /// by `schema-status-readable`, same subject, once.
+        @Test
+        void unknownStatus_closedWhenTheStatusDecodes() {
+            var h = heldByPendingSchema();
+
+            h.seed(new SchemaVersionKey("orders-db"), record(SchemaStatus.UNKNOWN));
+            h.drain();
+            assertThat(h.warns("schema-status-readable")).isEmpty();
+            h.seed(new SchemaVersionKey("orders-db"), record(SchemaStatus.COMPLETED));
+            h.drain();
+            h.seed(new SchemaVersionKey("orders-db"), record(SchemaStatus.COMPLETED));
+            h.drain();
+            var readable = h.warns("schema-status-readable");
+
+            assertThat(readable).hasSize(1);
+            assertThat(readable.getFirst().subject()).isEqualTo("orders-db");
+            assertThat(readable.getFirst().message()).doesNotContain(Recoveries.SUBJECT_GONE);
+        }
+
+        /// D.6 row 17, the subject-gone close. Red when: removing the schema record of a reported datasource leaves the warning open.
+        @Test
+        void unknownStatus_recordRemoved_closesTheWarning_subjectGone() {
+            var h = heldByPendingSchema();
+
+            h.seed(new SchemaVersionKey("orders-db"), record(SchemaStatus.UNKNOWN));
+            h.drain();
+            h.seedRemove(new SchemaVersionKey("orders-db"));
+            h.drain();
+            var readable = h.warns("schema-status-readable");
+
+            assertThat(readable).hasSize(1);
+            assertThat(readable.getFirst().subject()).isEqualTo("orders-db");
+            assertThat(readable.getFirst().message()).contains(Recoveries.SUBJECT_GONE);
+            assertThat(h.model().schemaUnknownWarned.contains("orders-db")).isFalse();
         }
 
         /// NT-21. Red when: FAILED does not route `ActivationBlocked` and an audit line.

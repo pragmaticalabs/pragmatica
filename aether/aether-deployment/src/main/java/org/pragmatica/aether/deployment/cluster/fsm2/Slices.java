@@ -83,11 +83,22 @@ public sealed interface Slices {
         m.judgments.get(pair.artifact())
                    .flatMap(judgment -> Option.option(judgment.unresponsive().get(pair.node())))
                    .filter(entry -> answered.compareTo(entry.generation()) >= 0)
-                   .onPresent(_ -> Outbox.artifact(m,
-                                                   pair.artifact(),
-                                                   intent -> intent.withOp(new JudgmentOp.ClearUnresponsive(pair.node()))));
+                   .onPresent(_ -> unloadedEndsExclusion(m, pair));
 
         return m;
+    }
+
+    private static ClusterModel unloadedEndsExclusion(ClusterModel m, SlicePair pair) {
+        Outbox.artifact(m,
+                        pair.artifact(),
+                        intent -> intent.withOp(new JudgmentOp.ClearUnresponsive(pair.node())));
+
+        return Judgments.exclusionEnding(m,
+                                         pair.artifact(),
+                                         "The instance of " + pair.artifact()
+                                        + " on " + pair.node()
+                                                       .id()
+                                        + " answered UNLOADED; its exclusion is cleared");
     }
 
     // -- activation (C10a, R-3.3.5) --------------------------------------------------------------------------------
@@ -128,6 +139,7 @@ public sealed interface Slices {
         var changed = !m.holdSignatures.get(pair).map(signature::equals).or(false);
 
         m.holdSignatures = m.holdSignatures.put(pair, signature);
+        m.heldByArtifact = Idx.add(m.heldByArtifact, pair.artifact(), pair.node());
         if (changed) {
             ctx.warn("schema-hold",
                      pair.artifact().asString(),
@@ -138,17 +150,49 @@ public sealed interface Slices {
         return m;
     }
 
+    /// The observed row of an excluded pair went: its exclusion is cleared now. D.6 rows 18/19: the reason is subject-gone; the recovery is
+    /// raised once the artifact's committed exclusions reach none (`Judgments.exclusionsEnded`), not here.
+    private static ClusterModel exclusionGone(ClusterModel m, SlicePair pair) {
+        Outbox.artifact(m,
+                        pair.artifact(),
+                        intent -> intent.withOp(new JudgmentOp.ClearUnresponsive(pair.node())));
+
+        return Judgments.exclusionEnding(m,
+                                         pair.artifact(),
+                                         Recoveries.gone(pair.artifact().asString(),
+                                                         "the instance on " + pair.node()
+                                                                                  .id()
+                                                        + " is gone; its exclusion is cleared"));
+    }
+
+    /// D.6 rows 15/16: a held pair that leaves the hold other than by its release (it failed, or its instance is gone) leaves the hold,
+    /// the reason being `why`. A pair with no hold raises nothing.
+    static ClusterModel holdGone(ClusterModel m, Ctx ctx, SlicePair pair, String why) {
+        return m.holdSignatures.containsKey(pair)
+               ? unhold(m, ctx, pair, "Slice " + pair.artifact() + " schema hold ended: " + why)
+               : m;
+    }
+
     private static ClusterModel releaseHold(ClusterModel m, Ctx ctx, SlicePair pair) {
-        m.holdSignatures.get(pair).onPresent(_ -> announceRelease(m, ctx, pair));
+        m.holdSignatures.get(pair)
+                        .onPresent(_ -> unhold(m,
+                                               ctx,
+                                               pair,
+                                               "Slice " + pair.artifact() + " schema hold cleared, resuming activation"));
 
         return m;
     }
 
-    private static ClusterModel announceRelease(ClusterModel m, Ctx ctx, SlicePair pair) {
+    /// D.6 rows 15/16 (CTO ruling on #2831): `schema-hold` has the artifact as its subject, so `schema-hold-cleared` is raised only when the
+    /// LAST held node of the artifact leaves the hold; a pair leaving while another is still held closes nothing.
+    private static ClusterModel unhold(ClusterModel m, Ctx ctx, SlicePair pair, String message) {
         m.holdSignatures = m.holdSignatures.remove(pair);
-        ctx.warn("schema-hold-cleared",
-                 pair.artifact().asString(),
-                 "Slice " + pair.artifact() + " schema hold cleared, resuming activation");
+        m.heldByArtifact = Idx.remove(m.heldByArtifact, pair.artifact(), pair.node());
+        if (!m.heldByArtifact.containsKey(pair.artifact())) {
+            ctx.warn(Recoveries.SCHEMA_HOLD_CLEARED,
+                     pair.artifact().asString(),
+                     message);
+        }
 
         return m;
     }
@@ -251,9 +295,13 @@ public sealed interface Slices {
         m.judgments.get(pair.artifact())
                    .filter(judgment -> judgment.unresponsive()
                                                .containsKey(pair.node()))
-                   .onPresent(_ -> Outbox.artifact(m,
-                                                   pair.artifact(),
-                                                   intent -> intent.withOp(new JudgmentOp.ClearUnresponsive(pair.node()))));
+                   .onPresent(_ -> exclusionGone(m, pair));
+        holdGone(m,
+                 ctx,
+                 pair,
+                 Recoveries.gone(pair.artifact().asString(),
+                                 "the instance on " + pair.node().id() + " is gone"));
+        Strays.onRowGone(m, ctx, pair);
         var goal = m.desired.get(pair);
 
         if (goal.map(value -> value.goal() == SliceGoal.UNLOADED).or(false)) {

@@ -94,7 +94,7 @@ public sealed interface Indexer {
                                        ? indexRecord(m, k.nodeId(), v)
                                        : m;
             case ArtifactJudgmentKey k -> value instanceof ArtifactJudgmentValue v
-                                          ? indexJudgment(m, k.artifact(), v)
+                                          ? indexJudgment(m, ctx, k.artifact(), v)
                                           : m;
             case DeploymentApplyKey k -> value instanceof DeploymentApplyValue v
                                          ? indexApply(m, k.blueprintId(), v)
@@ -140,7 +140,7 @@ public sealed interface Indexer {
             case CommunityKey k -> removeCommunity(m, k.communityId());
             case GovernorAnnouncementKey k -> removeAnnouncement(m, k.communityId());
             case NodeDepartureKey k -> removeRecord(m, k.nodeId());
-            case ArtifactJudgmentKey k -> removeJudgment(m, k.artifact());
+            case ArtifactJudgmentKey k -> removeJudgment(m, ctx, k.artifact());
             case DeploymentApplyKey k -> removeApply(m, k.blueprintId());
             case DeploymentOutcomeKey k -> removeOutcome(m, k.blueprintId());
             case SchemaVersionKey k -> removeSchema(m, k.datasourceName());
@@ -514,21 +514,39 @@ public sealed interface Indexer {
     }
 
     // -- judgments, applies, outcomes, schemas ---------------------------------------------------------------------
-    static ClusterModel indexJudgment(ClusterModel m, Artifact artifact, ArtifactJudgmentValue value) {
+    /// D.6 rows 18/19: an update that leaves the artifact with no exclusion closes `slice-unresponsive` (`Judgments.exclusionsEnded`).
+    static ClusterModel indexJudgment(ClusterModel m, Ctx ctx, Artifact artifact, ArtifactJudgmentValue value) {
+        var excluding = Judgments.excludes(m, artifact);
+
         unindexExclusions(m, artifact);
         m.judgments = m.judgments.put(artifact, value);
         value.unresponsive()
              .keySet()
              .forEach(node -> m.unresponsiveByNode = Idx.add(m.unresponsiveByNode, node, artifact));
 
-        return m;
+        return Judgments.exclusionsEnded(m,
+                                         ctx,
+                                         artifact,
+                                         excluding,
+                                         m.exclusionEndReasons.get(artifact)
+                                                              .or("The exclusions of " + artifact + " ended"));
     }
 
-    static ClusterModel removeJudgment(ClusterModel m, Artifact artifact) {
+    /// D.6 rows 18/19: the judgment going with exclusions in it closes `slice-unresponsive`: with the reason of this leader's clear when the
+    /// judgment went because its last exclusion was cleared, else with the reason subject-gone.
+    static ClusterModel removeJudgment(ClusterModel m, Ctx ctx, Artifact artifact) {
+        var excluding = Judgments.excludes(m, artifact);
+
         unindexExclusions(m, artifact);
         m.judgments = m.judgments.remove(artifact);
 
-        return m;
+        return Judgments.exclusionsEnded(m,
+                                         ctx,
+                                         artifact,
+                                         excluding,
+                                         m.exclusionEndReasons.get(artifact)
+                                                              .or(() -> Recoveries.gone(artifact.asString(),
+                                                                                        "its judgment was removed")));
     }
 
     private static ClusterModel unindexExclusions(ClusterModel m, Artifact artifact) {
@@ -612,6 +630,7 @@ public sealed interface Indexer {
 
     static ClusterModel indexClusterConfig(ClusterModel m, ClusterConfigValue value) {
         m.clusterConfig = Option.some(value);
+        m.communityPolicy = CommunityPolicies.committed(value);
 
         return m;
     }

@@ -686,8 +686,17 @@ public sealed interface Outbox {
             case ORPHAN_TARGET -> m;
             // CF-8 (V2771b): a refused stale-mark removal is derived again by the next tick's sweep (`Outcomes.sweep`), from the mirror's current judgment.
             case STALE_MARK -> m;
+            case DIRECTIVE -> rederiveAssignment(m, ctx, draft);
             default -> rederiveByPair(m, ctx, draft);
         };
+    }
+
+    /// R-CF.17 parity: a refused WORKER assignment is counted per worker (`Directory.assignmentRefused`). One that gave up on a worker is
+    /// not resubmitted (LEGACY does not retry past its bound); the reconcile re-derives the other workers' pending joins.
+    private static ClusterModel rederiveAssignment(ClusterModel m, Ctx ctx, TxDraft draft) {
+        return Directory.assignmentRefused(m, ctx, draft).isEmpty()
+               ? rederiveByPair(m, ctx, draft)
+               : Reconcile.request(m, ctx);
     }
 
     /// 5.7.2 / NT-122: the pairs of a refused goal transaction are split by whether their keys moved. The ones that

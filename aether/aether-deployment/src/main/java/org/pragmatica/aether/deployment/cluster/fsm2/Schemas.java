@@ -33,6 +33,9 @@ public sealed interface Schemas {
     // -- C12: SchemaVersionPut -------------------------------------------------------------------------------------
     static ClusterModel onPut(ClusterModel m, Ctx ctx, String datasource, SchemaVersionValue value) {
         Indexer.indexSchema(m, datasource, value);
+        if (value.status() != SchemaStatus.UNKNOWN) {
+            readable(m, ctx, datasource, "the status decodes as " + value.status());
+        }
 
         return switch (value.status()) {
             case PENDING -> dispatch(m, ctx, datasource);
@@ -96,7 +99,27 @@ public sealed interface Schemas {
     }
 
     /// #964: a status this node cannot decode is neither completed nor failed nor pending. No action is taken.
+    /// C12, the removal: a reported datasource whose record is removed is closed with the reason subject-gone (D.6 row 17).
+    static ClusterModel onRemove(ClusterModel m, Ctx ctx, String datasource) {
+        readable(m, ctx, datasource, Recoveries.gone(datasource, "its schema record was removed"));
+
+        return Indexer.removeSchema(m, datasource);
+    }
+
+    /// D.6 row 17: a datasource reported `schema-status-unknown` closes its episode: `schema-status-readable`, same subject.
+    private static ClusterModel readable(ClusterModel m, Ctx ctx, String datasource, String why) {
+        if (m.schemaUnknownWarned.contains(datasource)) {
+            m.schemaUnknownWarned = m.schemaUnknownWarned.remove(datasource);
+            ctx.warn(Recoveries.SCHEMA_STATUS_READABLE,
+                     datasource,
+                     "Schema record for datasource " + datasource + ": " + why);
+        }
+
+        return m;
+    }
+
     private static ClusterModel unreadable(ClusterModel m, Ctx ctx, String datasource) {
+        m.schemaUnknownWarned = m.schemaUnknownWarned.add(datasource);
         ctx.warn("schema-status-unknown",
                  datasource,
                  "Schema record for datasource " + datasource + " carries a status this node cannot decode");

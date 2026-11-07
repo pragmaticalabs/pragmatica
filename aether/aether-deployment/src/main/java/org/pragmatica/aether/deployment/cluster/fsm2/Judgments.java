@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -27,6 +28,37 @@ public sealed interface Judgments {
         return key instanceof ArtifactJudgmentKey
                ? Reconcile.request(m, ctx)
                : m;
+    }
+
+    /// D.6 rows 18/19: this leader cleared (or is clearing) an exclusion of `artifact`, for `reason`. The recovery is raised by
+    /// [#exclusionsEnded] once the committed judgment holds no exclusion, with the reason of the last clear.
+    static ClusterModel exclusionEnding(ClusterModel m, Artifact artifact, String reason) {
+        m.exclusionEndReasons = m.exclusionEndReasons.put(artifact, reason);
+
+        return m;
+    }
+
+    /// Whether the committed judgment of `artifact` excludes at least one node.
+    static boolean excludes(ClusterModel m, Artifact artifact) {
+        return m.judgments.get(artifact)
+                          .map(judgment -> !judgment.unresponsive()
+                                                    .isEmpty())
+                          .or(false);
+    }
+
+    /// D.6 rows 18/19 (CTO ruling on #2831): `slice-unresponsive` is raised per excluded node with the artifact as its subject, so
+    /// `slice-unresponsive-expired` is raised once, when the artifact's committed exclusions go from some to none: the last excluded node
+    /// expired or left (subject-gone), or the judgment itself went. Read from committed state, it is raised once however many paths
+    /// cleared the same exclusion (a departure and the C17b removal of the node's rows). Called by the indexer, so every path that indexes a
+    /// judgment (a notification, the values a refusal carries) sees the transition exactly once; the rebuild starts from an empty model and
+    /// sees none.
+    static ClusterModel exclusionsEnded(ClusterModel m, Ctx ctx, Artifact artifact, boolean excluding, String message) {
+        if (excluding && !excludes(m, artifact)) {
+            m.exclusionEndReasons = m.exclusionEndReasons.remove(artifact);
+            ctx.warn(Recoveries.SLICE_UNRESPONSIVE_EXPIRED, artifact.asString(), message);
+        }
+
+        return m;
     }
 
     record unused() implements Judgments {}
