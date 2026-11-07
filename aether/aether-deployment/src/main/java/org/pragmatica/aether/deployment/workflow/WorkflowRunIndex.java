@@ -146,7 +146,9 @@ public final class WorkflowRunIndex {
     /// The announcer that turns each committed run transition into its operator events, on the node that owns the cluster-events
     /// partition ONLY: every node applies every run, and the events of one transition must be raised once. A replayed run announces
     /// nothing: it is committed history, not a transition. See [Announcer] for the events, the open-incident set and the seeding.
-    public static Announcer announcer(WorkflowRunIndex index, BooleanSupplier ownsClusterEvents, OperatorWarningSink warnings) {
+    public static Announcer announcer(WorkflowRunIndex index,
+                                      BooleanSupplier ownsClusterEvents,
+                                      OperatorWarningSink warnings) {
         return new Announcer(index, ownsClusterEvents, warnings);
     }
 
@@ -192,7 +194,7 @@ public final class WorkflowRunIndex {
         public Unit onTransition(Option<WorkflowRunValue> before, WorkflowRunValue after, boolean replayed) {
             var step = track(after);
 
-            return !replayed && ownsClusterEvents.getAsBoolean()
+            return ! replayed && ownsClusterEvents.getAsBoolean()
                    ? raise(step, after)
                    : Unit.unit();
         }
@@ -200,19 +202,22 @@ public final class WorkflowRunIndex {
         /// Rebuild the open incidents from the committed `ESCALATED` runs in the index (the seeding, N13).
         public synchronized Unit reseed() {
             openIncidents.clear();
-            index.runs()
-                 .stream()
-                 .filter(WorkflowRunIndex::escalated)
-                 .forEach(run -> openIncidents.add(run.id()));
+            index.runs().stream().filter(WorkflowRunIndex::escalated).forEach(run -> openIncidents.add(run.id()));
 
             return Unit.unit();
         }
 
         private synchronized Step track(WorkflowRunValue after) {
             return switch (after.state()) {
-                case ESCALATED -> openIncidents.add(after.id()) ? Step.ESCALATE : Step.NONE;
-                case DONE, FAILED -> openIncidents.remove(after.id()) ? Step.RESOLVE : Step.NONE;
-                case RUNNING, WAITING -> openIncidents.contains(after.id()) ? Step.RESUME : Step.NONE;
+                case ESCALATED -> openIncidents.add(after.id())
+                                  ? Step.ESCALATE
+                                  : Step.NONE;
+                case DONE, FAILED -> openIncidents.remove(after.id())
+                                     ? Step.RESOLVE
+                                     : Step.NONE;
+                case RUNNING, WAITING -> openIncidents.contains(after.id())
+                                         ? Step.RESUME
+                                         : Step.NONE;
                 default -> Step.NONE;
             };
         }
