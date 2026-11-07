@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -29,7 +30,6 @@ import org.pragmatica.http.routing.UploadSpec;
 import org.pragmatica.http.server.BodySink;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.storage.ByteRange;
 import org.pragmatica.storage.ContentStore;
@@ -96,17 +96,17 @@ class IngestSinkTest {
 
     /// Pushes `body` in `chunk`-sized slices, each after the previous `accept` resolved, as the server does; answers the
     /// first refusal, if any.
-    private static Option<org.pragmatica.lang.Cause> push(BodySink sink, byte[] body, int chunk) {
+    private static Optional<org.pragmatica.lang.Cause> push(BodySink sink, byte[] body, int chunk) {
         for (var offset = 0; offset < body.length; offset += chunk) {
             var slice = ByteBuffer.wrap(body, offset, Math.min(chunk, body.length - offset)).slice();
             var outcome = sink.accept(slice).await(WAIT);
 
             if (outcome.isFailure()) {
-                return outcome.fold(Option::some, _ -> Option.none());
+                return outcome.fold(Option::some, _ -> Option.<org.pragmatica.lang.Cause>none()).toOptional();
             }
         }
 
-        return Option.none();
+        return Optional.empty();
     }
 
     private static void await(BooleanSupplier condition, String what) throws InterruptedException {
@@ -193,7 +193,7 @@ class IngestSinkTest {
 
         assertThat(handle.fields()).containsEntry("comment", List.of("hi"));
         assertThat(handle.files()).extracting(file -> file.field()).containsExactly("a", "b");
-        assertThat(handle.files().getFirst().fileName()).contains("a.bin");
+        assertThat(handle.files().getFirst().fileName().toOptional()).contains("a.bin");
         assertThat(read(store, refOf(handle, 0))).isEqualTo(first);
         assertThat(read(store, refOf(handle, 1))).isEqualTo(second);
         assertThat(catalog(store)).hasSize(2);
@@ -216,7 +216,7 @@ class IngestSinkTest {
         var refusal = push(sink, body.toByteArray(), 512 * 1024);
 
         assertThat(refusal).contains(UploadIngestError.Malformed.BAD_DELIMITER);
-        sink.fail(refusal.unwrap(), writer());
+        sink.fail(refusal.get(), writer());
         await(() -> permits.get() == 1, "the clean-up settled and the permit was returned");
 
         assertThat(refused.get()).isEqualTo(UploadIngestError.Malformed.BAD_DELIMITER);
@@ -266,14 +266,11 @@ class IngestSinkTest {
         var sink = sink(store, binary());
         var refusal = push(sink, random(9 * MIB, 10), MIB);
 
-        refusal.fold(() -> {
-                         sink.complete(head("application/octet-stream"), writer());
-                         return Unit.unit();
-                     },
-                     cause -> {
-                         sink.fail(cause, writer());
-                         return Unit.unit();
-                     });
+        if (refusal.isPresent()) {
+            sink.fail(refusal.get(), writer());
+        } else {
+            sink.complete(head("application/octet-stream"), writer());
+        }
         await(() -> permits.get() == 1, "the clean-up settled and the permit was returned");
 
         assertThat(refused.get()).isNotNull();

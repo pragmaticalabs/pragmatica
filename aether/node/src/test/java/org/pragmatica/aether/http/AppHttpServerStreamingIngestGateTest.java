@@ -153,7 +153,7 @@ class AppHttpServerStreamingIngestGateTest extends AppHttpServerIngestGateTest {
 
         assertThat(handle.fields()).isEqualTo(Map.of("comment", List.of("hello")));
         assertThat(handle.files()).extracting(file -> file.field()).containsExactly("a", "b");
-        assertThat(handle.files().getFirst().fileName()).contains("a.bin");
+        assertThat(handle.files().getFirst().fileName().toOptional()).contains("a.bin");
         assertThat(read(sliceStore(), refOf(handle, 0))).isEqualTo(first);
         assertThat(read(sliceStore(), refOf(handle, 1))).isEqualTo(second);
     }

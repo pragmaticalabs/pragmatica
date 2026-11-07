@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.http.upload.MultipartDecoder.Event;
@@ -26,7 +27,7 @@ class MultipartDecoderTest {
     private static final UploadSpec UNLIMITED = UploadSpec.uploadSpec(true, 0, 0);
 
     /// What a body decoded to: events with file content gathered per file, in body order.
-    private record Decoded(List<String> events, Option<Cause> refusal) {}
+    private record Decoded(List<String> events, Optional<Cause> refusal) {}
 
     private static byte[] ascii(String text) {
         return text.getBytes(StandardCharsets.ISO_8859_1);
@@ -73,12 +74,12 @@ class MultipartDecoderTest {
             var pushed = decoder.push(chunk);
 
             if (pushed.isFailure()) {
-                return new Decoded(events, pushed.fold(Option::some, _ -> Option.none()));
+                return new Decoded(events, pushed.fold(Option::some, _ -> Option.<Cause>none()).toOptional());
             }
             pushed.onSuccess(list -> list.forEach(event -> record(event, events, content)));
         }
 
-        return new Decoded(events, decoder.finish().fold(Option::some, _ -> Option.none()));
+        return new Decoded(events, decoder.finish().fold(Option::some, _ -> Option.<Cause>none()).toOptional());
     }
 
     private static void record(Event event, List<String> events, ByteArrayOutputStream content) {
@@ -141,7 +142,7 @@ class MultipartDecoderTest {
     void noBoundary_isRefusedMalformed() {
         var decoder = MultipartDecoder.multipartDecoder("multipart/form-data", UNLIMITED);
 
-        assertThat(decoder.fold(Option::some, _ -> Option.<Cause>none())).contains(UploadIngestError.Malformed.NO_BOUNDARY);
+        assertThat(decoder.fold(Option::some, _ -> Option.<Cause>none()).toOptional()).contains(UploadIngestError.Malformed.NO_BOUNDARY);
     }
 
     @Test
@@ -218,7 +219,7 @@ class MultipartDecoderTest {
 
         assertThat(decoder.push(ByteBuffer.wrap(ascii("--" + BOUNDARY + "XY"))).isFailure()).isTrue();
         assertThat(decoder.push(ByteBuffer.wrap(ascii("anything"))).isFailure()).isTrue();
-        assertThat(decoder.finish().fold(Option::some, _ -> Option.<Cause>none()))
+        assertThat(decoder.finish().fold(Option::some, _ -> Option.<Cause>none()).toOptional())
             .contains(UploadIngestError.Malformed.BAD_DELIMITER);
     }
 }
