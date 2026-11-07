@@ -288,4 +288,33 @@ class CommunityPlacementRankingWiringTest {
 
         assertThat(current().targetSource()).as("the next pass re-ranks against the new config").isEqualTo("b-dk");
     }
+
+    /// A forbid location refused now keeps its share (it is unavailable but not in the spill), so its member is not a reduction candidate.
+    @Test
+    void reserve_forbidRefusedLocationHoldingMember_doesNotRetireItsMemberForAShortPeer() {
+        var config = HEAD + docker("a-dk", "fallback = \"forbid\"") + docker("b-dk", "") + community(2, "a-dk", "b-dk");
+
+        start(config);
+        member(new NodeId("a1"), "a-dk");
+        refuse(config, "a-dk", System.currentTimeMillis());
+        reconciler.reconcile().await().unwrap();
+
+        assertThat(current().targetSource()).isEqualTo("b-dk");
+        assertThat(current().previousNode().isEmpty()).as("a1 must not be retired: a keeps its desired share").isTrue();
+    }
+
+    /// The location due for its probe leaves the probing spill, so the peer holding both members is over its share and one member is replaced.
+    @Test
+    void reserve_probeDueLocation_leavesTheSpillSoOverfullPeerMemberIsReplaced() {
+        var config = HEAD + docker("a-dk", "") + docker("b-dk", "") + community(2, "a-dk", "b-dk");
+
+        start(config);
+        member(new NodeId("b1"), "b-dk");
+        member(new NodeId("b2"), "b-dk");
+        refuse(config, "a-dk", 1L);
+        reconciler.reconcile().await().unwrap();
+
+        assertThat(current().targetSource()).isEqualTo("a-dk");
+        assertThat(current().previousNode().map(NodeId::id).or("none")).isEqualTo("b1");
+    }
 }
