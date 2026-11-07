@@ -90,6 +90,12 @@ public sealed interface ForwardError extends HttpError {
         static final Fn1<NotSent, Cause> FACTORY = Causes.forOneValue("Request was not forwarded: " + NOT_SENT_TEXT,
                                                                       NotSent::new);
 
+        /// The same verdict for a slice-to-slice invocation whose write the transport refused (#2807): the invoker
+        /// re-routes only a call that failed with this type, because only it proves nothing was applied.
+        public static NotSent notSent(Cause origin) {
+            return FACTORY.apply(origin);
+        }
+
         @Override
         public HttpStatus status() {
             return HttpStatus.SERVICE_UNAVAILABLE;

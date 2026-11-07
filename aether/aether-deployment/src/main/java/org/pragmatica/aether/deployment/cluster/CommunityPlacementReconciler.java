@@ -792,7 +792,7 @@ record PlacementReconciler(NodeId self,
         return cause instanceof org.pragmatica.aether.environment.EnvironmentError.CapacityUnavailable || cause instanceof org.pragmatica.aether.environment.EnvironmentError.NodeCapExceeded;
     }
 
-    private static Comparator<CommunityPlacement.Location> locationOrder() {
+    static Comparator<CommunityPlacement.Location> locationOrder() {
         return Comparator.comparing(CommunityPlacement.Location::source).thenComparing(location -> location.zone()
                                                                                                            .or(""));
     }
