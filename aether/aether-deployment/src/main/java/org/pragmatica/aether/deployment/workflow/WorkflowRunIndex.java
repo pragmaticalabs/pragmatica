@@ -211,13 +211,16 @@ public final class WorkflowRunIndex {
             openIncidents.clear();
             resolvedRaised.retainAll(runs.stream().map(WorkflowRunValue::id).collect(Collectors.toSet()));
             runs.stream().filter(WorkflowRunIndex::incidentOpen).forEach(run -> openIncidents.add(run.id()));
-            runs.stream().filter(WorkflowRunIndex::resolvedIncident).filter(this::unresolved).forEach(this::resolveOnReseed);
+            runs.stream()
+                .filter(WorkflowRunIndex::resolvedIncident)
+                .filter(this::unresolved)
+                .forEach(this::resolveOnReseed);
 
             return Unit.unit();
         }
 
         private boolean unresolved(WorkflowRunValue run) {
-            return !resolvedRaised.contains(run.id());
+            return ! resolvedRaised.contains(run.id());
         }
 
         private Unit resolveOnReseed(WorkflowRunValue run) {
