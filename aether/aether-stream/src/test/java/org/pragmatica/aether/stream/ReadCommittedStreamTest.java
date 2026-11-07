@@ -357,6 +357,103 @@ class ReadCommittedStreamTest {
         }
     }
 
+    /// PR-2f S2 (owner ruling `ab33af11c6`, mechanism `e10cf838c9`): when a GOVERNOR read on this node must go to the owner.
+    @Nested
+    class StaleCopy {
+
+        @Test
+        void behindCommittedOwner_withoutAnAnnouncementOrBelowIt_isTrue_andCaughtUpIsFalse() {
+            manager = replicaWithRecords(2);
+
+            assertThat(manager.behindCommittedOwner(STREAM, PARTITION)).as("(a) nothing announced by the owner in this life").isTrue();
+
+            manager.commitAdvanced(STREAM, PARTITION, 1L, EPOCH_1);
+
+            assertThat(manager.behindCommittedOwner(STREAM, PARTITION)).as("announced 1, visible 1: caught up").isFalse();
+
+            manager.commitAdvanced(STREAM, PARTITION, 3L, EPOCH_1);
+
+            assertThat(visibleOffset(manager)).as("control: the copy holds only offsets 0 and 1").isEqualTo(1L);
+            assertThat(manager.behindCommittedOwner(STREAM, PARTITION)).as("(b) visible 1 below the announced 3").isTrue();
+        }
+
+        @Test
+        void behindCommittedOwner_aMarkABatchOfANewerEpochOpened_isNotAnAnnouncement() {
+            manager = replicaWithRecords(2);
+            manager.commitAdvanced(STREAM, PARTITION, 1L, EPOCH_1);
+            manager.appendRecovered(STREAM, PARTITION, 2L, "r2".getBytes(UTF_8), 3L, EPOCH_2).onFailure(cause -> fail(cause.message()));
+
+            assertThat(manager.behindCommittedOwner(STREAM, PARTITION)).as("the owner of epoch 2 has announced nothing").isTrue();
+
+            manager.commitAdvanced(STREAM, PARTITION, 2L, EPOCH_2);
+
+            assertThat(manager.behindCommittedOwner(STREAM, PARTITION)).as("announced under epoch 2, visible 2").isFalse();
+        }
+
+        @Test
+        void behindCommittedOwner_aBatchBeforeAnyAnnouncement_isNotAnAnnouncement() {
+            manager = replicaWithRecords(2);
+            manager.appendRecovered(STREAM, PARTITION, 2L, "r2".getBytes(UTF_8), 3L, EPOCH_1).onFailure(cause -> fail(cause.message()));
+
+            assertThat(visibleOffset(manager)).as("control: nothing announced, so nothing is visible on the copy").isEqualTo(-1L);
+            assertThat(manager.behindCommittedOwner(STREAM, PARTITION)).as("a batch is not an announcement: (a) still holds").isTrue();
+        }
+
+        @Test
+        void behindCommittedOwner_onTheOwner_isFalse() {
+            manager = streamPartitionManager(Long.MAX_VALUE);
+            createStream(manager, 3, 2);
+
+            assertThat(manager.behindCommittedOwner(STREAM, PARTITION)).as("the owner is the authority").isFalse();
+        }
+
+        @Test
+        void repeatVisible_anOwnerWithAnEmptyLog_announcesMinusOne() throws Exception {
+            var sent = new CopyOnWriteArrayList<ReplicationMessage.CommitAdvance>();
+            var senders = new CopyOnWriteArrayList<Thread>();
+            var replication = replicationManager(SELF, registryWithPeers(), AcceptingReplicationTransport.accepting((target, message) -> record(sent, senders, target, message)));
+
+            manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication);
+            createStream(manager, 3, 3);
+            manager.repeatVisible();
+
+            var deadline = System.currentTimeMillis() + 5_000L;
+
+            while (sent.size() < 2 && System.currentTimeMillis() < deadline) {
+                Thread.sleep(20);
+            }
+
+            assertThat(sent).as("the tick reports the empty log to both replicas, so they stop forwarding").hasSize(2);
+            assertThat(sent).allSatisfy(message -> assertThat(message.committedThrough()).isEqualTo(-1L));
+        }
+
+        @Test
+        void repeatVisible_aReplicaWithAnEmptyLog_announcesNothing() throws Exception {
+            var sent = new CopyOnWriteArrayList<ReplicationMessage.CommitAdvance>();
+            var senders = new CopyOnWriteArrayList<Thread>();
+            var replication = replicationManager(SELF, registryWithPeers(), AcceptingReplicationTransport.accepting((target, message) -> record(sent, senders, target, message)));
+
+            manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication);
+            manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
+            createStream(manager, 3, 3);
+            manager.repeatVisible();
+            Thread.sleep(500);
+
+            assertThat(sent).as("only the owner speaks for the log: a replica's -1 would tell its peers nothing is acknowledged").isEmpty();
+
+            manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.OWNER);
+            manager.repeatVisible();
+
+            var deadline = System.currentTimeMillis() + 5_000L;
+
+            while (sent.size() < 2 && System.currentTimeMillis() < deadline) {
+                Thread.sleep(20);
+            }
+
+            assertThat(sent).as("control: the same manager and transport announce once it is the owner").hasSize(2);
+        }
+    }
+
     private static void record(List<ReplicationMessage.CommitAdvance> sent,
                                List<Thread> senders,
                                NodeId target,

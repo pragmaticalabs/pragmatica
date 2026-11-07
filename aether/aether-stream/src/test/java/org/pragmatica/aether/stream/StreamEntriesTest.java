@@ -66,7 +66,7 @@ class StreamEntriesTest {
         var entries = StreamEntries.streamEntries();
         var bucket = entries.livePartitionState("orders");
 
-        bucket.standing().replicaCommitted().put(0, new StreamPartitionManager.CommittedMark(Epoch.ZERO, 7L));
+        bucket.standing().replicaCommitted().put(0, new StreamPartitionManager.CommittedMark(Epoch.ZERO, 7L, true));
         entries.appliedConfigs().put("orders", config("orders", OLD_LIFE));
 
         assertThat(entries.livePartitionState("orders")).as("a later life gets its own state").isNotSameAs(bucket);
