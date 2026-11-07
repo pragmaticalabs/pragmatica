@@ -664,7 +664,9 @@ public sealed interface DepartureFlow {
     }
 
     private static boolean isStaleTopicRowNode(ClusterModel m, NodeId node) {
-        return !m.departed.contains(node) && !m.departing.containsKey(node) && !isPlacementNode(m, node);
+        return ! m.departed.contains(node)
+               && !m.departing.containsKey(node)
+               && !isPlacementNode(m, node);
     }
 
     /// Legacy `placementNodes` (`ClusterDeploymentState.java:1600`): the counted cores plus every node whose committed directive is WORKER.
