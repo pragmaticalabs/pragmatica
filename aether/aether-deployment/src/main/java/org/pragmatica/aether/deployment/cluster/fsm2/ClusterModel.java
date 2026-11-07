@@ -117,6 +117,10 @@ public final class ClusterModel {
     PMap<NodeId, ActivationDirectiveValue> directives = PMap.empty(scans);
     PMap<SlicePair, NodeRoutesValue> routes = PMap.empty(scans);
     PMap<NodeId, PSet<Artifact>> routesByNode = PMap.empty(scans);
+    /// #1337 (R-CF.15): the committed node-scoped topic rows (`TopicSubscriptionKey`, `TopicPublisherKey`) by their own key, and the keys of
+    /// each node's rows, so a departure removes a departed node's rows at their exact values.
+    PMap<AetherKey, AetherValue> topicRows = PMap.empty(scans);
+    PMap<NodeId, PSet<AetherKey>> topicRowsByNode = PMap.empty(scans);
     PMap<NodeId, NodePlacementValue> nodePlacements = PMap.empty(scans);
     PMap<String, CommunityPlacementOperationValue> placementOps = PMap.empty(scans);
     Option<ClusterConfigValue> clusterConfig = Option.none();
@@ -222,6 +226,8 @@ public final class ClusterModel {
         c.directives = directives.rebound(meter);
         c.routes = routes.rebound(meter);
         c.routesByNode = routesByNode.rebound(meter);
+        c.topicRows = topicRows.rebound(meter);
+        c.topicRowsByNode = topicRowsByNode.rebound(meter);
         c.nodePlacements = nodePlacements.rebound(meter);
         c.placementOps = placementOps.rebound(meter);
         c.clusterConfig = clusterConfig;

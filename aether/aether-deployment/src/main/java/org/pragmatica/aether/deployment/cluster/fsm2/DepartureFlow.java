@@ -140,6 +140,7 @@ public sealed interface DepartureFlow {
         if (!inferred) {
             mutations.addAll(desiredRemovals(m, node));
             mutations.addAll(routeRemovals(m, node));
+            mutations.addAll(topicRowRemovals(m, node));
         }
 
         return new TxDraft(inferred
@@ -170,6 +171,19 @@ public sealed interface DepartureFlow {
                                                                         value))
                                                   .stream())
                      .toList();
+    }
+
+    /// #1337 (R-CF.15): the node's topic-subscription and topic-publisher rows at their committed values, as legacy's node-removal batch
+    /// (`ClusterDeploymentState.topicRowCommandsForNode`) and stale sweep (`StaleEntryCleaner.cleanupStaleTopicRows`) remove them.
+    static List<KVCommand.Mutation<AetherKey, AetherValue>> topicRowRemovals(ClusterModel m, NodeId node) {
+        return Idx.members(m.topicRowsByNode, node)
+                  .toList()
+                  .stream()
+                  .sorted(Comparator.comparing(AetherKey::asString))
+                  .flatMap(key -> m.topicRows.get(key)
+                                             .map(value -> removal(key, value))
+                                             .stream())
+                  .toList();
     }
 
     private static List<Artifact> sorted(List<Artifact> artifacts) {
@@ -279,7 +293,7 @@ public sealed interface DepartureFlow {
 
     // -- C17b ------------------------------------------------------------------------------------------------------
     /// One transaction, guarded on the committed DEPARTED record: the node's observed rows at their exact values (current
-    /// or stale alike), and any desired and route keys still present. Never the directive or the placement key.
+    /// or stale alike), and any desired, route and topic-row (#1337) keys still present. Never the directive or the placement key.
     ///
     /// Not built for a **joined** node: a departed node is joined only when its admission names a different known process than its record, which
     /// J8's core arm admits (a joined node of the same process is superseded, so not departed; a token learned after the join, C11d, reaches
@@ -303,7 +317,8 @@ public sealed interface DepartureFlow {
     private static List<KVCommand.Mutation<AetherKey, AetherValue>> cleanupMutations(ClusterModel m, NodeId node) {
         return Stream.of(observedRemovals(m, node),
                          desiredRemovals(m, node),
-                         routeRemovals(m, node))
+                         routeRemovals(m, node),
+                         topicRowRemovals(m, node))
                      .flatMap(List::stream)
                      .toList();
     }
