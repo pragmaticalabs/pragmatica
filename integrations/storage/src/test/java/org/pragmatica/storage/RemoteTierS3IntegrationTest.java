@@ -621,7 +621,7 @@ class RemoteTierS3IntegrationTest {
             var id = blockIdOf("never stored on the endpoint".getBytes(StandardCharsets.UTF_8));
 
             assertThat(tier.touch(id).await().<Boolean>fold(cause -> fail(cause.message()), touched -> touched)).isFalse();
-            assertThat(s3Client.listObjects(prefix, 10).await().fold(cause -> fail(cause.message()), keys -> keys)).isEmpty();
+            assertThat(s3Client.listObjects(prefix, 10).await().<List<String>>fold(cause -> fail(cause.message()), keys -> keys)).isEmpty();
         }
 
         @Test
@@ -633,7 +633,7 @@ class RemoteTierS3IntegrationTest {
             tier.touch(id).await().onFailure(cause -> fail(cause.message()));
             tier.delete(id).await().onFailure(cause -> fail(cause.message()));
 
-            assertThat(s3Client.listObjects(prefix, 10).await().fold(cause -> fail(cause.message()), keys -> keys)).isEmpty();
+            assertThat(s3Client.listObjects(prefix, 10).await().<List<String>>fold(cause -> fail(cause.message()), keys -> keys)).isEmpty();
         }
     }
 
