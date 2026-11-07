@@ -10,19 +10,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.LongSupplier;
 
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowRunValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowState;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.utility.warning.OperatorWarningCode;
-import org.pragmatica.utility.warning.OperatorWarningSink;
-import org.pragmatica.utility.warning.OperatorWarnings;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 
 /// rc6 §4: the leader-side driver of every committed workflow run. One tick reads the committed runs and, for each `RUNNING` or
@@ -36,23 +29,18 @@ import org.slf4j.LoggerFactory;
 /// that was deposed after the check, concurrently with a later attempt once `settle` has elapsed, so executors must be fenced and
 /// idempotent per (run id, stepIndex) (D4, D10).
 ///
-/// An escalation is announced as [OperatorWarningCode#WORKFLOW_ESCALATED] once its commit is accepted, by the leader that committed
-/// it: AT MOST ONCE. The event is lost when the leader dies between the accept and the raise, and also when the commit's answer
-/// arrives later than `bound` or fails after the commit was applied (the tick stops waiting, the next tick finds the run already
-/// ESCALATED and therefore inactive, and nothing re-raises it). The committed run keeps the incident as its detail in every case.
+/// The reconciler raises no operator event. An escalation (and its resolution) is announced from the committed transition by
+/// [WorkflowRunIndex#announcer] on the cluster-events owner, so a commit whose answer is slow or lost no longer loses the event.
 /// A run whose kind this node does not know (a newer node admitted it) is held, never failed.
 public interface WorkflowReconciler {
     Promise<Unit> reconcile();
+    /// How long a commit or an effect call may stay unanswered before the tick stops waiting, when the caller names no bound.
+    TimeSpan DEFAULT_BOUND = TimeSpan.timeSpan(30).seconds();
 
     static WorkflowReconciler workflowReconciler(WorkflowLedger ledger,
                                                  Map<String, WorkflowKind<?>> kinds,
-                                                 LongSupplier clock,
-                                                 OperatorWarningSink warnings) {
-        return workflowReconciler(ledger,
-                                  kinds,
-                                  clock,
-                                  warnings,
-                                  TimeSpan.timeSpan(30).seconds());
+                                                 LongSupplier clock) {
+        return workflowReconciler(ledger, kinds, clock, DEFAULT_BOUND);
     }
 
     /// `bound`: how long a commit or an effect call may stay unanswered before the tick stops waiting for it; the next tick re-reads
@@ -60,16 +48,12 @@ public interface WorkflowReconciler {
     static WorkflowReconciler workflowReconciler(WorkflowLedger ledger,
                                                  Map<String, WorkflowKind<?>> kinds,
                                                  LongSupplier clock,
-                                                 OperatorWarningSink warnings,
                                                  TimeSpan bound) {
         record reconciler(WorkflowLedger ledger,
                           Map<String, WorkflowKind<?>> kinds,
                           LongSupplier clock,
-                          OperatorWarningSink warnings,
                           TimeSpan bound,
                           AtomicBoolean running) implements WorkflowReconciler {
-            private static final Logger LOG = LoggerFactory.getLogger(WorkflowReconciler.class);
-
             @Override
             public Promise<Unit> reconcile() {
                 if (!ledger.leads() || !running.compareAndSet(false, true)) {
@@ -116,9 +100,7 @@ public interface WorkflowReconciler {
             private Promise<Unit> execute(WorkflowRunValue run, WorkflowPlanner.Plan plan) {
                 return switch (plan) {
                     case WorkflowPlanner.Plan.Hold _ -> Promise.unitPromise();
-                    case WorkflowPlanner.Plan.Commit commit -> commit(run, commit.next()).flatMap(accepted -> accepted
-                                                                                                              ? announced(commit.next())
-                                                                                                              : Promise.unitPromise());
+                    case WorkflowPlanner.Plan.Commit commit -> commit(run, commit.next()).mapToUnit();
                     case WorkflowPlanner.Plan.Issue issue -> commit(run, issue.next()).flatMap(accepted -> accepted
                                                                                                            ? fenced(issue)
                                                                                                            : Promise.unitPromise());
@@ -156,19 +138,8 @@ public interface WorkflowReconciler {
                              .timeout(bound)
                              .recover(_ -> Unit.unit());
             }
-
-            private Promise<Unit> announced(WorkflowRunValue next) {
-                return next.state() == WorkflowState.ESCALATED
-                       ? Promise.success(OperatorWarnings.raise(LOG,
-                                                                warnings,
-                                                                OperatorWarningCode.WORKFLOW_ESCALATED,
-                                                                next.id(),
-                                                                "{}",
-                                                                next.detail()))
-                       : Promise.unitPromise();
-            }
         }
 
-        return new reconciler(ledger, kinds, clock, warnings, bound, new AtomicBoolean());
+        return new reconciler(ledger, kinds, clock, bound, new AtomicBoolean());
     }
 }
