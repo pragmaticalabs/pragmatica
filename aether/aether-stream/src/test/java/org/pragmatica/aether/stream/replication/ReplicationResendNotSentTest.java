@@ -216,6 +216,19 @@ class ReplicationResendNotSentTest {
         assertThat(delays).allSatisfy(delay -> assertThat(delay.nanos()).isLessThanOrEqualTo(DefaultReplicationManager.MAX_RESEND_BACKOFF.nanos()));
     }
 
+    /// (b) A re-send whose timer fires after the deadline (a late timer) hands the transport a zero wait, never a negative one.
+    @Test
+    void replicateEvent_passesAZeroWait_whenTheResendTimerFiresPastTheDeadline() {
+        transport.refuseAll();
+        manager.replicateEvent(STREAM, PARTITION, OFFSET, new byte[]{1}, 1L, Epoch.ZERO);
+
+        clock.set(DEADLINE_NANOS + TimeUnit.SECONDS.toNanos(1));
+        runNextResend();
+
+        assertThat(transport.attempts()).hasSize(2);
+        assertThat(transport.attempts().get(1).callerWait().nanos()).isZero();
+    }
+
     /// (b) The deadline boundary: a re-send whose backoff equals the time left would leave exactly at the deadline, when the
     /// publish's own timer fires, so it is not scheduled. Here 40 ms remain after the second refusal and the next backoff is 40 ms.
     @Test
