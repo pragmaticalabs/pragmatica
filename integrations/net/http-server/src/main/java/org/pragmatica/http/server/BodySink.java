@@ -14,7 +14,6 @@
  *  limitations under the License.
  */
 package org.pragmatica.http.server;
-package org.pragmatica.http.server;
 
 import java.nio.ByteBuffer;
 
