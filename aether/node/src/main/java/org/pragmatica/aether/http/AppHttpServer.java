@@ -329,7 +329,9 @@ class AppHttpServerAdapter implements AppHttpServer {
     private final AppHttpContext context;
     private final TimeSpan requestBudget;
     private final UploadAdmission uploadAdmission;
+
     private final AtomicReference<Option<UploadIngest>> uploadIngest = new AtomicReference<>(Option.none());
+
     private volatile PartLimitExecutor partLimitExecutor = PartLimitExecutor.partLimitExecutor();
 
     private final AtomicReference<OperatorWarningSink> warningSink = new AtomicReference<>(OperatorWarningSink.logOnly());
@@ -712,8 +714,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     @Override
     public void setUploadStorage(StorageInstance contentStorage) {
         uploadIngest.set(Option.some(UploadIngest.uploadIngest(contentStorage,
-                                                               config.upload()
-                                                                     .unclaimedTtl())));
+                                                               config.upload().unclaimedTtl())));
     }
 
     /// The node's upload cap was reached: one operator event for the episode, not one per refused request (the
@@ -1060,11 +1061,16 @@ class AppHttpServerAdapter implements AppHttpServer {
             return Disposition.aggregate(effectiveMaxBytes(spec));
         }
 
-        if (config.upload()
-                  .streamingIngest()) {
+        if (config.upload().streamingIngest()) {
             return uploadIngest.get()
                                .fold(() -> admitAggregate(securityContext, head, spec, path, requestId),
-                                     ingest -> admitStream(ingest, securityContext, head, spec, artifact, path, requestId));
+                                     ingest -> admitStream(ingest,
+                                                           securityContext,
+                                                           head,
+                                                           spec,
+                                                           artifact,
+                                                           path,
+                                                           requestId));
         }
 
         return admitAggregate(securityContext, head, spec, path, requestId);
@@ -1096,7 +1102,9 @@ class AppHttpServerAdapter implements AppHttpServer {
                                     String requestId) {
         return artifact.toResult(NO_SERVING_ARTIFACT)
                        .flatMap(coordinate -> ingest.plan(head, spec, coordinate))
-                       .fold(cause -> refuseIngest(UploadIngestError.ingestError(cause), path, requestId),
+                       .fold(cause -> refuseIngest(UploadIngestError.ingestError(cause),
+                                                   path,
+                                                   requestId),
                              plan -> streamUnderPermit(ingest, plan, securityContext, head, spec, path, requestId));
     }
 
@@ -1112,7 +1120,8 @@ class AppHttpServerAdapter implements AppHttpServer {
         var maxBytes = streamMaxBytes(spec);
 
         return uploadAdmission.tryAcquire(securityContext.principal().value(),
-                                          Math.min(declaredBytes(head, maxBytes), ingest.writeBufferBytes()))
+                                          Math.min(declaredBytes(head, maxBytes),
+                                                   ingest.writeBufferBytes()))
                               .fold(cause -> tooManyUploads(cause, path, requestId),
                                     release -> Disposition.stream(maxBytes,
                                                                   uploadBounds(spec),
@@ -1152,8 +1161,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                        : config.maxRequestSize();
 
         return Math.min(declared,
-                        config.upload()
-                              .maxSizeCeiling());
+                        config.upload().maxSizeCeiling());
     }
 
     /// `min(declared or the listener's `max_request_size`, ceiling, IN_MEMORY_LIMIT)`: the operator's ceiling caps what a
@@ -1369,8 +1377,9 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     /// A request whose upload the ingress stored was checked against the part limits as it streamed (U2): never again.
     private static boolean needsPartCheck(HttpRequest request, UploadSpec spec) {
-        return IngestedRequest.uploadOf(request)
-                              .isEmpty() && spec.hasPartLimits() && MultipartParser.isMultipart(request.headers().get("content-type"));
+        return IngestedRequest.uploadOf(request).isEmpty()
+               && spec.hasPartLimits()
+               && MultipartParser.isMultipart(request.headers().get("content-type"));
     }
 
     /// 503 with `Retry-After`: every part-limit worker is busy and the queue is full.
@@ -1456,8 +1465,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     /// The part limit a multipart `request` exceeds, or the nested part it carries (400), if the route declares any. A body that is not multipart, or is not a
     /// closed multipart, is not a breach: the handler answers it as it always has.
     private static Option<MultipartError> partLimitBreach(HttpRequest request, UploadSpec spec) {
-        return IngestedRequest.uploadOf(request)
-                              .isPresent()
+        return IngestedRequest.uploadOf(request).isPresent()
                ? Option.none()
                : spec.partBreach(request.body(),
                                  request.headers().get("content-type").or(""));
@@ -2479,8 +2487,8 @@ class AppHttpServerAdapter implements AppHttpServer {
     /// declaration or ceiling lifts the effective limit past it (a `Content-Length` over it is refused 413 on the head,
     /// never counted in an int). Streaming storage (U2) lifts it.
     static final long IN_MEMORY_LIMIT = Integer.MAX_VALUE - 8L;
-
     private static final Cause NO_SERVING_ARTIFACT = Causes.cause("No slice artifact serves the upload route");
+
     private static final Cause PART_LIMIT_BUSY = Causes.cause("Too many multipart uploads are being checked at once; retry shortly");
 
     private void sendResponse(ResponseWriter response, HttpResponseData responseData, String requestId) {

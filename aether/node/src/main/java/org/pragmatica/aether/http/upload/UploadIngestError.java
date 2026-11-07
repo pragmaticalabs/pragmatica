@@ -9,6 +9,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.storage.ContentStoreError;
 import org.pragmatica.storage.StorageError;
 
+
 /// Why a streamed upload was refused, each with the status the client is answered (U2, spec §B6). The message is the
 /// client-facing description: it names the framing rule or the limit, never decoder internals.
 public sealed interface UploadIngestError extends Cause {
@@ -24,18 +25,14 @@ public sealed interface UploadIngestError extends Cause {
         NO_DISPOSITION("A multipart part has no form-data Content-Disposition with a name"),
         NESTED_MULTIPART("A multipart part is itself multipart, which this route does not accept"),
         NOT_CLOSED("The multipart body ended before its closing boundary delimiter");
-
         private final String message;
-
         Malformed(String message) {
             this.message = message;
         }
-
         @Override
         public String message() {
             return message;
         }
-
         @Override
         public HttpStatus status() {
             return HttpStatus.BAD_REQUEST;

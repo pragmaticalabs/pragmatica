@@ -12,6 +12,7 @@ import org.pragmatica.http.QueryParams;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 
+
 /// A request whose body the ingress already stored (U2): the head and trailers the server delivered, with an empty body,
 /// and the [UploadHandle] of what was stored. It travels the normal dispatch path, where the conversion to the slice's
 /// request attaches the handle ([#uploadOf]).
@@ -38,8 +39,7 @@ public record IngestedRequest(HttpRequest head, UploadHandle upload, Runnable di
     @Contract
     public static void discardUpload(HttpRequest request) {
         if (request instanceof IngestedRequest ingested) {
-            ingested.discard()
-                    .run();
+            ingested.discard().run();
         }
     }
 

@@ -24,6 +24,7 @@ import org.pragmatica.storage.Namespace;
 import org.pragmatica.storage.ObjectSpec;
 import org.pragmatica.storage.StorageInstance;
 
+
 /// The node's streaming upload ingest (U2): one [ContentStore] per slice namespace over the node's `content` storage
 /// instance, created on first use and kept, and the plan of each streamed upload.
 ///
@@ -58,8 +59,7 @@ public final class UploadIngest {
     /// under the part limits of `spec`: refused when the namespace cannot be derived or bound, or when a multipart body
     /// declares no usable boundary.
     public Result<Plan> plan(HttpRequest head, UploadSpec spec, String artifactCoordinate) {
-        var contentType = head.headers()
-                              .get("content-type");
+        var contentType = head.headers().get("content-type");
 
         return Artifact.artifact(artifactCoordinate)
                        .map(ArtifactBase::artifactBase)
@@ -83,14 +83,12 @@ public final class UploadIngest {
     }
 
     private Result<IngestSink.Body> body(HttpRequest head, UploadSpec spec, Option<String> contentType) {
-        var expiresAt = Option.some(Instant.now()
-                                           .plus(unclaimedTtl.duration()));
+        var expiresAt = Option.some(Instant.now().plus(unclaimedTtl.duration()));
 
         return contentType.filter(MultipartDecoder::isFormData)
                           .fold(() -> Result.success(binary(head, contentType, expiresAt)),
-                                type -> MultipartDecoder.multipartDecoder(type, spec)
-                                                        .map(decoder -> new IngestSink.Body.Multipart(decoder,
-                                                                                                      expiresAt)));
+                                type -> MultipartDecoder.multipartDecoder(type, spec).map(decoder -> new IngestSink.Body.Multipart(decoder,
+                                                                                                                                   expiresAt)));
     }
 
     private static IngestSink.Body binary(HttpRequest head, Option<String> contentType, Option<Instant> expiresAt) {
@@ -104,8 +102,7 @@ public final class UploadIngest {
     private static Option<Long> declaredLength(HttpRequest head) {
         return head.headers()
                    .get("content-length")
-                   .flatMap(value -> Number.parseLong(value.strip())
-                                           .option())
+                   .flatMap(value -> Number.parseLong(value.strip()).option())
                    .filter(length -> length >= 0);
     }
 

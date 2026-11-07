@@ -30,10 +30,12 @@ import org.pragmatica.storage.ObjectId;
 import org.pragmatica.storage.ObjectInfo;
 import org.pragmatica.storage.ObjectSpec;
 import org.pragmatica.storage.ObjectWriter;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Unit.unit;
+
 
 /// Takes an upload body as it arrives and writes it to content storage (U2, spec §B2): a body that is not
 /// `multipart/form-data` becomes one object; a multipart body becomes one object per file part, written in order with one
@@ -101,7 +103,11 @@ public final class IngestSink implements BodySink {
         this.refuse = refuse;
     }
 
-    public static IngestSink ingestSink(ContentStore store, Body body, Runnable permit, Dispatch dispatch, Refuse refuse) {
+    public static IngestSink ingestSink(ContentStore store,
+                                        Body body,
+                                        Runnable permit,
+                                        Dispatch dispatch,
+                                        Refuse refuse) {
         return new IngestSink(store, body, permit, dispatch, refuse);
     }
 
@@ -110,10 +116,8 @@ public final class IngestSink implements BodySink {
         return switch (body) {
             case Body.Binary binary -> binaryFile(binary).flatMap(file -> file.writer()
                                                                               .write(chunk));
-            case Body.Multipart multipart -> multipart.decoder()
-                                                      .push(chunk)
-                                                      .async()
-                                                      .flatMap(events -> handleAll(events, multipart));
+            case Body.Multipart multipart -> multipart.decoder().push(chunk).async().flatMap(events -> handleAll(events,
+                                                                                                                 multipart));
         };
     }
 
@@ -121,8 +125,8 @@ public final class IngestSink implements BodySink {
     @Contract
     public void complete(HttpRequest request, ResponseWriter response) {
         finishBody().map(_ -> uploadHandle())
-                    .onSuccess(handle -> handOff(request, handle, response))
-                    .onFailure(cause -> refuseAndClean(cause, response));
+                  .onSuccess(handle -> handOff(request, handle, response))
+                  .onFailure(cause -> refuseAndClean(cause, response));
     }
 
     @Override
@@ -150,17 +154,14 @@ public final class IngestSink implements BodySink {
                                     .map(writer -> opened(writer,
                                                           new Event.FileStart("",
                                                                               Option.none(),
-                                                                              binary.spec()
-                                                                                    .contentType()))),
+                                                                              binary.spec().contentType()))),
                          Promise::success);
     }
 
     private Promise<Unit> finishBody() {
         return switch (body) {
             case Body.Binary binary -> binaryFile(binary).flatMap(this::commitOpen);
-            case Body.Multipart multipart -> multipart.decoder()
-                                                      .finish()
-                                                      .async();
+            case Body.Multipart multipart -> multipart.decoder().finish().async();
         };
     }
 
@@ -182,22 +183,17 @@ public final class IngestSink implements BodySink {
                                                                              start.contentType(),
                                                                              Option.none(),
                                                                              multipart.expiresAt(),
-                                                                             Map.of()))
-                                               .map(writer -> opened(writer, start))
-                                               .mapToUnit();
-            case Event.FileData data -> open.async(NO_OPEN_WRITER)
-                                            .flatMap(file -> file.writer()
-                                                                 .write(data.bytes()));
-            case Event.FileEnd _ -> open.async(NO_OPEN_WRITER)
-                                        .flatMap(this::commitOpen);
+                                                                             Map.of())).map(writer -> opened(writer,
+                                                                                                             start)).mapToUnit();
+            case Event.FileData data -> open.async(NO_OPEN_WRITER).flatMap(file -> file.writer()
+                                                                                       .write(data.bytes()));
+            case Event.FileEnd _ -> open.async(NO_OPEN_WRITER).flatMap(this::commitOpen);
             case Event.Field field -> Promise.success(addField(field));
         };
     }
 
     private Unit addField(Event.Field field) {
-        fields.computeIfAbsent(field.name(),
-                               _ -> new ArrayList<>())
-              .add(field.value());
+        fields.computeIfAbsent(field.name(), _ -> new ArrayList<>()).add(field.value());
 
         return unit();
     }
@@ -218,12 +214,12 @@ public final class IngestSink implements BodySink {
 
         return file.writer()
                    .commit(Option.none())
-                   .map(info -> recordFile(info, file.part()));
+                   .map(info -> recordFile(info,
+                                           file.part()));
     }
 
     private Unit recordFile(ObjectInfo info, Event.FileStart part) {
-        committed.add(info.ref()
-                          .id());
+        committed.add(info.ref().id());
         files.add(FileHandle.fileHandle(part.field(),
                                         part.fileName(),
                                         part.contentType(),
@@ -239,8 +235,8 @@ public final class IngestSink implements BodySink {
     // ---- terminal paths ----
     private void handOff(HttpRequest request, UploadHandle handle, ResponseWriter response) {
         Result.lift(() -> dispatch.dispatch(IngestedRequest.ingestedRequest(request, handle, this::discardStored),
-                                             response))
-              .onFailure(cause -> log.error("Dispatching a stored upload failed: {}", cause.message()));
+                                            response)).onFailure(cause -> log.error("Dispatching a stored upload failed: {}",
+                                                                                    cause.message()));
         release();
     }
 
@@ -263,7 +259,8 @@ public final class IngestSink implements BodySink {
         return file.fold(Promise::unitPromise,
                          openFile -> openFile.writer()
                                              .abort())
-                   .onFailure(cause -> log.warn("Aborting a streamed upload's writer failed: {}", cause.message()))
+                   .onFailure(cause -> log.warn("Aborting a streamed upload's writer failed: {}",
+                                                cause.message()))
                    .fold(_ -> deleteStored());
     }
 
@@ -272,10 +269,7 @@ public final class IngestSink implements BodySink {
 
         committed.clear();
 
-        return Promise.allOf(ids.stream()
-                                .map(this::deleteOne)
-                                .toList())
-                      .mapToUnit();
+        return Promise.allOf(ids.stream().map(this::deleteOne).toList()).mapToUnit();
     }
 
     private Promise<Unit> deleteOne(ObjectId id) {
