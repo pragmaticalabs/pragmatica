@@ -140,8 +140,8 @@ public final class RemoteTier implements StorageTier {
         var marker = markerKey(key);
 
         return request("DELETE", key, () -> s3Client.deleteObject(key)).flatMap(_ -> request("DELETE",
-                                                                                            marker,
-                                                                                            () -> s3Client.deleteObject(marker)));
+                                                                                             marker,
+                                                                                             () -> s3Client.deleteObject(marker)));
     }
 
     @Override
@@ -158,8 +158,8 @@ public final class RemoteTier implements StorageTier {
         var key = s3Key(id);
 
         return request("HEAD", key, () -> s3Client.statObject(key)).flatMap(found -> found.fold(() -> Promise.success(none()),
-                                                                                                 block -> withMarker(id,
-                                                                                                                     block)));
+                                                                                                block -> withMarker(id,
+                                                                                                                    block)));
     }
 
     private Promise<Option<BlockStat>> withMarker(BlockId id, S3Client.ObjectStat block) {
@@ -204,8 +204,7 @@ public final class RemoteTier implements StorageTier {
 
     private Promise<Boolean> markTouched(String key) {
         var marker = markerKey(key);
-        var touchedAt = Long.toString(System.currentTimeMillis())
-                            .getBytes(StandardCharsets.UTF_8);
+        var touchedAt = Long.toString(System.currentTimeMillis()).getBytes(StandardCharsets.UTF_8);
 
         return request("PUT", marker, () -> s3Client.putObject(marker, touchedAt, MARKER_CONTENT_TYPE)).map(_ -> true);
     }
@@ -255,14 +254,16 @@ public final class RemoteTier implements StorageTier {
                                             Option<S3Client.ObjectStat> open,
                                             S3Client.ObjectListing listing,
                                             int wanted) {
-        var objects = Stream.concat(open.stream(), listing.objects().stream()).toList();
+        var objects = Stream.concat(open.stream(),
+                                    listing.objects().stream()).toList();
         var more = listing.truncated() && !listing.objects().isEmpty();
         var stillOpen = more
                         ? Option.option(objects.getLast()).filter(object -> isBlockKey(object.key()))
                         : Option.<S3Client.ObjectStat> none();
-        var settled = objects.subList(0, objects.size() - (stillOpen.isPresent()
-                                                           ? 1
-                                                           : 0));
+        var settled = objects.subList(0,
+                                      objects.size() - (stillOpen.isPresent()
+                                                        ? 1
+                                                        : 0));
         var stats = blockStatsOf(settled);
 
         return more && stats.size() < wanted
@@ -278,7 +279,8 @@ public final class RemoteTier implements StorageTier {
 
     /// The blocks among `objects` (in listing order), each with the time of the marker listed right after it, if any.
     private List<BlockStat> blockStatsOf(List<S3Client.ObjectStat> objects) {
-        return IntStream.range(0, objects.size())
+        return IntStream.range(0,
+                               objects.size())
                         .boxed()
                         .flatMap(index -> blockStatOf(objects.get(index),
                                                       index + 1 < objects.size()
