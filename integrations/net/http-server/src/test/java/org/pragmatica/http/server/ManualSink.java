@@ -19,6 +19,9 @@ import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.lang.Cause;
@@ -78,14 +81,39 @@ final class ManualSink implements BodySink {
         terminals.add(name);
     }
 
-    /// Resolves the oldest outstanding `accept` successfully.
+    /// Resolves the oldest outstanding `accept` successfully; returns once the server's handler on it has run (see
+    /// [#resolve]).
     void succeedNext() {
-        pending.poll().succeed(unit());
+        resolve(promise -> promise.succeed(unit()));
     }
 
-    /// Fails the oldest outstanding `accept`.
+    /// Fails the oldest outstanding `accept`; returns once the server's handler on it has run.
     void failNext() {
-        pending.poll().fail(RecordingSink.Rejected.REJECTED);
+        resolve(promise -> promise.fail(RecordingSink.Rejected.REJECTED));
+    }
+
+    /// A promise's `onResult` handlers run asynchronously, in registration order, on one thread. The server registered its
+    /// handler when it called `accept`; a handler registered here, after it, has therefore run only once the server's has,
+    /// so the task that handler hands the channel's event loop is queued when this returns, and the test's
+    /// `runPendingTasks` runs it. Without this wait the test races the handler and sees nothing resumed.
+    private void resolve(Consumer<Promise<Unit>> settle) {
+        var promise = pending.poll();
+        var handled = new CountDownLatch(1);
+
+        promise.onResult(_ -> handled.countDown());
+        settle.accept(promise);
+        awaitHandled(handled);
+    }
+
+    private static void awaitHandled(CountDownLatch handled) {
+        try {
+            if (!handled.await(10, TimeUnit.SECONDS)) {
+                throw new AssertionError("the accept's handlers did not run within 10 s");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("interrupted while the accept's handlers ran", e);
+        }
     }
 
     int outstanding() {
