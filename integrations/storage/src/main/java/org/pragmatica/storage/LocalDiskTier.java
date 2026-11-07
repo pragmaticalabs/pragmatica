@@ -294,8 +294,9 @@ public final class LocalDiskTier implements StorageTier {
     }
 
     /// Walks the shard's first-level directories in ascending order, skipping those wholly before the cursor; each
-    /// directory visited is listed whole and sorted, and only the files a page returns are stat'ed. A file deleted
-    /// between the listing and its stat is skipped, never counted against the page.
+    /// directory visited is listed whole by name and sorted, and only the files a page returns are stat'ed. A file
+    /// removed while the shard is listed never fails the scan, and one deleted between the listing and its stat is
+    /// skipped, never counted against the page.
     @Override
     public Promise<Page<BlockStat>> scan(KeyShard shard, Option<Cursor> after, int limit) {
         return Promise.lift(READ_ERROR, () -> scanShard(shard, after, limit)).flatMap(Promise::resolved);
@@ -342,17 +343,41 @@ public final class LocalDiskTier implements StorageTier {
 
         return FileOps.isDirectory(directory) && resume.filter(hex -> prefix.compareTo(hex.substring(0, 2)) < 0)
                                                        .isEmpty()
-               ? FileOps.walk(directory, this::listedRegularFile).flatMap(files -> statFirst(files,
+               ? blockFilesUnder(directory).flatMap(files -> statFirst(files,
                                                                                             directory,
                                                                                             resume,
                                                                                             wanted))
                : Result.success(List.of());
     }
 
-    private boolean listedRegularFile(Path path) {
-        listingObserver.apply(path);
+    /// The files in `directory`'s subdirectories, by name only. A listing reads no file's attributes, so a file removed
+    /// while the shard is listed (a block deleted, a partial renamed over its block path) never fails it; [#statFirst]
+    /// skips a listed block gone before its stat, and never stats a name that is not a block's. A subdirectory removed
+    /// before it is listed lists as empty.
+    private Result<List<Path>> blockFilesUnder(Path directory) {
+        return listed(directory).flatMap(this::listedAll);
+    }
 
-        return FileOps.isRegularFile(path);
+    private Result<List<Path>> listedAll(List<Path> subdirectories) {
+        return Result.allOf(subdirectories.stream()
+                                          .map(this::listed)
+                                          .toList())
+                     .map(listings -> listings.stream()
+                                              .flatMap(List::stream)
+                                              .toList());
+    }
+
+    /// The entries of `directory`, each shown to the listing observer; none when it is gone or is not a directory.
+    private Result<List<Path>> listed(Path directory) {
+        return FileOps.list(directory)
+                      .fold(cause -> goneOr(directory, cause), Result::success)
+                      .onSuccess(entries -> entries.forEach(listingObserver::apply));
+    }
+
+    private static Result<List<Path>> goneOr(Path directory, Cause cause) {
+        return FileOps.isDirectory(directory)
+               ? cause.result()
+               : Result.success(List.of());
     }
 
     private static Result<List<BlockStat>> statFirst(List<Path> files,

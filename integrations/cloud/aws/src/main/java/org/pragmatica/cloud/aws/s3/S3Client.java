@@ -49,8 +49,9 @@ public interface S3Client {
     /// present), in ascending key order, with each object's size and last-modified time.
     Promise<ObjectListing> listObjectStats(String prefix, Option<String> startAfter, int maxKeys);
     /// Refreshes the object's last-modified time by a server-side copy onto itself (CopyObject with the metadata
-    /// directive REPLACE and `contentType`): the provider rewrites the object, the client sends no bytes. False only on a
-    /// 404 (the object is absent, and nothing is created); any other failure, including an error the provider reports in
+    /// directive REPLACE and `contentType`), conditional on the ETag a HEAD read just before: the provider rewrites the
+    /// object, the client sends no bytes. False when the object is absent (a 404) or was deleted or replaced between the
+    /// HEAD and the copy (a 412); nothing is created then. Any other failure, including an error the provider reports in
     /// the body of a 200, fails the promise.
     Promise<Boolean> touchObject(String key, String contentType);
 

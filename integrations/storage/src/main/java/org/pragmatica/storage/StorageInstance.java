@@ -332,13 +332,15 @@ public interface StorageInstance {
     /// through [#put], which deduplicates onto the block's record and writes nothing when one exists.
     ///
     /// A tier that holds the block is touched ([StorageTier#touch]); its bytes are not rewritten. A tier that does not is
-    /// written directly with the bytes another tier of this instance holds, hash-checked against `id` first. Waits for a
+    /// written directly with the bytes another tier of this instance holds, hash-checked against `id` first. So is a tier
+    /// that refuses the touch with [StorageError.OperationUnsupported] (it keeps no write time, as the in-memory DHT),
+    /// whether it holds the block or not: written is the only way such a tier meets this guarantee. Waits for a
     /// write or a collection of the same id in flight here before it starts. Records the tier's presence on the block's
     /// record if there is one, as an observation ([MetadataStore#observeLifecycle]): tier presence is not snapshot state,
     /// and no record or reference count is created or changed.
     ///
-    /// Fails with [StorageError.NoSuchTier] when the instance has no tier at `level`, [StorageError.BlockNotFound] when no
-    /// other tier holds the block, [StorageError.IntegrityError] when the copy found does not hash to `id`, and with the
+    /// Fails with [StorageError.NoSuchTier] when the instance has no tier at `level`, [StorageError.BlockNotFound] when the
+    /// tier must be written and no other tier holds the block, [StorageError.IntegrityError] when the copy found does not hash to `id`, and with the
     /// tier's failure otherwise. The default refuses with [StorageError.OperationUnsupported].
     default Promise<Unit> ensureHeld(BlockId id, TierLevel level) {
         return StorageError.OperationUnsupported.operationUnsupported(level, "ensureHeld").promise();
@@ -1304,12 +1306,24 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     private Promise<Unit> holdOn(StorageTier tier, BlockId id) {
-        return tier.touch(id)
-                   .flatMap(held -> held
+        return refreshed(tier, id).flatMap(held -> held
                                     ? Promise.success(unit())
                                     : copyOnto(tier, id))
                    .map(_ -> observePresence(id,
                                              tier.level()));
+    }
+
+    /// The tier's touch; false, so the block is written, when the tier refuses it with [StorageError.OperationUnsupported].
+    /// Design-out, not a recovery: a tier without write times has no refresh to fail, and the write gives the same
+    /// guarantee ("written no earlier than this call"). Every other failure of the touch fails the call.
+    private static Promise<Boolean> refreshed(StorageTier tier, BlockId id) {
+        return tier.touch(id).fold(touched -> touched.fold(DefaultStorageInstance::writtenInstead, Promise::success));
+    }
+
+    private static Promise<Boolean> writtenInstead(Cause cause) {
+        return cause instanceof StorageError.OperationUnsupported
+               ? Promise.success(false)
+               : cause.promise();
     }
 
     private Promise<Unit> copyOnto(StorageTier target, BlockId id) {
