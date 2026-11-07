@@ -11,17 +11,24 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.ArtifactBase;
+import org.pragmatica.aether.config.UploadConfig;
 import org.pragmatica.aether.http.handler.UploadHandle;
+import org.pragmatica.aether.http.upload.IngestedRequest;
 import org.pragmatica.aether.http.upload.UploadIngest;
 import org.pragmatica.aether.storage.SliceNamespace;
+import org.pragmatica.http.ContentType;
 import org.pragmatica.http.Headers;
 import org.pragmatica.http.HttpMethod;
+import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.QueryParams;
 import org.pragmatica.http.server.Disposition;
+import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.storage.ByteRange;
@@ -435,6 +442,84 @@ class AppHttpServerStreamingIngestGateTest extends AppHttpServerIngestGateTest {
 
         assertThat(huge).isInstanceOf(Disposition.Stream.class);
         assertThat(((Disposition.Stream) huge).maxBytes()).isEqualTo(4L * 1024 * MIB);
+    }
+
+    /// The ceiling caps a route that declares more: the 4 GiB route streams under the default 256 MiB ceiling.
+    @Test
+    void streamedLimit_aboveTheCeiling_isTheCeiling() throws Exception {
+        start(Protocol.H1, defaults(), 10 * MIB);
+
+        var huge = classify(HttpMethod.POST, "/api/huge/x", Option.some(KEY_A));
+
+        assertThat(huge).isInstanceOf(Disposition.Stream.class);
+        assertThat(((Disposition.Stream) huge).maxBytes()).isEqualTo(UploadConfig.DEFAULT_MAX_SIZE_CEILING);
+    }
+
+    // ---- a stored upload that reaches no slice is deleted
+
+    /// The head passed security, the body was stored, then dispatch refused it (here: no key on a protected route, as when
+    /// the route's security changed meanwhile): the stored upload is discarded before the refusal is answered.
+    @Test
+    void storedUpload_refusedBySecurityAtDispatch_isDiscarded() throws Exception {
+        start(Protocol.H1, defaults(), 10 * MIB);
+
+        var outcome = dispatchStored("/api/big/", Option.none());
+
+        assertThat(outcome.discarded()).as("the stored upload is deleted once").isEqualTo(1);
+        assertThat(outcome.status()).isEqualTo(Option.some(HttpStatus.UNAUTHORIZED));
+        assertThat(lastServed.get()).as("no slice received it").isNull();
+    }
+
+    /// The route resolved for the head is gone by the time the body is stored: the stored upload is discarded and the
+    /// request is answered as any request without a route.
+    @Test
+    void storedUpload_whoseRouteNoLongerResolves_isDiscarded() throws Exception {
+        start(Protocol.H1, defaults(), 10 * MIB);
+
+        var outcome = dispatchStored("/api/no-such-route/x", Option.some(KEY_A));
+
+        assertThat(outcome.discarded()).as("the stored upload is deleted once").isEqualTo(1);
+        assertThat(outcome.status()).isEqualTo(Option.some(HttpStatus.NOT_FOUND));
+        assertThat(lastServed.get()).as("no slice received it").isNull();
+    }
+
+    private record Dispatched(int discarded, Option<HttpStatus> status) {}
+
+    private Dispatched dispatchStored(String path, Option<String> key) throws InterruptedException {
+        var discarded = new AtomicInteger();
+        var status = new AtomicReference<Option<HttpStatus>>(Option.none());
+        var headers = Headers.headers(key.map(value -> Map.of("x-api-key", List.of(value)))
+                                         .or(Map.of()));
+        var stored = IngestedRequest.ingestedRequest(new Head("req-stored", HttpMethod.POST, path, headers, QueryParams.queryParams(Map.of())),
+                                                     UploadHandle.uploadHandle(List.of(), Map.of()),
+                                                     discarded::incrementAndGet);
+
+        ((AppHttpServerAdapter) server).handleRequest(stored, statusRecorder(status));
+        awaitAnswer(status);
+
+        return new Dispatched(discarded.get(), status.get());
+    }
+
+    private static void awaitAnswer(AtomicReference<Option<HttpStatus>> status) throws InterruptedException {
+        var deadline = System.nanoTime() + WAIT.nanos();
+
+        while (status.get().isEmpty() && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+    }
+
+    private static ResponseWriter statusRecorder(AtomicReference<Option<HttpStatus>> status) {
+        return new ResponseWriter() {
+            @Override
+            public void write(HttpStatus written, byte[] body, ContentType contentType) {
+                status.set(Option.some(written));
+            }
+
+            @Override
+            public ResponseWriter header(String name, String value) {
+                return this;
+            }
+        };
     }
 
     private Disposition classifyUpload(String contentType, long length) {

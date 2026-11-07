@@ -1139,7 +1139,7 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     @Contract
     private void refuseUpload(ResponseWriter response, UploadIngestError cause, String path, String requestId) {
-        sendProblem(response, cause.status(), cause.message(), path, requestId);
+        sendProblem(response, cause.status(), HttpError.clientMessage(cause), path, requestId);
     }
 
     /// What an upload reserves from the byte budget: its `Content-Length` when it declares one that is a size, else the most
@@ -1203,7 +1203,8 @@ class AppHttpServerAdapter implements AppHttpServer {
         sendProblem(response, status, HttpError.clientMessage(cause), path, requestId);
     }
 
-    private void handleRequest(HttpRequest request, ResponseWriter response) {
+    /// Package-private so the gate tests can dispatch a stored upload whose route or security changed after its head.
+    void handleRequest(HttpRequest request, ResponseWriter response) {
         var requestId = request.requestId();
 
         InvocationContext.runWithRequestId(requestId, () -> handleRequestInScope(request, response, requestId));

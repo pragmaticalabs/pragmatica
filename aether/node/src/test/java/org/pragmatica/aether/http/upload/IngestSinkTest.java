@@ -242,7 +242,8 @@ class IngestSinkTest {
 
     @Test
     void abort_midFile_deletesTheCommittedFiles_abortsTheOpenWriter_andReturnsThePermitOnce() throws Exception {
-        var store = store(storage(64L * MIB));
+        var tier = MemoryTier.memoryTier(64L * MIB);
+        var store = store(StorageInstance.storageInstance("ingest-sink-test", List.of(tier)));
         var sink = sink(store, multipart(UploadSpec.uploadSpec(true, 0, 0)));
         var valid = multipartBody(random(MIB, 8), random(6 * MIB, 9));
 
@@ -255,11 +256,30 @@ class IngestSinkTest {
 
         assertThat(permits.get()).as("the permit is returned exactly once").isEqualTo(1);
         assertThat(catalog(store)).isEmpty();
+        assertThat(tier.usedBytes()).as("the open writer's blocks and the committed file's are given back").isZero();
         assertThat(refused.get()).as("after an abort the server answers, not the sink").isNull();
         assertThat(written).isEmpty();
     }
 
     /// A full content tier answers 507 `storage-full` (not 503), and the partial object leaves no catalog entry.
+    /// The permit is returned once however many terminal calls reach the sink: a server abort after a refusal (a
+    /// disconnect racing the answer) returns no second permit.
+    @Test
+    void abort_afterARefusal_returnsNoSecondPermit() throws Exception {
+        var store = store(storage(64L * MIB));
+        var sink = sink(store, binary());
+
+        assertThat(push(sink, random(MIB, 10), 400_000)).isEmpty();
+        sink.fail(BodySink.Ended.TOO_LARGE, writer());
+        await(() -> permits.get() == 1, "the refusal returned the permit");
+
+        sink.abort(BodySink.Ended.DISCONNECTED);
+        Thread.sleep(200);
+
+        assertThat(permits.get()).as("the permit is returned exactly once").isEqualTo(1);
+        assertThat(catalog(store)).isEmpty();
+    }
+
     @Test
     void fullTier_answers507_andLeavesNoCatalogEntry() throws Exception {
         var store = store(storage(2L * MIB));

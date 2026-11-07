@@ -124,6 +124,19 @@ class MultipartDecoderTest {
         }
     }
 
+    /// RFC 7578 parameters: a quoted value keeps an escaped quote and a `;` it encloses, and parameter names match in any
+    /// case.
+    @Test
+    void quotedParameters_unescape_keepEnclosedSeparators_andNamesIgnoreCase() {
+        var body = ascii("--" + BOUNDARY + "\r\nContent-Disposition: form-data; NAME=\"f\"; FileName=\"a\\\"b;c.bin\"\r\n\r\n"
+                         + "xyz\r\n--" + BOUNDARY + "--\r\n");
+
+        var decoded = decode(body, body.length, UNLIMITED, TYPE);
+
+        assertThat(decoded.refusal()).isEmpty();
+        assertThat(decoded.events()).first().isEqualTo("start:f:a\"b;c.bin:application/octet-stream");
+    }
+
     @Test
     void fileContent_comesOutAsSlicesOfThePushedChunk_notCopies() {
         var decoder = MultipartDecoder.multipartDecoder(TYPE, UNLIMITED).unwrap();
