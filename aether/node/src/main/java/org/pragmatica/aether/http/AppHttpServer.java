@@ -1139,7 +1139,7 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     @Contract
     private void refuseUpload(ResponseWriter response, UploadIngestError cause, String path, String requestId) {
-        sendProblem(response, cause.status(), cause.message(), path, requestId);
+        sendProblem(response, cause.status(), HttpError.clientMessage(cause), path, requestId);
     }
 
     /// What an upload reserves from the byte budget: its `Content-Length` when it declares one that is a size, else the most
