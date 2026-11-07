@@ -23,6 +23,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+
 /// Takes a request body as it arrives instead of having it aggregated ([Disposition.Stream]), on HTTP/1.1 and HTTP/3
 /// alike. The server pulls: it reads no further body bytes from the connection (HTTP/1.1) or the stream (HTTP/3) while a
 /// chunk is being accepted, so a sink that is slow to accept slows the client down instead of growing a buffer.
@@ -55,13 +56,10 @@ public interface BodySink {
         TIMED_OUT("Request body timed out"),
         DISCONNECTED("Connection or stream closed before the body ended"),
         MALFORMED("Request could not be read");
-
         private final String message;
-
         Ended(String message) {
             this.message = message;
         }
-
         @Override
         public String message() {
             return message;

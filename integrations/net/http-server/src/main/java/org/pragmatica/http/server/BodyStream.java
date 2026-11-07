@@ -149,12 +149,13 @@ final class BodyStream {
         accepting = some(next);
         // A dependent step runs on the thread that resolves the promise, so the resolution reaches the loop in one hop;
         // an `onResult` handler would first go through the promise's own async executor.
-        sink.accept(next.view())
-            .withResult(result -> executor.execute(() -> settled(next, result)));
+        sink.accept(next.view()).withResult(result -> executor.execute(() -> settled(next, result)));
     }
 
     private void drained() {
-        onEnd.apply(() -> channel.config().setAutoRead(true), this::complete);
+        onEnd.apply(() -> channel.config()
+                                 .setAutoRead(true),
+                    this::complete);
     }
 
     private void complete(Runnable complete) {
@@ -169,8 +170,10 @@ final class BodyStream {
     }
 
     private void proceed(Result<Unit> result) {
-        result.onFailure(this::failed)
-              .onSuccessRun(this::pump);
+        switch (result) {
+            case Result.Success<Unit> _ -> pump();
+            case Result.Failure<Unit> failure -> failed(failure.cause());
+        }
     }
 
     private void failed(Cause cause) {
@@ -180,7 +183,8 @@ final class BodyStream {
     }
 
     private void releaseWaiting() {
-        waiting.forEach(piece -> piece.owner().release());
+        waiting.forEach(piece -> piece.owner()
+                                      .release());
         waiting.clear();
     }
 }

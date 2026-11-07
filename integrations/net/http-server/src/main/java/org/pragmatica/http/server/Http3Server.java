@@ -400,8 +400,7 @@ final class Http3Server {
         private void beginStream(ChannelHandlerContext ctx, Disposition.Stream streamed) {
             var sink = streamed.sink();
 
-            if (RequestTarget.requestTarget(targetOf(headersFrame.headers()))
-                             .isFailure()) {
+            if (RequestTarget.requestTarget(targetOf(headersFrame.headers())).isFailure()) {
                 sink.abort(BodySink.Ended.MALFORMED);
                 reject(ctx, HttpStatus.BAD_REQUEST, "Malformed request target");
 
@@ -504,7 +503,8 @@ final class Http3Server {
 
             stream.apply(() -> dispatch(ctx),
                          streamed -> streamed.body()
-                                             .end(() -> complete(ctx, streamed.sink())));
+                                             .end(() -> complete(ctx,
+                                                                 streamed.sink())));
         }
 
         @Contract
