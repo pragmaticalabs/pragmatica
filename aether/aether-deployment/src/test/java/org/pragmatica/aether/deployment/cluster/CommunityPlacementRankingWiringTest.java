@@ -33,7 +33,7 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// rc6 f5c Lane B: the community reserve path ranks its short locations with [SourceRanking] and honours `fallback = "forbid"`.
-/// Identity for configs that set no new field is pinned against `CommunityPlacementReconciler.locationOrder()` itself.
+/// Identity for configs that set no new field is pinned against `PlacementReconciler.locationOrder()` itself.
 class CommunityPlacementRankingWiringTest {
     private static final NodeId CORE = new NodeId("core");
     private static final String HEAD = """
@@ -73,7 +73,7 @@ class CommunityPlacementRankingWiringTest {
             hook.run();
             return Promise.success(store.process(store.createBatch(commands)));
         }, () -> true,
-        ready::contains, () -> Set.of(CORE), () -> 10, actuator, _ -> {}, (_, _) -> {}, 60_000L);
+        ready::contains, () -> Set.of(CORE), () -> 10, actuator, _ -> {}, (_, _) -> {}, org.pragmatica.lang.io.TimeSpan.timeSpan(60_000L).millis());
 
     // ---- fixtures ----
     private static String docker(String name, String extra) {
@@ -123,7 +123,7 @@ class CommunityPlacementRankingWiringTest {
     }
 
     private Option<CommunityPlacementOperationValue> operation() {
-        return store.getTyped(new AetherKey.CommunityPlacementOperationKey("stable"), CommunityPlacementOperationValue.class).option();
+        return store.getTyped(new AetherKey.CommunityPlacementOperationKey("stable"), CommunityPlacementOperationValue.class);
     }
 
     private CommunityPlacementOperationValue current() { return operation().unwrap(); }
@@ -162,7 +162,7 @@ class CommunityPlacementRankingWiringTest {
     @Test
     void reserve_dockerAndHetznerDefaultFields_reservesLocationOrderFirst() {
         var config = HEAD + hetzner("a_hz", "") + docker("b_dk", "") + community(2, "a_hz", "b_dk");
-        var oracle = policy(config).locations().stream().sorted(CommunityPlacementReconciler.locationOrder()).findFirst().orElseThrow();
+        var oracle = policy(config).locations().stream().sorted(PlacementReconciler.locationOrder()).findFirst().orElseThrow();
 
         start(config);
         reconciler.reconcile().await().unwrap();
