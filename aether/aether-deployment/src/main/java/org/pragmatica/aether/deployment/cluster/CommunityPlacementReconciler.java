@@ -23,6 +23,8 @@ import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.CommunityPlacement;
 import org.pragmatica.aether.config.cluster.CommunityPolicy;
+import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.SourceFallback;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue;
@@ -792,6 +794,35 @@ record PlacementReconciler(NodeId self,
         return cause instanceof org.pragmatica.aether.environment.EnvironmentError.CapacityUnavailable || cause instanceof org.pragmatica.aether.environment.EnvironmentError.NodeCapExceeded;
     }
 
+    /// rc6 f5c: the first location of `candidates` by [SourceRanking] (no deadline, no `max_nodes` counts: Lane B).
+    /// With every new profile field at its default this is today's [#locationOrder()] first element.
+    private java.util.Optional<CommunityPlacement.Location> bestRanked(ClusterBootstrapConfig config,
+                                                                       List<CommunityPlacement.Location> candidates) {
+        return SourceRanking.rank(candidates,
+                                  config.sources(),
+                                  NodeRole.WORKER,
+                                  SelectionRequest.selectionRequest(Option.none(),
+                                                                    clock.getAsLong()),
+                                  Option.none())
+                            .stream()
+                            .findFirst();
+    }
+
+    /// rc6 f5c §2.4: the unavailable locations whose discretionary share may spill to the others. A location whose
+    /// source says `fallback = "forbid"` keeps its full share (it is provisioned only by its probe), so it is not spilled.
+    private static java.util.Set<CommunityPlacement.Location> spillSet(ClusterBootstrapConfig config,
+                                                                       java.util.Set<CommunityPlacement.Location> unavailable) {
+        return unavailable.stream()
+                          .filter(location -> !forbidsFallback(config, location))
+                          .collect(Collectors.toSet());
+    }
+
+    private static boolean forbidsFallback(ClusterBootstrapConfig config, CommunityPlacement.Location location) {
+        return Option.option(config.sources().get(location.source()))
+                     .map(profile -> profile.fallback() == SourceFallback.FORBID)
+                     .or(false);
+    }
+
     static Comparator<CommunityPlacement.Location> locationOrder() {
         return Comparator.comparing(CommunityPlacement.Location::source).thenComparing(location -> location.zone()
                                                                                                            .or(""));
@@ -1342,30 +1373,31 @@ record PlacementReconciler(NodeId self,
                                                                 bindings.get(location).option(),
                                                                 snapshot))
                                 .collect(Collectors.toSet());
-        var effective = CommunityPlacementAvailability.effectiveCounts(policy, unavailable);
-        var ordinary = policy.locations()
-                             .stream()
-                             .filter(location -> !unavailable.contains(location))
-                             .filter(location -> matching(members, location).size() < effective.get(location))
-                             .sorted(locationOrder())
-                             .findFirst();
+        var spill = spillSet(config, unavailable);
+        var effective = CommunityPlacementAvailability.effectiveCounts(policy, spill);
+        var ordinary = bestRanked(config,
+                                  policy.locations()
+                                        .stream()
+                                        .filter(location -> !unavailable.contains(location))
+                                        .filter(location -> matching(members, location).size() < effective.get(location))
+                                        .toList());
         var probe = ordinary.isPresent()
                     ? java.util.Optional.<CommunityPlacement.Location> empty()
-                    : policy.locations()
-                            .stream()
-                            .filter(unavailable::contains)
-                            .filter(location -> probeDue(policy,
-                                                         location,
-                                                         bindings.get(location).option(),
-                                                         snapshot))
-                            .filter(location -> matching(members, location).size() < policy.desiredCounts()
-                                                                                           .get(location))
-                            .sorted(locationOrder())
-                            .findFirst();
-        var probingUnavailable = new HashSet<>(unavailable);
+                    : bestRanked(config,
+                                 policy.locations()
+                                       .stream()
+                                       .filter(unavailable::contains)
+                                       .filter(location -> probeDue(policy,
+                                                                    location,
+                                                                    bindings.get(location).option(),
+                                                                    snapshot))
+                                       .filter(location -> matching(members, location).size() < policy.desiredCounts()
+                                                                                                      .get(location))
+                                       .toList());
+        var probingSpill = new HashSet<>(spill);
 
-        probe.ifPresent(probingUnavailable::remove);
-        var desired = CommunityPlacementAvailability.effectiveCounts(policy, probingUnavailable);
+        probe.ifPresent(probingSpill::remove);
+        var desired = CommunityPlacementAvailability.effectiveCounts(policy, probingSpill);
         var deficit = ordinary.isPresent()
                       ? ordinary
                       : probe;
