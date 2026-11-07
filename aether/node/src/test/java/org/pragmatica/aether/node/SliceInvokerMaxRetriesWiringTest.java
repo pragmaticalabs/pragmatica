@@ -81,7 +81,7 @@ class SliceInvokerMaxRetriesWiringTest {
                                                          Option.none(),
                                                          Option.none());
         var inputs = new SliceRuntimeAssembly.SliceInvokerInputs(config,
-                                                                 mock(MessageRouter.DelegateRouter.class),
+                                                                 MessageRouter.DelegateRouter.delegate(),
                                                                  mock(KVStore.class),
                                                                  DeferredSliceInvokerFacade.deferredSliceInvokerFacade(),
                                                                  deepStubbedClusterNode(),
@@ -100,7 +100,7 @@ class SliceInvokerMaxRetriesWiringTest {
                                                                  mock(ScheduledTaskStateRegistry.class),
                                                                  new AtomicReference<>(),
                                                                  mock(DeploymentManager.class),
-                                                                 mock(OperatorWarningSink.class));
+                                                                 OperatorWarningSink.logOnly());
 
         var invoker = SliceRuntimeAssembly.sliceInvoker(inputs).sliceInvoker();
         var field = invoker.getClass().getDeclaredField("maxRetries");
