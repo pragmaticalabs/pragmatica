@@ -48,20 +48,18 @@ public sealed interface TopicSectionPreflight {
     }
 
     private static Stream<TopicSection> sectionsOf(SliceTopology topology) {
-        var published = topology.publishes()
-                                .stream()
-                                .map(SliceTopology.TopicPub::config);
-        var subscribed = topology.subscribes()
-                                 .stream()
-                                 .map(SliceTopology.TopicSub::config);
+        var published = topology.publishes().stream().map(SliceTopology.TopicPub::config);
+        var subscribed = topology.subscribes().stream().map(SliceTopology.TopicSub::config);
 
         return Stream.concat(published, subscribed).map(config -> new TopicSection(topology.sliceName(), config));
     }
 
     private static Result<Unit> bindSection(TopicSection section, ConfigurationProvider view) {
         return ProviderBasedConfigService.providerBasedConfigService(view)
-                                         .config(section.name(), TopicConfig.class)
-                                         .fold(cause -> refusal(section, cause), _ -> Result.unitResult());
+                                         .config(section.name(),
+                                                 TopicConfig.class)
+                                         .fold(cause -> refusal(section, cause),
+                                               _ -> Result.unitResult());
     }
 
     /// Design-out, not an absorbed failure: an absent section is a legal declaration that provisions an ephemeral

@@ -185,6 +185,7 @@ public interface BlueprintService {
     default Promise<Blueprint> validateDeployable(String dsl) {
         return validate(dsl).async();
     }
+
     Cause ARTIFACT_STORE_NOT_CONFIGURED = Causes.cause("ArtifactStore not configured");
 
     static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
@@ -607,7 +608,8 @@ class BlueprintServiceInstance implements BlueprintService {
 
     @Override
     public Promise<Blueprint> validateDeployable(String dsl) {
-        return validate(dsl).async().flatMap(this::preflightWithoutStoring);
+        return validate(dsl).async()
+                       .flatMap(this::preflightWithoutStoring);
     }
 
     private Promise<Blueprint> preflightWithoutStoring(Blueprint blueprint) {

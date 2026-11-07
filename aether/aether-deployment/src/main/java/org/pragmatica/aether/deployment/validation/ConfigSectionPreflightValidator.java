@@ -76,9 +76,7 @@ public interface ConfigSectionPreflightValidator {
 
     private static Stream<Result<Unit>> checkSliceJar(SliceJar sliceJar, Option<ConfigurationProvider> nodeComposite) {
         var loaderView = nodeComposite.map(composite -> loaderView(sliceJar, composite));
-        var resources = sliceJar.topologies()
-                                .stream()
-                                .flatMap(topology -> checkTopology(topology, loaderView));
+        var resources = sliceJar.topologies().stream().flatMap(topology -> checkTopology(topology, loaderView));
 
         return Stream.concat(resources, TopicSectionPreflight.check(sliceJar, nodeComposite));
     }
