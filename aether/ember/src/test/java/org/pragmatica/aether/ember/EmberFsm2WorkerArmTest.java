@@ -116,13 +116,14 @@ class EmberFsm2WorkerArmTest {
                        () -> leader().kvStore().getTyped(new AetherKey.ActivationDirectiveKey(workerId), AetherValue.class).isPresent());
         awaitCondition(workerId.id() + " reports ready", worker::isReady);
         awaitCondition("B4: the node FSM of " + workerId.id() + " is active", () -> nodeFsmActive(worker));
-        // The B4 edge (QuorumEstablished) and the B3 level heal (ReconcileActivation) are two entry paths that race: the 5 s heal tick may land between the
-        // engine's passive-client-ready flag and the B4 hook, and then the heal enters and the edge is skipped_active. Which wins is not a property of the
-        // worker arm (#2842), so this pins what is: the node FSM entered exactly once. That the genuine edge enters is pinned deterministically in
-        // Fsm2SystemTest (aWorker_entersOnThePassiveClientSwitch_andStepsOnlyItsOwnGoal).
-        assertThat(appliedNodeInputs(worker, "QuorumEstablished") + appliedNodeInputs(worker, "ReconcileActivation"))
-                .as("B4/B3: %s entered the node FSM exactly once, by the edge or the level heal", workerId.id())
-                .isEqualTo(1.0);
+        // Two things here are races, and neither is a property of the worker arm (#2842). The B4 edge (QuorumEstablished) and the B3 level heal
+        // (ReconcileActivation) are two entry paths: the 5 s heal tick can land between the engine's passive-client-ready flag and the B4 hook, and then
+        // the heal enters and the edge is skipped_active. And the interpreter publishes the model (active) before it dispatches the step's Metric effect,
+        // so a counter read the moment the node FSM is active can still be 0. So: await the entry to be counted, by either path, and pin that it was entered
+        // exactly once. That the genuine edge enters is pinned deterministically in Fsm2SystemTest (aWorker_entersOnThePassiveClientSwitch_andStepsOnlyItsOwnGoal).
+        awaitCondition("B4/B3: the entry of " + workerId.id() + " is counted", () -> nodeEntries(worker) > 0.0);
+        assertThat(nodeEntries(worker)).as("B4/B3: %s entered the node FSM exactly once, by the edge or the level heal", workerId.id())
+                                       .isEqualTo(1.0);
         assertThat(worker.deploymentWiring().system().map(Fsm2System::worker)).as("the worker runs the node half").isEqualTo(Option.some(true));
 
         return workerId;
@@ -132,6 +133,10 @@ class EmberFsm2WorkerArmTest {
         return Option.from(workers.stream()
                                   .filter(worker -> desiredFor(leader(), worker))
                                   .findFirst());
+    }
+
+    private static double nodeEntries(AetherNode node) {
+        return appliedNodeInputs(node, "QuorumEstablished") + appliedNodeInputs(node, "ReconcileActivation");
     }
 
     private static double appliedNodeInputs(AetherNode node, String input) {
