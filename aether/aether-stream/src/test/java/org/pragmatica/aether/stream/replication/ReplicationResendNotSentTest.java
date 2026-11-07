@@ -196,6 +196,26 @@ class ReplicationResendNotSentTest {
         assertThat(pendingResends()).as("no re-send past the deadline").isEmpty();
     }
 
+    /// (b) The backoff doubles from the first backoff and is capped at MAX_RESEND_BACKOFF, so a long refusal does not stretch
+    /// the gap between attempts past it.
+    @Test
+    void replicateEvent_capsTheBackoff_whenRefusedForLong() {
+        transport.refuseAll();
+        manager.replicateEvent(STREAM, PARTITION, OFFSET, new byte[]{1}, 1L, Epoch.ZERO);
+
+        var delays = new ArrayList<TimeSpan>();
+
+        for (int guard = 0; !pendingResends().isEmpty(); guard++) {
+            assertThat(guard).as("re-sends are bounded").isLessThan(100);
+            delays.add(pendingResends().getFirst().delay());
+            runNextResend();
+        }
+
+        assertThat(delays).first().isEqualTo(DefaultReplicationManager.FIRST_RESEND_BACKOFF);
+        assertThat(delays).contains(DefaultReplicationManager.MAX_RESEND_BACKOFF);
+        assertThat(delays).allSatisfy(delay -> assertThat(delay.nanos()).isLessThanOrEqualTo(DefaultReplicationManager.MAX_RESEND_BACKOFF.nanos()));
+    }
+
     /// (b) The deadline boundary: a re-send whose backoff equals the time left would leave exactly at the deadline, when the
     /// publish's own timer fires, so it is not scheduled. Here 40 ms remain after the second refusal and the next backoff is 40 ms.
     @Test
