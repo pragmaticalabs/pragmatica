@@ -49,6 +49,12 @@ import java.util.Map;
 /// - **Blocks are advisory, numbers are not.** A subsystem that outgrows its block takes the next free
 ///   slot in the reserved tail rather than pushing its neighbours along.
 ///
+/// ## The range ledger
+/// `wire-tag-ranges.txt`, next to this file, lists who may take which numbers. **Reserve first, then
+/// allocate inside the range**: commit your ledger line before you pin a tag. `SystemTagsLedgerTest` fails
+/// a pin outside every reservation and any two overlapping reservations. This file stays the single
+/// authority for the numbers; the ledger only keeps parallel lanes from picking the same free one.
+///
 /// ## The 1-byte window
 /// Tags are VLQ-encoded, so `0..127` costs ONE byte on the wire, `128..16383` costs two. `0..20` are
 /// the framework primitives (`SliceCodec.TAG_*`). `21..109` is spent on the cluster's own
