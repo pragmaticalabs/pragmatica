@@ -796,16 +796,16 @@ record PlacementReconciler(NodeId self,
 
     /// rc6 f5c: the first location of `candidates` by [SourceRanking] (no deadline, no `max_nodes` counts: Lane B).
     /// With every new profile field at its default this is today's [#locationOrder()] first element.
-    private java.util.Optional<CommunityPlacement.Location> bestRanked(ClusterBootstrapConfig config,
+    private Option<CommunityPlacement.Location> bestRanked(ClusterBootstrapConfig config,
                                                                        List<CommunityPlacement.Location> candidates) {
-        return SourceRanking.rank(candidates,
-                                  config.sources(),
-                                  NodeRole.WORKER,
-                                  SelectionRequest.selectionRequest(Option.none(),
-                                                                    clock.getAsLong()),
-                                  Option.none())
-                            .stream()
-                            .findFirst();
+        return Option.from(SourceRanking.rank(candidates,
+                                              config.sources(),
+                                              NodeRole.WORKER,
+                                              SelectionRequest.selectionRequest(Option.none(),
+                                                                                clock.getAsLong()),
+                                              Option.none())
+                                        .stream()
+                                        .findFirst());
     }
 
     /// rc6 f5c §2.4: the unavailable locations whose discretionary share may spill to the others. A location whose
@@ -1380,7 +1380,7 @@ record PlacementReconciler(NodeId self,
                                         .stream()
                                         .filter(location -> !unavailable.contains(location))
                                         .filter(location -> matching(members, location).size() < effective.get(location))
-                                        .toList());
+                                        .toList()).toOptional();
         var probe = ordinary.isPresent()
                     ? java.util.Optional.<CommunityPlacement.Location> empty()
                     : bestRanked(config,
@@ -1393,7 +1393,7 @@ record PlacementReconciler(NodeId self,
                                                                     snapshot))
                                        .filter(location -> matching(members, location).size() < policy.desiredCounts()
                                                                                                       .get(location))
-                                       .toList());
+                                       .toList()).toOptional();
         var probingSpill = new HashSet<>(spill);
 
         probe.ifPresent(probingSpill::remove);
