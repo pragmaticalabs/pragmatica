@@ -531,32 +531,52 @@ class RemoteTierS3IntegrationTest {
 
     /// v2829 FIX 5: a touch racing a delete of the same block never brings the block back. Touch then delete leaves it
     /// absent, and so does delete then touch (the touch finds nothing and creates nothing); an overlap must end the same
-    /// way. An unconditional copy onto itself was not ordered against the delete on MinIO: 36 of 40 rounds left the object
-    /// in the bucket.
+    /// way. Every round overlaps the two at the worst point: the delete is sent the moment the touch sends its copy, after
+    /// the touch's HEAD. An unconditional copy onto itself was not ordered against the delete on MinIO: 35 of 50 rounds
+    /// left the object in the bucket.
     @Nested
     class TouchRacingDelete {
         private static final int ROUNDS = 50;
 
         @Test
         void touchRacingDelete_neverResurrectsTheBlock() {
-            var resurrected = IntStream.range(0, ROUNDS).filter(this::resurrects).boxed().toList();
+            var http = new DeleteOnCopyHttp(JdkHttpOperations.jdkHttpOperations());
+            var racing = durableTier(clientWith(http), prefix);
+            var resurrected = IntStream.range(0, ROUNDS).filter(round -> resurrects(racing, http, round)).boxed().toList();
 
+            assertThat(http.deletes).as("every round raced a delete against the copy").hasSize(ROUNDS);
             assertThat(resurrected).as("rounds that left the deleted block in the bucket, of %d", ROUNDS).isEmpty();
         }
 
-        private boolean resurrects(int round) {
+        private boolean resurrects(RemoteTier racing, DeleteOnCopyHttp http, int round) {
             var content = ("touch racing delete " + round).getBytes(StandardCharsets.UTF_8);
             var id = blockIdOf(content);
 
             tier.put(id, content).await().onFailure(cause -> fail(cause.message()));
-
-            var touch = tier.touch(id);
-            var delete = tier.delete(id);
-
-            touch.await().onFailure(cause -> fail("round " + round + ": touch failed: " + cause.message()));
-            delete.await().onFailure(cause -> fail("round " + round + ": delete failed: " + cause.message()));
+            racing.touch(id).await().onFailure(cause -> fail("round " + round + ": touch failed: " + cause.message()));
+            http.deletes.getLast().await().onFailure(cause -> fail("round " + round + ": delete failed: " + cause.message()));
 
             return s3Client.headObject(keyOf(id)).await().<Boolean>fold(cause -> fail(cause.message()), held -> held);
+        }
+    }
+
+    /// Delegates to a real transport; the moment a copy is sent, sends a delete of its source key without waiting for it.
+    static final class DeleteOnCopyHttp implements HttpOperations {
+        private final HttpOperations delegate;
+        final List<Promise<Unit>> deletes = new CopyOnWriteArrayList<>();
+
+        DeleteOnCopyHttp(HttpOperations delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public <T> Promise<HttpResult<T>> send(HttpRequest request, BodyHandler<T> handler) {
+            request.headers()
+                   .firstValue("x-amz-copy-source")
+                   .map(source -> source.substring(BUCKET.length() + 1))
+                   .ifPresent(key -> deletes.add(s3Client.deleteObject(key)));
+
+            return delegate.send(request, handler);
         }
     }
 }
