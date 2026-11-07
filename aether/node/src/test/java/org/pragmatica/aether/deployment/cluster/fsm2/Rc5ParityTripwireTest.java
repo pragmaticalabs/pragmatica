@@ -155,6 +155,50 @@ class Rc5ParityTripwireTest {
         assertThat(w.present(live)).isTrue();
     }
 
+    /// R-CF.15, the removals of a departed node's topic rows are in the DEPARTURE batch itself, at their committed values, as legacy's node-removal
+    /// batch carries them. Red when: the departure draft stops adding `topicRowRemovals` (C17b would remove the rows a batch later, so the
+    /// end-state tests above cannot tell), or the mirror stops holding the rows' values (`Outbox.mirrored` has no topic arm, so the batch reads as moved).
+    @Test
+    void theDepartureBatch_carriesTheTopicRowRemovals_atTheirCommittedValues_andReadsAsUnmoved() {
+        var w = departingNodeWithTopicRows();
+
+        w.h.policy = FsmHarness.SettlePolicy.HOLD;
+        w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
+
+        var m = w.h.model();
+        var draft = m.submitted.values()
+                               .stream()
+                               .flatMap(submitted -> submitted.drafts().stream())
+                               .filter(d -> d.kind() == ClusterModel.SubmitKind.DEPARTURE)
+                               .findFirst()
+                               .orElseThrow();
+        var subscription = TopicSubscriptionValue.topicSubscriptionValue(CORE_2, TopicTier.ANY);
+        var publisher = TopicPublisherValue.topicPublisherValue(CORE_2, TopicTier.EPHEMERAL);
+
+        assertThat(Outbox.mirrored(m, SUBSCRIPTION)).as("the mirror holds the subscription row").isEqualTo(Option.some(subscription));
+        assertThat(Outbox.mirrored(m, PUBLISHER)).as("the mirror holds the publisher row").isEqualTo(Option.some(publisher));
+        assertThat(draft.mutations().stream().filter(mutation -> mutation.key().equals(SUBSCRIPTION)).map(mutation -> mutation.expected()))
+            .as("the departure batch removes the subscription row at its committed value").containsExactly(Option.some(subscription));
+        assertThat(draft.mutations().stream().filter(mutation -> mutation.key().equals(PUBLISHER)).map(mutation -> mutation.expected()))
+            .as("the departure batch removes the publisher row at its committed value").containsExactly(Option.some(publisher));
+        assertThat(Outbox.moved(m, draft)).as("nothing moved since the batch was derived").isFalse();
+    }
+
+    /// The mirror's remove side, read directly: a topic row the node removed leaves BOTH the row map and the by-node index. Red when: either
+    /// `Indexer.indexRemove` line for topic rows is deleted (the end-state test above cannot see a stale entry that the departure batch skips).
+    @Test
+    void aRemovedTopicRow_leavesTheRowMap_andTheByNodeIndex() {
+        var w = departingNodeWithTopicRows();
+        var m = w.h.model();
+
+        assertThat(Idx.members(m.topicRowsByNode, CORE_2).toList()).as("control: both rows indexed under the node").containsExactlyInAnyOrder(SUBSCRIPTION, PUBLISHER);
+        w.h.seedRemove(SUBSCRIPTION);
+        w.h.seedRemove(PUBLISHER);
+
+        assertThat(List.of(m.topicRows.get(SUBSCRIPTION).isPresent(), m.topicRows.get(PUBLISHER).isPresent())).as("the row map").containsExactly(false, false);
+        assertThat(Idx.members(m.topicRowsByNode, CORE_2).toList()).as("the by-node index").isEmpty();
+    }
+
     // -- #241: the committed community policy in derived-community assignment ---------------------------------------------
     // Legacy (rc5 2bb886e86, 31d5989db): `ClusterDeploymentState.assignDerivedCommunity` reads the COMMITTED `[community_policy]`
     // (`CommunityPolicyView`): `max_size` is the derived community's target size, and `growth = true` routes the join through
