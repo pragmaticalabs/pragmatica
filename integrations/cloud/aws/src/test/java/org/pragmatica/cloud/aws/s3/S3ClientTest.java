@@ -495,6 +495,16 @@ class S3ClientTest {
         }
 
         @Test
+        void listObjectStats_anObjectWithoutLastModified_failsWithParseError() {
+            testHttp.respondWithString(200, LIST_OBJECTS_RESPONSE.replaceFirst("<LastModified>[^<]*</LastModified>", ""));
+
+            minioClient.listObjectStats("data/", Option.none(), 10)
+                       .await()
+                       .onSuccess(listing -> fail("Expected a parse error, got " + listing))
+                       .onFailure(cause -> assertThat(cause).isInstanceOf(S3Error.ParseError.class));
+        }
+
+        @Test
         void listObjectStats_empty_isAnEmptyLastPage() {
             testHttp.respondWithString(200, EMPTY_LIST_RESPONSE);
 

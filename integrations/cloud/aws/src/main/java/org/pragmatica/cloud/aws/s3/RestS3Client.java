@@ -312,9 +312,11 @@ record RestS3Client(S3Config config,
     }
 
     private static Result<ObjectStat> statFromHeaders(HttpResult<Unit> result, String key) {
-        return Result.all(header(result, "Content-Length", key).flatMap(RestS3Client::parseSize),
-                          header(result, "Last-Modified", key).flatMap(RestS3Client::parseHttpDate))
-                     .map((size, modified) -> ObjectStat.objectStat(key, size, modified));
+        return header(result, "Content-Length", key).flatMap(RestS3Client::parseSize)
+                                                   .flatMap(size -> header(result, "Last-Modified", key).flatMap(RestS3Client::parseHttpDate)
+                                                                                                       .map(modified -> ObjectStat.objectStat(key,
+                                                                                                                                              size,
+                                                                                                                                              modified)));
     }
 
     private static Result<String> header(HttpResult<Unit> result, String name, String key) {
@@ -403,10 +405,15 @@ record RestS3Client(S3Config config,
     }
 
     private static Result<ObjectStat> objectStat(String contents) {
-        return Result.all(element(contents, KEY_PATTERN),
-                          element(contents, SIZE_PATTERN).flatMap(RestS3Client::parseSize),
-                          element(contents, LAST_MODIFIED_PATTERN).flatMap(RestS3Client::parseIsoDate))
-                     .map(ObjectStat::objectStat);
+        return element(contents, KEY_PATTERN).flatMap(key -> element(contents, SIZE_PATTERN).flatMap(RestS3Client::parseSize)
+                                                                                    .flatMap(size -> objectStatOf(contents,
+                                                                                                                  key,
+                                                                                                                  size)));
+    }
+
+    private static Result<ObjectStat> objectStatOf(String contents, String key, long size) {
+        return element(contents, LAST_MODIFIED_PATTERN).flatMap(RestS3Client::parseIsoDate)
+                                                       .map(modified -> ObjectStat.objectStat(key, size, modified));
     }
 
     private static Result<String> element(String contents, Pattern pattern) {
