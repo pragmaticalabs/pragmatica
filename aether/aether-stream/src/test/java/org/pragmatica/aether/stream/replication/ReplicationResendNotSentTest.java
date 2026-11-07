@@ -8,10 +8,12 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
@@ -257,6 +259,41 @@ class ReplicationResendNotSentTest {
             case "connectionDead" -> node -> Promise.success(new WriteOutcome.ConnectionDead(node));
             default -> _ -> Causes.cause("transport failed").promise();
         };
+    }
+
+    /// (h) Production wiring: the manager the product builds (public factory, real monotonic clock, shared scheduler)
+    /// stops re-sending a transport that refuses every write once the ack deadline has passed. Every other test here
+    /// drives the 5-arg seam with a hand clock, so only this one reaches the constructor's `System::nanoTime`: with a
+    /// frozen clock the deadline never arrives and a stalled lane is re-sent every 500 ms for ever. The wait is the
+    /// publish's own ack timeout (no guessed sleep before the snapshot); the settle and quiet windows are longer than the
+    /// 500 ms backoff cap, so a live re-send loop adds at least two sends inside the quiet window.
+    @Test
+    void replicateEvent_stopsResending_afterTheAckDeadline_withTheProductionClock() throws Exception {
+        var sends = new AtomicInteger();
+        ReplicationTransport refusing = (target, message) -> {
+            sends.incrementAndGet();
+            return Promise.success(new WriteOutcome.BackpressureRefused(target));
+        };
+        var production = ReplicationManager.replicationManager(OWNER, registry, refusing);
+        var timedOut = new CountDownLatch(1);
+
+        try {
+            production.replicateEvent(STREAM, PARTITION, OFFSET, new byte[]{1}, 1L, Epoch.ZERO);
+            production.awaitReplication(STREAM, PARTITION, OFFSET, 1)
+                      .onResultRun(timedOut::countDown);
+
+            assertThat(timedOut.await(15, TimeUnit.SECONDS)).as("the publish's ack timer fired").isTrue();
+            Thread.sleep(700);
+
+            var atDeadline = sends.get();
+
+            Thread.sleep(1_300);
+
+            assertThat(sends.get()).as("no re-send after the ack deadline").isEqualTo(atDeadline);
+            assertThat(atDeadline).as("re-sent, and bounded by the deadline").isBetween(3, 20);
+        } finally {
+            production.close();
+        }
     }
 
     private List<Scheduled> pendingResends() {
