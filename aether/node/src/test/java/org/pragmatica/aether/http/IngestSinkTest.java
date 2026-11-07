@@ -87,7 +87,7 @@ class IngestSinkTest {
         var head = TestRequest.post(UPLOAD, body.contentType(), bytes.length);
         var sink = harness.stream(head);
 
-        assertThat(feed(sink, bytes, randomSizes(3))).as("every chunk is accepted; only the end is wrong").isEmpty();
+        assertThat(feed(sink, bytes, randomSizes(3)).isEmpty()).as("every chunk is accepted; only the end is wrong").isTrue();
         assertThat(harness.stored()).as("control: the file was committed").hasSize(1);
 
         sink.complete(head, response);
