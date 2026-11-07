@@ -258,4 +258,36 @@ class PageTreeTest {
         assertThat(CatalogPage.fromBytes(ContentEnvelope.wrap(ContentEnvelope.ENTRY, new byte[]{1})).isFailure()).isTrue();
         assertThat(CatalogPage.fromBytes(CatalogPage.leaf(List.of()).toBytes().unwrap()).isFailure()).as("an empty page").isTrue();
     }
+
+    /// The kind byte is the only thing separating a page from a root: a valid page body under the root kind is refused by
+    /// the page decoder, a valid root body under the page kind by the root decoder, and the kinds are distinct.
+    @Test
+    void pageAndRootKinds_areNotInterchangeable() {
+        var page = CatalogPage.leaf(List.of(CatalogPage.Cell.cell("a", new byte[]{1}))).toBytes().unwrap();
+        var root = CatalogRoot.catalogRoot(5, some(new BlockId(new byte[Sha256.LENGTH])), none(), 77, 3).toBytes().unwrap();
+        var pageAsRoot = page.clone();
+        var rootAsPage = root.clone();
+
+        pageAsRoot[ContentEnvelope.marker().length] = ContentEnvelope.ROOT;
+        rootAsPage[ContentEnvelope.marker().length] = ContentEnvelope.PAGE;
+
+        assertThat(ContentEnvelope.PAGE).isNotEqualTo(ContentEnvelope.ROOT);
+        assertThat(CatalogPage.fromBytes(pageAsRoot).isFailure()).as("page body under the root kind").isTrue();
+        assertThat(CatalogRoot.fromBytes(rootAsPage).isFailure()).as("root body under the page kind").isTrue();
+        assertThat(CatalogRoot.fromBytes(page).isFailure()).as("a page into the root decoder").isTrue();
+        assertThat(CatalogPage.fromBytes(root).isFailure()).as("a root into the page decoder").isTrue();
+    }
+
+    /// The refusal names what failed: a page refusal says page, a root refusal says root.
+    @Test
+    void codecRefusals_nameTheirBlockKind() {
+        var garbage = new byte[]{1, 2, 3};
+        var pageCause = ContentFixture.failureOf(CatalogPage.fromBytes(garbage).async());
+        var rootCause = ContentFixture.failureOf(CatalogRoot.fromBytes(garbage).async());
+
+        assertThat(pageCause).isEqualTo(ContentStoreError.General.CATALOG_PAGE_PARSE_FAILED);
+        assertThat(pageCause.message()).contains("catalog page");
+        assertThat(rootCause).isEqualTo(ContentStoreError.General.CATALOG_ROOT_PARSE_FAILED);
+        assertThat(rootCause.message()).contains("catalog root");
+    }
 }
