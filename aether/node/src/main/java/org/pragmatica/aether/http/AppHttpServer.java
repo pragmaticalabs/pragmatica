@@ -1039,9 +1039,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private Option<String> remoteServingArtifact(RouteTable routeTable, String method, String normalizedPath) {
-        return findMatchingRemoteRoute(routeTable.remoteRoutes(),
-                                       method,
-                                       normalizedPath).flatMap(AppHttpServerAdapter::publishingArtifact);
+        return findMatchingRemoteRoute(routeTable.remoteRoutes(), method, normalizedPath).flatMap(AppHttpServerAdapter::publishingArtifact);
     }
 
     private static Option<String> publishingArtifact(HttpRouteRegistry.RouteInfo route) {
