@@ -13,6 +13,7 @@ import org.pragmatica.aether.slice.topology.SliceTopology.ResourceDep;
 import org.pragmatica.aether.slice.topology.SliceTopology.TopicPub;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.source.MapConfigSource;
+import org.pragmatica.config.source.TomlConfigSource;
 import org.pragmatica.lang.Option;
 
 import java.util.HashMap;
@@ -223,6 +224,146 @@ class ConfigSectionPreflightValidatorTest {
                                                                   Option.some(providerWithSections("database.orders")));
 
             result.onFailure(cause -> fail("[database.orders] is in the node composite — expected success but got: " + cause.message()));
+        }
+    }
+
+    /// #811: a topic section that EXISTS is bound through the activation binder at deploy, so an unknown or dashed key
+    /// fails the deploy, naming the slice, the section, the key and the suggestion. An ABSENT section stays legal (#396).
+    @Nested
+    class TopicSections {
+        private static final String DASHED_KEY_TOML = """
+                [order-events]
+                topic_name = "order-events"
+                replication-factor = 3
+                """;
+        private static final String WELL_FORMED_TOML = """
+                [order-events]
+                topic_name = "order-events"
+                durability = "durable"
+                partitions = 2
+                """;
+        private static final String EPHEMERAL_WITH_KNOB_TOML = """
+                [order-events]
+                topic_name = "order-events"
+                partitions = 2
+                """;
+
+        private static SliceTopology topologyWithSubscribeTopic(String sliceName, String topicConfigSection) {
+            var topicSub = new SliceTopology.TopicSub(topicConfigSection,
+                                                      topicConfigSection,
+                                                      "onOrder",
+                                                      "com.example.OrderPlaced",
+                                                      false);
+
+            return new SliceTopology(sliceName, "com.example:app:1.0.0", List.of(), List.of(), List.of(), List.of(), List.of(topicSub));
+        }
+
+        @Test
+        void validate_dashedKeyInPublishedTopicSection_failsNamingKeyAndSuggestion() {
+            var topology = topologyWithPublishTopic("orders-api", "order-events");
+            var result = ConfigSectionPreflightValidator.validate(List.of(jarShipping(ORDERS_ARTIFACT, DASHED_KEY_TOML, topology)),
+                                                                  Option.some(providerWithSections()));
+
+            result.onSuccess(_ -> fail("a dashed key in a topic section must refuse the deploy"))
+                  .onFailure(cause -> assertThat(cause.message()).contains("orders-api")
+                                                                  .contains("[order-events]")
+                                                                  .contains("replication-factor")
+                                                                  .contains("replication_factor"));
+        }
+
+        @Test
+        void validate_dashedKeyInSubscribedTopicSection_fails() {
+            var topology = topologyWithSubscribeTopic("billing-api", "order-events");
+            var result = ConfigSectionPreflightValidator.validate(List.of(jarShipping(BILLING_ARTIFACT, DASHED_KEY_TOML, topology)),
+                                                                  Option.some(providerWithSections()));
+
+            result.onSuccess(_ -> fail("a dashed key in a subscribed topic section must refuse the deploy"))
+                  .onFailure(cause -> assertThat(cause.message()).contains("billing-api")
+                                                                  .contains("replication-factor"));
+        }
+
+        /// Without a node composite the loader still binds from the jar's own layer (#1564), so the check does too.
+        @Test
+        void validate_dashedKeyInJarLayer_failsWithoutNodeComposite() {
+            var topology = topologyWithPublishTopic("orders-api", "order-events");
+            var result = ConfigSectionPreflightValidator.validate(List.of(jarShipping(ORDERS_ARTIFACT, DASHED_KEY_TOML, topology)),
+                                                                  Option.none());
+
+            result.onSuccess(_ -> fail("the jar layer is bound at load even with no node composite — expected failure"))
+                  .onFailure(cause -> assertThat(cause.message()).contains("replication-factor"));
+        }
+
+        /// The key is held only by the node composite (the jar ships no resources.toml), so a check that does not read
+        /// the composite layer would fail open here.
+        @Test
+        void validate_dashedKeyInNodeCompositeOnly_fails() {
+            var topology = topologyWithPublishTopic("orders-api", "order-events");
+            var source = TomlConfigSource.tomlConfigSource(DASHED_KEY_TOML).unwrap();
+            var composite = ConfigurationProvider.builder().withSource(source).build();
+            var result = ConfigSectionPreflightValidator.validate(List.of(jarWithoutResourcesToml(topology)),
+                                                                  Option.some(composite));
+
+            result.onSuccess(_ -> fail("a dashed key held by the node composite must refuse the deploy"))
+                  .onFailure(cause -> assertThat(cause.message()).contains("orders-api")
+                                                                  .contains("replication-factor"));
+        }
+
+        @Test
+        void validate_wellFormedTopicSection_succeeds() {
+            var topology = topologyWithPublishTopic("orders-api", "order-events");
+            var result = ConfigSectionPreflightValidator.validate(List.of(jarShipping(ORDERS_ARTIFACT, WELL_FORMED_TOML, topology)),
+                                                                  Option.some(providerWithSections()));
+
+            result.onFailure(cause -> fail("control: a well-formed topic section must pass but got: " + cause.message()));
+        }
+
+        /// A declaration the [org.pragmatica.aether.resource.TopicConfig] factory refuses (a stream knob on an ephemeral
+        /// topic, #576) is the activation refusal too, so it is refused here.
+        @Test
+        void validate_streamKnobOnEphemeralTopicSection_fails() {
+            var topology = topologyWithPublishTopic("orders-api", "order-events");
+            var result = ConfigSectionPreflightValidator.validate(List.of(jarShipping(ORDERS_ARTIFACT, EPHEMERAL_WITH_KNOB_TOML, topology)),
+                                                                  Option.some(providerWithSections()));
+
+            result.onSuccess(_ -> fail("an inert stream knob on an ephemeral topic must refuse the deploy"))
+                  .onFailure(cause -> assertThat(cause.message()).contains("orders-api")
+                                                                  .contains("partitions"));
+        }
+
+        /// Publisher and subscriber of one section in one slice: one refusal, not two.
+        @Test
+        void validate_sameSectionPublishedAndSubscribedInOneSlice_isRefusedOnce() {
+            var publisher = new TopicPub("order-events", "order-events", "com.example.OrderPlaced");
+            var subscriber = new SliceTopology.TopicSub("order-events", "order-events", "onOrder", "com.example.OrderPlaced", false);
+            var topology = new SliceTopology("orders-api", "com.example:app:1.0.0", List.of(), List.of(), List.of(), List.of(publisher), List.of(subscriber));
+            var result = ConfigSectionPreflightValidator.validate(List.of(jarShipping(ORDERS_ARTIFACT, DASHED_KEY_TOML, topology)),
+                                                                  Option.some(providerWithSections()));
+
+            result.onSuccess(_ -> fail("expected failure"))
+                  .onFailure(cause -> assertThat(cause.message().split("\\[order-events\\] refused", -1)).hasSize(2));
+        }
+
+        /// Every refusing section is reported, not the first.
+        @Test
+        void validate_twoSlicesWithBadTopicSections_reportsBoth() {
+            var orders = topologyWithPublishTopic("orders-api", "order-events");
+            var billing = topologyWithSubscribeTopic("billing-api", "order-events");
+            var result = ConfigSectionPreflightValidator.validate(List.of(jarShipping(ORDERS_ARTIFACT, DASHED_KEY_TOML, orders),
+                                                                          jarShipping(BILLING_ARTIFACT, DASHED_KEY_TOML, billing)),
+                                                                  Option.some(providerWithSections()));
+
+            result.onSuccess(_ -> fail("expected failure"))
+                  .onFailure(cause -> assertThat(cause.message()).contains("orders-api")
+                                                                  .contains("billing-api"));
+        }
+
+        /// Fail-open, as for resource sections: no node composite and no jar layer means nothing to bind from.
+        @Test
+        void validate_noViewAtAll_failsOpen() {
+            var topology = topologyWithPublishTopic("orders-api", "order-events");
+            var result = ConfigSectionPreflightValidator.validate(List.of(jarWithoutResourcesToml(topology)), Option.none());
+
+            result.onFailure(cause -> fail("Expected fail-open success but got: " + cause.message()));
         }
     }
 }

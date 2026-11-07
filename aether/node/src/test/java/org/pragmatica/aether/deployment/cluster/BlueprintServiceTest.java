@@ -209,6 +209,121 @@ class BlueprintServiceTest {
         }
     }
 
+    /// #811 (NT-176b): a topic section holding a dashed key is refused at DEPLOY (`publish`) AND at the validate route's
+    /// service (`validateDeployable`), naming the key and the suggestion, before any slice activates. The validate arm is
+    /// stateless: nothing is stored. The control (a well-formed topic section) passes through both.
+    @Nested
+    class TopicSectionPreflight {
+        private static final Artifact TOPIC_SLICE = Artifact.artifact("org.example:topic-slice:1.0.0").unwrap();
+        private static final String DSL = """
+                id = "org.example:topic-app:1.0.0"
+
+                [[slices]]
+                artifact = "org.example:topic-slice:1.0.0"
+                instances = 3
+                """;
+
+        @TempDir
+        Path tempDir;
+
+        private BlueprintService serviceOver(Path sliceJar) {
+            var liveStore = new TestKVStore();
+            var liveCluster = new TestClusterNode();
+
+            liveCluster.setStore(liveStore);
+            Repository liveRepository = artifact -> TOPIC_SLICE.equals(artifact)
+                                                    ? Result.lift(Causes::fromThrowable, () -> sliceJar.toUri().toURL())
+                                                            .flatMap(url -> Location.location(artifact, url))
+                                                            .async()
+                                                    : ((org.pragmatica.aether.slice.repository.Repository.Absent) () -> "Artifact not present in local repository").promise();
+
+            return BlueprintService.blueprintService(liveCluster, liveStore, liveRepository);
+        }
+
+        @Test
+        void blueprintWithDashedKeyInTopicSectionRefusedAtDeploy() throws IOException {
+            var service = serviceOver(writeSliceJar("[order-events]\ntopic_name = \"order-events\"\nreplication-factor = 3\n"));
+
+            service.publish(DSL)
+                   .await()
+                   .onSuccess(_ -> fail("a dashed key in a topic section must refuse the deploy"))
+                   .onFailure(cause -> assertThat(cause.message()).contains("order-events")
+                                                                  .contains("replication-factor")
+                                                                  .contains("replication_factor"));
+        }
+
+        @Test
+        void blueprintWithDashedKeyInTopicSectionRefusedAtValidate() throws IOException {
+            var service = serviceOver(writeSliceJar("[order-events]\ntopic_name = \"order-events\"\nreplication-factor = 3\n"));
+
+            service.validateDeployable(DSL)
+                   .await()
+                   .onSuccess(_ -> fail("a dashed key in a topic section must refuse the validate route"))
+                   .onFailure(cause -> assertThat(cause.message()).contains("order-events")
+                                                                  .contains("replication-factor")
+                                                                  .contains("replication_factor"));
+            assertThat(service.list()).as("validate stores nothing").isEmpty();
+        }
+
+        @Test
+        void wellFormedTopicSection_isAdmittedByDeployAndValidate() throws IOException {
+            var service = serviceOver(writeSliceJar("[order-events]\ntopic_name = \"order-events\"\n"));
+
+            service.validateDeployable(DSL)
+                   .await()
+                   .onFailure(cause -> fail("control: a well-formed topic section must validate, got: " + cause.message()));
+            assertThat(service.list()).as("validate stores nothing").isEmpty();
+            service.publish(DSL)
+                   .await()
+                   .onFailure(cause -> fail("control: a well-formed topic section must deploy, got: " + cause.message()));
+        }
+
+        @Test
+        void validateDeployable_unparseableDsl_answersTheParseRefusal() {
+            var service = serviceOver(tempDir.resolve("absent.jar"));
+
+            service.validateDeployable("invalid blueprint")
+                   .await()
+                   .onSuccess(_ -> fail("Expected failure"))
+                   .onFailure(cause -> assertThat(cause.message()).isNotEmpty());
+        }
+
+        private Path writeSliceJar(String resourcesToml) throws IOException {
+            var manifest = new Manifest();
+            var attributes = manifest.getMainAttributes();
+
+            attributes.put(Attributes.Name.MANIFEST_VERSION, "1.0");
+            attributes.putValue(SliceManifest.SLICE_ARTIFACT_ATTR, TOPIC_SLICE.asString());
+            attributes.putValue(SliceManifest.SLICE_CLASS_ATTR, "org.example.topic.TopicSlice");
+            attributes.putValue(SliceManifest.ENVELOPE_VERSION_ATTR, "1000");
+
+            var target = tempDir.resolve("topic-slice-1.0.0.jar");
+
+            try (var out = new JarOutputStream(Files.newOutputStream(target), manifest)) {
+                out.putNextEntry(new ZipEntry("org/example/topic/"));
+                out.closeEntry();
+                out.putNextEntry(new ZipEntry("META-INF/slice/TopicSlice.manifest"));
+                out.write("""
+                          slice.name=TopicSlice
+                          publish.topics.count=1
+                          publish.topic.0.config=order-events
+                          publish.topic.0.messageType=org.example.OrderPlaced
+                          reactive.count=1
+                          reactive.0.category=subscription
+                          reactive.0.config=order-events
+                          reactive.0.method=onOrder
+                          reactive.0.messageType=org.example.OrderPlaced
+                          """.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                out.closeEntry();
+                out.putNextEntry(new ZipEntry("META-INF/resources.toml"));
+                out.write(resourcesToml.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                out.closeEntry();
+            }
+
+            return target;
+        }
+    }
+
     @Nested
     class PublishTests {
         // Note: publish() requires actual JAR files for dependency resolution.

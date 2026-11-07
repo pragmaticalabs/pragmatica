@@ -24,11 +24,12 @@ import static org.pragmatica.aether.deployment.validation.MissingConfigSection.m
 /// target cluster, checked ONCE up front across the whole blueprint instead of failing later, one
 /// node at a time, inside [org.pragmatica.aether.resource.SpiResourceProvider.loadConfig].
 ///
-/// Scope is deliberately narrow: only [SliceTopology#resources()] (database/cache/HTTP/idempotency-
-/// style resources) is checked. `publishes()`/`subscribes()` (stream/pub-sub resources) are excluded —
-/// that subsystem already has its own validation stage ([StreamResourceValidator]) with different,
-/// deliberately non-gating semantics, and folding it into this hard-fail check would be scope creep
-/// beyond #547's acceptance criteria.
+/// Section PRESENCE is checked only for [SliceTopology#resources()] (database/cache/HTTP/idempotency-
+/// style resources). A topic section ([SliceTopology#publishes()]/[SliceTopology#subscribes()]) is never
+/// required to exist — an absent one provisions an ephemeral topic (#396) — but one that exists is bound
+/// through the activation binder by [TopicSectionPreflight] (#811), so an unknown or dashed key fails the
+/// deploy instead of the slice activation. Stream sections have their own validation stage
+/// ([StreamResourceValidator]) with different, deliberately non-gating semantics.
 /// The implicit `[json]` section of a slice with HTTP routes (#2378) is outside this check by construction: the slice
 /// processor writes no `resource.N` entry for it, so it never appears in [SliceTopology#resources()], and its absence
 /// is the defaults rather than a missing section.
@@ -75,10 +76,9 @@ public interface ConfigSectionPreflightValidator {
 
     private static Stream<Result<Unit>> checkSliceJar(SliceJar sliceJar, Option<ConfigurationProvider> nodeComposite) {
         var loaderView = nodeComposite.map(composite -> loaderView(sliceJar, composite));
+        var resources = sliceJar.topologies().stream().flatMap(topology -> checkTopology(topology, loaderView));
 
-        return sliceJar.topologies()
-                       .stream()
-                       .flatMap(topology -> checkTopology(topology, loaderView));
+        return Stream.concat(resources, TopicSectionPreflight.check(sliceJar, nodeComposite));
     }
 
     private static Stream<Result<Unit>> checkTopology(SliceTopology topology,
