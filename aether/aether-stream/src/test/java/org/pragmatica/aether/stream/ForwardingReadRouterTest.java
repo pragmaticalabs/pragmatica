@@ -8,6 +8,7 @@ package org.pragmatica.aether.stream;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.ReadPreference;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.ForwardingReadRouter.LocalReader;
 import org.pragmatica.aether.stream.ForwardingReadRouter.OwnerResolver;
 import org.pragmatica.aether.stream.forward.RawEventDto;
@@ -171,6 +172,100 @@ class ForwardingReadRouterTest {
               .onSuccess(events -> assertThat(events).containsExactly("local"));
     }
 
+    /// PR-2f S2 (know `e10cf838c9`): a copy behind the owner forwards a GOVERNOR read without reading local.
+    @Test
+    void route_forwardsToOwner_whenGovernorCopyIsBehindTheOwner() {
+        var router = staleRouter(true, owner(OWNER));
+
+        router.route(STREAM, PARTITION, 0, 10)
+              .await()
+              .onFailure(ForwardingReadRouterTest::failUnexpected)
+              .onSuccess(events -> assertThat(events).containsExactly("owner-served"));
+    }
+
+    @Test
+    void route_readsLocal_whenGovernorCopyIsNotBehindTheOwner() {
+        var router = staleRouter(false, owner(OWNER));
+
+        router.route(STREAM, PARTITION, 0, 10)
+              .await()
+              .onFailure(ForwardingReadRouterTest::failUnexpected)
+              .onSuccess(events -> assertThat(events).containsExactly("local"));
+    }
+
+    @Test
+    void route_readsLocal_whenGovernorCopyIsBehindButTheOwnerIsSelf() {
+        var router = staleRouter(true, owner(SELF));
+
+        router.route(STREAM, PARTITION, 0, 10)
+              .await()
+              .onFailure(ForwardingReadRouterTest::failUnexpected)
+              .onSuccess(events -> assertThat(events).containsExactly("local"));
+    }
+
+    /// After a restart the committed owner can differ from the HRW owner; the stale copy's read goes to the committed one.
+    @Test
+    void route_forwardsToTheCommittedOwner_whenGovernorCopyIsBehindAndItDiffersFromTheHrwOwner() {
+        var committed = new NodeId("committed-owner");
+        var router = ForwardingReadRouter.forwardingReadRouter(Option.none(),
+                                                               SELF,
+                                                               Option.some(forwardClientServingOnly(committed, "committed-served")),
+                                                               ReadPreference.GOVERNOR,
+                                                               owner(OWNER),
+                                                               successReader("local"),
+                                                               ForwardingReadRouterTest::decode,
+                                                               StreamReadForwardMetrics.NOOP,
+                                                               Option.some((_, _) -> Option.some(new CommittedStreamOwnerSource.CommittedOwner(committed,
+                                                                                                                                              Epoch.ZERO))),
+                                                               Option.none(),
+                                                               Option.none(),
+                                                               (_, _) -> true);
+
+        router.route(STREAM, PARTITION, 0, 10)
+              .await()
+              .onFailure(ForwardingReadRouterTest::failUnexpected)
+              .onSuccess(events -> assertThat(events).containsExactly("committed-served"));
+    }
+
+    /// The committed record can name this very node (it is the owner of record but the copy is stale): forwarding to itself
+    /// is no hop, so the read goes to the HRW owner instead.
+    @Test
+    void route_forwardsToTheHrwOwner_whenGovernorCopyIsBehindAndTheCommittedOwnerIsSelf() {
+        var router = ForwardingReadRouter.forwardingReadRouter(Option.none(),
+                                                               SELF,
+                                                               Option.some(forwardClientServingOnly(OWNER, "owner-served")),
+                                                               ReadPreference.GOVERNOR,
+                                                               owner(OWNER),
+                                                               successReader("local"),
+                                                               ForwardingReadRouterTest::decode,
+                                                               StreamReadForwardMetrics.NOOP,
+                                                               Option.some((_, _) -> Option.some(new CommittedStreamOwnerSource.CommittedOwner(SELF,
+                                                                                                                                              Epoch.ZERO))),
+                                                               Option.none(),
+                                                               Option.none(),
+                                                               (_, _) -> true);
+
+        router.route(STREAM, PARTITION, 0, 10)
+              .await()
+              .onFailure(ForwardingReadRouterTest::failUnexpected)
+              .onSuccess(events -> assertThat(events).containsExactly("owner-served"));
+    }
+
+    private static ForwardingReadRouter<String> staleRouter(boolean behind, OwnerResolver ownerResolver) {
+        return ForwardingReadRouter.forwardingReadRouter(Option.none(),
+                                                         SELF,
+                                                         Option.some(forwardClientServing("owner-served")),
+                                                         ReadPreference.GOVERNOR,
+                                                         ownerResolver,
+                                                         successReader("local"),
+                                                         ForwardingReadRouterTest::decode,
+                                                         StreamReadForwardMetrics.NOOP,
+                                                         Option.none(),
+                                                         Option.none(),
+                                                         Option.none(),
+                                                         (_, _) -> behind);
+    }
+
     // ---- helpers -------------------------------------------------------------------------------
 
     private static ForwardingReadRouter<String> router(ReadPreference preference,
@@ -230,6 +325,32 @@ class ForwardingReadRouterTest {
             @Override
             public Promise<ReadForwardResult> readRemote(NodeId replicaId, String streamName, int partition, long fromOffset, int maxEvents) {
                 return Promise.success(new ReadForwardResult(dtos, false));
+            }
+
+            @Override
+            public void onPublishForwardResponse(PublishForwardResponse response) {}
+
+            @Override
+            public void onReadForwardResponse(ReadForwardResponse response) {}
+        };
+    }
+
+    /// Serves `data` to a read forwarded to `target`; any other node answers `PARTITION_NOT_LOCAL` (the router then degrades
+    /// to its local read).
+    private static StreamForwardClient forwardClientServingOnly(NodeId target, String... data) {
+        var dtos = Arrays.stream(data).map(ForwardingReadRouterTest::toDto).toList();
+
+        return new StreamForwardClient() {
+            @Override
+            public Promise<Long> publishRemote(NodeId governorId, String streamName, int partition, byte[] payload, long timestamp) {
+                return Promise.success(-1L);
+            }
+
+            @Override
+            public Promise<ReadForwardResult> readRemote(NodeId replicaId, String streamName, int partition, long fromOffset, int maxEvents) {
+                return replicaId.equals(target)
+                       ? Promise.success(new ReadForwardResult(dtos, false))
+                       : StreamError.General.PARTITION_NOT_LOCAL.promise();
             }
 
             @Override
