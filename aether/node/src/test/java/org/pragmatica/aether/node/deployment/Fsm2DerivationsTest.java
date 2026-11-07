@@ -15,6 +15,7 @@ import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.cluster.node.ForwardingClusterNode;
 import org.pragmatica.consensus.rabia.ProtocolConfig;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Option;
@@ -27,7 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// W-35, the **wired** arm for a core (phase-3 design 12 item 5, P3-Q27, G-6, MQ-7): the node FSM's write-attempt bound and the cluster FSM's lost-write
 /// backstop are derived from the consensus `applyTimeout` the node is configured with, so each outlasts the engine's own verdict by a margin and
 /// that verdict always arrives first. PR B proved the factory with the real constants; this proves the configuration reaches it. The worker arm
-/// (`FORWARD_APPLY_TIMEOUT`, MT-31) is not carried: a worker has no FSM runtime in this PR (N-3).
+/// (G-6 (a), MT-31): a worker's bound comes from the forwarder's `forwardApplyTimeout()`, never from the configured `applyTimeout` (F3).
 class Fsm2DerivationsTest {
     private static final NodeId SELF = NodeId.nodeId("core-1").unwrap();
     private static final ProcessIncarnation PROCESS = new ProcessIncarnation(1L, 7L);
@@ -71,6 +72,16 @@ class Fsm2DerivationsTest {
         assertThat(config.timings().writeAttemptMs()).as("MT: sourced from the default 30 s instead of the configured 45 s").isEqualTo(50_000L);
         assertThat(config.process()).isEqualTo(PROCESS);
         assertThat(config.self()).isEqualTo(SELF);
+    }
+
+    /// MT-31: on a worker the submitting path is the `ForwardingClusterNode`; a bound sourced from the configured 45 s would read 50 s.
+    @Test
+    void theNodeFsmWriteAttempt_ofAWorker_outlastsTheForwarderTimeout_notTheApplyTimeout() {
+        var forwarder = ForwardingClusterNode.forwardApplyTimeout().millis();
+        var config = Fsm2System.nodeFsmConfig(configuredWith(TimeSpan.timeSpan(45).seconds()), PROCESS, true);
+
+        assertThat(config.timings().writeAttemptMs()).as("MT-31: sourced from applyTimeout").isEqualTo(forwarder + 5_000L).isGreaterThan(forwarder);
+        assertThat(Fsm2System.nodeFsmConfig(configuredWith(TimeSpan.timeSpan(45).seconds()), PROCESS, false).timings().writeAttemptMs()).as("control: the core arm").isEqualTo(50_000L);
     }
 
     @Test

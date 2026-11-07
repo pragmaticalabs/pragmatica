@@ -20,6 +20,7 @@ import java.util.function.Consumer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.netty.buffer.ByteBuf;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.node.AetherNodeConfig;
@@ -35,6 +36,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.rabia.ProtocolConfig;
 import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Option;
@@ -109,6 +111,8 @@ final class Fsm2Harness implements AutoCloseable {
     volatile boolean incarnationOnly;
     /// The timer service the interpreters and the seam cadence use; the shared scheduler unless a test substitutes a manual one.
     private FsmTimers.TimerService clock = FsmTimers.sharedScheduler();
+    /// The consensus `applyTimeout` the node is configured with; the default unless a test sets another, before `assembled()`.
+    private TimeSpan applyTimeout = ProtocolConfig.DEFAULT_APPLY_TIMEOUT;
     /// Whether the cluster's engine marker is committed; false holds the guard closed (WAITING) until a test commits it.
     final AtomicBoolean markerCommitted = new AtomicBoolean(true);
 
@@ -124,6 +128,11 @@ final class Fsm2Harness implements AutoCloseable {
     /// guard over the store's committed mirror. The guard then opens only when the engine marker and the incarnation are really committed.
     static Fsm2Harness production(DeploymentEngine engine) {
         return new Fsm2Harness(engine, false, true, true);
+    }
+
+    /// As [#production], for a worker: the production factory also registers the store's install listener for the node FSM (ruling D8).
+    static Fsm2Harness productionWorker(DeploymentEngine engine) {
+        return new Fsm2Harness(engine, true, true, true);
     }
 
     private Fsm2Harness(DeploymentEngine engine, boolean worker, boolean markerCommitted, boolean production) {
@@ -148,6 +157,7 @@ final class Fsm2Harness implements AutoCloseable {
                                                             registry,
                                                             guard,
                                                             new DeploymentWiring.Node(SELF, () -> store.notificationRevision().or(0L), store::isReplaying, AdmissionSeam.admissionSeam(bootTokens::tokenOf, _ -> 0L)));
+            DeploymentWiring.listeningForInstalls(wiring, store);
         }
     }
 
@@ -196,6 +206,13 @@ final class Fsm2Harness implements AutoCloseable {
         selfReadyHook.run();
     }
 
+    /// Configures another consensus `applyTimeout`; before `assembled()`.
+    Fsm2Harness withApplyTimeout(TimeSpan timeout) {
+        applyTimeout = timeout;
+
+        return this;
+    }
+
     /// Substitutes the timer service; before `assembled()`.
     Fsm2Harness withClock(FsmTimers.TimerService timers) {
         clock = timers;
@@ -210,6 +227,14 @@ final class Fsm2Harness implements AutoCloseable {
         return Set.of(SELF, PEER);
     }
 
+    /// The system of the other role (a worker's for a core, a core's for a worker), for a test that hands it to this wiring.
+    Fsm2System foreignRoleSystem() {
+        var c = collaborators();
+
+        return Fsm2System.fsm2System(new Fsm2System.Collaborators(c.config(), c.process(), c.swim(), c.splitTimeout(), c.store(), c.cluster(), c.adapter(), c.loaded(), c.selfReady(), c.translator(), c.seamSources(), c.admissions(), c.guard(), c.clock(), !worker),
+                                     stopWaitMs);
+    }
+
     /// Builds the route table and the system the way `assembleNode` does, then starts the consumers.
     Fsm2Harness assembled() {
         var builder = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class);
@@ -219,7 +244,7 @@ final class Fsm2Harness implements AutoCloseable {
         wiring.registerEntries(entries);
         entries.addAll(wiring.guardEntries());
         entries.forEach(this::register);
-        if (wiring.isFsm2() && !worker) {
+        if (wiring.isFsm2()) {
             wiring.attach(defaultStopWait
                           ? Fsm2System.fsm2System(collaborators())
                           : Fsm2System.fsm2System(collaborators(), stopWaitMs));
@@ -231,6 +256,12 @@ final class Fsm2Harness implements AutoCloseable {
     }
 
     private static AetherNodeConfig configFor(DeploymentEngine engine) {
+        return configFor(engine, ProtocolConfig.DEFAULT_APPLY_TIMEOUT);
+    }
+
+    private static AetherNodeConfig configFor(DeploymentEngine engine, TimeSpan applyTimeout) {
+        var defaults = ProtocolConfig.defaultConfig();
+
         return AetherNodeConfig.builder()
                                .self(SELF)
                                .coreNodes(List.of())
@@ -246,12 +277,22 @@ final class Fsm2Harness implements AutoCloseable {
                                .environment(Option.none())
                                .managementHttpProtocol(HttpProtocol.H1)
                                .storageConfig(Map.of())
+                               .backupConfig(Option.none())
+                               .membership(Option.none())
+                               .streaming(StreamingConfig.streamingConfig())
+                               .protocol(new ProtocolConfig(defaults.cleanupInterval(),
+                                                            defaults.syncRetryInterval(),
+                                                            defaults.removeOlderThanPhases(),
+                                                            defaults.maxPendingBatches(),
+                                                            applyTimeout,
+                                                            defaults.decisionGapTimeout(),
+                                                            defaults.participationMarker()))
                                .build()
                                .withDeploymentEngine(engine);
     }
 
     private Fsm2System.Collaborators collaborators() {
-        var config = configFor(engine);
+        var config = configFor(engine, applyTimeout);
 
         return new Fsm2System.Collaborators(config,
                                             new ProcessIncarnation(1L, SELF_TOKEN),
@@ -275,7 +316,8 @@ final class Fsm2Harness implements AutoCloseable {
                                                                    bootTokens::tokenOf),
                                             AdmissionSeam.admissionSeam(bootTokens::tokenOf, _ -> 0L),
                                             guard,
-                                            clock);
+                                            clock,
+                                            worker);
     }
 
     /// A slice store whose loads fail: enough for a local op to run and be counted as failed.
