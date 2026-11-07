@@ -257,11 +257,13 @@ class CommunityPlacementRankingWiringTest {
         var before = HEAD + docker("a-dk", "") + docker("b-dk", "") + community(2, "a-dk", "b-dk");
         var after = HEAD + docker("a-dk", "") + docker("b-dk", "preference = 10") + community(2, "a-dk", "b-dk");
 
+        var hookRan = new boolean[1];
+
         start(before);
-        beforeCommit = () -> install(after);
+        beforeCommit = () -> { hookRan[0] = true; install(after); };
         reconciler.reconcile().await().unwrap();
 
-        assertThat(operation().isEmpty()).as("the commit that ranked a-dk first against the old config is rejected").isTrue();
+        assertThat(operation().isEmpty()).as("the commit that ranked a-dk first against the old config is rejected; operation=%s hookRan=%s", operation(), hookRan[0]).isTrue();
 
         reconciler.reconcile().await().unwrap();
 
