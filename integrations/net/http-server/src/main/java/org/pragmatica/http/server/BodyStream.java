@@ -165,8 +165,10 @@ final class BodyStream {
     }
 
     private void proceed(Result<Unit> result) {
-        result.onFailure(this::failed)
-              .onSuccessRun(this::pump);
+        switch (result) {
+            case Result.Success<Unit> _ -> pump();
+            case Result.Failure<Unit>(var cause) -> failed(cause);
+        }
     }
 
     private void failed(Cause cause) {

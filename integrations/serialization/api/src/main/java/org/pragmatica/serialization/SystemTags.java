@@ -763,11 +763,11 @@ public interface SystemTags {
         pin(table, 2223, "org.pragmatica.aether.slice.kvstore.AetherKey.WorkflowClaimKey");
         pin(table, 2224, "org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowClaimValue");
         // U2 (streaming upload ingest): the stored-upload handles an ingress attaches to HttpRequestContext, so a forward
-        // carries a reference instead of the body. 2890..2892 as assigned for U2, not the next free slot.
+        // carries a reference instead of the body. Inside the ahse-U2 reservation 2890..2899 of wire-tag-ranges.txt.
         pin(table, 2890, "org.pragmatica.aether.http.handler.ObjectHandle");
         pin(table, 2891, "org.pragmatica.aether.http.handler.FileHandle");
         pin(table, 2892, "org.pragmatica.aether.http.handler.UploadHandle");
-        // ---- 2225..2889 and 2893..16383 RESERVED ----
+        // ---- unpinned numbers up to 16383 RESERVED: reserve a range in wire-tag-ranges.txt first ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);
