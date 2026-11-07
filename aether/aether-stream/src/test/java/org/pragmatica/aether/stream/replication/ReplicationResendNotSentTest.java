@@ -212,8 +212,8 @@ class ReplicationResendNotSentTest {
         }
 
         assertThat(delays).first().isEqualTo(DefaultReplicationManager.FIRST_RESEND_BACKOFF);
-        assertThat(delays).contains(DefaultReplicationManager.MAX_RESEND_BACKOFF);
-        assertThat(delays).allSatisfy(delay -> assertThat(delay.nanos()).isLessThanOrEqualTo(DefaultReplicationManager.MAX_RESEND_BACKOFF.nanos()));
+        assertThat(delays.stream().mapToLong(delay -> delay.nanos()).max().orElseThrow()).as("the cap is 500 ms")
+                                                                                 .isEqualTo(TimeUnit.MILLISECONDS.toNanos(500));
     }
 
     /// (b) A re-send whose timer fires after the deadline (a late timer) hands the transport a zero wait, never a negative one.
