@@ -515,6 +515,7 @@ class AppHttpServerIngestGateTest {
         return switch (classify(HttpMethod.POST, path, Option.some(KEY_A))) {
             case Disposition.Aggregate aggregate -> aggregate;
             case Disposition.Reject _ -> throw new AssertionError("control: " + path + " with a valid key is admitted");
+            case Disposition.Stream _ -> throw new AssertionError("control: " + path + " is not streamed");
         };
     }
 

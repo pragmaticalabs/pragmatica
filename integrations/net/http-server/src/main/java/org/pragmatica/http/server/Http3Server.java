@@ -361,6 +361,7 @@ final class Http3Server {
                 switch (classifier.classify(headRequest())) {
                     case Disposition.Reject reject -> rejectWith(ctx, reject.respond());
                     case Disposition.Aggregate aggregate -> admit(ctx, aggregate);
+                    case Disposition.Stream stream -> reject(ctx, HttpStatus.NOT_IMPLEMENTED, "Streaming not wired");
                 }
             } else {
                 trailersFrame = some(frame);

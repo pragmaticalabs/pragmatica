@@ -32,6 +32,14 @@ public sealed interface Disposition {
     /// without reading the rest.
     record Aggregate(long maxBytes, Option<BodyBounds> bounds, Runnable release) implements Disposition {}
 
+    /// Hand the body to `sink` as it arrives, up to `maxBytes`, instead of aggregating it: the server never holds more than
+    /// the chunk being accepted. `bounds` replaces the listener's general idle and minimum-rate bounds when present.
+    ///
+    /// A body that crosses `maxBytes` (or a `Content-Length` above it) is answered 413, the sink is aborted with
+    /// [BodySink.Ended#TOO_LARGE], and the connection is closed without reading the rest. The sink's terminal call is its
+    /// owner's only release point: the server holds no permit for it.
+    record Stream(long maxBytes, Option<BodyBounds> bounds, BodySink sink) implements Disposition {}
+
     /// Answer now and close the connection without reading the body (RFC 9110 §10.1.1): `respond` writes the final
     /// response, so a 401 or a 429 is exactly the one the handler would have written.
     record Reject(Consumer<ResponseWriter> respond) implements Disposition {}
@@ -45,6 +53,10 @@ public sealed interface Disposition {
 
     static Disposition aggregate(long maxBytes, BodyBounds bounds, Runnable release) {
         return new Aggregate(maxBytes, Option.some(bounds), release);
+    }
+
+    static Disposition stream(long maxBytes, BodyBounds bounds, BodySink sink) {
+        return new Stream(maxBytes, Option.some(bounds), sink);
     }
 
     static Disposition reject(Consumer<ResponseWriter> respond) {

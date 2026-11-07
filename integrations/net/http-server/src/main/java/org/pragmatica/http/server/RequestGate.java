@@ -131,6 +131,7 @@ final class RequestGate extends ChannelInboundHandlerAdapter {
         return switch (classifier.classify(headOf(head))) {
             case Disposition.Reject reject -> refuse(ctx, reject.respond());
             case Disposition.Aggregate aggregate -> admit(ctx, head, aggregate);
+            case Disposition.Stream stream -> refuse(ctx, writer -> writer.error(HttpStatus.NOT_IMPLEMENTED, "Streaming not wired"));
         };
     }
 
