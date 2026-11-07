@@ -142,7 +142,13 @@ public final class LocalDiskTier implements StorageTier {
                                                Option<Fn1<Result<Option<byte[]>>, BlockId>> readerOverride,
                                                Option<Fn2<Result<Unit>, Path, byte[]>> writerOverride,
                                                Option<Fn1<Result<Unit>, Path>> directoryForcerOverride) {
-        return localDiskTier(basePath, maxBytes, readTimeout, readerOverride, writerOverride, directoryForcerOverride, _ -> unit());
+        return localDiskTier(basePath,
+                             maxBytes,
+                             readTimeout,
+                             readerOverride,
+                             writerOverride,
+                             directoryForcerOverride,
+                             _ -> unit());
     }
 
     /// Variant that also hands every path a [#scan] lists to `listingObserver`, after the listing and before any stat of
@@ -343,10 +349,7 @@ public final class LocalDiskTier implements StorageTier {
 
         return FileOps.isDirectory(directory) && resume.filter(hex -> prefix.compareTo(hex.substring(0, 2)) < 0)
                                                        .isEmpty()
-               ? blockFilesUnder(directory).flatMap(files -> statFirst(files,
-                                                                                            directory,
-                                                                                            resume,
-                                                                                            wanted))
+               ? blockFilesUnder(directory).flatMap(files -> statFirst(files, directory, resume, wanted))
                : Result.success(List.of());
     }
 
@@ -359,18 +362,16 @@ public final class LocalDiskTier implements StorageTier {
     }
 
     private Result<List<Path>> listedAll(List<Path> subdirectories) {
-        return Result.allOf(subdirectories.stream()
-                                          .map(this::listed)
-                                          .toList())
-                     .map(listings -> listings.stream()
-                                              .flatMap(List::stream)
-                                              .toList());
+        return Result.allOf(subdirectories.stream().map(this::listed).toList()).map(listings -> listings.stream()
+                                                                                                        .flatMap(List::stream)
+                                                                                                        .toList());
     }
 
     /// The entries of `directory`, each shown to the listing observer; none when it is gone or is not a directory.
     private Result<List<Path>> listed(Path directory) {
         return FileOps.list(directory)
-                      .fold(cause -> goneOr(directory, cause), Result::success)
+                      .fold(cause -> goneOr(directory, cause),
+                            Result::success)
                       .onSuccess(entries -> entries.forEach(listingObserver::apply));
     }
 

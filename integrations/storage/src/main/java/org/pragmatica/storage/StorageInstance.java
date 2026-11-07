@@ -1307,17 +1307,18 @@ final class DefaultStorageInstance implements StorageInstance {
 
     private Promise<Unit> holdOn(StorageTier tier, BlockId id) {
         return refreshed(tier, id).flatMap(held -> held
-                                    ? Promise.success(unit())
-                                    : copyOnto(tier, id))
-                   .map(_ -> observePresence(id,
-                                             tier.level()));
+                                                   ? Promise.success(unit())
+                                                   : copyOnto(tier, id))
+                        .map(_ -> observePresence(id,
+                                                  tier.level()));
     }
 
     /// The tier's touch; false, so the block is written, when the tier refuses it with [StorageError.OperationUnsupported].
     /// Design-out, not a recovery: a tier without write times has no refresh to fail, and the write gives the same
     /// guarantee ("written no earlier than this call"). Every other failure of the touch fails the call.
     private static Promise<Boolean> refreshed(StorageTier tier, BlockId id) {
-        return tier.touch(id).fold(touched -> touched.fold(DefaultStorageInstance::writtenInstead, Promise::success));
+        return tier.touch(id)
+                   .fold(touched -> touched.fold(DefaultStorageInstance::writtenInstead, Promise::success));
     }
 
     private static Promise<Boolean> writtenInstead(Cause cause) {

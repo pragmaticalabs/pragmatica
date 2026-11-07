@@ -179,8 +179,8 @@ record RestS3Client(S3Config config,
     @Override
     public Promise<Boolean> touchObject(String key, String contentType) {
         return head(key).flatMap(result -> toEtag(result, key))
-                        .flatMap(etag -> etag.fold(() -> success(false),
-                                                   tag -> copyIfMatch(key, contentType, tag)));
+                   .flatMap(etag -> etag.fold(() -> success(false),
+                                              tag -> copyIfMatch(key, contentType, tag)));
     }
 
     private Promise<Boolean> copyIfMatch(String key, String contentType, String etag) {
