@@ -853,16 +853,32 @@ class AppHttpServerIngestGateTest {
     private final class H3Client implements Client {
         @Override
         public Reply post(String path, Option<String> key, int size, Mode mode) throws Exception {
+            var bodyWritten = new StringBuffer("body-not-sent");
             var answer = H3Probe.exchange(port, stream -> {
                 stream.write(headers(path, key, mode == Mode.UNDECLARED
                                                 ? -1
                                                 : size));
                 if (mode != Mode.EXPECT_CONTINUE_NOT_SENT) {
-                    sendBody(stream, size, true);
+                    var sent = sendBody(stream, size, true);
+
+                    bodyWritten.setLength(0);
+                    bodyWritten.append("body-sent=").append(sent).append('/').append(size);
                 }
             });
 
-            return new Reply(answer.statusCode(), answer.body());
+            return new Reply(statusOrExplain(answer, bodyWritten), answer.body());
+        }
+
+        /// #2746: a request answered by no status also says how much of the body the client wrote and whether the
+        /// server's router was ever reached, which tells a request that never arrived (served stays at its earlier
+        /// value) from a response lost on the way back.
+        private int statusOrExplain(H3Probe.Answer answer, CharSequence bodyWritten) {
+            try {
+                return answer.statusCode();
+            } catch (IllegalStateException e) {
+                throw new IllegalStateException(e.getMessage() + "; client " + bodyWritten + "; server routed=" + served.get()
+                                                + " routedBytes=" + servedBytes.get(), e);
+            }
         }
 
         @Override

@@ -127,17 +127,17 @@ class Http3RequestGateWireTest {
         var big = Http3TestClient.exchange(port, stream -> body(stream, "/big", twoMiB, twoMiB));
         var bigUndeclared = Http3TestClient.exchange(port, stream -> body(stream, "/big", twoMiB, -1));
 
-        assertThat(big.status()).isEqualTo("200");
+        assertThat(big.statusText()).isEqualTo("200");
         assertThat(big.body()).isEqualTo("handled " + twoMiB);
-        assertThat(bigUndeclared.status()).isEqualTo("200");
+        assertThat(bigUndeclared.statusText()).isEqualTo("200");
         assertThat(bigUndeclared.body()).isEqualTo("handled " + twoMiB);
         assertThat(invocations.get()).as("control: both reached the handler").isEqualTo(2);
 
         var small = Http3TestClient.exchange(port, stream -> body(stream, "/small", twoMiB, twoMiB));
         var smallUndeclared = Http3TestClient.exchange(port, stream -> body(stream, "/small", twoMiB, -1));
 
-        assertThat(small.status()).isEqualTo("413");
-        assertThat(smallUndeclared.status()).isEqualTo("413");
+        assertThat(small.statusText()).isEqualTo("413");
+        assertThat(smallUndeclared.statusText()).isEqualTo("413");
         assertThat(invocations.get()).as("neither refused request reached the handler").isEqualTo(2);
     }
 
