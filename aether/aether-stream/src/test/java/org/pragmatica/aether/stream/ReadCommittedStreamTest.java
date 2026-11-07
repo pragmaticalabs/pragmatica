@@ -402,7 +402,7 @@ class ReadCommittedStreamTest {
         void repeatVisible_anOwnerWithAnEmptyLog_announcesMinusOne() throws Exception {
             var sent = new CopyOnWriteArrayList<ReplicationMessage.CommitAdvance>();
             var senders = new CopyOnWriteArrayList<Thread>();
-            var replication = replicationManager(SELF, registryWithPeers(), (target, message) -> record(sent, senders, target, message));
+            var replication = replicationManager(SELF, registryWithPeers(), AcceptingReplicationTransport.accepting((target, message) -> record(sent, senders, target, message)));
 
             manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication);
             createStream(manager, 3, 3);
