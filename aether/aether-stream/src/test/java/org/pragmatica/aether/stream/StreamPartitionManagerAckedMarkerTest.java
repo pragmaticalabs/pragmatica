@@ -333,21 +333,26 @@ class StreamPartitionManagerAckedMarkerTest {
     }
 
     /// A marker that could not be clamped is never restored in this incarnation (`forgoAckedRestore`), even though it is
-    /// otherwise trusted: valid CRC, the log's real epoch token, the committed record naming this node. Without the forgo
-    /// the unclamped marker (50) would raise visible to `min(durable, 50)` = 9 at the first admission.
+    /// otherwise trusted: valid CRC, the log's real epoch token, the committed record naming this node under the same
+    /// epoch (no `restartOn` bump: a bumped epoch would fail the lineage check and distrust the marker for another reason).
+    /// Without the forgo the unclamped marker (50) would raise visible to `min(durable, 50)` = 9 at the first admission.
     @Test
     void markerWhoseClampFailed_isNeverTrustedToRaiseVisible() throws IOException {
-        restartWithMarkerAt4();
-        var token = AppendLog.readAckedMarker(walFile(walDir)).flatMap(AppendLog.AckedMark::epoch).map(AppendLog.EpochKey::token)
-                             .or("missing-token");
-
+        startOwner(walDir);
+        publish(10);
+        replication.handleAck(replicateAck(PEER, STREAM, PARTITION, 4L));
+        manager.repeatVisible();
         manager.close();
         manager = null;
+        var token = AppendLog.readAckedMarker(walFile(walDir))
+                             .flatMap(AppendLog.AckedMark::epoch)
+                             .map(AppendLog.EpochKey::token)
+                             .or("missing-token");
         var sidecar = walFile(walDir).resolveSibling(PARTITION + ".acked");
 
         Files.writeString(sidecar, validMarkerLine(token, 50L));
         Files.createDirectories(sidecar.resolveSibling(PARTITION + ".acked.tmp").resolve("blocks-the-clamp-rewrite"));
-        restartOn(walDir);
+        startOwner(walDir);
         servedRead();
         servedRead();
         assertThat(markerOffset()).as("control: the clamp rewrite failed, the marker is still above the head").isEqualTo(Option.some(50L));
