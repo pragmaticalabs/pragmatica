@@ -360,6 +360,8 @@ class SliceTargetOverridePreservationTest {
     static final class CapturingRabiaNode implements RabiaNode<KVCommand<AetherKey>> {
         private final NodeId self;
         final List<KVCommand<AetherKey>> appliedCommands = new CopyOnWriteArrayList<>();
+        /// When set, every apply is also processed by this store, as consensus does, and answers with its real results.
+        volatile KVStore<AetherKey, AetherValue> applyInto;
 
         CapturingRabiaNode(NodeId self) {
             this.self = self;
@@ -390,7 +392,11 @@ class SliceTargetOverridePreservationTest {
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
             appliedCommands.addAll(commands);
 
-            return Promise.success((List<R>) acceptedResults(commands));
+            var store = applyInto;
+
+            return Promise.success((List<R>) (store == null
+                                              ? acceptedResults(commands)
+                                              : store.process(store.createBatch(commands))));
         }
 
         @Override
