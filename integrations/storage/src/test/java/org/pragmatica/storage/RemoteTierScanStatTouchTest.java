@@ -1,11 +1,18 @@
 package org.pragmatica.storage;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.cloud.aws.s3.S3Client;
+import org.pragmatica.lang.Causes;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -129,6 +136,76 @@ class RemoteTierScanStatTouchTest extends TierScanStatTouchContract {
 
         assertThat(scanned.stream().map(BlockStat::id).toList()).containsExactlyInAnyOrderElementsOf(ids);
         assertThat(scanned).allMatch(stat -> stat.writtenAtMillis() == s3.clock.get(), "every block reports its touch");
+    }
+
+    /// A block takes the time of its own marker only: an untouched block listed right before a later-written neighbour
+    /// reports its own write time, in the scan and in stat alike.
+    @Test
+    void scan_aBlockNeverTakesTheTimeOfAnAdjacentObject() {
+        var contents = contentsSharingOneFirstByte(2).stream()
+                                                     .sorted(Comparator.comparing(c -> BlockId.blockId(c).unwrap().hexString()))
+                                                     .toList();
+        var first = store(contents.get(0));
+        var firstTime = s3.clock.get();
+
+        s3.clock.addAndGet(60_000L);
+        var second = store(contents.get(1));
+
+        var scanned = scanAllStats(KeyShard.all(), 10);
+
+        assertThat(scanned).hasSize(2);
+        assertThat(scanned.stream().filter(stat -> stat.id().equals(first)).findFirst().orElseThrow().writtenAtMillis())
+            .as("the earlier block keeps its own write time").isEqualTo(firstTime);
+        assertThat(tier.stat(first).await().unwrap().map(BlockStat::writtenAtMillis).or(-1L)).isEqualTo(firstTime);
+        assertThat(scanned.stream().filter(stat -> stat.id().equals(second)).findFirst().orElseThrow().writtenAtMillis())
+            .isEqualTo(s3.clock.get());
+    }
+
+    /// Delete removes the block first and its marker second, so a failure between the two leaves only an orphan marker,
+    /// which no operation reports as a block; a retry removes it.
+    @Test
+    void delete_removesTheBlockBeforeItsMarker_andAMarkerFailureLeavesOnlyAnOrphan() {
+        var order = new ArrayList<String>();
+        var failMarker = new boolean[]{false};
+        var recording = (S3Client) Proxy.newProxyInstance(getClass().getClassLoader(),
+                                                          new Class<?>[]{S3Client.class},
+                                                          (proxy, method, args) -> {
+                                                              if (method.getName().equals("deleteObject")) {
+                                                                  var marker = ((String) args[0]).endsWith(".touched");
+                                                                  order.add(marker ? "marker" : "block");
+                                                                  if (marker && failMarker[0]) {
+                                                                      return Promise.failure(Causes.cause("marker delete failed"));
+                                                                  }
+                                                              }
+                                                              try {
+                                                                  return method.invoke(s3, args);
+                                                              } catch (InvocationTargetException e) {
+                                                                  throw e.getCause();
+                                                              }
+                                                          });
+        var recorded = RemoteTier.remoteTier(recording, "scan-prefix", 1 << 20);
+        var content = bytes("deleted in order");
+        var id = BlockId.blockId(content).unwrap();
+
+        recorded.put(id, content).await().unwrap();
+        recorded.touch(id).await().unwrap();
+        recorded.delete(id).await().unwrap();
+
+        assertThat(order).containsExactly("block", "marker");
+        assertThat(s3.keys()).isEmpty();
+
+        order.clear();
+        recorded.put(id, content).await().unwrap();
+        recorded.touch(id).await().unwrap();
+        failMarker[0] = true;
+
+        assertThat(recorded.delete(id).await().isFailure()).isTrue();
+        assertThat(s3.keys()).as("only the orphan marker is left").containsExactly(keyOf(id) + ".touched");
+        assertThat(recorded.stat(id).await().unwrap().isEmpty()).as("an orphan marker is no block").isTrue();
+
+        failMarker[0] = false;
+        recorded.delete(id).await().unwrap();
+        assertThat(s3.keys()).isEmpty();
     }
 
     private String keyOf(BlockId id) {
