@@ -596,6 +596,36 @@ class AppendLogTest {
             wal.close();
         }
 
+        /// #2855: a commit that runs after close() must not mutate the directory (its force on the closed channel used to
+        /// fail-stop the log and write the fail-stop mark, so @TempDir cleanup raced it).
+        @Test
+        void commitAfterClose_mutatesNoFile_andResolvesFromTheCloseTimeSync() throws IOException {
+            var wal = open("commit-after-close.wal");
+            var seq = wal.write(0L, payload(0), 1L).unwrap();
+
+            wal.close();
+            var before = listing();
+            var commit = wal.commit(seq).await();
+
+            assertThat(commit.isSuccess()).as("the close-time fsync covered the write").isTrue();
+            assertThat(wal.failStopped()).isFalse();
+            assertThat(listing()).isEqualTo(before);
+        }
+
+        private List<String> listing() throws IOException {
+            try (var files = Files.list(dir)) {
+                return files.map(f -> f.getFileName() + ":" + fileLength(f)).sorted().toList();
+            }
+        }
+
+        private static long fileLength(Path f) {
+            try {
+                return Files.size(f);
+            } catch (IOException e) {
+                return -1L;
+            }
+        }
+
         /// The write-side inverse of recovery's duplicate refusal: a non-increasing offset is refused
         /// with [AppendLog.WalError.OffsetRegression] and nothing is written.
         @Test
