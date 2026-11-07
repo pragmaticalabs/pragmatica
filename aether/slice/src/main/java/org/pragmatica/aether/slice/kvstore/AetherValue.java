@@ -3765,7 +3765,7 @@ public sealed interface AetherValue {
                                         deadline,
                                         now,
                                         WorkflowState.WAITING,
-                                        postcondition,
+                                        carry(postcondition),
                                         conflictKeys,
                                         epoch + 1);
         }
@@ -3782,7 +3782,7 @@ public sealed interface AetherValue {
                                         deadline,
                                         0L,
                                         WorkflowState.RUNNING,
-                                        "",
+                                        carry(""),
                                         conflictKeys,
                                         epoch + 1);
         }
@@ -3799,9 +3799,52 @@ public sealed interface AetherValue {
                                         deadline,
                                         issuedAt,
                                         newState,
-                                        newDetail,
+                                        newState == WorkflowState.ESCALATED
+                                        ? ESCALATED_MARK + newDetail
+                                        : carry(newDetail),
                                         conflictKeys,
                                         epoch + 1);
+        }
+
+        /// The `detail` prefix that marks a `FAILED` run as abandoned by an operator. The cause rides in the existing `detail` field,
+        /// so the wire shape is unchanged (rc6 f2b N11, CTO ruling v2803c F3).
+        public static final String ABANDONED_PREFIX = "abandoned:";
+
+        /// The same run ended by an operator's abandon: `FAILED`, with `reason` after the [#ABANDONED_PREFIX] as the `detail`. Counters
+        /// and step untouched.
+        public WorkflowRunValue abandoned(String reason) {
+            return in(WorkflowState.FAILED, ABANDONED_PREFIX + reason);
+        }
+
+        /// Whether this run is a `FAILED` run that an operator abandoned (its `detail` carries the [#ABANDONED_PREFIX] cause).
+        public boolean isAbandoned() {
+            return state == WorkflowState.FAILED && reason().startsWith(ABANDONED_PREFIX);
+        }
+
+        /// The leading `detail` marker that records, durably, that this run entered `ESCALATED`. It is set by the transition into
+        /// `ESCALATED` and carried by every later transition (resume, issue, advance, a terminal commit), so a node that takes the
+        /// events partition over can still tell an escalated run that ended from one that never escalated. It rides in the existing
+        /// `detail` field, so the wire shape is unchanged (rc6 f2b fixD, CTO ruling v2803c). A marker followed by the plain detail:
+        /// `ESCALATED_MARK + reason`. The marker is a control character, so it never starts an operator-written reason, and it composes
+        /// with [#ABANDONED_PREFIX] because [#reason] strips it first.
+        public static final String ESCALATED_MARK = "\u0001escalated\u0001";
+
+        /// Whether this run has ever entered `ESCALATED` (its `detail` carries the [#ESCALATED_MARK]).
+        public boolean wasEscalated() {
+            return detail.startsWith(ESCALATED_MARK);
+        }
+
+        /// The `detail` without the [#ESCALATED_MARK]: the awaited postcondition, the reason or the incident, as the transition set it.
+        public String reason() {
+            return wasEscalated()
+                   ? detail.substring(ESCALATED_MARK.length())
+                   : detail;
+        }
+
+        private String carry(String plainDetail) {
+            return wasEscalated()
+                   ? ESCALATED_MARK + plainDetail
+                   : plainDetail;
         }
 
         /// An operator's resume of a `PAUSED` or `ESCALATED` run: `RUNNING` again, with a fresh attempt budget for the step in hand
@@ -3818,7 +3861,7 @@ public sealed interface AetherValue {
                                         newDeadline,
                                         issuedAt,
                                         WorkflowState.RUNNING,
-                                        "",
+                                        carry(""),
                                         conflictKeys,
                                         epoch + 1);
         }

@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.pragmatica.aether.deployment.workflow.WorkflowStep.Readiness;
+import org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowClaimValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowRunValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowState;
 import org.pragmatica.lang.Cause;
@@ -52,6 +53,7 @@ class WorkflowReconcilerTest {
     void setUp() {
         cluster = new WorkflowTestCluster();
         probe = new WarningProbe();
+        cluster.announceTo(() -> true, probe.sink());
         actions = new AtomicInteger();
         observations = new AtomicInteger();
         real = cluster.ledger(CORE_1);
@@ -92,7 +94,12 @@ class WorkflowReconcilerTest {
             }
 
             @Override
-            public Option<org.pragmatica.aether.slice.kvstore.AetherValue.WorkflowClaimValue> claim(String conflictKey) {
+            public Option<WorkflowRunValue> run(String id) {
+                return real.run(id);
+            }
+
+            @Override
+            public Option<WorkflowClaimValue> claim(String conflictKey) {
                 return real.claim(conflictKey);
             }
 
@@ -114,18 +121,19 @@ class WorkflowReconcilerTest {
     }
 
     private WorkflowReconciler reconciler(TimeSpan bound) {
-        return WorkflowReconciler.workflowReconciler(ledger(), Map.of("k", kind), () -> T0, probe.sink(), bound);
+        return WorkflowReconciler.workflowReconciler(ledger(), Map.of("k", kind), () -> T0, bound);
     }
 
-    private WorkflowRunValue admit(String id, String key) {
-        return WorkflowAdmission.workflowAdmission(real, Map.of("k", kind), () -> id)
-                                .admit("k", Map.of(), List.of(key), T0)
+    /// Admits a run as the request `name`; tests name runs by their request key, [#committed] maps it to the keyed run id.
+    private WorkflowRunValue admit(String name, String key) {
+        return WorkflowAdmission.workflowAdmission(real, Map.of("k", kind))
+                                .admit("k", Map.of(), List.of(key), T0, name)
                                 .await()
                                 .unwrap();
     }
 
-    private WorkflowRunValue committed(String id) {
-        return cluster.run(id).unwrap();
+    private WorkflowRunValue committed(String name) {
+        return cluster.run(WorkflowAdmission.runId("k", name).unwrap()).unwrap();
     }
 
     private static void tick(WorkflowReconciler reconciler) {
@@ -287,7 +295,7 @@ class WorkflowReconcilerTest {
         assertThat(actions.get()).isZero();
     }
 
-    //--- the at-most-once incident (A3): a commit applied but not seen to be accepted never raises
+    //--- the durable announce (f2b §5): the incident is raised from the APPLIED transition, never from the commit's answer
 
     private WorkflowRunValue pastDeadline() {
         var run = admit("wf-1", "a");
@@ -308,8 +316,10 @@ class WorkflowReconcilerTest {
         assertThat(probe.settled()).hasSize(1);
     }
 
+    /// Before f2b the reconciler raised on the commit's answer, so a late answer lost the incident. The raise is now derived from
+    /// the applied record, so the incident is raised once although the tick never saw the commit accepted.
     @Test
-    void tick_escalationCommitAppliedButAnsweredLate_isNeverAnnounced_yetStaysCommitted() {
+    void tick_escalationCommitAppliedButAnsweredLate_isStillAnnouncedOnce() {
         pastDeadline();
 
         commits = (expected, next) -> appliedButUnanswered(expected, next, Promise.promise());
@@ -319,16 +329,16 @@ class WorkflowReconcilerTest {
         tick(reconciler);
         assertThat(committed("wf-1").state()).as("the commit was applied").isEqualTo(WorkflowState.ESCALATED);
         assertThat(committed("wf-1").detail()).as("the incident survives as the run's detail").contains("elapsed-time budget");
-        assertThat(probe.settled()).as("at most once: nothing re-raises it").isEmpty();
+        assertThat(probe.settled()).as("raised from the applied transition, once").hasSize(1);
     }
 
     @Test
-    void tick_escalationCommitAppliedButAnswerFailed_isNeverAnnounced() {
+    void tick_escalationCommitAppliedButAnswerFailed_isStillAnnouncedOnce() {
         pastDeadline();
         commits = (expected, next) -> appliedButUnanswered(expected, next, BOOM.promise());
         tick(reconciler(BOUND));
         assertThat(committed("wf-1").state()).isEqualTo(WorkflowState.ESCALATED);
-        assertThat(probe.settled()).isEmpty();
+        assertThat(probe.settled()).hasSize(1);
     }
 
     /// The wrapper, not the applier, answers: the REAL commit is applied, and the caller is handed `answer` instead of its result.
@@ -336,5 +346,37 @@ class WorkflowReconcilerTest {
         real.commit(expected, next).await();
 
         return answer;
+    }
+
+    /// r03w: the three-argument factory must hand DEFAULT_BOUND to the reconciler; a commit answered 400 ms late is still accepted and
+    /// its effect performed. A factory passing 1 ms drops the late answer (no effect), so this goes red.
+    @Test
+    void defaultFactory_waitsForASlowCommit_pastAShortBound() {
+        admit("wf-1", "a");
+        commits = this::answeredLate;
+        tick(WorkflowReconciler.workflowReconciler(ledger(), Map.of("k", kind), () -> T0));
+        assertThat(actions.get()).as("the late accepted commit was waited for").isEqualTo(1);
+    }
+
+    private Promise<Boolean> answeredLate(WorkflowRunValue before, WorkflowRunValue next) {
+        var answer = Promise.<Boolean> promise();
+
+        Thread.startVirtualThread(() -> commitAfterDelay(before, next, answer));
+        return answer;
+    }
+
+    private void commitAfterDelay(WorkflowRunValue before, WorkflowRunValue next, Promise<Boolean> answer) {
+        try {
+            Thread.sleep(400);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        real.commit(before, next).onSuccess(answer::succeed);
+    }
+
+    /// r03: the default commit/effect bound is 30 s; a shorter default would drop a slow but successful answer.
+    @Test
+    void defaultBound_isThirtySeconds() {
+        assertThat(WorkflowReconciler.DEFAULT_BOUND).isEqualTo(TimeSpan.timeSpan(30).seconds());
     }
 }

@@ -35,7 +35,8 @@ class WorkflowRunValueTest {
         assertThat(resumed.deadline()).as("the new elapsed-time budget").isEqualTo(9_000L);
         assertThat(resumed.issuedAt()).as("an issued effect stays issued").isEqualTo(300L);
         assertThat(resumed.state()).isEqualTo(WorkflowState.RUNNING);
-        assertThat(resumed.detail()).isEmpty();
+        assertThat(resumed.reason()).isEmpty();
+        assertThat(resumed.wasEscalated()).as("the incident is still open").isTrue();
         assertThat(resumed.stepIndex()).isEqualTo(escalated.stepIndex());
         assertThat(resumed.startedAt()).isEqualTo(escalated.startedAt());
     }
@@ -75,5 +76,50 @@ class WorkflowRunValueTest {
             assertThat(run.active()).as(state.name()).isEqualTo(state == WorkflowState.RUNNING || state == WorkflowState.WAITING);
             assertThat(run.releasesClaims()).as(state.name()).isEqualTo(state == WorkflowState.DONE || state == WorkflowState.FAILED);
         }
+    }
+
+    @Test
+    void abandoned_isFailedWithTheCauseInDetail_andOnlyThatIsAbandoned() {
+        var abandoned = fresh().abandoned("operator gave up");
+
+        assertThat(abandoned.state()).isEqualTo(WorkflowState.FAILED);
+        assertThat(abandoned.detail()).isEqualTo("abandoned:operator gave up");
+        assertThat(abandoned.isAbandoned()).isTrue();
+        assertThat(abandoned.releasesClaims()).isTrue();
+        assertThat(fresh().in(WorkflowState.FAILED, "abandoned").isAbandoned()).isFalse();
+        assertThat(fresh().in(WorkflowState.DONE, "abandoned:x").isAbandoned()).isFalse();
+    }
+
+    /// fixD: the durable escalated mark is set by the transition into ESCALATED and kept by every later transition; a run that never
+    /// escalated carries no mark and its detail is untouched.
+    @Test
+    void escalatedMark_isSetOnEscalation_andKeptThroughResumeIssueAdvanceAndEveryTerminal() {
+        var escalated = fresh().in(WorkflowState.ESCALATED, "incident");
+        var resumed = escalated.resumed(9_000L);
+
+        assertThat(fresh().wasEscalated()).isFalse();
+        assertThat(fresh().in(WorkflowState.FAILED, "why").detail()).as("an unmarked run's detail is verbatim").isEqualTo("why");
+        assertThat(escalated.wasEscalated()).isTrue();
+        assertThat(escalated.reason()).isEqualTo("incident");
+        assertThat(resumed.issued("post", 5L).wasEscalated()).isTrue();
+        assertThat(resumed.issued("post", 5L).reason()).isEqualTo("post");
+        assertThat(resumed.advanced().wasEscalated()).isTrue();
+        assertThat(resumed.in(WorkflowState.DONE, "ok").wasEscalated()).isTrue();
+        assertThat(resumed.in(WorkflowState.FAILED, "no").wasEscalated()).isTrue();
+        assertThat(escalated.abandoned("gave up").wasEscalated()).isTrue();
+        assertThat(escalated.in(WorkflowState.ESCALATED, "again").reason()).as("one mark, never doubled").isEqualTo("again");
+    }
+
+    /// fixD: the mark composes with the abandoned prefix: the abandon is read through the mark, and both survive in one detail.
+    @Test
+    void escalatedMark_composesWithTheAbandonedPrefix_inBothDirections() {
+        var abandonedAfterEscalation = fresh().in(WorkflowState.ESCALATED, "incident").abandoned("gave up");
+
+        assertThat(abandonedAfterEscalation.isAbandoned()).isTrue();
+        assertThat(abandonedAfterEscalation.wasEscalated()).isTrue();
+        assertThat(abandonedAfterEscalation.reason()).isEqualTo("abandoned:gave up");
+        assertThat(abandonedAfterEscalation.detail()).isEqualTo(WorkflowRunValue.ESCALATED_MARK + "abandoned:gave up");
+        assertThat(fresh().abandoned("x").wasEscalated()).isFalse();
+        assertThat(fresh().in(WorkflowState.DONE, "abandoned:x").isAbandoned()).isFalse();
     }
 }
