@@ -3,11 +3,15 @@ package org.pragmatica.storage;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.locks.LockSupport;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -125,5 +129,75 @@ class StorageInstanceEnsureHeldTest {
         node.ensureHeld(id, TierLevel.LOCAL_DISK).await().unwrap();
 
         assertThat(disk.get(id).await().unwrap().unwrap()).isEqualTo(CONTENT);
+    }
+
+    /// A put of the id still writing its first tier: ensureHeld waits for it. Without the wait the shared tier is not
+    /// written yet and the first tier's copy does not exist yet, so the call would fail with BlockNotFound at once.
+    @Test
+    void ensureHeld_waitsForAWriteOfTheSameIdInFlight() {
+        var gate = Promise.<Unit>promise();
+        var gated = new GatedTier(MemoryTier.memoryTier(1 << 20, TierLevel.LOCAL_DISK), gate);
+        var gatedNode = StorageInstance.storageInstance("g2-in-flight", List.of(gated, shared));
+        var id = BlockId.blockId(CONTENT).unwrap();
+        var put = gatedNode.put(CONTENT);
+        var held = gatedNode.ensureHeld(id, TierLevel.REMOTE);
+
+        LockSupport.parkNanos(200_000_000L);
+
+        assertThat(held.isResolved()).as("ensureHeld waits while the put is in flight").isFalse();
+
+        gate.succeed(Unit.unit());
+
+        assertThat(put.await().unwrap()).isEqualTo(id);
+        held.await().unwrap();
+        assertThat(shared.get(id).await().unwrap().unwrap()).isEqualTo(CONTENT);
+    }
+
+    /// A durable tier whose writes wait for `gate`.
+    private record GatedTier(MemoryTier inner, Promise<Unit> gate) implements StorageTier {
+        @Override
+        public Promise<Option<byte[]>> get(BlockId id) {
+            return inner.get(id);
+        }
+
+        @Override
+        public Promise<Unit> put(BlockId id, byte[] content) {
+            return gate.flatMap(_ -> inner.put(id, content));
+        }
+
+        @Override
+        public Promise<Unit> delete(BlockId id) {
+            return inner.delete(id);
+        }
+
+        @Override
+        public Promise<Boolean> exists(BlockId id) {
+            return inner.exists(id);
+        }
+
+        @Override
+        public Promise<Boolean> touch(BlockId id) {
+            return inner.touch(id);
+        }
+
+        @Override
+        public boolean isDurable() {
+            return true;
+        }
+
+        @Override
+        public TierLevel level() {
+            return inner.level();
+        }
+
+        @Override
+        public long usedBytes() {
+            return inner.usedBytes();
+        }
+
+        @Override
+        public long maxBytes() {
+            return inner.maxBytes();
+        }
     }
 }

@@ -393,7 +393,8 @@ record RestS3Client(S3Config config,
     }
 
     /// Each `<Contents>` element's `Key`, `Size` and `LastModified`, in document order (ascending key order on the
-    /// wire), and `IsTruncated`. An element missing any of the three fails with [S3Error.ParseError].
+    /// wire), and `IsTruncated`. Every element missing any of the three adds an [S3Error.ParseError] to the failure, one
+    /// composite cause ([org.pragmatica.lang.Cause#stream]).
     static Result<ObjectListing> extractListing(String xml) {
         return Result.allOf(CONTENTS_PATTERN.matcher(xml)
                                             .results()

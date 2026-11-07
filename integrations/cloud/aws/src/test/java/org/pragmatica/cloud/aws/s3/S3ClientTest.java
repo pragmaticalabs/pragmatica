@@ -501,7 +501,7 @@ class S3ClientTest {
             minioClient.listObjectStats("data/", Option.none(), 10)
                        .await()
                        .onSuccess(listing -> fail("Expected a parse error, got " + listing))
-                       .onFailure(cause -> assertThat(cause).isInstanceOf(S3Error.ParseError.class));
+                       .onFailure(cause -> assertThat(cause.stream()).hasAtLeastOneElementOfType(S3Error.ParseError.class));
         }
 
         @Test
