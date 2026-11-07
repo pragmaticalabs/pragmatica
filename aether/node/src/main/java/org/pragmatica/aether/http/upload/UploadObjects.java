@@ -15,7 +15,8 @@ import org.pragmatica.storage.Sha256;
 
 /// The two directions between a storage [ObjectRef] and the wire's [ObjectHandle], which carries each component in the
 /// text form storage prints (U2). Writing never fails; reading parses each text back and is refused when one is not the
-/// canonical form storage would have printed, so a handle that did not come from storage opens nothing.
+/// canonical form storage would have printed (lower-case hex of exactly 32 bytes for the manifest and the digest), so a
+/// handle that did not come from storage opens nothing.
 public sealed interface UploadObjects {
     Cause NOT_CANONICAL = Causes.cause("An object handle component is not in the form storage prints");
 
@@ -36,12 +37,12 @@ public sealed interface UploadObjects {
         return Result.all(ObjectId.objectId(handle.id()),
                           BlockId.fromHex(handle.manifest())
                                  .filter(NOT_CANONICAL,
-                                         manifest -> manifest.hexString()
-                                                             .equals(handle.manifest())),
+                                         manifest -> manifest.hash().length == Sha256.LENGTH && manifest.hexString()
+                                                                                                         .equals(handle.manifest())),
                           Sha256.fromHex(handle.digest())
                                 .filter(NOT_CANONICAL,
-                                        digest -> digest.hexString()
-                                                        .equals(handle.digest())))
+                                        digest -> digest.bytes().length == Sha256.LENGTH && digest.hexString()
+                                                                                                  .equals(handle.digest())))
                      .map((id, manifest, digest) -> ObjectRef.objectRef(handle.namespace(),
                                                                          id,
                                                                          manifest,

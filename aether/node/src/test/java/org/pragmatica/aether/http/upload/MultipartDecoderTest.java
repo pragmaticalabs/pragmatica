@@ -90,13 +90,12 @@ class MultipartDecoderTest {
                                 .bytes();
         var cut = indexOf(body, latin("XYZ"));
         var decoder = MultipartDecoder.multipartDecoder(TYPE, NO_LIMITS).unwrap();
-        var first = new Collector();
-        var second = new Collector();
+        var events = new Collector();
 
-        decoder.push(ByteBuffer.wrap(Arrays.copyOfRange(body, 0, cut))).onSuccess(first::accept);
-        assertThat(first.data()).as("the possible delimiter prefix is held back").isEqualTo("abc");
-        decoder.push(ByteBuffer.wrap(Arrays.copyOfRange(body, cut, body.length))).onSuccess(second::accept);
-        assertThat(second.data()).as("the held tail turned out to be content").isEqualTo("\r\n--decoder-bouXYZ");
+        decoder.push(ByteBuffer.wrap(Arrays.copyOfRange(body, 0, cut))).onSuccess(events::accept);
+        assertThat(events.data()).as("the possible delimiter prefix is held back").isEqualTo("abc");
+        decoder.push(ByteBuffer.wrap(Arrays.copyOfRange(body, cut, body.length))).onSuccess(events::accept);
+        assertThat(events.data()).as("the held tail turned out to be content").isEqualTo("abc\r\n--decoder-bouXYZ");
         assertThat(decoder.finish().isSuccess()).isTrue();
     }
 

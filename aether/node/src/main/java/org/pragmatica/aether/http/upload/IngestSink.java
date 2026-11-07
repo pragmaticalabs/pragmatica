@@ -22,6 +22,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.storage.ContentStore;
@@ -47,7 +48,7 @@ import static org.pragmatica.lang.Unit.unit;
 ///   aborted and every object already committed for the request is deleted, so nothing it stored stays in the catalog.
 ///   The client is answered the refusal's status ([UploadIngestError#status]); after an abort the server answers.
 /// - **Permit.** `permit` (the upload's admission) is run exactly once, on whichever terminal path ends the request:
-///   as the stored request is handed to `dispatch` (returned first, so a dispatch that throws cannot keep it), after a refusal was answered and its clean-up settled, or after an
+///   once the stored request was handed to `dispatch` (a dispatch that throws is logged at this boundary, so it cannot keep the permit), after a refusal was answered and its clean-up settled, or after an
 ///   abort's clean-up settled [G: release after the hand-off, not after the slice answers].
 ///
 /// The server makes one call at a time, each after the previous `accept` resolved, so the state below is touched by one
@@ -237,8 +238,10 @@ public final class IngestSink implements BodySink {
 
     // ---- terminal paths ----
     private void handOff(HttpRequest request, UploadHandle handle, ResponseWriter response) {
+        Result.lift(() -> dispatch.dispatch(IngestedRequest.ingestedRequest(request, handle, this::discardStored),
+                                             response))
+              .onFailure(cause -> log.error("Dispatching a stored upload failed: {}", cause.message()));
         release();
-        dispatch.dispatch(IngestedRequest.ingestedRequest(request, handle, this::discardStored), response);
     }
 
     private void refuseAndClean(Cause cause, ResponseWriter response) {
