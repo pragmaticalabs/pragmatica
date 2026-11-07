@@ -18,10 +18,12 @@ import java.util.stream.Stream;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.node.machine.LegCommand;
 import org.pragmatica.aether.deployment.node.machine.LegCommand.LegKind;
+import org.pragmatica.aether.deployment.validation.TopicTierPreflight;
 import org.pragmatica.aether.invoke.CronExpression;
 import org.pragmatica.aether.invoke.ScheduledTaskManager;
 import org.pragmatica.aether.resource.ScheduleConfig;
 import org.pragmatica.aether.resource.TopicConfig;
+import org.pragmatica.aether.resource.TopicDurability;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.Slice;
@@ -35,12 +37,14 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskPauseKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistrationKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.TopicPublisherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistrationValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.TopicPublisherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicTier;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
@@ -58,6 +62,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn3;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.utility.warning.OperatorWarningCode;
@@ -74,7 +79,8 @@ import org.slf4j.LoggerFactory;
 /// builders, same inputs) guards (L3).
 ///
 /// The sources copied, and their legacy counterparts in `NodeDeploymentState.Active`:
-/// - topic subscriptions: `doPublishTopicSubscriptions` and `buildTopicSubscriptionPutCommand`;
+/// - topic subscriptions and publishers: `doPublishTopicSubscriptions`, `buildTopicSubscriptionPutCommand`, `buildTopicPublisherPutCommand`,
+///   `readPublishersFromManifest` and the #1337 tier refusal `refuseTierConflicts`;
 /// - stream registrations: `doPublishStreamSubscriptions`, `readStreamSubscriptions`, `resolveStreamName`, the #1935 warnings;
 /// - scheduled tasks: `doPublishScheduledTasks` and `buildValidatedScheduledTaskPutCommand`;
 /// - stream references: `buildStreamRefCommands` (ACQUIRE, and RELEASE for the teardown).
@@ -87,6 +93,8 @@ import org.slf4j.LoggerFactory;
 final class SliceLegBuilders {
     private static final Logger log = LoggerFactory.getLogger(SliceLegBuilders.class);
     private static final String MANIFEST_DIR = "META-INF/slice/";
+    /// The manifest key naming a routed slice's JSON codec settings section (#2394), as legacy `ConfigUpdateSections.JSON_SETTINGS_SECTION_KEY`.
+    private static final String JSON_SETTINGS_SECTION_KEY = "json.settings.section";
     /// The attempt of a slice's holder key, as legacy's `SLICE_HOLDER_ATTEMPT`: a node runs one instance of an artifact at a time, so acquire
     /// and release of the same instance name the same key.
     private static final long SLICE_HOLDER_ATTEMPT = 0L;
@@ -109,6 +117,9 @@ final class SliceLegBuilders {
 
     private record SubscriptionEntry(ResourceAddress address, MethodName methodName, TopicTier tier) {}
 
+    /// A topic the slice publishes and the tier it delivers on (#1337); [TopicTier#UNDECLARED] when the tier could not be read.
+    private record PublisherEntry(ResourceAddress address, TopicTier tier) {}
+
     private record ScheduledEntry(String configSection, MethodName methodName) {}
 
     private record StreamEntry(String streamName,
@@ -119,8 +130,8 @@ final class SliceLegBuilders {
 
     private record StreamRole(String alias) {}
 
-    /// The `config-update` sections a slice declares and the factory class that receives their changes (`slice.factory` of the manifest
-    /// that declares the first of them), copied from `readConfigUpdateEntriesFromManifest`.
+    /// The `config-update` sections a slice declares, its `[json]` settings section, and the factory class that receives their changes
+    /// (`slice.factory` of the manifest that declares the first of them), copied from `readConfigUpdateEntriesFromManifest`.
     record ConfigUpdates(String factoryClassName, List<String> sections) {
         ConfigUpdates {
             sections = List.copyOf(sections);
@@ -139,11 +150,17 @@ final class SliceLegBuilders {
     }
 
     /// The commands registering the legs of `slice` that ride in the ACTIVE batch (spec R-3.4.6), in the legacy chain's order: topic
-    /// subscriptions, stream registrations, scheduled tasks. An invalid schedule string fails the whole step (it must not reach the KV).
+    /// subscriptions and publishers, stream registrations, scheduled tasks. A tier conflict with a committed topic row of another slice
+    /// (#1337) and an invalid schedule string each fail the whole step (neither must reach the KV); the tier refusal is checked first, as
+    /// the legacy topic pass runs before the scheduled-task pass.
     Result<List<LegCommand>> legs(Artifact artifact, Slice slice) {
-        return scheduledTasks(artifact, slice).map(scheduled -> concat(topicSubscriptions(artifact, slice),
-                                                                       streamRegistrations(artifact, slice),
-                                                                       scheduled));
+        var subscriptions = subscriptionEntries(artifact, slice);
+        var publishers = publisherEntries(artifact, slice);
+
+        return refuseTierConflicts(artifact, subscriptions, publishers).flatMap(_ -> scheduledTasks(artifact, slice))
+                                  .map(scheduled -> concat(topicRows(artifact, subscriptions, publishers),
+                                                           streamRegistrations(artifact, slice),
+                                                           scheduled));
     }
 
     /// The per-instance stream references to take with the ACTIVE row (event-stream-namespaces 8.5), one per declared stream role whose
@@ -162,7 +179,7 @@ final class SliceLegBuilders {
                : acquireCommands(artifact, declarations);
     }
 
-    /// The commands of the teardown batch (N13, N16): this node's topic-subscription rows, the stream registrations, this node's stream
+    /// The commands of the teardown batch (N13, N16): this node's topic-subscription and topic-publisher rows, the stream registrations, this node's stream
     /// reference holder keys to release, and the scheduled tasks with their pause keys, in the legacy chain's order. Every one is a remove or a release; the
     /// last-replica filter on the cluster-scoped ones is the FSM's (see the class comment).
     List<LegCommand> teardown(Artifact artifact, Slice slice) {
@@ -193,6 +210,8 @@ final class SliceLegBuilders {
                                  sections);
     }
 
+    /// The `config-update` sections, then the section naming a routed slice's JSON codec settings (#2394, legacy `ConfigUpdateSections`), so a
+    /// committed `json.*` change reaches the factory's `notifyConfigUpdate` with section `json`.
     private static List<String> configUpdateSections(Properties manifest) {
         var sections = new ArrayList<String>();
         var count = manifestCount(manifest.getProperty("reactive.count", "0"));
@@ -204,6 +223,8 @@ final class SliceLegBuilders {
                 Option.option(manifest.getProperty(prefix + "config")).onPresent(sections::add);
             }
         }
+
+        Option.option(manifest.getProperty(JSON_SETTINGS_SECTION_KEY)).onPresent(sections::add);
 
         return sections;
     }
@@ -219,12 +240,26 @@ final class SliceLegBuilders {
         return List.copyOf(all);
     }
 
-    // -- topic subscriptions ------------------------------------------------------------------------------------------
-    private List<LegCommand> topicSubscriptions(Artifact artifact, Slice slice) {
-        return subscriptionEntries(artifact, slice).stream()
-                                  .map(entry -> topicPut(artifact, entry))
-                                  .map(command -> LegCommand.legCommand(LegKind.TOPIC_SUBSCRIPTION, command))
-                                  .toList();
+    // -- topic subscriptions and publishers ---------------------------------------------------------------------------
+    /// The subscription rows, then the publisher rows whose tier was read (#1337: an UNDECLARED tier writes no row, so nothing is refused on a
+    /// guess), as legacy batches them. Both are node-scoped rows, so both carry [LegKind#TOPIC_SUBSCRIPTION]: the teardown always removes them.
+    private List<LegCommand> topicRows(Artifact artifact,
+                                       List<SubscriptionEntry> subscriptions,
+                                       List<PublisherEntry> publishers) {
+        var subscriptionPuts = subscriptions.stream().map(entry -> topicPut(artifact, entry));
+        var publisherPuts = publishers.stream()
+                                      .filter(entry -> entry.tier() != TopicTier.UNDECLARED)
+                                      .map(entry -> publisherPut(artifact, entry));
+
+        return Stream.concat(subscriptionPuts, publisherPuts)
+                     .map(command -> LegCommand.legCommand(LegKind.TOPIC_SUBSCRIPTION, command))
+                     .toList();
+    }
+
+    /// #1337: the key is node-scoped, as the subscription's (#1448).
+    private KVCommand<AetherKey> publisherPut(Artifact artifact, PublisherEntry entry) {
+        return new KVCommand.Put<>(TopicPublisherKey.topicPublisherKey(entry.address(), artifact, sources.self()),
+                                   TopicPublisherValue.topicPublisherValue(sources.self(), entry.tier()));
     }
 
     /// #1448: the key is node-scoped, so this node's subscription record is its own row.
@@ -238,11 +273,20 @@ final class SliceLegBuilders {
                                    TopicSubscriptionValue.topicSubscriptionValue(sources.self(), entry.tier()));
     }
 
+    /// This node's subscription rows, then its publisher rows: every declared publisher, the UNDECLARED ones included, as legacy removes them.
     private List<LegCommand> topicRemovals(Artifact artifact, Slice slice) {
-        return subscriptionEntries(artifact, slice).stream()
-                                  .map(entry -> topicRemove(artifact, entry))
-                                  .map(command -> LegCommand.legCommand(LegKind.TOPIC_SUBSCRIPTION, command))
-                                  .toList();
+        var subscriptionRemoves = subscriptionEntries(artifact, slice).stream()
+                                                     .map(entry -> topicRemove(artifact, entry));
+        var publisherRemoves = publisherEntries(artifact, slice).stream()
+                                               .map(entry -> publisherRemove(artifact, entry));
+
+        return Stream.concat(subscriptionRemoves, publisherRemoves)
+                     .map(command -> LegCommand.legCommand(LegKind.TOPIC_SUBSCRIPTION, command))
+                     .toList();
+    }
+
+    private KVCommand<AetherKey> publisherRemove(Artifact artifact, PublisherEntry entry) {
+        return new KVCommand.Remove<>(TopicPublisherKey.topicPublisherKey(entry.address(), artifact, sources.self()));
     }
 
     /// #1448: scoped to this node, so an unload removes the row this node published and leaves every other instance's row, and therefore the
@@ -297,6 +341,160 @@ final class SliceLegBuilders {
 
     private Option<Artifact> owningBlueprintOf(Artifact sliceArtifact) {
         return OwningBlueprintResolver.owningBlueprintOf(sources.kvStore(), sliceArtifact);
+    }
+
+    /// The `publish.topic.N` bindings of every manifest whose address resolves, copied from `readPublishersFromManifest`.
+    private List<PublisherEntry> publisherEntries(Artifact artifact, Slice slice) {
+        var result = new ArrayList<PublisherEntry>();
+
+        for (var entry : publishBindings(artifact, slice)) {
+            subscriptionAddress(artifact, entry).option()
+                               .map(address -> new PublisherEntry(address,
+                                                                  declaredPublisherTier(artifact,
+                                                                                        entry.config())))
+                               .onPresent(result::add);
+        }
+
+        return result;
+    }
+
+    private List<ReactiveEntry> publishBindings(Artifact artifact, Slice slice) {
+        var result = new ArrayList<ReactiveEntry>();
+
+        for (var manifest : manifests(artifact, slice)) {
+            var count = manifestCount(manifest.getProperty("publish.topics.count", "0"));
+
+            for (int i = 0; i < count; i++) {
+                var prefix = "publish.topic." + i + ".";
+
+                result.add(new ReactiveEntry("publisher",
+                                             "",
+                                             manifest.getProperty(prefix + "config", ""),
+                                             manifest,
+                                             prefix));
+            }
+        }
+
+        return result;
+    }
+
+    /// What the publisher's topic section declares, read through the slice's own composite: an ABSENT section is the ephemeral default, a
+    /// section that cannot be bound, or no config service at all, is [TopicTier#UNDECLARED] (legacy `declaredPublisherTier`).
+    private TopicTier declaredPublisherTier(Artifact artifact, String section) {
+        return configService(artifact).map(service -> publisherTierIn(service, section))
+                            .or(TopicTier.UNDECLARED);
+    }
+
+    private static TopicTier publisherTierIn(ConfigService service, String section) {
+        return service.hasSection(section)
+               ? service.config(section, TopicConfig.class)
+                        .map(SliceLegBuilders::deliveryTier)
+                        .or(TopicTier.UNDECLARED)
+               : TopicTier.EPHEMERAL;
+    }
+
+    private static TopicTier deliveryTier(TopicConfig config) {
+        return config.durability() == TopicDurability.DURABLE
+               ? TopicTier.DURABLE
+               : TopicTier.EPHEMERAL;
+    }
+
+    /// #1337, copied from legacy `refuseTierConflicts`: the cross-deployment half of the tier check, in BOTH orders, against the committed
+    /// topic rows. A subscriber whose handler needs the durable tier is refused while an ephemeral publisher row of its topic stands; a
+    /// publisher that delivers ephemerally is refused while a durable subscriber row stands. A row of the same slice at another version does
+    /// not count (an upgrade replaces its predecessor). Two slices activating at the same instant can each miss the other's row; the runtime
+    /// refusal in `TopicPublisher` is the backstop for that, as under legacy.
+    private Result<Unit> refuseTierConflicts(Artifact artifact,
+                                             List<SubscriptionEntry> subscriptions,
+                                             List<PublisherEntry> publishers) {
+        var conflicts = new ArrayList<String>();
+
+        subscriptions.stream()
+                     .filter(subscription -> subscription.tier()
+                                                         .requiresDurable())
+                     .forEach(subscription -> ephemeralPublishersAt(subscription.address(),
+                                                                    artifact).forEach(publisher -> conflicts.add(subscriberConflict(artifact,
+                                                                                                                                    subscription,
+                                                                                                                                    publisher))));
+        publishers.stream()
+                  .filter(publisher -> publisher.tier()
+                                                .deliversEphemeral())
+                  .forEach(publisher -> durableSubscribersAt(publisher.address(),
+                                                             artifact).forEach(subscriber -> conflicts.add(publisherConflict(artifact,
+                                                                                                                             publisher,
+                                                                                                                             subscriber))));
+
+        return conflicts.isEmpty()
+               ? Result.unitResult()
+               : TopicTierPreflight.TopicTierMismatchRefused.FACTORY.apply(String.join("; ", conflicts)).result();
+    }
+
+    private static String subscriberConflict(Artifact artifact, SubscriptionEntry subscription, String publisher) {
+        return "topic " + subscription.address()
+                                      .asString()
+             + " is subscribed by " + artifact.asString()
+             + "." + subscription.methodName()
+                                 .name()
+             + ", whose handler takes a MessageContext and needs a durable topic, but " + publisher
+             + " publishes it on the EPHEMERAL tier";
+    }
+
+    private static String publisherConflict(Artifact artifact, PublisherEntry publisher, String subscriber) {
+        return "topic " + publisher.address()
+                                   .asString()
+             + " is published on the EPHEMERAL tier by " + artifact.asString()
+             + " but subscribed by " + subscriber
+             + ", whose handler takes a MessageContext and needs a durable topic";
+    }
+
+    private List<String> ephemeralPublishersAt(ResourceAddress address, Artifact self) {
+        var found = new ArrayList<String>();
+
+        sources.kvStore()
+               .forEach(TopicPublisherKey.class,
+                        TopicPublisherValue.class,
+                        (key, value) -> collectConflictingRow(found,
+                                                              new TopicRow(key.address(),
+                                                                           key.artifact(),
+                                                                           key.nodeId(),
+                                                                           value.tier().deliversEphemeral()),
+                                                              address,
+                                                              self));
+
+        return found;
+    }
+
+    private List<String> durableSubscribersAt(ResourceAddress address, Artifact self) {
+        var found = new ArrayList<String>();
+
+        sources.kvStore()
+               .forEach(TopicSubscriptionKey.class,
+                        TopicSubscriptionValue.class,
+                        (key, value) -> collectConflictingRow(found,
+                                                              new TopicRow(key.address(),
+                                                                           key.artifact(),
+                                                                           key.nodeId(),
+                                                                           value.tier().requiresDurable()),
+                                                              address,
+                                                              self));
+
+        return found;
+    }
+
+    /// A committed topic row as the refusal reads it: where, whose, on which node, and whether its tier conflicts.
+    private record TopicRow(ResourceAddress address, Artifact artifact, NodeId node, boolean conflicting) {}
+
+    private static void collectConflictingRow(List<String> found,
+                                              TopicRow row,
+                                              ResourceAddress address,
+                                              Artifact self) {
+        if (row.conflicting() && row.address().equals(address) && !row.artifact().base().equals(self.base())) {
+            var description = row.artifact().asString() + " (on " + row.node().id() + ")";
+
+            if (!found.contains(description)) {
+                found.add(description);
+            }
+        }
     }
 
     // -- stream registrations -----------------------------------------------------------------------------------------
