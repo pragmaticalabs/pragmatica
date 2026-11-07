@@ -172,8 +172,8 @@ class Http3BodyBufferReleaseTest {
             send(stream, BODY, false);
             awaitHeld();
             // one byte past the limit
-            stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[LIMIT - BODY + 1])))
-                  .addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
+            // #2746: the last frame carries the FIN; a FIN-only frame after it can be lost for good
+            Http3TestClient.finishWith(stream, new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[LIMIT - BODY + 1])));
         });
 
         assertThat(answer.status()).isEqualTo("413");
@@ -206,10 +206,13 @@ class Http3BodyBufferReleaseTest {
     private void send(QuicStreamChannel stream, int size, boolean last) {
         stream.write(Http3TestClient.postHeaders(port));
 
-        var written = stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[size])));
+        var data = new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[size]));
 
+        // #2746: the last frame carries the FIN; a FIN-only frame after it can be lost for good
         if (last) {
-            written.addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
+            Http3TestClient.finishWith(stream, data);
+        } else {
+            stream.writeAndFlush(data);
         }
     }
 
