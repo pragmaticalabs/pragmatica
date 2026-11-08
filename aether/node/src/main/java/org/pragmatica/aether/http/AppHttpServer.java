@@ -2007,12 +2007,17 @@ class AppHttpServerAdapter implements AppHttpServer {
         httpForwarder.unwrap()
                      .forward(httpCtx, route, requestId)
                      .onSuccess(responseData -> sendResponse(response, responseData, requestId))
-                     .onFailure(cause -> discardUnsent(request, cause))
-                     .onFailure(cause -> sendProblem(response,
-                                                     forwardFailureStatus(cause),
-                                                     HttpError.clientMessage(cause),
-                                                     request.path(),
-                                                     requestId));
+                     .onFailure(cause -> answerForwardFailure(request, response, cause, requestId));
+    }
+
+    /// The failure is answered only once the unsent upload is deleted, so a client that has the answer can rely on the
+    /// objects being gone (#2915).
+    private void answerForwardFailure(HttpRequest request, ResponseWriter response, Cause cause, String requestId) {
+        discardUnsent(request, cause).onResultRun(() -> sendProblem(response,
+                                                                    forwardFailureStatus(cause),
+                                                                    HttpError.clientMessage(cause),
+                                                                    request.path(),
+                                                                    requestId));
     }
 
     /// Every app listener, HTTP/1.1 and HTTP/3, at start and at certificate rotation, is configured here, so the
@@ -2035,12 +2040,11 @@ class AppHttpServerAdapter implements AppHttpServer {
     /// A stored upload whose forward never left this node ([ForwardError.NotSent], [ForwardError.TooLargeToForward]) reached
     /// no slice: its objects are deleted [G]. A forward that may have reached a node (outcome unknown) keeps them: the
     /// serving node may have claimed the upload.
-    @Contract
-    private static void discardUnsent(HttpRequest request, Cause cause) {
-        switch (cause) {
-            case ForwardError.NotSent _, ForwardError.TooLargeToForward _ -> IngestedRequest.discardUpload(request);
-            default -> {}
-        }
+    private static Promise<Unit> discardUnsent(HttpRequest request, Cause cause) {
+        return switch (cause) {
+            case ForwardError.NotSent _, ForwardError.TooLargeToForward _ -> IngestedRequest.discardedUpload(request);
+            default -> Promise.unitPromise();
+        };
     }
 
     /// A [ForwardError] names its own status: 503 per the 2026-10-07 ruling (know 14a3606152), whose detail says

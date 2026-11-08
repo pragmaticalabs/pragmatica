@@ -31,6 +31,8 @@ import org.pragmatica.http.QueryParams;
 import org.pragmatica.http.server.Disposition;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.storage.ByteRange;
 import org.pragmatica.storage.ContentStore;
@@ -558,7 +560,7 @@ class AppHttpServerStreamingIngestGateTest extends AppHttpServerIngestGateTest {
                                          .or(Map.of()));
         var stored = IngestedRequest.ingestedRequest(new Head("req-stored", HttpMethod.POST, path, headers, QueryParams.queryParams(Map.of())),
                                                      UploadHandle.uploadHandle(List.of(), Map.of()),
-                                                     discarded::incrementAndGet);
+                                                     () -> Promise.success(discarded.incrementAndGet()).mapToUnit());
 
         ((AppHttpServerAdapter) server).handleRequest(stored, statusRecorder(status));
         awaitAnswer(status);
