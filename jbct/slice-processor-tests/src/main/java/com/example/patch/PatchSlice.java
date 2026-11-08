@@ -13,7 +13,6 @@ import org.pragmatica.lang.Promise;
 @Slice
 public interface PatchSlice {
     Profile CURRENT = new Profile("ann", Option.some("annie"), Option.some(30));
-
     Promise<Profile> update(ProfileUpdate request);
     Promise<Profile> updateViaJackson(JacksonProfileUpdate request);
     Promise<ProfileUpdate> echo(ProfileUpdate request);
@@ -45,9 +44,7 @@ public interface PatchSlice {
 
     private static Profile patched(ProfileUpdate update) {
         return new Profile(CURRENT.name(),
-                           update.nickname()
-                                 .applyTo(CURRENT.nickname()),
-                           update.age()
-                                 .applyTo(CURRENT.age()));
+                           update.nickname().applyTo(CURRENT.nickname()),
+                           update.age().applyTo(CURRENT.age()));
     }
 }

@@ -3,8 +3,9 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package com.example.patch;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
 import org.pragmatica.lang.Patch;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 
 /// The same partial update, kept on the Jackson fallback by its Jackson annotation: the generator refuses any type a
