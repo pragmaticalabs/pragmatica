@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart;
+import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,7 +39,7 @@ class PartitionStateIsolationTest {
     void setUp() {
         manager.placementRoleSupplier((_, _) -> role.get());
         manager.ownerEpochSource((_, _) -> EPOCH);
-        manager.epochStarts((_, _, _) -> Option.some(0L));
+        manager.epochStarts((_, _) -> List.of(new EpochStart(EPOCH, 0L)));
         manager.createStream(StreamConfig.streamConfig(STREAM, 2, RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 3_600_000L), "earliest"))
                .onFailure(cause -> fail(cause.message()));
         role.set(Role.REPLICA);

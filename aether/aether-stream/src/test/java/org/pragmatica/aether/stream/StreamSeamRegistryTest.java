@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.util.List;
 import java.nio.file.Path;
 
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -97,7 +98,7 @@ class StreamSeamRegistryTest {
         manager.operatorWarnings(OperatorWarningSink.logOnly());
         manager.ownershipRecords((_, _) -> Option.none());
         manager.tieredReader(new SealedTierFixture().reader());
-        manager.epochStarts((_, _, _) -> Option.none());
+        manager.epochStarts((_, _) -> List.of());
         manager.repairReportBound(TimeSpan.timeSpan(1).seconds());
         manager.exhaustionSink(_ -> {});
         manager.placementRoleSupplier((_, _) -> Role.OWNER);
