@@ -172,7 +172,6 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
     private static List<String> listEntries(String raw) {
         return Arrays.stream(raw.replace("[", "").replace("]", "").split(","))
                      .map(String::trim)
-                     .map(entry -> entry.replace("\"", ""))
                      .filter(entry -> !entry.isBlank())
                      .toList();
     }

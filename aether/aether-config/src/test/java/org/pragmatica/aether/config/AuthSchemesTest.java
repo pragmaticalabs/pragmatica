@@ -4,6 +4,7 @@
 
 package org.pragmatica.aether.config;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import org.pragmatica.lang.Option;
@@ -22,6 +23,16 @@ class AuthSchemesTest {
         AuthSchemes.authSchemes(List.of("Token", "Bearer", "DPoP"))
                    .onFailure(cause -> fail(cause.message()))
                    .onSuccess(schemes -> assertThat(schemes).containsExactly("Token", "Bearer", "DPoP"));
+    }
+
+    @Test
+    void authSchemes_result_isACopy_unaffectedByLaterChangesToTheInput() {
+        var input = new ArrayList<>(List.of("Bearer"));
+        var schemes = AuthSchemes.authSchemes(input).unwrap();
+
+        input.add("Token");
+
+        assertThat(schemes).containsExactly("Bearer");
     }
 
     @Test
