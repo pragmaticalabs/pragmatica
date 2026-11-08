@@ -163,7 +163,7 @@ class Http3FinLossTest {
 
         awaitQuiet(udp);
         stream.eventLoop().submit(() -> writeTail(stream, ending)).sync();
-        awaitProbes(udp);
+        injector.awaitProbes(udp, PROBES);
         injector.release(udp, loss.drop);
     }
 
@@ -186,15 +186,6 @@ class Http3FinLossTest {
         }
 
         throw new AssertionError("the client kept sending for 10 s");
-    }
-
-    /// Returns once the injector holds four datagrams past the burst: the PTO probes, enough for the FIN-only frame to count as lost by packet threshold (a deadline of 10 s only bounds a hang).
-    private void awaitProbes(Channel udp) throws Exception {
-        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-
-        while (System.nanoTime() < deadline && udp.eventLoop().submit(injector::heldAfterBurst).syncUninterruptibly().getNow() < PROBES) {
-            Thread.sleep(20);
-        }
     }
 
     private long writtenOnLoop(Channel udp) {

@@ -17,6 +17,8 @@ package org.pragmatica.http.server;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.BiPredicate;
 
 import org.pragmatica.lang.Contract;
@@ -103,6 +105,16 @@ final class TailLossInjector extends ChannelOutboundHandlerAdapter {
         var content = packet.content();
 
         return content.isReadable() && (content.getByte(content.readerIndex()) & 0x80) == 0;
+    }
+
+    /// Returns once `probes` datagrams are held past the burst, the endpoint's PTO probes (at most 10 s: the bound only
+    /// stops a hang). A fixed delay is not enough on a starved host (#2866).
+    void awaitProbes(Channel channel, int probes) {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+        while (System.nanoTime() < deadline && channel.eventLoop().submit(this::heldAfterBurst).syncUninterruptibly().getNow() < probes) {
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(20));
+        }
     }
 
     /// Stops holding and drops or sends what was held, on the channel's event loop; returns once done.

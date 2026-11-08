@@ -27,6 +27,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 import io.netty.bootstrap.Bootstrap;
+import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.nio.NioIoHandler;
@@ -64,11 +65,12 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// read, and Netty then defers sending until that read completes, so the `FIN` happened to leave with the last data;
 /// written outside that window, as here, each write is packetised at once and the `FIN` travelled alone. The same task
 /// arms the injector, writes the request and ends the injector's burst, so the burst is exactly the request's datagrams
-/// under any load (#2862). The injector releases them 700 ms later, after the PTO probes.
+/// under any load (#2862). The injector releases them once the client has sent four PTO probes (#2866), at the earliest 700 ms later.
 class NettyHttpOperationsFinLossTest {
     private static final int BODY_BYTES = 6 * 1024;
     private static final String PAD = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ".repeat(80);
 
+    private static final int PROBES = 4;
     private final TailLossInjector injector = new TailLossInjector();
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     private final MultiThreadIoEventLoopGroup group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
@@ -172,7 +174,7 @@ class NettyHttpOperationsFinLossTest {
 
         Thread.sleep(100);
         udp.eventLoop().submit(() -> writeTail(stream, request)).sync();
-        scheduler.schedule(() -> injector.release(udp, drop), 700, TimeUnit.MILLISECONDS);
+        scheduler.schedule(() -> release(udp, drop), 700, TimeUnit.MILLISECONDS);
 
         try {
             return reader.answer.get(10, TimeUnit.SECONDS);
@@ -187,6 +189,11 @@ class NettyHttpOperationsFinLossTest {
         injector.arm();
         NettyHttpOperations.writeHttp3Request(stream, request);
         injector.endBurst();
+    }
+
+    private void release(Channel udp, boolean drop) {
+        injector.awaitProbes(udp, PROBES);
+        injector.release(udp, drop);
     }
 
     /// Completes with `status body` once the response stream ends.
