@@ -111,8 +111,8 @@ public sealed interface Patch<T> permits Absent, Null, Value {
     /// Create the patch of a field that was set to a value.
     ///
     /// A `null` value is normalised to [#nullValue()]: `Value(null)` would be written as `null` and read back as
-    /// [Null], so the three states stay the only ones a body can state. [guess: pending the owner's API ruling on
-    /// normalising versus refusing a `null` value.]
+    /// [Null], so the three states stay the only ones a body can state. Instances are created only through these
+    /// factories (owner ruling 2026-11-08).
     ///
     /// @param value Value to be stored in the created instance; `null` gives [Null].
     ///
