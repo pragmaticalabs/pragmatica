@@ -5,10 +5,12 @@
 
 package org.pragmatica.aether.forge;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.URI;
 import java.net.http.HttpRequest;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -27,7 +29,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
+import java.util.jar.JarOutputStream;
 import java.util.stream.Collectors;
+import java.util.zip.ZipEntry;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -243,11 +247,13 @@ class Fsm2EquivalenceRoundTest {
                 yield placement;
             }
             case E09 -> {
-                // A fatal failure under ALL_OR_NOTHING: a second slice that cannot be resolved; the verdict is whatever the durable record says.
+                // A fatal failure under ALL_OR_NOTHING: a second slice whose jar is present but carries no slice manifest (unloadable, so a fatal
+                // load failure, not a publish-time rejection); the verdict is whatever the durable record says.
+                uploadUnloadableJar(cluster);
                 var at = publish(cluster, blueprint(echo, 3) + """
 
                     [[slices]]
-                    artifact = "org.f4.missing:never-published:1.0.0"
+                    artifact = "org.f4.broken:unloadable:1.0.0"
                     instances = 3
                     """);
 
@@ -258,6 +264,26 @@ class Fsm2EquivalenceRoundTest {
                 yield -1L;
             }
         };
+    }
+
+    /// Puts a jar that is a valid archive without any slice manifest entries into the cluster's artifact repository (E-09's fatal trigger).
+    private void uploadUnloadableJar(EmberCluster cluster) {
+        var jar = new ByteArrayOutputStream();
+
+        try (var out = new JarOutputStream(jar)) {
+            out.putNextEntry(new ZipEntry("org/f4/broken/Nothing.txt"));
+            out.write("not a slice".getBytes(StandardCharsets.UTF_8));
+            out.closeEntry();
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        var response = send(HttpRequest.newBuilder()
+                                       .uri(mgmt(cluster, "/repository/org/f4/broken/unloadable/1.0.0/unloadable-1.0.0.jar"))
+                                       .PUT(HttpRequest.BodyPublishers.ofByteArray(jar.toByteArray()))
+                                       .timeout(Duration.ofSeconds(10))
+                                       .build());
+
+        log("upload unloadable jar -> " + response);
     }
 
     /// Publishes and waits for placement; returns O5 in ms.
