@@ -3,6 +3,7 @@ package org.pragmatica.storage;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.storage.AppendLog.WalRecord;
@@ -610,6 +611,73 @@ class AppendLogTest {
             assertThat(commit.isSuccess()).as("the close-time fsync covered the write").isTrue();
             assertThat(wal.failStopped()).isFalse();
             assertThat(listing()).isEqualTo(before);
+        }
+
+        /// #2855 (the wait): close() takes `writeLock` then `syncLock`, so an fsync in flight (modelled by holding `syncLock`)
+        /// finishes before the channel closes. A close() that did not wait would close under the commit and leave the log
+        /// to fail-stop on a closed channel. The closer thread's BLOCKED state is the observation, bounded by a deadline.
+        @Test
+        @Timeout(30)
+        void close_blocksWhileAGroupCommitHoldsSyncLock_thenCompletesWithNoFailStopMark() throws Exception {
+            var wal = open("close-waits.wal");
+            var seq = wal.write(0L, payload(0), 1L).unwrap();
+            var closer = new Thread(wal::close);
+            Promise<Unit> commit;
+            Thread.State whileHeld;
+            boolean writableWhileHeld;
+
+            synchronized (lockOf(wal, "syncLock")) {
+                commit = wal.commit(seq);
+                closer.start();
+                whileHeld = awaitSettled(closer);
+                writableWhileHeld = wal.writable().isSuccess();
+            }
+
+            closer.join();
+            var commitResult = commit.await();
+
+            assertThat(whileHeld).as("close() waits for the in-flight commit").isEqualTo(Thread.State.BLOCKED);
+            assertThat(writableWhileHeld).as("the log is not closed while the commit is in flight").isTrue();
+            assertThat(commitResult.isSuccess()).isTrue();
+            assertThat(wal.failStopped()).isFalse();
+            assertThat(listing()).noneMatch(name -> name.contains(".failstopped"));
+        }
+
+        /// #2855 (the refusal): a commit for a sequence the close-time force did not cover is refused with WAL_CLOSED, without
+        /// forcing the closed channel -- which would fail-stop the log and write the mark beside a log that is gone.
+        @Test
+        void commitBeyondTheCloseTimeForce_isRefusedClosed_withoutFailStop() throws IOException {
+            var wal = open("commit-beyond-close.wal");
+            var seq = wal.write(0L, payload(0), 1L).unwrap();
+
+            wal.close();
+            var before = listing();
+            var commit = wal.commit(seq + 1).await();
+
+            assertThat(commit.isFailure()).as("seq %d was never written, so no close-time force covered it", seq + 1).isTrue();
+            commit.onFailure(cause -> assertThat(cause).isEqualTo(AppendLog.WalError.General.WAL_CLOSED));
+            assertThat(wal.failStopped()).isFalse();
+            assertThat(listing()).isEqualTo(before);
+        }
+
+        private static Object lockOf(AppendLog wal, String name) throws ReflectiveOperationException {
+            var field = AppendLog.class.getDeclaredField(name);
+
+            field.setAccessible(true);
+            return field.get(wal);
+        }
+
+        /// The thread's state once it has parked on a monitor or finished; fails the test past the deadline.
+        private static Thread.State awaitSettled(Thread thread) throws InterruptedException {
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+            while (thread.getState() != Thread.State.BLOCKED && thread.getState() != Thread.State.TERMINATED) {
+                if (System.nanoTime() > deadline) {
+                    fail("thread neither blocked nor finished: " + thread.getState());
+                }
+                Thread.sleep(2);
+            }
+            return thread.getState();
         }
 
         private List<String> listing() throws IOException {
