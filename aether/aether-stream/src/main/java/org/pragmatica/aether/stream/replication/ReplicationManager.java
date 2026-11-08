@@ -177,6 +177,25 @@ public interface ReplicationManager extends AutoCloseable {
         return new DefaultReplicationManager(governorId, registry, transport, batcher);
     }
 
+    /// The production manager (#263): owner-aware as [#replicationManager(NodeId, ReplicaRegistry, ReplicationTransport, EarliestRetainedOffset)],
+    /// with an adaptive batcher of `maxEvents` / `maxDelay`. Events and runs are handed over in the owner's append section
+    /// and encoded and sent on flusher threads in offset order, through the same chunking, re-sending path as the direct
+    /// manager; the first event of an idle partition goes out at once.
+    static ReplicationManager batchingReplicationManager(NodeId governorId,
+                                                         ReplicaRegistry registry,
+                                                         ReplicationTransport transport,
+                                                         EarliestRetainedOffset earliestRetained,
+                                                         int maxEvents,
+                                                         TimeSpan maxDelay) {
+        return new DefaultReplicationManager(governorId,
+                                             registry,
+                                             transport,
+                                             earliestRetained,
+                                             sender -> ReplicationBatcher.adaptiveReplicationBatcher(sender,
+                                                                                                    maxEvents,
+                                                                                                    maxDelay));
+    }
+
     private static ReplicationManager noOpReplicationManager() {
         var emptyRegistry = ReplicaRegistry.replicaRegistry();
 

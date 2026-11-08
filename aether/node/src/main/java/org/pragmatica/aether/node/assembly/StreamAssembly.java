@@ -309,13 +309,17 @@ public sealed interface StreamAssembly {
         // just below (it needs this manager), so the earliest-retained seam reads through a holder set
         // immediately after.
         var streamPartitionManagerRef = new AtomicReference<StreamPartitionManager>();
-        var streamReplicationManager = ReplicationManager.replicationManager(config.self(),
-                                                                             streamReplicaRegistry,
-                                                                             streamReplicationTransport,
-                                                                             (streamName, partition) -> Option.option(streamPartitionManagerRef.get())
-                                                                                                              .map(spm -> spm.earliestRetainedOffset(streamName,
-                                                                                                                                                     partition))
-                                                                                                              .or(-1L));
+        // #263 (overhaul 7.2): the owner batches what it replicates. The append section hands each event to the batcher;
+        // encoding and sending happen on flusher threads, in offset order, and an idle partition's first event goes out at once.
+        var streamReplicationManager = ReplicationManager.batchingReplicationManager(config.self(),
+                                                                                     streamReplicaRegistry,
+                                                                                     streamReplicationTransport,
+                                                                                     (streamName, partition) -> Option.option(streamPartitionManagerRef.get())
+                                                                                                                      .map(spm -> spm.earliestRetainedOffset(streamName,
+                                                                                                                                                             partition))
+                                                                                                                      .or(-1L),
+                                                                                     config.streaming().replicationBatchMaxEvents(),
+                                                                                     config.streaming().replicationBatchMaxDelay());
         var streamSegmentIndex = new SegmentIndex();
         // A3b restore-at-boot: the streams MetadataStore was already restored from its latest disk
         // snapshot when `streamStorageSetup` was assembled (StorageFactory.restoreAndSignalReady), so

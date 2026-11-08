@@ -242,6 +242,13 @@ public final class ConfigValidator {
             errors.add("streaming.caught_up_max_lag_offsets must be >= 0 (a negative bound rejects every replica, "
                       + "stopping replica-served reads and blocking the ring-release catch-up gate). Got: " + streaming.caughtUpMaxLagOffsets());
         }
+        // #263: a batch of zero events can never fill, and a non-positive window would flush every event on its own.
+        if (streaming.replicationBatchMaxEvents() < 1) {
+            errors.add("streaming.replication_batch_max_events must be >= 1. Got: " + streaming.replicationBatchMaxEvents());
+        }
+        if (streaming.replicationBatchMaxDelay().nanos() <= 0) {
+            errors.add("streaming.replication_batch_max_delay must be > 0. Got: " + streaming.replicationBatchMaxDelay());
+        }
         // #1604: 0 means "derive from the filesystem"; a negative cap has no meaning.
         if (streaming.segmentDiskMaxBytes() < 0) {
             errors.add("streaming.segment_disk_max_bytes must be >= 0 (0 derives the cap from the filesystem). Got: " + streaming.segmentDiskMaxBytes());
