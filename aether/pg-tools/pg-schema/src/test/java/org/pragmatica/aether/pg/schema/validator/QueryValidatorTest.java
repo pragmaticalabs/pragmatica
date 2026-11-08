@@ -6,6 +6,8 @@ package org.pragmatica.aether.pg.schema.validator;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.pg.parser.PostgresParser;
 import org.pragmatica.aether.pg.parser.transform.CstNavigator;
@@ -831,6 +833,25 @@ class QueryValidatorTest {
 
         @Test void selectOutputColumnNames_qualifiedColumnOverTableAlias_isTheColumn() {
             assertThat(outputColumns("SELECT u.name FROM users AS u")).isEqualTo(Option.present(List.of("name")));
+        }
+
+        /// #2894 regression: an alias the lexer reads as a keyword / type word used to extract as the
+        /// placeholder `???`. Every such word must come back as its own lexeme, folded like an unquoted identifier.
+        @ParameterizedTest
+        @ValueSource(strings = {"name", "text", "user", "Name", "timestamp", "interval", "char", "varchar",
+                                "boolean", "int", "integer", "bigint", "numeric", "json", "jsonb", "bit"})
+        void selectOutputColumnNames_keywordLikeAlias_isTheAliasLexeme(String alias) {
+            assertThat(outputColumns("SELECT lower(name) AS " + alias + " FROM users"))
+                .isEqualTo(Option.present(List.of(alias.toLowerCase())));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"name", "text", "user", "timestamp", "int", "json"})
+        void selectOutputColumnNames_quotedKeywordLikeAlias_keepsCase(String alias) {
+            var quoted = alias.substring(0, 1).toUpperCase() + alias.substring(1);
+
+            assertThat(outputColumns("SELECT lower(name) AS \"" + quoted + "\" FROM users"))
+                .isEqualTo(Option.present(List.of(quoted)));
         }
 
         @Test void selectOutputColumnNames_quotedAlias_isTheAlias() {

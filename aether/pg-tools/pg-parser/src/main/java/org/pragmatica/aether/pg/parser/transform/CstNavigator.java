@@ -94,6 +94,32 @@ public record CstNavigator(CstNode.NonTerminal node) {
                    .orElse(Option.empty());
     }
 
+    /// Text of the first leaf in document order, descending through nested nodes. Unlike
+    /// [#firstTokenText()] it also reads an anonymous `Terminal` — the shape an inline keyword literal
+    /// takes — and a leaf nested under a keyword rule.
+    public Option<String> firstLeafText() {
+        return firstLeafOf(node);
+    }
+
+    private static Option<String> firstLeafOf(CstNode node) {
+        return switch (node) {
+            case CstNode.Token tok -> Option.present(tok.text());
+            case CstNode.Terminal term -> Option.present(term.text());
+            case CstNode.NonTerminal nt -> firstLeafOfChildren(nt);
+            case CstNode.Error _ -> Option.empty();
+        };
+    }
+
+    private static Option<String> firstLeafOfChildren(CstNode.NonTerminal parent) {
+        return Option.from(parent.children()
+                                 .stream()
+                                 .filter(CstNavigator::isNonEmpty)
+                                 .map(CstNavigator::firstLeafOf)
+                                 .filter(Option::isPresent)
+                                 .findFirst())
+                     .flatMap(found -> found);
+    }
+
     public <T> List<T> collectList(String itemRule, Function<CstNavigator, T> mapper) {
         var result = new ArrayList<T>();
 

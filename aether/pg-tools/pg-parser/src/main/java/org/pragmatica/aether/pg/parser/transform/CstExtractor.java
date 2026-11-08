@@ -18,6 +18,10 @@ import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
 public final class CstExtractor {
     private CstExtractor() {}
 
+    /// The identifier a node spells. A label the lexer reads as a keyword or type word (`name`, `text`,
+    /// `int`, ...) has no `*Identifier` child — its lexeme is an anonymous or keyword-kind leaf — so it is
+    /// taken from the node's own first leaf and normalised like any other identifier. A node with no
+    /// lexeme at all is a parser defect and fails loudly instead of yielding a placeholder name.
     public static Identifier extractIdentifier(CstNavigator nav) {
         var quoted = nav.child("QuotedIdentifier");
 
@@ -42,7 +46,9 @@ public final class CstExtractor {
         }
 
         return classifyRawIdentifier(nav.span(),
-                                     nav.firstTokenText().or("???"));
+                                     nav.firstTokenText()
+                                        .orElse(nav::firstLeafText)
+                                        .expect("identifier node '" + nav.rule() + "' carries no lexeme at " + nav.span()));
     }
 
     /// peglib 0.7.x lexes an identifier as ONE token — `ColId`, or the kind of whatever keyword rule

@@ -6,6 +6,8 @@ package org.pragmatica.aether.pg.codegen.processor;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.file.Path;
 
@@ -94,6 +96,23 @@ class ScalarAliasAndArrayBindTest {
         void literalContainingAs_doesNotConfuse() throws Exception {
             assertThat(factory("Promise<Long>", "SELECT count(*) AS n FROM users WHERE name = ANY(:names) AND email <> ' x AS y '"))
                 .contains("row.getLong(\"n\")");
+        }
+
+        /// #2894 regression: an alias the lexer reads as a keyword / type word generated `row.getString("???")`.
+        @ParameterizedTest
+        @ValueSource(strings = {"name", "text", "user", "Name", "timestamp", "interval", "char", "varchar",
+                                "boolean", "int", "integer", "bigint", "numeric", "json", "jsonb", "bit"})
+        void keywordLikeAlias_isTheColumn(String alias) throws Exception {
+            var source = factory("Promise<String>", "SELECT lower(name) AS " + alias + " FROM users WHERE name = ANY(:names)");
+
+            assertThat(source).contains("row.getString(\"" + alias.toLowerCase() + "\")").doesNotContain("???");
+        }
+
+        @Test
+        void quotedKeywordLikeAlias_keepsCase() throws Exception {
+            assertThat(factory("Promise<String>", "SELECT lower(name) AS \"Name\" FROM users WHERE name = ANY(:names)"))
+                .contains("row.getString(\"Name\")")
+                .doesNotContain("???");
         }
 
         @Test

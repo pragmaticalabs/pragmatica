@@ -81,6 +81,33 @@ class ReturnTypeMappingValidationTest {
         assertThat(result.diagnostics()).doesNotContain(NO_MATCH);
     }
 
+    /// #2894: an alias the lexer reads as a keyword word (`name`) used to extract as `???`, so a matching
+    /// `(SELECT 1) AS name` target warned that `name` had no SELECT column.
+    @Test
+    void subqueryAliasedAsKeywordWord_emitsNoWarning() throws Exception {
+        var source = """
+            package test;
+
+            import org.pragmatica.aether.pg.codegen.annotation.Query;
+            import org.pragmatica.aether.resource.db.PgSql;
+            import org.pragmatica.lang.Promise;
+            import java.util.List;
+
+            @PgSql
+            public interface KeywordAliasRepo {
+                record Row(long id, long name) {}
+
+                @Query("SELECT id, (SELECT 1) AS name FROM orders")
+                Promise<List<Row>> findAll();
+            }
+            """;
+
+        var result = compile(source, "test/KeywordAliasRepo.java");
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.diagnostics()).doesNotContain(NO_MATCH);
+    }
+
     @Test
     void selectStar_emitsNoWarning() throws Exception {
         var source = """
