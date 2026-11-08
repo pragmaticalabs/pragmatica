@@ -10,6 +10,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.fsm2.AbsenceBounds;
@@ -42,6 +43,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.lang.Contract;
@@ -193,7 +195,8 @@ public final class Fsm2System {
 
     /// The cluster FSM's settings: the atomicity and sizing the node is configured with, the absence bounds derived from the SWIM and
     /// membership terms, the reconcile tick from `[timeouts.deployment]`, the process the correlation ids are qualified by, and the lost-write
-    /// backstop after the consensus `applyTimeout` (`submissionExpiry = applyTimeout + 5 s`, MQ-7).
+    /// backstop after the consensus `applyTimeout` (`submissionExpiry = applyTimeout + 5 s`, MQ-7), and the configured core nodes as the seed cores
+    /// absence classes CORE (#2868; `seedNodes`, which J5 reads, stays empty).
     public static Settings clusterSettings(AetherNodeConfig config,
                                            ProcessIncarnation process,
                                            SwimConfig swim,
@@ -213,22 +216,28 @@ public final class Fsm2System {
                                                        splitTimeout))
                                   .unwrap();
         var sizing = config.deploymentDefaults().communitySizing();
+        var paced = Settings.settings(config.self(),
+                                      config.atomicity(),
+                                      Set.of(),
+                                      bounds)
+                            .withTiming(Timing.DEFAULT.withTick(config.timeouts()
+                                                                      .deployment()
+                                                                      .reconciliationInterval()
+                                                                      .millis()))
+                            .withCommunitySizing(sizing.targetSize(),
+                                                 sizing.viabilityFloor());
 
-        return Settings.settings(config.self(),
-                                 config.atomicity(),
-                                 Set.of(),
-                                 bounds)
-                       .withTiming(Timing.DEFAULT.withTick(config.timeouts()
-                                                                 .deployment()
-                                                                 .reconciliationInterval()
-                                                                 .millis()))
-                       .withCommunitySizing(sizing.targetSize(),
-                                            sizing.viabilityFloor())
-                       .withSubmissionExpiry(config.protocol()
-                                                   .applyTimeout()
-                                                   .plus(TimeSpan.timeSpan(5).seconds())
-                                                   .millis())
-                       .withProcess(process);
+        return paced.withSubmissionExpiry(config.protocol().applyTimeout().plus(TimeSpan.timeSpan(5).seconds()).millis())
+                    .withProcess(process)
+                    .withSeedCores(seedCores(config.topology()));
+    }
+
+    /// The configured core nodes, which `Absence.classOf` classes CORE without a directive (#2868).
+    static Set<NodeId> seedCores(TopologyConfig topology) {
+        return topology.coreNodes()
+                       .stream()
+                       .map(NodeInfo::id)
+                       .collect(Collectors.toUnmodifiableSet());
     }
 
     // -- assembly ----------------------------------------------------------------------------------------------------

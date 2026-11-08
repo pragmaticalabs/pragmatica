@@ -77,6 +77,20 @@ final class MbWorld {
         return w;
     }
 
+    /// A world whose configured core nodes are `seedCores` (`Settings.seedCores`, #2868); `seedNodes` stays empty, as in production.
+    static MbWorld worldWithSeedCores(Set<NodeId> seedCores, NodeId... cores) {
+        var w = new MbWorld(Settings.settings(FsmHarness.SELF, DeploymentAtomicity.ALL_OR_NOTHING, Set.of(), bounds())
+                                    .withSeedCores(seedCores));
+
+        for (var core : cores) {
+            w.cores.add(core);
+        }
+
+        w.syncCores();
+
+        return w;
+    }
+
     /// A world whose communities are viable with `floor` live members (the default floor is 3).
     static MbWorld worldWithFloor(int floor, NodeId... cores) {
         var w = new MbWorld(Settings.settings(FsmHarness.SELF,

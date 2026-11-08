@@ -21,6 +21,10 @@ import org.pragmatica.consensus.NodeId;
 ///   `[guess: the margin, settled by the timeout jitter of E-04]`.
 /// - `process`: this JVM's process identity; it qualifies every correlation id (P3-Q16), so ids of two processes never collide
 ///   `[guess: the boot incarnation and token, formatted c<bootIncarnation>.<bootToken>-<incarnation>-<seq>; P3-Q16 fixes neither the qualifier nor the format]`.
+/// - `seedCores`: the configured core nodes (`topology.coreNodes`), read only by `Absence.classOf` (#2868): a seed core never receives an
+///   activation directive, and the live membership views that otherwise mark it a core drop it when it departs, so without this durable
+///   signal a departed seed core is classed a worker and is never judged absent. Distinct from `seedNodes`, which `Directory.assignCore` (J5)
+///   reads and which this field leaves unchanged.
 ///
 /// `jitter` maps a subject (an artifact-node key) to a number in `[0, 1)` for the retry delays (R-3.3.7). It is
 /// injected so that `step` stays a function of its arguments: the interpreter supplies a random source, a test a
@@ -30,6 +34,7 @@ public record Settings(NodeId self,
                        int communityTargetSize,
                        int communityViabilityFloor,
                        Set<NodeId> seedNodes,
+                       Set<NodeId> seedCores,
                        AbsenceBounds bounds,
                        Timing timing,
                        DivergenceBounds divergence,
@@ -42,6 +47,7 @@ public record Settings(NodeId self,
 
     public Settings {
         seedNodes = Set.copyOf(seedNodes);
+        seedCores = Set.copyOf(seedCores);
     }
 
     public static Settings settings(NodeId self,
@@ -53,6 +59,7 @@ public record Settings(NodeId self,
                             100,
                             3,
                             seedNodes,
+                            Set.of(),
                             bounds,
                             Timing.DEFAULT,
                             DivergenceBounds.DEFAULT,
@@ -67,6 +74,7 @@ public record Settings(NodeId self,
                             communityTargetSize,
                             communityViabilityFloor,
                             seedNodes,
+                            seedCores,
                             bounds,
                             value,
                             divergence,
@@ -81,6 +89,7 @@ public record Settings(NodeId self,
                             targetSize,
                             viabilityFloor,
                             seedNodes,
+                            seedCores,
                             bounds,
                             timing,
                             divergence,
@@ -95,6 +104,7 @@ public record Settings(NodeId self,
                             communityTargetSize,
                             communityViabilityFloor,
                             seedNodes,
+                            seedCores,
                             bounds,
                             timing,
                             value,
@@ -109,6 +119,7 @@ public record Settings(NodeId self,
                             communityTargetSize,
                             communityViabilityFloor,
                             seedNodes,
+                            seedCores,
                             bounds,
                             timing,
                             divergence,
@@ -123,11 +134,27 @@ public record Settings(NodeId self,
                             communityTargetSize,
                             communityViabilityFloor,
                             seedNodes,
+                            seedCores,
                             bounds,
                             timing,
                             divergence,
                             submissionExpiry,
                             value,
+                            jitter);
+    }
+
+    public Settings withSeedCores(Set<NodeId> value) {
+        return new Settings(self,
+                            atomicity,
+                            communityTargetSize,
+                            communityViabilityFloor,
+                            seedNodes,
+                            value,
+                            bounds,
+                            timing,
+                            divergence,
+                            submissionExpiry,
+                            process,
                             jitter);
     }
 
@@ -137,6 +164,7 @@ public record Settings(NodeId self,
                             communityTargetSize,
                             communityViabilityFloor,
                             seedNodes,
+                            seedCores,
                             bounds,
                             timing,
                             divergence,
