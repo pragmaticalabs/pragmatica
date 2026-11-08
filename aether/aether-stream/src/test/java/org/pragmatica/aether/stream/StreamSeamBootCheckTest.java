@@ -113,6 +113,24 @@ class StreamSeamBootCheckTest {
         assertThat(walManager.unboundSeams()).as("a factory that defaults it").contains(StreamSeam.OWNER_EPOCH_SOURCE);
     }
 
+    /// #1971 (PR-6a): the committed epoch starts are a REQUIRED argument of the fence-enabled (production) factory; a source the
+    /// caller passed counts as bound there, while [CommittedEpochStarts#NONE] and every other factory leave the seam at its default.
+    @Test
+    void epochStarts_handedToTheFenceEnabledFactory_countsAsBound_andNoneDoesNot() {
+        var production = fenceEnabled((_, _) -> Epoch.ZERO, (_, _) -> List.of());
+        var unwired = fenceEnabled((_, _) -> Epoch.ZERO);
+
+        try {
+            assertThat(production.unboundSeams()).as("a source the caller passed").doesNotContain(StreamSeam.EPOCH_STARTS);
+            assertThat(unwired.unboundSeams()).as("NONE is the default").contains(StreamSeam.EPOCH_STARTS);
+        } finally {
+            production.close();
+            unwired.close();
+        }
+
+        assertThat(walManager.unboundSeams()).as("a factory that defaults it").contains(StreamSeam.EPOCH_STARTS);
+    }
+
     @Test
     void reportUnboundSafetySeams_namesEachSafetyRelevantDefault_atError_onAWalManager() {
         walManager.reportUnboundSafetySeams();
@@ -154,6 +172,10 @@ class StreamSeamBootCheckTest {
     }
 
     private StreamPartitionManager fenceEnabled(StreamOwnerEpochSource source) {
+        return fenceEnabled(source, CommittedEpochStarts.NONE);
+    }
+
+    private StreamPartitionManager fenceEnabled(StreamOwnerEpochSource source, CommittedEpochStarts epochStarts) {
         return streamPartitionManager(Long.MAX_VALUE,
                                       EvictionListener.NOOP,
                                       ReplicationManager.NONE,
@@ -162,6 +184,7 @@ class StreamSeamBootCheckTest {
                                                                                                                           TO_STRING_BYTES,
                                                                                                                           UNUSED_DESERIALIZER)),
                                       source,
+                                      epochStarts,
                                       Option.some(AppendLog.Opener.directory(walDir)),
                                       LastSealedOffsetSource.none(),
                                       DurableSealedOffsetSource.none());

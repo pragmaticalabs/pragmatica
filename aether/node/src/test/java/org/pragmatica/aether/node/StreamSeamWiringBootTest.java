@@ -21,7 +21,6 @@ import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.aether.stream.StreamPartitionManager;
-import org.pragmatica.aether.stream.StreamSeam;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -37,14 +36,15 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
 /// #2201 A-14, the author pre-check of PR-2a, through the REAL boot path: `StreamAssembly` binds every late-bound seam of the
-/// stream partition manager except `EPOCH_STARTS` (which production never binds; its default is conservative), the owner-epoch
-/// source counting as bound because the assembly hands it to the factory, and its boot check
+/// stream partition manager, the owner-epoch source and (#1971, PR-6a NT-143) the committed epoch starts counting as bound
+/// because the assembly hands them to the factory, and its boot check
 /// (`reportUnboundSafetySeams`) runs only after the last safety-relevant seam is bound, so a correctly wired node with a WAL
 /// logs no seam ERROR and its gauge reads 0. The stream-module tests pin each setter's registration; what they cannot pin is
 /// which seams the assembly binds and where it calls the check.
 ///
-/// Red with any seam binding removed from `StreamAssembly` (the first assertion), with the owner-epoch source no longer
-/// registered by the constructor, or with the check called before the last safety-relevant binding (the ERROR assertion). Not
+/// Red with any seam binding removed from `StreamAssembly` (the first assertion), with the owner-epoch source or the committed
+/// epoch starts no longer registered by the constructor (NT-143: red at the rc5 base `2e44f7577b`, where production never bound
+/// `EPOCH_STARTS`), or with the check called before the last safety-relevant binding (the ERROR assertion). Not
 /// red with the check's call removed: on a correctly wired node it has nothing to say, and its own behaviour is pinned in
 /// `StreamSeamBootCheckTest`.
 class StreamSeamWiringBootTest {
@@ -76,7 +76,7 @@ class StreamSeamWiringBootTest {
 
     @Test
     @Timeout(value = 90, unit = SECONDS)
-    void aBootedNodeWithAWal_bindsEverySeamButEpochStarts_andItsBootCheckStaysSilent() {
+    void aBootedNodeWithAWal_bindsEverySeam_andItsBootCheckStaysSilent() {
         org.slf4j.LoggerFactory.getLogger(StreamPartitionManager.class).error(SENTINEL);
         node = AetherNode.aetherNode(minimalConfig(), () -> {})
                          .onFailure(cause -> fail("boot must succeed: " + cause.message()))
@@ -85,7 +85,7 @@ class StreamSeamWiringBootTest {
 
         assertThat(node.storageSetups().get(StorageFactory.STREAMS_NAME).instance().logRoot().isPresent())
             .as("fixture: the node keeps a stream WAL, so the boot check is armed").isTrue();
-        assertThat(manager.unboundSeams()).as("every seam bound by the assembly but EPOCH_STARTS").containsExactly(StreamSeam.EPOCH_STARTS);
+        assertThat(manager.unboundSeams()).as("every seam bound by the assembly, EPOCH_STARTS included (#1971)").isEmpty();
         assertThat(manager.unboundSafetySeamCount()).as("the gauge's value").isZero();
         assertThat(capture.messages(Level.ERROR)).as("the boot check found nothing to report; only the positive control was captured")
                                                  .containsExactly(SENTINEL);

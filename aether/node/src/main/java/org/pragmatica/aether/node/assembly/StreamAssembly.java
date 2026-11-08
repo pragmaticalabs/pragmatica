@@ -78,6 +78,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.storage.DelegatedStorageAdapter;
+import org.pragmatica.aether.stream.CommittedEpochStarts;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.DeadLetterHandler;
 import org.pragmatica.aether.stream.DefaultStreamPublisher;
@@ -361,6 +362,10 @@ public sealed interface StreamAssembly {
                                                                                    clusterNode,
                                                                                    ownershipEpochHighWater,
                                                                                    streamOwnerEpochSource,
+                                                                                   // #1971/#1938 (PR-6a): the committed epoch starts a
+                                                                                   // non-owner copy's doubted prefix and a catch-up
+                                                                                   // from a log-less source are judged by.
+                                                                                   CommittedEpochStarts.committedEpochStarts(kvStore),
                                                                                    streamLogs(streamStorage),
                                                                                    streamSegmentIndex::lastSealedOffset,
                                                                                    DurableSealedOffsetSource.fromLatestSnapshot(streamStorageSetup.snapshotManager(),

@@ -76,6 +76,16 @@ public final class EpochValidation {
                           .or(() -> Result.success(ownerEpoch));
     }
 
+    /// The offset at or below every offset an epoch after `epoch` may have re-assigned ([#resumeBound]), or none when no start
+    /// after it is recorded (or none at all). #1971 (I-24): a non-owner copy whose records go no further than `epoch`'s lineage
+    /// is doubted from here, by the same rule a consumer of that epoch resumes by; [Epoch#ZERO] stands for "older than every
+    /// kept start" and answers the oldest kept start.
+    public static Option<Long> reassignedFrom(List<EpochStart> starts, Epoch epoch) {
+        return starts.isEmpty()
+               ? Option.none()
+               : resumeBound(starts, epoch);
+    }
+
     /// The offset at or below every offset an epoch after the consumer's may have re-assigned: the start that followed the
     /// consumer's epoch, or, for a consumer older than every kept start, the oldest kept start, whose offset the record keeps as
     /// the lowest of those it folded (`StreamPartitionOwnershipValue#capped`). A cursor at or below it is admitted; above it the

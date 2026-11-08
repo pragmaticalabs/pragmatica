@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
+import org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
@@ -87,9 +88,8 @@ class ReplicaAckGateTest {
         replica.createStream(StreamConfig.streamConfig(STREAM));
         replica.ownerEpochSource((_, _) -> committed.get());
         replica.placementRoleSupplier((_, _) -> Role.REPLICA);
-        replica.epochStarts((_, _, epoch) -> epoch.equals(E2)
-                                             ? Option.some(E2_START)
-                                             : Option.none());
+        // the committed record lists every epoch's start, the current one included (#1873: committed before activation)
+        replica.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E2, E2_START)));
         handler = replicationReceiveHandler(self,
                                             replica::appendRecovered,
                                             (stream, partition) -> Math.min(replica.nextExpectedOffset(stream, partition),

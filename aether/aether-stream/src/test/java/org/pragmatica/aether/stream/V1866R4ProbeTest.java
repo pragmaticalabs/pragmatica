@@ -129,6 +129,7 @@ class V1866R4ProbeTest {
                                       cluster,
                                       OwnershipEpochHighWater.ownershipEpochHighWater(emptyStore()),
                                       StreamOwnerEpochSource.zero(),
+                                      CommittedEpochStarts.NONE,
                                       Option.some(AppendLog.Opener.directory(walDir)),
                                       LastSealedOffsetSource.none(),
                                       DurableSealedOffsetSource.none());

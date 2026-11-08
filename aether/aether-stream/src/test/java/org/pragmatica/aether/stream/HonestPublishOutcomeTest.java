@@ -458,6 +458,7 @@ class HonestPublishOutcomeTest {
                                       node,
                                       OwnershipEpochHighWater.ownershipEpochHighWater(emptyStore()),
                                       StreamOwnerEpochSource.zero(),
+                                      CommittedEpochStarts.NONE,
                                       Option.some(AppendLog.Opener.directory(walDir)),
                                       LastSealedOffsetSource.none(),
                                       DurableSealedOffsetSource.none());

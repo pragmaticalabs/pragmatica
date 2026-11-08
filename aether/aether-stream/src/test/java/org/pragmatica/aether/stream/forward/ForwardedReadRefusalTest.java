@@ -251,9 +251,7 @@ class ForwardedReadRefusalTest {
         }
         owner.syncReplicated(STREAM, PARTITION).await();
         owner.placementRoleSupplier((_, _) -> Role.REPLICA);
-        owner.epochStarts((_, _, epoch) -> epoch.equals(E2)
-                                           ? Option.some(5L)
-                                           : Option.none());
+        owner.epochStarts((_, _) -> List.of(new EpochStart(E2, 5L)));
         callerHoldsOnlyTheConfig(config(STREAM, 1));
         connect();
         var expected = new StreamError.ReplicaNotVerified(STREAM, PARTITION, 5L);
