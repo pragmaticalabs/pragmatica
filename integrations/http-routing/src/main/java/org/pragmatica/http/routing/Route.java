@@ -327,6 +327,36 @@ public interface Route<T> extends RouteSource, RouteShape {
                        route.uploadSpec());
     }
 
+    /// Completes a route whose argument-binding lambda returns the request-bound [Handler] rather than the response
+    /// (#2879): the route's parsed arguments reach that lambda, and the [RequestContext] of the same request is
+    /// handed to the [Handler] it returns. A generated route uses this to give a slice method values taken from the
+    /// request itself, such as its headers, beside the parsed path, query and body arguments. The context is the one
+    /// the router passed to this route's handler; it is never read from ambient state.
+    ///
+    /// Method, path, content type, spacers, name, security, version, path arity, spacer slots and upload limits are
+    /// those of `route`.
+    ///
+    /// @param route a route whose result is a [Handler] for the response
+    /// @return a route answering with the response that handler produces
+    static <R> Route<R> withRequestContext(Route<Handler<R>> route) {
+        return route(route.method(),
+                     route.path(),
+                     bindRequestContext(route.handler()),
+                     route.contentType(),
+                     route.spacers(),
+                     route.name(),
+                     route.security(),
+                     route.version(),
+                     route.pathParamCount(),
+                     route.spacerSlots(),
+                     route.uploadSpec());
+    }
+
+    private static <R> Handler<R> bindRequestContext(Handler<Handler<R>> binding) {
+        return request -> binding.handle(request)
+                                 .flatMap(bound -> bound.handle(request));
+    }
+
     static Subroutes in(String path) {
         return () -> path;
     }
