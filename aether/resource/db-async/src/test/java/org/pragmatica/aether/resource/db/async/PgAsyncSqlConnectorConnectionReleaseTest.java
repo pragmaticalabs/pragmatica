@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.db.async;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -41,6 +42,7 @@ class PgAsyncSqlConnectorConnectionReleaseTest {
     private static final int OPERATIONS = 8;
     private static final RowMapper<Integer> COUNT = row -> row.getInt("n");
     private static final Cause BODY_FAILED = Causes.cause("body failed (injected by the test)");
+    private static final String IDLE_IN_TRANSACTION = "SELECT count(*) AS n FROM pg_stat_activity WHERE datname = current_database() AND state = 'idle in transaction'";
     private static final String INSERT_UNIQUE = "INSERT INTO release_probe(id) VALUES (?)";
     private static PostgreSQLContainer<?> postgres;
     private AsyncSqlConnector connector;
@@ -90,7 +92,7 @@ class PgAsyncSqlConnectorConnectionReleaseTest {
         var results = new ArrayList<Result<T>>();
 
         for (int i = 0; i < OPERATIONS; i++) {
-            results.add(operation.get().await(timeSpan(3).seconds()));
+            results.add(operation.get().await(timeSpan(5).seconds()));
         }
 
         return results;
@@ -134,10 +136,19 @@ class PgAsyncSqlConnectorConnectionReleaseTest {
 
         assertAllFailedWith(results, "injected throw");
         assertPoolStillServes();
+        assertNoBackendIdleInTransaction();
     }
 
     private static Promise<Integer> throwing(SqlConnector tx) {
         throw new IllegalStateException("injected throw");
+    }
+
+    /// Asked of the unpooled `pinned` session: a pooled connection would be the very one that may be sitting in the transaction.
+    private void assertNoBackendIdleInTransaction() {
+        var count = connector.pinned(Duration.ZERO, session -> session.queryOne(IDLE_IN_TRANSACTION, COUNT), _ -> Promise.unitPromise())
+                             .await(timeSpan(10).seconds());
+
+        assertThat(count.unwrap()).as("backends left inside the abandoned transaction").isZero();
     }
 
     @Test

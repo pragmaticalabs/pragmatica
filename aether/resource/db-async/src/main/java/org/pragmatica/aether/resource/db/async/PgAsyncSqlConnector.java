@@ -246,7 +246,7 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
         return invoke(release, session).fold(_ -> closeAndResolve(conn, bodyResult));
     }
 
-    /// The pooled connection goes back on EVERY exit of `body` (success, failure, a throw): `Connection.close()` of a pooled
+    /// The pooled connection goes back on EVERY exit of `body` (success or failure): `Connection.close()` of a pooled
     /// connection is the release (`PgConnection.close` runs the pool's `onRelease`, PgConnectionPool wires it at
     /// connection creation), and neither commit nor rollback returns it. A release that fails is absorbed (design-out: the
     /// pool's release cannot fail), so the body's own result or cause is what the caller sees.
@@ -256,10 +256,8 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
     }
 
     private static <T> Promise<T> runAndRelease(Connection conn, Fn1<Promise<T>, Connection> body) {
-        return Promise.lift(DatabaseConnectorError::databaseFailure,
-                            () -> body.apply(conn))
-                      .flatMap(promise -> promise)
-                      .fold(result -> closeAndResolve(conn, result));
+        return body.apply(conn)
+                   .fold(result -> closeAndResolve(conn, result));
     }
 
     /// A subscription pins its pooled connection for as long as it listens (LISTEN is session state), so the connection
