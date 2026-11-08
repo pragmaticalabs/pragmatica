@@ -84,9 +84,7 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
             return Promise.success(new int[0]);
         }
 
-        return borrowed(conn -> executeBatch(conn,
-                                             convertPlaceholders(sql),
-                                             paramsList));
+        return borrowed(conn -> executeBatch(conn, convertPlaceholders(sql), paramsList));
     }
 
     @Override
@@ -264,11 +262,16 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
     /// goes back when the subscription ends: on a failed subscribe at once, otherwise on a successful `unlisten`. A failed
     /// `unlisten` leaves the connection with the subscription, because a connection still listening must not be handed to
     /// another borrower.
-    private static Promise<Listening> subscribeOwning(Connection conn, String channel, Consumer<String> onNotification) {
+    private static Promise<Listening> subscribeOwning(Connection conn,
+                                                      String channel,
+                                                      Consumer<String> onNotification) {
         return conn.subscribe(channel, onNotification)
                    .map(listening -> releasingOnUnlisten(conn, listening))
-                   .fold(result -> result.fold(_ -> closeAndResolve(conn, result),
-                                               _ -> Promise.resolved(result)));
+                   .fold(result -> releaseOnFailure(conn, result));
+    }
+
+    private static Promise<Listening> releaseOnFailure(Connection conn, Result<Listening> result) {
+        return result.fold(_ -> closeAndResolve(conn, result), Promise::success);
     }
 
     private static Listening releasingOnUnlisten(Connection conn, Listening listening) {
