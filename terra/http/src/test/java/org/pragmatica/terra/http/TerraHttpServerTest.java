@@ -282,6 +282,25 @@ class TerraHttpServerTest {
         } finally { close(host); }
     }
 
+    // #2805: Terra secures every route by rebuilding it; the rebuilt route keeps the declared success status and Location.
+    @Test void serve_declaredSuccessStatus_survivesTheSecurityRebuild() throws Exception {
+        var routes = List.<Route<?>>of(
+            Route.<String>get("/created").withoutParameters().to(_ -> Promise.success("made")).withSecurity(SecurityPolicy.publicRoute()).asText()
+                .withSuccess(SuccessSpec.successSpec(201, _ -> "/created/1")),
+            Route.<Unit>get("/accepted").withoutParameters().to(_ -> Promise.unitPromise()).withSecurity(SecurityPolicy.publicRoute()).asText()
+                .withSuccess(SuccessSpec.successSpec(202)),
+            Route.<Unit>get("/done").withoutParameters().to(_ -> Promise.unitPromise()).withSecurity(SecurityPolicy.publicRoute()).asText());
+        var host = start(routes, HttpAuthenticator.denyUnlessPublicValidator(), new AtomicInteger());
+        try (var client = HttpClient.newHttpClient()) {
+            var created = get(client, host, "/created");
+            assertThat(created.statusCode()).isEqualTo(201);
+            assertThat(created.body()).isEqualTo("made");
+            assertThat(created.headers().firstValue("Location")).contains("/created/1");
+            assertThat(get(client, host, "/accepted").statusCode()).isEqualTo(202);
+            assertThat(get(client, host, "/done").statusCode()).isEqualTo(204);
+        } finally { close(host); }
+    }
+
     @Test void serve_nullHandlerPromise_failsAndDoesNotHangDrain() throws Exception {
         var route = Route.<String>get("/null").withoutParameters().to(_ -> null)
             .withSecurity(SecurityPolicy.publicRoute()).asText();
