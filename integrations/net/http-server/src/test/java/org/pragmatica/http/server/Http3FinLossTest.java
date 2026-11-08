@@ -56,8 +56,9 @@ class Http3FinLossTest {
     private static final int HEAD = 512 * 1024;
     private static final int TAIL = 6 * 1024;
     private static final int PROBES = 4;
+    private static final int ATTEMPTS = 3;
 
-    private final TailLossInjector injector = new TailLossInjector();
+    private TailLossInjector injector = new TailLossInjector();
     private Http3Server server;
     private int port;
 
@@ -86,15 +87,33 @@ class Http3FinLossTest {
         assertCompletes(Ending.FIN_ONLY_AFTER_DATA, Loss.FIN_ONLY);
     }
 
+    /// The stall needs the client to detect the FIN-only frame's loss in the same batch as the data's, which depends on
+    /// how the server's acknowledgements of the probes are split: when they arrive in two pieces (a starved host reads
+    /// the released datagrams in two goes), the data is retransmitted first and the FIN-only frame after it, and the
+    /// exchange completes though quiche is unchanged (#2866: 1 in ~190 under load). A quiche that retransmits a lost
+    /// FIN-only frame completes EVERY attempt, so the tripwire fires only when all three do.
     @Test
     void finOnlyFrameLostWithData_stalls() throws Exception {
+        var answer = stallAttempt();
+
+        for (int attempt = 1; attempt < ATTEMPTS && "200".equals(answer.status()); attempt++) {
+            answer = stallAttempt();
+        }
+
+        assertThat(answer.status()).as("TRIPWIRE #2746: quiche now retransmits a FIN-only frame lost together with data "
+                                      + "(" + ATTEMPTS + " attempts in a row); the workaround (FIN on the last data) can be "
+                                      + "reconsidered. " + injector.log())
+                  .isEqualTo("closed");
+    }
+
+    private Http3TestClient.Answer stallAttempt() throws Exception {
+        injector = new TailLossInjector();
         var answer = exchange(Ending.FIN_ONLY_AFTER_DATA, Loss.DATA_AND_FIN_EXCEPT_LAST_DATA);
 
         assertPatternApplied();
         assertThat(injector.log()).as("the FIN-only frame was the burst's last datagram, and was dropped").contains("bx46");
-        assertThat(answer.status()).as("TRIPWIRE #2746: quiche now retransmits a FIN-only frame lost together with data; "
-                                      + "the workaround (FIN on the last data) can be reconsidered. " + injector.log())
-                  .isEqualTo("closed");
+
+        return answer;
     }
 
     @Test
