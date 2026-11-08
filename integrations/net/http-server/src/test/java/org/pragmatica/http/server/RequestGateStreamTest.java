@@ -509,18 +509,22 @@ class RequestGateStreamTest {
     /// request's admission forever: the abort is abandoned-and-given at the deadline's own positive floor.
     @Test
     void hungAccept_withAZeroBound_isStillAbandonedAtTheFloor() {
-        var channel = channel(1_000_000, Option.some(BodyBounds.bodyBounds(timeSpan(0).seconds(),
-                                                                                BodyRateLimit.bodyRateLimit(0, timeSpan(1).seconds(), timeSpan(1).seconds()),
-                                                                                timeSpan(0).seconds())));
+        var channel = channel(1500, Option.some(BodyBounds.bodyBounds(timeSpan(0).seconds(),
+                                                                           BodyRateLimit.bodyRateLimit(0, timeSpan(1).seconds(), timeSpan(1).seconds()),
+                                                                           timeSpan(0).seconds())));
 
-        channel.writeInbound(head("/up", "Content-Length", "5000"));
-        channel.writeInbound(new DefaultHttpContent(bytes(10)));
-        channel.close();
+        channel.writeInbound(head("/up", "Transfer-Encoding", "chunked"));
+        channel.writeInbound(new DefaultHttpContent(bytes(1000)));
+        channel.writeInbound(new DefaultHttpContent(bytes(1000)));
+        var answer = response(channel);
+
+        assertThat(answer.status().code()).as("the crossing chunk ended the request").isEqualTo(413);
         assertThat(sink.terminals()).as("not yet: the accept is outstanding").isEmpty();
         channel.advanceTimeBy(31, TimeUnit.SECONDS);
         channel.runScheduledPendingTasks();
         assertThat(sink.terminals()).as("aborted though the accept never resolved and no bound was set")
-                                    .containsExactly("abort:DISCONNECTED");
+                                    .containsExactly("abort:TOO_LARGE");
+        answer.release();
         channel.finishAndReleaseAll();
     }
 
