@@ -108,7 +108,7 @@ class QuicActivityKickStrandedLossTest {
 
         awaitTrue(() -> received("A" + PAD), RECOVERY_BOUND, "the kick re-queued and delivered the stranded data A");
         assertThat(reading.nettyTimerArmedAfter()).as("positive control: netty had no timer after the induced stall").isFalse();
-        assertThat(reading.quicheTimerAfter()).as("positive control: the stall state was reached in this run").isEqualTo(-1);
+        assertThat(reading.quicheTimerAfter()).as("positive control: the stall state was reached in this run " + reading).isEqualTo(-1);
     }
 
     /// TRIPWIRE, enabled on purpose. It asserts today's netty behaviour: without a write nothing ever
@@ -121,7 +121,7 @@ class QuicActivityKickStrandedLossTest {
 
         LockSupport.parkNanos(TimeUnit.SECONDS.toNanos(5));
 
-        assertThat(reading.quicheTimerAfter()).as("positive control: the stall state was reached in this run").isEqualTo(-1);
+        assertThat(reading.quicheTimerAfter()).as("positive control: the stall state was reached in this run " + reading).isEqualTo(-1);
         assertThat(received("A" + PAD)).as("netty now re-sends stranded data by itself - delete this tripwire and the activity kick")
                                  .isFalse();
     }
