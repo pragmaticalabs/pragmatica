@@ -170,6 +170,16 @@ accepts are `[app-http] auth_schemes` (default `["Bearer"]`), matched case-insen
 [verified: `aether/aether-config/src/test/java/org/pragmatica/aether/config/ConfigLoaderAuthSchemesTest.java`,
 `aether/node/src/test/java/org/pragmatica/aether/http/AppHttpServerSecurityGridTest.java`].
 
+`JWT` mode verifies against a shared secret instead when `[app-http] jwt_algorithm = "HS256"` (#2880). The configured
+mode picks the algorithm, never the token header: an HS256-configured node refuses a token whose header says anything
+but `HS256` (RS256, `none`, ...), and a JWKS-configured node refuses an `HS256` token, so a public key cannot be
+replayed as an HMAC key. The secret comes from `AETHER_JWT_SECRET` (or the file `AETHER_JWT_SECRET_FILE` names), never
+from the TOML; it must be at least 32 bytes (UTF-8). A missing, empty or shorter secret, or a `jwks_url` beside HS256,
+refuses the node's config load naming the setting; it is never replaced by a deny-all fallback. Cluster-bootstrap
+pre-flight cannot see the node's environment, so the secret check happens at the node's own load
+[verified: `aether/aether-config/src/test/java/org/pragmatica/aether/config/ConfigLoaderHs256Test.java`,
+`aether/http-security/src/test/java/org/pragmatica/aether/http/security/JwtHs256ValidatorTest.java`].
+
 An operator can explicitly set `security_mode = "none"` to disable authentication — an explicit
 setting always overrides the default. This is appropriate only for a single-node local/dev
 instance, never for a network-reachable deployment.
