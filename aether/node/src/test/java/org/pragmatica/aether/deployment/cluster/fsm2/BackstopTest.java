@@ -517,4 +517,85 @@ class BackstopTest {
         assertThat(w.inferred()).isEmpty();
         assertThat(w.h.warns("worker-absence-unjudgeable")).hasSize(1);
     }
+
+    // #2868: a seed core never receives an activation directive, and the live views (counted cores, core view) drop it when it departs.
+    private static MbWorld departedSeedCore(Set<NodeId> seedCores) {
+        var w = MbWorld.worldWithSeedCores(seedCores, CORE_1, CORE_2);
+
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, 0x2222L);
+        w.target(ORDERS, 1, "CORE_ONLY")
+         .instance(CORE_2,
+                   ORDERS,
+                   SliceGoal.ACTIVE,
+                   SliceObservedState.ACTIVE,
+                   gen(1),
+                   0x2222L);
+
+        return w;
+    }
+
+    private static MbWorld withoutCore2(MbWorld w) {
+        return w.seams(s -> s.withCountedCores(Set.of(CORE_1))
+                             .withCoreView(Option.some(Set.of(CORE_1)))
+                             .withLocalAlive(Option.some(Set.of(CORE_1))));
+    }
+
+    private static void assertRecordedAfterBrm_andRowsRemoved(MbWorld w) {
+        w.refreshSeams(s -> s);
+        assertThat(w.since(CORE_2).or(0L)).as("judged ABSENT as a core, not UNJUDGEABLE as a worker").isGreaterThan(0L);
+        assertThat(w.h.warns("worker-absence-unjudgeable")).as("no unjudgeable class").isEmpty();
+        w.h.advance(BRM - 1_000L);
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.inferred()).as("not before B_rm").isEmpty();
+        w.h.advance(1_001L + 31_000L);
+        var inferred = w.inferred();
+
+        assertThat(inferred).hasSize(1);
+        var mutation = inferred.getFirst().transaction().mutations().getFirst();
+
+        assertThat(mutation.key()).isEqualTo(new NodeDepartureKey(CORE_2));
+        assertThat(mutation.replacement().map(v -> ((NodeDepartureValue) v).cause())).isEqualTo(Option.some(Option.some(DepartureCause.STALE)));
+        assertThat(w.h.warns("departure-inferred")).singleElement().satisfies(warn -> assertThat(warn.subject()).isEqualTo(CORE_2.id()));
+        assertThat(w.present(new SliceObservedKey(CORE_2, ORDERS))).as("C17b removed the observed row").isFalse();
+        assertThat(w.present(new SliceDesiredKey(CORE_2, ORDERS))).as("C17b removed the desired row").isFalse();
+    }
+
+    // #2868 (1): Red when: a directive-less seed core is classed by the live views alone (the seed-core disjunct of classOf dropped): once it leaves
+    // them it is an unassigned worker, UNJUDGEABLE with no rosters, so it is never recorded and its rows stay.
+    @Test
+    void seedCore_withoutDirective_lostDeparture_isRecordedAfterB_rm_andRowsRemoved() {
+        var w = withoutCore2(departedSeedCore(Set.of(CORE_1, CORE_2)));
+
+        w.activate();
+        assertRecordedAfterBrm_andRowsRemoved(w);
+    }
+
+    // #2868 (2), the E04 r1 ordering: the seed core goes DEAD before this leader activates, so NodeRemoved lands in Dormant and is dropped
+    // (ClusterFsm.whileDormant). Red when: the backstop cannot stand in for that edge because the departed seed core is not classed CORE.
+    @Test
+    void seedCore_deadBeforeActivation_droppedEdge_rowsRemovedAfterActivation() {
+        var w = departedSeedCore(Set.of(CORE_1, CORE_2));
+
+        withoutCore2(w).h.deliver(new ClusterInput.NodeRemoved(CORE_2));
+        assertThat(w.h.submits()).as("the edge is dropped while Dormant").isEmpty();
+        w.activate();
+        assertThat(w.recordOf(CORE_2).isEmpty()).as("no departure record from the dropped edge").isTrue();
+        assertRecordedAfterBrm_andRowsRemoved(w);
+    }
+
+    // #2868 (3), regression: Red when: the seed set leaks into the class of a node outside it (every directive-less node classed CORE). A
+    // directive-less non-seed node that left the views stays an unassigned worker: with no rosters it is UNJUDGEABLE, never recorded.
+    @Test
+    void nonSeedWorker_withoutDirective_keepsTheWorkerClass_andIsNeverRecorded() {
+        var w = withoutCore2(departedSeedCore(Set.of(CORE_1)));
+
+        w.activate();
+        assertThat(Absence.classOf(w.h.model(), new Ctx(w.h.settings, w.h.wallMs, w.h.monoNs), CORE_2)).isEqualTo(Absence.NodeClass.UNASSIGNED_WORKER);
+        assertThat(Absence.classOf(w.h.model(), new Ctx(w.h.settings, w.h.wallMs, w.h.monoNs), CORE_1)).as("control: the seed core").isEqualTo(Absence.NodeClass.CORE);
+        w.h.advance(3 * BRM);
+        assertThat(w.inferred()).isEmpty();
+        assertThat(w.present(new SliceObservedKey(CORE_2, ORDERS))).isTrue();
+        assertThat(w.h.warns("worker-absence-unjudgeable")).singleElement().satisfies(warn -> assertThat(warn.subject()).isEqualTo("worker"));
+    }
 }

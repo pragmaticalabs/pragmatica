@@ -144,7 +144,7 @@ class EntryGatePinsTest {
                       .withCoreView(Option.some(view ? Set.of(CORE_1, node) : Set.of(CORE_1))));
         w.activate();
 
-        return Absence.classOf(w.h.model(), node);
+        return Absence.classOf(w.h.model(), new Ctx(w.h.settings, w.h.wallMs, w.h.monoNs), node);
     }
 
     /// Red when: a node is classed CORE only if all three sources agree (`||` weakened to `&&`): its directive, the counted cores,
