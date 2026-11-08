@@ -19,11 +19,17 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.cluster.state.kvstore.CommitRing;
+import org.pragmatica.cluster.state.kvstore.IncarnationTag;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
+import org.pragmatica.cluster.state.kvstore.ReplicaEntry;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// F4 instrument validation, offline (FSM replacement plan 3.3; #2763): before any counted run, every control of the comparison, the monitor
 /// and the oracle must fire on a synthetic but engine-shaped record, and a clean record must read clean. A control that cannot fire here can
@@ -328,6 +334,85 @@ class EquivalenceInstrumentTest {
         @Test
         void theAllowList_isFrozenEmpty() {
             assertThat(EquivalenceOracle.allowList()).isEmpty();
+        }
+    }
+
+    /// The O4 ring reader ([Fsm2EquivalenceRoundTest.RingCursor]) over a real [CommitRing]: a ring empty at the first read drops nothing, a floor
+    /// that jumps past the read position is a gap, and a gap on every node read is an instrument error (round ERROR), never an O4 value (#2763).
+    @Nested
+    class RingReader {
+        private static final IncarnationTag TAG = IncarnationTag.incarnationTag(1, "f4");
+
+        private static CommitRing ring(long floor) {
+            var ring = CommitRing.commitRing(CommitRing.DEFAULT_BUDGET_BYTES, _ -> 16, Runnable::run);
+
+            ring.invalidate(TAG, floor);
+
+            return ring;
+        }
+
+        private static void append(CommitRing ring, long slot) {
+            ring.append(TAG, slot, "id-" + slot, List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, "v" + slot)), slot + 1);
+        }
+
+        /// F4 r1/r3: LEGACY ran second, every ring was empty at the first read (cleared at the frontier) and the old cursor started at 0, so
+        /// `[0, floor)` read as a gap on every node and O4 was -1. Mutation: start the first read at 0 instead of the floor; this goes red.
+        @Test
+        void aRingEmptyAtTheFirstRead_dropsNothing_andLaterEntriesAreRead() {
+            var ring = ring(40);
+            var cursor = new Fsm2EquivalenceRoundTest.RingCursor("n1");
+
+            assertThat(cursor.read(ring)).isEmpty();
+            append(ring, 40);
+            append(ring, 41);
+            assertThat(cursor.read(ring)).extracting(ReplicaEntry::slot).containsExactly(40L, 41L);
+            assertThat(cursor.read(ring)).isEmpty();
+            assertThat(cursor.gapped()).as(cursor.describe()).isFalse();
+            Fsm2EquivalenceRoundTest.RingCursor.requireCovered(List.of(cursor));
+        }
+
+        /// A clear between reads (an incarnation-touching batch, a snapshot install) loses the batches after the position. Mutation: drop the
+        /// `floorBefore > start` check; this goes red.
+        @Test
+        void aFloorAboveThePosition_isAGap() {
+            var ring = ring(0);
+            var cursor = new Fsm2EquivalenceRoundTest.RingCursor("n1");
+
+            append(ring, 0);
+            assertThat(cursor.read(ring)).hasSize(1);
+            append(ring, 1);
+            ring.invalidate(TAG, 5);
+            append(ring, 5);
+            assertThat(cursor.read(ring)).extracting(ReplicaEntry::slot).containsExactly(5L);
+            assertThat(cursor.gapped()).isTrue();
+            assertThat(cursor.describe()).contains("[1,5)");
+        }
+
+        /// A gap on every node read makes the O4 count unknown: an exception (the round's arm ERROR), not a negative count. One node that read
+        /// the window covers it. Mutation: return instead of throwing in `requireCovered`; the first assertion goes red.
+        @Test
+        void aGapOnEveryNode_isAnInstrumentError_andOneCleanNodeCoversIt() {
+            var gapped = List.of(gappedCursor("n1"), gappedCursor("n2"), gappedCursor("n3"));
+
+            assertThatThrownBy(() -> Fsm2EquivalenceRoundTest.RingCursor.requireCovered(gapped)).isInstanceOf(IllegalStateException.class)
+                                                                                                 .hasMessageContaining("dropped entries on every node")
+                                                                                                 .hasMessageContaining("n3");
+            var clean = new Fsm2EquivalenceRoundTest.RingCursor("n4");
+
+            clean.read(ring(0));
+            Fsm2EquivalenceRoundTest.RingCursor.requireCovered(List.of(gapped.get(0), gapped.get(1), clean));
+        }
+
+        private static Fsm2EquivalenceRoundTest.RingCursor gappedCursor(String node) {
+            var ring = ring(0);
+            var cursor = new Fsm2EquivalenceRoundTest.RingCursor(node);
+
+            append(ring, 0);
+            cursor.read(ring);
+            ring.invalidate(TAG, 9);
+            cursor.read(ring);
+
+            return cursor;
         }
     }
 }

@@ -45,12 +45,14 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.forge.EquivalenceComparison.Arm;
 import org.pragmatica.aether.forge.EquivalenceComparison.Divergence;
+import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.aether.slice.repository.maven.MavenLocalRepoLocator;
+import org.pragmatica.cluster.state.kvstore.CommitRing;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
@@ -58,6 +60,7 @@ import org.pragmatica.cluster.state.kvstore.ReplicaEntry;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 
@@ -86,6 +89,7 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 @EnabledIfSystemProperty(named = "f4.scenario", matches = ".+")
 class Fsm2EquivalenceRoundTest {
     private static final Duration WAIT = Duration.ofSeconds(240);
+    private static final long LEADER_READY_HOLD_MS = 3000L;
     private static final long TICK_MS = Long.getLong("f4.tick.ms", 30_000L);
     private static final long QUIET_MS = Long.getLong("f4.quiet.ms", 2 * TICK_MS);
     private static final long QUIESCENCE_BOUND_MS = Long.getLong("f4.quiescence.bound.ms", 600_000L);
@@ -187,6 +191,7 @@ class Fsm2EquivalenceRoundTest {
             awaitTrue("a leader", WAIT, () -> cluster.currentLeader().isPresent());
             awaitTrue("quorum on every node", WAIT, () -> healthy(cluster));
             awaitTrue("every node counts all " + scenario.nodes + " core members (placement determinism)", WAIT, () -> fullMembership(cluster, scenario.nodes));
+            awaitLeaderReadiness(cluster, scenario.nodes);
             var recorder = new Recorder(cluster);
 
             recorder.start();
@@ -194,13 +199,15 @@ class Fsm2EquivalenceRoundTest {
             var quiescent = awaitQuiescence(cluster);
 
             recorder.stop();
+            recorder.ringLog().forEach(line -> log("ring (%s) %s".formatted(engine, line)));
+            var slotCount = recorder.batches();
             var slots = recorder.slotEffects();
-            var o4 = recorder.batches() < 0 ? -1L : EquivalenceComparison.o4Counted(slots, scenario.name());
+            var o4 = EquivalenceComparison.o4Counted(slots, scenario.name());
 
             logSlots(engine, slots);
             placements.put(engine, EquivalenceComparison.placement(recorder.placementSlots()));
             log("placement (%s): gate=%s whole arm=%s".formatted(engine, placements.get(engine), EquivalenceComparison.placement(slots)));
-            log("O4 (%s): %d slots, %d counted after the %s allow-list".formatted(engine, recorder.batches(), o4, scenario));
+            log("O4 (%s): %d slots, %d counted after the %s allow-list".formatted(engine, slotCount, o4, scenario));
             var kv = new EquivalenceKv(snapshot(cluster));
             var live = cluster.allNodes().stream().map(AetherNode::self).collect(Collectors.toUnmodifiableSet());
 
@@ -487,8 +494,7 @@ class Fsm2EquivalenceRoundTest {
         private final List<EquivalenceMonitor.Sample> samples = new CopyOnWriteArrayList<>();
         private final Set<Long> familySlots = new ConcurrentSkipListSet<>();
         private final Map<Long, List<String>> slotEffects = new ConcurrentSkipListMap<>();
-        private final Map<String, Long> nextSlot = Collections.synchronizedMap(new HashMap<>());
-        private final Set<String> gaps = new ConcurrentSkipListSet<>();
+        private final Map<String, RingCursor> cursors = Collections.synchronizedMap(new HashMap<>());
         private final ScheduledExecutorService executor = Executors.newScheduledThreadPool(2);
         private volatile long placementCut = Long.MAX_VALUE;
 
@@ -517,28 +523,19 @@ class Fsm2EquivalenceRoundTest {
         private synchronized void readRings() {
             for (var node : cluster.allNodes()) {
                 try {
-                    var ring = node.kvStore().replicaRing();
-                    var key = node.self().id();
-                    var expected = nextSlot.get(key);
+                    var cursor = cursors.computeIfAbsent(node.self().id(), RingCursor::new);
 
-                    if (expected != null && ring.floor() > expected) {
-                        gaps.add(key + ":[" + expected + "," + ring.floor() + ")");
-                    }
-                    var last = expected == null ? -1L : expected - 1;
-
-                    for (var entry : ring.entries()) {
-                        if (entry.slot() > last) {
-                            if (touchesFamily(entry)) {
-                                familySlots.add(entry.slot());
-                                slotEffects.put(entry.slot(), familyEffects(entry));
-                            }
-                            last = entry.slot();
-                        }
-                    }
-                    nextSlot.put(key, last + 1);
+                    cursor.read(node.kvStore().replicaRing()).forEach(this::record);
                 } catch (RuntimeException e) {
                     // A node stopping mid-read.
                 }
+            }
+        }
+
+        private void record(ReplicaEntry entry) {
+            if (touchesFamily(entry)) {
+                familySlots.add(entry.slot());
+                slotEffects.put(entry.slot(), familyEffects(entry));
             }
         }
 
@@ -587,12 +584,72 @@ class Fsm2EquivalenceRoundTest {
             return Map.copyOf(slotEffects);
         }
 
-        /// A gap on one node is covered when another node read the same window; the count is void only when every node had one.
+        /// The O4 slot count. A gap on one node is covered when another node read the same window; a gap on every node read means the
+        /// count is unknown, which is an instrument error ([RingCursor#requireCovered]), never an O4 value.
         long batches() {
-            var nodes = nextSlot.size();
-            var gappedNodes = gaps.stream().map(gap -> gap.substring(0, gap.indexOf(':'))).distinct().count();
+            RingCursor.requireCovered(List.copyOf(cursors.values()));
 
-            return nodes > 0 && gappedNodes >= nodes ? -1 : familySlots.size();
+            return familySlots.size();
+        }
+
+        /// Every node's first ring read and every gap, for the arm log.
+        List<String> ringLog() {
+            return cursors.values().stream().map(RingCursor::describe).sorted().toList();
+        }
+    }
+
+    /// One node's read position in its commit ring. The first read starts at the ring's floor, not at slot 0: a ring that holds no entry yet
+    /// (cleared by the incarnation commit or a snapshot install, the floor at the frontier) has dropped nothing the recorder could have read,
+    /// and starting at 0 reported `[0, floor)` as a gap on every node whose ring was empty at the first read (#2763, F4 r1/r3: LEGACY o4=-1 when
+    /// it ran second). A gap is a floor above the position: either before this read (`floor > position`), or a clear or eviction between the
+    /// floor read and the entry read that left no entry below the new floor.
+    static final class RingCursor {
+        private final String node;
+        private final List<String> gaps = new ArrayList<>();
+        private long position = -1;
+        private String first = "";
+
+        RingCursor(String node) {
+            this.node = node;
+        }
+
+        /// The entries at or after the position, in ring order; moves the position past them and records any gap.
+        synchronized List<ReplicaEntry> read(CommitRing ring) {
+            var floorBefore = ring.floor();
+            var entries = ring.entries();
+            var floorAfter = ring.floor();
+            var start = position < 0 ? floorBefore : position;
+
+            if (position < 0) {
+                first = "first read floor=" + floorBefore + " next=" + ring.nextSlot() + " entries=" + entries.size();
+            }
+            if (floorBefore > start) {
+                gaps.add("[" + start + "," + floorBefore + ")");
+            } else if (floorAfter > start && entries.stream().noneMatch(entry -> entry.slot() < floorAfter)) {
+                gaps.add("[" + start + "," + floorAfter + ") during the read");
+            }
+            var fresh = entries.stream().filter(entry -> entry.slot() >= start).toList();
+
+            position = Math.max(Math.max(start, floorBefore), fresh.isEmpty() ? start : fresh.getLast().slot() + 1);
+
+            return fresh;
+        }
+
+        synchronized boolean gapped() {
+            return !gaps.isEmpty();
+        }
+
+        synchronized String describe() {
+            return node + ": " + first + " gaps=" + gaps;
+        }
+
+        /// Throws when every node read has a gap: the union of the rings may miss a batch, so the O4 count is unknown (round ERROR).
+        @Contract
+        static void requireCovered(List<RingCursor> cursors) {
+            if (!cursors.isEmpty() && cursors.stream().allMatch(RingCursor::gapped)) {
+                throw new IllegalStateException("instrument: the commit ring dropped entries on every node, O4 count unknown: "
+                                                + cursors.stream().map(RingCursor::describe).toList());
+            }
         }
     }
 
@@ -800,6 +857,48 @@ class Fsm2EquivalenceRoundTest {
     /// counts every core member. The per-arm placement record is the check that this suffices: a mismatch voids the round.
     private static boolean fullMembership(EmberCluster cluster, int nodes) {
         return cluster.allNodes().stream().allMatch(node -> node.membershipFsm().coreCountedMembers().size() == nodes);
+    }
+
+    /// Placement determinism, second half (#2763, F4 r2 E09: LEGACY "deployed with 2 slices across 1 allocatable nodes" 0.3 s after its
+    /// leader activated). LEGACY allocates over `ClusterDeploymentState.allocatableNodes()`: the active nodes that the LEADER's readiness view
+    /// (`ClusterSyncCollector.reportedStates()`, READY peers from the pong fan + self) holds READY. A new leader's view starts empty and fills
+    /// as peers report, so a publish inside that window places on fewer nodes, and E-09's fatal failure rolls back before the rest are placed.
+    /// Both arms publish only after one leader has held every peer READY (and itself READY) for [#LEADER_READY_HOLD_MS].
+    private void awaitLeaderReadiness(EmberCluster cluster, int nodes) {
+        var deadline = System.currentTimeMillis() + WAIT.toMillis();
+        var heldBy = "";
+        var heldSince = Long.MAX_VALUE;
+
+        while (true) {
+            var ready = cluster.currentLeader().filter(leader -> leaderHoldsAllReady(cluster, leader, nodes));
+            var now = System.currentTimeMillis();
+
+            if (ready.isEmpty() || !ready.unwrap().equals(heldBy)) {
+                heldBy = ready.or("");
+                heldSince = ready.isEmpty() ? Long.MAX_VALUE : now;
+            } else if (now - heldSince >= LEADER_READY_HOLD_MS) {
+                log("leader %s has held all %d nodes READY for %d ms".formatted(heldBy, nodes, now - heldSince));
+
+                return;
+            }
+            if (now > deadline) {
+                throw new AssertionError("F4 timed out waiting: the leader's readiness view holding all " + nodes + " nodes READY");
+            }
+            sleep(250L);
+        }
+    }
+
+    private static boolean leaderHoldsAllReady(EmberCluster cluster, String leader, int nodes) {
+        return cluster.getNode(leader).filter(AetherNode::isReady).map(node -> readyPeers(node) == nodes - 1).or(false);
+    }
+
+    private static long readyPeers(AetherNode leader) {
+        return leader.metricsCollector()
+                     .reportedStates()
+                     .entrySet()
+                     .stream()
+                     .filter(entry -> !entry.getKey().equals(leader.self()) && entry.getValue() == NodeReportedState.READY)
+                     .count();
     }
 
     /// O4 is compared only at equal placement: arms whose per-artifact node counts differ void the round (not PASS).

@@ -37,7 +37,8 @@ final class EquivalenceComparison {
         }
     }
 
-    /// What one arm of a round recorded. `o4Batches` is negative when the commit ring dropped entries between reads (the count is void);
+    /// What one arm of a round recorded. `o4Batches` is negative when the arm did not quiesce (the count is void; a commit ring that dropped
+    /// entries on every node is a round ERROR, never an O4 value);
     /// `o5PlacementMs` is negative when placement never completed; `o6` holds the hygiene counters (lost, settled_unknown, closed).
     record Arm(String engine,
                EquivalenceKv quiescent,
@@ -228,7 +229,7 @@ final class EquivalenceComparison {
 
     private static void o4(Arm legacy, Arm other, List<Divergence> divergences) {
         if (legacy.o4Batches() < 0 || other.o4Batches() < 0) {
-            divergences.add(new Divergence("O4", "void count: the commit ring dropped entries (legacy=" + legacy.o4Batches() + ", " + other.engine() + "=" + other.o4Batches() + ")"));
+            divergences.add(new Divergence("O4", "void count: an arm did not quiesce (legacy=" + legacy.o4Batches() + ", " + other.engine() + "=" + other.o4Batches() + ")"));
         } else if (other.o4Batches() > O4_RATIO * legacy.o4Batches()) {
             divergences.add(new Divergence("O4", other.engine() + " batches=" + other.o4Batches() + " > " + O4_RATIO + " x legacy " + legacy.o4Batches()));
         }
