@@ -579,7 +579,10 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         }
 
         log.warn("Led({}): leader-acting lease expired — leader lost", currentLeader);
-        loseLeader(ctx, led, Option.some(led.leader()), tx);
+        loseLeader(ctx,
+                   led,
+                   Option.some(led.leader()),
+                   tx);
     }
 
     private static void handleNodeGoneInLed(LeaderElectionContext ctx,
@@ -1106,7 +1109,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             return;
         }
 
-        var pool = excludeSuspect(ctx.candidatePool().stream().sorted().toList(), suspectOf(owner));
+        var pool = excludeSuspect(ctx.candidatePool().stream().sorted().toList(),
+                                  suspectOf(owner));
 
         if (pool.isEmpty()) {
             // GUARD 3 (election-trigger swallow).
@@ -1154,8 +1158,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// the transport topology is not proposed again. Falls back to the unfiltered pool when the suspect is
     /// the only candidate, so the empty-pool guard and the 1-2 node behaviour stay as they were.
     private static List<NodeId> excludeSuspect(List<NodeId> sortedPool, Option<NodeId> suspect) {
-        var filtered = suspect.map(node -> withoutNode(sortedPool, node))
-                              .or(sortedPool);
+        var filtered = suspect.map(node -> withoutNode(sortedPool, node)).or(sortedPool);
 
         return filtered.isEmpty()
                ? sortedPool

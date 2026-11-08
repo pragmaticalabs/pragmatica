@@ -977,11 +977,8 @@ public final class LeaderElectionContext {
         var pool = expectedCluster().isEmpty()
                    ? currentTopology()
                    : expectedCluster();
-        var sorted = pool.stream()
-                         .filter(node -> excluded.filter(node::equals)
-                                                 .isEmpty())
-                         .sorted()
-                         .toList();
+        var sorted = pool.stream().filter(node -> excluded.filter(node::equals)
+                                                          .isEmpty()).sorted().toList();
         var rank = sorted.indexOf(self);
 
         return rank >= 0
