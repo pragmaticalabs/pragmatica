@@ -8,6 +8,7 @@ import java.util.List;
 
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import org.junit.jupiter.api.Test;
@@ -225,6 +226,15 @@ class EpochValidationTest {
 
     private static EpochStart folded(Epoch epoch, long startOffset, Epoch from) {
         return new EpochStart(epoch, startOffset, from);
+    }
+
+    /// v2858a A2: the bound is the lowest start of an epoch AFTER the consumer's -- the consumer's own start is not one.
+    @Test
+    void reassignedFrom_ignoresTheConsumersOwnEpochStart() {
+        var e1 = Epoch.epoch(1L, 1L, 1L);
+        var e2 = Epoch.epoch(1L, 1L, 2L);
+
+        assertThat(EpochValidation.reassignedFrom(List.of(start(e1, 5L), start(e2, 10L)), e1)).isEqualTo(Option.some(10L));
     }
 
     private static List<EpochStart> keptHistory() {

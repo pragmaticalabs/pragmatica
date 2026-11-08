@@ -254,6 +254,37 @@ class StreamPartitionManagerEpochStartsTest {
         }
     }
 
+    /// A range whose epoch's re-assignment lies at or above where the range ends is not doubted (E1's records 0..4 end below the
+    /// lowest later start, 7): the copy is doubted only from E2's own re-assignment, E3's start 8 (not E1's 7).
+    @Test
+    void rangeEndingBelowItsReassignment_doubtsNothingInIt() {
+        try (var logged = emptyLoggedReplica(List.of(new EpochStart(E2, 7L), new EpochStart(E3, 8L)))) {
+            record(logged, 0, 5, E1);
+            record(logged, 5, 10, E2);
+
+            assertThat(logged.unverifiedFrom(STREAM, PARTITION)).isEqualTo(Option.some(8L));
+        }
+    }
+
+    /// A history this codec did not write is not guessed at: the copy is doubted from 0, fail-closed, though it holds records.
+    @Test
+    void foreignHistory_isDoubtedFromZero() throws Exception {
+        try (var logged = emptyLoggedReplica(STALE_TAIL_STARTS)) {
+            record(logged, 0, 3, E1);
+        }
+        try (var paths = java.nio.file.Files.walk(wal)) {
+            var file = paths.filter(path -> path.getFileName().toString().equals(PARTITION + ".wal")).findFirst().orElseThrow();
+            var log = org.pragmatica.storage.AppendLog.open(file).unwrap();
+
+            log.recordEpochStart(org.pragmatica.storage.AppendLog.EpochKey.epochKey("seven").unwrap(), 3L, (_, _) -> true).unwrap();
+            log.close();
+        }
+        try (var reopened = emptyLoggedReplica(STALE_TAIL_STARTS)) {
+            assertThat(reopened.epochHistory(STREAM, PARTITION).isFailure()).as("the history is a foreign key").isTrue();
+            assertThat(reopened.unverifiedFrom(STREAM, PARTITION)).isEqualTo(Option.some(0L));
+        }
+    }
+
     private static ProvenanceEntry owned(Epoch epoch, long start) {
         return ProvenanceEntry.provenanceEntry(epoch, Option.none(), start);
     }
