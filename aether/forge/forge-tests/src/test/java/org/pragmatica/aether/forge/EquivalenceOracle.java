@@ -58,6 +58,7 @@ final class EquivalenceOracle {
     private static final long NOW_MONO = 5_000_000_000L;
     private static final int DRAIN_GUARD = 20_000;
     static final String ALLOW_LIST = "/fsm2/oracle-allowlist.txt";
+    private static final Artifact STRAY = Artifact.artifact("org.f4.control:oracle-stray:1.0.0").unwrap();
 
     private EquivalenceOracle() {}
 
@@ -189,25 +190,17 @@ final class EquivalenceOracle {
                          .orElse(false);
     }
 
-    /// D-8 (e), second control: one stray observed ACTIVE row with no desired key on a live core; red unless a Submit names that row's key.
+    /// D-8 (e), second control: one stray observed ACTIVE row with no desired key (an artifact no target names) on the first live core; red unless
+    /// a Submit names that row's node and artifact (adopt or condemn).
     private static boolean strayFires(Map<AetherKey, AetherValue> projection, LeaderValue leader, Set<NodeId> liveCores) {
-        var artifact = projection.keySet()
-                                 .stream()
-                                 .filter(AetherKey.SliceDesiredKey.class::isInstance)
-                                 .map(key -> ((AetherKey.SliceDesiredKey) key).artifact())
-                                 .min(Comparator.comparing(Artifact::asString));
-        var host = artifact.flatMap(chosen -> liveCores.stream()
-                                                        .sorted(Comparator.comparing(NodeId::id))
-                                                        .filter(node -> !projection.containsKey(AetherKey.SliceDesiredKey.sliceDesiredKey(node, chosen)))
-                                                        .findFirst());
+        var host = liveCores.stream().min(Comparator.comparing(NodeId::id));
 
-        if (artifact.isEmpty() || host.isEmpty()) {
+        if (host.isEmpty()) {
             return false;
         }
-        var strayKey = AetherKey.SliceObservedKey.sliceObservedKey(host.get(), artifact.get());
         var withStray = new HashMap<>(projection);
 
-        withStray.put(strayKey,
+        withStray.put(AetherKey.SliceObservedKey.sliceObservedKey(host.get(), STRAY),
                       new AetherValue.SliceObservedValue(AetherValue.SliceObservedState.ACTIVE,
                                                          1L,
                                                          new AetherValue.Generation(leader.viewSequence(), 999_999L),
@@ -218,12 +211,11 @@ final class EquivalenceOracle {
                                                          List.of(),
                                                          NOW_WALL));
         var hostId = host.get().id();
-        var artifactName = artifact.get().asString();
 
         return run(withStray, leader, liveCores).stream()
                                                 .anyMatch(submit -> submit.mutatedKeys()
                                                                           .stream()
-                                                                          .anyMatch(key -> key.contains(hostId) && key.contains(artifactName)));
+                                                                          .anyMatch(key -> key.contains(hostId) && key.contains(STRAY.asString())));
     }
 
     /// Activate, `Rebuild(projection)`, then drain the mailbox until the first `Reconcile` has run and the `Flush` after it has run (D-8 (b)).

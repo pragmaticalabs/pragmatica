@@ -102,7 +102,7 @@ final class EquivalenceDivergentControl {
                                () -> kv.put(AetherKey.SliceTargetKey.sliceTargetKey(O2_PLANT.base()),
                                             AetherValue.SliceTargetValue.sliceTargetValue(O2_PLANT.version(), 1)));
         // O3
-        kv.put(new AetherKey.TopicPublisherKey(ResourceAddress.resourceAddress("f4", "control", "1").unwrap(), O2_PLANT, DEPARTED),
+        kv.put(new AetherKey.TopicPublisherKey(ResourceAddress.resourceAddress("f4", "control", "1.0.0").unwrap(), O2_PLANT, DEPARTED),
                AetherValue.TopicPublisherValue.topicPublisherValue(DEPARTED, AetherValue.TopicTier.ANY));
 
         return kv;
