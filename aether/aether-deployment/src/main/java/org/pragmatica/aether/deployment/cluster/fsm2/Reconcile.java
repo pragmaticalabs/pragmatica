@@ -51,7 +51,8 @@ public sealed interface Reconcile {
         return m;
     }
 
-    /// Step 10: the desired keys of finished unloads, the rows of departed nodes, the ADMITTED rewrite, the pending joins.
+    /// Step 10: the desired keys of finished unloads, the rows of departed nodes, the ADMITTED rewrite, the stale topic rows (#1337), the
+    /// pending joins.
     /// No record is removed here (R-4.3.5 narrowed by MQ-4).
     private static ClusterModel collect(ClusterModel m, Ctx ctx) {
         m.unloadedDesired.toList()
@@ -61,6 +62,7 @@ public sealed interface Reconcile {
                          .filter(pair -> !m.pendingGoals.containsKey(pair))
                          .forEach(pair -> Gc.removeDesired(m, pair));
         DepartureFlow.sweep(m, ctx);
+        DepartureFlow.sweepStaleTopicRows(m);
         DepartureFlow.rereadOverdue(m, ctx);
 
         return Joins.retryPending(m, ctx);

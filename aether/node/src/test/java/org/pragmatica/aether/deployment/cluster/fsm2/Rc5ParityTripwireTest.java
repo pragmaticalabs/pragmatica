@@ -67,7 +67,8 @@ class Rc5ParityTripwireTest {
     // -- #1337, cluster side: a departed node's topic rows -----------------------------------------------------------------
     // Legacy (rc5 6fc194e39): the node-removal batch removes the departed node's TopicSubscription and TopicPublisher rows
     // (`ClusterDeploymentState.topicRowCommandsForNode`), and the periodic sweep removes any left behind
-    // (`StaleEntryCleaner.cleanupStaleTopicRows`). FSM2's C17/C17b remove the node's desired, observed and route rows only.
+    // (`StaleEntryCleaner.cleanupStaleTopicRows`). FSM2 (F2b) mirrors the topic rows; C17, C17b and R-4.3.3 remove them with the node's other
+    // rows, and `DepartureFlow.sweepStaleTopicRows` is the stale sweep (pinned in TopicRowRemovalTest).
     private static final ResourceAddress ORDERS_TOPIC = ResourceAddress.resourceAddress("org.example", "orders", "1.0.0").unwrap();
     private static final TopicSubscriptionKey SUBSCRIPTION = TopicSubscriptionKey.topicSubscriptionKey(ORDERS_TOPIC,
                                                                                                        ORDERS,
@@ -101,25 +102,104 @@ class Rc5ParityTripwireTest {
         return w;
     }
 
-    /// CUTOVER-BLOCKER tripwire (#1337): FSM2's departure cleanup ran (the node's observed row is gone) and left its topic rows.
-    @Test
-    void tripwire_aDepartedNodesTopicRows_surviveTheFsm2DepartureCleanup() {
-        var w = departed();
-
-        assertThat(w.present(new SliceObservedKey(CORE_2, ORDERS))).as("the departure cleanup ran, so the tripwire is not vacuous").isFalse();
-        assertThat(List.of(w.present(SUBSCRIPTION), w.present(PUBLISHER))).as("#1337 parity: " + PARITY
-                                                                              + ": FSM2 now removes a departed node's topic rows; enable parity_aDepartedNodesTopicRows_areRemoved_likeLegacy and delete this tripwire")
-                                                                          .containsExactly(true, true);
-    }
-
-    @Disabled("#1337 parity: " + PARITY)
+    /// R-CF.15 (#1337): the departure batch removes the departed node's topic rows with its desired, observed and route rows.
     @Test
     void parity_aDepartedNodesTopicRows_areRemoved_likeLegacy() {
         var w = departed();
 
-        assertThat(List.of(w.present(SUBSCRIPTION), w.present(PUBLISHER))).as("#1337 parity: " + PARITY
-                                                                              + ": a departed node's topic rows are removed, as the legacy node-removal batch and stale sweep do")
+        assertThat(w.present(new SliceObservedKey(CORE_2, ORDERS))).as("the departure cleanup ran").isFalse();
+        assertThat(List.of(w.present(SUBSCRIPTION), w.present(PUBLISHER))).as("#1337 parity: a departed node's topic rows are removed, as the legacy node-removal batch does")
                                                                           .containsExactly(false, false);
+    }
+
+    /// R-CF.15, legacy's stale sweep (`StaleEntryCleaner.cleanupStaleTopicRows`): a topic row of the departed node that commits after its
+    /// departure batch (a late batch of that node) is removed by the next reconcile's C17b, which re-derives the cleanup from the mirror.
+    @Test
+    void parity_aTopicRowOfADepartedNode_committedAfterTheDeparture_isSwept_likeLegacy() {
+        var w = departed();
+        var late = TopicPublisherKey.topicPublisherKey(ORDERS_TOPIC, BILLING, CORE_2);
+
+        w.h.seed(late, TopicPublisherValue.topicPublisherValue(CORE_2, TopicTier.DURABLE));
+        assertThat(w.present(late)).as("control: the late row committed").isTrue();
+
+        w.h.advance(120_000L);
+
+        assertThat(w.present(late)).as("#1337 parity: the departed node's late topic row is swept").isFalse();
+    }
+
+    /// The remove side of the mirror: topic rows the node removed itself (an unload) before departing leave the mirror, so the departure
+    /// batch, whose removals are guarded on the mirrored values, does not name them and still commits.
+    @Test
+    void topicRowsRemovedBeforeTheDeparture_leaveTheMirror_andTheDepartureBatchCommits() {
+        var w = departingNodeWithTopicRows();
+
+        w.h.seedRemove(SUBSCRIPTION);
+        w.h.seedRemove(PUBLISHER);
+        w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
+        w.h.drain();
+
+        assertThat(w.present(new SliceObservedKey(CORE_2, ORDERS))).as("the departure batch committed").isFalse();
+    }
+
+    /// The control: a LIVE node's topic rows are not touched by another node's departure.
+    @Test
+    void aLiveNodesTopicRows_surviveAnotherNodesDeparture() {
+        var w = departingNodeWithTopicRows();
+        var live = TopicSubscriptionKey.topicSubscriptionKey(ORDERS_TOPIC, ORDERS, MethodName.methodName("onOrder").unwrap(), CORE_3);
+
+        w.h.seed(live, TopicSubscriptionValue.topicSubscriptionValue(CORE_3, TopicTier.ANY));
+        w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
+        w.h.drain();
+        w.h.advance(120_000L);
+
+        assertThat(w.present(SUBSCRIPTION)).as("control: the departed node's row went").isFalse();
+        assertThat(w.present(live)).isTrue();
+    }
+
+    /// R-CF.15, the removals of a departed node's topic rows are in the DEPARTURE batch itself, at their committed values, as legacy's node-removal
+    /// batch carries them. Red when: the departure draft stops adding `topicRowRemovals` (C17b would remove the rows a batch later, so the
+    /// end-state tests above cannot tell), or the mirror stops holding the rows' values (`Outbox.mirrored` has no topic arm, so the batch reads as moved).
+    @Test
+    void theDepartureBatch_carriesTheTopicRowRemovals_atTheirCommittedValues_andReadsAsUnmoved() {
+        var w = departingNodeWithTopicRows();
+
+        w.h.policy = FsmHarness.SettlePolicy.HOLD;
+        w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
+
+        var m = w.h.model();
+        var draft = m.submitted.values()
+                               .stream()
+                               .flatMap(submitted -> submitted.drafts().stream())
+                               .filter(d -> d.kind() == ClusterModel.SubmitKind.DEPARTURE)
+                               .findFirst()
+                               .orElseThrow();
+        var subscription = TopicSubscriptionValue.topicSubscriptionValue(CORE_2, TopicTier.ANY);
+        var publisher = TopicPublisherValue.topicPublisherValue(CORE_2, TopicTier.EPHEMERAL);
+
+        assertThat(Outbox.mirrored(m, SUBSCRIPTION)).as("the mirror holds the subscription row").isEqualTo(Option.some(subscription));
+        assertThat(Outbox.mirrored(m, PUBLISHER)).as("the mirror holds the publisher row").isEqualTo(Option.some(publisher));
+        assertThat(draft.mutations().stream().filter(mutation -> mutation.key().equals(SUBSCRIPTION)).map(mutation -> mutation.expected()))
+            .as("the departure batch removes the subscription row at its committed value").containsExactly(Option.some(subscription));
+        assertThat(draft.mutations().stream().filter(mutation -> mutation.key().equals(PUBLISHER)).map(mutation -> mutation.expected()))
+            .as("the departure batch removes the publisher row at its committed value").containsExactly(Option.some(publisher));
+        assertThat(Outbox.moved(m, draft)).as("nothing moved since the batch was derived").isFalse();
+    }
+
+    /// The mirror's remove side, read directly: a topic row the node removed leaves BOTH the row map and the by-node index. Red when: either
+    /// `Indexer.indexRemove` line for topic rows is deleted (the end-state test above cannot see a stale entry that the departure batch skips).
+    @Test
+    void aRemovedTopicRow_leavesTheRowMap_andTheByNodeIndex() {
+        var w = departingNodeWithTopicRows();
+
+        assertThat(Idx.members(w.h.model().topicRowsByNode, CORE_2).toList()).as("control: both rows indexed under the node").containsExactlyInAnyOrder(SUBSCRIPTION, PUBLISHER);
+        w.h.seedRemove(SUBSCRIPTION);
+        w.h.seedRemove(PUBLISHER);
+        w.h.drain();
+
+        var m = w.h.model();
+
+        assertThat(List.of(m.topicRows.get(SUBSCRIPTION).isPresent(), m.topicRows.get(PUBLISHER).isPresent())).as("the row map").containsExactly(false, false);
+        assertThat(Idx.members(m.topicRowsByNode, CORE_2).toList()).as("the by-node index").isEmpty();
     }
 
     // -- #241: the committed community policy in derived-community assignment ---------------------------------------------
