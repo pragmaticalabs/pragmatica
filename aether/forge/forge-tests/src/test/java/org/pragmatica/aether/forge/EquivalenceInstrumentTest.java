@@ -186,6 +186,29 @@ class EquivalenceInstrumentTest {
             assertThat(EquivalenceComparison.o4Counted(slots, "")).isEqualTo(9L);
         }
 
+        /// The O4 placement gate (CTO ruling on #2763): LEGACY placing an artifact on 1 node and FSM2 on 3 (the dev9 E-09 shape) read as different
+        /// placements; the same per-artifact node counts read as equal across engines although the families and node ids differ; teardown puts
+        /// and removes place nothing.
+        @Test
+        void placement_comparesPerArtifactNodeCountsAcrossEngines() {
+            var legacyOneNode = Map.of(1L, List.of("NodeArtifactKey put LOAD node-artifact/l1/a", "NodeArtifactKey put LOAD node-artifact/l1/b"),
+                                       2L, List.of("NodeArtifactKey put UNLOAD node-artifact/l2/a", "NodeArtifactKey remove - node-artifact/l3/a"));
+            var legacyThreeNodes = Map.of(1L, List.of("NodeArtifactKey put LOAD node-artifact/l1/a", "NodeArtifactKey put LOAD node-artifact/l2/a"),
+                                          2L, List.of("NodeArtifactKey put LOADING node-artifact/l3/a", "NodeArtifactKey put FAILED node-artifact/l1/b"),
+                                          3L, List.of("NodeArtifactKey put LOAD node-artifact/l2/b", "NodeArtifactKey put LOAD node-artifact/l3/b"));
+            var fsm2ThreeNodes = Map.of(1L, List.of("SliceDesiredKey put LOADED slice-desired/f1/a",
+                                                    "SliceDesiredKey put LOADED slice-desired/f2/a",
+                                                    "SliceDesiredKey put LOADED slice-desired/f3/a",
+                                                    "DeploymentOutcomeKey put IN_PROGRESS deployment-outcome/x"),
+                                        2L, List.of("SliceObservedKey put LOADING slice-observed/f1/b", "SliceObservedKey put LOADING slice-observed/f2/b"),
+                                        3L, List.of("SliceObservedKey put FAILED slice-observed/f3/b", "SliceObservedKey put UNLOADED slice-observed/f4/b"));
+
+            assertThat(EquivalenceComparison.placement(legacyOneNode)).isEqualTo("[a=1 nodes, b=1 nodes]");
+            assertThat(EquivalenceComparison.placement(fsm2ThreeNodes)).isEqualTo("[a=3 nodes, b=3 nodes]");
+            assertThat(EquivalenceComparison.placement(legacyThreeNodes)).isEqualTo(EquivalenceComparison.placement(fsm2ThreeNodes));
+            assertThat(EquivalenceComparison.placement(legacyOneNode)).isNotEqualTo(EquivalenceComparison.placement(fsm2ThreeNodes));
+        }
+
         private static Arm withVerdict(Arm arm, AetherValue.DeploymentOutcomeStatus status) {
             var kv = new HashMap<>(arm.quiescent().entries());
 

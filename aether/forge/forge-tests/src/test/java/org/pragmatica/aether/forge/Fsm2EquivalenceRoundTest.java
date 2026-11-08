@@ -117,13 +117,14 @@ class Fsm2EquivalenceRoundTest {
         var arms = new HashMap<DeploymentEngine, Arm>();
         var oracle = new ArrayList<EquivalenceOracle.Verdict>();
         var o4Controls = new HashMap<DeploymentEngine, Boolean>();
+        var placements = new HashMap<DeploymentEngine, String>();
 
         log("F4 round scenario=%s round=%d order=%s tick=%d quiet=%d".formatted(scenario, round, engines, TICK_MS, QUIET_MS));
         for (var index = 0; index < engines.size(); index++) {
             var engine = engines.get(index);
 
             try {
-                arms.put(engine, runArm(scenario, engine, 33000 + 400 * index, oracle, o4Controls));
+                arms.put(engine, runArm(scenario, engine, 33000 + 400 * index, oracle, o4Controls, placements));
             } catch (RuntimeException | AssertionError e) {
                 log("arm %s ERROR %s".formatted(engine, e));
                 log("VERDICT ERROR");
@@ -154,15 +155,17 @@ class Fsm2EquivalenceRoundTest {
             }
         });
         var divergences = new ArrayList<>(fsm2Divergences.stream().map(Divergence::describe).toList());
+        var voids = placementVoid(placements);
 
         oracle.forEach(verdict -> verdict.disagreements().forEach(submit -> divergences.add("ORACLE: " + submit.describe())));
-        var verdict = !silent.isEmpty() ? "VOID" : divergences.isEmpty() ? "PASS" : "DIVERGE";
+        var verdict = !silent.isEmpty() || !voids.isEmpty() ? "VOID" : divergences.isEmpty() ? "PASS" : "DIVERGE";
 
         log("arm legacy: o4=%d o5=%d ms o6=%s samples=%d".formatted(legacy.o4Batches(), legacy.o5PlacementMs(), legacy.o6(), legacy.samples().size()));
         log("arm fsm2:   o4=%d o5=%d ms o6=%s samples=%d".formatted(fsm2.o4Batches(), fsm2.o5PlacementMs(), fsm2.o6(), fsm2.samples().size()));
         oracle.forEach(result -> log(result.describe()));
         log("control divergences: " + controlDivergences.stream().map(Divergence::describe).toList());
         log("silent controls: " + silent);
+        log("placement legacy=%s fsm2=%s; void: %s".formatted(placements.get(DeploymentEngine.LEGACY), placements.get(DeploymentEngine.FSM2), voids));
         divergences.forEach(divergence -> log("DIVERGENCE " + divergence));
         log("VERDICT " + verdict);
         write(scenario, round);
@@ -173,7 +176,8 @@ class Fsm2EquivalenceRoundTest {
                        DeploymentEngine engine,
                        int basePort,
                        List<EquivalenceOracle.Verdict> oracle,
-                       Map<DeploymentEngine, Boolean> o4Controls) {
+                       Map<DeploymentEngine, Boolean> o4Controls,
+                       Map<DeploymentEngine, String> placements) {
         var cluster = emberCluster(scenario.nodes, basePort, basePort + 100, basePort + 200, "f4" + engine.name().toLowerCase().charAt(0));
 
         cluster.withDeploymentEngine(engine);
@@ -182,10 +186,11 @@ class Fsm2EquivalenceRoundTest {
         try {
             awaitTrue("a leader", WAIT, () -> cluster.currentLeader().isPresent());
             awaitTrue("quorum on every node", WAIT, () -> healthy(cluster));
+            awaitTrue("every node counts all " + scenario.nodes + " core members (placement determinism)", WAIT, () -> fullMembership(cluster, scenario.nodes));
             var recorder = new Recorder(cluster);
 
             recorder.start();
-            var placementMs = scenario(scenario, cluster);
+            var placementMs = scenario(scenario, cluster, recorder);
             var quiescent = awaitQuiescence(cluster);
 
             recorder.stop();
@@ -193,6 +198,8 @@ class Fsm2EquivalenceRoundTest {
             var o4 = recorder.batches() < 0 ? -1L : EquivalenceComparison.o4Counted(slots, scenario.name());
 
             logSlots(engine, slots);
+            placements.put(engine, EquivalenceComparison.placement(slots));
+            log("placement (%s): %s".formatted(engine, placements.get(engine)));
             log("O4 (%s): %d slots, %d counted after the %s allow-list".formatted(engine, recorder.batches(), o4, scenario));
             var kv = new EquivalenceKv(snapshot(cluster));
             var live = cluster.allNodes().stream().map(AetherNode::self).collect(Collectors.toUnmodifiableSet());
@@ -225,7 +232,7 @@ class Fsm2EquivalenceRoundTest {
 
     /// Runs the scenario; returns O5, the time from the publish to the first instant (polled every 250 ms, the same for both arms) at which the
     /// published artifact's ACTIVE count reached its target, or -1 when the scenario places nothing (E-09).
-    private long scenario(Scenario scenario, EmberCluster cluster) {
+    private long scenario(Scenario scenario, EmberCluster cluster, Recorder recorder) {
         var echo = Artifact.artifact(TestArtifacts.ECHO_SLICE).unwrap();
 
         return switch (scenario) {
@@ -305,8 +312,9 @@ class Fsm2EquivalenceRoundTest {
             case E08 -> {
                 // A transient load failure (design 9.3 E-08): 3 instances placed (the blueprint floor, #1495), then the jar is moved out of the local
                 // repository the nodes resolve from, so the 3 -> 5 scale-up loads fail with ArtifactNotFound (Intermittent, retried); once a FAILED
-                // row is committed the jar is restored and the retry must succeed. The fixture's own control: no FAILED row within the bound fails
-                // the arm (no silent pass).
+                // row is committed the jar is restored and the retry must succeed. The FAILED row is read from the commit ring, not the live KV: FSM2
+                // re-issues the load within ~1 s, so its FAILED row is overwritten between two 250 ms KV polls (dev11: 34 failed loads, 0 seen).
+                // The fixture's own control: no committed FAILED row within the bound fails the arm (no silent pass).
                 publishAndPlace(cluster, echo, 3);
                 var jar = localJar(echo);
                 var aside = jar.resolveSibling(jar.getFileName() + ".f4-aside");
@@ -315,8 +323,8 @@ class Fsm2EquivalenceRoundTest {
                 move(jar, aside);
                 try {
                     expectAccepted(scale(cluster, 5));
-                    awaitTrue("a transient load failure (E-08 fixture fired)", Duration.ofSeconds(90), () -> failed(cluster, echo) > 0);
-                    log("E08 transient failure observed after %d ms: %s".formatted(System.currentTimeMillis() - at, failedRows(cluster, echo)));
+                    awaitTrue("a committed transient load failure (E-08 fixture fired)", Duration.ofSeconds(90), () -> !recorder.committedFailures(echo).isEmpty());
+                    log("E08 transient failure committed after %d ms: %s".formatted(System.currentTimeMillis() - at, recorder.committedFailures(echo)));
                 } finally {
                     move(aside, jar);
                 }
@@ -390,17 +398,6 @@ class Fsm2EquivalenceRoundTest {
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
-    }
-
-    private static long failed(EmberCluster cluster, Artifact artifact) {
-        return failedRows(cluster, artifact).size();
-    }
-
-    private static List<EquivalenceKv.Instance> failedRows(EmberCluster cluster, Artifact artifact) {
-        return new EquivalenceKv(snapshot(cluster)).instances()
-                                                   .stream()
-                                                   .filter(instance -> instance.base().equals(artifact.base()) && instance.state().equals("FAILED"))
-                                                   .toList();
     }
 
     /// Publishes and waits for placement; returns O5 in ms.
@@ -538,6 +535,17 @@ class Fsm2EquivalenceRoundTest {
 
         List<EquivalenceMonitor.Sample> samples() {
             return List.copyOf(samples);
+        }
+
+        /// The committed `put FAILED` effects on `artifact`'s per-node rows, in slot order: every FAILED write, however briefly it lived.
+        List<String> committedFailures(Artifact artifact) {
+            var suffix = "/" + artifact.asString();
+
+            return new TreeMap<>(slotEffects).values()
+                                             .stream()
+                                             .flatMap(List::stream)
+                                             .filter(effect -> effect.contains(" put FAILED ") && effect.endsWith(suffix))
+                                             .toList();
         }
 
         /// Per counted slot, its O4-family effects (`Family op detail key`), in slot order: the batch attribution of R2 (#2763).
@@ -751,6 +759,21 @@ class Fsm2EquivalenceRoundTest {
 
     private static long active(EmberCluster cluster, Artifact artifact) {
         return new EquivalenceKv(snapshot(cluster)).active().getOrDefault(artifact.base(), 0L);
+    }
+
+    /// Placement determinism (CTO ruling on #2763): LEGACY E-09 placed on 1 node in dev9 and 3 in dev10. A member with no descriptor yet is outside
+    /// core accounting (`MembershipFsm.coreCountedMembers`), which the LEGACY allocator places over, so both arms publish only once every node
+    /// counts every core member. The per-arm placement record is the check that this suffices: a mismatch voids the round.
+    private static boolean fullMembership(EmberCluster cluster, int nodes) {
+        return cluster.allNodes().stream().allMatch(node -> node.membershipFsm().coreCountedMembers().size() == nodes);
+    }
+
+    /// O4 is compared only at equal placement: arms whose per-artifact node counts differ void the round (not PASS).
+    private static List<String> placementVoid(Map<DeploymentEngine, String> placements) {
+        var legacy = placements.get(DeploymentEngine.LEGACY);
+        var fsm2 = placements.get(DeploymentEngine.FSM2);
+
+        return legacy.equals(fsm2) ? List.of() : List.of("O4-placement-mismatch(legacy=" + legacy + ", fsm2=" + fsm2 + ")");
     }
 
     private boolean healthy(EmberCluster cluster) {

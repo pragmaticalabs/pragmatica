@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.stream.Collectors;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -85,6 +86,32 @@ final class EquivalenceComparison {
         var parts = effect.split(" ", 4);
 
         return parts.length < 3 ? effect : parts[0] + " " + parts[1] + " " + parts[2];
+    }
+
+    /// The families whose per-node puts are placement decisions: LEGACY's `NodeArtifactKey`, FSM2's `SliceDesiredKey` and `SliceObservedKey`.
+    private static final Set<String> PLACEMENT_FAMILIES = Set.of("NodeArtifactKey", "SliceDesiredKey", "SliceObservedKey");
+
+    /// The placement of one arm from its per-slot effects (`Family op detail key`, key `prefix/node/artifact`): per artifact, the number of
+    /// distinct nodes that ever received a non-teardown put (detail not UNLOAD*). Every placement family is keyed per (node, artifact), so a
+    /// node holds at most one instance and the count is nodes x 1 instance. Node ids differ per arm (prefix), so only the counts are compared:
+    /// an O4 comparison is valid only between arms with equal placement (CTO ruling on #2763; LEGACY E-09 was bimodal, 1 node vs 3).
+    static String placement(Map<Long, List<String>> slotEffects) {
+        return slotEffects.values()
+                          .stream()
+                          .flatMap(List::stream)
+                          .map(effect -> effect.split(" ", 4))
+                          .filter(EquivalenceComparison::isPlacement)
+                          .map(parts -> parts[3].split("/", 3))
+                          .filter(key -> key.length == 3)
+                          .collect(Collectors.groupingBy(key -> key[2], TreeMap::new, Collectors.mapping(key -> key[1], Collectors.toSet())))
+                          .entrySet()
+                          .stream()
+                          .map(entry -> entry.getKey() + "=" + entry.getValue().size() + " nodes")
+                          .collect(Collectors.joining(", ", "[", "]"));
+    }
+
+    private static boolean isPlacement(String[] parts) {
+        return parts.length == 4 && PLACEMENT_FAMILIES.contains(parts[0]) && parts[1].equals("put") && !parts[2].startsWith("UNLOAD");
     }
 
     /// Compares outside any ruled scenario: no outcome mapping applies.
