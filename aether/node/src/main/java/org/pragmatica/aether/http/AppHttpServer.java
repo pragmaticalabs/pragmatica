@@ -1734,7 +1734,8 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                                                                                                                               "Invalid token");
             case SecurityError.InvalidCredentials _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED,
                                                                                  "Invalid credentials");
-            case SecurityError.InsufficientRole _, SecurityError.AccessDenied _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN, cause.message());
+            case SecurityError.InsufficientRole _, SecurityError.AccessDenied _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN,
+                                                                                                             cause.message());
             case SecurityError.JwksFetchFailed _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED,
                                                                               "Authentication temporarily unavailable");
             default -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED, "Authentication failed");
