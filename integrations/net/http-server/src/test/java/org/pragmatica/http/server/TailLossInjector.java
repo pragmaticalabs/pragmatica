@@ -17,6 +17,7 @@ package org.pragmatica.http.server;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.BiPredicate;
 
 import org.pragmatica.lang.Contract;
 
@@ -94,10 +95,27 @@ final class TailLossInjector extends ChannelOutboundHandlerAdapter {
 
     /// Stops holding and drops or sends what was held, on the channel's event loop; returns once done.
     void release(Channel channel, boolean drop) {
+        release(channel, drop
+                         ? ALL_BUT_SECOND_LAST
+                         : NONE);
+    }
+
+    /// The burst datagrams dropped are the ones `drop` names, given a datagram's index in the burst and the burst's size.
+    /// Stops holding and drops or sends what was held, on the channel's event loop; returns once done.
+    void release(Channel channel, BiPredicate<Integer, Integer> drop) {
         channel.eventLoop().submit(() -> releaseHeld(drop)).syncUninterruptibly();
     }
 
-    private void releaseHeld(boolean drop) {
+    /// Drops nothing: the control.
+    static final BiPredicate<Integer, Integer> NONE = (_, _) -> false;
+    /// Drops every burst datagram but the second-to-last (the default pattern of [#release(Channel, boolean)]).
+    static final BiPredicate<Integer, Integer> ALL_BUT_SECOND_LAST = (i, size) -> i != size - 2;
+    /// Drops every burst datagram but the last.
+    static final BiPredicate<Integer, Integer> ALL_BUT_LAST = (i, size) -> i != size - 1;
+    /// Drops the burst's last datagram only.
+    static final BiPredicate<Integer, Integer> LAST_ONLY = (i, size) -> i == size - 1;
+
+    private void releaseHeld(BiPredicate<Integer, Integer> drop) {
         armed = false;
         if (held.isEmpty()) {
             log = "nothing held";
@@ -106,12 +124,11 @@ final class TailLossInjector extends ChannelOutboundHandlerAdapter {
         }
 
         var burstSize = burstEnd;
-        var keep = burstSize - 2;
         var text = new StringBuilder();
 
         for (int i = 0; i < held.size(); i++) {
             var h = held.get(i);
-            var dropIt = drop && i < burstSize && i != keep;
+            var dropIt = i < burstSize && drop.test(i, burstSize);
 
             text.append(i < burstSize
                         ? 'b'

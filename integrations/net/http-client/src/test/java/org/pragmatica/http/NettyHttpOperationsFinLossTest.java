@@ -16,8 +16,6 @@
  */
 package org.pragmatica.http;
 
-import java.io.IOException;
-import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.http.HttpRequest;
@@ -79,13 +77,13 @@ class NettyHttpOperationsFinLossTest {
 
     @BeforeEach
     void start() {
-        port = freeUdpPort();
-        server = HttpServer.http3Server(HttpServerConfig.httpServerConfig("client-fin-loss", port),
+        server = HttpServer.http3Server(HttpServerConfig.httpServerConfig("client-fin-loss", 0),
                                         QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols())
                                                              .unwrap(),
                                         NettyHttpOperationsFinLossTest::answer)
                            .await(timeSpan(10).seconds())
                            .unwrap();
+        port = server.port();
     }
 
     @AfterEach
@@ -189,14 +187,6 @@ class NettyHttpOperationsFinLossTest {
         injector.arm();
         NettyHttpOperations.writeHttp3Request(stream, request);
         injector.endBurst();
-    }
-
-    private static int freeUdpPort() {
-        try (var socket = new DatagramSocket(0)) {
-            return socket.getLocalPort();
-        } catch (IOException e) {
-            throw new AssertionError(e);
-        }
     }
 
     /// Completes with `status body` once the response stream ends.
