@@ -318,7 +318,7 @@ class TerraHttpServerTest {
 
     @Disabled("#2157 part b: enable when a ContextPropagation on the classpath carries the SecurityContext across executor hops")
     @Test void holder_readAfterExecutorHopFromHandler_seesCaller() throws Exception {
-        assertThat(serve("/hop", gate -> hoppedPrincipal(), false)).isEqualTo("reader");
+        assertThat(serve("/hop", gate -> hoppedPrincipal(), false)).isEqualTo("api-key:reader");
     }
 
     private static String serve(String path, Function<AtomicReference<Promise<Unit>>, Promise<String>> handler, boolean gated) throws Exception {
