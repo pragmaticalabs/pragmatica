@@ -725,7 +725,7 @@ class SliceProcessorTest {
                                           List.of(causeIn("shared.one", "OneError", "Denied")));
 
         assertThat(diagnostics).doesNotContain("Ambiguous explicit");
-        assertThat(generatedRoutes(classes)).contains("case shared.one.OneError.Denied _ -> HttpError.httpError(HttpStatus.NOT_FOUND, cause);");
+        assertThat(generatedRoutes(classes)).contains("case Denied _ -> HttpError.httpError(HttpStatus.NOT_FOUND, cause);");
     }
 
     private String compileWithRoutes(Path classes, String route, String method) throws IOException {
