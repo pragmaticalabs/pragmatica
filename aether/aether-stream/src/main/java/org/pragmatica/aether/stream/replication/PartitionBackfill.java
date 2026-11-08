@@ -1796,8 +1796,52 @@ public final class PartitionBackfill {
         return transport.requestCatchup(survivorNode,
                                         request,
                                         () -> progress(streamName, partition))
-                        .flatMap(response -> applyAndPromote(streamName, partition, survivorTail, response))
+                        .flatMap(response -> applyAndPromote(streamName,
+                                                             partition,
+                                                             survivorTail,
+                                                             withinCommittedLineage(response)))
                         .withSuccess(_ -> recordSurvivorConfirmed(streamName, partition, survivorNode, survivorTail));
+    }
+
+    /// I-27 (#1759, CTO D1): the activating owner takes a source's records only up to the lowest offset a later committed epoch
+    /// re-assigned ([AlignedRecovery#reassignedFrom]): a replica serving its WAL ships what it holds, a deposed epoch's tail
+    /// included, vouched by its own history, and the receiver clips it. What is left out is never installed; the promotion
+    /// gate then finds the run short of the source's tail and the activation stays un-activated, as for any short run.
+    private ReplicationMessage.CatchupResponse withinCommittedLineage(ReplicationMessage.CatchupResponse response) {
+        return partitionRecovery.reassignedFrom(response.streamName(),
+                                                response.partition(),
+                                                response.fromOffset(),
+                                                response.toOffset(),
+                                                response.history())
+                                .onPresent(bound -> log.warn("Backfill {}[{}]: source {} serves records from {} that a later committed epoch "
+                                                            + "re-assigned; they are not installed",
+                                                             response.streamName(),
+                                                             response.partition(),
+                                                             response.governorId(),
+                                                             bound))
+                                .map(bound -> clippedBefore(response, bound))
+                                .or(response);
+    }
+
+    private static ReplicationMessage.CatchupResponse clippedBefore(ReplicationMessage.CatchupResponse response, long bound) {
+        var kept = (int) Math.clamp(bound - response.fromOffset(),
+                                    0L,
+                                    response.payloads()
+                                            .size());
+
+        return ReplicationMessage.CatchupResponse.catchupResponse(response.governorId(),
+                                                                  response.streamName(),
+                                                                  response.partition(),
+                                                                  response.fromOffset(),
+                                                                  response.fromOffset() + kept - 1,
+                                                                  response.payloads()
+                                                                          .subList(0, kept),
+                                                                  response.timestamps()
+                                                                          .subList(0,
+                                                                                   Math.min(kept,
+                                                                                            response.timestamps()
+                                                                                                    .size())),
+                                                                  response.history());
     }
 
     /// After a SUCCESSFUL owner catch-up the owner has just read `localWatermark + 1 .. survivorTail` FROM

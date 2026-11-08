@@ -8,6 +8,7 @@ import java.util.List;
 
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 
@@ -62,6 +63,18 @@ public interface AlignedRecovery {
     /// comparison over it fails closed.
     Result<Long> applyUnattributed(String streamName, int partition, long toOffset, PageApply apply);
 
+    /// I-27 (#1759, CTO D1): the lowest offset of the page `[fromOffset, toOffset]` whose record the committed epoch starts say
+    /// a later epoch re-assigned, judged on every epoch the source's `slice` records (the 6a min-over-history rule); none when
+    /// the page holds no such record. The activating owner installs nothing at or above it ([PartitionBackfill]). The default
+    /// re-assigns nothing: a seam with no committed history judges nothing.
+    default Option<Long> reassignedFrom(String streamName,
+                                        int partition,
+                                        long fromOffset,
+                                        long toOffset,
+                                        List<ProvenanceEntry> slice) {
+        return Option.none();
+    }
+
     /// The page's appends, run between the install and its settlement.
     @FunctionalInterface
     interface PageApply {
@@ -99,6 +112,15 @@ public interface AlignedRecovery {
         Result<Long> applyUnattributed(String streamName, int partition, long toOffset, PageApply apply);
     }
 
+    @FunctionalInterface
+    interface ReassignedJudge {
+        Option<Long> reassignedFrom(String streamName,
+                                    int partition,
+                                    long fromOffset,
+                                    long toOffset,
+                                    List<ProvenanceEntry> slice);
+    }
+
     static AlignedRecovery alignedRecovery(Appender appender,
                                            AttributedApplier attributed,
                                            UnattributedApplier unattributed) {
@@ -113,11 +135,21 @@ public interface AlignedRecovery {
                                unattributed);
     }
 
-    /// The seam with a distinct [#applyOwnerAttributed] (production: `StreamPartitionManager#alignedRecovery`).
+    /// The seam with a distinct [#applyOwnerAttributed] and no committed history to judge a page by.
     static AlignedRecovery alignedRecovery(Appender appender,
                                            AttributedApplier attributed,
                                            OwnerAttributedApplier ownerAttributed,
                                            UnattributedApplier unattributed) {
+        return alignedRecovery(appender, attributed, ownerAttributed, unattributed, (_, _, _, _, _) -> Option.none());
+    }
+
+    /// The seam with a distinct [#applyOwnerAttributed] and a [#reassignedFrom] judge (production:
+    /// `StreamPartitionManager#alignedRecovery`).
+    static AlignedRecovery alignedRecovery(Appender appender,
+                                           AttributedApplier attributed,
+                                           OwnerAttributedApplier ownerAttributed,
+                                           UnattributedApplier unattributed,
+                                           ReassignedJudge reassigned) {
         return new AlignedRecovery() {
             @Override
             public Result<Long> appendRecovered(String streamName,
@@ -158,6 +190,15 @@ public interface AlignedRecovery {
             @Override
             public Result<Long> applyUnattributed(String streamName, int partition, long toOffset, PageApply apply) {
                 return unattributed.applyUnattributed(streamName, partition, toOffset, apply);
+            }
+
+            @Override
+            public Option<Long> reassignedFrom(String streamName,
+                                               int partition,
+                                               long fromOffset,
+                                               long toOffset,
+                                               List<ProvenanceEntry> slice) {
+                return reassigned.reassignedFrom(streamName, partition, fromOffset, toOffset, slice);
             }
         };
     }

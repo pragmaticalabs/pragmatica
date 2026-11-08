@@ -5088,6 +5088,46 @@ public final class StreamPartitionManager implements AutoCloseable {
         return installUnattributed(streamName, partition, toOffset).flatMap(installed -> settle(installed, apply.apply()));
     }
 
+    /// I-27 (#1759, CTO D1): the lowest offset of the page `[fromOffset, toOffset]` a later epoch re-assigned, judged on every
+    /// epoch the source's `slice` records by 6a's min-over-history rule ([EpochValidation#reassignedFrom]): a recorded range
+    /// `(e_k, [s_k, end_k))` that reaches into the page holds the replaced lineage from `max(s_k, reassignedFrom(starts, e_k))`
+    /// when that lies inside it. The activating owner installs nothing at or above it ([AlignedRecovery#reassignedFrom]): a
+    /// replica that kept a deposed epoch's tail serves it from its WAL, vouched by its own history, and the tail is not taken.
+    ///
+    /// Unlike the doubt of a copy ([#recordedDoubtStart]), a range with NO committed start after its epoch is not judged
+    /// re-assigned: the activating owner's own epoch is pending -- its start is committed only after this catch-up -- and is
+    /// treated as not started, so the records of the epoch it succeeds are what it catches up on. An empty slice records no
+    /// epoch, and judges nothing. [guess: an empty slice (a log-less source) is not clipped; the N13 install compare stays its
+    /// guard. Clipping it from the lowest committed start would refuse every catch-up from a log-less peer.]
+    public Option<Long> reassignedFrom(String streamName,
+                                       int partition,
+                                       long fromOffset,
+                                       long toOffset,
+                                       List<ProvenanceEntry> slice) {
+        var starts = committedEpochStarts.startsOf(streamName, partition);
+        var ranges = slice.stream()
+                          .map(entry -> new RecordedRange(entry.rank(),
+                                                          entry.startOffset()))
+                          .toList();
+
+        return Option.from(IntStream.range(0,
+                                           ranges.size())
+                                    .filter(i -> rangeEnd(ranges, i, toOffset) > fromOffset)
+                                    .mapToObj(i -> reassignedInside(ranges.get(i),
+                                                                    rangeEnd(ranges, i, toOffset),
+                                                                    starts))
+                                    .flatMap(Option::stream)
+                                    .min(Long::compare));
+    }
+
+    private static Option<Long> reassignedInside(RecordedRange range, long end, List<EpochStart> starts) {
+        return EpochValidation.reassignedFrom(starts,
+                                              range.epoch())
+                              .map(reassigned -> Math.max(range.from(),
+                                                          reassigned))
+                              .filter(bound -> bound < end);
+    }
+
     private Result<Long> settle(InstalledSlice installed, Result<Long> applied) {
         return applied.onSuccess(_ -> releaseProvenance(installed))
                       .onFailure(_ -> trimAfterFailedApply(installed));
@@ -5366,7 +5406,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                                                         partition)),
                                                this::applyAttributed,
                                                this::applyOwnerAttributed,
-                                               this::applyUnattributed);
+                                               this::applyUnattributed,
+                                               this::reassignedFrom);
     }
 
     /// Records about to be applied up to `toOffset` carry no provenance (#1596: a sealed segment without a slice).
