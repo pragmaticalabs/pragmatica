@@ -46,20 +46,37 @@ public final class ConfigLoader {
     private ConfigLoader() {}
 
     public static Result<AetherConfig> load(Path path) {
-        return TomlParser.parseFile(path).flatMap(doc -> loadDocument(doc, Map.of(), System::getenv, FileOps::exists));
+        return TomlParser.parseFile(path).flatMap(doc -> loadNode(doc, Map.of(), System::getenv));
     }
 
     public static Result<AetherConfig> loadFromString(String content) {
-        return TomlParser.parse(content).flatMap(doc -> loadDocument(doc, Map.of(), System::getenv, FileOps::exists));
+        return TomlParser.parse(content).flatMap(doc -> loadNode(doc, Map.of(), System::getenv));
     }
 
     /// [#loadFromString] against a supplied environment (the test seam for env-fed values such as the HS256 secret).
     static Result<AetherConfig> loadFromString(String content, Fn1<String, String> env) {
-        return TomlParser.parse(content).flatMap(doc -> loadDocument(doc, Map.of(), env, FileOps::exists));
+        return TomlParser.parse(content).flatMap(doc -> loadNode(doc, Map.of(), env));
     }
 
     public static Result<AetherConfig> loadWithOverrides(Path path, Map<String, String> overrides) {
-        return TomlParser.parseFile(path).flatMap(doc -> loadDocument(doc, overrides, System::getenv, FileOps::exists));
+        return TomlParser.parseFile(path).flatMap(doc -> loadNode(doc, overrides, System::getenv));
+    }
+
+    /// The node's own load: [#loadDocument] plus the one verdict pre-flight cannot give, that an HS256 JWT mode has its
+    /// secret (#2880). A configured mode with a missing secret is refused naming the setting, never a degraded fallback.
+    private static Result<AetherConfig> loadNode(TomlDocument doc, Map<String, String> overrides, Fn1<String, String> env) {
+        return loadDocument(doc, overrides, env, FileOps::exists).flatMap(ConfigLoader::requireJwtSecret);
+    }
+
+    private static Result<AetherConfig> requireJwtSecret(AetherConfig config) {
+        return config.appHttp()
+                     .jwtConfig()
+                     .filter(jwt -> jwt.keyMode() == JwtKeyMode.HS256 && jwt.sharedSecret().isEmpty())
+                     .fold(() -> Result.success(config),
+                           _ -> ConfigError.invalidConfig("[app-http] jwt_algorithm = \"HS256\" needs a shared secret of at least "
+                                                         + JwtSecret.MIN_BYTES + " bytes in " + JWT_SECRET_ENV + " (or the file "
+                                                         + JWT_SECRET_ENV + "_FILE names); none was supplied.")
+                                            .result());
     }
 
     /// THE node load path, shared by every entry point and by cluster bootstrap's pre-flight ([#checkNodeDocument]):
@@ -600,8 +617,8 @@ public final class ConfigLoader {
     /// `jwt_algorithm = "HS256"` (#2880) selects the shared-secret mode, and the secret comes from the environment
     /// (`AETHER_JWT_SECRET`, or the file `AETHER_JWT_SECRET_FILE` names), never from the TOML, so the config file can be
     /// committed and logged. Without `jwt_algorithm` the mode is JWKS and `jwks_url` alone makes it present. A secret the
-    /// environment does not supply is not refused here: pre-flight judges against an empty environment, so the node
-    /// start-up refuses it instead ([#JWT_SECRET_ENV]).
+    /// environment does not supply is not refused here: pre-flight judges against an empty environment, so the node's
+    /// own load refuses it instead ([#requireJwtSecret]).
     private static Option<JwtConfig> parseJwtConfig(TomlDocument doc, Fn1<String, String> env) {
         return jwtKeyMode(doc).fold(() -> doc.getString("app-http", "jwks_url")
                                              .map(jwksUrl -> buildJwtConfig(doc, jwksUrl, JwtKeyMode.JWKS, Option.empty())),

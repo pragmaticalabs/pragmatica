@@ -443,10 +443,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     private static SecurityValidator buildSecurityValidator(AppHttpConfig config) {
         return switch (config.securityMode()) {
             case API_KEY -> SecurityValidator.apiKeyValidator(config.apiKeys());
-            case JWT -> config.jwtConfig()
-                              .filter(JwtConfig::hasKey)
-                              .map(SecurityValidator::jwtValidator)
-                              .or(() -> jwtModeWithoutConfigValidator(config.enabled(), config.jwtConfig().isPresent()));
+            case JWT -> config.jwtConfig().map(SecurityValidator::jwtValidator).or(() -> jwtModeWithoutConfigValidator(config.enabled()));
             case NONE -> SecurityValidator.permitAllValidator();
         };
     }
@@ -463,24 +460,13 @@ class AppHttpServerAdapter implements AppHttpServer {
     /// contradiction, not a degraded default. Only logged for a server that will actually serve:
     /// the validator is built at construction, before `start()` consults `enabled()`, and a disabled
     /// server refuses nothing. Pinned by `AppHttpServerJwtMissingConfigLogTest`.
-    private static SecurityValidator jwtModeWithoutConfigValidator(boolean serverEnabled, boolean hs256WithoutSecret) {
+    private static SecurityValidator jwtModeWithoutConfigValidator(boolean serverEnabled) {
         if (serverEnabled) {
-            log.error(hs256WithoutSecret
-                      ? JWT_MISSING_SECRET_MESSAGE
-                      : JWT_MISSING_CONFIG_MESSAGE);
+            log.error(JWT_MISSING_CONFIG_MESSAGE);
         }
 
         return SecurityValidator.denyUnlessPublicValidator();
     }
-
-    /// #2880: `jwt_algorithm = "HS256"` with no `AETHER_JWT_SECRET` / `AETHER_JWT_SECRET_FILE` in the node's environment.
-    /// Pre-flight judges against an empty environment and cannot see the secret, so the node refuses here, to the same
-    /// effect as a missing `jwks_url`: every non-public route answers 401. The message never names a secret value.
-    private static final String JWT_MISSING_SECRET_MESSAGE = "[app-http] jwt_algorithm = \"HS256\" but no shared secret is"
-                                                           + " supplied (AETHER_JWT_SECRET or AETHER_JWT_SECRET_FILE): nothing can"
-                                                           + " verify a token, so every non-public app route on this node will be"
-                                                           + " REFUSED with 401. Supply the secret (at least 32 bytes) and restart"
-                                                           + " the node (#2880).";
 
     private static final String JWT_MISSING_CONFIG_MESSAGE = "[app-http] security_mode = \"jwt\" but [app-http] jwks_url is missing:"
                                                            + " no JWT configuration is present, so every non-public app route on this"

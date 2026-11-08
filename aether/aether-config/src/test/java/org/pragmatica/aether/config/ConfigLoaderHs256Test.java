@@ -7,6 +7,7 @@ package org.pragmatica.aether.config;
 import java.util.Map;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -46,17 +47,18 @@ class ConfigLoaderHs256Test {
         var config = jwt(HS256, Map.of("AETHER_JWT_SECRET", SECRET)).unwrap();
 
         assertThat(config.keyMode()).isEqualTo(JwtKeyMode.HS256);
-        assertThat(config.hasKey()).isTrue();
         assertThat(config.sharedSecret()).isEqualTo(Option.some(JwtSecret.jwtSecret(SECRET).unwrap()));
         assertThat(config.toString()).doesNotContain(SECRET);
     }
 
     @Test
-    void hs256_withoutSecret_loadsWithoutKey_theNodeStartRefusesIt() {
-        var config = jwt(HS256, Map.of()).unwrap();
+    void hs256_withoutSecret_isRefusedAtLoad_namingTheSetting() {
+        assertRefused(HS256, Map.of(), "jwt_algorithm = \"HS256\" needs a shared secret");
+    }
 
-        assertThat(config.keyMode()).isEqualTo(JwtKeyMode.HS256);
-        assertThat(config.hasKey()).isFalse();
+    @Test
+    void hs256_withEmptySecret_isRefusedAtLoad() {
+        assertRefused(HS256, Map.of("AETHER_JWT_SECRET", ""), "AETHER_JWT_SECRET");
     }
 
     @Test

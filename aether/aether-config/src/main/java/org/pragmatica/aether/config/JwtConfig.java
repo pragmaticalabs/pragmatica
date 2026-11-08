@@ -64,7 +64,7 @@ public record JwtConfig(String jwksUrl,
     }
 
     /// #2880: the full form, naming how signatures are verified. [JwtKeyMode#JWKS] takes a `jwksUrl` and no secret;
-    /// [JwtKeyMode#HS256] takes a secret (possibly not yet supplied, see [#hasKey]) and no `jwksUrl`, because HS mode
+    /// [JwtKeyMode#HS256] takes a secret (possibly not yet supplied: the node's own load refuses that) and no `jwksUrl`, because HS mode
     /// never reads a JWKS and a URL beside it is a configuration that says two things.
     public static Result<JwtConfig> jwtConfig(String jwksUrl,
                                               Option<String> issuer,
@@ -98,11 +98,6 @@ public record JwtConfig(String jwksUrl,
                           : Causes.cause("jwks_url is set but jwt_algorithm is HS256: HS256 mode never reads a JWKS, remove jwks_url")
                                   .result();
         };
-    }
-
-    /// Whether a token can be verified at all: JWKS mode always has its endpoint; HS256 mode needs its secret.
-    public boolean hasKey() {
-        return keyMode == JwtKeyMode.JWKS || sharedSecret.isPresent();
     }
 
     private static JwtConfig normalized(String jwksUrl,
