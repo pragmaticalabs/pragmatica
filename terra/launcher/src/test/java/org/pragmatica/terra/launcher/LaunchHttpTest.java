@@ -67,12 +67,15 @@ class LaunchHttpTest {
     }
 
     @Test void parse_jwtAuthSchemes_emptyOrDuplicate_failsTheLaunch() {
-        for (var line : List.of("auth_schemes = []\n", "auth_schemes = [\"Token\", \"token\"]\n")) {
-            var launch = jwtLaunch(line);
+        var cases = Map.of("auth_schemes = []\n", "auth_schemes is empty",
+                           "auth_schemes = [\"Token\", \"token\"]\n", "names 'token' more than once");
 
-            assertThat(launch.isFailure()).as(line).isTrue();
-            launch.onFailure(cause -> assertThat(cause.message()).as(line).contains("auth_schemes"));
-        }
+        cases.forEach((line, reason) -> assertLaunchRefused(jwtLaunch(line), line, reason));
+    }
+
+    private static void assertLaunchRefused(Result<LaunchHttp> launch, String line, String reason) {
+        assertThat(launch.isFailure()).as(line).isTrue();
+        launch.onFailure(cause -> assertThat(cause.message()).as(line).contains("Invalid [jwt]").contains(reason));
     }
 
     private static Result<LaunchHttp> jwtLaunch(String authSchemesLine) {
