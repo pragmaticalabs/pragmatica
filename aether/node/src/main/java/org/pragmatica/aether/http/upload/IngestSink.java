@@ -185,25 +185,17 @@ public final class IngestSink implements BodySink {
 
     private Promise<Unit> handle(Event event, Body.Multipart multipart) {
         return switch (event) {
-            case Event.FileStart start -> startFile(start, multipart);
+            case Event.FileStart start -> store.create(ObjectSpec.objectSpec(start.fileName(),
+                                                                             start.contentType(),
+                                                                             Option.none(),
+                                                                             multipart.expiresAt(),
+                                                                             Map.of())).flatMap(writer -> opened(writer,
+                                                                                                                 start)).mapToUnit();
             case Event.FileData data -> currentOpen().async(NO_OPEN_WRITER).flatMap(file -> file.writer()
                                                                                                 .write(data.bytes()));
             case Event.FileEnd _ -> currentOpen().async(NO_OPEN_WRITER).flatMap(this::commitOpen);
             case Event.Field field -> Promise.success(addField(field));
         };
-    }
-
-    /// Creates the part's writer, unless the upload already ended: then nothing is created.
-    private Promise<Unit> startFile(Event.FileStart start, Body.Multipart multipart) {
-        return isAborted()
-               ? ABANDONED.promise()
-               : store.create(ObjectSpec.objectSpec(start.fileName(),
-                                                    start.contentType(),
-                                                    Option.none(),
-                                                    multipart.expiresAt(),
-                                                    Map.of()))
-                      .flatMap(writer -> opened(writer, start))
-                      .mapToUnit();
     }
 
     private Unit addField(Event.Field field) {
@@ -238,10 +230,6 @@ public final class IngestSink implements BodySink {
         open = Option.some(file);
 
         return true;
-    }
-
-    private synchronized boolean isAborted() {
-        return aborted;
     }
 
     private synchronized Option<OpenFile> currentOpen() {
