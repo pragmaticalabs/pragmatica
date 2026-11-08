@@ -141,7 +141,7 @@ class RollbackNoPromotionTest {
                                                                       .mutations()
                                                                       .stream()
                                                                       .anyMatch(mutation -> mutation.key() instanceof DeploymentOutcomeKey
-                                                                                            && mutation.newValue()
+                                                                                            && mutation.replacement()
                                                                                                        .filter(DeploymentOutcomeValue.class::isInstance)
                                                                                                        .map(DeploymentOutcomeValue.class::cast)
                                                                                                        .map(value -> value.status() == DeploymentOutcomeStatus.ROLLED_BACK)
@@ -160,7 +160,7 @@ class RollbackNoPromotionTest {
                           .mutations()
                           .stream()
                           .filter(mutation -> mutation.key() instanceof SliceDesiredKey)
-                          .filter(mutation -> mutation.newValue()
+                          .filter(mutation -> mutation.replacement()
                                                       .filter(SliceDesiredValue.class::isInstance)
                                                       .map(SliceDesiredValue.class::cast)
                                                       .map(goal -> goal.goal() == SliceGoal.ACTIVE)
