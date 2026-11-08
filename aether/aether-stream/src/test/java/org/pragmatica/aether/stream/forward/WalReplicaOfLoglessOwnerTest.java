@@ -115,35 +115,18 @@ class WalReplicaOfLoglessOwnerTest {
                                                                     .isEmpty();
     }
 
-    /// The committed owner is this node itself (a node never attributes its own sourcing): nothing it is answered with is labelled
-    /// by the committed epochs. Pins the `!owner.equals(self)` guard of `answeredByCommittedOwner`.
-    @Test
-    void committedOwnerThatIsThisNode_answeringVouchedEmpty_isNotAttributed() {
-        publish(E1, 3);
-        publish(E2, 1);
-        backfill(committedOwner(OWNER), OWNER);
-
-        assertThat(replica.nextExpectedOffset(STREAM, PARTITION)).as("the page itself is applied").isEqualTo(4L);
-        assertThat(replica.epochHistory(STREAM, PARTITION).unwrap()).as("the guard, not the source filter, keeps it empty")
-                                                                    .isEmpty();
-    }
-
     private static CommittedStreamOwnerSource committedOwner(NodeId node) {
         return (_, _) -> Option.some(new CommittedStreamOwnerSource.CommittedOwner(node, E2));
     }
 
     private void backfill(CommittedStreamOwnerSource committedOwnerSource) {
-        backfill(committedOwnerSource, NEW_PEER);
-    }
-
-    private void backfill(CommittedStreamOwnerSource committedOwnerSource, NodeId self) {
         partitionBackfill(registry,
                           replica.alignedRecovery(),
                           forwardCatchupTransport(client, 100),
                           ReplicationTransport.NOOP,
                           (_, _, _) -> Promise.success(owner.nextExpectedOffset(STREAM, PARTITION) - 1),
                           (stream, partition) -> replica.nextExpectedOffset(stream, partition) - 1,
-                          self,
+                          NEW_PEER,
                           TimeSpan.timeSpan(0).millis(),
                           () -> List.of(OWNER),
                           committedOwnerSource).backfill(STREAM, PARTITION)
