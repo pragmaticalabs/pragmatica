@@ -49,7 +49,7 @@ class ScalarAliasAndArrayBindTest {
 
         @Test
         void booleanKind() throws Exception {
-            assertThat(factory("Promise<Boolean>", "SELECT EXISTS(SELECT 1 FROM users WHERE name = ANY(:names)) AS found")).contains("(Object) (names)");
+            assertThat(factory("Promise<Boolean>", "SELECT COALESCE(EXISTS(SELECT 1 FROM users WHERE name = ANY(:names)), false) AS found")).contains("(Object) (names)");
         }
     }
 
@@ -103,14 +103,14 @@ class ScalarAliasAndArrayBindTest {
         @ValueSource(strings = {"name", "text", "user", "Name", "timestamp", "interval", "char", "varchar",
                                 "boolean", "int", "integer", "bigint", "numeric", "json", "jsonb", "bit"})
         void keywordLikeAlias_isTheColumn(String alias) throws Exception {
-            var source = factory("Promise<String>", "SELECT lower(name) AS " + alias + " FROM users WHERE name = ANY(:names)");
+            var source = factory("Promise<String>", "SELECT COALESCE(lower(name), '') AS " + alias + " FROM users WHERE name = ANY(:names)");
 
             assertThat(source).contains("row.getString(\"" + alias.toLowerCase() + "\")").doesNotContain("???");
         }
 
         @Test
         void quotedKeywordLikeAlias_keepsCase() throws Exception {
-            assertThat(factory("Promise<String>", "SELECT lower(name) AS \"Name\" FROM users WHERE name = ANY(:names)"))
+            assertThat(factory("Promise<String>", "SELECT COALESCE(lower(name), '') AS \"Name\" FROM users WHERE name = ANY(:names)"))
                 .contains("row.getString(\"Name\")")
                 .doesNotContain("???");
         }

@@ -15,6 +15,7 @@ import org.pragmatica.aether.pg.parser.transform.CstNavigator;
 import org.pragmatica.aether.pg.schema.model.BuiltinTypes;
 import org.pragmatica.aether.pg.schema.model.PgType;
 import org.pragmatica.aether.pg.schema.model.Schema;
+import org.pragmatica.aether.pg.schema.validator.OutputNullability;
 import org.pragmatica.aether.pg.schema.validator.QueryValidator;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -202,14 +203,40 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
             if ( enclosed.getKind() != ElementKind.METHOD) {
             continue;}
             var execElement = (ExecutableElement) enclosed;
-            var methodInfo = analyzeMethod(execElement, schemaOpt, interfaceElement);
+            var methodInfo = analyzeGuarded(execElement, schemaOpt, interfaceElement);
             if ( methodInfo != null) {
             methods.add(methodInfo);}
         }
         return methods;
     }
 
-    private FactoryGenerator.MethodInfo analyzeMethod(
+    /// The processor boundary: a failure inside the analysis of one method (for instance a parse-tree extractor that
+    /// throws on a shape it does not model) must not escape as an uncaught processor crash naming only a grammar
+    /// rule. It becomes a build error naming the method and its SQL.
+    @SuppressWarnings("JBCT-EX-01")
+    private FactoryGenerator.MethodInfo analyzeGuarded(
+    ExecutableElement execElement,
+    Option<Schema> schemaOpt,
+    TypeElement interfaceElement) {
+        try {
+            return analyzeMethod(execElement, schemaOpt, interfaceElement);
+        } catch (RuntimeException failure) {
+            error(ProcessorError.analysisFailed(execElement.getSimpleName().toString(),
+                                                declaredSql(execElement),
+                                                String.valueOf(failure.getMessage())),
+                  execElement);
+            return null;
+        }
+    }
+
+    private static String declaredSql(ExecutableElement execElement) {
+        var query = execElement.getAnnotation(Query.class);
+        return query == null
+               ? "(generated CRUD statement)"
+               : query.value();
+    }
+
+    FactoryGenerator.MethodInfo analyzeMethod(
     ExecutableElement execElement,
     Option<Schema> schemaOpt,
     TypeElement interfaceElement) {
@@ -285,6 +312,12 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                               schema));
         validateJsonPairs(execElement, pairing, boundBody);
         schemaOpt.onPresent(schema -> validateReturnTypeMapping(execElement, resolved, parsedCst));
+        schemaOpt.onPresent(schema -> validateOutputNullability(execElement,
+                                                                methodName,
+                                                                resolved,
+                                                                needsScalarColumn(resolved, documentRepr.isPresent()),
+                                                                parsedCst,
+                                                                schema));
         validateRewrittenSql(execElement, methodName, rewritten.sql(), schemaOpt);
         var mapperColumns = boundMapperColumns(execElement, resolved, resolveMapperColumns(execElement, resolved), Set.of());
         var scalarNeeded = needsScalarColumn(resolved, documentRepr.isPresent());
@@ -1415,6 +1448,58 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
             if ( !selectColumns.contains(columnName)) {
             warning(ProcessorError.returnFieldNotInSelect(field.name(), resolved.innerTypeName()),
                     execElement);}
+        }
+    }
+
+    /// An output NOT PROVEN non-null that is read into a non-`Option` field fails the build (#2889). Nullability is
+    /// computed per output expression from the parse tree (`OutputNullability`), never from column metadata alone.
+    /// A record field is checked against the output of its name; a scalar or document method reads its single output
+    /// through a non-nullable accessor, so a scalar is always checked, whatever the method's `Option` row wrapper.
+    /// An `Option` field on a provably non-null output is accepted without a warning. Skipped when the outputs
+    /// cannot be listed (parse failure, `VALUES`, `*` over a derived table).
+    private void validateOutputNullability(
+    ExecutableElement execElement,
+    String methodName,
+    TypeMirrorResolver.ResolvedReturn resolved,
+    boolean scalar,
+    Result<CstNode> parsedCst,
+    Schema schema) {
+        if (!resolved.needsMapper() && !scalar) {
+            return;
+        }
+        var outputs = parsedCst.option()
+                               .flatMap(CstNavigator::wrap)
+                               .flatMap(nav -> OutputNullability.analyze(nav, schema));
+        if (outputs.isEmpty()) {
+            return;
+        }
+        if (scalar) {
+            outputs.unwrap().stream().findFirst().ifPresent(first -> reportIfNullable(execElement, methodName, first, "the returned value"));
+            return;
+        }
+        for (var field : extractReturnFields(execElement, resolved)) {
+            var columnName = NamingConvention.toSnakeCase(field.name());
+            if (field.typeName().startsWith(OPTION_TYPE + "<")) {
+                continue;
+            }
+            outputs.unwrap().stream()
+                   .filter(output -> output.name().map(columnName::equals).or(false))
+                   .findFirst()
+                   .ifPresent(output -> reportIfNullable(execElement, methodName, output, "field '" + field.name() + "'"));
+        }
+    }
+
+    private void reportIfNullable(ExecutableElement execElement,
+                                  String methodName,
+                                  OutputNullability.Output output,
+                                  String target) {
+        if (output.nullability() instanceof OutputNullability.Nullability.MayBeNull nullable) {
+            error(ProcessorError.nullableOutputToNonOption(methodName,
+                                                           output.name().or("?"),
+                                                           target,
+                                                           nullable.reason(),
+                                                           target.startsWith("field")),
+                  execElement);
         }
     }
 

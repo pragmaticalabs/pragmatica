@@ -52,7 +52,22 @@ final class TestCompilationHelper {
         return compile(sources, tempDir, true);
     }
 
+    /// Compiles with a caller-supplied processor, e.g. a subclass that forces a failure.
+    static CompilationResult compileWithProcessor(QueryAnnotationProcessor processor,
+                                                  String sourceCode,
+                                                  String fileName,
+                                                  Path tempDir) throws Exception {
+        return compile(List.of(new SourceEntry(fileName, sourceCode)), tempDir, true, processor);
+    }
+
     private static CompilationResult compile(List<SourceEntry> sources, Path tempDir, boolean procOnly) throws Exception {
+        return compile(sources, tempDir, procOnly, new QueryAnnotationProcessor());
+    }
+
+    private static CompilationResult compile(List<SourceEntry> sources,
+                                             Path tempDir,
+                                             boolean procOnly,
+                                             QueryAnnotationProcessor processor) throws Exception {
         var compiler = ToolProvider.getSystemJavaCompiler();
         var diagnosticCollector = new DiagnosticCollector<JavaFileObject>();
 
@@ -83,7 +98,7 @@ final class TestCompilationHelper {
             var task = compiler.getTask(
                 null, fileManager, diagnosticCollector, options, null, sourceFiles
             );
-            task.setProcessors(List.of(new QueryAnnotationProcessor()));
+            task.setProcessors(List.of(processor));
             var success = task.call();
             var diagMessages = diagnosticCollector.getDiagnostics().stream()
                 .map(d -> d.getKind() + ": " + d.getMessage(null))

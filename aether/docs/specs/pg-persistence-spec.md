@@ -183,6 +183,15 @@ Promise<Unit> createUser(CreateUserRequest request);
 - All record fields MUST be used in the query (same exact-match rule)
 - `Option<T>` field → binds NULL when empty
 
+### Output Nullability (`@Query`)
+- Nullability is computed per output expression from the parse tree, never from column metadata alone
+- An output NOT PROVEN non-null that is read into a non-`Option` record field or a scalar/`@Jsonb` result → compilation error naming the method, output, reason and fix (`COALESCE(..., <default>)` or `Option<T>`)
+- Proven non-null: `NOT NULL` columns of the FROM root and inner-joined tables, `count(..)`, literals, `COALESCE` with a proven last argument; casts, signs and parentheses pass the verdict through
+- Nullable forms: outer-join sides, `max`/`min`/`sum`/`avg`/... over a possibly empty group, `CASE` without `ELSE`, `NULLIF`, empty scalar subquery, set operation with a nullable branch, anything unproven
+- `Option<T>` on a proven output → accepted, no warning
+- Scalar/`@Jsonb` single outputs are read non-nullably: `Promise<Option<T>>` does not permit a NULL value
+- CRUD-generated methods are out of scope
+
 ### Mixing Records and Direct Parameters
 
 ```java

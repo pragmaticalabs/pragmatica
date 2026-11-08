@@ -541,7 +541,7 @@ class AnnotationProcessorE2ETest {
 
                     record Post(long id, String[] tags) {}
 
-                    @Query("SELECT id, tags FROM posts WHERE id = :id")
+                    @Query("SELECT id, COALESCE(tags, '{}') AS tags FROM posts WHERE id = :id")
                     Promise<Option<Post>> findPost(long id);
                 }
                 """;
@@ -574,7 +574,7 @@ class AnnotationProcessorE2ETest {
 
                     record Rank(long id, Integer[] scores) {}
 
-                    @Query("SELECT id, scores FROM ranks WHERE id = :id")
+                    @Query("SELECT id, COALESCE(scores, '{}') AS scores FROM ranks WHERE id = :id")
                     Promise<Option<Rank>> findRank(long id);
                 }
                 """;
@@ -740,7 +740,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface TotalsRepo {
 
-                    @Query("SELECT sum(total) AS total_amount FROM orders WHERE status = :status")
+                    @Query("SELECT COALESCE(sum(total), 0) AS total_amount FROM orders WHERE status = :status")
                     Promise<BigDecimal> totalByStatus(String status);
                 }
                 """;
@@ -774,7 +774,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface TimeRepo {
 
-                    @Query("SELECT max(created_at) AS latest FROM orders")
+                    @Query("SELECT COALESCE(max(created_at), CAST('1970-01-01T00:00:00Z' AS timestamptz)) AS latest FROM orders")
                     Promise<Instant> latestCreatedAt();
                 }
                 """;
@@ -804,7 +804,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface UuidRepo {
 
-                    @Query("SELECT correlation_id FROM orders WHERE id = :id")
+                    @Query("SELECT COALESCE(correlation_id, '00000000-0000-0000-0000-000000000000') AS correlation_id FROM orders WHERE id = :id")
                     Promise<UUID> correlationFor(Long id);
                 }
                 """;
@@ -834,7 +834,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface DateRepo {
 
-                    @Query("SELECT event_date FROM events WHERE id = :id")
+                    @Query("SELECT COALESCE(event_date, CAST('1970-01-01' AS date)) AS event_date FROM events WHERE id = :id")
                     Promise<LocalDate> eventDate(Long id);
                 }
                 """;
@@ -892,7 +892,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface NullableTotalsRepo {
 
-                    @Query("SELECT sum(total) AS total_amount FROM orders WHERE status = :status")
+                    @Query("SELECT COALESCE(sum(total), 0) AS total_amount FROM orders WHERE status = :status")
                     Promise<Option<BigDecimal>> totalByStatus(String status);
                 }
                 """;
@@ -924,7 +924,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface UuidListRepo {
 
-                    @Query("SELECT correlation_id FROM orders WHERE status = :status")
+                    @Query("SELECT COALESCE(correlation_id, '00000000-0000-0000-0000-000000000000') AS correlation_id FROM orders WHERE status = :status")
                     Promise<List<UUID>> correlationIds(String status);
                 }
                 """;
@@ -954,7 +954,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface SumRepo {
 
-                    @Query("SELECT sum(amount) AS total FROM items")
+                    @Query("SELECT COALESCE(sum(amount), 0) AS total FROM items")
                     Promise<Long> totalAmount();
                 }
                 """;
@@ -980,7 +980,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface ExistsRepo {
 
-                    @Query("SELECT EXISTS(SELECT 1 FROM orders WHERE id = :id) AS found")
+                    @Query("SELECT COALESCE(EXISTS(SELECT 1 FROM orders WHERE id = :id), false) AS found")
                     Promise<Boolean> existsById(Long id);
                 }
                 """;

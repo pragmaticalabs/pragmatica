@@ -42,7 +42,7 @@ public interface AnalyticsPersistence {
     @Table(OrderMetric.class)
     Promise<Unit> deleteById(Long id);
 
-    @Query("SELECT customer_id, sum(revenue) AS total_revenue "
+    @Query("SELECT customer_id, COALESCE(sum(revenue), 0) AS total_revenue "
           + "FROM order_metrics "
           + "WHERE customer_id = :customerId "
           + "GROUP BY customer_id")
@@ -57,6 +57,6 @@ public interface AnalyticsPersistence {
     Promise<Long> countSnapshots();
 
     @Query("WITH recent AS (SELECT customer_id, revenue FROM order_metrics WHERE created_at > :since) "
-          + "SELECT sum(revenue) AS total_revenue FROM recent WHERE customer_id = :customerId")
+          + "SELECT COALESCE(sum(revenue), 0) AS total_revenue FROM recent WHERE customer_id = :customerId")
     Promise<BigDecimal> recentRevenueForCustomer(Instant since, Long customerId);
 }
