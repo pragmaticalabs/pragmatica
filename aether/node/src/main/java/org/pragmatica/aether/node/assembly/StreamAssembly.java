@@ -267,6 +267,26 @@ public sealed interface StreamAssembly {
 
     /// The network-backed replication transport: each send returns the cluster network's own outcome, and the
     /// caller-wait overload reaches the network's TTL-bounded send (#1996, #2583 P1).
+    /// #263 (overhaul 7.2): the owner batches what it replicates. The append section hands each event to the batcher;
+    /// encoding and sending happen on flusher threads, in offset order, and an idle partition's first event goes out at
+    /// once. `[streaming] replication_batch_max_events` / `replication_batch_max_delay` size the batch. The batcher holds
+    /// heap copies of the events whose sends have not returned, at most `sendBudgetBytes` of them; past that, owner
+    /// publishes are refused (`REPLICATION_BEHIND`) before they take an offset.
+    static ReplicationManager streamReplicationManager(NodeId self,
+                                                       ReplicaRegistry registry,
+                                                       ReplicationTransport transport,
+                                                       ReplicationManager.EarliestRetainedOffset earliestRetained,
+                                                       StreamingConfig streaming,
+                                                       long sendBudgetBytes) {
+        return ReplicationManager.batchingReplicationManager(self,
+                                                             registry,
+                                                             transport,
+                                                             earliestRetained,
+                                                             streaming.replicationBatchMaxEvents(),
+                                                             streaming.replicationBatchMaxDelay(),
+                                                             sendBudgetBytes);
+    }
+
     static ReplicationTransport replicationTransport(ClusterNetwork replicationNetwork) {
         return new ReplicationTransport() {
             @Override
@@ -309,13 +329,20 @@ public sealed interface StreamAssembly {
         // just below (it needs this manager), so the earliest-retained seam reads through a holder set
         // immediately after.
         var streamPartitionManagerRef = new AtomicReference<StreamPartitionManager>();
-        var streamReplicationManager = ReplicationManager.replicationManager(config.self(),
-                                                                             streamReplicaRegistry,
-                                                                             streamReplicationTransport,
-                                                                             (streamName, partition) -> Option.option(streamPartitionManagerRef.get())
-                                                                                                              .map(spm -> spm.earliestRetainedOffset(streamName,
-                                                                                                                                                     partition))
-                                                                                                              .or(-1L));
+        var streamReplicationManager = streamReplicationManager(config.self(),
+                                                                streamReplicaRegistry,
+                                                                streamReplicationTransport,
+                                                                (streamName, partition) -> Option.option(streamPartitionManagerRef.get())
+                                                                                                 .map(spm -> spm.earliestRetainedOffset(streamName,
+                                                                                                                                        partition))
+                                                                                                 .or(-1L),
+                                                                config.streaming(),
+
+        // #263: the replication send budget is the stream memory
+        // budget's heap cap for un-landed event copies, the sealer's
+        // pending cap below (a GUESS at the share; each has its own
+        // counter, so the two together may hold twice the cap).
+        in.streamMemoryBudget().sealPendingCapBytes());
         var streamSegmentIndex = new SegmentIndex();
         // A3b restore-at-boot: the streams MetadataStore was already restored from its latest disk
         // snapshot when `streamStorageSetup` was assembled (StorageFactory.restoreAndSignalReady), so

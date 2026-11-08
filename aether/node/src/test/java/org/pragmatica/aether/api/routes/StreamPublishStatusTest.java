@@ -34,7 +34,8 @@ class StreamPublishStatusTest {
                                                           "MaterializeBudgetExceeded",
                                                           "General.STREAM_MEMORY_EXCEEDED",
                                                           "General.SEALING_BEHIND",
-                                                          "General.SEGMENT_TIER_FULL");
+                                                          "General.SEGMENT_TIER_FULL",
+                                                          "General.REPLICATION_BEHIND");
 
     @TestFactory
     Stream<DynamicTest> everyRawStreamError_onPublish_isRetryInvitingOnlyWhenPreAppend() {
