@@ -14,6 +14,7 @@ import org.pragmatica.http.Headers;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.QueryParams;
+import org.pragmatica.lang.Promise;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -60,7 +61,7 @@ class IngestedRequestTest {
 
     @Test
     void accessors_answerTheHeadsOwnFields() {
-        var request = IngestedRequest.ingestedRequest(HEAD, UploadHandle.uploadHandle(List.of(), Map.of()), () -> {});
+        var request = IngestedRequest.ingestedRequest(HEAD, UploadHandle.uploadHandle(List.of(), Map.of()), Promise::unitPromise);
 
         assertThat(request.requestId()).isEqualTo("req-1");
         assertThat(request.method()).isEqualTo(HttpMethod.PUT);
@@ -74,7 +75,7 @@ class IngestedRequestTest {
     @Test
     void discardUpload_runsTheDiscard_ofAnIngestedRequestOnly() {
         var runs = new AtomicInteger();
-        var request = IngestedRequest.ingestedRequest(HEAD, UploadHandle.uploadHandle(List.of(), Map.of()), runs::incrementAndGet);
+        var request = IngestedRequest.ingestedRequest(HEAD, UploadHandle.uploadHandle(List.of(), Map.of()), () -> Promise.success(runs.incrementAndGet()).mapToUnit());
 
         IngestedRequest.discardUpload(request);
         IngestedRequest.discardUpload(HEAD);

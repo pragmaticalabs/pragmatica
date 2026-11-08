@@ -276,11 +276,10 @@ public final class IngestSink implements BodySink {
                                                  cause.message()));
     }
 
-    /// What the dispatch path runs when the request reaches no slice: the committed objects are deleted, fire and forget
-    /// (each failure is logged by [#deleteOne]).
-    @Contract
-    private void discardStored() {
-        deleteStored().onResultRun(() -> log.debug("Discarded the stored upload of a request no slice received"));
+    /// What the dispatch path runs when the request reaches no slice: the committed objects are deleted; the promise
+    /// resolves when every delete has finished (each failure is logged by [#deleteOne]).
+    private Promise<Unit> discardStored() {
+        return deleteStored().onResultRun(() -> log.debug("Discarded the stored upload of a request no slice received"));
     }
 
     private void release() {
