@@ -160,6 +160,10 @@ public final class QueryValidator {
         return bareColumnName(target);
     }
 
+    private static Option<String> lastNamePart(CstNavigator qualifiedName) {
+        return Option.from(CstExtractor.extractQualifiedName(qualifiedName).parts().stream().reduce((_, last) -> last)).map(part -> part.normalized());
+    }
+
     /// Resolves a bare (unqualified, unaliased) column reference by descending the single-child
     /// expression precedence chain to its `ColId`. Any branching along the way — an operator, cast,
     /// function argument list, parentheses, or literal introduces a sibling node — stops the descent
@@ -171,14 +175,11 @@ public final class QueryValidator {
             return Option.present(CstExtractor.extractIdentifier(colId.unwrap()).normalized());
         }
 
-        var qualified = node.child("QualifiedName");
+        var qualified = node.child("QualifiedName").filter(_ -> node.children()
+                                                                    .size() == 1);
 
-        if (qualified.isPresent() && node.children().size() == 1) {
-            var qname = CstExtractor.extractQualifiedName(qualified.unwrap());
-
-            return qname.parts().isEmpty()
-                   ? Option.empty()
-                   : Option.present(qname.parts().getLast().normalized());
+        if (qualified.isPresent()) {
+            return qualified.flatMap(QueryValidator::lastNamePart);
         }
 
         if (node.children().size() != 1) return Option.empty();
