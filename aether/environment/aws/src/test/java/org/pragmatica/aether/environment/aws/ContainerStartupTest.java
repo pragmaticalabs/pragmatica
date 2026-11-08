@@ -64,15 +64,15 @@ class ContainerStartupTest {
         }
     }
 
-    private static GenericContainer<?> failing(AtomicInteger created, String tag) {
+    private static Fixed failing(AtomicInteger created, String tag) {
         return configure(new Fixed(IMAGE), "echo " + tag + created.get() + "; exit 126");
     }
 
-    private static GenericContainer<?> healthy() {
+    private static Fixed healthy() {
         return configure(new Fixed(IMAGE), "echo Ready.; sleep 120");
     }
 
-    private static GenericContainer<?> configure(Fixed container, String script) {
+    private static Fixed configure(Fixed container, String script) {
         return container.withCreateContainerCmdModifier(cmd -> cmd.withEntrypoint("sh", "-c", script))
                         .waitingFor(Wait.forLogMessage(".*Ready\\..*\\n", 1)
                                         .withStartupTimeout(Duration.ofSeconds(20)));
