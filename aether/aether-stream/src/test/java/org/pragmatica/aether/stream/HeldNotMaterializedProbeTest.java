@@ -248,9 +248,10 @@ class HeldNotMaterializedProbeTest {
         assertThat(manager.heldNotMaterializedWatermark("restarted", 0)).isEqualTo(Option.some(3L));
     }
 
-    /// The production naming path: the owner is a REGISTERED replica on the peer, so its catch-up probe is served by
+    /// The production catch-up path: the owner is a REGISTERED replica on the peer, so its catch-up probe is served by
     /// `readAppended`, not `readVisible`. The unregistered sender used elsewhere in this class exercises only the
     /// latter.
+    ///
     /// #1759 (I-27): a registered replica's catch-up read of a held, unmaterialized partition is served from its WAL,
     /// read-only, rather than named unavailable: `fresh[0]` has no WAL, so the page is empty, vouched by an empty history,
     /// and the partition stays unmaterialized. (Before #1759 this answered `PartitionHeldNotMaterialized` at -1.)
