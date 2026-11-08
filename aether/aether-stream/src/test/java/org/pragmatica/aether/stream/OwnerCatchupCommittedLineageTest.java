@@ -113,6 +113,24 @@ class OwnerCatchupCommittedLineageTest {
         assertThat(owner.reassignedFrom("s", 0, 0, 12, List.of())).isEqualTo(Option.none());
     }
 
+    @Test
+    void reassignedFrom_ofSeveralClippedRanges_isTheLowestBound() {
+        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E2, 2L), new EpochStart(E3, 9L)));
+
+        assertThat(owner.reassignedFrom("s", 0, 0, 12, List.of(ProvenanceEntry.provenanceEntry(E1, 0),
+                                                               ProvenanceEntry.provenanceEntry(E2, 5))))
+            .as("E1 [0,5) is cut at E2's start 2, E2 [5,13) at E3's start 9: the lower wins").isEqualTo(Option.some(2L));
+    }
+
+    @Test
+    void reassignedFrom_ofARangeEndingExactlyWhereThePageStarts_doesNotJudgeThatRange() {
+        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 3L)));
+
+        assertThat(owner.reassignedFrom("s", 0, 5, 12, List.of(ProvenanceEntry.provenanceEntry(E1, 0),
+                                                               ProvenanceEntry.provenanceEntry(E4, 5))))
+            .as("E1 [0,5) holds nothing of the page [5,12]; E4 has no later committed epoch").isEqualTo(Option.none());
+    }
+
     private Option<Object> catchUpFrom(List<ProvenanceEntry> history) {
         var registry = ReplicaRegistry.replicaRegistry();
 

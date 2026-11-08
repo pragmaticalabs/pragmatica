@@ -265,6 +265,38 @@ class ReplicaWalCatchupTest {
             assertThat(scanStarts.subList(1, 3)).as("continued from the hint, scans %s", scanStarts).allMatch(start -> start > 0);
         }
 
+        /// A read that is not the continuation of the last page has no hint to use: it scans from the start of the file.
+        @Test
+        void readHeldDurable_aReadNotContinuingTheLastPage_scansFromTheStartOfTheFile() {
+            assertThat(offsets(read("held", 0, 2))).containsExactly(0L, 1L);
+            assertThat(offsets(read("held", 3, 2))).containsExactly(3L, 4L);
+
+            assertThat(scanStarts).containsExactly(0L, 0L);
+        }
+
+        /// D3: the remembered position now lands on a frame boundary, but the record there is not the one asked for (the
+        /// asked-for record lies before it): the page is read again from the start, never taken from the wrong place.
+        /// The first WAL has 48-byte frames, so a page of three ends at 144; the rewritten one has 25-byte frames for offsets 0-3
+        /// and a 44-byte frame for offset 4, so 144 is the start of offset 5's frame.
+        @Test
+        void readHeldDurable_aStaleHintLandingOnAnotherRecord_fallsBackToAFullScan() throws Exception {
+            rewriteWal(0, 1, 2, 3, 4, 5, 6, 7);
+            assertThat(offsets(read("held", 0, 3))).containsExactly(0L, 1L, 2L);
+
+            rewriteFrames(new long[]{0, 1, 2, 3, 4, 5, 6, 7}, new int[]{1, 1, 1, 1, 20, 7, 7, 7});
+
+            assertThat(offsets(read("held", 3, 2))).containsExactly(3L, 4L);
+        }
+
+        /// The floor itself is sealed: a read AT it is expired past it; the first offset above it is merely not written yet.
+        @Test
+        void readHeldDurable_anEmptyWalReadAtTheSealedFloor_isCursorExpiredPastTheFloor() {
+            sealedFloor = 4L;
+
+            assertThat(failure(read2("fresh", 4, PAGE))).isEqualTo(new StreamError.CursorExpired(4, 5));
+            assertThat(read("fresh", 5, PAGE)).isEmpty();
+        }
+
         /// D3: a hint whose page does not begin at the expected offset (the log changed under it) is never trusted: the page
         /// is read again from the start of the file.
         @Test
@@ -385,6 +417,19 @@ class ReplicaWalCatchupTest {
 
         for (var offset : offsets) {
             wal.append(offset, longPayload(offset), 2000L + offset).await().onFailure(cause -> fail(cause.message()));
+        }
+        wal.close();
+    }
+
+    /// Replace `held`'s WAL with frames at `offsets`, the i-th carrying `lengths[i]` payload bytes.
+    private void rewriteFrames(long[] offsets, int[] lengths) throws Exception {
+        var file = walFile();
+
+        Files.delete(file);
+        var wal = AppendLog.open(file).unwrap();
+
+        for (var i = 0; i < offsets.length; i++) {
+            wal.append(offsets[i], new byte[lengths[i]], 2000L + offsets[i]).await().onFailure(cause -> fail(cause.message()));
         }
         wal.close();
     }
