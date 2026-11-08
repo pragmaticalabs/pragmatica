@@ -101,7 +101,7 @@ class JwksKeyStore implements AutoCloseable {
     }
 
     private void fetchAndCacheKeys() {
-        fetchJwks().onSuccess(this::applyJwksResponse).onFailure(this::logFetchFailure);
+        fetchJwks().onSuccess(this::applyJwksResponse).onFailure(cause -> logFetchFailure(cause));
     }
 
     @SuppressWarnings("unchecked")
