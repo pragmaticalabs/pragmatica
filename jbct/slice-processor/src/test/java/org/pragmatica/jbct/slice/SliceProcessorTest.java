@@ -602,6 +602,57 @@ class SliceProcessorTest {
         assertThat(diagnostics).contains("Generated routes: UploadService");
     }
 
+    /// #2805 (owner ruling 2026-11-08): `status = 204` on a result that is not `Unit` fails the build; a 204 response
+    /// carries no body, so the value would be dropped.
+    @Test
+    void status204_onNonUnitResult_failsTheBuild(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 204 }",
+                                            "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
+
+        assertThat(diagnostics).contains("declares status = 204, which answers with no body");
+    }
+
+    /// Positive control: the same declaration on a `Unit` result builds.
+    @Test
+    void status204_onUnitResult_builds(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 204 }",
+                                            "record Item(String name) {}\n\n    Promise<org.pragmatica.lang.Unit> create(Item request);");
+
+        assertThat(diagnostics).doesNotContain("declares status = 204");
+        assertThat(diagnostics).contains("Generated routes: UploadService");
+    }
+
+    /// #2805: a status that is not a success status is a clear build error naming the route and the accepted values.
+    @Test
+    void nonSuccessStatus_failsTheBuildWithAClearError(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 302 }",
+                                            "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
+
+        assertThat(diagnostics).contains("Route 'create' status must be a success status, one of [200, 201, 202, 203, 204] written as a number; got 302");
+    }
+
+    @Test
+    void stringStatus_failsTheBuildWithAClearError(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = \"201\" }",
+                                            "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
+
+        assertThat(diagnostics).contains("Route 'create' status must be a success status, one of [200, 201, 202, 203, 204] written as a number; got the string \"201\"");
+    }
+
+    /// #2805: a `location` placeholder must name a component of the result record.
+    @Test
+    void locationNamingAnUnknownField_failsTheBuild(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 201, location = \"/items/{slug}\" }",
+                                            "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
+
+        assertThat(diagnostics).contains("location names {slug}, but the result record upload.UploadService.Item has no such component; its components are [name]");
+    }
+
     private String compileWithRoutes(Path classes, String route, String method) throws IOException {
         return compileWithRoutes(classes, route, method, List.of());
     }

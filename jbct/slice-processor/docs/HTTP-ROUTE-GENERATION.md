@@ -200,6 +200,26 @@ uploadGallery = { route = "POST /gallery", consumes = "multipart/form-data", max
 - The generated route carries the limits as `.withUpload(UploadSpec.uploadSpec(upload, maxSizeBytes, maxDurationMillis))`, where `upload` is true for a binary or multipart `consumes`; a route that declares a part limit carries the seven-argument form, `.withUpload(UploadSpec.uploadSpec(upload, maxSizeBytes, maxDurationMillis, maxFiles, maxFileBytes, maxFields, maxFieldBytes))`, with `0L` for each part limit it does not declare. The node that accepts the request enforces them before it reads the body (the size and time limits) or before it dispatches it (the part limits); a route that declares none of them and consumes JSON, text or XML generates no `withUpload` call.
 - Any other key is a compile error naming it and the valid keys. Only `resumable` and `unclaimed_ttl` are refused as not enforced yet, not ignored.
 
+### Success status and Location
+
+An inline-table route may declare its success response (#2805):
+
+```toml
+[routes]
+create = { route = "POST /articles", status = 201, location = "/articles/{slug}" }
+enqueue = { route = "POST /jobs", status = 202 }
+```
+
+- `status` is one of `200`, `201`, `202`, `203`, `204`, written as a number; anything else fails the build.
+  `204` is accepted only on a `Promise<Unit>` method.
+- `location` is a `Location` template. Each `{field}` names a component of the result record (of the element, for an
+  `Option` result) and is rendered as one percent-encoded path segment; a value-object component is rendered through
+  its `valueMapping().lower()`. A placeholder that names no component fails the build. With no `location`, no header
+  is sent.
+- Undeclared defaults: a value answers `200` with its body; a `Unit` answers `204` with no body; an empty `Option`
+  answers `404` with the RFC 9457 body. A null success value is a JBCT violation: it answers `500` and is logged at
+  WARN with the route.
+
 ## Generated Code
 
 ### Input

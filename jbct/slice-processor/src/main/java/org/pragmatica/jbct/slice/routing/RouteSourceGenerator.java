@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -831,7 +832,8 @@ public class RouteSourceGenerator {
                     ? ","
                     : "";
         var security = securityExpression(routeConfig, handlerName);
-        var trailer = uploadTrailer(routeDsl) + versionedTrailer(version) + outputCall(routeDsl) + comma;
+        var trailer = uploadTrailer(routeDsl) + versionedTrailer(version) + outputCall(routeDsl)
+                      + successTrailer(routeDsl, method, sliceElement) + comma;
         // A refused route (F2) is still emitted, as a body-only route, so its one clear error is the only one: emitting
         // the parameter merge would add a misleading "add a record component" error for a MultipartRequest body.
         var hasPath = routeDsl.hasPathParams() && !paramsRefused;
@@ -1024,6 +1026,104 @@ public class RouteSourceGenerator {
                 + "L, " + limits.maxFieldBytes()
                 + "L"
                : "";
+    }
+
+    /// #2805: the success response the route declares (`status`, `location`), emitted after the output call so a route
+    /// that declares neither generates the source it always did. `status = 204` on a result that is not `Unit`, and a
+    /// `location` placeholder that names no component of the result record, are build errors.
+    private String successTrailer(RouteDsl routeDsl, MethodModel method, TypeElement sliceElement) {
+        var success = routeDsl.success();
+
+        if (!success.declared()) {
+            return "";
+        }
+
+        var unit = isUnit(method.responseType());
+
+        if (!unit && success.status().filter(status -> status == 204).isPresent()) {
+            messager.printMessage(Diagnostic.Kind.ERROR,
+                                  "Route '" + method.name() + "' declares status = 204, which answers with no body, but '"
+                                  + method.name() + "' returns " + method.responseType()
+                                  + "; return Promise<Unit> for a response with no body, or declare a status that carries one",
+                                  sliceElement);
+        }
+
+        var status = success.status().or(unit
+                                          ? 204
+                                          : 200);
+
+        return success.location()
+                      .map(template -> locationExpression(template, method, sliceElement))
+                      .map(location -> ".withSuccess(org.pragmatica.http.routing.SuccessSpec.successSpec(" + status + ", value -> "
+                                       + location + "))")
+                      .or(".withSuccess(org.pragmatica.http.routing.SuccessSpec.successSpec(" + status + "))");
+    }
+
+    private static final Pattern LOCATION_FIELD = Pattern.compile("\\{([^}]*)}");
+
+    /// The `Location` template as a Java expression over the success value: literal text stays as written and each
+    /// `{field}` reads that component of the result record (an `Option` result is read inside), rendered as one path
+    /// segment. A value object component is rendered through its `valueMapping().lower()`, the inverse of the lift
+    /// a path segment of that type is parsed with.
+    private String locationExpression(String template, MethodModel method, TypeElement sliceElement) {
+        var record = resultRecord(method.responseType());
+        var matcher = LOCATION_FIELD.matcher(template);
+        var parts = new ArrayList<String>();
+        var start = 0;
+
+        while (matcher.find()) {
+            parts.add("\"" + escapeJavaString(template.substring(start, matcher.start())) + "\"");
+            parts.add(locationField(matcher.group(1), record, method, sliceElement));
+            start = matcher.end();
+        }
+
+        parts.add("\"" + escapeJavaString(template.substring(start)) + "\"");
+
+        return String.join(" + ", parts);
+    }
+
+    private String locationField(String field, Option<TypeElement> record, MethodModel method, TypeElement sliceElement) {
+        var component = record.flatMap(type -> Option.from(type.getRecordComponents()
+                                                               .stream()
+                                                               .filter(candidate -> candidate.getSimpleName()
+                                                                                             .contentEquals(field))
+                                                               .findFirst()));
+
+        if (component.isEmpty()) {
+            messager.printMessage(Diagnostic.Kind.ERROR,
+                                  "Route '" + method.name() + "' location names {" + field + "}, but "
+                                  + record.map(type -> "the result record " + type.getQualifiedName() + " has no such component; its components are "
+                                                       + type.getRecordComponents().stream().map(c -> c.getSimpleName().toString()).toList())
+                                          .or("the result type " + method.responseType() + " is not a record with fields to read"),
+                                  sliceElement);
+            return "\"\"";
+        }
+
+        var recordType = record.map(type -> type.getQualifiedName().toString()).or("");
+        var read = "((" + recordType + ") value)." + field + "()";
+        var rendered = component.flatMap(c -> ValueMappingResolver.resolve(c.asType()))
+                                .map(binding -> binding.voQualifiedName() + ".valueMapping().lower().apply(" + read + ")")
+                                .or(read);
+
+        return "org.pragmatica.http.routing.SuccessSpec.pathSegment(" + rendered + ")";
+    }
+
+    /// The record a `Location` template reads: the result type, or the element of an `Option` result.
+    private Option<TypeElement> resultRecord(TypeMirror responseType) {
+        return Option.some(responseType)
+                     .filter(DeclaredType.class::isInstance)
+                     .map(DeclaredType.class::cast)
+                     .map(this::optionElement)
+                     .map(DeclaredType::asElement)
+                     .filter(element -> element.getKind() == ElementKind.RECORD)
+                     .map(TypeElement.class::cast);
+    }
+
+    private DeclaredType optionElement(DeclaredType type) {
+        return "org.pragmatica.lang.Option".equals(types.erasure(type).toString()) && type.getTypeArguments().size() == 1
+               && type.getTypeArguments().getFirst() instanceof DeclaredType element
+               ? element
+               : type;
     }
 
     private String versionedTrailer(int version) {

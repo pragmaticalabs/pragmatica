@@ -21,6 +21,7 @@ import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.parse.DataSize;
 import org.pragmatica.lang.parse.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
@@ -387,8 +388,11 @@ public final class RouteConfigLoader {
     }
 
     /// The keys an inline-table route accepts. `max_size` and `max_duration` are the per-route ingest limits;
-    /// `max_files`, `max_file_size`, `max_fields` and `max_field_size` are the multipart part limits.
+    /// `max_files`, `max_file_size`, `max_fields` and `max_field_size` are the multipart part limits; `status` and
+    /// `location` are the declared success response (#2805).
     private static final Set<String> INLINE_ROUTE_KEYS = Set.of("route",
+                                                                "status",
+                                                                "location",
                                                                 "consumes",
                                                                 "produces",
                                                                 "security",
@@ -507,12 +511,51 @@ public final class RouteConfigLoader {
         return Result.all(resolveMedia(table, "consumes"),
                           resolveMedia(table, "produces"),
                           resolveInlineSecurity(table),
-                          parseLimits(key, table)).flatMap((consumes, produces, security, limits) -> RouteDsl.parse(routeStr,
-                                                                                                                    consumes,
-                                                                                                                    produces).map(dsl -> new ParsedRoute(key,
-                                                                                                                                                         dsl.withLimits(limits),
-                                                                                                                                                         security,
-                                                                                                                                                         methodOverride)));
+                          parseLimits(key, table),
+                          parseSuccess(key, table)).flatMap((consumes, produces, security, limits, success) -> RouteDsl.parse(routeStr,
+                                                                                                                              consumes,
+                                                                                                                              produces).map(dsl -> new ParsedRoute(key,
+                                                                                                                                                                   dsl.withLimits(limits)
+                                                                                                                                                                      .withSuccess(success),
+                                                                                                                                                                   security,
+                                                                                                                                                                   methodOverride)));
+    }
+
+    /// The success statuses a route may declare: `204` and `202` answer a `Unit` result with no body; `200`, `201`,
+    /// `202` and `203` answer a value with its body. Anything else (another 2xx, a redirect, an error) is refused here.
+    private static final Set<Long> SUCCESS_STATUSES = Set.of(200L, 201L, 202L, 203L, 204L);
+
+    /// `status` (a whole number, one of [#SUCCESS_STATUSES]) and `location` (a non-blank `Location` template).
+    private static Result<RouteSuccess> parseSuccess(String key, Map<String, Object> table) {
+        return Result.all(parseStatus(key, table), parseLocation(key, table)).map(RouteSuccess::routeSuccess);
+    }
+
+    private static Result<Option<Integer>> parseStatus(String key, Map<String, Object> table) {
+        return Option.option(table.get("status"))
+                     .map(raw -> successStatus(key, raw).map(Option::some))
+                     .or(Result.success(Option.none()));
+    }
+
+    private static Result<Integer> successStatus(String key, Object raw) {
+        return raw instanceof Number number && number.doubleValue() == number.longValue() && SUCCESS_STATUSES.contains(number.longValue())
+               ? Result.success(number.intValue())
+               : Causes.cause("Route '" + key + "' status must be a success status, one of " + new TreeSet<>(SUCCESS_STATUSES)
+                             + " written as a number; got " + describe(raw)).result();
+    }
+
+    private static String describe(Object raw) {
+        return raw instanceof String text
+               ? "the string \"" + text + "\""
+               : String.valueOf(raw);
+    }
+
+    private static Result<Option<String>> parseLocation(String key, Map<String, Object> table) {
+        return Option.option(table.get("location"))
+                     .map(Object::toString)
+                     .map(location -> Verify.ensure(location,
+                                                    Verify.Is::notBlank,
+                                                    Causes.cause("Route '" + key + "' location must not be blank")).map(Option::some))
+                     .or(Result.success(Option.none()));
     }
 
     private static Result<RouteLimits> parseLimits(String key, Map<String, Object> table) {
