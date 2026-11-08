@@ -69,7 +69,7 @@ class GeneratedSuccessStatusRouteTest {
         var response = send("POST", "/api/blog/drafts", "{\"slug\":\"d-1\",\"title\":\"Draft\"}");
 
         assertThat(response.statusCode()).isEqualTo(201);
-        assertThat(response.headers()).containsEntry("Location", "/api/blog/drafts/d-1");
+        assertThat(response.headers()).containsEntry("Location", "/api/blog/drafts/d-1/view");
     }
 
     @Test

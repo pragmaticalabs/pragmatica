@@ -671,6 +671,15 @@ class SliceProcessorTest {
         assertThat(diagnostics).contains("location names {slug}, but the result record upload.UploadService.Item has no such component; its components are [name]");
     }
 
+    @Test
+    void locationOnANonRecordResult_failsTheBuild(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 201, location = \"/items/{slug}\" }",
+                                            "record Item(String name) {}\n\n    Promise<String> create(Item request);");
+
+        assertThat(diagnostics).contains("location names {slug}, but the result type java.lang.String is not a record with fields to read");
+    }
+
     private String compileWithRoutes(Path classes, String route, String method) throws IOException {
         return compileWithRoutes(classes, route, method, List.of());
     }
