@@ -3,6 +3,7 @@ package org.pragmatica.storage;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -97,6 +98,34 @@ class AppendLogReadRangeTest {
         Files.write(file, Arrays.copyOf(bytes, (int) ends[4] - 2));
 
         assertDamagedAt(AppendLog.readRange(file, 0, 10, 0), ends[3]);
+    }
+
+    /// The length is not covered by the frame CRC: a negative one on an empty-payload frame passes the CRC and must be
+    /// refused by the length guard, not allocated.
+    @Test
+    void readRange_aNegativeLengthOnAnEmptyPayloadFrame_failsThePage_notAnAllocationError() throws Exception {
+        var log = AppendLog.open(file).unwrap();
+
+        log.append(RECORDS, new byte[0], 2_000L).await().onFailure(c -> fail(c.message()));
+        log.close();
+        var bytes = Files.readAllBytes(file);
+
+        Arrays.fill(bytes, (int) ends[RECORDS - 1], (int) ends[RECORDS - 1] + 4, (byte) 0xFF);
+        Files.write(file, bytes);
+
+        assertDamagedAt(AppendLog.readRange(file, RECORDS, 10, ends[RECORDS - 1]), ends[RECORDS - 1]);
+    }
+
+    @Test
+    void rangePage_copiesItsRecords_soALaterChangeToTheSourceListDoesNotShowThrough() {
+        var source = new ArrayList<AppendLog.WalRecord>();
+
+        source.add(new AppendLog.WalRecord(0, 1L, payload(0)));
+        var page = new AppendLog.RangePage(source, 7L);
+
+        source.clear();
+
+        assertThat(page.records()).hasSize(1);
     }
 
     @Test

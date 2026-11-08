@@ -1,6 +1,8 @@
 package org.pragmatica.storage;
 
 import java.io.IOException;
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -92,6 +94,9 @@ class AppendLogVolumeReadOnlyTest {
         assertThat(storage.readLogRange("orders/0", 0, 10, 0).isFailure()).as("the torn tail fails a page reaching it").isTrue();
         assertThat(opener.readRange("orders/0", 0, 10, 0).isFailure()).as("through the opener too").isTrue();
         assertThat(storage.readLogRange("orders/9", 0, 10, 0).unwrap()).isEqualTo(AppendLog.RangePage.EMPTY);
+        var size = Files.size(volume.resolve("logs").resolve("orders/0.wal"));
+
+        assertThat(storage.readLogRange("orders/0", 0, 10, size).unwrap().endPosition()).as("a scan starts where it is told").isEqualTo(size);
         assertThat(storage.readLogEpochHistory("orders/0").unwrap()).containsExactly(new AppendLog.EpochStart(EPOCH_ONE, 0));
         assertThat(opener.readEpochHistory("orders/0").unwrap()).containsExactly(new AppendLog.EpochStart(EPOCH_ONE, 0));
         assertThat(snapshot()).isEqualTo(before);
@@ -112,6 +117,21 @@ class AppendLogVolumeReadOnlyTest {
         assertThat(bare.readRange("orders/0", 0, 3, 0).isFailure()).isTrue();
         assertThat(bare.readEpochHistory("orders/0").isFailure()).isTrue();
         assertThat(snapshot()).isEqualTo(before);
+    }
+
+    /// An instance that keeps no logs (it does not override the read-only log operations) refuses both, naming itself,
+    /// rather than answer an empty page or history (#1759).
+    @Test
+    void anInstanceWithoutLogs_refusesTheRangeAndTheHistory() {
+        var bare = (StorageInstance) Proxy.newProxyInstance(
+            StorageInstance.class.getClassLoader(),
+            new Class<?>[]{StorageInstance.class},
+            (proxy, method, args) -> "name".equals(method.getName())
+                                     ? "bare"
+                                     : InvocationHandler.invokeDefault(proxy, method, args));
+
+        assertThat(bare.readLogRange("orders/0", 0, 3, 0).isFailure()).isTrue();
+        assertThat(bare.readLogEpochHistory("orders/0").isFailure()).isTrue();
     }
 
     /// The explicit open cuts the torn tail, and says so: a WARN naming the log, the byte range cut and the

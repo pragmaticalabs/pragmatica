@@ -28,13 +28,16 @@ import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.stream.forward.StreamForwardHandler;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
 import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
+import org.pragmatica.aether.stream.replication.PartitionBackfill;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
+import org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupResponse;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.storage.AppendLog;
 
@@ -182,6 +185,43 @@ class ReplicaWalCatchupTest {
 
             assertThat(answer.success()).isFalse();
             assertThat(answer.events()).isEmpty();
+        }
+
+        /// NT-149, node-level deterministic equivalent (the Ember form needs a per-node off-heap budget the harness does not
+        /// have): an owner behind a budget-deferred replica pulls through the replica's real forward handler, installs the
+        /// WAL-served records and holds the replica's tail, so its activation catch-up is complete.
+        @Test
+        void ownerBehindABudgetDeferredReplica_catchesUpFromItsWal_andReachesItsTail() {
+            var owner = streamPartitionManager();
+            var registry = ReplicaRegistry.replicaRegistry();
+
+            owner.createStream(config("held", 1)).onFailure(cause -> fail(cause.message()));
+            registry.registerReplica("held", 0, PEER);
+            registry.registerReplica("held", 0, SELF);
+            var backfill = PartitionBackfill.partitionBackfill(registry,
+                                                               owner.alignedRecovery(),
+                                                               (_, request) -> Promise.success(servedByTheReplica(request.fromOffset())),
+                                                               PEER);
+
+            var outcome = backfill.catchUpOwnerFrom("held", 0, SELF, EVENTS - 1L).await();
+
+            outcome.onFailure(cause -> fail(cause.message()));
+            assertThat(owner.partitionBuffer("held", 0).map(OffHeapRingBuffer::headOffset)).isEqualTo(Option.some(EVENTS - 1L));
+            assertThat(manager.partitionBuffer("held", 0).isEmpty()).as("the replica stayed unmaterialized").isTrue();
+            owner.close();
+        }
+
+        private CatchupResponse servedByTheReplica(long from) {
+            var answer = catchupRead(from, PAGE);
+
+            return CatchupResponse.catchupResponse(SELF,
+                                                   "held",
+                                                   0,
+                                                   from,
+                                                   answer.events().getLast().offset(),
+                                                   answer.events().stream().map(RawEventDto::data).toList(),
+                                                   answer.events().stream().map(RawEventDto::timestamp).toList(),
+                                                   answer.history());
         }
 
         private ReadForwardResponse catchupRead(long from, int max) {
