@@ -602,15 +602,171 @@ class SliceProcessorTest {
         assertThat(diagnostics).contains("Generated routes: UploadService");
     }
 
+    // ========== [errors] packages: Cause types outside the slice package (#2883) ==========
+
+    private static JavaFileObject causeIn(String pkg, String outer, String... inner) {
+        var members = Arrays.stream(inner)
+                            .map(name -> "    record " + name + "() implements " + outer
+                                         + " { public String message() { return \"" + name + "\"; } }\n")
+                            .collect(Collectors.joining());
+
+        return JavaFileObjects.forSourceString(pkg + "." + outer,
+                                               "package " + pkg + ";\n\n"
+                                               + "public sealed interface " + outer + " extends org.pragmatica.lang.Cause {\n"
+                                               + members + "}\n");
+    }
+
+    private static final String ERRORS_METHOD = "Promise<String> upload(String body);";
+
+    private String errorPackagesToml(String errors) {
+        return "prefix = \"/api\"\n\n[routes]\nupload = \"PUT /files/{id:Long}\"\n\n[errors]\n" + errors + "\n";
+    }
+
+    private String generatedRoutes(Path classes) throws IOException {
+        return Files.readString(classes.resolve(Path.of("upload", "UploadServiceRoutes.java")));
+    }
+
+    @Test
+    void errorsPackages_listedPackage_mapsItsCauseToTheDeclaredStatus(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithToml(classes,
+                                          errorPackagesToml("packages = [\"shared.errors\"]\nHTTP_429 = [\"*QuotaExceeded*\"]"),
+                                          ERRORS_METHOD,
+                                          List.of(causeIn("shared.errors", "QuotaError", "QuotaExceeded")));
+
+        assertThat(diagnostics).doesNotContain("do not exist");
+        assertThat(generatedRoutes(classes)).contains("case QuotaExceeded _ -> HttpError.httpError(HttpStatus.TOO_MANY_REQUESTS, cause);");
+    }
+
+    /// The slice's own package is always scanned; listing it again must not map its Causes twice. (A name repeated
+    /// within one list is collapsed earlier, when the base and slice configs merge.)
+    @Test
+    void errorsPackages_sliceOwnPackageListed_mapsItsCauseOnce(@TempDir Path classes) throws IOException {
+        compileWithToml(classes,
+                        errorPackagesToml("packages = [\"upload\"]\nHTTP_429 = [\"*OwnQuota*\"]"),
+                        ERRORS_METHOD,
+                        List.of(causeIn("upload", "OwnError", "OwnQuota")));
+
+        assertThat(generatedRoutes(classes).split("case OwnQuota _", -1).length - 1).isEqualTo(1);
+    }
+
+    @Test
+    void errorsPackages_unlistedPackage_isNotDiscovered(@TempDir Path classes) throws IOException {
+        compileWithToml(classes,
+                        errorPackagesToml("HTTP_429 = [\"*QuotaExceeded*\"]"),
+                        ERRORS_METHOD,
+                        List.of(causeIn("shared.errors", "QuotaError", "QuotaExceeded")));
+
+        assertThat(generatedRoutes(classes)).doesNotContain("QuotaExceeded");
+    }
+
+    @Test
+    void errorsPackages_missingPackage_failsTheBuildNamingIt(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithToml(classes,
+                                          errorPackagesToml("packages = [\"shared.errors\", \"shared.typo\"]"),
+                                          ERRORS_METHOD,
+                                          List.of(causeIn("shared.errors", "QuotaError", "QuotaExceeded")));
+
+        assertThat(diagnostics).contains("do not exist: shared.typo");
+        assertThat(diagnostics).doesNotContain("Generated routes: UploadService");
+    }
+
+    @Test
+    void errorsPackages_sameSimpleNameInTwoPackages_isMappedByQualifiedName(@TempDir Path classes) throws IOException {
+        compileWithToml(classes,
+                        errorPackagesToml("packages = [\"shared.one\", \"shared.two\"]\nHTTP_403 = [\"OneError.Denied\"]\nHTTP_409 = [\"TwoError.Denied\"]"),
+                        ERRORS_METHOD,
+                        List.of(causeIn("shared.one", "OneError", "Denied"), causeIn("shared.two", "TwoError", "Denied")));
+
+        var generated = generatedRoutes(classes);
+
+        assertThat(generated).contains("case shared.one.OneError.Denied _ -> HttpError.httpError(HttpStatus.FORBIDDEN, cause);");
+        assertThat(generated).contains("case shared.two.TwoError.Denied _ -> HttpError.httpError(HttpStatus.CONFLICT, cause);");
+    }
+
+    private static final String TWO_DENIED_PACKAGES = "packages = [\"shared.one\", \"shared.two\"]\n\n[errors.explicit]\n";
+
+    private static List<JavaFileObject> twoDenied() {
+        return List.of(causeIn("shared.one", "OneError", "Denied"), causeIn("shared.two", "TwoError", "Denied"));
+    }
+
+    @Test
+    void errorsExplicit_simpleNameMatchingTwoCauses_failsTheBuildNamingEveryMatch(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithToml(classes,
+                                          errorPackagesToml(TWO_DENIED_PACKAGES + "Denied = 404"),
+                                          ERRORS_METHOD,
+                                          twoDenied());
+
+        assertThat(diagnostics).contains("Ambiguous explicit error mapping 'Denied'");
+        assertThat(diagnostics).contains("shared.one.OneError.Denied, shared.two.TwoError.Denied");
+        assertThat(diagnostics).contains("fully-qualified name");
+        assertThat(diagnostics).doesNotContain("Generated routes: UploadService");
+    }
+
+    @Test
+    void errorsExplicit_fullyQualifiedKey_mapsOnlyThatTypeAndTheOtherKeepsTheDefault(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithToml(classes,
+                                          errorPackagesToml(TWO_DENIED_PACKAGES + "\"shared.one.OneError.Denied\" = 404"),
+                                          ERRORS_METHOD,
+                                          twoDenied());
+
+        var generated = generatedRoutes(classes);
+
+        assertThat(diagnostics).doesNotContain("Ambiguous explicit");
+        assertThat(diagnostics).doesNotContain("Dead explicit");
+        assertThat(generated).contains("case shared.one.OneError.Denied _ -> HttpError.httpError(HttpStatus.NOT_FOUND, cause);");
+        assertThat(generated).contains("case shared.two.TwoError.Denied _ -> HttpError.httpError(HttpStatus.INTERNAL_SERVER_ERROR, cause);");
+    }
+
+    @Test
+    void errorsExplicit_unambiguousSimpleName_stillMapsItsCause(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithToml(classes,
+                                          errorPackagesToml("packages = [\"shared.one\"]\n\n[errors.explicit]\nDenied = 404"),
+                                          ERRORS_METHOD,
+                                          List.of(causeIn("shared.one", "OneError", "Denied")));
+
+        assertThat(diagnostics).doesNotContain("Ambiguous explicit");
+        assertThat(generatedRoutes(classes)).contains("case Denied _ -> HttpError.httpError(HttpStatus.NOT_FOUND, cause);");
+    }
+
+    @Test
+    void errorsExplicit_simpleAndQualifiedKeyForOneType_qualifiedKeyDecides(@TempDir Path classes) throws IOException {
+        compileWithToml(classes,
+                        errorPackagesToml("packages = [\"shared.one\"]\n\n[errors.explicit]\nDenied = 404\n\"shared.one.OneError.Denied\" = 403"),
+                        ERRORS_METHOD,
+                        List.of(causeIn("shared.one", "OneError", "Denied")));
+
+        assertThat(generatedRoutes(classes)).contains("case Denied _ -> HttpError.httpError(HttpStatus.FORBIDDEN, cause);");
+    }
+
+    @Test
+    void errorsExplicit_twoAmbiguousKeys_reportOneMessagePerKeySortedAndNewlineJoined(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithToml(classes,
+                                          errorPackagesToml(TWO_DENIED_PACKAGES + "Zeta = 404\nDenied = 404\nAlpha = 404\nMid = 404\nBeta = 404"),
+                                          ERRORS_METHOD,
+                                          List.of(causeIn("shared.one", "OneError", "Alpha", "Beta", "Denied", "Mid", "Zeta"),
+                                                  causeIn("shared.two", "TwoError", "Alpha", "Beta", "Denied", "Mid", "Zeta")));
+
+        var keys = List.of("Alpha", "Beta", "Denied", "Mid", "Zeta");
+        var positions = keys.stream().map(key -> diagnostics.indexOf("Ambiguous explicit error mapping '" + key + "'")).toList();
+
+        assertThat(positions).doesNotContain(-1);
+        assertThat(positions).isInStrictOrder();
+        assertThat(diagnostics).contains("upload/routes.toml.\n  Ambiguous explicit error mapping 'Beta'");
+    }
+
     private String compileWithRoutes(Path classes, String route, String method) throws IOException {
         return compileWithRoutes(classes, route, method, List.of());
     }
 
     private String compileWithRoutes(Path classes, String route, String method, List<JavaFileObject> extra) throws IOException {
+        return compileWithToml(classes, "prefix = \"/api\"\n\n[routes]\n" + route + "\n", method, extra);
+    }
+
+    private String compileWithToml(Path classes, String toml, String method, List<JavaFileObject> extra) throws IOException {
         var routes = classes.resolve(Path.of("upload", "routes.toml"));
 
         Files.createDirectories(routes.getParent());
-        Files.writeString(routes, "prefix = \"/api\"\n\n[routes]\n" + route + "\n");
+        Files.writeString(routes, toml);
         var source = JavaFileObjects.forSourceString("upload.UploadService",
                                                      """
             package upload;

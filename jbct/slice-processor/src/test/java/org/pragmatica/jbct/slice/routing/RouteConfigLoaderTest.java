@@ -903,4 +903,65 @@ class RouteConfigLoaderTest {
                 .isEqualTo(org.pragmatica.serialization.json.NamingStrategy.SNAKE_CASE);
         }
     }
+
+    @Nested
+    class ErrorPackages {
+
+        @Test
+        void load_readsErrorsPackages_inDeclarationOrder() throws IOException {
+            var result = RouteConfigLoader.load(writeConfig("routes.toml", """
+                [routes]
+                getUser = "GET /{id}"
+
+                [errors]
+                packages = ["com.acme.shared", "com.acme.other"]
+                HTTP_404 = ["*NotFound*"]
+                """));
+
+            assertThat(result.unwrap().errors().packages()).containsExactly("com.acme.shared", "com.acme.other");
+            assertThat(result.unwrap().errors().statusPatterns()).containsKey(404);
+        }
+
+        @Test
+        void load_defaultsToNoPackages_whenKeyAbsent() throws IOException {
+            var result = RouteConfigLoader.load(writeConfig("routes.toml", """
+                [routes]
+                getUser = "GET /{id}"
+                """));
+
+            assertThat(result.unwrap().errors().packages()).isEmpty();
+        }
+
+        @Test
+        void loadMerged_unionsBaseAndSlicePackages_withoutDuplicates() throws IOException {
+            writeConfig("routes-base.toml", """
+                [errors]
+                packages = ["com.acme.base", "com.acme.shared"]
+                """);
+            writeConfig("routes.toml", """
+                [routes]
+                getUser = "GET /{id}"
+
+                [errors]
+                packages = ["com.acme.shared", "com.acme.own"]
+                """);
+
+            assertThat(RouteConfigLoader.loadMerged(tempDir).unwrap().errors().packages())
+                .containsExactly("com.acme.base", "com.acme.shared", "com.acme.own");
+        }
+
+        @Test
+        void load_refusesNonListPackages_namingTheKey() throws IOException {
+            var result = RouteConfigLoader.load(writeConfig("routes.toml", """
+                [routes]
+                getUser = "GET /{id}"
+
+                [errors]
+                packages = "com.acme.shared"
+                """));
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).contains("errors.packages"));
+        }
+    }
 }
