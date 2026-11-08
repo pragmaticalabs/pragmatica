@@ -212,12 +212,11 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
                      : HttpStatus.INTERNAL_SERVER_ERROR;
 
         return status == HttpStatus.UNAUTHORIZED
-               ? authenticator.challengeScheme()
-                              .<HttpError> map(scheme -> TerraAuthenticationRefusal.refusal(cause,
-                                                                                            SecurityError.challenge(scheme,
-                                                                                                                    "Terra",
-                                                                                                                    cause)))
-                              .or(() -> status.with(cause))
+               ? TerraAuthenticationRefusal.refusal(cause,
+                                                    authenticator.challengeScheme()
+                                                                 .map(scheme -> SecurityError.challenge(scheme,
+                                                                                                        "Terra",
+                                                                                                        cause)))
                : status.with(cause);
     }
 

@@ -24,7 +24,7 @@ class AppHttpServerSecurityErrorStatusTest {
                                            new SecurityError.KeyNotFound("kid detail")};
 
         for (var cause : refused) {
-            var mapped = AppHttpServer.mapSecurityError(cause);
+            var mapped = AppHttpServerAdapter.mapSecurityError(cause);
 
             assertThat(mapped.status()).as(cause.toString()).isEqualTo(HttpStatus.UNAUTHORIZED);
             assertThat(mapped.clientMessage()).as(cause.toString()).doesNotContain("detail");
@@ -33,7 +33,7 @@ class AppHttpServerSecurityErrorStatusTest {
 
     @Test
     void expiredToken_is401() {
-        assertThat(AppHttpServer.mapSecurityError(new SecurityError.TokenExpired("x")).status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(AppHttpServerAdapter.mapSecurityError(new SecurityError.TokenExpired("x")).status()).isEqualTo(HttpStatus.UNAUTHORIZED);
     }
 
     @Test
@@ -43,19 +43,19 @@ class AppHttpServerSecurityErrorStatusTest {
                                               SecurityError.NO_VALIDATOR_CONFIGURED,
                                               SecurityError.UNRESOLVED_POLICY,
                                               SecurityError.UNENFORCEABLE_POLICY}) {
-            assertThat(AppHttpServer.mapSecurityError(cause).status()).as(cause.toString()).isEqualTo(HttpStatus.UNAUTHORIZED);
+            assertThat(AppHttpServerAdapter.mapSecurityError(cause).status()).as(cause.toString()).isEqualTo(HttpStatus.UNAUTHORIZED);
         }
     }
 
     @Test
     void authorizationDenials_are403() {
-        assertThat(AppHttpServer.mapSecurityError(new SecurityError.InsufficientRole("role 'admin' required")).status()).isEqualTo(HttpStatus.FORBIDDEN);
-        assertThat(AppHttpServer.mapSecurityError(new SecurityError.AccessDenied("x")).status()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(AppHttpServerAdapter.mapSecurityError(new SecurityError.InsufficientRole("role 'admin' required")).status()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(AppHttpServerAdapter.mapSecurityError(new SecurityError.AccessDenied("x")).status()).isEqualTo(HttpStatus.FORBIDDEN);
     }
 
     @Test
     void jwksFetchFailure_isAServerSideFailureAnswered401WithoutAnErrorCode() {
-        var mapped = AppHttpServer.mapSecurityError(new SecurityError.JwksFetchFailed("x"));
+        var mapped = AppHttpServerAdapter.mapSecurityError(new SecurityError.JwksFetchFailed("x"));
 
         assertThat(mapped.status()).isEqualTo(HttpStatus.UNAUTHORIZED);
         assertThat(SecurityError.challengeError(new SecurityError.JwksFetchFailed("x")).isEmpty()).isTrue();

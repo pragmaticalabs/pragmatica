@@ -248,15 +248,16 @@ class AppHttpServerSecurityGridTest {
         assertThat(response.headers().firstValue("WWW-Authenticate")).contains("Bearer realm=\"Aether\", error=\"invalid_token\"");
     }
 
-    /// #2926: `Authorization: Bearer ` with an empty token (the #2910 verifier's 403 case).
+    /// #2926: `Authorization: Bearer ` -- the HTTP stack trims the trailing space, so the node sees a scheme with no
+    /// token: a missing credential (401, no `error`), not 403. (An empty `X-API-Key` is the invalid-token case below.)
     @Test
-    void jwtMode_emptyBearerToken_isRefusedWith401InvalidToken() throws Exception {
+    void jwtMode_bearerWithNoToken_isRefusedWith401() throws Exception {
         startServer(Setup.JWT_WITH_CONFIG, SecurityPolicy.roleRequired("admin"));
 
         var response = get("/local/thing", Option.some("Bearer "));
 
         assertThat(response.statusCode()).isEqualTo(401);
-        assertThat(response.headers().firstValue("WWW-Authenticate")).contains("Bearer realm=\"Aether\", error=\"invalid_token\"");
+        assertThat(response.headers().firstValue("WWW-Authenticate")).contains("Bearer realm=\"Aether\"");
     }
 
     /// #2926: the error code follows the first configured scheme.

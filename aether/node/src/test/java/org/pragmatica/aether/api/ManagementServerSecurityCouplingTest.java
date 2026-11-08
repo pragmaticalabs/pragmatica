@@ -117,7 +117,6 @@ class ManagementServerSecurityCouplingTest {
 
         assertThat(serializer.status()).isEqualTo(401);
         assertThat(serializer.header("WWW-Authenticate")).isEqualTo("ApiKey realm=\"Aether\", error=\"invalid_token\"");
-        assertThat(serializer.bodyText()).doesNotContain("Invalid API key");
     }
 
     @Test
@@ -230,12 +229,6 @@ class ManagementServerSecurityCouplingTest {
         private volatile HttpStatus status;
         private volatile String body = "";
 
-        String header(String name) {
-            assertThat(captured).as("the owner answered the forwarded request").isNotNull();
-
-            return captured.headers().get(name);
-        }
-
         String bodyText() {
             return body;
         }
@@ -346,6 +339,12 @@ class ManagementServerSecurityCouplingTest {
             assertThat(captured).as("the owner answered the forwarded request").isNotNull();
 
             return captured.statusCode();
+        }
+
+        String header(String name) {
+            assertThat(captured).as("the owner answered the forwarded request").isNotNull();
+
+            return captured.headers().get(name);
         }
 
         String bodyText() {

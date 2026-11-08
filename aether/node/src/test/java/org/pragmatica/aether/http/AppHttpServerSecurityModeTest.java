@@ -106,6 +106,20 @@ class AppHttpServerSecurityModeTest {
         }
 
         @Test
+        void rejectsEmptyKey() throws Exception {
+            var request = HttpRequest.newBuilder()
+                                     .uri(URI.create("http://localhost:" + port + "/some/path"))
+                                     .header("X-API-Key", "")
+                                     .GET()
+                                     .build();
+
+            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            assertThat(response.statusCode()).isEqualTo(401);
+            assertThat(response.headers().firstValue("WWW-Authenticate")).contains("ApiKey realm=\"Aether\", error=\"invalid_token\"");
+        }
+
+        @Test
         void healthEndpointBypassesAuth() throws Exception {
             var request = HttpRequest.newBuilder()
                                      .uri(URI.create("http://localhost:" + port + "/health"))

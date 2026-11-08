@@ -5,16 +5,20 @@ package org.pragmatica.terra.http;
 
 import java.util.Map;
 
+import org.pragmatica.aether.http.security.SecurityError;
 import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
 
-/// A 401 refusal that carries its `WWW-Authenticate` challenge (#2926). The client body stays the status text; the
-/// origin is for the server log only.
-record TerraAuthenticationRefusal(Cause origin, String challenge) implements HttpError {
-    static TerraAuthenticationRefusal refusal(Cause origin, String challenge) {
+/// A 401 refusal (#2926): carries its `WWW-Authenticate` challenge, when the authenticator names a scheme, and a
+/// client-safe detail. The client body never says which check failed (signature, issuer, key id, ...); the origin
+/// stays below the detail in the cause chain, for the server log only.
+record TerraAuthenticationRefusal(Cause origin, Option<String> challenge) implements HttpError {
+    private static final String REFUSED_DETAIL = "Invalid credentials";
+
+    static TerraAuthenticationRefusal refusal(Cause origin, Option<String> challenge) {
         return new TerraAuthenticationRefusal(origin, challenge);
     }
 
@@ -25,7 +29,8 @@ record TerraAuthenticationRefusal(Cause origin, String challenge) implements Htt
 
     @Override
     public Map<String, String> responseHeaders() {
-        return Map.of("WWW-Authenticate", challenge);
+        return challenge.map(value -> Map.of("WWW-Authenticate", value))
+                        .or(Map.of());
     }
 
     @Override
@@ -35,6 +40,19 @@ record TerraAuthenticationRefusal(Cause origin, String challenge) implements Htt
 
     @Override
     public Option<Cause> source() {
-        return Option.some(origin);
+        return Option.some(new ClientDetail(clientText(), origin));
+    }
+
+    private String clientText() {
+        return origin instanceof SecurityError.MissingCredentials missing
+               ? missing.message()
+               : REFUSED_DETAIL;
+    }
+
+    private record ClientDetail(String message, Cause origin) implements Cause {
+        @Override
+        public Option<Cause> source() {
+            return Option.some(origin);
+        }
     }
 }

@@ -99,7 +99,10 @@ class TerraHttpServerTest {
             var invalid = get(client, host, "/private", "X-API-Key", "bad");
             assertThat(invalid.statusCode()).isEqualTo(401);
             assertThat(invalid.headers().firstValue("WWW-Authenticate")).contains("ApiKey realm=\"Terra\", error=\"invalid_token\"");
-            assertThat(invalid.body()).doesNotContain("Invalid API key");
+            assertThat(invalid.body()).doesNotContain("Invalid API key").contains("Invalid credentials");
+            var empty = get(client, host, "/private", "X-API-Key", "");
+            assertThat(empty.statusCode()).isEqualTo(401);
+            assertThat(empty.headers().firstValue("WWW-Authenticate")).contains("ApiKey realm=\"Terra\", error=\"invalid_token\"");
             var forbidden = get(client, host, "/admin", "X-API-Key", "reader-secret");
             assertThat(forbidden.statusCode()).isEqualTo(403);
             assertThat(forbidden.headers().firstValue("WWW-Authenticate")).isEmpty();
@@ -118,9 +121,10 @@ class TerraHttpServerTest {
             var malformed = get(client, host, "/jwt", "Authorization", "Token not-a-jwt");
             assertThat(malformed.statusCode()).isEqualTo(401);
             assertThat(malformed.headers().firstValue("WWW-Authenticate")).contains("Token realm=\"Terra\", error=\"invalid_token\"");
-            var empty = get(client, host, "/jwt", "Authorization", "Bearer ");
-            assertThat(empty.statusCode()).isEqualTo(401);
-            assertThat(empty.headers().firstValue("WWW-Authenticate")).contains("Token realm=\"Terra\", error=\"invalid_token\"");
+            var forged = get(client, host, "/jwt", "Authorization", "Bearer a.b.c");
+            assertThat(forged.statusCode()).isEqualTo(401);
+            assertThat(forged.headers().firstValue("WWW-Authenticate")).contains("Token realm=\"Terra\", error=\"invalid_token\"");
+            assertThat(forged.body()).doesNotContain("Base64").doesNotContain("Signature");
         } finally { close(host); }
     }
 
