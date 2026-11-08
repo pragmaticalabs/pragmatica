@@ -117,10 +117,13 @@ class AppHttpServerH3BoundsTest {
 
         for (int i = 0; i < TRICKLE_CHUNKS; i++) {
             Thread.sleep(TRICKLE_INTERVAL_MS);
-            stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[TRICKLE_CHUNK])));
+            if (i == TRICKLE_CHUNKS - 1) {
+                // #2746: the last frame carries the FIN
+                H3Probe.writeLastData(stream, new byte[TRICKLE_CHUNK]);
+            } else {
+                stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[TRICKLE_CHUNK])));
+            }
         }
-
-        stream.shutdownOutput();
     }
 
     private static AppHttpServer appHttpServer(int port) {

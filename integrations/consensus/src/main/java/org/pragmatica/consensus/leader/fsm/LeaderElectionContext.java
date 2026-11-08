@@ -932,7 +932,12 @@ public final class LeaderElectionContext {
 
     /// Fresh data-carrying instance per call. See [`#electing`].
     public LeaderElectionState.ReElecting reElecting() {
-        return LeaderElectionState.ReElecting.fresh(this);
+        return reElecting(Option.none());
+    }
+
+    /// Fresh data-carrying instance carrying the leader this node doubted (#2869). See [`#electing`].
+    public LeaderElectionState.ReElecting reElecting(Option<NodeId> suspect) {
+        return LeaderElectionState.ReElecting.fresh(this, suspect);
     }
 
     public LeaderElectionState.QuorumLost quorumLost() {
@@ -966,11 +971,14 @@ public final class LeaderElectionContext {
                : filtered;
     }
 
-    public int rankOfSelf() {
+    /// Rank of this node in the sorted pool with `excluded` left out (#2869: the re-election suspect does not
+    /// hold a staircase slot, so the next-lowest node proposes at the base delay).
+    public int rankOfSelf(Option<NodeId> excluded) {
         var pool = expectedCluster().isEmpty()
                    ? currentTopology()
                    : expectedCluster();
-        var sorted = pool.stream().sorted().toList();
+        var sorted = pool.stream().filter(node -> excluded.filter(node::equals)
+                                                          .isEmpty()).sorted().toList();
         var rank = sorted.indexOf(self);
 
         return rank >= 0

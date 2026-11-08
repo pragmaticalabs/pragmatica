@@ -144,9 +144,14 @@ class Http3ServerBoundsTest {
 
         for (int i = 0; i < TRICKLE_CHUNKS; i++) {
             Thread.sleep(TRICKLE_INTERVAL_MS);
-            stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[TRICKLE_CHUNK])));
-        }
+            var frame = new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[TRICKLE_CHUNK]));
 
-        stream.shutdownOutput();
+            // #2746: the last frame carries the FIN
+            if (i == TRICKLE_CHUNKS - 1) {
+                Http3TestClient.finishWith(stream, frame);
+            } else {
+                stream.writeAndFlush(frame);
+            }
+        }
     }
 }
