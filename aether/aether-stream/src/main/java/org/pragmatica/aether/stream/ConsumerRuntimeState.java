@@ -683,13 +683,14 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     }
 
     /// #1960: the successor proceeds past a held flush. Raised once per held group, and only while a successor is still
-    /// waiting to start; its recovery is raised when the held flush settles. A flush that never settles is never
+    /// waiting to start (not cancelled: [#close] cancels every registered consumer, so a closed runtime raises nothing);
+    /// its recovery is raised when the held flush settles. A flush that never settles is never
     /// recovered: the condition stands, and [#close] reports the commit unsettled at its shutdown bound.
     private Promise<Unit> detachWaitExceeded(ConsumerKey key,
                                              ConsumerState state,
                                              PendingDetaches detaches,
                                              TimeSpan bound) {
-        if (!closed.get() && !state.isCancelled() && detaches.claimBoundExceeded()) {
+        if (!state.isCancelled() && detaches.claimBoundExceeded()) {
             warnDetachWaitExceeded(key, bound);
             detaches.settled.onResult(_ -> raiseDetachWaitSettled(key));
         }

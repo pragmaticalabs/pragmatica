@@ -622,6 +622,14 @@ class DetachAwaitsInFlightAdvanceTest {
                                 .as("no recovery while the flush is still wedged")
                                 .doesNotContain(OperatorWarningCode.STREAM_CONSUMER_DETACH_WAIT_SETTLED);
 
+            wedgingRuntime.unsubscribe(STREAM, 0, GROUP);
+            wedgingRuntime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> Promise.unitPromise());
+            awaitFetches(fetches, 3);
+
+            assertThat(warnings).extracting(OperatorWarning::code)
+                                .as("a second successor past the same held flush raises no second warning")
+                                .containsExactly(OperatorWarningCode.STREAM_CONSUMER_DETACH_WAIT_EXCEEDED);
+
             wedged.succeed(CommitOutcome.persisted());
             awaitWarning(warnings, OperatorWarningCode.STREAM_CONSUMER_DETACH_WAIT_SETTLED);
 
@@ -633,6 +641,58 @@ class DetachAwaitsInFlightAdvanceTest {
             wedged.succeed(CommitOutcome.persisted());
             wedgingRuntime.close();
         }
+    }
+
+    /// #1960: a successor unsubscribed while it waits on the held flush still runs its fetch at the bound, but raises no
+    /// `stream-consumer-detach-wait-exceeded`: no successor starts past the flush. The fetch it runs is the signal that
+    /// the bound has passed. Red under "the warning ignores the successor's cancel".
+    @Test
+    void wedgedFlushCommit_successorCancelledWhileWaiting_raisesNoWarning() throws InterruptedException {
+        var wedge = new AtomicBoolean();
+        var wedged = Promise.<CommitOutcome>promise();
+        var fetches = new AtomicInteger();
+        var warnings = new CopyOnWriteArrayList<OperatorWarning>();
+        var wedging = new ConsumerCursorStore() {
+            @Override
+            public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                return wedge.get()
+                       ? wedged
+                       : Promise.success(CommitOutcome.persisted());
+            }
+
+            @Override
+            public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                fetches.incrementAndGet();
+
+                return Promise.success(Option.none());
+            }
+        };
+        var wedgingRuntime = (ConsumerRuntimeState) streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), wedging);
+
+        wedgingRuntime.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+        wedgingRuntime.detachWaitBound(timeSpan(200).millis());
+        try {
+            wedgingRuntime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> Promise.unitPromise());
+            wedge.set(true);
+            wedgingRuntime.unsubscribe(STREAM, 0, GROUP);
+            wedgingRuntime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> Promise.unitPromise());
+            wedgingRuntime.unsubscribe(STREAM, 0, GROUP);
+            awaitFetches(fetches, 2);
+
+            assertThat(warnings).as("the cancelled successor raised nothing at the bound").isEmpty();
+        } finally {
+            wedged.succeed(CommitOutcome.persisted());
+            wedgingRuntime.close();
+        }
+    }
+
+    private static void awaitFetches(AtomicInteger fetches, int count) throws InterruptedException {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+        while (fetches.get() < count && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(fetches.get()).as("fetches").isGreaterThanOrEqualTo(count);
     }
 
     /// NT-166b (#1960 F10): the cancel check and the in-flight-slot claim are one step. Each round subscribes a fresh
