@@ -23,6 +23,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.storage.ContentStore;
 import org.pragmatica.storage.ObjectId;
@@ -34,6 +35,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 /// Takes an upload body as it arrives and writes it to content storage (U2, spec §B2): a body that is not
@@ -61,6 +63,8 @@ import static org.pragmatica.lang.Unit.unit;
 public final class IngestSink implements BodySink {
     private static final Logger log = LoggerFactory.getLogger(IngestSink.class);
     private static final Cause NO_OPEN_WRITER = Causes.cause("Multipart file content arrived outside a file part");
+    /// How long one object delete may take before it is given up on (logged as a failure, the object left for A4).
+    private static final TimeSpan DELETE_BOUND = timeSpan(30).seconds();
     private static final Cause ABANDONED = Causes.cause("The upload ended before this step completed");
 
     /// Hands a stored upload's request to the normal dispatch path.
@@ -93,6 +97,7 @@ public final class IngestSink implements BodySink {
     private final Runnable permit;
     private final Dispatch dispatch;
     private final Refuse refuse;
+    private final TimeSpan deleteBound;
     private final AtomicBoolean released = new AtomicBoolean();
     private final List<FileHandle> files = new ArrayList<>();
     private final List<ObjectId> committed = new ArrayList<>();
@@ -101,12 +106,18 @@ public final class IngestSink implements BodySink {
     private Option<OpenFile> open = Option.none();
     private boolean aborted;
 
-    private IngestSink(ContentStore store, Body body, Runnable permit, Dispatch dispatch, Refuse refuse) {
+    private IngestSink(ContentStore store,
+                       Body body,
+                       Runnable permit,
+                       Dispatch dispatch,
+                       Refuse refuse,
+                       TimeSpan deleteBound) {
         this.store = store;
         this.body = body;
         this.permit = permit;
         this.dispatch = dispatch;
         this.refuse = refuse;
+        this.deleteBound = deleteBound;
     }
 
     public static IngestSink ingestSink(ContentStore store,
@@ -114,7 +125,16 @@ public final class IngestSink implements BodySink {
                                         Runnable permit,
                                         Dispatch dispatch,
                                         Refuse refuse) {
-        return new IngestSink(store, body, permit, dispatch, refuse);
+        return ingestSink(store, body, permit, dispatch, refuse, DELETE_BOUND);
+    }
+
+    static IngestSink ingestSink(ContentStore store,
+                                 Body body,
+                                 Runnable permit,
+                                 Dispatch dispatch,
+                                 Refuse refuse,
+                                 TimeSpan deleteBound) {
+        return new IngestSink(store, body, permit, dispatch, refuse, deleteBound);
     }
 
     @Override
@@ -336,8 +356,11 @@ public final class IngestSink implements BodySink {
         return Promise.allOf(ids.stream().map(this::deleteOne).toList()).mapToUnit();
     }
 
+    /// A delete that does not resolve within the bound fails with a timeout, so a hung store holds neither the permit nor
+    /// the abandoned chain; the timeout is logged like any other failed delete.
     private Promise<Unit> deleteOne(ObjectId id) {
         return store.delete(id)
+                    .timeout(deleteBound)
                     .onFailure(cause -> log.warn("Deleting stored upload object {} failed: {}",
                                                  id.asString(),
                                                  cause.message()));

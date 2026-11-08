@@ -528,6 +528,28 @@ class RequestGateStreamTest {
         channel.finishAndReleaseAll();
     }
 
+    /// #2876: a route with a positive stall bound that is not the floor aborts at that bound, not at the 30 s floor.
+    @Test
+    void hungAccept_withAPositiveBound_isAbandonedAtThatBound_notAtTheFloor() {
+        var channel = channel(1500, Option.some(BodyBounds.bodyBounds(timeSpan(2).seconds(),
+                                                                           BodyRateLimit.bodyRateLimit(0, timeSpan(1).seconds(), timeSpan(1).seconds()),
+                                                                           timeSpan(0).seconds())));
+
+        channel.writeInbound(head("/up", "Transfer-Encoding", "chunked"));
+        channel.writeInbound(new DefaultHttpContent(bytes(1000)));
+        channel.writeInbound(new DefaultHttpContent(bytes(1000)));
+        var answer = response(channel);
+
+        assertThat(answer.status().code()).as("the crossing chunk ended the request").isEqualTo(413);
+        assertThat(sink.terminals()).as("not yet: inside the 2 s bound").isEmpty();
+        channel.advanceTimeBy(3, TimeUnit.SECONDS);
+        channel.runScheduledPendingTasks();
+        assertThat(sink.terminals()).as("aborted at the route's bound, far inside the 30 s floor")
+                                    .containsExactly("abort:TOO_LARGE");
+        answer.release();
+        channel.finishAndReleaseAll();
+    }
+
     /// P3: while the gate holds reading off for a slow sink, the body's rate check does not run: a sink that takes 20 s
     /// (inside the 30 s stall bound) over a 10-byte chunk is not blamed on a client that "sent 10 bytes in 20 s".
     @Test

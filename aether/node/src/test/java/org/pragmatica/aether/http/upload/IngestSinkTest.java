@@ -72,11 +72,16 @@ class IngestSinkTest {
     }
 
     private IngestSink sink(ContentStore store, IngestSink.Body body) {
+        return sink(store, body, TimeSpan.timeSpan(30).seconds());
+    }
+
+    private IngestSink sink(ContentStore store, IngestSink.Body body, TimeSpan deleteBound) {
         return IngestSink.ingestSink(store,
                                      body,
                                      permits::incrementAndGet,
                                      (request, _) -> dispatched.set(request),
-                                     (_, cause) -> refused.set(cause));
+                                     (_, cause) -> refused.set(cause),
+                                     deleteBound);
     }
 
     private static IngestSink.Body binary() {
@@ -589,6 +594,42 @@ class IngestSinkTest {
         assertThat(spy.aborts.get()).isEqualTo(1);
         assertThat(spy.creates.get()).as("the chain stopped at the refused writer").isEqualTo(1);
         assertThat(catalog(store)).isEmpty();
+    }
+
+    /// #2876: a delete that never resolves must not hold the request's admission: the clean-up gives up on it at the bound.
+    @Test
+    void abort_withAHungDelete_returnsThePermitAtTheDeleteBound() throws Exception {
+        var spy = new Spy(false);
+        var sink = sink(spy(store(storage(64L * MIB)), spy),
+                        multipart(UploadSpec.uploadSpec(true, 0, 0)),
+                        TimeSpan.timeSpan(300).millis());
+
+        assertThat(push(sink, firstFileCommittedSecondOpen(), 400_000)).isEmpty();
+        sink.abort(BodySink.Ended.DISCONNECTED);
+        await(() -> spy.deletes.get() == 1, "the committed file's delete started");
+
+        await(() -> permits.get() == 1, "the delete was given up on and the permit was returned");
+        assertThat(spy.deleteGate.isResolved()).as("the delete itself never resolved").isFalse();
+    }
+
+    /// #2876: the late commit's delete hangs too: the abandoned chain still ends (failed), it does not hang.
+    @Test
+    void abort_thenTheHungCommitResolves_withAHungDelete_theAbandonedChainEndsAtTheDeleteBound() throws Exception {
+        var spy = new Spy(false);
+        var sink = sink(spy(store(storage(64L * MIB)), spy),
+                        multipart(UploadSpec.uploadSpec(true, 0, 0)),
+                        TimeSpan.timeSpan(300).millis());
+        var hung = Promise.<Unit>promise();
+
+        spy.commitGate = hung;
+        var chain = sink.accept(ByteBuffer.wrap(multipartBody(random(100, 1), random(100, 2))));
+
+        sink.abort(BodySink.Ended.STALLED);
+        await(() -> permits.get() == 1, "the clean-up settled and the permit was returned");
+        hung.succeed(Unit.unit());
+        await(() -> spy.deletes.get() == 1, "the late commit's delete started");
+
+        assertThat(chain.await(WAIT).isFailure()).as("the chain ended though its delete never resolved").isTrue();
     }
 
     private static byte[] multipartBody(byte[] first, byte[] second) {
