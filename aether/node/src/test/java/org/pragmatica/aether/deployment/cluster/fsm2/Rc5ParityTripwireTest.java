@@ -239,20 +239,7 @@ class Rc5ParityTripwireTest {
                 .map(CommunityValue.class::cast);
     }
 
-    /// CUTOVER-BLOCKER tripwire (#241): with `max_size = 7` committed, FSM2 still mints `east-w-0` at the node-level target size.
-    @Test
-    void tripwire_aDerivedCommunity_takesTheNodeSizing_notTheCommittedMaxSize() {
-        var w = workersOfEastUnder("[community_policy]\nmax_size = 7\n");
-
-        join(w, W1, 21L);
-        assertThat(legacyView(w).current().maxSize()).as("the legacy reader sees the committed max_size, so the tripwire is not vacuous").isEqualTo(7);
-        assertThat(communityOf(w, W1)).isEqualTo("east-w-0");
-        assertThat(communityValue(w, "east-w-0").map(CommunityValue::targetSize)).as("#241 parity: " + PARITY
-                                                                                + ": FSM2 now stamps the committed max_size; enable parity_aDerivedCommunity_takesTheCommittedMaxSize_likeLegacy and delete this tripwire")
-                                                                            .isEqualTo(Option.some(SETTINGS_TARGET));
-    }
-
-    @Disabled("#241 parity: " + PARITY)
+    /// R-CF.16 (#241): enabled by F2c.
     @Test
     void parity_aDerivedCommunity_takesTheCommittedMaxSize_likeLegacy() {
         var w = workersOfEastUnder("[community_policy]\nmax_size = 7\n");
@@ -283,24 +270,13 @@ class Rc5ParityTripwireTest {
         return w;
     }
 
-    /// CUTOVER-BLOCKER tripwire (#241): with growth on and `east-w-0` full at `max_size = 3`, the legacy growth policy mints a new community for
-    /// the fourth worker; FSM2 puts it in `east-w-0`.
-    @Test
-    void tripwire_growth_fsm2PacksTheFourthWorkerIntoTheFullCommunity() {
-        var w = fourWorkersUnderGrowth();
-
-        assertThat(legacyDecisionForTheFourth(w)).as("the legacy growth policy mints, so the tripwire is not vacuous")
-                                                 .isEqualTo(CommunityGrowthPolicy.Decision.Mint.mint("east-w-1"));
-        assertThat(communityOf(w, W4)).as("#241 parity: " + PARITY
-                                          + ": FSM2 now applies the growth policy; enable parity_growth_theFourthWorkerTakesTheGrowthDecision_likeLegacy and delete this tripwire")
-                                      .isEqualTo("east-w-0");
-    }
-
-    @Disabled("#241 parity: " + PARITY)
+    /// R-CF.17 (#241): enabled by F2c.
     @Test
     void parity_growth_theFourthWorkerTakesTheGrowthDecision_likeLegacy() {
         var w = fourWorkersUnderGrowth();
 
+        assertThat(legacyDecisionForTheFourth(w)).as("the legacy growth policy mints for the fourth worker")
+                                                 .isEqualTo(CommunityGrowthPolicy.Decision.Mint.mint("east-w-1"));
         assertThat(communityOf(w, W4)).as("#241 parity: " + PARITY + ": the fourth worker takes the community the growth policy decides")
                                       .isEqualTo("east-w-1");
     }
@@ -341,21 +317,7 @@ class Rc5ParityTripwireTest {
                       .map(value -> ((CommunityValue) value).state());
     }
 
-    /// CUTOVER-BLOCKER tripwire (#241): with `viability_floor = 4` committed, FSM2 still activates a community of three live members.
-    @Test
-    void tripwire_communityState_isJudgedAgainstTheNodeFloor_notTheCommittedOne() {
-        var h = formingCommunityOfThreeUnderFloorFour();
-        var legacyFloor = CommunityPolicyView.communityPolicyView(h.store, CommunitySizing.communitySizing(SETTINGS_TARGET, 3))
-                                             .current()
-                                             .viabilityFloor();
-
-        assertThat(legacyFloor).as("the legacy reader sees the committed floor, so the tripwire is not vacuous").isEqualTo(4);
-        assertThat(stateOfC(h)).as("#241 parity: " + PARITY
-                                   + ": FSM2 now judges against the committed floor; enable parity_communityState_isJudgedAgainstTheCommittedFloor_likeLegacy and delete this tripwire")
-                               .isEqualTo(Option.some(CommunityState.ACTIVE));
-    }
-
-    @Disabled("#241 parity: " + PARITY)
+    /// R-CF.18 (#241): enabled by F2c.
     @Test
     void parity_communityState_isJudgedAgainstTheCommittedFloor_likeLegacy() {
         var h = formingCommunityOfThreeUnderFloorFour();

@@ -167,12 +167,9 @@ public sealed interface Divergence {
         Outbox.artifact(m,
                         artifact,
                         intent -> intent.withOp(new JudgmentOp.ClearUnresponsive(node)));
-        ctx.warn("slice-unresponsive-expired",
-                 artifact.asString(),
-                 "Exclusion of " + node.id() + " for " + artifact + " expired");
         ctx.metric("aether_deployment_fsm_divergence_total", Map.of("fsm", "cluster", "stage", "expire"));
 
-        return m;
+        return Judgments.exclusionEnding(m, artifact, "Exclusion of " + node.id() + " for " + artifact + " expired");
     }
 
     record unused() implements Divergence {}

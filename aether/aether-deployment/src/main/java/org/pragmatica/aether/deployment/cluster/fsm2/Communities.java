@@ -21,7 +21,7 @@ import org.pragmatica.lang.Option;
 
 /// Per-community state (reconcile step 5, B-074): the leader walks every committed community, recomputes its state from
 /// observed live membership, and writes exactly the edges. FORMING and DEGRADED become ACTIVE at the viability floor; ACTIVE
-/// becomes DEGRADED below it. The teardown states and an undecodable state never change here (#964).
+/// becomes DEGRADED below it. The floor is the COMMITTED `viability_floor` (R-CF.18, #241; `CommunityPolicies`). The teardown states and an undecodable state never change here (#964).
 public sealed interface Communities {
     static ClusterModel run(ClusterModel m, Ctx ctx) {
         m.communities.entries()
@@ -36,7 +36,7 @@ public sealed interface Communities {
     }
 
     private static ClusterModel evaluate(ClusterModel m, Ctx ctx, String id, CommunityValue community) {
-        var floor = ctx.settings().communityViabilityFloor();
+        var floor = CommunityPolicies.current(m, ctx).viabilityFloor();
         var next = next(community.state(), liveMembers(m, id), floor);
 
         if (next != community.state()) {

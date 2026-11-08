@@ -4,15 +4,22 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.Predicate;
 
+import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceDesiredValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.lang.Option;
 
@@ -112,6 +119,226 @@ class SlDivergenceTest {
             assertThat(isRetraction(h)).as("at 3T + 1 ms: goal UNLOADED and the judgment in one transaction").isTrue();
             assertThat(h.model().judgment(ORDERS).map(ArtifactJudgmentValue::unresponsive).or(Map.of())).containsKey(CORE_1);
             assertThat(h.warns("slice-unresponsive")).hasSize(1);
+        }
+
+        private FsmHarness excluded() {
+            var h = stuckLoading();
+
+            at(h, T_LOAD + 1);
+            at(h, T_LOAD);
+            at(h, T_LOAD);
+            assertThat(h.warns("slice-unresponsive")).hasSize(1);
+            assertThat(h.model().judgment(ORDERS).map(ArtifactJudgmentValue::unresponsive).or(Map.of())).containsKey(CORE_1);
+            assertThat(h.warns("slice-unresponsive-expired")).as("not before the expiry or the subject going").isEmpty();
+
+            return h;
+        }
+
+        /// D.6 rows 18/19 (know 7cc9e79f61), the subject-gone close. Red when: the observed row of an excluded pair goes and
+        /// `slice-unresponsive` stays open (no `slice-unresponsive-expired`, same subject, reason subject-gone).
+        @Test
+        void excludedInstanceGone_closesTheWarning_subjectGone() {
+            var h = excluded();
+
+            h.seedRemove(new SliceObservedKey(CORE_1, ORDERS));
+            h.drain();
+            var expired = h.warns("slice-unresponsive-expired");
+
+            assertThat(expired).hasSize(1);
+            assertThat(expired.getFirst().subject()).isEqualTo(ORDERS.asString());
+            assertThat(expired.getFirst().message()).contains(Recoveries.SUBJECT_GONE).contains("is gone");
+        }
+
+        /// D.6 rows 18/19, the subject-gone close on a departure. Red when: the excluded node departs and the warning stays open.
+        @Test
+        void excludedNodeDeparts_closesTheWarning_subjectGone() {
+            var h = excluded();
+
+            h.deliver(new ClusterInput.NodeRemoved(CORE_1));
+            var expired = h.warns("slice-unresponsive-expired");
+
+            assertThat(expired).isNotEmpty();
+            assertThat(expired.getFirst().subject()).isEqualTo(ORDERS.asString());
+            assertThat(expired.getFirst().message()).contains(Recoveries.SUBJECT_GONE).contains("departed");
+        }
+
+        /// Three instances of ORDERS, one per core, all stuck in LOADING and all excluded after 3T (no core is left to re-place on).
+        private FsmHarness allExcluded() {
+            var h = threeCores();
+
+            seedTarget(h, ORDERS, 3, 1);
+            h.activate();
+            var token = 11L;
+
+            for (var host : hosts(h, ORDERS)) {
+                node(h, host, token++).writes(ORDERS, SliceObservedState.LOADING);
+            }
+
+            h.drain();
+            at(h, T_LOAD + 1);
+            at(h, T_LOAD);
+            at(h, T_LOAD);
+            assertThat(exclusions(h)).as("precondition: three excluded").hasSize(3);
+            assertThat(h.warns("slice-unresponsive-expired")).isEmpty();
+
+            return h;
+        }
+
+        /// Three instances placed at once on three nodes that never write a row, so all three are excluded in one pass and, with no row to
+        /// re-judge against the retracted goal, all fall due for expiry in one pass.
+        private FsmHarness allExcludedSilent() {
+            var h = threeCores();
+
+            seedTarget(h, ORDERS, 3, 1);
+            h.activate();
+            at(h, 3 * T_LOAD + 1);
+            assertThat(exclusions(h)).as("precondition: three excluded").hasSize(3);
+            assertThat(h.warns("slice-unresponsive-expired")).isEmpty();
+
+            return h;
+        }
+
+        private Map<NodeId, ?> exclusions(FsmHarness h) {
+            return h.model().judgment(ORDERS).map(ArtifactJudgmentValue::unresponsive).or(Map.of());
+        }
+
+        /// D.6 rows 18/19, CTO ruling on #2831. `slice-unresponsive` has the artifact as its subject, so it closes only when the artifact's
+        /// committed exclusions are none. Red when: an excluded instance going raises `slice-unresponsive-expired` while another is still
+        /// excluded, or the last one going does not raise it exactly once.
+        @Test
+        void excludedInstancesGone_keepTheWarningOpen_untilTheLastGoes() {
+            var h = allExcluded();
+            var excluded = List.copyOf(exclusions(h).keySet());
+
+            for (var gone = 0; gone < excluded.size() - 1; gone++) {
+                h.seedRemove(new SliceObservedKey(excluded.get(gone), ORDERS));
+                h.drain();
+                assertThat(exclusions(h)).as("cleared one by one").hasSize(excluded.size() - gone - 1);
+                assertThat(h.warns("slice-unresponsive-expired")).as("not while a node of the artifact is excluded").isEmpty();
+            }
+
+            h.seedRemove(new SliceObservedKey(excluded.getLast(), ORDERS));
+            h.drain();
+            var expired = h.warns("slice-unresponsive-expired");
+
+            assertThat(expired).as("once, when the last exclusion is cleared").hasSize(1);
+            assertThat(expired.getFirst().subject()).isEqualTo(ORDERS.asString());
+            assertThat(expired.getFirst().message()).contains(Recoveries.SUBJECT_GONE);
+        }
+
+        /// D.6 rows 18/19, CTO ruling on #2831. Red when: the expiry of the exclusions, which all fall due in one pass, raises
+        /// `slice-unresponsive-expired` per node instead of once, or the close does not say it expired, or its reason stays in the model.
+        @Test
+        void allExcluded_expireInOnePass_closesOnce() {
+            var h = allExcludedSilent();
+            var sizes = new ArrayList<Integer>();
+
+            for (var step = 0; step < 40 && !exclusions(h).isEmpty(); step++) {
+                at(h, T_LOAD);
+                sizes.add(exclusions(h).size());
+            }
+
+            assertThat(exclusions(h)).as("all expired").isEmpty();
+            assertThat(sizes).as("the three expire in one pass").containsOnly(3, 0);
+            var expired = h.warns("slice-unresponsive-expired");
+
+            assertThat(expired).hasSize(1);
+            assertThat(expired.getFirst().message()).contains("expired");
+            assertThat(h.model().exclusionEndReasons.containsKey(ORDERS)).as("the reason is dropped with the close").isFalse();
+        }
+
+        /// D.6 rows 18/19: an UNLOADED answer ends the exclusion (C10e), so the warning closes. Red when: the exclusion is cleared by the
+        /// answer and `slice-unresponsive` stays open, or the close does not say why.
+        @Test
+        void excludedInstanceAnswersUnloaded_closesTheWarning() {
+            var h = excluded();
+            var goal = h.model().desired(SlicePair.slicePair(CORE_1, ORDERS)).map(SliceDesiredValue::generation);
+
+            assertThat(goal.isPresent()).as("precondition: the retraction wrote goal UNLOADED").isTrue();
+            node(h, CORE_1, 11L).writes(ORDERS, SliceObservedState.UNLOADED);
+            h.drain();
+            var expired = h.warns("slice-unresponsive-expired");
+
+            assertThat(expired).hasSize(1);
+            assertThat(expired.getFirst().message()).contains("answered UNLOADED");
+        }
+
+        /// D.6 rows 18/19, subject-gone: the judgment itself goes while it excludes a node. Red when: the warning stays open.
+        @Test
+        void judgmentRemoved_closesTheWarning_subjectGone() {
+            var h = excluded();
+
+            h.seedRemove(new ArtifactJudgmentKey(ORDERS));
+            h.drain();
+            var expired = h.warns("slice-unresponsive-expired");
+
+            assertThat(expired).hasSize(1);
+            assertThat(expired.getFirst().message()).contains(Recoveries.SUBJECT_GONE);
+        }
+
+        /// D.6 rows 18/19 via the indexer: a judgment UPDATE (not a removal) that leaves the artifact with no exclusion closes the warning.
+        /// Red when: `Indexer.indexJudgment` does not read the exclusion before the update, so the some-to-none transition is missed.
+        @Test
+        void judgmentUpdatedToNoExclusion_closesTheWarningOnce() {
+            var h = excluded();
+
+            h.seed(new ArtifactJudgmentKey(ORDERS), new ArtifactJudgmentValue(false, Map.of(), Map.of(), Set.of()));
+            h.drain();
+            var expired = h.warns("slice-unresponsive-expired");
+
+            assertThat(expired).hasSize(1);
+            assertThat(expired.getFirst().subject()).isEqualTo(ORDERS.asString());
+        }
+
+        /// D.6 rows 18/19: a judgment update with no exclusion before it and none after raises no recovery. Red when: the close is not gated
+        /// on the prior exclusion (`Judgments.exclusionsEnded` raises on every update that holds none).
+        @Test
+        void judgmentUpdatedWithNoPriorExclusion_raisesNothing() {
+            var h = stuckLoading();
+
+            assertThat(exclusions(h)).as("precondition: nothing excluded").isEmpty();
+            h.seed(new ArtifactJudgmentKey(ORDERS), new ArtifactJudgmentValue(false, Map.of(), Map.of(), Set.of()));
+            h.drain();
+            h.seed(new ArtifactJudgmentKey(ORDERS), new ArtifactJudgmentValue(true, Map.of(), Map.of(), Set.of()));
+            h.drain();
+            assertThat(h.model().judgment(ORDERS).map(ArtifactJudgmentValue::permanentFailure).or(false)).as("precondition: the updates were indexed").isTrue();
+            assertThat(h.warns("slice-unresponsive-expired")).isEmpty();
+        }
+
+        /// Commits the held submissions that mutate a key `matching`, each settled with the applier's verdict.
+        private void commitHeld(FsmHarness h, Predicate<AetherKey> matching) {
+            h.held.values()
+                  .stream()
+                  .filter(submit -> submit.transaction()
+                                          .mutations()
+                                          .stream()
+                                          .anyMatch(mutation -> matching.test(mutation.key())))
+                  .toList()
+                  .forEach(submit -> h.settleHeld(submit, h.applyHeld(submit.correlationId())));
+        }
+
+        /// Item 4 of the #2831 verification: the departure of an excluded node clears its exclusion (`DepartureFlow.departed`), and C17b,
+        /// committed before that clear, removes the node's row, which finds the exclusion still committed and clears it again
+        /// (`Slices.onObservedRemove`). Red when: `slice-unresponsive-expired` is raised more than once for the one exclusion.
+        @Test
+        void excludedNodeDeparts_rowsRemovedBeforeTheClearCommits_closesTheWarningOnce() {
+            var h = excluded();
+
+            h.policy = FsmHarness.SettlePolicy.HOLD;
+            h.deliver(new ClusterInput.NodeRemoved(CORE_1));
+            commitHeld(h, key -> key instanceof NodeDepartureKey);
+            commitHeld(h, key -> key instanceof SliceObservedKey);
+            assertThat(h.store.get(new SliceObservedKey(CORE_1, ORDERS)).isPresent()).as("precondition: C17b removed the departed node's row")
+                                                                                   .isFalse();
+            assertThat(exclusions(h)).as("precondition: the row went while the exclusion was still committed").containsKey(CORE_1);
+            h.policy = FsmHarness.SettlePolicy.APPLY;
+            commitHeld(h, key -> true);
+            h.advanceBySeconds(5);
+            assertThat(exclusions(h)).as("the exclusion is cleared").doesNotContainKey(CORE_1);
+            var expired = h.warns("slice-unresponsive-expired");
+
+            assertThat(expired).hasSize(1);
+            assertThat(expired.getFirst().message()).contains(Recoveries.SUBJECT_GONE);
         }
     }
 

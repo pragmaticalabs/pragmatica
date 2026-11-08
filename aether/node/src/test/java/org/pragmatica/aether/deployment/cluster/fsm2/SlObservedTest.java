@@ -143,6 +143,55 @@ class SlObservedTest {
             assertThat(h.warns("stray-instance")).hasSize(1);
         }
 
+        /// D.6 row 20 (know 7cc9e79f61): the condemned row going is both the remediation completing and the subject leaving. Red when:
+        /// the observed row of a condemned stray disappears and `stray-instance` stays open (no `stray-instance-removed`, same subject,
+        /// once); the close is raised while the row stands; or a row that was never condemned raises it.
+        @Test
+        void condemnedStray_rowGone_closesTheWarning() {
+            var h = threeCores();
+
+            seedTarget(h, ORDERS, 1, 1);
+            seedRow(h, CORE_1, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
+            seedRow(h, CORE_2, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
+            h.activate();
+            assertThat(h.warns("stray-instance")).hasSize(1);
+            assertThat(h.warns("stray-instance-removed")).as("the row stands").isEmpty();
+            h.seedRemove(new SliceObservedKey(CORE_1, ORDERS));
+            h.drain();
+            assertThat(h.warns("stray-instance-removed")).as("CORE_1's adopted row was never condemned").isEmpty();
+            h.seedRemove(new SliceObservedKey(CORE_2, ORDERS));
+            h.drain();
+            var removed = h.warns("stray-instance-removed");
+
+            assertThat(removed).hasSize(1);
+            assertThat(removed.getFirst().subject()).isEqualTo(ORDERS.asString());
+            assertThat(removed.getFirst().message()).contains(Recoveries.SUBJECT_GONE);
+        }
+
+        /// D.6 row 20, CTO ruling on #2831. `stray-instance` has the artifact as its subject, so it closes only when the last condemned
+        /// instance of the artifact is gone. Red when: one of two condemned rows going raises `stray-instance-removed` while the other still
+        /// stands, or the last one going does not raise it exactly once.
+        @Test
+        void twoCondemnedStrays_closeOnlyWhenTheLastRowGoes() {
+            var h = threeCores();
+
+            seedTarget(h, ORDERS, 1, 1);
+            seedRow(h, CORE_1, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
+            seedRow(h, CORE_2, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
+            seedRow(h, CORE_3, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
+            h.activate();
+            assertThat(h.warns("stray-instance")).as("precondition: two surplus strays condemned").hasSize(2);
+            h.seedRemove(new SliceObservedKey(CORE_2, ORDERS));
+            h.drain();
+            assertThat(h.warns("stray-instance-removed")).as("CORE_3's condemned row still stands").isEmpty();
+            h.seedRemove(new SliceObservedKey(CORE_3, ORDERS));
+            h.drain();
+            var removed = h.warns("stray-instance-removed");
+
+            assertThat(removed).as("once, when the last condemned row goes").hasSize(1);
+            assertThat(removed.getFirst().subject()).isEqualTo(ORDERS.asString());
+        }
+
         /// NT-105 (c). Red when: a stray of a version no committed target permits is adopted instead of condemned.
         @Test
         void unpermittedStray_isCondemned() {

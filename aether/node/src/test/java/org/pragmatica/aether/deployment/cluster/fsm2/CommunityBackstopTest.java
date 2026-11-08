@@ -349,6 +349,32 @@ class CommunityBackstopTest {
         assertThat(w.inferred().stream().map(s -> s.transaction()
                                                    .key())).as("the one still absent worker is recorded once its own B_w elapsed")
                   .containsExactly(new NodeDepartureKey(e.get(0)));
+        var cleared = w.h.warns("departure-breaker-cleared");
+
+        assertThat(cleared).as("D.6 row 8: the cleared breaker closes its warning, once").hasSize(1);
+        assertThat(cleared.getFirst().subject()).isEqualTo("e-comm");
+        assertThat(cleared.getFirst().message()).doesNotContain(Recoveries.SUBJECT_GONE);
+    }
+
+    // D.6 row 8 (know 7cc9e79f61), the subject-gone close
+    // Red when: a community whose breaker was reported is removed and departure-inferred-suppressed stays open (no
+    // departure-breaker-cleared, same subject, reason subject-gone); or the close is raised before the removal.
+    @Test
+    void breaker_reportedCommunityRemoved_closesItsWarning_subjectGone() {
+        var w = sixWorkers();
+        var present = List.of(node("e5"), node("e6"));
+
+        w.evolve("e-comm", GOV, Set.copyOf(present), present, 3 * BW);
+        assertThat(w.h.warns("departure-inferred-suppressed")).hasSize(1);
+        assertThat(w.h.warns("departure-breaker-cleared")).as("the breaker still holds").isEmpty();
+        w.h.seedRemove(new CommunityKey("e-comm"));
+        w.h.drain();
+        var cleared = w.h.warns("departure-breaker-cleared");
+
+        assertThat(cleared).hasSize(1);
+        assertThat(cleared.getFirst().subject()).isEqualTo("e-comm");
+        assertThat(cleared.getFirst().message()).contains(Recoveries.SUBJECT_GONE);
+        assertThat(w.h.model().suppressedWarned.contains("e-comm")).isFalse();
     }
 
     // NT-128 floor arm

@@ -24,6 +24,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -61,16 +62,56 @@ public sealed interface Placement {
 
             return m;
         }
-        // FER (degrade forward): an unparsable placement leaves this one target unplaced and is reported to the operator on every
-        // reconcile; the other targets are placed as usual. Guarantee: the failure is visible, never silent and never
-        // mistaken for a default placement. Mechanism: the warning below, repeated by each pass until the placement is fixed.
+        // FER (degrade forward): an unparsable placement leaves this one target unplaced and is reported to the operator once per
+        // episode; the other targets are placed as usual. Guarantee: the failure is visible, never silent and never mistaken for a
+        // default placement. Mechanism: the warning below (D.6 row 10: once, until the first pass that parses it raises
+        // `placement-valid`, or the target is removed).
         Result.lift(() -> PlacementPolicy.valueOf(target.effectivePlacement()))
-              .onFailure(cause -> ctx.warn("invalid-placement",
-                                           artifact.asString(),
-                                           "Invalid placement " + target.placement()
-                                          + " for " + artifact
-                                          + ": " + cause.message()))
-              .onSuccess(policy -> reconcileWithPolicy(m, ctx, artifact, target, policy));
+              .onFailure(cause -> invalid(m, ctx, artifact, target, cause))
+              .onSuccess(policy -> reconcileWithPolicy(placementValid(m, ctx, base),
+                                                       ctx,
+                                                       artifact,
+                                                       target,
+                                                       policy));
+
+        return m;
+    }
+
+    private static ClusterModel invalid(ClusterModel m,
+                                        Ctx ctx,
+                                        Artifact artifact,
+                                        SliceTargetValue target,
+                                        Cause cause) {
+        if (!m.invalidPlacementWarned.contains(artifact)) {
+            m.invalidPlacementWarned = m.invalidPlacementWarned.add(artifact);
+            ctx.warn("invalid-placement",
+                     artifact.asString(),
+                     "Invalid placement " + target.placement() + " for " + artifact + ": " + cause.message());
+        }
+
+        return m;
+    }
+
+    /// D.6 row 10: the first pass that parses the placement of `base` closes every reported version of it: `placement-valid`.
+    private static ClusterModel placementValid(ClusterModel m, Ctx ctx, ArtifactBase base) {
+        return closeReported(m, ctx, base, "the placement parses");
+    }
+
+    /// Closes every reported `invalid-placement` of `base` with `placement-valid`, the reason being `why`.
+    static ClusterModel closeReported(ClusterModel m, Ctx ctx, ArtifactBase base, String why) {
+        m.invalidPlacementWarned.toList()
+                                .stream()
+                                .filter(artifact -> artifact.base()
+                                                            .equals(base))
+                                .sorted(Comparator.comparing(Artifact::asString))
+                                .forEach(artifact -> closeOne(m, ctx, artifact, why));
+
+        return m;
+    }
+
+    private static ClusterModel closeOne(ClusterModel m, Ctx ctx, Artifact artifact, String why) {
+        m.invalidPlacementWarned = m.invalidPlacementWarned.remove(artifact);
+        ctx.warn(Recoveries.PLACEMENT_VALID, artifact.asString(), "Placement of " + artifact.asString() + ": " + why);
 
         return m;
     }

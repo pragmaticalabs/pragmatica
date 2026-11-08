@@ -188,6 +188,46 @@ class SlPlacementTest {
             assertThat(countGoals(h, ORDERS)).isZero();
             assertThat(h.warns("invalid-placement")).isNotEmpty();
         }
+
+        /// D.6 row 10 (know 7cc9e79f61). Red when: `invalid-placement` is raised on every pass instead of once per episode; the first pass
+        /// that parses the placement does not close it with `placement-valid`, same subject; or the close is raised while it is invalid.
+        @Test
+        void invalidPlacement_isReportedOnce_andClosedWhenItParses() {
+            var h = threeCores();
+
+            h.seedQuietly(new SliceTargetKey(ORDERS.base()), target(ORDERS, 2, 1, "NOWHERE"));
+            h.activate();
+            h.deliver(new ClusterInput.Reconcile());
+            h.deliver(new ClusterInput.Reconcile());
+            assertThat(h.warns("invalid-placement")).as("once per episode").hasSize(1);
+            assertThat(h.warns("placement-valid")).isEmpty();
+            h.seed(new SliceTargetKey(ORDERS.base()), target(ORDERS, 2, 1, "CORE_ONLY"));
+            h.drain();
+            h.deliver(new ClusterInput.Reconcile());
+            var valid = h.warns("placement-valid");
+
+            assertThat(valid).hasSize(1);
+            assertThat(valid.getFirst().subject()).isEqualTo(h.warns("invalid-placement").getFirst().subject());
+            assertThat(valid.getFirst().message()).doesNotContain(Recoveries.SUBJECT_GONE);
+            assertThat(countGoals(h, ORDERS)).as("placed once it parses").isEqualTo(2L);
+        }
+
+        /// D.6 row 10, the subject-gone close. Red when: removing the target of a reported artifact leaves `invalid-placement` open.
+        @Test
+        void invalidPlacement_targetRemoved_closesTheWarning_subjectGone() {
+            var h = threeCores();
+
+            h.seedQuietly(new SliceTargetKey(ORDERS.base()), target(ORDERS, 2, 1, "NOWHERE"));
+            h.activate();
+            h.seedRemove(new SliceTargetKey(ORDERS.base()));
+            h.drain();
+            var valid = h.warns("placement-valid");
+
+            assertThat(valid).hasSize(1);
+            assertThat(valid.getFirst().subject()).isEqualTo(ORDERS.asString());
+            assertThat(valid.getFirst().message()).contains(Recoveries.SUBJECT_GONE);
+            assertThat(h.model().invalidPlacementWarned.contains(ORDERS)).isFalse();
+        }
     }
 
     @Nested

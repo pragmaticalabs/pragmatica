@@ -15,6 +15,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.function.LongSupplier;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -22,6 +23,7 @@ import java.util.stream.Stream;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.StreamOwnerEpochSource;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.net.quic.QuicClusterServer;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn2;
@@ -46,10 +48,15 @@ import static org.pragmatica.lang.Unit.unit;
 
 final class DefaultReplicationManager implements ReplicationManager {
     private static final Logger log = LoggerFactory.getLogger(DefaultReplicationManager.class);
-    /// How long the owner waits for a replica's ack. Replication does not retransmit on its own: a replica that misses a
-    /// chunk is repaired by catch-up, so this wait is the only deadline a replicate frame has, and the offline buffer
+    /// How long the owner waits for a replica's ack. Replication re-sends a chunk only when the transport proves it never
+    /// left this node (#2820, see [#sendUntilWritten]); a replica that misses a chunk that did leave is repaired by
+    /// catch-up. So this wait is the only deadline a replicate frame has: re-sends stop at it, and the offline buffer
     /// must not hold the frame past it (#1996).
     static final TimeSpan DEFAULT_ACK_TIMEOUT = TimeSpan.timeSpan(5).seconds();
+    /// Wait before the first re-send of a replicate chunk the transport refused to write (#2820); doubled per attempt up
+    /// to [#MAX_RESEND_BACKOFF]. A FORWARD-lane backpressure refusal clears within milliseconds (#2820's run: 4 ms).
+    static final TimeSpan FIRST_RESEND_BACKOFF = TimeSpan.timeSpan(20).millis();
+    static final TimeSpan MAX_RESEND_BACKOFF = TimeSpan.timeSpan(500).millis();
     private static final Runnable NO_OP = DefaultReplicationManager::noOp;
 
     private final NodeId governorId;
@@ -67,6 +74,8 @@ final class DefaultReplicationManager implements ReplicationManager {
     private final AtomicLong waiterSequence = new AtomicLong();
     private final Runnable betweenSteps;
     private final Fn2<ScheduledFuture<?>, Runnable, TimeSpan> timerScheduler;
+    /// Monotonic nanosecond clock bounding the re-sends of a refused chunk (#2820); `System::nanoTime` in production.
+    private final LongSupplier nanoClock;
     /// Test probe (#1260). A `LongAdder`, not an `AtomicLong`: it is bumped per visited waiter on the ack
     /// hot path of every partition, and a single CAS'd counter would reintroduce cross-partition contention.
     private final LongAdder ackVisits = new LongAdder();
@@ -109,7 +118,17 @@ final class DefaultReplicationManager implements ReplicationManager {
                               ReplicationTransport transport,
                               Runnable betweenSteps,
                               Fn2<ScheduledFuture<?>, Runnable, TimeSpan> timerScheduler) {
-        this(governorId, registry, transport, none(), ALWAYS_PROMOTE, betweenSteps, timerScheduler);
+        this(governorId, registry, transport, none(), ALWAYS_PROMOTE, betweenSteps, timerScheduler, System::nanoTime);
+    }
+
+    /// Test seam (#2820): `timerScheduler` also schedules the re-sends of a chunk the transport refused to write, and
+    /// `nanoClock` is the clock their deadline is measured on, so a test drives both attempts and deadline by hand.
+    DefaultReplicationManager(NodeId governorId,
+                              ReplicaRegistry registry,
+                              ReplicationTransport transport,
+                              Fn2<ScheduledFuture<?>, Runnable, TimeSpan> timerScheduler,
+                              LongSupplier nanoClock) {
+        this(governorId, registry, transport, none(), ALWAYS_PROMOTE, NO_OP, timerScheduler, nanoClock);
     }
 
     private DefaultReplicationManager(NodeId governorId,
@@ -117,7 +136,14 @@ final class DefaultReplicationManager implements ReplicationManager {
                                       ReplicationTransport transport,
                                       Option<ReplicationBatcher> batcher,
                                       EarliestRetainedOffset earliestRetained) {
-        this(governorId, registry, transport, batcher, earliestRetained, NO_OP, SharedScheduler::schedule);
+        this(governorId,
+             registry,
+             transport,
+             batcher,
+             earliestRetained,
+             NO_OP,
+             SharedScheduler::schedule,
+             System::nanoTime);
     }
 
     private DefaultReplicationManager(NodeId governorId,
@@ -126,7 +152,8 @@ final class DefaultReplicationManager implements ReplicationManager {
                                       Option<ReplicationBatcher> batcher,
                                       EarliestRetainedOffset earliestRetained,
                                       Runnable betweenSteps,
-                                      Fn2<ScheduledFuture<?>, Runnable, TimeSpan> timerScheduler) {
+                                      Fn2<ScheduledFuture<?>, Runnable, TimeSpan> timerScheduler,
+                                      LongSupplier nanoClock) {
         this.governorId = governorId;
         this.registry = registry;
         this.transport = transport;
@@ -134,6 +161,7 @@ final class DefaultReplicationManager implements ReplicationManager {
         this.earliestRetained = earliestRetained;
         this.betweenSteps = betweenSteps;
         this.timerScheduler = timerScheduler;
+        this.nanoClock = nanoClock;
     }
 
     /// Estimated bytes per `ReplicateEvents` chunk: half the transport frame limit. The other half
@@ -525,9 +553,84 @@ final class DefaultReplicationManager implements ReplicationManager {
         }
     }
 
+    /// Every replica gets the chunk, each under one deadline: [#DEFAULT_ACK_TIMEOUT] from now, the bound the owner's
+    /// await of this publish runs under. The await registers once the append has completed, at or after this send, so
+    /// it does not expire before this deadline; re-sends past it could not help that publish.
     @Contract
     private void sendChunk(List<NodeId> replicas, ReplicationMessage.ReplicateEvents message) {
-        replicas.forEach(replica -> transport.send(replica, message, DEFAULT_ACK_TIMEOUT));
+        var deadlineNanos = nanoClock.getAsLong() + DEFAULT_ACK_TIMEOUT.nanos();
+
+        replicas.forEach(replica -> sendUntilWritten(replica,
+                                                     message,
+                                                     DEFAULT_ACK_TIMEOUT,
+                                                     deadlineNanos,
+                                                     FIRST_RESEND_BACKOFF));
+    }
+
+    /// #2820: one send, then the outcome is read. A [WriteOutcome#provablyNotSent] outcome (backpressure, no peer
+    /// state, encode failure) proves the replica never received this frame, so the SAME message (owner epoch and
+    /// `fromOffset` unchanged) is sent again to that replica after `backoff`; the replica cannot see it twice. A frame
+    /// that was sent, or whose fate is unknown (connection dead, the send promise failed), is never re-sent here: the
+    /// replica may hold it, and a missed chunk is repaired by catch-up as before.
+    @Contract
+    private void sendUntilWritten(NodeId replica,
+                                  ReplicationMessage.ReplicateEvents message,
+                                  TimeSpan callerWait,
+                                  long deadlineNanos,
+                                  TimeSpan backoff) {
+        transport.send(replica, message, callerWait)
+                 .onSuccess(outcome -> resendIfNotSent(replica, message, outcome, deadlineNanos, backoff));
+    }
+
+    @Contract
+    private void resendIfNotSent(NodeId replica,
+                                 ReplicationMessage.ReplicateEvents message,
+                                 WriteOutcome outcome,
+                                 long deadlineNanos,
+                                 TimeSpan backoff) {
+        if (outcome.provablyNotSent()) {
+            scheduleResend(replica, message, outcome, deadlineNanos, backoff);
+        }
+    }
+
+    /// A re-send goes out only if it would still leave before the deadline; otherwise one WARN, and the publish's await
+    /// fails on its own timer with [ReplicationError.General#REPLICATION_TIMEOUT], as it did before #2820.
+    @Contract
+    private void scheduleResend(NodeId replica,
+                                ReplicationMessage.ReplicateEvents message,
+                                WriteOutcome outcome,
+                                long deadlineNanos,
+                                TimeSpan backoff) {
+        var remainingNanos = deadlineNanos - nanoClock.getAsLong();
+
+        if (backoff.nanos() >= remainingNanos) {
+            log.warn("Replicate of {}[{}]@{} to replica {} on lane {} not written before the ack deadline, last outcome {}; "
+                    + "giving up re-sending",
+                     message.streamName(),
+                     message.partition(),
+                     message.fromOffset(),
+                     replica,
+                     message.streamType(),
+                     outcome);
+
+            return;
+        }
+
+        timerScheduler.apply(() -> resend(replica, message, deadlineNanos, backoff), backoff);
+    }
+
+    @Contract
+    private void resend(NodeId replica,
+                        ReplicationMessage.ReplicateEvents message,
+                        long deadlineNanos,
+                        TimeSpan backoff) {
+        var remaining = TimeSpan.timeSpan(Math.max(0, deadlineNanos - nanoClock.getAsLong())).nanos();
+
+        sendUntilWritten(replica, message, remaining, deadlineNanos, nextBackoff(backoff));
+    }
+
+    private static TimeSpan nextBackoff(TimeSpan backoff) {
+        return TimeSpan.timeSpan(Math.min(backoff.nanos() * 2, MAX_RESEND_BACKOFF.nanos())).nanos();
     }
 
     /// Exclusive end of the chunk starting at `start`: as many events as fit the accounting budget, and at least
