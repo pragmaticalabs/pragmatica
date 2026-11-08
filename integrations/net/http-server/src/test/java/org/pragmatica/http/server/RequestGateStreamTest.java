@@ -471,19 +471,36 @@ class RequestGateStreamTest {
         channel.finishAndReleaseAll();
     }
 
-    /// #2841e (b): the accept resolving just after the abort deadline neither aborts again nor answers again.
+    /// #2841e (b): the accept failing just after the abort deadline neither aborts again nor answers again.
     @Test
-    void hungAccept_resolvingAfterTheDeadline_doesNotAbortTwiceOrAnswerTwice() {
+    void hungAccept_failingAfterTheDeadline_doesNotAbortTwiceOrAnswerTwice() {
         var channel = stalledChannel();
         var answer = response(channel);
 
         channel.advanceTimeBy(31, TimeUnit.SECONDS);
         channel.runScheduledPendingTasks();
         assertThat(sink.terminals()).as("aborted at the deadline, before the late resolution").containsExactly("abort:STALLED");
-        sink.succeedNext();
+        sink.failNext();
         channel.runPendingTasks();
         assertThat(sink.terminals()).as("one abort, none from the late resolution").containsExactly("abort:STALLED");
         assertThat(response(channel)).as("no second response").isNull();
+        answer.release();
+        channel.finishAndReleaseAll();
+    }
+
+    /// #2841e (c): an accept that resolves inside the abort deadline behaves as before: one abort at the resolution, and
+    /// the deadline that was armed for it gives no second abort when it passes.
+    @Test
+    void hungAccept_resolvingInsideTheDeadline_abortsOnce_andTheDeadlineIsSilent() {
+        var channel = stalledChannel();
+        var answer = response(channel);
+
+        sink.succeedNext();
+        channel.runPendingTasks();
+        assertThat(sink.terminals()).containsExactly("abort:STALLED");
+        channel.advanceTimeBy(60, TimeUnit.SECONDS);
+        channel.runScheduledPendingTasks();
+        assertThat(sink.terminals()).as("the deadline did not abort again").containsExactly("abort:STALLED");
         answer.release();
         channel.finishAndReleaseAll();
     }

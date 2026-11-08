@@ -187,7 +187,6 @@ final class BodyStream {
     private void abortDeadline() {
         abortTimer = none();
         abortAfterAccept.onPresent(this::abandonAccept);
-        abortAfterAccept = none();
     }
 
     private void abandonAccept(Cause cause) {
