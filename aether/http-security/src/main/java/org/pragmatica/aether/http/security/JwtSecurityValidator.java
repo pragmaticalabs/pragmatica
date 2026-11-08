@@ -51,6 +51,11 @@ class JwtSecurityValidator implements HttpAuthenticator {
     }
 
     @Override
+    public Option<String> challengeScheme() {
+        return Option.some(config.challengeScheme());
+    }
+
+    @Override
     public Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy) {
         return switch (policy) {
             case SecurityPolicy.Public() -> success(SecurityContext.securityContext());

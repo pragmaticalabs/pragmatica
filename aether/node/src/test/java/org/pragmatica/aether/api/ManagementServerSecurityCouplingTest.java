@@ -108,6 +108,37 @@ class ManagementServerSecurityCouplingTest {
                                          .doesNotContain("authorization_role");
     }
 
+    /// #2926: an unknown key is unauthenticated -- 401, never 403 -- and says so with the RFC 6750 error code.
+    @Test
+    void invalidCredentials_refusedWith401_andTheInvalidTokenChallenge() {
+        var validator = validatorReturning(SecurityError.INVALID_API_KEY.result());
+
+        server(validator, true).onHttpForwardRequest(forwardRequest());
+
+        assertThat(serializer.status()).isEqualTo(401);
+        assertThat(serializer.header("WWW-Authenticate")).isEqualTo("ApiKey realm=\"Aether\", error=\"invalid_token\"");
+        assertThat(serializer.bodyText()).doesNotContain("Invalid API key");
+    }
+
+    @Test
+    void missingCredentials_refusedWith401_andAChallengeWithoutAnErrorCode() {
+        var validator = validatorReturning(SecurityError.MISSING_API_KEY.result());
+
+        server(validator, true).onHttpForwardRequest(forwardRequest());
+
+        assertThat(serializer.header("WWW-Authenticate")).isEqualTo("ApiKey realm=\"Aether\"");
+    }
+
+    @Test
+    void accessDenied_refusedWith403_andNoChallenge() {
+        var validator = validatorReturning(new SecurityError.AccessDenied("no").result());
+
+        server(validator, true).onHttpForwardRequest(forwardRequest());
+
+        assertThat(serializer.status()).isEqualTo(403);
+        assertThat(serializer.header("WWW-Authenticate")).isNull();
+    }
+
     @Test
     void insufficientRole_refusalNamesThePlaneAndTheAuthorizationRoleAxis() {
         var validator = validatorReturning(Result.success(SecurityContext.securityContext("ops-alice",
@@ -198,6 +229,12 @@ class ManagementServerSecurityCouplingTest {
     private static final class RecordingResponseWriter implements ResponseWriter {
         private volatile HttpStatus status;
         private volatile String body = "";
+
+        String header(String name) {
+            assertThat(captured).as("the owner answered the forwarded request").isNotNull();
+
+            return captured.headers().get(name);
+        }
 
         String bodyText() {
             return body;

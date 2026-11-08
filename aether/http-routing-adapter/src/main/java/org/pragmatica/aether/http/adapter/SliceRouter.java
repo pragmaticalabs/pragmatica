@@ -358,7 +358,7 @@ public interface SliceRouter {
                 var problemDetail = ProblemDetail.fromHttpError(httpError, request.path(), request.requestId());
 
                 return HttpResponseData.httpResponseData(httpError.status().code(),
-                                                         JSON_HEADERS,
+                                                         mergeHeaders(JSON_HEADERS, httpError.responseHeaders()),
                                                          encodeProblem(problemDetail));
             }
 

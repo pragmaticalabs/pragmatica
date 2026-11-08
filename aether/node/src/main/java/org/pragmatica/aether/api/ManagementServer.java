@@ -2343,10 +2343,16 @@ class ManagementServerImpl implements ManagementServer {
 
         requestObserver.recordSecurityDenial(classifyDenialType(cause), method, path);
         if (status == HttpStatus.UNAUTHORIZED) {
-            response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"");
+            response.header("WWW-Authenticate", authenticateChallenge(cause));
         }
 
         ProblemResponses.writeProblem(response, toRoutingStatus(status), denialDetail(cause), path, requestId);
+    }
+
+    /// #2926: `ApiKey realm="Aether"`, plus the RFC 6750 section 3.1 `error` auth-param when a credential was
+    /// presented and refused. Package-visible so the exact challenge can be asserted without the HTTP pipeline.
+    static String authenticateChallenge(Cause cause) {
+        return SecurityError.challenge("ApiKey", "Aether", cause);
     }
 
     private static final String AUTHENTICATION_DENIAL = "Management API authentication refused: ";
@@ -2381,6 +2387,7 @@ class ManagementServerImpl implements ManagementServer {
             case SecurityError.MissingCredentials _ -> "auth_failure";
             case SecurityError.InvalidCredentials _ -> "auth_failure";
             case SecurityError.AccessDenied _ -> "insufficient_role";
+            case SecurityError.InsufficientRole _ -> "insufficient_role";
             case RoleEnforcer.AuthorizationError.AccessDenied _ -> "insufficient_role";
             default -> "auth_failure";
         };
@@ -2394,8 +2401,9 @@ class ManagementServerImpl implements ManagementServer {
     static HttpStatus resolveSecurityErrorStatus(Cause cause) {
         return switch (cause) {
             case SecurityError.MissingCredentials _ -> HttpStatus.UNAUTHORIZED;
-            case SecurityError.InvalidCredentials _ -> HttpStatus.FORBIDDEN;
+            case SecurityError.InvalidCredentials _ -> HttpStatus.UNAUTHORIZED;
             case SecurityError.AccessDenied _ -> HttpStatus.FORBIDDEN;
+            case SecurityError.InsufficientRole _ -> HttpStatus.FORBIDDEN;
             case RoleEnforcer.AuthorizationError.AccessDenied _ -> HttpStatus.FORBIDDEN;
             default -> HttpStatus.UNAUTHORIZED;
         };

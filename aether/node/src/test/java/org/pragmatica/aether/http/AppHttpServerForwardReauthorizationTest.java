@@ -129,6 +129,21 @@ class AppHttpServerForwardReauthorizationTest {
         assertThat(router.handleCount()).isZero();
     }
 
+    /// #2926: a refused (unknown) key relays 401 with the `invalid_token` error code, not 403 without a challenge.
+    @Test
+    void forwardedRequest_withAnInvalidKey_isRefusedWith401_andTheInvalidTokenChallenge() {
+        var host = hostServing("/api/admin/", SecurityPolicy.roleRequired("admin"), withInvalidKey("/api/admin/secret"));
+
+        host.onHttpForwardRequest(forwardRequest("corr-bad-key"));
+
+        var relayed = relayedResponse();
+
+        assertThat(relayed.statusCode()).isEqualTo(401);
+        assertThat(relayed.headers()).containsEntry("WWW-Authenticate", "ApiKey realm=\"Aether\", error=\"invalid_token\"");
+        assertThat(body(relayed)).doesNotContain("not-a-valid-key");
+        assertThat(router.handleCount()).isZero();
+    }
+
     /// #2156: under JWT mode the relayed challenge names the FIRST configured `auth_schemes` entry.
     @Test
     void forwardedRequest_withoutACredential_underJwt_challengesWithTheFirstConfiguredScheme() {
@@ -159,6 +174,29 @@ class AppHttpServerForwardReauthorizationTest {
 
         assertThat(relayed.statusCode()).isEqualTo(401);
         assertThat(relayed.headers()).containsEntry("WWW-Authenticate", "Token realm=\"Aether\"");
+        assertThat(router.handleCount()).isZero();
+    }
+
+    /// #2926: a malformed token under JWT mode relays 401 with the first scheme and `error="invalid_token"`.
+    @Test
+    void forwardedRequest_withAMalformedJwt_underJwt_isRefusedWith401_andTheInvalidTokenChallenge() {
+        var jwt = JwtConfig.jwtConfig("http://127.0.0.1:1/.well-known/jwks.json", Option.empty(), Option.empty(), "role", 3600, 30,
+                                      List.of("Token", "Bearer"))
+                           .unwrap();
+        var config = AppHttpConfig.appHttpConfig(true, TEST_PORT, Map.of(), AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE, SecurityMode.JWT,
+                                                 Option.some(jwt), HttpProtocol.H1)
+                                  .unwrap();
+        var policy = SecurityPolicy.roleRequired("admin");
+        var forwarded = HttpRequestContext.httpRequestContext("/api/admin/secret", "GET", Map.of(),
+                                                              Map.of("Authorization", List.of("Token not-a-jwt")), "req-fwd");
+        var host = hostServing(config, new StubRoutePublisher("GET", "/api/admin/", SELF_NODE, router, policy, policy), forwarded);
+
+        host.onHttpForwardRequest(forwardRequest("corr-jwt-bad"));
+
+        var relayed = relayedResponse();
+
+        assertThat(relayed.statusCode()).isEqualTo(401);
+        assertThat(relayed.headers()).containsEntry("WWW-Authenticate", "Token realm=\"Aether\", error=\"invalid_token\"");
         assertThat(router.handleCount()).isZero();
     }
 
@@ -333,6 +371,10 @@ class AppHttpServerForwardReauthorizationTest {
 
     private static HttpRequestContext withApiKey(String path) {
         return HttpRequestContext.httpRequestContext(path, "GET", Map.of(), Map.of("X-API-Key", List.of(VALID_API_KEY)), "req-fwd");
+    }
+
+    private static HttpRequestContext withInvalidKey(String path) {
+        return HttpRequestContext.httpRequestContext(path, "GET", Map.of(), Map.of("X-API-Key", List.of("not-a-valid-key")), "req-fwd");
     }
 
     private static HttpRequestContext withoutCredential(String path) {

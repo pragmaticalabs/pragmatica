@@ -17,7 +17,7 @@
 | C5 | Auth-required app/management routes reject unauthenticated requests with HTTP 401 (not 200, not 500). | `rbac-spec.md §4` (Route protection) |
 | C6 | 401 responses include `WWW-Authenticate` per HTTP standards. | `rbac-spec.md §4.2` |
 | C7 | Public health probes (`/health/live`, `/health/ready`) are reachable without authentication. | `test-readiness-contract.md §2`; `rbac-spec.md §4.1` (public allow-list) |
-| C8 | Role-based authorization: `viewer` can read but not mutate; `operator` can scale; `admin` can deploy. Invalid keys yield 403. | `rbac-spec.md §5` (Role matrix) |
+| C8 | Role-based authorization: `viewer` can read but not mutate; `operator` can scale; `admin` can deploy. Invalid keys yield 401 with a `WWW-Authenticate` challenge (#2926); 403 is for a valid key lacking the role. | `rbac-spec.md §5` (Role matrix) |
 | C9 | Cluster remains healthy at full membership across all security probes. | `test-readiness-contract.md §1.1` |
 
 ---
@@ -39,7 +39,7 @@
 | TC-05-SECURITY-011 | `test_health_public_no_auth` | `test-route-security.sh:9` | C7 | core | Strict 200 on `/health/live` unauth; `assert_cluster_healthy`. |
 | TC-05-SECURITY-012 | `test_status_requires_auth` | `test-route-security.sh:15` | C5 | core | Strict 401 on unauthenticated `/api/nodes/status`. |
 | TC-05-SECURITY-013 | `test_status_with_auth` | `test-route-security.sh:22` | C5, C8 | core | Strict 200 with admin key. |
-| TC-05-SECURITY-014 | `test_status_invalid_key` | `test-route-security.sh:27` | C5, C8 | core | Strict 403 with invalid key. |
+| TC-05-SECURITY-014 | `test_status_invalid_key` | `test-route-security.sh:27` | C5, C8 | core | Strict 401 with invalid key. |
 | TC-05-SECURITY-015 | `test_viewer_can_read` | `test-route-security.sh:34` | C8 | core | Strict 200 on read routes with viewer key. |
 | TC-05-SECURITY-016 | `test_viewer_cannot_mutate` | `test-route-security.sh:45` | C8 | core | Strict 403 on `POST /api/scale` with viewer key. |
 | TC-05-SECURITY-017 | `test_admin_can_deploy` | `test-route-security.sh:57` | C8 | core | Status NOT in {401,403} — admits 5xx as "auth passed". Audit §1.7 NARROW (RC2). |

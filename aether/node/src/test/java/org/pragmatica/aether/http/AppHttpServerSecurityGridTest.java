@@ -236,6 +236,54 @@ class AppHttpServerSecurityGridTest {
         assertThat(response.headers().firstValue("WWW-Authenticate")).contains("Bearer realm=\"Aether\"");
     }
 
+    /// #2926: a malformed bearer token is unauthenticated -- 401 with the RFC 6750 `invalid_token` code, never 403.
+    @Test
+    void jwtMode_malformedBearerToken_isRefusedWith401InvalidToken() throws Exception {
+        startServer(Setup.JWT_WITH_CONFIG, SecurityPolicy.roleRequired("admin"));
+
+        var response = get("/local/thing", Option.some("Bearer not-a-jwt"));
+
+        assertThat(response.statusCode()).isEqualTo(401);
+        assertThat(response.body()).doesNotContain(SERVED);
+        assertThat(response.headers().firstValue("WWW-Authenticate")).contains("Bearer realm=\"Aether\", error=\"invalid_token\"");
+    }
+
+    /// #2926: `Authorization: Bearer ` with an empty token (the #2910 verifier's 403 case).
+    @Test
+    void jwtMode_emptyBearerToken_isRefusedWith401InvalidToken() throws Exception {
+        startServer(Setup.JWT_WITH_CONFIG, SecurityPolicy.roleRequired("admin"));
+
+        var response = get("/local/thing", Option.some("Bearer "));
+
+        assertThat(response.statusCode()).isEqualTo(401);
+        assertThat(response.headers().firstValue("WWW-Authenticate")).contains("Bearer realm=\"Aether\", error=\"invalid_token\"");
+    }
+
+    /// #2926: the error code follows the first configured scheme.
+    @Test
+    void jwtMode_invalidToken_challengeNamesTheFirstConfiguredSchemeAndTheErrorCode() throws Exception {
+        var jwt = JwtConfig.jwtConfig(UNREACHABLE_JWKS, Option.empty(), Option.empty(), "role", 3600, 30, List.of("Token", "Bearer"))
+                           .unwrap();
+
+        startServer(Setup.appHttp(SecurityMode.JWT, Option.some(jwt)), SecurityPolicy.roleRequired("admin"));
+
+        var response = get("/local/thing", Option.some("Token not-a-jwt"));
+
+        assertThat(response.statusCode()).isEqualTo(401);
+        assertThat(response.headers().firstValue("WWW-Authenticate")).contains("Token realm=\"Aether\", error=\"invalid_token\"");
+    }
+
+    /// #2926 (guess G1): a header in a scheme this node does not accept presents no usable credential -- 401, no `error`.
+    @Test
+    void jwtMode_unacceptedScheme_isRefusedWith401AndNoErrorCode() throws Exception {
+        startServer(Setup.JWT_WITH_CONFIG, SecurityPolicy.roleRequired("admin"));
+
+        var response = get("/local/thing", Option.some("Basic dXNlcjpwYXNz"));
+
+        assertThat(response.statusCode()).isEqualTo(401);
+        assertThat(response.headers().firstValue("WWW-Authenticate")).contains("Bearer realm=\"Aether\"");
+    }
+
     /// No credential can satisfy the no-config validator either: a bearer token presented to a node
     /// that has nothing to verify it against is refused, not waved through.
     @Test

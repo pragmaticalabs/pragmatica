@@ -15,6 +15,8 @@
  */
 package org.pragmatica.http;
 
+import java.util.Map;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.utils.Causes;
@@ -26,6 +28,11 @@ public interface HttpError extends Cause, HttpStatusAware {
     @Override
     default HttpStatus httpStatus() {
         return status();
+    }
+
+    /// Extra response headers the refusal carries, e.g. `WWW-Authenticate` on a 401 (#2926). Empty by default.
+    default Map<String, String> responseHeaders() {
+        return Map.of();
     }
 
     /// The text safe to put in a client-facing body: the status text and nothing below it. The default is

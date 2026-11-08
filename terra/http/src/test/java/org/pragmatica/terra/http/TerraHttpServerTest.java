@@ -86,6 +86,44 @@ class TerraHttpServerTest {
         } finally { close(host); }
     }
 
+    /// #2926: 401 for every unauthenticated request, with the RFC 6750 challenge; 403 (no challenge) only for a role.
+    @Test void serve_apiKeyRefusals_challengeOn401_andNoneOn403() throws Exception {
+        var routes = List.<Route<?>>of(
+            Route.<String>get("/private").withoutParameters().to(_ -> Promise.success("ok")).withSecurity(SecurityPolicy.unspecified()).asText(),
+            Route.<String>get("/admin").withoutParameters().to(_ -> Promise.success("admin")).withSecurity(SecurityPolicy.roleRequired("admin")).asText());
+        var host = start(routes, HttpAuthenticator.apiKeyValidator(KEYS), new AtomicInteger());
+        try (var client = HttpClient.newHttpClient()) {
+            var missing = get(client, host, "/private");
+            assertThat(missing.statusCode()).isEqualTo(401);
+            assertThat(missing.headers().firstValue("WWW-Authenticate")).contains("ApiKey realm=\"Terra\"");
+            var invalid = get(client, host, "/private", "X-API-Key", "bad");
+            assertThat(invalid.statusCode()).isEqualTo(401);
+            assertThat(invalid.headers().firstValue("WWW-Authenticate")).contains("ApiKey realm=\"Terra\", error=\"invalid_token\"");
+            assertThat(invalid.body()).doesNotContain("Invalid API key");
+            var forbidden = get(client, host, "/admin", "X-API-Key", "reader-secret");
+            assertThat(forbidden.statusCode()).isEqualTo(403);
+            assertThat(forbidden.headers().firstValue("WWW-Authenticate")).isEmpty();
+        } finally { close(host); }
+    }
+
+    @Test void serve_jwtRefusals_challengeNamesTheFirstConfiguredScheme() throws Exception {
+        var jwt = org.pragmatica.aether.config.JwtConfig.jwtConfig("http://127.0.0.1:1/keys", org.pragmatica.lang.Option.<String>empty(),
+            org.pragmatica.lang.Option.<String>empty(), "role", 3600, 30, List.of("Token", "Bearer")).unwrap();
+        var route = Route.<String>get("/jwt").withoutParameters().to(_ -> Promise.success("ok")).withSecurity(SecurityPolicy.roleRequired("admin")).asText();
+        var host = start(List.of(route), HttpAuthenticator.jwtValidator(jwt), new AtomicInteger());
+        try (var client = HttpClient.newHttpClient()) {
+            var missing = get(client, host, "/jwt");
+            assertThat(missing.statusCode()).isEqualTo(401);
+            assertThat(missing.headers().firstValue("WWW-Authenticate")).contains("Token realm=\"Terra\"");
+            var malformed = get(client, host, "/jwt", "Authorization", "Token not-a-jwt");
+            assertThat(malformed.statusCode()).isEqualTo(401);
+            assertThat(malformed.headers().firstValue("WWW-Authenticate")).contains("Token realm=\"Terra\", error=\"invalid_token\"");
+            var empty = get(client, host, "/jwt", "Authorization", "Bearer ");
+            assertThat(empty.statusCode()).isEqualTo(401);
+            assertThat(empty.headers().firstValue("WWW-Authenticate")).contains("Token realm=\"Terra\", error=\"invalid_token\"");
+        } finally { close(host); }
+    }
+
     @Test void serve_headerVersions_authorizesSelectedVersionAndPreservesLifecycleHeaders() throws Exception {
         var routes = List.<Route<?>>of(
             Route.<String>get("/items").withoutParameters().to(_ -> Promise.success("v1")).versioned(1).withSecurity(SecurityPolicy.publicRoute()).asText(),
