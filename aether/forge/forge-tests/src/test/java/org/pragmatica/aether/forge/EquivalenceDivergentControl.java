@@ -110,9 +110,11 @@ final class EquivalenceDivergentControl {
     }
 
     private static AetherValue.DeploymentOutcomeValue flipped(AetherValue.DeploymentOutcomeValue outcome) {
-        var status = outcome.status() == AetherValue.DeploymentOutcomeStatus.FAILED
-                     ? AetherValue.DeploymentOutcomeStatus.SUCCEEDED
-                     : AetherValue.DeploymentOutcomeStatus.FAILED;
+        // Plan 3.3: a FATAL report writes SUCCEEDED. Any non-SUCCEEDED verdict (FAILED, ROLLED_BACK, ...) flips to it, so the control differs from
+        // LEGACY whichever failure verdict LEGACY wrote.
+        var status = outcome.status() == AetherValue.DeploymentOutcomeStatus.SUCCEEDED
+                     ? AetherValue.DeploymentOutcomeStatus.FAILED
+                     : AetherValue.DeploymentOutcomeStatus.SUCCEEDED;
 
         return new AetherValue.DeploymentOutcomeValue(status,
                                                       outcome.failingSlices(),
