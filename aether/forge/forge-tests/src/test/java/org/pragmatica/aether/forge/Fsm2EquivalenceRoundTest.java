@@ -198,8 +198,8 @@ class Fsm2EquivalenceRoundTest {
             var o4 = recorder.batches() < 0 ? -1L : EquivalenceComparison.o4Counted(slots, scenario.name());
 
             logSlots(engine, slots);
-            placements.put(engine, EquivalenceComparison.placement(slots));
-            log("placement (%s): %s".formatted(engine, placements.get(engine)));
+            placements.put(engine, EquivalenceComparison.placement(recorder.placementSlots()));
+            log("placement (%s): gate=%s whole arm=%s".formatted(engine, placements.get(engine), EquivalenceComparison.placement(slots)));
             log("O4 (%s): %d slots, %d counted after the %s allow-list".formatted(engine, recorder.batches(), o4, scenario));
             var kv = new EquivalenceKv(snapshot(cluster));
             var live = cluster.allNodes().stream().map(AetherNode::self).collect(Collectors.toUnmodifiableSet());
@@ -236,9 +236,9 @@ class Fsm2EquivalenceRoundTest {
         var echo = Artifact.artifact(TestArtifacts.ECHO_SLICE).unwrap();
 
         return switch (scenario) {
-            case E01 -> publishAndPlace(cluster, echo, 3);
+            case E01 -> publishAndPlace(cluster, recorder, echo, 3);
             case E02 -> {
-                var placement = publishAndPlace(cluster, echo, 3);
+                var placement = publishAndPlace(cluster, recorder, echo, 3);
 
                 // Design 9.3 says 3 -> 5 -> 2; the blueprint floor (#1495) refuses 2, so the step down goes to the floor, 3.
                 expectAccepted(scale(cluster, 5));
@@ -248,7 +248,7 @@ class Fsm2EquivalenceRoundTest {
                 yield placement;
             }
             case E03 -> {
-                var placement = publishAndPlace(cluster, echo, 3);
+                var placement = publishAndPlace(cluster, recorder, echo, 3);
 
                 send(HttpRequest.newBuilder().uri(mgmt(cluster, "/api/v1/blueprints/" + BLUEPRINT_ID)).DELETE().timeout(Duration.ofSeconds(10)).build());
                 awaitTrue("the target is removed", WAIT, () -> new EquivalenceKv(snapshot(cluster)).targets().isEmpty());
@@ -258,13 +258,17 @@ class Fsm2EquivalenceRoundTest {
                 var leader = cluster.currentLeader().unwrap();
                 var at = publish(cluster, blueprint(echo, 3));
 
+                // Placement determinism (CTO ruling on #2763): the leader is killed only once the arm's first placement put is committed, so
+                // whether the dead leader held a share of the placement is the allocator's choice, not a race between the kill and the engine's
+                // first batch (dev12: LEGACY had committed a LOAD on its leader before the kill, FSM2 had committed nothing: 4 vs 3 nodes).
+                awaitTrue("the first placement put committed", WAIT, () -> recorder.placed(echo));
                 cluster.killNode(leader, false).await(TimeSpan.timeSpan(60).seconds());
                 awaitTrue("a new leader", WAIT, () -> cluster.currentLeader().filter(id -> !id.equals(leader)).isPresent());
                 awaitTrue("3 ACTIVE after the leader kill", WAIT, () -> active(cluster, echo) == 3);
                 yield System.currentTimeMillis() - at;
             }
             case E05, E07 -> {
-                var placement = publishAndPlace(cluster, echo, 3);
+                var placement = publishAndPlace(cluster, recorder, echo, 3);
                 var victim = hostOfAnInstance(cluster, echo);
 
                 cluster.killNode(victim, scenario == Scenario.E07).await(TimeSpan.timeSpan(60).seconds());
@@ -272,7 +276,7 @@ class Fsm2EquivalenceRoundTest {
                 yield placement;
             }
             case E06 -> {
-                var placement = publishAndPlace(cluster, echo, 3);
+                var placement = publishAndPlace(cluster, recorder, echo, 3);
                 // Quorum loss (3 of 5 silenced) and heal. Comparison scope: both engines must converge to the same committed state; the
                 // FSM2-only asserts of design 9.3 (no extra suspend on a resync, no re-incarnation) are NOT checked here.
                 var silenced = cluster.allNodes().stream().map(node -> node.self().id()).sorted().limit(3).toList();
@@ -285,7 +289,7 @@ class Fsm2EquivalenceRoundTest {
                 yield placement;
             }
             case E10 -> {
-                var placement = publishAndPlace(cluster, echo, 3);
+                var placement = publishAndPlace(cluster, recorder, echo, 3);
                 // One core silenced then healed in the same process. NOT the arm-C harness (the victim's self-fence is not swallowed), and the
                 // FSM2-only asserts (J3 ADMITTED(e_d + 1), kept rows adopted) are not checked: this is the engine-comparison part only.
                 var victim = hostOfAnInstance(cluster, echo);
@@ -302,6 +306,8 @@ class Fsm2EquivalenceRoundTest {
                 var leader = cluster.currentLeader().unwrap();
                 var at = publish(cluster, blueprint(echo, 3));
 
+                // As E-04: the leader is silenced only once the arm's first placement put is committed (placement determinism).
+                awaitTrue("the first placement put committed", WAIT, () -> recorder.placed(echo));
                 cluster.getNode(leader).onPresent(node -> node.blackhole(true));
                 sleep(PARTITION_MS);
                 cluster.getNode(leader).onPresent(node -> node.blackhole(false));
@@ -315,7 +321,7 @@ class Fsm2EquivalenceRoundTest {
                 // row is committed the jar is restored and the retry must succeed. The FAILED row is read from the commit ring, not the live KV: FSM2
                 // re-issues the load within ~1 s, so its FAILED row is overwritten between two 250 ms KV polls (dev11: 34 failed loads, 0 seen).
                 // The fixture's own control: no committed FAILED row within the bound fails the arm (no silent pass).
-                publishAndPlace(cluster, echo, 3);
+                publishAndPlace(cluster, recorder, echo, 3);
                 var jar = localJar(echo);
                 var aside = jar.resolveSibling(jar.getFileName() + ".f4-aside");
                 var at = System.currentTimeMillis();
@@ -400,11 +406,13 @@ class Fsm2EquivalenceRoundTest {
         }
     }
 
-    /// Publishes and waits for placement; returns O5 in ms.
-    private long publishAndPlace(EmberCluster cluster, Artifact artifact, int instances) {
+    /// Publishes and waits for placement; returns O5 in ms. Cuts the recorder's placement there: the O4 placement gate compares what the
+    /// publish established, and what the scenario does next (scale, kill, partition) is engine behaviour O4 measures, not a gate input.
+    private long publishAndPlace(EmberCluster cluster, Recorder recorder, Artifact artifact, int instances) {
         var at = publish(cluster, blueprint(artifact, instances));
 
         awaitTrue(instances + " ACTIVE", WAIT, () -> active(cluster, artifact) == instances);
+        recorder.cutPlacement();
 
         return System.currentTimeMillis() - at;
     }
@@ -482,6 +490,7 @@ class Fsm2EquivalenceRoundTest {
         private final Map<String, Long> nextSlot = Collections.synchronizedMap(new HashMap<>());
         private final Set<String> gaps = new ConcurrentSkipListSet<>();
         private final ScheduledExecutorService executor = Executors.newScheduledThreadPool(2);
+        private volatile long placementCut = Long.MAX_VALUE;
 
         Recorder(EmberCluster cluster) {
             this.cluster = cluster;
@@ -535,6 +544,31 @@ class Fsm2EquivalenceRoundTest {
 
         List<EquivalenceMonitor.Sample> samples() {
             return List.copyOf(samples);
+        }
+
+        /// Marks the end of the publish's placement: the slots read so far are the placement the O4 gate compares. Without a cut (E-04, E-09,
+        /// E-11: the fault or failure lands mid-placement) the gate compares the whole arm.
+        void cutPlacement() {
+            readRings();
+            placementCut = slotEffects.keySet().stream().mapToLong(Long::longValue).max().orElse(-1L);
+        }
+
+        /// The slots up to the placement cut (every slot when no cut was made).
+        Map<Long, List<String>> placementSlots() {
+            return slotEffects.entrySet()
+                              .stream()
+                              .filter(entry -> entry.getKey() <= placementCut)
+                              .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+        }
+
+        /// Whether any committed placement put ([EquivalenceComparison#isPlacement]) names `artifact`.
+        boolean placed(Artifact artifact) {
+            var suffix = "/" + artifact.asString();
+
+            return slotEffects.values()
+                              .stream()
+                              .flatMap(List::stream)
+                              .anyMatch(effect -> EquivalenceComparison.isPlacement(effect) && effect.endsWith(suffix));
         }
 
         /// The committed `put FAILED` effects on `artifact`'s per-node rows, in slot order: every FAILED write, however briefly it lived.

@@ -100,7 +100,7 @@ final class EquivalenceComparison {
                           .stream()
                           .flatMap(List::stream)
                           .map(effect -> effect.split(" ", 4))
-                          .filter(EquivalenceComparison::isPlacement)
+                          .filter(parts -> isPlacement(parts))
                           .map(parts -> parts[3].split("/", 3))
                           .filter(key -> key.length == 3)
                           .collect(Collectors.groupingBy(key -> key[2], TreeMap::new, Collectors.mapping(key -> key[1], Collectors.toSet())))
@@ -108,6 +108,11 @@ final class EquivalenceComparison {
                           .stream()
                           .map(entry -> entry.getKey() + "=" + entry.getValue().size() + " nodes")
                           .collect(Collectors.joining(", ", "[", "]"));
+    }
+
+    /// Whether one effect description (`Family op detail key`) is a placement put: the effects [#placement] counts.
+    static boolean isPlacement(String effect) {
+        return isPlacement(effect.split(" ", 4));
     }
 
     private static boolean isPlacement(String[] parts) {
