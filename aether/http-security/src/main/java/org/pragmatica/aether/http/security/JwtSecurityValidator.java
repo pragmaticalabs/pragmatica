@@ -9,6 +9,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.pragmatica.aether.config.JwtConfig;
+import org.pragmatica.aether.config.JwtKeyMode;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.AuthorizationRole;
 import org.pragmatica.aether.http.handler.security.Role;
@@ -27,24 +28,36 @@ import static org.pragmatica.lang.Result.success;
 class JwtSecurityValidator implements HttpAuthenticator {
     private static final Logger log = LoggerFactory.getLogger(JwtSecurityValidator.class);
 
+    private static final SecurityError NO_JWKS = new SecurityError.KeyNotFound("No JWKS key store is open");
+
     private final JwtConfig config;
-    private final JwksKeyStore keyStore;
+    private final Option<JwksKeyStore> keyStore;
 
     JwtSecurityValidator(JwtConfig config) {
-        this.config = config;
-        this.keyStore = new JwksKeyStore(config.jwksUrl(), config.cacheTtlSeconds());
+        this(config, jwksStoreFor(config));
     }
 
     JwtSecurityValidator(JwtConfig config, JwksKeyStore keyStore) {
+        this(config, Option.some(keyStore));
+    }
+
+    private JwtSecurityValidator(JwtConfig config, Option<JwksKeyStore> keyStore) {
         this.config = config;
         this.keyStore = keyStore;
+    }
+
+    /// HS256 mode never reads a JWKS, so it never opens a store (nor the HTTP client behind it) (#2880).
+    private static Option<JwksKeyStore> jwksStoreFor(JwtConfig config) {
+        return config.keyMode() == JwtKeyMode.JWKS
+               ? Option.some(new JwksKeyStore(config.jwksUrl(), config.cacheTtlSeconds()))
+               : Option.empty();
     }
 
     @Override
     public org.pragmatica.lang.Promise<org.pragmatica.lang.Unit> close() {
         return org.pragmatica.lang.Promise.lift(org.pragmatica.lang.utils.Causes::fromThrowable,
                                                 () -> {
-                                                    keyStore.close();
+                                                    keyStore.onPresent(JwksKeyStore::close);
 
                                                     return org.pragmatica.lang.Unit.unit();
                                                 });
@@ -77,10 +90,21 @@ class JwtSecurityValidator implements HttpAuthenticator {
                               .flatMap(payload -> buildSecurityContext(payload));
     }
 
+    /// #2880: the CONFIGURED mode picks the verification path; the token header never does. An `alg` the mode does not
+    /// serve is refused before any key lookup.
     private Result<JwtTokenParser.ParsedJwt> verifySignature(JwtTokenParser.ParsedJwt jwt) {
-        return keyStore.findKey(jwt.header().kid(),
-                                jwt.header().alg())
-                       .flatMap(key -> JwtSignatureVerifier.verify(jwt, key));
+        return switch (config.keyMode()) {
+            case JWKS -> verifyWithJwks(jwt);
+            case HS256 -> JwtSignatureVerifier.verifyHmac(jwt, config.sharedSecret());
+        };
+    }
+
+    private Result<JwtTokenParser.ParsedJwt> verifyWithJwks(JwtTokenParser.ParsedJwt jwt) {
+        return JwtSignatureVerifier.asymmetricAlgorithm(jwt)
+                                   .flatMap(_ -> keyStore.toResult(NO_JWKS))
+                                   .flatMap(store -> store.findKey(jwt.header().kid(),
+                                                                   jwt.header().alg()))
+                                   .flatMap(key -> JwtSignatureVerifier.verify(jwt, key));
     }
 
     private Result<Map<String, Object>> validateClaims(Map<String, Object> payload) {

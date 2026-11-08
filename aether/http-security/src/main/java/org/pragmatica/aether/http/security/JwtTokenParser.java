@@ -25,6 +25,8 @@ final class JwtTokenParser {
 
     private JwtTokenParser() {}
 
+    /// `alg` is the header's own claim and the empty string when the header names none. It is what the token SAYS; the
+    /// configured JWT mode, never this value, chooses how a signature is verified (#2880).
     record JwtHeader(String alg, String kid) {}
 
     record ParsedJwt(JwtHeader header, Map<String, Object> payload, byte[] signature, String signedContent) {}
@@ -54,7 +56,7 @@ final class JwtTokenParser {
     }
 
     private static Result<JwtHeader> extractHeader(Map<String, Object> headerMap) {
-        var alg = Option.option(headerMap.get("alg")).map(Object::toString).or("RS256");
+        var alg = Option.option(headerMap.get("alg")).map(Object::toString).or("");
         var kid = Option.option(headerMap.get("kid")).map(Object::toString).or("");
 
         return success(new JwtHeader(alg, kid));
