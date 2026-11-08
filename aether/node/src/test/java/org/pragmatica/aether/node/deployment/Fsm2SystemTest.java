@@ -199,7 +199,28 @@ class Fsm2SystemTest {
                 harness.awaitThat(() -> harness.count("ConfigChanged", "applied", "node") == 1.0);
                 assertThat(legacy).as("never the NDM under FSM2").hasValue(0);
                 assertThat(harness.registry.find("aether_deployment_fsm2_dropped_total").tags("point", "B5.ConfigApplied").counters()).as("not a drop").isEmpty();
+                assertThat(harness.registry.find("aether_deployment_fsm2_dropped_total").tags("point", "B5.ConfigApplied.preAttach").counters())
+                    .as("attached: not a pre-attach drop").isEmpty();
                 assertThat(harness.wiring.recorded()).contains("B5.ConfigApplied -> fsm2:NodeFsmInput.ConfigChanged");
+            }
+        }
+
+        /// #2757: a config change applied before the FSM2 system is attached is dropped and COUNTED. It stays a design-out (no FSM2 chain has run
+        /// before attach, so no slice is registered for config, and REGISTER_CONFIG reads the current value at registration), but a reachable drop is
+        /// never silent. Red when: the pre-attach arm stops counting, or reaches the NDM.
+        @Test
+        void theConfigHook_beforeAttach_isACountedDrop_underFsm2() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false)) {
+                var legacy = new AtomicInteger();
+                var hook = harness.wiring.configApplied(_ -> legacy.incrementAndGet());
+
+                assertThat(harness.wiring.system()).as("control: nothing attached yet").isEqualTo(Option.none());
+                hook.accept("orders.banner");
+                hook.accept("orders.limit");
+
+                assertThat(legacy).as("never the NDM under FSM2").hasValue(0);
+                assertThat(harness.registry.counter("aether_deployment_fsm2_dropped_total", "point", "B5.ConfigApplied.preAttach").count())
+                    .as("each pre-attach change is counted").isEqualTo(2.0);
             }
         }
     }

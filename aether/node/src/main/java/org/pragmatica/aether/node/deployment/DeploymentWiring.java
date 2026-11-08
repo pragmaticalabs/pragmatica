@@ -70,6 +70,8 @@ import static org.pragmatica.lang.Promise.promise;
 public final class DeploymentWiring {
     private static final String LEGACY_TARGET = "legacy";
     private static final String DROPPED_TARGET = "dropped";
+    /// The drop point of a config change applied before the FSM2 system is attached (#2757).
+    static final String B5_PRE_ATTACH = "B5.ConfigApplied.preAttach";
 
     /// What the wiring reads from the node: its identity, the store's thread-scoped stamp accessors and the admission seam (the one reader
     /// of tokens and incarnations, delta 7).
@@ -392,9 +394,13 @@ public final class DeploymentWiring {
                : legacy("B5.ConfigApplied", legacy);
     }
 
+    /// #2757: a change applied before [#attach] is dropped and counted (`aether_deployment_fsm2_dropped_total{point=B5.ConfigApplied.preAttach}`).
+    /// Design-out, not loss: no FSM2 chain has run before attach, so no slice is registered for config, and REGISTER_CONFIG reads the current
+    /// value at registration (`SliceRuntimeAdapter` `notifyInitial`). The count makes a reachable drop visible.
     private void configChanged(String key) {
         system.onPresent(fsm2 -> fsm2.nodeInterpreter()
-                                     .deliver(new NodeFsmInput.ConfigChanged(key)));
+                                     .deliver(new NodeFsmInput.ConfigChanged(key)))
+              .onEmpty(() -> dropCounter(B5_PRE_ATTACH).increment());
     }
 
     /// B12: a node reported itself DRAINING. Under FSM2 on a core, the cluster interpreter's `NodeDraining` (CI-10); on a worker a counted drop (a worker runs no cluster FSM);

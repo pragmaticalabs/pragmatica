@@ -17,7 +17,8 @@ package org.pragmatica.http;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
+
+import org.pragmatica.lang.Contract;
 
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
@@ -29,9 +30,12 @@ import io.netty.util.ReferenceCountUtil;
 /// #2746: the loss pattern quiche does not recover from, on the outbound datagrams of one endpoint.
 ///
 /// Installed first on an endpoint's UDP channel. Once armed it holds every outbound 1-RTT (short-header) datagram. The
-/// datagrams written within [#BURST_NANOS] of the first held one are the BURST: the tail of one stream, written in one
-/// go. The later ones are what the endpoint sends while nothing reaches the peer: its PTO probes, ack-eliciting packets
-/// with higher numbers. [#release] then drops every burst datagram but the second-to-last and sends the rest, so the
+/// datagrams held when [#endBurst] is called are the BURST: the tail of one stream, written in one go. The test arms,
+/// writes the stream's tail and ends the burst in ONE task on the channel's event loop, so the burst is exactly the
+/// datagrams that write produced, by position, whatever the load (#2862: a 10 ms window after the first held datagram
+/// caught only one of them when the writes, made off the event loop, ran as separate tasks far apart). The later ones
+/// are what the endpoint sends while nothing reaches the peer: its PTO probes, ack-eliciting packets with higher
+/// numbers. [#release] then drops every burst datagram but the second-to-last and sends the rest, so the
 /// peer acknowledges the probes and the endpoint detects, in ONE batch, the loss of the stream's earlier data and of the
 /// burst's last datagram. When the stream ended with a FIN-only frame, that frame is the burst's last datagram: quiche
 /// retransmits the lost data but never the `FIN`, so the peer holds every byte and waits until the idle timeout.
@@ -39,18 +43,24 @@ import io.netty.util.ReferenceCountUtil;
 ///
 /// `drop = false` is the control: everything held is sent, in order.
 final class TailLossInjector extends ChannelOutboundHandlerAdapter {
-    static final long BURST_NANOS = TimeUnit.MILLISECONDS.toNanos(10);
-
-    private record Held(ChannelHandlerContext ctx, DatagramPacket packet, ChannelPromise promise, long at) {}
+    private record Held(ChannelHandlerContext ctx, DatagramPacket packet, ChannelPromise promise) {}
 
     private final List<Held> held = new ArrayList<>();
     private volatile boolean armed;
+    private volatile int burstEnd;
     private volatile int burst;
     private volatile int later;
     private volatile String log = "";
 
     void arm() {
         armed = true;
+    }
+
+    /// Ends the burst: the datagrams held so far are its datagrams. Called on the channel's event loop, in the task
+    /// that armed the injector and wrote the stream's tail.
+    @Contract
+    void endBurst() {
+        burstEnd = held.size();
     }
 
     /// Datagrams of the burst, and datagrams sent after it, at the last [#release].
@@ -69,7 +79,7 @@ final class TailLossInjector extends ChannelOutboundHandlerAdapter {
     @Override
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
         if (armed && msg instanceof DatagramPacket packet && isShortHeader(packet)) {
-            held.add(new Held(ctx, packet, promise, System.nanoTime()));
+            held.add(new Held(ctx, packet, promise));
         } else {
             super.write(ctx, msg, promise);
         }
@@ -96,8 +106,7 @@ final class TailLossInjector extends ChannelOutboundHandlerAdapter {
             return;
         }
 
-        var first = held.getFirst().at();
-        var burstSize = (int) held.stream().filter(h -> h.at() - first <= BURST_NANOS).count();
+        var burstSize = burstEnd;
         var keep = burstSize - 2;
         var text = new StringBuilder();
 
@@ -117,10 +126,11 @@ final class TailLossInjector extends ChannelOutboundHandlerAdapter {
                 h.ctx().write(h.packet(), h.promise());
             }
         }
-        held.getFirst().ctx().flush();
+        // #2862: published before the flush, which lets the peer end the exchange and the test read them
         burst = burstSize;
         later = held.size() - burstSize;
         log = text.toString().trim();
+        held.getFirst().ctx().flush();
         held.clear();
     }
 }
