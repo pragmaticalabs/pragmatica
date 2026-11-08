@@ -2,12 +2,14 @@ package org.pragmatica.aether.stream;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 import java.util.stream.IntStream;
+import java.util.stream.LongStream;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.AfterEach;
@@ -48,19 +50,21 @@ import static org.pragmatica.aether.stream.segment.TieredStreamReader.tieredStre
 
 /// #1759 (I-27, CTO D3): a replica that holds a partition without a ring, whose WAL starts above offset 0 because the prefix
 /// below was sealed to the tier, serves a catch-up from 0 as the tier's sealed prefix followed by the WAL tail, as a
-/// materialized partition serves its evicted prefix then its ring (#1383). `held` has six events written by a previous run
-/// with a two-event ring: offsets 0-3 sealed to the tier and truncated from the WAL, 4-5 left in it. A partition not held
+/// materialized partition serves its evicted prefix then its ring (#1383). `held` has forty 256 KiB events written by a
+/// previous run with a four-event ring: offsets 0-35 sealed to the tier and truncated from the WAL (which compacts past
+/// 8 MiB), 36-39 left in it. A partition not held
 /// here is still answered unavailable, never an empty success.
 class ReplicaWalTierPrefixCatchupTest {
     private static final NodeId SELF = NodeId.randomNodeId();
     private static final NodeId PEER = NodeId.randomNodeId();
     private static final Epoch E1 = Epoch.epoch(0, 1, 0);
-    private static final int EVENTS = 6;
-    private static final int RING = 2;
+    private static final int EVENTS = 40;
+    private static final int RING = 4;
+    private static final int PAYLOAD_BYTES = 256 * 1024;
     private static final long SEALED_THROUGH = EVENTS - RING - 1L;
     private static final long AWAIT_MS = 10_000;
     private static final long POLL_NANOS = 10_000_000;
-    private static final int PAGE = 16;
+    private static final int PAGE = 64;
 
     @TempDir
     Path walDir;
@@ -88,6 +92,9 @@ class ReplicaWalTierPrefixCatchupTest {
         awaitCondition(() -> index.lastSealedOffset("held", 0) == SEALED_THROUGH);
         previous.truncateWalsToSealed();
         previous.close();
+        assertThat(AppendLog.readRange(walFile(), 0, 1, 0).unwrap().records()).as("the WAL starts above the sealed prefix")
+                            .extracting(AppendLog.WalRecord::offset)
+                            .containsExactly(SEALED_THROUGH + 1);
         recordEpochStart();
         var registry = ReplicaRegistry.replicaRegistry();
 
@@ -107,7 +114,7 @@ class ReplicaWalTierPrefixCatchupTest {
         handler = StreamForwardHandler.streamForwardHandler(SELF,
                                                             manager,
                                                             AcceptingStreamForwardTransport.accepting((_, message) -> record(message)),
-                                                            1_048_576L,
+                                                            64L * 1024 * 1024,
                                                             StreamReadForwardMetrics.NOOP,
                                                             Option.none(),
                                                             Option.some(tieredStreamReader(index, storage)));
@@ -124,9 +131,9 @@ class ReplicaWalTierPrefixCatchupTest {
         var answer = catchupRead(0L, PAGE);
 
         assertThat(answer.success()).as("answer %s", answer.errorMessage()).isTrue();
-        assertThat(answer.events()).extracting(RawEventDto::offset).containsExactly(0L, 1L, 2L, 3L, 4L, 5L);
+        assertThat(answer.events()).extracting(RawEventDto::offset).containsExactlyElementsOf(LongStream.range(0, EVENTS).boxed().toList());
         assertThat(answer.events().get(0).data()).as("from the tier").isEqualTo(payload(0));
-        assertThat(answer.events().get(5).data()).as("from the WAL").isEqualTo(payload(5));
+        assertThat(answer.events().get(EVENTS - 1).data()).as("from the WAL").isEqualTo(payload(EVENTS - 1));
         assertThat(manager.partitionBuffer("held", 0).isEmpty()).as("no ring is created").isTrue();
     }
 
@@ -187,13 +194,18 @@ class ReplicaWalTierPrefixCatchupTest {
     }
 
     private static byte[] payload(int i) {
-        return ("event-" + i).getBytes();
+        var payload = new byte[PAYLOAD_BYTES];
+
+        Arrays.fill(payload, (byte) (i * 31 + 7));
+        payload[0] = (byte) i;
+
+        return payload;
     }
 
     private static StreamConfig heldConfig() {
         return StreamConfig.streamConfig("held",
                                          1,
-                                         RetentionPolicy.retentionPolicy(RING, 1_048_576L, 600_000L),
+                                         RetentionPolicy.retentionPolicy(RING, 2L * RING * PAYLOAD_BYTES, 600_000L),
                                          "earliest");
     }
 
