@@ -16,6 +16,9 @@
  */
 package org.pragmatica.json;
 
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Patch;
 
@@ -25,9 +28,6 @@ import tools.jackson.databind.DeserializationContext;
 import tools.jackson.databind.JavaType;
 import tools.jackson.databind.ValueDeserializer;
 import tools.jackson.databind.deser.CreatorProperty;
-
-import java.util.stream.IntStream;
-import java.util.stream.Stream;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
@@ -74,7 +74,8 @@ public class PatchDeserializer extends ValueDeserializer<Patch<?>> {
                      .flatMap(PatchDeserializer::elementType)
                      .filter(PatchDeserializer::isSupportedElement)
                      .<ValueDeserializer<?>> map(type -> contextualized(ctxt, type))
-                     .or(() -> refused(ctxt, reason(property)));
+                     .or(() -> refused(ctxt,
+                                       reason(property)));
     }
 
     // Jackson's failure channel is an exception, which JsonMapper lifts into a Result whose message keeps the reason.
@@ -90,7 +91,8 @@ public class PatchDeserializer extends ValueDeserializer<Patch<?>> {
 
     /// Whether the property's member belongs to a record.
     static boolean isRecordMember(BeanProperty property) {
-        return option(property.getMember()).map(member -> member.getDeclaringClass().isRecord())
+        return option(property.getMember()).map(member -> member.getDeclaringClass()
+                                                                .isRecord())
                      .or(false);
     }
 
@@ -103,17 +105,20 @@ public class PatchDeserializer extends ValueDeserializer<Patch<?>> {
     }
 
     private static Option<String> describe(BeanProperty property) {
-        return option(property.getMember()).map(member -> "property '" + property.getName() + "' of "
-                                                          + member.getDeclaringClass().getName());
+        return option(property.getMember()).map(member -> "property '" + property.getName()
+                                                         + "' of " + member.getDeclaringClass()
+                                                                           .getName());
     }
 
     /// Whether a `Patch` sits anywhere in the type's generic tree (element, key or type argument).
     static boolean containsPatch(JavaType type) {
-        return type.getRawClass() == Patch.class
-               || Stream.concat(Stream.of(option(type.getKeyType()), option(type.getContentType()))
-                                      .flatMap(Option::stream),
-                                IntStream.range(0, type.containedTypeCount()).mapToObj(type::containedType))
-                        .anyMatch(PatchDeserializer::containsPatch);
+        return type.getRawClass() == Patch.class || Stream.concat(Stream.of(option(type.getKeyType()),
+                                                                            option(type.getContentType()))
+                                                                        .flatMap(Option::stream),
+                                                                  IntStream.range(0,
+                                                                                  type.containedTypeCount())
+                                                                           .mapToObj(type::containedType))
+                                                          .anyMatch(PatchDeserializer::containsPatch);
     }
 
     // Patch is resolved per concrete type like Option, so `T` sits in the generic binding of a SimpleType (#696).

@@ -16,6 +16,8 @@
  */
 package org.pragmatica.json;
 
+import java.util.stream.Stream;
+
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Patch;
@@ -26,8 +28,6 @@ import tools.jackson.databind.JavaType;
 import tools.jackson.databind.SerializationContext;
 import tools.jackson.databind.ValueSerializer;
 import tools.jackson.databind.jsontype.TypeSerializer;
-
-import java.util.stream.Stream;
 
 import static org.pragmatica.lang.Option.option;
 
@@ -57,7 +57,8 @@ public class PatchSerializer extends ValueSerializer<Patch<?>> {
     public ValueSerializer<?> createContextual(SerializationContext prov, BeanProperty property) {
         return option(property).filter(PatchSerializer::isPatchRecordComponent)
                      .<ValueSerializer<?>> map(_ -> this)
-                     .or(() -> refused(prov, PatchDeserializer.reason(option(property))));
+                     .or(() -> refused(prov,
+                                       PatchDeserializer.reason(option(property))));
     }
 
     // Jackson's failure channel is an exception, which JsonMapper lifts into a Result whose message keeps the reason.
@@ -77,12 +78,14 @@ public class PatchSerializer extends ValueSerializer<Patch<?>> {
     // A field or a getter of a plain class, or an extra getter of a record, is no component: refused as on read.
     private static boolean isComponentOfItsRecord(BeanProperty property) {
         return option(property.getMember()).filter(_ -> PatchDeserializer.isRecordMember(property))
-                     .map(member -> isComponentName(member.getDeclaringClass(), member.getName()))
+                     .map(member -> isComponentName(member.getDeclaringClass(),
+                                                    member.getName()))
                      .or(false);
     }
 
     private static boolean isComponentName(Class<?> owner, String name) {
-        return Stream.of(owner.getRecordComponents()).anyMatch(component -> component.getName().equals(name));
+        return Stream.of(owner.getRecordComponents()).anyMatch(component -> component.getName()
+                                                                                     .equals(name));
     }
 
     private static boolean hasSupportedElement(JavaType type) {
