@@ -117,7 +117,7 @@ public final class ReplicationBatcher implements AutoCloseable {
     @FunctionalInterface
     interface BatchSender {
         @Contract
-        void send(PartitionKey key, BatchSnapshot snapshot);
+        void deliver(PartitionKey key, BatchSnapshot snapshot);
     }
 
     private ReplicationBatcher(BatchSender sender,
@@ -513,7 +513,7 @@ public final class ReplicationBatcher implements AutoCloseable {
         /// owner's ack wait times out as for any lost frame (overhaul 7.2, failure modes).
         private void sendOne(QueuedBatch queued) {
             try {
-                sender.send(queued.key(), queued.snapshot());
+                sender.deliver(queued.key(), queued.snapshot());
             } catch (RuntimeException failure) {
                 log.warn("Replication batch {}[{}]@{} not sent: {}",
                          queued.key().streamName(),
