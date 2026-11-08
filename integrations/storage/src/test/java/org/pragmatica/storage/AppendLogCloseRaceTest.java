@@ -95,7 +95,9 @@ class AppendLogCloseRaceTest {
     private record Race(Result<Unit> result, List<String> atClose) {}
 
     private void assertRefusedClosedAndNothingMutated(AppendLog wal, Race race) throws IOException {
-        assertThat(race.result().fold(cause -> cause.message(), _ -> "accepted")).isEqualTo(WAL_CLOSED_MESSAGE);
+        var outcome = race.result().<String>fold(cause -> cause.message(), _ -> "accepted");
+
+        assertThat(outcome).isEqualTo(WAL_CLOSED_MESSAGE);
         assertThat(wal.failStopped()).as("a cleanly closed log is not fail-stopped").isFalse();
         assertThat(snapshot()).as("no file changed after close").isEqualTo(race.atClose());
     }
