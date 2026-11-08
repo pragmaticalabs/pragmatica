@@ -7,6 +7,8 @@ package org.pragmatica.aether.stream.replication;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.pragmatica.aether.slice.generation.Epoch;
+
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Result;
 
@@ -39,7 +41,7 @@ class AlignedRecoveryOwnerAttributionTest {
             }
         };
 
-        var result = recovery.applyOwnerAttributed("s", 0, 0L, 1L, List.of(), () -> {
+        var result = recovery.applyOwnerAttributed("s", 0, 0L, 1L, Epoch.ZERO, List.of(), () -> {
             calls.add("apply");
             return Result.success(1L);
         });
@@ -57,7 +59,7 @@ class AlignedRecoveryOwnerAttributionTest {
                                                        },
                                                        (_, _, toOffset, _) -> Result.success(toOffset));
 
-        var result = recovery.applyOwnerAttributed("s", 0, 0L, 1L, List.of(), () -> {
+        var result = recovery.applyOwnerAttributed("s", 0, 0L, 1L, Epoch.ZERO, List.of(), () -> {
             calls.add("apply");
             return Result.success(1L);
         });

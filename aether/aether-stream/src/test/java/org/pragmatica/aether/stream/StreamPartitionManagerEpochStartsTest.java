@@ -218,6 +218,22 @@ class StreamPartitionManagerEpochStartsTest {
         assertThat(manager.replicaVerified(STREAM, PARTITION)).isTrue();
     }
 
+    /// v2858c q10 (mutant m05): verified for E3, judged at E4 (doubted from 11), then a STALE judge reads E3. The kept E4 doubt row
+    /// stays doubted from 11: the doubt start is taken from the kept row's epoch, not the stale judge's, which would equal its
+    /// lineage E3 and open the serve gate (start Long.MAX_VALUE) for records E4 re-assigned.
+    @Test
+    void staleEpochJudge_keepsTheNewerDoubt_andTheServeGateClosed() {
+        starts.set(List.of(new EpochStart(E1, 0L), new EpochStart(E3, 0L), new EpochStart(E4, 11L)));
+        append(16);
+        manager.markVerifiedForEpoch(STREAM, PARTITION, E3);
+        committed.set(E4);
+        assertThat(manager.unverifiedFrom(STREAM, PARTITION)).as("judged at E4").isEqualTo(Option.some(11L));
+
+        committed.set(E3);
+
+        assertThat(manager.unverifiedFrom(STREAM, PARTITION)).as("the E4 doubt stands under a stale E3 view").isEqualTo(Option.some(11L));
+    }
+
     /// A copy verified for E3 whose committed epoch moved on to E4 before E4's start was committed: no start after its lineage is
     /// known, so it is doubted from 0 until that start is.
     @Test

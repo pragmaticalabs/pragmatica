@@ -1081,7 +1081,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         return trust.verified()
                ? none()
-               : some(doubtStart(streamName, partition, epoch, trust.lineage()));
+               : some(doubtStart(streamName, partition, trust.epoch(), trust.lineage()));
     }
 
     /// A verification for `epoch` is kept for that epoch, and a verdict on a LATER epoch is kept whatever it says: a judge that
@@ -1177,6 +1177,9 @@ public final class StreamPartitionManager implements AutoCloseable {
                           head + 1);
     }
 
+    /// The `max(from, reassigned)` clamp is observably redundant (v2858c m17), for a non-stale judge: when `reassigned < from`, the
+    /// earlier range holding `reassigned` already doubts at or below it (its later-epoch set is a superset, so its `reassigned`
+    /// is lower), provided the first entry starts at or below the lowest held record.
     private static long rangeDoubt(RecordedRange range, long end, Epoch epoch, List<EpochStart> starts) {
         return range.from() >= end || range.epoch()
                                            .equals(epoch)
@@ -5062,13 +5065,14 @@ public final class StreamPartitionManager implements AutoCloseable {
                                              int partition,
                                              long fromOffset,
                                              long toOffset,
+                                             Epoch ownerEpoch,
                                              List<ProvenanceEntry> slice,
                                              AlignedRecovery.PageApply apply) {
         return applyAttributed(streamName,
                                partition,
                                fromOffset,
                                toOffset,
-                               vouchedOrCommitted(streamName, partition, toOffset, slice),
+                               vouchedOrCommitted(streamName, partition, toOffset, ownerEpoch, slice),
                                apply);
     }
 
@@ -5140,10 +5144,21 @@ public final class StreamPartitionManager implements AutoCloseable {
     private List<ProvenanceEntry> vouchedOrCommitted(String streamName,
                                                      int partition,
                                                      long toOffset,
+                                                     Epoch ownerEpoch,
                                                      List<ProvenanceEntry> slice) {
         return slice.isEmpty()
-               ? committedProvenance(committedEpochStarts.startsOf(streamName, partition), toOffset)
+               ? committedProvenance(startsUpTo(committedEpochStarts.startsOf(streamName, partition), ownerEpoch),
+                                     toOffset)
                : slice;
+    }
+
+    /// The starts of `ownerEpoch` and below: the epochs the owner read by the identity check had committed (v2858c R1). A later
+    /// start, committed after that read, belongs to the epoch that re-assigned the owner's tail, not to the owner's records.
+    private static List<EpochStart> startsUpTo(List<EpochStart> starts, Epoch ownerEpoch) {
+        return starts.stream()
+                     .filter(start -> start.epoch()
+                                           .compareTo(ownerEpoch) <= 0)
+                     .toList();
     }
 
     /// The provenance the committed starts assert for offsets up to `toOffset` (spec #1569 §7.5.1a, the 6a contract): entry

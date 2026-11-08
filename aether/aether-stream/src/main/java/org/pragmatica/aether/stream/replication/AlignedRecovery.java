@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream.replication;
 
 import java.util.List;
 
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.lang.Result;
 
@@ -43,11 +44,14 @@ public interface AlignedRecovery {
     /// it keeps no log, and the page is attributed to the committed epochs instead of being left with records and no history.
     /// Only a caller that knows its source is the committed owner calls this ([PartitionBackfill]); an empty slice from any
     /// other source (a survivor, a WAL copy whose log records none) stays empty through [#applyAttributed]. The default
-    /// attributes nothing more than [#applyAttributed].
+    /// attributes nothing more than [#applyAttributed]. `ownerEpoch` is the epoch of the ownership record the caller read when
+    /// it identified the committed owner: only the committed starts of that epoch or below attribute the page (one snapshot,
+    /// v2858c R1), as a later epoch's start would label the deposed owner's records with the epoch that re-assigned them.
     default Result<Long> applyOwnerAttributed(String streamName,
                                               int partition,
                                               long fromOffset,
                                               long toOffset,
+                                              Epoch ownerEpoch,
                                               List<ProvenanceEntry> slice,
                                               PageApply apply) {
         return applyAttributed(streamName, partition, fromOffset, toOffset, slice, apply);
@@ -80,6 +84,17 @@ public interface AlignedRecovery {
     }
 
     @FunctionalInterface
+    interface OwnerAttributedApplier {
+        Result<Long> applyOwnerAttributed(String streamName,
+                                          int partition,
+                                          long fromOffset,
+                                          long toOffset,
+                                          Epoch ownerEpoch,
+                                          List<ProvenanceEntry> slice,
+                                          PageApply apply);
+    }
+
+    @FunctionalInterface
     interface UnattributedApplier {
         Result<Long> applyUnattributed(String streamName, int partition, long toOffset, PageApply apply);
     }
@@ -87,13 +102,21 @@ public interface AlignedRecovery {
     static AlignedRecovery alignedRecovery(Appender appender,
                                            AttributedApplier attributed,
                                            UnattributedApplier unattributed) {
-        return alignedRecovery(appender, attributed, attributed, unattributed);
+        return alignedRecovery(appender,
+                               attributed,
+                               (streamName, partition, fromOffset, toOffset, _, slice, apply) -> attributed.applyAttributed(streamName,
+                                                                                                                            partition,
+                                                                                                                            fromOffset,
+                                                                                                                            toOffset,
+                                                                                                                            slice,
+                                                                                                                            apply),
+                               unattributed);
     }
 
     /// The seam with a distinct [#applyOwnerAttributed] (production: `StreamPartitionManager#alignedRecovery`).
     static AlignedRecovery alignedRecovery(Appender appender,
                                            AttributedApplier attributed,
-                                           AttributedApplier ownerAttributed,
+                                           OwnerAttributedApplier ownerAttributed,
                                            UnattributedApplier unattributed) {
         return new AlignedRecovery() {
             @Override
@@ -120,9 +143,16 @@ public interface AlignedRecovery {
                                                      int partition,
                                                      long fromOffset,
                                                      long toOffset,
+                                                     Epoch ownerEpoch,
                                                      List<ProvenanceEntry> slice,
                                                      PageApply apply) {
-                return ownerAttributed.applyAttributed(streamName, partition, fromOffset, toOffset, slice, apply);
+                return ownerAttributed.applyOwnerAttributed(streamName,
+                                                            partition,
+                                                            fromOffset,
+                                                            toOffset,
+                                                            ownerEpoch,
+                                                            slice,
+                                                            apply);
             }
 
             @Override

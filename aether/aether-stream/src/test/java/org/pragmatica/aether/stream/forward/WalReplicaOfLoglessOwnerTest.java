@@ -22,6 +22,7 @@ import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResp
 import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.aether.stream.replication.PartitionBackfill;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
+import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.replication.ReplicationTransport;
 import org.pragmatica.consensus.NodeId;
@@ -53,6 +54,7 @@ class WalReplicaOfLoglessOwnerTest {
     private static final NodeId ELSEWHERE = NodeId.randomNodeId();
     private static final Epoch E1 = Epoch.epoch(0, 1, 0);
     private static final Epoch E2 = Epoch.epoch(0, 2, 0);
+    private static final Epoch E3 = Epoch.epoch(0, 3, 0);
 
     @TempDir
     Path replicaWal;
@@ -113,6 +115,26 @@ class WalReplicaOfLoglessOwnerTest {
         assertThat(replica.nextExpectedOffset(STREAM, PARTITION)).as("the page itself is applied").isEqualTo(4L);
         assertThat(replica.epochHistory(STREAM, PARTITION).unwrap()).as("no committed-epoch provenance for a non-owner's answer")
                                                                     .isEmpty();
+    }
+
+    /// v2858c R1: the owner read names OWNER at E2 while the starts read already sees E3@4 committed by another node (two reads
+    /// of one KV record). OWNER's records 4..5 are E2 lineage that E3 re-assigned, so they must not be labelled E3: only the
+    /// starts of the owner read's epoch and below attribute the page, and the copy is doubted from 4 under the current E3.
+    @Test
+    void ownerRead_isTheOnlySnapshot_aStartCommittedAfterItDoesNotLabelTheDeposedOwnersRecords() {
+        publish(E1, 3);
+        publish(E2, 3);
+        replica.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E2, 3L), new EpochStart(E3, 4L)));
+        backfill(committedOwner(OWNER));
+        replica.ownerEpochSource((_, _) -> E3);
+        replica.placementRoleSupplier((_, _) -> Role.REPLICA);
+
+        var from = replica.unverifiedFrom(STREAM, PARTITION);
+
+        assertThat(from.isPresent() && from.unwrap() <= 4L).as("history=%s unverifiedFrom=%s",
+                                                              replica.epochHistory(STREAM, PARTITION),
+                                                              from)
+                                                          .isTrue();
     }
 
     private static CommittedStreamOwnerSource committedOwner(NodeId node) {
