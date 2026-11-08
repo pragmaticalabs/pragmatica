@@ -82,7 +82,7 @@ class PgAsyncSqlConnectorConnectionReleaseTest {
                  .unwrap();
     }
 
-    /// A pool that leaked never finishes closing, so the stop is bounded and its outcome is not the test's verdict.
+    /// The stop is bounded and its outcome is not the test's verdict: `PgConnectionPool.close` only shuts down idle connections.
     @AfterEach
     void abandonPool() {
         connector.stop().await(timeSpan(2).seconds());
@@ -201,5 +201,51 @@ class PgAsyncSqlConnectorConnectionReleaseTest {
 
         assertAllSucceeded(results);
         assertPoolStillServes();
+    }
+
+    /// A second `unlisten` must not release the connection a second time: the pool would then hold it twice and two
+    /// borrowers would share one socket (protocol interleave).
+    @Test
+    void subscribe_unlistenTwice_secondIsNoOp_andConcurrentBorrowersGetDistinctConnections() {
+        var listening = connector.subscribe("release_channel", _ -> {}).await(timeSpan(5).seconds()).unwrap();
+
+        assertThat(listening.unlisten().await(timeSpan(5).seconds()).isSuccess()).isTrue();
+        assertThat(listening.unlisten().await(timeSpan(5).seconds()).isSuccess()).as("second unlisten is a no-op success").isTrue();
+
+        var first = connector.transactional(SLOW_PID);
+        var second = connector.transactional(SLOW_PID);
+        var pidA = first.await(timeSpan(10).seconds());
+        var pidB = second.await(timeSpan(10).seconds());
+
+        assertThat(pidA.isSuccess()).as("first: %s", pidA).isTrue();
+        assertThat(pidB.isSuccess()).as("second: %s", pidB).isTrue();
+        assertThat(pidA.unwrap()).isNotEqualTo(pidB.unwrap());
+    }
+
+    private static final SqlConnector.TransactionCallback<Integer> SLOW_PID = tx -> tx.queryOne("SELECT pg_sleep(0.5), 1 AS n", COUNT)
+                                                                          .flatMap(_ -> tx.queryOne("SELECT pg_backend_pid() AS n", COUNT));
+
+    /// A failed `unlisten` (dead backend) must free the pool slot: with a pool of two, two such failures must leave the
+    /// pool able to serve a plain query.
+    @Test
+    void subscribe_failedUnlistens_discardTheConnections_andFreeThePoolSlots() throws InterruptedException {
+        var one = connector.subscribe("release_channel_a", _ -> {}).await(timeSpan(5).seconds()).unwrap();
+        var two = connector.subscribe("release_channel_b", _ -> {}).await(timeSpan(5).seconds()).unwrap();
+
+        killOtherBackends();
+        Thread.sleep(1000);
+
+        assertThat(one.unlisten().await(timeSpan(5).seconds()).isFailure()).as("unlisten on a dead backend fails").isTrue();
+        assertThat(two.unlisten().await(timeSpan(5).seconds()).isFailure()).as("unlisten on a dead backend fails").isTrue();
+        assertPoolStillServes();
+    }
+
+    private void killOtherBackends() {
+        connector.pinned(Duration.ZERO,
+                         session -> session.queryList("SELECT pg_terminate_backend(pid)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()",
+                                                      COUNT),
+                         _ -> Promise.unitPromise())
+                 .await(timeSpan(10).seconds())
+                 .unwrap();
     }
 }

@@ -6,6 +6,7 @@ package org.pragmatica.aether.resource.db.async;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
@@ -19,6 +20,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.postgres.PgConnection;
 import org.pragmatica.postgres.PgResultSet;
 import org.pragmatica.postgres.PgRow;
 import org.pragmatica.postgres.net.Connectible;
@@ -259,9 +261,12 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
     }
 
     /// A subscription pins its pooled connection for as long as it listens (LISTEN is session state), so the connection
-    /// goes back when the subscription ends: on a failed subscribe at once, otherwise on a successful `unlisten`. A failed
-    /// `unlisten` leaves the connection with the subscription, because a connection still listening must not be handed to
-    /// another borrower.
+    /// goes back when the subscription ends: on a failed subscribe at once, otherwise on the first `unlisten` (a repeated
+    /// `unlisten` is a no-op success, so the pool never receives the same connection twice). A failed `unlisten` DISCARDS
+    /// the connection (closes its socket, which ends its LISTEN registrations, then hands the dead connection to the pool,
+    /// which drops it and frees the slot): a connection that may still be listening must not be handed to another
+    /// borrower, and a dead one must not hold a slot. Limit: a subscription dropped without `unlisten`, or a `stop()` with a
+    /// live subscription, still holds its connection (`PgConnectionPool.close` only shuts down idle connections).
     private static Promise<Listening> subscribeOwning(Connection conn,
                                                       String channel,
                                                       Consumer<String> onNotification) {
@@ -275,8 +280,34 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
     }
 
     private static Listening releasingOnUnlisten(Connection conn, Listening listening) {
-        return () -> listening.unlisten()
-                              .flatMap(_ -> conn.close());
+        var released = new AtomicBoolean(false);
+
+        return () -> unlistenOnce(released, conn, listening);
+    }
+
+    private static Promise<Unit> unlistenOnce(AtomicBoolean released, Connection conn, Listening listening) {
+        if (!released.compareAndSet(false, true)) {
+            return Promise.unitPromise();
+        }
+
+        return listening.unlisten()
+                        .fold(result -> releaseAfterUnlisten(conn, result));
+    }
+
+    private static Promise<Unit> releaseAfterUnlisten(Connection conn, Result<Unit> result) {
+        return result.fold(_ -> discardKeeping(conn, result), _ -> closeAndResolve(conn, result));
+    }
+
+    private static Promise<Unit> discardKeeping(Connection conn, Result<Unit> result) {
+        return discard(conn).fold(_ -> Promise.resolved(result));
+    }
+
+    /// Really closes the socket (a pooled `close()` is only the release), then releases the dead connection so the pool
+    /// drops it and frees its slot (`PgConnectionPool.firstAliveConnection`).
+    private static Promise<Unit> discard(Connection conn) {
+        return (conn instanceof PgConnection pg
+                ? pg.shutdown()
+                : Promise.unitPromise()).fold(_ -> conn.close());
     }
 
     private static <T> Promise<T> closeAndResolve(Connection conn, Result<T> bodyResult) {
