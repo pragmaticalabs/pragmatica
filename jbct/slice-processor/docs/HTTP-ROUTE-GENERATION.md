@@ -210,7 +210,7 @@ create = { route = "POST /articles", status = 201, location = "/articles/{slug}"
 enqueue = { route = "POST /jobs", status = 202 }
 ```
 
-- `status` is one of `200`, `201`, `202`, `203`, `204`, written as a number; anything else fails the build.
+- `status` is one of `200`, `201`, `202`, `204`, written as a number; `203`, `205`, `206` and anything else fail the build.
   `204` is accepted only on a `Promise<Unit>` method.
 - `location` is a `Location` template. Each `{field}` names a component of the result record (of the element, for an
   `Option` result) and is rendered as one percent-encoded path segment; a value-object component is rendered through
