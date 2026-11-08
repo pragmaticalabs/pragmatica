@@ -84,7 +84,7 @@ class GeneratedRequestHeadersRouteTest {
 
         @Test
         void mergedPathAndBody_receivesTheRequestHeaders_besideBothValues() {
-            assertServed(send("PUT", "/api/headers/items/7", Map.of(), PROBE, json("{\"text\":\"hello\"}")),
+            assertServed(send("PUT", "/api/headers/items/7", Map.of(), PROBE, json("{\"id\":\"ignored\",\"text\":\"hello\"}")),
                          "path=7,text=hello");
         }
 
@@ -101,7 +101,7 @@ class GeneratedRequestHeadersRouteTest {
 
         @Test
         void mergedPathQueryAndBody_receivesTheRequestHeaders_besideAllValues() {
-            assertServed(send("PUT", "/api/headers/pqb/5", Map.of("tag", List.of("t3")), PROBE, json("{\"text\":\"hello\"}")),
+            assertServed(send("PUT", "/api/headers/pqb/5", Map.of("tag", List.of("t3")), PROBE, json("{\"id\":\"ignored\",\"text\":\"hello\"}")),
                          "path=5,tag=t3,text=hello");
         }
 
