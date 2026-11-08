@@ -24,7 +24,6 @@ import org.pragmatica.aether.http.HttpRoutePublisher.LocalRouteInfo;
 import org.pragmatica.aether.http.adapter.RouteDecorator;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
-import org.pragmatica.aether.http.handler.HttpRequestHandler;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
@@ -115,11 +114,6 @@ record IngestGateRoutes(SliceRouter router, SecurityPolicy security, Map<String,
     }
 
     @Override
-    public Promise<Unit> publishRoutes(Artifact artifact, ClassLoader classLoader, SliceInvokerFacade invokerFacade) {
-        return Promise.success(unit());
-    }
-
-    @Override
     public Promise<Unit> publishRoutes(Artifact artifact,
                                        ClassLoader classLoader,
                                        Object sliceInstance,
@@ -135,11 +129,6 @@ record IngestGateRoutes(SliceRouter router, SecurityPolicy security, Map<String,
     @Override
     public Promise<Unit> unpublishRoutes(Artifact artifact) {
         return Promise.success(unit());
-    }
-
-    @Override
-    public Option<HttpRequestHandler> getHandler(Artifact artifact) {
-        return Option.none();
     }
 
     @Override

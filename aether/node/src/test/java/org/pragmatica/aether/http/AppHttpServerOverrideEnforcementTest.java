@@ -21,7 +21,6 @@ import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.http.adapter.RouteDecorator;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
-import org.pragmatica.aether.http.handler.HttpRequestHandler;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.slice.MethodHandle;
@@ -86,9 +85,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// override rule or hands the server a hand-written policy.
 ///
 /// [`RouterOnlyStub`] substitutes exactly one thing — `findLocalRouter`/`getSliceRouter`, the
-/// dispatch plumbing — because the `publishRoutes(3-arg)` handler path populates `handlers` and not
-/// `sliceRouters`, so without it an authorized request would 404 instead of 200 and the two
-/// outcomes under test would be indistinguishable. That substitution is downstream of, and
+/// dispatch plumbing — so an authorized request is answered by the test's own router and the two
+/// outcomes under test (200 versus 403) stay distinguishable. That substitution is downstream of, and
 /// independent of, every security decision asserted below: it cannot manufacture a 403, and reverting
 /// the production hunk turns these 403s back into 200s with it still in place.
 class AppHttpServerOverrideEnforcementTest {
@@ -109,7 +107,10 @@ class AppHttpServerOverrideEnforcementTest {
     void setUp() {
         httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
         realPublisher = HttpRoutePublisher.httpRoutePublisher(SELF_NODE, new AcceptingCluster());
-        realPublisher.publishRoutes(ARTIFACT, getClass().getClassLoader(), stubInvokerFacade())
+        realPublisher.publishRoutes(ARTIFACT,
+                                    getClass().getClassLoader(),
+                                    new OverrideEnforcementRouteFactory.Slice(),
+                                    stubInvokerFacade())
                      .await(timeSpan(30).seconds())
                      .onFailure(cause -> Assertions.fail("route publication must succeed: " + cause.message()));
     }
@@ -428,11 +429,6 @@ class AppHttpServerOverrideEnforcementTest {
         }
 
         @Override
-        public Promise<Unit> publishRoutes(Artifact artifact, ClassLoader classLoader, SliceInvokerFacade invokerFacade) {
-            return delegate.publishRoutes(artifact, classLoader, invokerFacade);
-        }
-
-        @Override
         public Promise<Unit> publishRoutes(Artifact artifact,
                                            ClassLoader classLoader,
                                            Object sliceInstance,
@@ -448,11 +444,6 @@ class AppHttpServerOverrideEnforcementTest {
         @Override
         public Promise<Unit> unpublishRoutes(Artifact artifact) {
             return delegate.unpublishRoutes(artifact);
-        }
-
-        @Override
-        public Option<HttpRequestHandler> getHandler(Artifact artifact) {
-            return delegate.getHandler(artifact);
         }
 
         @Override
