@@ -5,16 +5,16 @@
 package org.pragmatica.aether.stream;
 
 /// The late-bound seams of [StreamPartitionManager] (#2201 A-14, spec 5.1 target, bullet 4): 19 of them, bound by setters in
-/// `StreamAssembly` (the owner-epoch source through the production factory), not in `AetherNode`. Each defaults to a value that
-/// lets a unit, Forge or legacy manager run without the cluster wiring; production binds every one except [#EPOCH_STARTS].
-/// [StreamPartitionManager#unboundSeams] lists the ones still at their default.
+/// `StreamAssembly` (the owner-epoch source and the committed epoch starts through the production factory), not in `AetherNode`.
+/// Each defaults to a value that lets a unit, Forge or legacy manager run without the cluster wiring; production binds every
+/// one. [StreamPartitionManager#unboundSeams] lists the ones still at their default.
 ///
 /// `[guess]` The safety-relevant classification is a judgement, not a derivation: a seam is safety-relevant when its default,
 /// left in place on a node that keeps a WAL, would let the node act as an owner, admit or acknowledge writes, release a ring,
 /// or skip a durable check, with no committed state behind it (Step 0 §4). [#EPOCH_STARTS] is NOT classed safety-relevant
-/// although it guards replica trust, because its default is conservative rather than permissive (every offset counts as at
-/// or above the epoch's start, so a copy holding anything is doubted until compared), and production never binds it, so
-/// classing it would alarm on every node. The operational and observability seams are not classed either.
+/// although it guards replica trust, because its default is conservative rather than permissive (no history is known, so a
+/// copy holding anything is doubted from 0 until compared); since #1971 it is a required argument of the production factory
+/// instead. The operational and observability seams are not classed either.
 public enum StreamSeam {
     /// The owner epoch a local publish is stamped with; the default stamps `Epoch.ZERO`.
     OWNER_EPOCH_SOURCE(true),
@@ -24,7 +24,8 @@ public enum StreamSeam {
     /// The committed ownership records a validated consumer read is checked against; the default checks nothing.
     OWNERSHIP_RECORDS(true),
     TIERED_READER(false),
-    /// Where a committed epoch began; the default doubts every copy (conservative), and production does not bind it.
+    /// Where each committed epoch began (#1971); the default knows none and doubts every copy from 0 (conservative). Production
+    /// passes it to the factory.
     EPOCH_STARTS(false),
     REPAIR_REPORT_BOUND(false),
     EXHAUSTION_SINK(false),

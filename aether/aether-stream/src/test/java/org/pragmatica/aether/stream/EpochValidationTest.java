@@ -8,6 +8,7 @@ import java.util.List;
 
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import org.junit.jupiter.api.Test;
@@ -62,6 +63,15 @@ class EpochValidationTest {
     }
 
     /// A consumer from a lineage NEWER than the owner serves: the read reached a stale owner and must be re-routed.
+    /// v2858a A2: a later epoch that starts BELOW an earlier one re-assigned from its own start, so the consumer resumes from the
+    /// lowest start after its epoch, not the first one listed: E3 at 9 lies below E2 at 11, and an E1 consumer at 10 read E1's 9.
+    @Test
+    void laterEpochStartingBelowAnEarlierStart_resumesAtTheLowest() {
+        var diverged = divergence(E3, List.of(start(E1, 0), start(E2, 11), start(E3, 9)), E1, 10L);
+
+        assertThat(diverged.resumeAt()).isEqualTo(9L);
+    }
+
     @Test
     void newerEpochThanTheOwners_isAStaleReader() {
         var result = EpochValidation.admit(STREAM, 0, E1, List.of(start(E1, 0)), E2, 5L);
@@ -216,6 +226,15 @@ class EpochValidationTest {
 
     private static EpochStart folded(Epoch epoch, long startOffset, Epoch from) {
         return new EpochStart(epoch, startOffset, from);
+    }
+
+    /// v2858a A2: the bound is the lowest start of an epoch AFTER the consumer's -- the consumer's own start is not one.
+    @Test
+    void reassignedFrom_ignoresTheConsumersOwnEpochStart() {
+        var e1 = Epoch.epoch(1L, 1L, 1L);
+        var e2 = Epoch.epoch(1L, 1L, 2L);
+
+        assertThat(EpochValidation.reassignedFrom(List.of(start(e1, 5L), start(e2, 10L)), e1)).isEqualTo(Option.some(10L));
     }
 
     private static List<EpochStart> keptHistory() {

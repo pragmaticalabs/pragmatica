@@ -12,8 +12,8 @@ import java.util.function.ToLongFunction;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmInput;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
@@ -29,6 +29,8 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.TopicPublisherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceDesiredValue;
@@ -101,6 +103,8 @@ public final class Fsm2Routes {
                                                                                         NodeRoutesKey.class,
                                                                                         NodePlacementKey.class,
                                                                                         CommunityPlacementOperationKey.class,
+                                                                                        TopicSubscriptionKey.class,
+                                                                                        TopicPublisherKey.class,
                                                                                         ClusterConfigKey.class);
 
     /// The key families the cluster FSM indexes on a remove: the put families without `ClusterConfigKey`.

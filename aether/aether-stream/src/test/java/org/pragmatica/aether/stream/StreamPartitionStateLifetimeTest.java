@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart;
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -99,7 +100,7 @@ class StreamPartitionStateLifetimeTest {
         void setUp() {
             manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
             manager.ownerEpochSource((_, _) -> EPOCH);
-            manager.epochStarts((_, _, _) -> Option.some(0L));
+            manager.epochStarts((_, _) -> List.of(new EpochStart(EPOCH, 0L)));
             manager.placementRoleSupplier((_, _) -> role.get());
             manager.partitionFlags(recordingFlags(raised));
         }
@@ -286,6 +287,7 @@ class StreamPartitionStateLifetimeTest {
                                           new RecordingClusterNode(),
                                           OwnershipEpochHighWater.ownershipEpochHighWater(emptyStore()),
                                           StreamOwnerEpochSource.zero(),
+                                          CommittedEpochStarts.NONE,
                                           Option.some(AppendLog.Opener.directory(walDir)),
                                           LastSealedOffsetSource.none(),
                                           DurableSealedOffsetSource.none());

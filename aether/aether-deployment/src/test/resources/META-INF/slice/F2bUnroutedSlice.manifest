@@ -1,0 +1,2 @@
+# F2b fixture (R-CF.29, #2394): a slice with a factory but no routes, so no JSON settings section and no config-update binding.
+slice.factory=org.pragmatica.aether.deployment.wiring.ConfigCarryForwardChainTest$JsonProbe

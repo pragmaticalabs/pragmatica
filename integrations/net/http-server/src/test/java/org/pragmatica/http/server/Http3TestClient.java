@@ -109,9 +109,11 @@ final class Http3TestClient {
         return ((InetSocketAddress) server.serverChannel().unwrap().localAddress()).getPort();
     }
 
-    /// Opens a connection, lets `writer` write one request, and waits up to 10 s after it returns for the response.
+    /// Opens a connection, lets `writer` write one request, and waits up to 25 s after it returns for the response. A
+    /// stalled exchange ends when a connection idles out: the server's at 5 s, at the latest the client's at 20 s
+    /// (`maxIdleTimeout` below), so 25 s covers every way an exchange can end (#2866: 10 s was missed on a starved host).
     static Answer exchange(int port, RequestWriter writer) throws Exception {
-        return connect(port, writer, (reader, _) -> reader.answer.get(10, TimeUnit.SECONDS));
+        return connect(port, writer, (reader, _) -> reader.answer.get(25, TimeUnit.SECONDS));
     }
 
     /// Opens a connection, lets `writer` write one request, and waits up to 10 s after it returns for the server to close

@@ -462,7 +462,9 @@ public class PgConnection implements Connection {
         return stream.close();
     }
 
-    Promise<Unit> shutdown() {
+    /// Closes the socket for real (cached statements first). Unlike `close()`, which on a pooled connection is only the
+    /// release, this ends the backend session and with it every LISTEN registration.
+    public Promise<Unit> shutdown() {
         if (statementCache != null) {
             return allOf(statementCache.values().stream().map(PgPreparedStatement::closeOnServer)).withResult(_ -> statementCache.clear())
                         .fold(_ -> stream.close());

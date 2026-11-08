@@ -20,6 +20,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureCause;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue;
@@ -156,6 +157,7 @@ public sealed interface DepartureFlow {
         if (!inferred) {
             mutations.addAll(desiredRemovals(m, node));
             mutations.addAll(routeRemovals(m, node));
+            mutations.addAll(topicRowRemovals(m, node));
         }
 
         return new TxDraft(inferred
@@ -186,6 +188,19 @@ public sealed interface DepartureFlow {
                                                                         value))
                                                   .stream())
                      .toList();
+    }
+
+    /// #1337 (R-CF.15): the node's topic-subscription and topic-publisher rows at their committed values, as legacy's node-removal batch
+    /// (`ClusterDeploymentState.topicRowCommandsForNode`) and stale sweep (`StaleEntryCleaner.cleanupStaleTopicRows`) remove them.
+    static List<KVCommand.Mutation<AetherKey, AetherValue>> topicRowRemovals(ClusterModel m, NodeId node) {
+        return Idx.members(m.topicRowsByNode, node)
+                  .toList()
+                  .stream()
+                  .sorted(Comparator.comparing(AetherKey::asString))
+                  .flatMap(key -> m.topicRows.get(key)
+                                             .map(value -> removal(key, value))
+                                             .stream())
+                  .toList();
     }
 
     private static List<Artifact> sorted(List<Artifact> artifacts) {
@@ -322,7 +337,7 @@ public sealed interface DepartureFlow {
 
     // -- C17b ------------------------------------------------------------------------------------------------------
     /// One transaction, guarded on the committed DEPARTED record: the node's observed rows at their exact values (current
-    /// or stale alike), and any desired and route keys still present. Never the directive or the placement key.
+    /// or stale alike), and any desired, route and topic-row (#1337) keys still present. Never the directive or the placement key.
     ///
     /// Not built for a **joined** node: a departed node is joined only when its admission names a different known process than its record, which
     /// J8's core arm admits (a joined node of the same process is superseded, so not departed; a token learned after the join, C11d, reaches
@@ -346,7 +361,8 @@ public sealed interface DepartureFlow {
     private static List<KVCommand.Mutation<AetherKey, AetherValue>> cleanupMutations(ClusterModel m, NodeId node) {
         return Stream.of(observedRemovals(m, node),
                          desiredRemovals(m, node),
-                         routeRemovals(m, node))
+                         routeRemovals(m, node),
+                         topicRowRemovals(m, node))
                      .flatMap(List::stream)
                      .toList();
     }
@@ -656,6 +672,52 @@ public sealed interface DepartureFlow {
                  .forEach(node -> admittedRewrite(m, ctx, node));
 
         return m;
+    }
+
+    // -- step 10: stale topic rows (#1337 parity) ------------------------------------------------------------------
+    /// Legacy parity: `ClusterDeploymentState.sweepStaleEntries` (`:3545-3560`) runs `StaleEntryCleaner.cleanupStaleTopicRows`
+    /// (`StaleEntryCleaner.java:65-98`) on every pass, removing each topic row whose node is not a placement node: the counted cores plus the
+    /// nodes with a committed WORKER directive (`placementNodes`, `:1600`), and nothing while the core membership is unwired
+    /// (`coreMembershipResolved`, `:1614`; here an absent `coreView`). It reaches the rows no record covers: a row committed after R-4.3.3 removed
+    /// the record, or one a removal batch lost across a leader change left behind. Two narrowings: a departing node is left to its C17 draft and
+    /// a departed one to C17b (which keeps W3' and G-4), and each removal expects the row's committed value, so a row rewritten meanwhile stays.
+    /// In flight a removal is not sent again; a refused or lost one is derived again by the next pass (`Outbox.rederive`).
+    static ClusterModel sweepStaleTopicRows(ClusterModel m) {
+        return m.seams.coreView()
+                      .isEmpty()
+               ? m
+               : removeStaleTopicRows(m);
+    }
+
+    private static ClusterModel removeStaleTopicRows(ClusterModel m) {
+        m.topicRowsByNode.keys()
+                         .stream()
+                         .filter(node -> isStaleTopicRowNode(m, node))
+                         .sorted()
+                         .flatMap(node -> topicRowRemovals(m, node).stream())
+                         .filter(mutation -> !Outcomes.inFlight(m,
+                                                                SubmitKind.STALE_TOPIC_ROW,
+                                                                mutation.key()))
+                         .forEach(mutation -> Outbox.direct(m,
+                                                            TxDraft.draft(SubmitKind.STALE_TOPIC_ROW,
+                                                                          mutation.key(),
+                                                                          List.of(mutation))));
+
+        return m;
+    }
+
+    private static boolean isStaleTopicRowNode(ClusterModel m, NodeId node) {
+        return ! m.departed.contains(node)
+               && !m.departing.containsKey(node)
+               && !isPlacementNode(m, node);
+    }
+
+    /// Legacy `placementNodes` (`ClusterDeploymentState.java:1600`): the counted cores plus every node whose committed directive is WORKER.
+    private static boolean isPlacementNode(ClusterModel m, NodeId node) {
+        return m.seams.countedCores()
+                      .contains(node) || m.directives.get(node)
+                                                     .map(directive -> ActivationDirectiveValue.WORKER.equals(directive.role()))
+                                                     .or(false);
     }
 
     record unused() implements DepartureFlow {}

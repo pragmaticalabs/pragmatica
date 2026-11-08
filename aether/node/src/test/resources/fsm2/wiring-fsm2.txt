@@ -45,6 +45,10 @@ B1.cluster.SliceObservedKey.put -> fsm2:Fsm2Routes
 B1.cluster.SliceObservedKey.remove -> fsm2:Fsm2Routes
 B1.cluster.SliceTargetKey.put -> fsm2:Fsm2Routes
 B1.cluster.SliceTargetKey.remove -> fsm2:Fsm2Routes
+B1.cluster.TopicPublisherKey.put -> fsm2:Fsm2Routes
+B1.cluster.TopicPublisherKey.remove -> fsm2:Fsm2Routes
+B1.cluster.TopicSubscriptionKey.put -> fsm2:Fsm2Routes
+B1.cluster.TopicSubscriptionKey.remove -> fsm2:Fsm2Routes
 B1.cluster.VersionRoutingKey.put -> fsm2:Fsm2Routes
 B1.cluster.VersionRoutingKey.remove -> fsm2:Fsm2Routes
 B1.ndm.NodeArtifactKey.put -> dropped

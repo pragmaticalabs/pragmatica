@@ -210,7 +210,7 @@ class ConsumerBehindTheRingComponentTest {
         tier.seal(STREAM, PARTITION, 0, 19);
         manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
         manager.ownerEpochSource((_, _) -> E2);
-        manager.epochStarts((_, _, _) -> Option.some(5L));
+        manager.epochStarts((_, _) -> List.of(new EpochStart(E2, 5L)));
 
         var read = manager.readServingTiered(STREAM, PARTITION, 2L, 10, Epoch.ZERO).await().unwrap();
 

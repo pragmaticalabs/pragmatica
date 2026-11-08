@@ -16,6 +16,7 @@ import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.stream.CommittedStreamOwnerSource.CommittedOwner;
 import org.pragmatica.aether.stream.CommittedStreamIsrSource;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.OwnerActivation;
@@ -1468,7 +1469,8 @@ public final class PartitionBackfill {
     /// already landed is verified identical and skipped, and a divergent held event or a missing prefix
     /// refuses the whole run. The replica stays SYNCING and the redrive retries from the moved head. Returns
     /// the number of events this run holds at their source offsets, so `fromOffset + applied - 1` is a
-    /// true highest-held offset for the {@link #promote} gate. It short-circuits to the first refusal.
+    /// true highest-held offset for the {@link #promote} gate. It short-circuits to the first refusal. The committed
+    /// owner's answer is applied through [AlignedRecovery#applyOwnerAttributed] ([#committedOwnerAnswer]).
     private Result<Long> applyEvents(String streamName, int partition, ReplicationMessage.CatchupResponse response) {
         var payloads = response.payloads();
         var timestamps = response.timestamps();
@@ -1483,16 +1485,37 @@ public final class PartitionBackfill {
             return MALFORMED_RESPONSE.result();
         }
 
-        return partitionRecovery.applyAttributed(streamName,
-                                                 partition,
-                                                 response.fromOffset(),
-                                                 response.toOffset(),
-                                                 response.history(),
-                                                 () -> applyPayloads(streamName,
-                                                                     partition,
-                                                                     response.fromOffset(),
-                                                                     payloads,
-                                                                     timestamps));
+        AlignedRecovery.PageApply page = () -> applyPayloads(streamName,
+                                                             partition,
+                                                             response.fromOffset(),
+                                                             payloads,
+                                                             timestamps);
+
+        return committedOwnerAnswer(streamName, partition, response.governorId()).fold(() -> partitionRecovery.applyAttributed(streamName,
+                                                                                                                               partition,
+                                                                                                                               response.fromOffset(),
+                                                                                                                               response.toOffset(),
+                                                                                                                               response.history(),
+                                                                                                                               page),
+                                                                                       committed -> partitionRecovery.applyOwnerAttributed(streamName,
+                                                                                                                                           partition,
+                                                                                                                                           response.fromOffset(),
+                                                                                                                                           response.toOffset(),
+                                                                                                                                           committed.ownerEpoch(),
+                                                                                                                                           response.history(),
+                                                                                                                                           page));
+    }
+
+    /// I-25 scope (#1938, v2858a R1): the page was answered by the committed owner of the partition, and this node is not
+    /// it. Only that answer's vouched-empty history is attributed to the committed epochs
+    /// ([AlignedRecovery#applyOwnerAttributed]); a survivor or any other peer this backfill sources from may hold an older
+    /// lineage, and its empty history stays empty.
+    private Option<CommittedOwner> committedOwnerAnswer(String streamName, int partition, NodeId responder) {
+        return committedOwnerSource.committedOwner(streamName, partition)
+                                   .filter(committed -> !committed.owner()
+                                                                  .equals(self))
+                                   .filter(committed -> committed.owner()
+                                                                 .equals(responder));
     }
 
     /// #1596: runs only after the source's owner-epoch slice passed N13 and was recorded ([#applyEvents]); a failure

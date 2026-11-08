@@ -371,7 +371,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // the decision (seq > entryBaseline) — the stale pre-death commit (≤ baseline) is never
             // adopted, so a killed leader's corpse in KV cannot resurrect and wedge re-election.
             var entryBaseline = ctx.committedViewSequence();
-            var tickFuture = scheduleStaircaseFirstTick(ctx, "Electing");
+            var tickFuture = scheduleStaircaseFirstTick(ctx, "Electing", Option.none());
             var observationFuture = SharedScheduler.scheduleAtFixedRate(() -> adoptLeaderFromKvIfPresent(ctx),
                                                                         ctx.peerObservationInterval());
 
@@ -579,7 +579,10 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         }
 
         log.warn("Led({}): leader-acting lease expired — leader lost", currentLeader);
-        loseLeader(ctx, led, tx);
+        loseLeader(ctx,
+                   led,
+                   Option.some(led.leader()),
+                   tx);
     }
 
     private static void handleNodeGoneInLed(LeaderElectionContext ctx,
@@ -588,15 +591,19 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                                             TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
         ctx.setCurrentTopology(event.topology());
         if (event.node().equals(led.leader())) {
-            loseLeader(ctx, led, tx);
+            // #2869: no suspect on this path — the departed leader is already out of the transport topology.
+            loseLeader(ctx, led, Option.none(), tx);
         }
     }
 
     /// This follower lost its leader on its own evidence. With the pre-vote enabled it asks the electorate
     /// first and stays in `Led` (#1748); the pre-vote does not apply to a leader that is this node itself or
     /// no longer eligible (voted out — nothing for the electorate to vouch for), or when this node is the whole electorate (nobody to ask; the verdict would dispatch re-entrantly from inside this handler), and is absent in local mode.
+    /// Without the pre-vote, `suspect` becomes the [`ReElecting`] suspect (#2869): the lease-trip path names the
+    /// silent leader, which may still sit in the transport topology; the NodeGone path passes none.
     private static void loseLeader(LeaderElectionContext ctx,
                                    Led led,
+                                   Option<NodeId> suspect,
                                    TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
         ctx.preVote()
            .filter(_ -> !led.leader()
@@ -605,7 +612,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                         && ctx.electorate()
                               .size() > 1)
            .onPresent(preVote -> tx.handle(() -> preVote.suspect(led.leader())))
-           .onEmpty(() -> tx.transitionTo(ctx.reElecting()));
+           .onEmpty(() -> tx.transitionTo(ctx.reElecting(suspect)));
     }
 
     /// A majority of the electorate doubts the leader. Honoured only for the tenure it was asked about and
@@ -624,7 +631,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         }
 
         log.warn("Led({}): a majority of the electorate doubts the leader — transitioning to ReElecting", led.leader());
-        tx.transitionTo(ctx.reElecting());
+        tx.transitionTo(ctx.reElecting(Option.some(led.leader())));
     }
 
     private static void handleLeaderCommittedInLed(LeaderElectionContext ctx,
@@ -684,13 +691,23 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// independent peer-observation timer (see [`Electing`] for the rationale — symmetric fix
     /// applies here so a re-election proposal in flight cannot blind the FSM to a peer-committed
     /// leader). All three futures are cancelled in `onExit` / `onCasLost`.
+    ///
+    /// `suspect` (#2869) is the leader this node doubted when it decided to re-elect (lease trip or a
+    /// majority-confirmed pre-vote doubt). It lives for this instance only — the next entry starts from
+    /// whatever its own trigger names — and only steers candidate selection and the staircase rank:
+    /// a commit naming the suspect is still adopted, because rejecting a consensus decision would split views.
     @Contract
     record ReElecting(LeaderElectionContext ctx,
                       long entryBaseline,
+                      Option<NodeId> suspect,
                       AtomicReference<ScheduledFuture<?>> tickFuture,
                       AtomicReference<ScheduledFuture<?>> proposalTimeoutFuture,
                       AtomicReference<ScheduledFuture<?>> observationFuture) implements LeaderElectionState {
         public static ReElecting fresh(LeaderElectionContext ctx) {
+            return fresh(ctx, Option.none());
+        }
+
+        public static ReElecting fresh(LeaderElectionContext ctx, Option<NodeId> suspect) {
             // FIX-1 refinement (see Electing.fresh): snapshot the committed-viewSequence baseline at
             // the decision-to-re-elect. The killed leader's stale commit (seq ≤ baseline) is fenced
             // out of adoption; only a fresh post-death commit (> baseline) is adopted.
@@ -704,12 +721,13 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // after a failed proposal continue to use `proposalRetryDelay` via the existing
             // `rescheduleCurrentTick` path — the staircase only governs the FIRST tick after
             // entry to the state, which is exactly when herding would otherwise occur.
-            var holder = new AtomicReference<ScheduledFuture<?>>(scheduleStaircaseFirstTick(ctx, "ReElecting"));
+            var holder = new AtomicReference<ScheduledFuture<?>>(scheduleStaircaseFirstTick(ctx, "ReElecting", suspect));
             var observationFuture = SharedScheduler.scheduleAtFixedRate(() -> adoptLeaderFromKvIfPresent(ctx),
                                                                         ctx.peerObservationInterval());
 
             return new ReElecting(ctx,
                                   entryBaseline,
+                                  suspect,
                                   holder,
                                   new AtomicReference<>(),
                                   new AtomicReference<>(observationFuture));
@@ -1022,9 +1040,12 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// `node-2` (rank 1) proposes one `perRankDelay` later (default 1s); and so on. Subsequent
     /// retries after a failed proposal use [`#scheduleElectionTickInto`] (with `proposalRetryDelay`
     /// + jitter) — the staircase ONLY governs the first tick on each entry, which is exactly
-    /// the window where parallel proposals would otherwise collide.
-    private static ScheduledFuture<?> scheduleStaircaseFirstTick(LeaderElectionContext ctx, String stateLabel) {
-        var rank = ctx.rankOfSelf();
+    /// the window where parallel proposals would otherwise collide. A [`ReElecting`] suspect is left out
+    /// of the ranking (#2869), so the lowest non-suspect node proposes at the base delay.
+    private static ScheduledFuture<?> scheduleStaircaseFirstTick(LeaderElectionContext ctx,
+                                                                 String stateLabel,
+                                                                 Option<NodeId> suspect) {
+        var rank = ctx.rankOfSelf(suspect);
         var delayMs = ctx.baseElectionDelay().millis() + rank * ctx.perRankDelay().millis();
 
         log.info("Entering {}: rank={}, first-tick delay={}ms (rank-staircase: base={}ms + rank*{}ms), "
@@ -1088,7 +1109,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             return;
         }
 
-        var pool = ctx.candidatePool().stream().sorted().toList();
+        var pool = excludeSuspect(ctx.candidatePool().stream().sorted().toList(),
+                                  suspectOf(owner));
 
         if (pool.isEmpty()) {
             // GUARD 3 (election-trigger swallow).
@@ -1102,8 +1124,11 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         var candidate = pool.getFirst();
         // All nodes propose in parallel during initial election. Rabia phase resolution
         // is leaderless and handles concurrent proposals natively — only one commits per
-        // phase. `candidate` is `pool.getFirst()` after sorting, so every proposer picks
-        // the same NodeId, eliminating split-vote risk. Removing the prior single-proposer
+        // phase. `candidate` is `pool.getFirst()` after sorting, but a ReElecting suspect (#2869)
+        // is local to the node that observed the silence, so proposers can now differ. One leader
+        // per view is guaranteed by Rabia's total log order plus the LeaderValue fence, which
+        // refuses a second write at the same viewSequence (KVStore.java:714, doc :656-658).
+        // Removing the prior single-proposer
         // gate (lex-first only) ensures the cluster does not stall on `node-1` whenever its
         // Rabia engine is the slowest to reach `Idle`/`InPhase` after a cold restart —
         // any peer whose Rabia activates first can drive the proposal forward.
@@ -1130,6 +1155,30 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         }
 
         sendProposal(ctx, owner, handler, candidate);
+    }
+
+    /// #2869: drops the [`ReElecting`] suspect from the sorted pool so a silent ex-leader still present in
+    /// the transport topology is not proposed again. Falls back to the unfiltered pool when the suspect is
+    /// the only candidate, so the empty-pool guard and the 1-2 node behaviour stay as they were.
+    private static List<NodeId> excludeSuspect(List<NodeId> sortedPool, Option<NodeId> suspect) {
+        var filtered = suspect.map(node -> withoutNode(sortedPool, node)).or(sortedPool);
+
+        return filtered.isEmpty()
+               ? sortedPool
+               : filtered;
+    }
+
+    private static List<NodeId> withoutNode(List<NodeId> pool, NodeId node) {
+        return pool.stream()
+                   .filter(candidate -> !candidate.equals(node))
+                   .toList();
+    }
+
+    private static Option<NodeId> suspectOf(LeaderElectionState owner) {
+        return switch (owner) {
+            case ReElecting r -> r.suspect();
+            default -> Option.none();
+        };
     }
 
     private static void sendProposal(LeaderElectionContext ctx,

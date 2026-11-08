@@ -212,9 +212,11 @@ final class Http3Server {
                                boolean ownsGroup) {
         if (future.isSuccess()) {
             var channel = ((io.netty.channel.ChannelFuture) future).channel();
+            // #2867: the bound port, as NettyHttpServer reports it: with port 0 the OS-assigned one
+            var boundPort = ((InetSocketAddress) channel.localAddress()).getPort();
 
-            log.info("HTTP/3 QUIC server '{}' started on port {}", config.name(), config.port());
-            promise.succeed(new Http3Server(config.port(), Option.option(group), Option.option(channel), ownsGroup));
+            log.info("HTTP/3 QUIC server '{}' started on port {}", config.name(), boundPort);
+            promise.succeed(new Http3Server(boundPort, Option.option(group), Option.option(channel), ownsGroup));
         } else {
             // #1612: the group this create made is terminated (bounded) BEFORE the failure is reported; the bind
             // failure is what the create reports, and a termination failure is only logged.
@@ -308,6 +310,16 @@ final class Http3Server {
     /// Either answers 408, resets the stream's input and never dispatches. A slow upload above the minimum rate
     /// completes however long it takes.
     ///
+    /// A streamed request ([Disposition.Stream]) is never buffered: its DATA frames go to the route's [BodySink] one at a
+    /// time (see [BodyStream]) under the same bounds, and when its input ends the sink gets the request (head and
+    /// trailers, empty body) and its response. A refusal is answered as above and aborts the sink (413:
+    /// [BodySink.Ended#TOO_LARGE]; 408: [BodySink.Ended#TIMED_OUT]); an undecodable target is answered 400 and a framing
+    /// error closes the stream, both aborting it [BodySink.Ended#MALFORMED]; a stream torn down first aborts it
+    /// [BodySink.Ended#DISCONNECTED]. A failed `accept` hands the sink its response and then resets the stream's input.
+    /// While the stream waits for its sink, the body's idle and rate bounds are held ([BodyGuard#hold]); a sink that does
+    /// not accept within the stall bound (the route's idle bound, else the read timeout) is answered 503 with
+    /// `Retry-After` and aborted [BodySink.Ended#STALLED].
+    ///
     /// Package-private so the server-level tests can drive it in an `EmbeddedChannel`.
     static class Http3RequestHandler extends Http3RequestStreamInboundHandler {
         private static final Logger log = LoggerFactory.getLogger(Http3RequestHandler.class);
@@ -322,6 +334,8 @@ final class Http3Server {
         private ByteBuf bodyData;
         private boolean rejected;
         private Option<BodyGuard> guard = none();
+        /// The body of a streamed request ([Disposition.Stream]) on its way to the sink; empty for an aggregated one.
+        private Option<Streamed> stream = none();
 
         Http3RequestHandler(BiConsumer<HttpRequest, ResponseWriter> handler,
                             int maxContentLength,
@@ -365,6 +379,7 @@ final class Http3Server {
                 switch (classifier.classify(headRequest())) {
                     case Disposition.Reject reject -> rejectWith(ctx, reject.respond());
                     case Disposition.Aggregate aggregate -> admit(ctx, aggregate);
+                    case Disposition.Stream streamed -> beginStream(ctx, streamed);
                 }
             } else {
                 trailersFrame = some(frame);
@@ -385,6 +400,90 @@ final class Http3Server {
             started.refuseIfDeclaredTooLarge(declaredLength());
         }
 
+        /// A streamed request's sink, and its body on the way to it.
+        private record Streamed(BodySink sink, BodyStream body) {}
+
+        /// Streams the body to the sink, frame by frame, under the same bounds as an aggregated one. Reading the stream
+        /// stops while a frame waits or is being accepted, so QUIC stops granting the client stream credit: the server
+        /// holds at most the stream's flow-control window. A target that cannot be decoded is answered 400 at once.
+        private void beginStream(ChannelHandlerContext ctx, Disposition.Stream streamed) {
+            var sink = streamed.sink();
+
+            if (RequestTarget.requestTarget(targetOf(headersFrame.headers())).isFailure()) {
+                sink.abort(BodySink.Ended.MALFORMED);
+                reject(ctx, HttpStatus.BAD_REQUEST, "Malformed request target");
+
+                return;
+            }
+
+            var bounds = streamed.bounds();
+
+            stream = some(new Streamed(sink,
+                                       BodyStream.bodyStream(ctx.executor(),
+                                                             ctx.channel(),
+                                                             sink,
+                                                             cause -> rejectWith(ctx, writer -> sink.fail(cause, writer)),
+                                                             BodyStream.Pacing.pacing(this::holdGuard,
+                                                                                      this::resumeGuard,
+                                                                                      bounds.map(BodyBounds::idle)
+                                                                                            .or(readTimeout),
+                                                                                      () -> onStalled(ctx)))));
+            var started = BodyGuard.start(ctx.executor(),
+                                          streamed.maxBytes(),
+                                          bounds.map(BodyBounds::idle).or(readTimeout),
+                                          bounds.map(BodyBounds::rate).or(bodyRateLimit),
+                                          bounds.map(BodyBounds::maxDuration).or(NO_BOUND),
+                                          () -> {},
+                                          reason -> onRefused(ctx, reason, streamed.maxBytes()));
+
+            guard = some(started);
+            started.refuseIfDeclaredTooLarge(declaredLength());
+        }
+
+        /// The stream stopped reading to wait for its sink: the client's idle and rate bounds stop with it.
+        private void holdGuard() {
+            guard.onPresent(BodyGuard::hold);
+        }
+
+        private void resumeGuard() {
+            guard.onPresent(BodyGuard::resume);
+        }
+
+        /// The sink stalled past the bound (the route's idle bound, else the read timeout): 503, retryable, and the sink
+        /// is aborted [BodySink.Ended#STALLED] once its outstanding `accept` resolves.
+        private void onStalled(ChannelHandlerContext ctx) {
+            if (!rejected) {
+                log.debug("HTTP/3 streamed request body: the sink stalled");
+                stream.onPresent(streamed -> rejectStalled(ctx, streamed));
+            }
+        }
+
+        private void rejectStalled(ChannelHandlerContext ctx, Streamed streamed) {
+            var pacing = streamed.body().pacing();
+
+            endStream(BodySink.Ended.STALLED);
+            rejectWith(ctx, pacing::answerStalled);
+        }
+
+        /// The server ends the streamed request: the sink is aborted with `cause` (after its outstanding `accept`).
+        private void endStream(Cause cause) {
+            stream.onPresent(streamed -> streamed.body()
+                                                 .abort(cause));
+        }
+
+        /// The whole body arrived and was accepted: the sink gets the request (head and trailers, empty body) and its
+        /// response.
+        private void complete(ChannelHandlerContext ctx, BodySink sink) {
+            var requestId = IdGenerator.generate("req");
+            var trailers = Headers.trailers(trailersFrame.map(frame -> extractHeaders(frame.headers())).or(Map.of()));
+
+            sink.complete(requestOf(requestId,
+                                    RequestTarget.lenientTarget(targetOf(headersFrame.headers())),
+                                    new byte[0],
+                                    trailers),
+                          new Http3ResponseWriter(ctx, requestId));
+        }
+
         private long declaredLength() {
             return Option.option(headersFrame.headers().get("content-length"))
                          .flatMap(value -> Result.lift(Causes::fromThrowable,
@@ -402,9 +501,16 @@ final class Http3Server {
         @Override
         protected void channelRead(ChannelHandlerContext ctx, Http3DataFrame dataFrame) {
             if (!rejected && guard.map(active -> active.onBytes(dataFrame.content().readableBytes())).or(true)) {
-                appendData(dataFrame.content());
+                stream.apply(() -> appendAndRelease(dataFrame),
+                             streamed -> streamed.body()
+                                                 .offer(dataFrame.content()));
+            } else {
+                ReferenceCountUtil.release(dataFrame);
             }
+        }
 
+        private void appendAndRelease(Http3DataFrame dataFrame) {
+            appendData(dataFrame.content());
             ReferenceCountUtil.release(dataFrame);
         }
 
@@ -434,7 +540,10 @@ final class Http3Server {
                 return;
             }
 
-            dispatch(ctx);
+            stream.apply(() -> dispatch(ctx),
+                         streamed -> streamed.body()
+                                             .end(() -> complete(ctx,
+                                                                 streamed.sink())));
         }
 
         @Contract
@@ -442,6 +551,7 @@ final class Http3Server {
         public void handlerRemoved(ChannelHandlerContext ctx) {
             stopTimers();
             releaseBody();
+            endStream(BodySink.Ended.DISCONNECTED);
         }
 
         private void dispatch(ChannelHandlerContext ctx) {
@@ -498,6 +608,9 @@ final class Http3Server {
             guard = none();
             if (!rejected) {
                 log.debug("HTTP/3 request body refused: {}", reason);
+                endStream(reason == BodyGuard.Refusal.TOO_LARGE
+                          ? BodySink.Ended.TOO_LARGE
+                          : BodySink.Ended.TIMED_OUT);
                 switch (reason) {
                     case TOO_LARGE -> reject(ctx,
                                              HttpStatus.REQUEST_ENTITY_TOO_LARGE,
@@ -531,9 +644,12 @@ final class Http3Server {
             }
         }
 
-        /// Package-private test seam: whether a body buffer is still held, so a test can assert every exit released it.
+        /// Package-private test seam: whether a body buffer is still held (the aggregated body, or a streamed body's chunk
+        /// waiting or being accepted), so a test can assert every exit released it.
         boolean holdsBodyBuffer() {
-            return bodyData != null;
+            return bodyData != null || stream.map(streamed -> streamed.body()
+                                                                      .holdsBuffer())
+                                             .or(false);
         }
 
         private void releaseBody() {
@@ -606,6 +722,7 @@ final class Http3Server {
         @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
             rejected = true;
+            endStream(BodySink.Ended.MALFORMED);
             log.error("Error in HTTP/3 handler", cause);
             ctx.close();
         }

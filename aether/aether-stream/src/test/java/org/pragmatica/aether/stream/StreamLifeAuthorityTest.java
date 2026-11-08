@@ -161,6 +161,7 @@ class StreamLifeAuthorityTest {
                                       cluster,
                                       OwnershipEpochHighWater.ownershipEpochHighWater(emptyStore()),
                                       StreamOwnerEpochSource.zero(),
+                                      CommittedEpochStarts.NONE,
                                       Option.some(opener),
                                       LastSealedOffsetSource.none(),
                                       DurableSealedOffsetSource.none());

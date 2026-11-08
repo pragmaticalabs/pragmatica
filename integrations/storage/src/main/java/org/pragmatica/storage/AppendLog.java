@@ -517,11 +517,14 @@ public final class AppendLog implements AutoCloseable {
     }
 
     /// Takes `writeLock` then `syncLock`, the order [#compact] uses; the in-lock `syncFailure` check closes the race
-    /// with a fail-stop recorded after the entry check, as there.
+    /// with a fail-stop recorded after the entry check, as there. The in-lock `closed` check (#2859) closes the race with a
+    /// [#close] that completed between the entry check and these locks: the channel is gone, and a cut would fail-stop the log.
     private Result<Unit> cutSuffix(long keepThrough) {
         synchronized (writeLock) {
             synchronized (syncLock) {
-                return syncFailure.fold(() -> cutSuffixLocked(keepThrough), Cause::result);
+                return closed
+                       ? WalError.General.WAL_CLOSED.result()
+                       : syncFailure.fold(() -> cutSuffixLocked(keepThrough), Cause::result);
             }
         }
     }
@@ -607,7 +610,18 @@ public final class AppendLog implements AutoCloseable {
     /// not follow the last one or a start below the last start, a no-op when it repeats the last entry
     /// exactly.
     public Result<Unit> recordEpochStart(EpochKey key, long startOffset, EpochOrder order) {
-        return epochs.recordStart(key, startOffset, order);
+        return unlessClosed(() -> epochs.recordStart(key, startOffset, order));
+    }
+
+    /// Runs `operation` under `writeLock` unless the log is closed (#2859): the epoch sidecar is a file of this log, so a
+    /// closed log refuses to rewrite it with `WAL_CLOSED`, as [#close] (which takes `writeLock` first) orders it. The
+    /// history's own lock is taken inside `operation`, innermost, as in [#writeAttributed]; no path holds it while taking this one.
+    private Result<Unit> unlessClosed(Supplier<Result<Unit>> operation) {
+        synchronized (writeLock) {
+            return closed
+                   ? WalError.General.WAL_CLOSED.result()
+                   : operation.get();
+        }
     }
 
     /// The owner-epoch history, oldest first, as last made durable. Reads memory only.
@@ -624,7 +638,7 @@ public final class AppendLog implements AutoCloseable {
     /// Drop every epoch entry starting above `offset`, durably -- for a log truncated back to `offset`,
     /// where no epoch began past it.
     public Result<Unit> truncateEpochsAbove(long offset) {
-        return epochs.truncateAbove(offset);
+        return unlessClosed(() -> epochs.truncateAbove(offset));
     }
 
     /// Drop every epoch entry that no written record reaches (#1596): an entry is recorded durably BEFORE the first
@@ -634,13 +648,16 @@ public final class AppendLog implements AutoCloseable {
     /// the bound is the larger of it and the last written offset, read under the write lock, so an entry a
     /// concurrent attributed write has just used is never dropped. With neither known (`-1`), nothing is dropped.
     public Result<Unit> truncateEpochsAboveHead(long knownHead) {
-        synchronized (writeLock) {
-            var head = Math.max(knownHead, lastOffset);
+        return unlessClosed(() -> truncateEpochsAboveHeadLocked(knownHead));
+    }
 
-            return head < 0
-                   ? Result.unitResult()
-                   : epochs.truncateAbove(head);
-        }
+    /// Runs under `writeLock`.
+    private Result<Unit> truncateEpochsAboveHeadLocked(long knownHead) {
+        var head = Math.max(knownHead, lastOffset);
+
+        return head < 0
+               ? Result.unitResult()
+               : epochs.truncateAbove(head);
     }
 
     /// Drop the given epoch entries that no written record reaches (#1638 F1): each of `entries` whose start lies
@@ -649,9 +666,7 @@ public final class AppendLog implements AutoCloseable {
     /// above the head that the caller did not name belongs to someone else. Unlike [#truncateEpochsAboveHead] a head of
     /// `-1` is not "unknown": the caller names entries it recorded itself, over a head it knows.
     public Result<Unit> dropEpochStartsAboveHead(long knownHead, List<EpochStart> entries) {
-        synchronized (writeLock) {
-            return epochs.removeAbove(Math.max(knownHead, lastOffset), entries);
-        }
+        return unlessClosed(() -> epochs.removeAbove(Math.max(knownHead, lastOffset), entries));
     }
 
     /// Delete the log's files -- the log, its epoch history, its acked marker, any stale temp and its fail-stop mark -- after
@@ -694,10 +709,14 @@ public final class AppendLog implements AutoCloseable {
                : raiseAckedMarker(offset);
     }
 
+    /// The in-lock `closed` check (#2859) pairs with [#close] taking `markerLock`: a raise either finished before the log
+    /// closed or is refused, so no marker file is rewritten after close.
     private Result<Unit> raiseAckedMarker(long offset) {
         synchronized (markerLock) {
-            return acked.advance(new AckedMark(attributedEpoch(offset), offset),
-                                 Math.max(lastOffset, sealedFloor.getAsLong()));
+            return closed
+                   ? WalError.General.WAL_CLOSED.result()
+                   : acked.advance(new AckedMark(attributedEpoch(offset), offset),
+                                   Math.max(lastOffset, sealedFloor.getAsLong()));
         }
     }
 
@@ -716,7 +735,9 @@ public final class AppendLog implements AutoCloseable {
     public Result<Unit> clampAckedMarker(long knownHead) {
         synchronized (writeLock) {
             synchronized (markerLock) {
-                return lowerAckedMarker(Math.max(knownHead, lastOffset));
+                return closed
+                       ? WalError.General.WAL_CLOSED.result()
+                       : lowerAckedMarker(Math.max(knownHead, lastOffset));
             }
         }
     }
@@ -764,6 +785,24 @@ public final class AppendLog implements AutoCloseable {
     @Contract
     @Override
     public void close() {
+        synchronized (writeLock) {
+            synchronized (syncLock) {
+                synchronized (markerLock) {
+                    closeLocked();
+                }
+            }
+        }
+    }
+
+    /// Runs under `writeLock`, `syncLock` and `markerLock` (#2855, #2859): an in-flight write or group commit finishes before
+    /// the channel closes, and the close-time force publishes `syncedSeq`, so a commit that runs later resolves from it and touches no file. A commit
+    /// the close-time force did not cover is refused by [#forceUpTo] without forcing the closed channel -- which would
+    /// fail-stop the log and write its mark beside a log that is gone.
+    private void closeLocked() {
+        if (closed) {
+            return;
+        }
+
         closed = true;
         syncFailure.fold(this::closeTimeSync, _ -> unit());
         Result.lift(CLOSE_FAILED,
@@ -774,8 +813,15 @@ public final class AppendLog implements AutoCloseable {
     }
 
     private Unit closeTimeSync() {
+        var target = writtenSeq;
+        var covered = lastOffset;
+        var startedAt = System.nanoTime();
+
         Result.lift(CLOSE_FAILED,
                     () -> channel.force(false))
+              .onSuccess(_ -> publishSync(target,
+                                          covered,
+                                          System.nanoTime() - startedAt))
               .onFailure(cause -> log.warn("AppendLog close-time fsync issue for {}: {}",
                                            file,
                                            cause.message()));
@@ -896,12 +942,21 @@ public final class AppendLog implements AutoCloseable {
                            boolean failStopped) {}
 
     // === append path ===
+    /// The in-lock `closed` check (#2859) closes the race with a [#close] that completed between [#write]'s entry check and
+    /// `writeLock`: the channel is gone, and the frame write would fail-stop the log and write `<log>.failstopped`.
     private Result<Long> writeRecord(long offset, byte[] payload, long timestampMillis) {
         synchronized (writeLock) {
-            return admitsOffset(offset)
-                   ? writeNext(offset, payload, timestampMillis)
-                   : new WalError.OffsetRegression(offset, lastOffset).result();
+            return closed
+                   ? WalError.General.WAL_CLOSED.result()
+                   : writeAdmitted(offset, payload, timestampMillis);
         }
+    }
+
+    /// Runs under `writeLock`.
+    private Result<Long> writeAdmitted(long offset, byte[] payload, long timestampMillis) {
+        return admitsOffset(offset)
+               ? writeNext(offset, payload, timestampMillis)
+               : new WalError.OffsetRegression(offset, lastOffset).result();
     }
 
     /// The offset-order rule (I-04, class doc), under `writeLock`: `o == lastOffset + 1`, any `o` on an empty log, or
@@ -910,18 +965,30 @@ public final class AppendLog implements AutoCloseable {
         return offset == lastOffset + 1 || (offset > lastOffset && (lastOffset == -1 || offset <= sealedFloor.getAsLong() + 1));
     }
 
+    /// The in-lock `closed` check (#2859), as in [#writeRecord]: a closed log must not rewrite `<log>.epochs`.
     private Result<Long> writeAttributed(long offset,
                                          byte[] payload,
                                          long timestampMillis,
                                          EpochKey key,
                                          EpochOrder order) {
         synchronized (writeLock) {
-            return admitsOffset(offset)
-                   ? epochs.recordIfNew(key, offset, order)
-                           .onFailure(this::failStopOnEpochWriteFailure)
-                           .flatMap(_ -> writeNext(offset, payload, timestampMillis))
-                   : new WalError.OffsetRegression(offset, lastOffset).result();
+            return closed
+                   ? WalError.General.WAL_CLOSED.result()
+                   : writeAttributedAdmitted(offset, payload, timestampMillis, key, order);
         }
+    }
+
+    /// Runs under `writeLock`.
+    private Result<Long> writeAttributedAdmitted(long offset,
+                                                 byte[] payload,
+                                                 long timestampMillis,
+                                                 EpochKey key,
+                                                 EpochOrder order) {
+        return admitsOffset(offset)
+               ? epochs.recordIfNew(key, offset, order)
+                       .onFailure(this::failStopOnEpochWriteFailure)
+                       .flatMap(_ -> writeNext(offset, payload, timestampMillis))
+               : new WalError.OffsetRegression(offset, lastOffset).result();
     }
 
     /// Runs under `writeLock`. A refused key wrote nothing and leaves the log writable; only an entry that could
@@ -988,7 +1055,9 @@ public final class AppendLog implements AutoCloseable {
         synchronized (syncLock) {
             return syncedSeq >= mySeq
                    ? unitResult()
-                   : syncFailure.fold(this::forceAndPublish, Cause::result);
+                   : closed
+                     ? WalError.General.WAL_CLOSED.result()
+                     : syncFailure.fold(this::forceAndPublish, Cause::result);
         }
     }
 
@@ -1173,7 +1242,9 @@ public final class AppendLog implements AutoCloseable {
     private Result<Unit> compact() {
         synchronized (writeLock) {
             synchronized (syncLock) {
-                return syncFailure.fold(() -> rewriteSurvivors(truncatedUpto), Cause::result);
+                return closed
+                       ? WalError.General.WAL_CLOSED.result()
+                       : syncFailure.fold(() -> rewriteSurvivors(truncatedUpto), Cause::result);
             }
         }
     }

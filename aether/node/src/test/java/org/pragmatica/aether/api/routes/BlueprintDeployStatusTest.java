@@ -633,6 +633,11 @@ class BlueprintDeployStatusTest {
         }
 
         @Override
+        public void setUploadStorage(org.pragmatica.storage.StorageInstance contentStorage) {
+            unsupported("setUploadStorage");
+        }
+
+        @Override
         public Option<Integer> boundPort() {
             return unsupported("boundPort");
         }

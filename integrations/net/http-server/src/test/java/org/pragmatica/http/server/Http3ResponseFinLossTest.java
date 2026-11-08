@@ -24,6 +24,7 @@ import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 
+import io.netty.channel.Channel;
 import io.netty.handler.codec.http3.Http3;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import org.junit.jupiter.api.AfterEach;
@@ -40,16 +41,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// body, never saw the end of the stream, and the exchange stalled until the server's 5 s idle timeout. The writer now
 /// sends `FIN` with the response's last bytes ([QuicStreamFinisher]).
 ///
-/// The handler answers off the event loop, 100 ms after dispatch, as an application handler does: each stream write is
-/// then packetised as soon as it is made. The injector holds the server's datagrams from just before the answer and
-/// releases them 600 ms later, after the PTO probes.
+/// The handler answers 100 ms after dispatch, in a task of its own on the server's event loop, outside the QUIC
+/// channel's read handling, as an application handler's answer runs: each stream write is then packetised as soon as it
+/// is made. The same task arms the injector, writes the answer and ends the injector's burst, so the burst is exactly
+/// the answer's datagrams under any load (#2862). The injector releases them once the endpoint has sent four PTO probes (#2866), at the earliest 600 ms later.
 class Http3ResponseFinLossTest {
+    private static final int PROBES = 4;
     private static final int BODY_BYTES = 6 * 1024;
     private static final String PAD = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ".repeat(80);
 
     private final TailLossInjector injector = new TailLossInjector();
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     private Http3Server server;
+    private Channel udp;
     private int port;
 
     @AfterEach
@@ -110,7 +114,8 @@ class Http3ResponseFinLossTest {
                                     (request, writer) -> answerLater(request, writer, drop, emptyBody))
                             .await(timeSpan(10).seconds())
                             .unwrap();
-        server.serverChannel().unwrap().pipeline().addFirst(injector);
+        udp = server.serverChannel().unwrap();
+        udp.pipeline().addFirst(injector);
         port = Http3TestClient.boundPort(server);
     }
 
@@ -121,7 +126,7 @@ class Http3ResponseFinLossTest {
     }
 
     private void answerLater(HttpRequest request, ResponseWriter writer, boolean drop, boolean emptyBody) {
-        scheduler.schedule(() -> answer(writer, emptyBody), 100, TimeUnit.MILLISECONDS);
+        udp.eventLoop().schedule(() -> answer(writer, emptyBody), 100, TimeUnit.MILLISECONDS);
         scheduler.schedule(() -> release(drop), 700, TimeUnit.MILLISECONDS);
     }
 
@@ -132,10 +137,12 @@ class Http3ResponseFinLossTest {
         } else {
             writer.write(HttpStatus.OK, new byte[BODY_BYTES], CommonContentType.TEXT_PLAIN);
         }
+
+        injector.endBurst();
     }
 
     private void release(boolean drop) {
-        injector.release(server.serverChannel().unwrap(),
-                         drop);
+        injector.awaitProbes(udp, PROBES);
+        injector.release(udp, drop);
     }
 }

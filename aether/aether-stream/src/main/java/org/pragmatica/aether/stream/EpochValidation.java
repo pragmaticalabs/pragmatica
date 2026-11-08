@@ -76,14 +76,26 @@ public final class EpochValidation {
                           .or(() -> Result.success(ownerEpoch));
     }
 
-    /// The offset at or below every offset an epoch after the consumer's may have re-assigned: the start that followed the
-    /// consumer's epoch, or, for a consumer older than every kept start, the oldest kept start, whose offset the record keeps as
-    /// the lowest of those it folded (`StreamPartitionOwnershipValue#capped`). A cursor at or below it is admitted; above it the
+    /// The offset at or below every offset an epoch after `epoch` may have re-assigned ([#resumeBound]), or none when no start
+    /// after it is recorded (or none at all). #1971 (I-24): a non-owner copy whose records go no further than `epoch`'s lineage
+    /// is doubted from here, by the same rule a consumer of that epoch resumes by; [Epoch#ZERO] stands for "older than every
+    /// kept start" and answers the lowest kept start.
+    public static Option<Long> reassignedFrom(List<EpochStart> starts, Epoch epoch) {
+        return resumeBound(starts, epoch);
+    }
+
+    /// The offset at or below every offset an epoch after the consumer's may have re-assigned: the LOWEST start of an epoch after
+    /// the consumer's, for a consumer older than every kept start the lowest kept start, whose offset the record keeps as the
+    /// lowest of those it folded (`StreamPartitionOwnershipValue#capped`). The lowest, not the first after the consumer's epoch
+    /// (v2858a A2): nothing makes a later epoch start above an earlier one (`withEpochStart` appends unchecked), and a later
+    /// epoch that starts lower re-assigned the offsets from its own start. A cursor at or below it is admitted; above it the
     /// consumer re-reads from it, so it may redeliver and never skips.
     private static Option<Long> resumeBound(List<EpochStart> starts, Epoch consumerEpoch) {
-        return consumerEpoch.compareTo(starts.getFirst().epoch()) < 0
-               ? Option.some(starts.getFirst().startOffset())
-               : firstFollowing(starts, consumerEpoch).map(EpochStart::startOffset);
+        return Option.from(starts.stream()
+                                 .filter(start -> start.epoch()
+                                                       .compareTo(consumerEpoch) > 0)
+                                 .map(EpochStart::startOffset)
+                                 .min(Long::compare));
     }
 
     /// Where the loss is PROVEN to begin, or -1: the first start that is exactly known to be of an epoch after the consumer's
@@ -97,10 +109,5 @@ public final class EpochValidation {
                      .findFirst()
                      .map(EpochStart::startOffset)
                      .orElse(StreamError.EpochDiverged.NO_PROVEN_LOSS);
-    }
-
-    private static Option<EpochStart> firstFollowing(List<EpochStart> starts, Epoch consumerEpoch) {
-        return Option.from(starts.stream().filter(start -> start.epoch()
-                                                                .compareTo(consumerEpoch) > 0).findFirst());
     }
 }

@@ -271,7 +271,7 @@ public sealed interface Outcomes {
     }
 
     /// Whether a draft of `kind` on `key` is submitted and unsettled, or waits in the outbox.
-    private static boolean inFlight(ClusterModel m, SubmitKind kind, AetherKey key) {
+    static boolean inFlight(ClusterModel m, SubmitKind kind, AetherKey key) {
         return m.submitted.values()
                           .stream()
                           .flatMap(submitted -> submitted.drafts()
@@ -422,6 +422,14 @@ public sealed interface Outcomes {
     private static KVCommand.Mutation<AetherKey, AetherValue> removal(ArtifactBase base,
                                                                       AetherValue.SliceTargetValue target) {
         return new KVCommand.Mutation<>(new SliceTargetKey(base), Option.some((AetherValue) target), Option.none());
+    }
+
+    /// #2864: a rollback of a blueprint that declares `artifact` is queued or in flight.
+    static boolean rollingBack(ClusterModel m, Artifact artifact) {
+        return Idx.members(m.blueprintsByArtifact, artifact)
+                  .toList()
+                  .stream()
+                  .anyMatch(id -> rollbackInFlight(m, id));
     }
 
     private static boolean rollbackInFlight(ClusterModel m, BlueprintId id) {

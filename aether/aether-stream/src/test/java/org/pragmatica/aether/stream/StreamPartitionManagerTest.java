@@ -131,6 +131,7 @@ class StreamPartitionManagerTest {
                                                                         node,
                                                                         highWater,
                                                                         StreamOwnerEpochSource.zero(),
+                                                                        CommittedEpochStarts.NONE,
                                                                         Option.none(),
                                                                         LastSealedOffsetSource.none(),
                                                                         DurableSealedOffsetSource.none());

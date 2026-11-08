@@ -15,26 +15,18 @@
  */
 package org.pragmatica.http.server;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.function.BiPredicate;
 
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 
 import io.netty.buffer.Unpooled;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelOutboundHandlerAdapter;
-import io.netty.channel.ChannelPromise;
-import io.netty.channel.socket.DatagramPacket;
+import io.netty.channel.Channel;
 import io.netty.handler.codec.http3.DefaultHttp3DataFrame;
 import io.netty.handler.codec.http3.DefaultHttp3HeadersFrame;
 import io.netty.handler.codec.http3.Http3;
-import io.netty.handler.codec.http3.Http3DataFrame;
-import io.netty.handler.codec.http3.Http3HeadersFrame;
-import io.netty.handler.codec.http3.Http3RequestStreamInboundHandler;
 import io.netty.handler.codec.quic.DefaultQuicStreamFrame;
-import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicStreamChannel;
-import io.netty.util.ReferenceCountUtil;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -45,10 +37,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// #2746: the quiche defect behind the stall, pinned on the wire with a hand-driven client.
 ///
-/// A POST sends 512 KiB, then its 6 KiB tail. The client's datagrams are held from the tail on: the tail's datagrams
-/// (phase 1), the stream's `FIN` when it travels alone (phase 2), and four packets of a second stream (phase 3). The
-/// release then drops what the case names and sends the rest, so the server acknowledges the phase-3 packets and the
-/// client detects every loss in ONE batch.
+/// A POST sends 512 KiB, then its 6 KiB tail. The client's datagrams are held from the tail on ([TailLossInjector]):
+/// the burst is the tail's datagrams and the stream's `FIN` when it travels alone, written in one task; the datagrams
+/// that follow are the client's PTO probes. The release then drops what the case names of the burst and sends the
+/// rest, so the server acknowledges the probes and the client detects every loss in ONE batch.
 ///
 /// - The tail's data lost, all but its last datagram, together with the FIN-only frame that followed it: quiche
 ///   (netty-codec-native-quic 4.2.18, unchanged in 4.2.20) retransmits the data but never the `FIN`. The server holds
@@ -63,7 +55,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Http3FinLossTest {
     private static final int HEAD = 512 * 1024;
     private static final int TAIL = 6 * 1024;
+    private static final int PROBES = 4;
+    private static final int ATTEMPTS = 3;
 
+    private TailLossInjector injector = new TailLossInjector();
     private Http3Server server;
     private int port;
 
@@ -92,20 +87,38 @@ class Http3FinLossTest {
         assertCompletes(Ending.FIN_ONLY_AFTER_DATA, Loss.FIN_ONLY);
     }
 
+    /// The stall needs the client to detect the FIN-only frame's loss in the same batch as the data's, which depends on
+    /// how the server's acknowledgements of the probes are split: when they arrive in two pieces (a starved host reads
+    /// the released datagrams in two goes), the data is retransmitted first and the FIN-only frame after it, and the
+    /// exchange completes though quiche is unchanged (#2866: 1 in ~190 under load). A quiche that retransmits a lost
+    /// FIN-only frame completes EVERY attempt, so the tripwire fires only when all three do.
     @Test
     void finOnlyFrameLostWithData_stalls() throws Exception {
-        var holder = new Holder();
-        var answer = exchange(Ending.FIN_ONLY_AFTER_DATA, Loss.DATA_AND_FIN_EXCEPT_LAST_DATA, holder);
+        var answer = stallAttempt();
 
-        assertThat(holder.log()).as("the FIN-only frame was dropped").contains("2x");
-        assertThat(answer.status()).as("TRIPWIRE #2746: quiche now retransmits a FIN-only frame lost together with data; "
-                                      + "the workaround (FIN on the last data) can be reconsidered. " + holder.log())
+        for (int attempt = 1; attempt < ATTEMPTS && "200".equals(answer.status()); attempt++) {
+            answer = stallAttempt();
+        }
+
+        assertThat(answer.status()).as("TRIPWIRE #2746: quiche now retransmits a FIN-only frame lost together with data "
+                                      + "(" + ATTEMPTS + " attempts in a row); the workaround (FIN on the last data) can be "
+                                      + "reconsidered. " + injector.log())
                   .isEqualTo("closed");
+    }
+
+    private Http3TestClient.Answer stallAttempt() throws Exception {
+        injector = new TailLossInjector();
+        var answer = exchange(Ending.FIN_ONLY_AFTER_DATA, Loss.DATA_AND_FIN_EXCEPT_LAST_DATA);
+
+        assertPatternApplied();
+        assertThat(injector.log()).as("the FIN-only frame was the burst's last datagram, and was dropped").contains("bx46");
+
+        return answer;
     }
 
     @Test
     void finOnLastDataLostWithData_completes() throws Exception {
-        assertCompletes(Ending.FIN_ON_LAST_DATA, Loss.DATA_AND_FIN_EXCEPT_LAST_DATA);
+        assertCompletes(Ending.FIN_ON_LAST_DATA, Loss.DATA_EXCEPT_FIN_BEARING);
     }
 
     @Test
@@ -114,11 +127,17 @@ class Http3FinLossTest {
     }
 
     private void assertCompletes(Ending ending, Loss loss) throws Exception {
-        var holder = new Holder();
-        var answer = exchange(ending, loss, holder);
+        var answer = exchange(ending, loss);
 
-        assertThat(answer.status()).as(holder.log() + "; " + answer.diagnostics()).isEqualTo("200");
+        assertPatternApplied();
+        assertThat(answer.status()).as(injector.log() + "; " + answer.diagnostics()).isEqualTo("200");
         assertThat(answer.body()).isEqualTo("handled " + (HEAD + TAIL));
+    }
+
+    /// The burst held several datagrams and the endpoint's probes followed it: the loss the case names was applied.
+    private void assertPatternApplied() {
+        assertThat(injector.burst()).as("the pattern was applied: " + injector.log()).isGreaterThanOrEqualTo(2);
+        assertThat(injector.later()).as("probes followed the burst: " + injector.log()).isGreaterThanOrEqualTo(1);
     }
 
     /// How the request stream ends.
@@ -129,49 +148,79 @@ class Http3FinLossTest {
         FIN_ON_LAST_DATA
     }
 
-    /// What the release drops.
+    /// What the release drops, of the burst: the tail's datagrams, the last of which carries or follows the `FIN`.
     private enum Loss {
-        NONE,
-        FIN_ONLY,
-        DATA_AND_FIN_EXCEPT_LAST_DATA,
-        DATA_AND_FIN_EXCEPT_BEFORE_LAST
+        NONE(TailLossInjector.NONE),
+        FIN_ONLY(TailLossInjector.LAST_ONLY),
+        DATA_AND_FIN_EXCEPT_LAST_DATA(TailLossInjector.ALL_BUT_SECOND_LAST),
+        DATA_EXCEPT_FIN_BEARING(TailLossInjector.ALL_BUT_LAST),
+        DATA_AND_FIN_EXCEPT_BEFORE_LAST(TailLossInjector.ALL_BUT_SECOND_LAST);
+
+        private final BiPredicate<Integer, Integer> drop;
+
+        Loss(BiPredicate<Integer, Integer> drop) {
+            this.drop = drop;
+        }
     }
 
-    private Http3TestClient.Answer exchange(Ending ending, Loss loss, Holder holder) throws Exception {
-        return Http3TestClient.exchange(port, stream -> writeRequest(stream, ending, loss, holder));
+    private Http3TestClient.Answer exchange(Ending ending, Loss loss) throws Exception {
+        return Http3TestClient.exchange(port, stream -> writeRequest(stream, ending, loss));
     }
 
-    private void writeRequest(QuicStreamChannel stream, Ending ending, Loss loss, Holder holder) throws Exception {
-        stream.parent().parent().pipeline().addFirst(holder);
+    /// The tail and the `FIN` are written in ONE task on the client's event loop, between [TailLossInjector#arm] and
+    /// [TailLossInjector#endBurst]: the burst is exactly their datagrams, by position, whatever the load (#2866: the
+    /// pattern used to be tagged by sleeps between the writes, and under load it missed the FIN-only frame). The
+    /// release comes once the client has sent four PTO probes while nothing reached the server (at most 10 s).
+    private void writeRequest(QuicStreamChannel stream, Ending ending, Loss loss) throws Exception {
+        var udp = stream.parent().parent();
+
+        udp.pipeline().addFirst(injector);
         stream.write(headers("/x", HEAD + TAIL));
         for (int sent = 0; sent < HEAD; sent += 16384) {
             stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[16384]))).sync();
         }
 
-        Thread.sleep(100);
-        holder.phase = 1;
+        awaitQuiet(udp);
+        stream.eventLoop().submit(() -> writeTail(stream, ending)).sync();
+        injector.awaitProbes(udp, PROBES);
+        injector.release(udp, loss.drop);
+    }
+
+    /// Returns once the client has sent nothing for 200 ms, as seen from its event loop: the head is acknowledged and
+    /// the congestion window is open, so the tail's datagrams are produced by the task that writes it, not later when
+    /// an acknowledgement arrives.
+    private void awaitQuiet(Channel udp) throws Exception {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        var seen = writtenOnLoop(udp);
+
+        while (System.nanoTime() < deadline) {
+            Thread.sleep(200);
+            var now = writtenOnLoop(udp);
+
+            if (now == seen) {
+                return;
+            }
+
+            seen = now;
+        }
+
+        throw new AssertionError("the client kept sending for 10 s");
+    }
+
+    private long writtenOnLoop(Channel udp) {
+        return udp.eventLoop().submit(injector::written).syncUninterruptibly().getNow();
+    }
+
+    private void writeTail(QuicStreamChannel stream, Ending ending) {
+        injector.arm();
         if (ending == Ending.FIN_ON_LAST_DATA) {
-            stream.eventLoop().submit(() -> writeTailWithFin(stream)).sync();
-            Thread.sleep(3);
-            holder.phase = 2;
+            writeTailWithFin(stream);
         } else {
-            stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[TAIL]))).sync();
-            Thread.sleep(3);
-            holder.phase = 2;
-            stream.shutdownOutput().sync();
+            stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[TAIL])));
+            stream.shutdownOutput();
         }
 
-        Thread.sleep(3);
-        holder.phase = 3;
-        var other = Http3.newRequestStream((QuicChannel) stream.parent(), new Ignore()).sync().getNow();
-
-        other.write(headers("/y", 4 * 1100));
-        for (int i = 0; i < 4; i++) {
-            other.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[1100]))).sync();
-        }
-
-        Thread.sleep(3);
-        holder.release(loss);
+        injector.endBurst();
     }
 
     /// A DATA frame (type 0x00, two-byte varint length) written past the frame codec as a STREAM frame with `FIN`.
@@ -197,88 +246,5 @@ class Http3FinLossTest {
                   String.valueOf(length));
 
         return frame;
-    }
-
-    /// Holds every outbound datagram while `phase > 0`, tagged with the phase it was written in.
-    private static final class Holder extends ChannelOutboundHandlerAdapter {
-        private record Held(ChannelHandlerContext ctx, DatagramPacket packet, ChannelPromise promise, int phase) {}
-
-        private final List<Held> held = new ArrayList<>();
-        private final StringBuffer log = new StringBuffer();
-        volatile int phase;
-
-        @Override
-        public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
-            if (phase > 0 && msg instanceof DatagramPacket packet) {
-                held.add(new Held(ctx, packet, promise, phase));
-            } else {
-                super.write(ctx, msg, promise);
-            }
-        }
-
-        String log() {
-            return "held: " + log.toString()
-                                 .trim();
-        }
-
-        /// On the event loop: stops holding, drops the datagrams `loss` names and sends the rest, in order.
-        void release(Loss loss) throws Exception {
-            held.getFirst().ctx().executor().submit(() -> releaseHeld(loss)).sync();
-        }
-
-        private void releaseHeld(Loss loss) {
-            phase = 0;
-            var lastPhase1 = -1;
-
-            for (int i = 0; i < held.size(); i++) {
-                if (held.get(i).phase() == 1) {
-                    lastPhase1 = i;
-                }
-            }
-
-            var keep = loss == Loss.DATA_AND_FIN_EXCEPT_BEFORE_LAST
-                       ? lastPhase1 - 1
-                       : lastPhase1;
-
-            for (int i = 0; i < held.size(); i++) {
-                var h = held.get(i);
-                var drop = isDropped(loss, h.phase(), i == keep);
-
-                log.append(h.phase()).append(drop
-                                             ? "x"
-                                             : "+").append(h.packet().content().readableBytes()).append(' ');
-                if (drop) {
-                    ReferenceCountUtil.release(h.packet());
-                    h.promise().setSuccess();
-                } else {
-                    h.ctx().write(h.packet(), h.promise());
-                }
-            }
-
-            held.getFirst().ctx().flush();
-            held.clear();
-        }
-
-        private static boolean isDropped(Loss loss, int phase, boolean kept) {
-            return switch (loss) {
-                case NONE -> false;
-                case FIN_ONLY -> phase == 2;
-                case DATA_AND_FIN_EXCEPT_LAST_DATA, DATA_AND_FIN_EXCEPT_BEFORE_LAST -> (phase == 1 && !kept) || phase == 2;
-            };
-        }
-    }
-
-    /// The second stream only has to carry packets; its answer is ignored.
-    private static final class Ignore extends Http3RequestStreamInboundHandler {
-        @Override
-        protected void channelRead(ChannelHandlerContext ctx, Http3HeadersFrame frame) {}
-
-        @Override
-        protected void channelRead(ChannelHandlerContext ctx, Http3DataFrame frame) {
-            ReferenceCountUtil.release(frame);
-        }
-
-        @Override
-        protected void channelInputClosed(ChannelHandlerContext ctx) {}
     }
 }

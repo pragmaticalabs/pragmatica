@@ -8,6 +8,7 @@ import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
+import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -24,7 +25,8 @@ class HttpRequestContextTrailersTest {
                                                         new byte[0],
                                                         null,
                                                         "req",
-                                                        SecurityContext.securityContext()))
+                                                        SecurityContext.securityContext(),
+                                                        Option.none()))
             .isInstanceOf(NullPointerException.class)
             .hasMessage("trailers");
     }
@@ -34,5 +36,36 @@ class HttpRequestContextTrailersTest {
         var context = HttpRequestContext.httpRequestContext("/p", "GET", Map.of(), Map.of("x", List.of("1")), "req");
 
         assertThat(context.trailers()).isEmpty();
+    }
+
+    @Test
+    void canonicalConstructor_refusesNullUpload() {
+        assertThatThrownBy(() -> new HttpRequestContext("/p",
+                                                        "GET",
+                                                        Map.of(),
+                                                        Map.of(),
+                                                        new byte[0],
+                                                        Map.of(),
+                                                        "req",
+                                                        SecurityContext.securityContext(),
+                                                        null))
+            .isInstanceOf(NullPointerException.class)
+            .hasMessage("upload");
+    }
+
+    @Test
+    void withSecurity_keepsTheUploadOfAnIngestedRequest() {
+        var upload = UploadHandle.uploadHandle(List.of(), Map.of("k", List.of("v")));
+        var context = HttpRequestContext.httpRequestContext("/p",
+                                                            "POST",
+                                                            Map.of(),
+                                                            Map.of(),
+                                                            new byte[0],
+                                                            Map.of(),
+                                                            "req",
+                                                            SecurityContext.securityContext(),
+                                                            Option.some(upload));
+
+        assertThat(context.withSecurity(SecurityContext.securityContext()).upload()).isEqualTo(Option.some(upload));
     }
 }
