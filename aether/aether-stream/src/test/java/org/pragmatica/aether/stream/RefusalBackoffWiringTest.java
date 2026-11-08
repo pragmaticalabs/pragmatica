@@ -8,11 +8,14 @@ import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
+import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
+import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.slice.ConsumerConfig;
@@ -40,14 +43,15 @@ class RefusalBackoffWiringTest {
     private static final NodeId SELF = new NodeId("self");
     private static final NodeId PEER = new NodeId("peer");
     private static final String STREAM = "orders";
+    private static final int CONSUMERS = 10_000;
 
     /// Answers in order: refuse, refuse, refuse, a SENT read, refuse, ... and records when each read arrived. The sent read
     /// either succeeds (`sentSucceeds`) or fails with a cause that is not a refusal: both mean the frame was sent.
-    private static final class Script {
+    private static class Script {
         private final boolean sentSucceeds;
-        private final List<Long> readsAtNanos = new CopyOnWriteArrayList<>();
+        final List<Long> readsAtNanos = new CopyOnWriteArrayList<>();
 
-        private Script(boolean sentSucceeds) {
+        Script(boolean sentSucceeds) {
             this.sentSucceeds = sentSucceeds;
         }
 
@@ -99,6 +103,64 @@ class RefusalBackoffWiringTest {
         }
 
         assertHeldThenReset(script);
+    }
+
+    /// #2875: a trigger that checked the hold just before the refused pass parked the loop used to win `running` as the pass
+    /// released it and re-read inside the hold (a first hold measured 0 ms). The window is nanoseconds wide, so many
+    /// consumers are refused at once while appends hammer all of them: no consumer may re-read sooner than the shortest first
+    /// hold (250 ms less 20% jitter) after its refused read.
+    @RepeatedTest(5)
+    void consumer_neverReadsInsideTheFirstHold_whileAppendsHammerManyLoops() throws InterruptedException {
+        var manager = StreamPartitionManager.streamPartitionManager();
+        var scripts = IntStream.range(0, CONSUMERS).mapToObj(_ -> new AlwaysRefuses()).toList();
+        var stop = new AtomicBoolean();
+
+        manager.createStream(StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(1_000_000, 64 * 1024 * 1024, 60_000), "earliest"));
+        var runtimes = scripts.stream()
+                              .map(script -> StreamConsumerRuntime.streamConsumerRuntime(manager,
+                                                                                         DeadLetterHandler.deadLetterHandler(),
+                                                                                         inMemoryCursorStore(),
+                                                                                         scriptedReader(script)))
+                              .toList();
+        var hammers = IntStream.range(0, 4).mapToObj(_ -> Thread.ofPlatform().start(() -> hammer(manager, stop))).toList();
+
+        try {
+            runtimes.forEach(runtime -> runtime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig("group-1"), (_, _, _) -> Promise.unitPromise()));
+            driveUntil(() -> scripts.stream().allMatch(script -> script.readsAtNanos.size() >= 2), () -> {});
+        } finally {
+            stop.set(true);
+            for (var thread : hammers) {
+                thread.join();
+            }
+            runtimes.forEach(StreamConsumerRuntime::close);
+            manager.close();
+        }
+
+        assertThat(scripts).as("every loop read again after its first hold").allMatch(script -> script.readsAtNanos.size() >= 2);
+        assertThat(scripts.stream().mapToLong(script -> script.gapMs(0, 1)).min().orElseThrow())
+            .as("shortest first hold across %d refused loops", CONSUMERS).isGreaterThanOrEqualTo(190L);
+    }
+
+    private static void hammer(StreamPartitionManager manager, AtomicBoolean stop) {
+        var payload = new byte[]{1};
+
+        for (long tick = 0; !stop.get(); tick++) {
+            manager.publishLocal(STREAM, 0, payload, tick);
+            Thread.onSpinWait();
+        }
+    }
+
+    private static final class AlwaysRefuses extends Script {
+        private AlwaysRefuses() {
+            super(false);
+        }
+
+        @Override
+        <T> Promise<T> next(T answer) {
+            readsAtNanos.add(System.nanoTime());
+
+            return StreamForwardError.ForwardNotSent.FACTORY.apply(new WriteOutcome.BackpressureRefused(PEER)).promise();
+        }
     }
 
     @Test
