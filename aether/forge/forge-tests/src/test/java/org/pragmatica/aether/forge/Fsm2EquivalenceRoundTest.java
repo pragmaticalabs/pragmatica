@@ -45,6 +45,7 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
+import org.pragmatica.aether.slice.repository.maven.MavenLocalRepoLocator;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
@@ -295,7 +296,7 @@ class Fsm2EquivalenceRoundTest {
             case E09 -> {
                 // A fatal failure under ALL_OR_NOTHING: a second slice whose jar is present but carries no slice manifest (unloadable, so a fatal
                 // load failure, not a publish-time rejection); the verdict is whatever the durable record says.
-                uploadUnloadableJar(cluster);
+                installUnloadableJar();
                 var at = publish(cluster, blueprint(echo, 3) + """
 
                     [[slices]]
@@ -312,24 +313,23 @@ class Fsm2EquivalenceRoundTest {
         };
     }
 
-    /// Puts a jar that is a valid archive without any slice manifest entries into the cluster's artifact repository (E-09's fatal trigger).
-    private void uploadUnloadableJar(EmberCluster cluster) {
+    /// Writes a jar that is a valid archive without any slice manifest entries into the local Maven repository the nodes resolve from (the cluster's
+    /// own artifact store is not consulted by a blueprint publish: a PUT /repository upload answered "Artifact not found" for 30 s). E-09's fatal trigger.
+    private void installUnloadableJar() {
         var jar = new ByteArrayOutputStream();
 
         try (var out = new JarOutputStream(jar)) {
             out.putNextEntry(new ZipEntry("org/f4/broken/Nothing.txt"));
             out.write("not a slice".getBytes(StandardCharsets.UTF_8));
             out.closeEntry();
+            var target = Path.of(MavenLocalRepoLocator.findLocalRepository(), "org/f4/broken/unloadable/1.0.0/unloadable-1.0.0.jar");
+
+            Files.createDirectories(target.getParent());
+            Files.write(target, jar.toByteArray());
+            log("installed unloadable jar at " + target);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
-        var response = send(HttpRequest.newBuilder()
-                                       .uri(mgmt(cluster, "/repository/org/f4/broken/unloadable/1.0.0/unloadable-1.0.0.jar"))
-                                       .PUT(HttpRequest.BodyPublishers.ofByteArray(jar.toByteArray()))
-                                       .timeout(Duration.ofSeconds(10))
-                                       .build());
-
-        log("upload unloadable jar -> " + response);
     }
 
     /// Publishes and waits for placement; returns O5 in ms.
