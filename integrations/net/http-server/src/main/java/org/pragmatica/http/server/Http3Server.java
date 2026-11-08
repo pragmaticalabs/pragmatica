@@ -212,9 +212,11 @@ final class Http3Server {
                                boolean ownsGroup) {
         if (future.isSuccess()) {
             var channel = ((io.netty.channel.ChannelFuture) future).channel();
+            // #2867: the bound port, as NettyHttpServer reports it: with port 0 the OS-assigned one
+            var boundPort = ((InetSocketAddress) channel.localAddress()).getPort();
 
-            log.info("HTTP/3 QUIC server '{}' started on port {}", config.name(), config.port());
-            promise.succeed(new Http3Server(config.port(), Option.option(group), Option.option(channel), ownsGroup));
+            log.info("HTTP/3 QUIC server '{}' started on port {}", config.name(), boundPort);
+            promise.succeed(new Http3Server(boundPort, Option.option(group), Option.option(channel), ownsGroup));
         } else {
             // #1612: the group this create made is terminated (bounded) BEFORE the failure is reported; the bind
             // failure is what the create reports, and a termination failure is only logged.
