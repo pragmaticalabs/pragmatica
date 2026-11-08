@@ -564,12 +564,15 @@ class SegmentRunFormingTest {
         /// holds the offset" and under "a later read replaces the flush offset".
         @Test
         void aReadOfAnOffsetBehindOtherRuns_sealsEveryRunUpToIt() {
-            var sink = RecordingSink.succeeding();
+            // holding: the first seal stays in flight, so run 0-2 is still queued when the lower offset is read (#2890: with an
+            // instantly succeeding sink the demand flush could seal it before the second read, which then rightly saw false).
+            var sink = RecordingSink.holding();
             var sealer = sealerWith(sink, sealerThresholds(NEVER_BYTES, NEVER_EVENTS, HOUR, 3 * EVENT_BYTES));
 
             LongStream.rangeClosed(0, 11).forEach(offset -> evict(sealer, offset, offset));
             assertThat(sealer.holdsUnsealedForRead(STREAM, PARTITION, 7)).isTrue();
             assertThat(sealer.holdsUnsealedForRead(STREAM, PARTITION, 2)).as("a lower offset read later keeps the flush through 7").isTrue();
+            sink.open();
             awaitCondition(() -> !sealer.holdsUnsealed(STREAM, PARTITION, 7), 2_000);
             assertThat(sink.segments().stream().map(SegmentRunFormingTest::range).toList()).containsExactly(List.of(0L, 2L),
                                                                                                            List.of(3L, 5L),
