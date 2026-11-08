@@ -19,11 +19,9 @@ package org.pragmatica.json;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Patch;
 
-import tools.jackson.core.JacksonException;
 import tools.jackson.core.JsonParser;
 import tools.jackson.core.JsonToken;
 import tools.jackson.databind.BeanProperty;
-import tools.jackson.databind.DatabindException;
 import tools.jackson.databind.DeserializationContext;
 import tools.jackson.databind.JavaType;
 import tools.jackson.databind.ValueDeserializer;
@@ -57,7 +55,7 @@ public class PatchDeserializer extends ValueDeserializer<Patch<?>> {
     }
 
     @Override
-    public Patch<?> deserialize(JsonParser p, DeserializationContext ctxt) throws JacksonException {
+    public Patch<?> deserialize(JsonParser p, DeserializationContext ctxt) {
         if (p.currentToken() == JsonToken.VALUE_NULL) {
             return Patch.nullValue();
         }
@@ -75,11 +73,9 @@ public class PatchDeserializer extends ValueDeserializer<Patch<?>> {
                      .or(() -> refused(ctxt));
     }
 
-    // Jackson's failure channel is an exception (JsonMapper lifts it into a Result). Thrown as a DatabindException,
-    // not reported through reportBadDefinition: the mapper turns an InvalidDefinitionException into a bare
-    // "invalid definition" and would drop the reason.
+    // Jackson's failure channel is an exception, which JsonMapper lifts into a Result whose message keeps the reason.
     private static <T> T refused(DeserializationContext ctxt) {
-        throw DatabindException.from(ctxt, POSITION);
+        return ctxt.reportBadDefinition(Patch.class, POSITION);
     }
 
     // Patch is resolved per concrete type like Option, so `T` sits in the generic binding of a SimpleType (#696).

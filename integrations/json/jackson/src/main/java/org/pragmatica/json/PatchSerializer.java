@@ -20,10 +20,8 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Patch;
 
-import tools.jackson.core.JacksonException;
 import tools.jackson.core.JsonGenerator;
 import tools.jackson.databind.BeanProperty;
-import tools.jackson.databind.DatabindException;
 import tools.jackson.databind.JavaType;
 import tools.jackson.databind.SerializationContext;
 import tools.jackson.databind.ValueSerializer;
@@ -45,7 +43,7 @@ public class PatchSerializer extends ValueSerializer<Patch<?>> {
 
     @Contract
     @Override
-    public void serialize(Patch<?> value, JsonGenerator gen, SerializationContext provider) throws JacksonException {
+    public void serialize(Patch<?> value, JsonGenerator gen, SerializationContext provider) {
         switch (value) {
             case Patch.Value<?> present -> provider.writeValue(gen, present.value());
             case Patch.Null<?>_ -> gen.writeNull();
@@ -62,11 +60,9 @@ public class PatchSerializer extends ValueSerializer<Patch<?>> {
                      .or(() -> refused(prov, PatchDeserializer.POSITION));
     }
 
-    // Jackson's failure channel is an exception (JsonMapper lifts it into a Result). Thrown as a DatabindException,
-    // not reported through reportBadDefinition: the mapper turns an InvalidDefinitionException into a bare
-    // "invalid definition" and would drop the reason.
+    // Jackson's failure channel is an exception, which JsonMapper lifts into a Result whose message keeps the reason.
     private static <T> T refused(SerializationContext provider, String reason) {
-        throw DatabindException.from(provider, reason);
+        return provider.reportBadDefinition(Patch.class, reason);
     }
 
     private static boolean hasSupportedElement(JavaType type) {
@@ -82,7 +78,7 @@ public class PatchSerializer extends ValueSerializer<Patch<?>> {
     public void serializeWithType(Patch<?> value,
                                   JsonGenerator gen,
                                   SerializationContext provider,
-                                  TypeSerializer typeSer) throws JacksonException {
+                                  TypeSerializer typeSer) {
         serialize(value, gen, provider);
     }
 

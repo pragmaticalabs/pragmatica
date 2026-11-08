@@ -130,7 +130,7 @@ public sealed interface JsonError extends Cause {
                                                                          extractValue(e),
                                                                          e.getPathReference());
             case InvalidDefinitionException e -> TypeMismatch.typeMismatch(Option.option(e.getType()).map(t -> t.getTypeName()).or("unknown"),
-                                                                           "invalid definition",
+                                                                           "invalid definition: " + e.getOriginalMessage(),
                                                                            e.getPathReference());
             // JSON parsing errors (malformed JSON)
             case StreamReadException e -> InvalidJson.invalidJson(e.getMessage(), extractLocation(e));
