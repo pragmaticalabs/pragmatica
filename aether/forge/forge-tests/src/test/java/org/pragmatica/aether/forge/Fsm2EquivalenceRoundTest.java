@@ -29,7 +29,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
+import java.util.jar.Attributes;
 import java.util.jar.JarOutputStream;
+import java.util.jar.Manifest;
 import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 
@@ -313,12 +315,18 @@ class Fsm2EquivalenceRoundTest {
         };
     }
 
-    /// Writes a jar that is a valid archive without any slice manifest entries into the local Maven repository the nodes resolve from (the cluster's
+    /// Writes a jar whose manifest is valid (the publish reads it) but whose slice class does not exist, so the load fails fatally, into the local Maven repository the nodes resolve from (the cluster's
     /// own artifact store is not consulted by a blueprint publish: a PUT /repository upload answered "Artifact not found" for 30 s). E-09's fatal trigger.
     private void installUnloadableJar() {
         var jar = new ByteArrayOutputStream();
 
-        try (var out = new JarOutputStream(jar)) {
+        var manifest = new Manifest();
+
+        manifest.getMainAttributes().put(Attributes.Name.MANIFEST_VERSION, "1.0");
+        manifest.getMainAttributes().putValue("Slice-Artifact", "org.f4.broken:unloadable:1.0.0");
+        manifest.getMainAttributes().putValue("Slice-Class", "org.f4.broken.NoSuchSlice");
+        manifest.getMainAttributes().putValue("Envelope-Version", "dev");
+        try (var out = new JarOutputStream(jar, manifest)) {
             out.putNextEntry(new ZipEntry("org/f4/broken/Nothing.txt"));
             out.write("not a slice".getBytes(StandardCharsets.UTF_8));
             out.closeEntry();
@@ -526,6 +534,15 @@ class Fsm2EquivalenceRoundTest {
 
         rows.forEach((key, value) -> commit(node, key, Option.none(), Option.some(value)));
         for (var index = 0; index < 320; index++) {
+            // The violator re-asserts any planted row the engine has already cleaned (FSM2 removes the ACTIVE row of a DEPARTED node at once, which
+            // is its job); the monitor then sees the violation in consecutive samples, which is what a broken cleanup would look like.
+            var present = snapshot(cluster);
+
+            rows.forEach((key, value) -> {
+                if (!present.containsKey(key)) {
+                    commit(node, key, Option.none(), Option.some(value));
+                }
+            });
             samples.add(new EquivalenceMonitor.Sample(System.currentTimeMillis() - start, new EquivalenceKv(snapshot(cluster))));
             sleep(25L);
         }
