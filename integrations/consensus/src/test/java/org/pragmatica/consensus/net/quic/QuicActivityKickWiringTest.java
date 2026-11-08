@@ -17,8 +17,10 @@ package org.pragmatica.consensus.net.quic;
 
 import java.net.SocketAddress;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
@@ -65,6 +67,9 @@ class QuicActivityKickWiringTest {
     /// Far below the 30 s transport keepalive, which would otherwise rescue the data and hide a missing kick.
     private static final TimeSpan RECOVERY_BOUND = TimeSpan.timeSpan(4).seconds();
     private static final long LOSS_TIMER_MAX_NANOS = TimeUnit.MILLISECONDS.toNanos(150);
+    /// #2920: attempts at reaching the stall state before the precondition is allowed to fail.
+    private static final int STALL_ATTEMPTS = 6;
+    private static final QuicheStall.Reading MISSED = new QuicheStall.Reading(0, -2, true, "watcher never saw the loss timer", -1, 0);
 
     private final List<QuicClusterNetwork> networks = new java.util.ArrayList<>();
     private QuicActivityKickStrandedLossTest.DelayRelay relay;
@@ -79,7 +84,32 @@ class QuicActivityKickWiringTest {
     }
 
     @Test
-    void strandedLossOnARealLane_isRecoveredByTheProductionKick() throws Exception {
+    void strandedLossOnARealLane_isRecoveredByTheProductionKick() {
+        var attempt = strand();
+
+        assertThat(attempt.reading()).as("precondition: the stall state was reached within " + STALL_ATTEMPTS + " attempts")
+                                     .isNotSameAs(MISSED);
+        assertThat(attempt.reading().quicheTimerBefore()).as("quiche's timer was due when connectionSend ran").isLessThanOrEqualTo(0);
+        awaitTrue(() -> attempt.received().stream().anyMatch(probe -> probe.marker().equals("A" + PAD)),
+                  RECOVERY_BOUND,
+                  "the production kick recovered the stranded data A within " + RECOVERY_BOUND.millis() + " ms");
+    }
+
+    /// #2920: the stall is only reachable in a ~1/8 RTT window after B's ACK, so reaching it is a retried precondition
+    /// (fresh networks per attempt), exactly as in [QuicActivityKickStrandedLossTest]; the assertion on the production
+    /// kick is made only against an attempt that read the stall state.
+    private Attempt strand() {
+        var attempt = strandOnce();
+
+        for (var n = 1; n < STALL_ATTEMPTS && attempt.reading() == MISSED; n++) {
+            System.err.println("#2920 stall not reached, attempt " + n);
+            tearDown();
+            attempt = strandOnce();
+        }
+        return attempt;
+    }
+
+    private Attempt strandOnce() {
         var low = new NodeId("kw-a");
         var high = new NodeId("kw-b");
         var received = new CopyOnWriteArrayList<LaneProbe>();
@@ -91,35 +121,41 @@ class QuicActivityKickWiringTest {
         awaitTrue(() -> connected(lowNet, high) && connected(highNet, low), "both ends CONNECTED");
         LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(4 * ONE_WAY_DELAY_MS));   // nothing in flight
 
+        var connection = lowNet.activeConnectionForTests(high).unwrap();
+
         relay.dropNextDialerPacket();
+        // Armed before A is written: the induction runs on the event loop at the first sight of the loss timer.
+        var induced = QuicheStall.induceWhenLossTimerArmed(connection.connection(), LOSS_TIMER_MAX_NANOS,
+                                                           () -> relay.sentByDialerSinceArm.get() >= 2);
+
         lowNet.send(high, LaneProbe.laneProbe(low, StreamType.FORWARD, "A" + PAD));
         awaitTrue(() -> relay.sentByDialerSinceArm.get() >= 1, "data packet A reached the relay");
         lowNet.send(high, LaneProbe.laneProbe(low, StreamType.FORWARD, "B" + PAD));
         awaitTrue(() -> relay.sentByDialerSinceArm.get() >= 2, "data packet B reached the relay");
         assertThat(relay.droppedByDialer.get()).as("exactly A was dropped").isEqualTo(1);
 
-        var connection = lowNet.activeConnectionForTests(high).unwrap();
-        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-        var timer = -1L;
+        var reading = awaitReading(induced);
 
-        while (System.nanoTime() < deadline) {
-            timer = QuicheStall.quicheTimerNanos(connection.connection());
-            if (timer > 0 && timer < LOSS_TIMER_MAX_NANOS) {
-                break;
-            }
-            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+        if (reading != MISSED) {
+            assertThat(received.stream().anyMatch(probe -> probe.marker().equals("A" + PAD))).as("A is not delivered by anything else").isFalse();
         }
-        assertThat(timer).as("quiche armed the loss timer for A once B was acked").isBetween(1L, LOSS_TIMER_MAX_NANOS);
-        assertThat(received.stream().anyMatch(probe -> probe.marker().equals("A" + PAD))).as("A not delivered before the induction").isFalse();
-
-        var reading = QuicheStall.induceLateTimer(connection.connection());
-
-                assertThat(reading.quicheTimerBefore()).as("quiche's timer was due when connectionSend ran").isLessThanOrEqualTo(0);
-
-        awaitTrue(() -> received.stream().anyMatch(probe -> probe.marker().equals("A" + PAD)),
-                  RECOVERY_BOUND,
-                  "the production kick recovered the stranded data A within " + RECOVERY_BOUND.millis() + " ms");
+        return new Attempt(reading, received);
     }
+
+    /// A watcher that never fired means the loss timer was never seen armed (the ACK was processed too late and
+    /// loss was declared inside it): reported as [#MISSED] so that [#strand] retries.
+    private static QuicheStall.Reading awaitReading(CompletableFuture<QuicheStall.Reading> induced) {
+        try {
+            return induced.get(10, TimeUnit.SECONDS);
+        } catch (TimeoutException e) {
+            induced.cancel(false);
+            return MISSED;
+        } catch (Exception e) {
+            return fail("stall induction failed: " + e);
+        }
+    }
+
+    private record Attempt(QuicheStall.Reading reading, List<LaneProbe> received) {}
 
     /// With the real 1 s transport keepalive running, an idle link sends no kicks: the keepalive rides the
     /// CONTROL lane and must not hold the window open. v-2023 measured 9.79 kicks/s here before that fix.

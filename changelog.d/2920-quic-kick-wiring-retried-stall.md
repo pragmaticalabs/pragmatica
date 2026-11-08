@@ -1,0 +1,2 @@
+### Fixed (2026-11-08 — #2920: `QuicActivityKickWiringTest` stall induction was timing-dependent)
+- The production-wiring test reached the stall only if its polling thread saw quiche's ~1/8-RTT loss timer before netty's own timer fired. It now uses the event-loop induction of #2904 (`QuicheStall.induceWhenLossTimerArmed`) and treats reaching the stall as a retried precondition (fresh networks, up to 6 attempts); the production-kick assertion is made only against an attempt that read the stall. Test-only change.

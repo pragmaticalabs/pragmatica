@@ -16,7 +16,9 @@
 package io.netty.handler.codec.quic;
 
 import java.lang.reflect.Field;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 
 /// #1727 (M2) test instrument. Reaches into netty-codec-classes-quic 4.2.18 (package-private
 /// QuicheQuicChannel / TimeoutHandler / Quiche) to put a connection into the lost-wake-up state
@@ -26,7 +28,8 @@ public final class QuicheStall {
     private QuicheStall() {}
 
     /// The state read around the induced stall. Times are quiche's own: nanos until its timer, -1 = no timer.
-    public record Reading(long quicheTimerBefore, long quicheTimerAfter, boolean nettyTimerArmedAfter, String sendResult) {}
+    public record Reading(long quicheTimerBefore, long quicheTimerAfter, boolean nettyTimerArmedAfter, String sendResult,
+                          long timerAtTrigger, long triggerNanos) {}
 
     /// quiche's current timer in nanos (-1: none), read on the channel's event loop.
     public static long quicheTimerNanos(QuicChannel channel) throws Exception {
@@ -39,10 +42,41 @@ public final class QuicheStall {
     /// netty does after every write/recv. `scheduleTimeout()` then finds the elapsed timer and runs it inline from
     /// inside the send; quiche declares the in-flight packet lost; the nested send is a re-entrant no-op.
     public static Reading induceLateTimer(QuicChannel channel) throws Exception {
-        return channel.eventLoop().submit(() -> induce((QuicheQuicChannel) channel)).get(10, TimeUnit.SECONDS);
+        return channel.eventLoop().submit(() -> induce((QuicheQuicChannel) channel, -1)).get(10, TimeUnit.SECONDS);
     }
 
-    private static Reading induce(QuicheQuicChannel channel) throws Exception {
+    /// #2904: closes the race between the test thread and netty's own timer. quiche's loss timer for the dropped
+    /// packet is armed for only ~1/8 RTT after the ACK of the next packet (tens of ms); a test thread that polls
+    /// the timer and then submits [#induceLateTimer] can lose that race under load, netty's genuine timer then
+    /// retransmits and the stall state is never reached. This watcher runs ON the event loop: once `ready` holds
+    /// it re-checks every millisecond and induces in the very task that first sees quiche's timer in
+    /// `(0, maxNanos)`, so netty's timer cannot fire in between. The future completes with the reading.
+    public static CompletableFuture<Reading> induceWhenLossTimerArmed(QuicChannel channel, long maxNanos, BooleanSupplier ready) {
+        var result = new CompletableFuture<Reading>();
+
+        channel.eventLoop().execute(() -> watch((QuicheQuicChannel) channel, maxNanos, ready, result));
+        return result;
+    }
+
+    private static void watch(QuicheQuicChannel channel, long maxNanos, BooleanSupplier ready, CompletableFuture<Reading> result) {
+        if (result.isDone()) {
+            return;
+        }
+        try {
+            var timer = Quiche.quiche_conn_timeout_as_nanos(connection(channel).address());
+
+            if (ready.getAsBoolean() && timer > 0 && timer < maxNanos) {
+                result.complete(induce(channel, timer));
+                return;
+            }
+            channel.eventLoop().schedule(() -> watch(channel, maxNanos, ready, result), 1, TimeUnit.MILLISECONDS);
+        } catch (Exception e) {
+            result.completeExceptionally(e);
+        }
+    }
+
+    private static Reading induce(QuicheQuicChannel channel, long timerAtTrigger) throws Exception {
+        var triggerNanos = System.nanoTime();
         var connection = connection(channel);
         var handler = field(QuicheQuicChannel.class, "timeoutHandler").get(channel);
         var timeoutFuture = field(handler.getClass(), "timeoutFuture");
@@ -68,7 +102,7 @@ public final class QuicheStall {
         var after = Quiche.quiche_conn_timeout_as_nanos(connection.address());
         var armed = timeoutFuture.get(handler) != null;
 
-        return new Reading(before, after, armed, String.valueOf(result));
+        return new Reading(before, after, armed, String.valueOf(result), timerAtTrigger, triggerNanos);
     }
 
     private static QuicheQuicConnection connection(QuicChannel channel) throws Exception {
