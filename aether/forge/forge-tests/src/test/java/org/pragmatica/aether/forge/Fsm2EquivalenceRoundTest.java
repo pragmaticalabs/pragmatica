@@ -85,6 +85,7 @@ class Fsm2EquivalenceRoundTest {
     private static final long QUIESCENCE_BOUND_MS = Long.getLong("f4.quiescence.bound.ms", 600_000L);
     private static final EquivalenceMonitor MONITOR = new EquivalenceMonitor(TICK_MS, Long.getLong("f4.scale.window.ms", 2 * TICK_MS));
     private static final BlueprintId O4_CONTROL = BlueprintId.blueprintId("org.f4.control:o4-scripted-batch:1.0.0").unwrap();
+    private static final long PARTITION_MS = Long.getLong("f4.partition.ms", 20_000L);
     private static final String BLUEPRINT_ID = "forge.test:f4-equivalence:1.0.0";
 
     private final HttpOperations http = jdkHttpOperations();
@@ -93,7 +94,7 @@ class Fsm2EquivalenceRoundTest {
 
     /// The scenarios of design 9.3 that this harness drives. Node counts leave room to re-place after a loss (one instance per node).
     enum Scenario {
-        E01(3), E02(5), E03(3), E04(4), E05(4), E07(4), E09(3);
+        E01(3), E02(5), E03(3), E04(4), E05(4), E06(5), E07(4), E09(3), E10(4), E11(4);
 
         final int nodes;
 
@@ -252,6 +253,44 @@ class Fsm2EquivalenceRoundTest {
                 cluster.killNode(victim, scenario == Scenario.E07).await(TimeSpan.timeSpan(60).seconds());
                 awaitTrue("3 ACTIVE after losing " + victim, WAIT, () -> active(cluster, echo) == 3);
                 yield placement;
+            }
+            case E06 -> {
+                var placement = publishAndPlace(cluster, echo, 3);
+                // Quorum loss (3 of 5 silenced) and heal. Comparison scope: both engines must converge to the same committed state; the
+                // FSM2-only asserts of design 9.3 (no extra suspend on a resync, no re-incarnation) are NOT checked here.
+                var silenced = cluster.allNodes().stream().map(node -> node.self().id()).sorted().limit(3).toList();
+
+                silenced.forEach(id -> cluster.getNode(id).onPresent(node -> node.blackhole(true)));
+                sleep(PARTITION_MS);
+                silenced.forEach(id -> cluster.getNode(id).onPresent(node -> node.blackhole(false)));
+                awaitTrue("quorum after the heal", WAIT, () -> cluster.currentLeader().isPresent() && healthy(cluster));
+                awaitTrue("3 ACTIVE after the heal", WAIT, () -> active(cluster, echo) == 3);
+                yield placement;
+            }
+            case E10 -> {
+                var placement = publishAndPlace(cluster, echo, 3);
+                // One core silenced then healed in the same process. NOT the arm-C harness (the victim's self-fence is not swallowed), and the
+                // FSM2-only asserts (J3 ADMITTED(e_d + 1), kept rows adopted) are not checked: this is the engine-comparison part only.
+                var victim = hostOfAnInstance(cluster, echo);
+
+                cluster.getNode(victim).onPresent(node -> node.blackhole(true));
+                sleep(PARTITION_MS);
+                cluster.getNode(victim).onPresent(node -> node.blackhole(false));
+                awaitTrue("quorum after the heal", WAIT, () -> cluster.currentLeader().isPresent() && healthy(cluster));
+                awaitTrue("3 ACTIVE after the heal", WAIT, () -> active(cluster, echo) == 3);
+                yield placement;
+            }
+            case E11 -> {
+                // The leader is silenced while a goal is in flight, then heals (a same-node or a changed election, whichever the cluster picks).
+                var leader = cluster.currentLeader().unwrap();
+                var at = publish(cluster, blueprint(echo, 3));
+
+                cluster.getNode(leader).onPresent(node -> node.blackhole(true));
+                sleep(PARTITION_MS);
+                cluster.getNode(leader).onPresent(node -> node.blackhole(false));
+                awaitTrue("quorum after the heal", WAIT, () -> cluster.currentLeader().isPresent() && healthy(cluster));
+                awaitTrue("3 ACTIVE after the leader heal", WAIT, () -> active(cluster, echo) == 3);
+                yield System.currentTimeMillis() - at;
             }
             case E09 -> {
                 // A fatal failure under ALL_OR_NOTHING: a second slice whose jar is present but carries no slice manifest (unloadable, so a fatal
