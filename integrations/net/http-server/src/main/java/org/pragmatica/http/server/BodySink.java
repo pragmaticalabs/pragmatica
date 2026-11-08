@@ -45,8 +45,9 @@ public interface BodySink {
     @Contract
     void fail(Cause cause, ResponseWriter response);
 
-    /// The server ended the request without the whole body: it crossed the size limit, timed out, or the connection or
-    /// stream went away. The server answers the client itself where it still can; the sink only cleans up.
+    /// The server ended the request without the whole body: it crossed the size limit, timed out, the sink stalled (an
+    /// `accept` outstanding past the stall bound: the server answers 503, and this call follows once that `accept`
+    /// resolved), or the connection or stream went away. The server answers the client itself where it still can; the sink only cleans up.
     @Contract
     void abort(Cause cause);
 
@@ -55,6 +56,7 @@ public interface BodySink {
         TOO_LARGE("Request body exceeds the limit"),
         TIMED_OUT("Request body timed out"),
         DISCONNECTED("Connection or stream closed before the body ended"),
+        STALLED("The sink did not accept a chunk within the stall bound"),
         MALFORMED("Request could not be read");
         private final String message;
         Ended(String message) {

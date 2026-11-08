@@ -35,6 +35,10 @@ import static org.pragmatica.lang.Unit.unit;
 ///
 /// The first check runs `grace` after [#start] and averages over all of it; each later check averages over the
 /// `window` since the previous one. Below the minimum, `onTooSlow` runs once and the guard stops.
+///
+/// **Held time does not count.** While the server itself holds reading off ([#hold] until [#resume]), the client cannot
+/// send, so the clock of the pending check stops: a check averages over `grace` or `window` of time the server was
+/// reading, however long the holds between.
 final class BodyRateGuard {
     private final EventExecutor executor;
     private final BodyRateLimit limit;
@@ -42,6 +46,12 @@ final class BodyRateGuard {
     private long received;
     private long receivedAtLastCheck;
     private Option<ScheduledFuture<?>> nextCheck = none();
+    /// The span the pending check averages over, how much of it is still to run, and since when it has been running.
+    private TimeSpan span = TimeSpan.timeSpan(0).nanos();
+    private long remainingNanos;
+    private long runningSince;
+    private boolean held;
+    private boolean stopped;
 
     private BodyRateGuard(EventExecutor executor, BodyRateLimit limit, Runnable onTooSlow) {
         this.executor = executor;
@@ -68,14 +78,55 @@ final class BodyRateGuard {
 
     /// The body is complete (or the request is over): no further check.
     Unit stop() {
-        nextCheck.onPresent(check -> check.cancel(false));
-        nextCheck = none();
+        stopped = true;
+        cancelCheck();
 
         return unit();
     }
 
+    /// The server stopped reading the body: the pending check's clock stops. Idempotent.
+    Unit hold() {
+        if (!held && !stopped) {
+            held = true;
+            nextCheck.onPresent(_ -> pauseCheck());
+        }
+
+        return unit();
+    }
+
+    /// The server reads the body again: the pending check's clock runs on from where [#hold] stopped it. Idempotent.
+    Unit resume() {
+        if (held && !stopped) {
+            held = false;
+            if (limit.enabled()) {
+                armCheck(Math.max(remainingNanos, 0));
+            }
+        }
+
+        return unit();
+    }
+
+    private void pauseCheck() {
+        remainingNanos -= executor.ticker().nanoTime() - runningSince;
+        cancelCheck();
+    }
+
+    private void cancelCheck() {
+        nextCheck.onPresent(check -> check.cancel(false));
+        nextCheck = none();
+    }
+
     private void scheduleCheck(TimeSpan after) {
-        nextCheck = some(executor.schedule(() -> check(after), after.nanos(), TimeUnit.NANOSECONDS));
+        span = after;
+        remainingNanos = after.nanos();
+        if (!held) {
+            armCheck(remainingNanos);
+        }
+    }
+
+    private void armCheck(long nanos) {
+        runningSince = executor.ticker().nanoTime();
+        nextCheck = some(executor.schedule(() -> check(span), nanos, TimeUnit.NANOSECONDS));
     }
 
     private void check(TimeSpan elapsed) {

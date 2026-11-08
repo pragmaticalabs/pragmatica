@@ -44,6 +44,51 @@ class AppHttpServerForwardByReferenceTest {
         assertThat(outcome.servedSha()).as("B read the bytes the client sent").isEqualTo(outcome.sentSha());
     }
 
+    /// The object is deleted from the content storage after A forwarded the handle and before B received it: B's slice is
+    /// never handed a handle that names nothing, and the client gets the typed 503 (a forward failure: B refused with upload-unavailable, which A can only report as outcome unknown) inside the test's bound, not a hang.
+    @Test
+    void upload_deletedMidForward_failsTyped503_andBsSliceIsNeverReached() throws Exception {
+        var outcome = ForwardByReferenceScenario.run(2 * MIB, ForwardByReferenceScenario.Fault.DELETE_MID_FORWARD);
+
+        assertThat(outcome.status()).as("%s", outcome).isEqualTo(503);
+        assertThat(outcome.text()).as("a typed forward failure (B refused it, so A cannot know it was not applied): %s", outcome)
+                                  .contains("outcome unknown");
+        assertThat(outcome.forwards()).as("forwarded once, to B").isEqualTo(1);
+        assertThat(outcome.sliceCalls()).as("B's slice was not reached").isZero();
+    }
+
+    /// The node that held the object is gone: B's content storage holds nothing of A's upload. Same typed 503, no hang.
+    @Test
+    void upload_whoseHolderIsGone_failsTyped503_andBsSliceIsNeverReached() throws Exception {
+        var outcome = ForwardByReferenceScenario.run(2 * MIB, ForwardByReferenceScenario.Fault.HOLDER_GONE);
+
+        assertThat(outcome.status()).as("%s", outcome).isEqualTo(503);
+        assertThat(outcome.text()).as("a typed forward failure (B refused it, so A cannot know it was not applied): %s", outcome)
+                                  .contains("outcome unknown");
+        assertThat(outcome.forwards()).as("forwarded once, to B").isEqualTo(1);
+        assertThat(outcome.sliceCalls()).as("B's slice was not reached").isZero();
+    }
+
+    /// The write to B is refused locally: nothing left A, so the stored upload is deleted and the client is told nothing
+    /// was applied.
+    @Test
+    void upload_whoseForwardNeverLeftA_isDeleted_andAnswered503NothingApplied() throws Exception {
+        var outcome = ForwardByReferenceScenario.run(2 * MIB, ForwardByReferenceScenario.Fault.PEER_UNREACHABLE);
+
+        assertThat(outcome.status()).as("%s", outcome).isEqualTo(503);
+        assertThat(outcome.text()).as("%s", outcome).contains("nothing was applied");
+        assertThat(outcome.catalogDelta()).as("the stored upload is deleted: %s", outcome).isZero();
+    }
+
+    /// The limit, pinned: B refused after receiving the forward, so A cannot tell whether anything was applied and keeps
+    /// the stored upload for the unclaimed TTL (nothing reclaims it before A4).
+    @Test
+    void upload_whoseOutcomeIsUnknown_isKept() throws Exception {
+        var outcome = ForwardByReferenceScenario.run(2 * MIB, ForwardByReferenceScenario.Fault.HOLDER_GONE);
+
+        assertThat(outcome.catalogDelta()).as("kept: %s", outcome).isEqualTo(1);
+    }
+
     @Test
     void oneGiBUpload_forwardedByReference_underA256MiBHeap_inAChildJvm() throws Exception {
         var size = 1024 * MIB;

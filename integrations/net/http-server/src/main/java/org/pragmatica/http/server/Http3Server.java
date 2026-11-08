@@ -314,6 +314,9 @@ final class Http3Server {
     /// [BodySink.Ended#TOO_LARGE]; 408: [BodySink.Ended#TIMED_OUT]); an undecodable target is answered 400 and a framing
     /// error closes the stream, both aborting it [BodySink.Ended#MALFORMED]; a stream torn down first aborts it
     /// [BodySink.Ended#DISCONNECTED]. A failed `accept` hands the sink its response and then resets the stream's input.
+    /// While the stream waits for its sink, the body's idle and rate bounds are held ([BodyGuard#hold]); a sink that does
+    /// not accept within the stall bound (the route's idle bound, else the read timeout) is answered 503 with
+    /// `Retry-After` and aborted [BodySink.Ended#STALLED].
     ///
     /// Package-private so the server-level tests can drive it in an `EmbeddedChannel`.
     static class Http3RequestHandler extends Http3RequestStreamInboundHandler {
@@ -417,7 +420,12 @@ final class Http3Server {
                                        BodyStream.bodyStream(ctx.executor(),
                                                              ctx.channel(),
                                                              sink,
-                                                             cause -> rejectWith(ctx, writer -> sink.fail(cause, writer)))));
+                                                             cause -> rejectWith(ctx, writer -> sink.fail(cause, writer)),
+                                                             BodyStream.Pacing.pacing(this::holdGuard,
+                                                                                      this::resumeGuard,
+                                                                                      bounds.map(BodyBounds::idle)
+                                                                                            .or(readTimeout),
+                                                                                      () -> onStalled(ctx)))));
             var started = BodyGuard.start(ctx.executor(),
                                           streamed.maxBytes(),
                                           bounds.map(BodyBounds::idle).or(readTimeout),
@@ -428,6 +436,31 @@ final class Http3Server {
 
             guard = some(started);
             started.refuseIfDeclaredTooLarge(declaredLength());
+        }
+
+        /// The stream stopped reading to wait for its sink: the client's idle and rate bounds stop with it.
+        private void holdGuard() {
+            guard.onPresent(BodyGuard::hold);
+        }
+
+        private void resumeGuard() {
+            guard.onPresent(BodyGuard::resume);
+        }
+
+        /// The sink stalled past the bound (the route's idle bound, else the read timeout): 503, retryable, and the sink
+        /// is aborted [BodySink.Ended#STALLED] once its outstanding `accept` resolves.
+        private void onStalled(ChannelHandlerContext ctx) {
+            if (!rejected) {
+                log.debug("HTTP/3 streamed request body: the sink stalled");
+                stream.onPresent(streamed -> rejectStalled(ctx, streamed));
+            }
+        }
+
+        private void rejectStalled(ChannelHandlerContext ctx, Streamed streamed) {
+            var pacing = streamed.body().pacing();
+
+            endStream(BodySink.Ended.STALLED);
+            rejectWith(ctx, pacing::answerStalled);
         }
 
         /// The server ends the streamed request: the sink is aborted with `cause` (after its outstanding `accept`).

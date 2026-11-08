@@ -257,6 +257,28 @@ class Http3StreamTest {
         channel.finishAndReleaseAll();
     }
 
+    /// P3 (#2841 round A): a sink that does not accept within the stall bound is the server's fault: 503, not 408; the sink
+    /// is aborted STALLED once its outstanding accept resolves.
+    @Test
+    void storageStall_pastTheIdleBound_isAnswered503_notTimedOut() {
+        var channel = channel(1_000_000,
+                              Option.some(BodyBounds.bodyBounds(timeSpan(30).seconds(),
+                                                                BodyRateLimit.bodyRateLimit(0, timeSpan(1).seconds(), timeSpan(1).seconds()),
+                                                                timeSpan(0).seconds())));
+
+        channel.writeInbound(headers("/up", 5000));
+        channel.writeInbound(new DefaultHttp3DataFrame(bytes(10)));
+        channel.advanceTimeBy(31, TimeUnit.SECONDS);
+        channel.runScheduledPendingTasks();
+
+        assertThat(status(channel)).isEqualTo("503");
+        sink.succeedNext();
+        channel.runPendingTasks();
+        assertThat(sink.terminals()).containsExactly("abort:STALLED");
+        assertThat(sink.violations()).isEmpty();
+        channel.finishAndReleaseAll();
+    }
+
     @Test
     void undecodableTarget_isAnswered400_andAbortsMalformed() {
         var channel = channel();

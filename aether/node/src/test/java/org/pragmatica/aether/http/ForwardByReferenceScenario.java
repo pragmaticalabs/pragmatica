@@ -24,7 +24,10 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
+import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.config.UploadConfig;
+import org.pragmatica.aether.http.upload.UploadIngest;
+import org.pragmatica.aether.storage.SliceNamespace;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
@@ -88,8 +91,23 @@ final class ForwardByReferenceScenario {
     /// @param bodyOnB        the body length B's slice was handed
     /// @param forwardedBytes the largest encoded request A forwarded to B
     /// @param forwards       how many requests A forwarded
+    /// @param text           the body of A's answer
+    /// @param sliceCalls     how many requests reached B's slice
+    /// @param catalogDelta   how many objects A's content storage gained from the request (kept orphans), net of deletions
     record Outcome(int status, String sentSha, String servedSha, long handleSize, long bodyOnB, long forwardedBytes,
-                   long forwards) {}
+                   long forwards, String text, long sliceCalls, long catalogDelta) {}
+
+    /// What happens to the stored object between A's store and B's read.
+    enum Fault {
+        /// Nothing: B reads the object through the content storage both nodes share.
+        NONE,
+        /// The object is deleted from the shared content storage after A forwarded the request and before B received it.
+        DELETE_MID_FORWARD,
+        /// B reads a content storage that does not hold A's object: the node that held it is gone.
+        HOLDER_GONE,
+        /// The transport refuses A's write to B: the forward never leaves A.
+        PEER_UNREACHABLE
+    }
 
     public static void main(String[] args) throws Exception {
         var size = Long.parseLong(args[0]);
@@ -108,10 +126,14 @@ final class ForwardByReferenceScenario {
     }
 
     static Outcome run(long size) throws Exception {
+        return run(size, Fault.NONE);
+    }
+
+    static Outcome run(long size, Fault fault) throws Exception {
         var dir = Files.createTempDirectory("u2-forward");
 
         try {
-            return run(size, dir);
+            return run(size, dir, fault);
         } finally {
             try (var paths = Files.walk(dir)) {
                 paths.sorted(Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
@@ -119,7 +141,7 @@ final class ForwardByReferenceScenario {
         }
     }
 
-    private static Outcome run(long size, Path dir) throws Exception {
+    private static Outcome run(long size, Path dir, Fault fault) throws Exception {
         var storage = StorageInstance.storageInstance("content", List.of(LocalDiskTier.localDiskTier(dir, 8 * GIB).unwrap()));
         var codec = org.pragmatica.aether.node.NodeCodecs.nodeCodecs(org.pragmatica.serialization.FrameworkCodecs.frameworkCodecs());
         var toB = new Link(NODE_B);
@@ -154,7 +176,10 @@ final class ForwardByReferenceScenario {
 
             awaitRouteServed(a, port);
             toB.reset();
+            slice.calls.set(0);
+            injectFault(fault, storage, b, dir, toB);
 
+            var catalogBefore = catalogSize(storage);
             var answer = post(port, size);
 
             return new Outcome(answer.status(),
@@ -163,11 +188,45 @@ final class ForwardByReferenceScenario {
                                slice.handleSize.get(),
                                slice.bodyLength.get(),
                                toB.maxRequestBytes.get(),
-                               toB.requests.get());
+                               toB.requests.get(),
+                               answer.text(),
+                               slice.calls.get(),
+                               catalogSize(storage) - catalogBefore);
         } finally {
             a.stop().await(WAIT);
             b.stop().await(WAIT);
         }
+    }
+
+    private static void injectFault(Fault fault, StorageInstance storage, AppHttpServer b, Path dir, Link toB) throws Exception {
+        switch (fault) {
+            case NONE -> {}
+            case DELETE_MID_FORWARD -> toB.beforeDelivery.set(() -> deleteEverything(storage));
+            case PEER_UNREACHABLE -> toB.unreachable.set(true);
+            case HOLDER_GONE -> b.setUploadStorage(StorageInstance.storageInstance("content-b",
+                                                                                   List.of(LocalDiskTier.localDiskTier(Files.createDirectory(dir.resolve("b")),
+                                                                                                                       GIB).unwrap())));
+        }
+    }
+
+    private static ContentStore sliceStore(StorageInstance storage) {
+        var namespace = SliceNamespace.sliceNamespace(ArtifactBase.artifactBase(ARTIFACT)).unwrap();
+
+        return UploadIngest.uploadIngest(storage, TimeSpan.timeSpan(1).hours()).store(namespace).unwrap();
+    }
+
+    private static long catalogSize(StorageInstance storage) {
+        return sliceStore(storage).list(Option.none(), Option.none(), 1000).await(WAIT).unwrap().items().size();
+    }
+
+    private static void deleteEverything(StorageInstance storage) {
+        var store = sliceStore(storage);
+
+        store.list(Option.none(), Option.none(), 1000)
+             .await(WAIT)
+             .unwrap()
+             .items()
+             .forEach(info -> store.delete(info.ref().id()).await(WAIT));
     }
 
     private static AppHttpServer server(NodeId self,
@@ -208,7 +267,7 @@ final class ForwardByReferenceScenario {
         }
     }
 
-    record Answer(int status, String sentSha) {}
+    record Answer(int status, String sentSha, String text) {}
 
     /// One HTTP/1.1 POST of `size` seeded random bytes, generated and hashed while they are sent, so the client holds one
     /// buffer, never the body.
@@ -235,7 +294,9 @@ final class ForwardByReferenceScenario {
 
             var response = readAll(socket.getInputStream());
 
-            return new Answer(Integer.parseInt(response.substring(9, 12)), HexFormat.of().formatHex(digest.digest()));
+            return new Answer(Integer.parseInt(response.substring(9, 12)),
+                              HexFormat.of().formatHex(digest.digest()),
+                              response.substring(response.indexOf("\r\n\r\n") + 4));
         }
     }
 
@@ -253,6 +314,7 @@ final class ForwardByReferenceScenario {
         final AtomicReference<String> servedSha = new AtomicReference<>("<none>");
         final AtomicLong handleSize = new AtomicLong(-1);
         final AtomicLong bodyLength = new AtomicLong(-1);
+        final AtomicLong calls = new AtomicLong();
 
         HashingSlice(StorageInstance storage) {
             this.storage = storage;
@@ -260,6 +322,7 @@ final class ForwardByReferenceScenario {
 
         @Override
         public Promise<HttpResponseData> handle(HttpRequestContext request) {
+            calls.incrementAndGet();
             bodyLength.set(request.body().length);
 
             return request.upload()
@@ -323,6 +386,8 @@ final class ForwardByReferenceScenario {
         final AtomicReference<AppHttpServer> peer = new AtomicReference<>();
         final AtomicLong maxRequestBytes = new AtomicLong();
         final AtomicLong requests = new AtomicLong();
+        final java.util.concurrent.atomic.AtomicBoolean unreachable = new java.util.concurrent.atomic.AtomicBoolean();
+        final AtomicReference<Runnable> beforeDelivery = new AtomicReference<>(() -> {});
 
         Link(NodeId target) {
             this.target = target;
@@ -336,9 +401,15 @@ final class ForwardByReferenceScenario {
         @Override
         public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             switch (message) {
+                case HttpForwardRequest request when unreachable.get() -> {
+                    requests.incrementAndGet();
+
+                    return Promise.success(new WriteOutcome.NoPeerState(nodeId));
+                }
                 case HttpForwardRequest request -> {
                     requests.incrementAndGet();
                     maxRequestBytes.accumulateAndGet(request.requestData().length, Math::max);
+                    beforeDelivery.get().run();
                     Thread.ofVirtual().start(() -> peer.get().onHttpForwardRequest(request));
                 }
                 case HttpForwardResponse response -> Thread.ofVirtual().start(() -> peer.get().onHttpForwardResponse(response));

@@ -77,7 +77,9 @@ import static org.pragmatica.lang.Option.some;
 ///   response; reading stays off until that response is written, and what the decoder had already delivered of a
 ///   pipelined next request is held and replayed then. A failed `accept` hands the sink a response that closes the
 ///   connection, which then lingers like a refused one. While the gate itself holds reading off, the reader-idle event is
-///   not passed on: the client is not the one that is idle.
+///   not passed on and the body's idle and rate bounds are held ([BodyGuard#hold]): the client is not the one that is
+///   idle. The sink's own wait is bounded instead: an `accept` outstanding past the stall bound (the route's idle bound,
+///   else the read timeout) is answered 503 with `Retry-After` and aborts the sink ([BodySink.Ended#STALLED]).
 ///
 /// A refused request is answered and then closed after a short linger ([#LINGER_MILLIS]): the response is sent, the
 /// output is shut down and reading stops, so the client's remaining bytes wait in the kernel's buffer and its sending
@@ -226,7 +228,12 @@ final class RequestGate extends ChannelInboundHandlerAdapter {
                                    BodyStream.bodyStream(ctx.executor(),
                                                          ctx.channel(),
                                                          sink,
-                                                         cause -> acceptFailed(ctx, sink, cause))));
+                                                         cause -> acceptFailed(ctx, sink, cause),
+                                                         BodyStream.Pacing.pacing(this::holdGuard,
+                                                                                  this::resumeGuard,
+                                                                                  bounds.map(BodyBounds::idle)
+                                                                                        .or(config.readTimeout()),
+                                                                                  () -> stalled(ctx)))));
         var started = BodyGuard.start(ctx.executor(),
                                       streamed.maxBytes(),
                                       bounds.map(BodyBounds::idle).or(NO_BOUND),
@@ -329,6 +336,32 @@ final class RequestGate extends ChannelInboundHandlerAdapter {
         stream = none();
         bodyEnded = false;
         answerAndClose(ctx, writer -> sink.fail(cause, writer), true);
+    }
+
+    /// The stream stopped reading to wait for its sink: the client's idle and rate bounds stop with it.
+    private void holdGuard() {
+        guard.onPresent(BodyGuard::hold);
+    }
+
+    private void resumeGuard() {
+        guard.onPresent(BodyGuard::resume);
+    }
+
+    /// The sink stalled past the bound (the route's idle bound, else the read timeout): 503, retryable, and the
+    /// connection closes; the sink is aborted [BodySink.Ended#STALLED] once its outstanding `accept` resolves.
+    private void stalled(ChannelHandlerContext ctx) {
+        if (!refused) {
+            log.debug("Streamed request body on {}: the sink stalled",
+                      ctx.channel().remoteAddress());
+            stream.onPresent(streamed -> refuseStalled(ctx, streamed));
+        }
+    }
+
+    private void refuseStalled(ChannelHandlerContext ctx, Streamed streamed) {
+        var pacing = streamed.body().pacing();
+
+        endStream(BodySink.Ended.STALLED);
+        refuse(ctx, pacing::answerStalled);
     }
 
     /// The server ends the streamed request: the sink is aborted with `cause` (after its outstanding `accept`).

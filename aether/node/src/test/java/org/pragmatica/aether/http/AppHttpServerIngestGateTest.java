@@ -126,6 +126,8 @@ class AppHttpServerIngestGateTest {
     private final AtomicInteger entered = new AtomicInteger();
     private volatile CountDownLatch gate = new CountDownLatch(0);
     private volatile boolean failDispatch;
+    /// When set, the counting router answers a failed promise with this cause instead of serving.
+    volatile org.pragmatica.lang.Cause dispatchFailure;
     private volatile String sliceRequestId = "";
     private final HttpRouteRegistry registry = HttpRouteRegistry.httpRouteRegistry();
     AppHttpServer server;
@@ -163,6 +165,13 @@ class AppHttpServerIngestGateTest {
                                                              List.of(LocalDiskTier.localDiskTier(contentDir, 8L * 1024 * MIB).unwrap()));
         }
         return contentStorage;
+    }
+
+    /// Replicates `entry` as served by `node`, as the KV store would.
+    void registerRoute(NodeId node, RouteEntry entry) {
+        registry.onNodeRoutesPut(new ValuePut<>(new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(node, ARTIFACT),
+                                                                    NodeRoutesValue.nodeRoutesValue(List.of(entry))),
+                                                Option.none()));
     }
 
     void start(Protocol protocol, UploadConfig upload, int maxRequestSize) throws IOException {
@@ -627,6 +636,9 @@ class AppHttpServerIngestGateTest {
             awaitGate();
             if (failDispatch) {
                 throw new IllegalStateException("dispatch failed");
+            }
+            if (dispatchFailure != null) {
+                return dispatchFailure.promise();
             }
             served.incrementAndGet();
             lastServed.set(request);

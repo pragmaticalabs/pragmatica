@@ -163,7 +163,10 @@ public final class StreamingIngestProbe {
             digest.update(piece);
             for (int at = 0; at < piece.length; at += 64 * 1024) {
                 var frame = Unpooled.wrappedBuffer(piece, at, Math.min(64 * 1024, piece.length - at));
-                var written = stream.writeAndFlush(new DefaultHttp3DataFrame(frame));
+                var data = new DefaultHttp3DataFrame(frame);
+                var written = done + at + frame.readableBytes() >= size
+                              ? Http3TestClient.finishWith(stream, data)
+                              : stream.writeAndFlush(data);
 
                 if (!written.await(30, TimeUnit.SECONDS) || !written.isSuccess()) {
                     throw new IllegalStateException("frame write failed at " + (done + at), written.cause());
@@ -172,8 +175,6 @@ public final class StreamingIngestProbe {
 
             done += piece.length;
         }
-
-        stream.shutdownOutput();
 
         return RecordingSink.hex(digest.digest());
     }

@@ -484,6 +484,60 @@ class AppHttpServerStreamingIngestGateTest extends AppHttpServerIngestGateTest {
         assertThat(lastServed.get()).as("no slice received it").isNull();
     }
 
+    /// The route resolves to a node this one cannot forward to (no forwarder is configured): the stored upload reaches no
+    /// slice, so its objects are deleted before the 503 is answered.
+    @Test
+    void storedUpload_forRemoteRouteWithoutAForwarder_isDeleted_andAnswered503() throws Exception {
+        start(Protocol.H1, defaults(), 10 * MIB);
+        var node = org.pragmatica.consensus.NodeId.nodeId("serving-node").unwrap();
+        var entry = org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue.RouteEntry.activeRoute("POST", "/remote/", "create", "UNSPECIFIED", "UNSPECIFIED", 0, List.of(), List.of(), true, 4 * MIB, 0);
+
+        registerRoute(node, entry);
+        publishRouteTableUntilServed(Protocol.H1, "/remote/");
+        var reply = client(Protocol.H1).post("/remote/", Option.some(KEY_A), 64 * 1024, Mode.DECLARED);
+
+        assertThat(reply.status()).isEqualTo(503);
+        assertThat(reply.text()).contains("forwarding not available");
+        awaitEmptyCatalog();
+    }
+
+    /// The node refused the request before the slice ran (rate limit): the stored upload is deleted, the 429 answered.
+    @Test
+    void storedUpload_refusedByTheRateLimit_isDeleted() throws Exception {
+        start(Protocol.H1, defaults(), 10 * MIB);
+        dispatchFailure = org.pragmatica.aether.slice.RateGuardError.LimitExceeded.limitExceeded(1000, 10, 0, 0);
+
+        var outcome = dispatchStored("/api/upload/x", Option.some(KEY_A));
+
+        assertThat(outcome.status()).isEqualTo(Option.some(HttpStatus.TOO_MANY_REQUESTS));
+        assertThat(outcome.discarded()).as("the stored upload is deleted once").isEqualTo(1);
+    }
+
+    /// The node refused the request before the slice ran (invocation admission, here a draining node): same.
+    @Test
+    void storedUpload_refusedByInvocationAdmission_isDeleted() throws Exception {
+        start(Protocol.H1, defaults(), 10 * MIB);
+        dispatchFailure = org.pragmatica.aether.invoke.InvocationAdmission.Error.DRAINING;
+
+        var outcome = dispatchStored("/api/upload/x", Option.some(KEY_A));
+
+        assertThat(outcome.status()).isEqualTo(Option.some(HttpStatus.SERVICE_UNAVAILABLE));
+        assertThat(outcome.discarded()).as("the stored upload is deleted once").isEqualTo(1);
+    }
+
+    /// The limit, pinned: a failure from inside the slice may have followed a claim, so the stored upload is kept (for the
+    /// unclaimed TTL; nothing reclaims it before A4).
+    @Test
+    void storedUpload_whoseSliceFailed_isKept() throws Exception {
+        start(Protocol.H1, defaults(), 10 * MIB);
+        dispatchFailure = org.pragmatica.lang.utils.Causes.cause("slice failed after claiming");
+
+        var outcome = dispatchStored("/api/upload/x", Option.some(KEY_A));
+
+        assertThat(outcome.status()).isEqualTo(Option.some(HttpStatus.INTERNAL_SERVER_ERROR));
+        assertThat(outcome.discarded()).as("kept: the slice may have claimed it").isZero();
+    }
+
     private record Dispatched(int discarded, Option<HttpStatus> status) {}
 
     private Dispatched dispatchStored(String path, Option<String> key) throws InterruptedException {

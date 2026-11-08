@@ -92,6 +92,27 @@ public sealed interface UploadIngestError extends Cause {
         }
     }
 
+    /// A forwarded request's upload is not in this node's content storage: deleted since the ingress stored it, or stored
+    /// where this node does not read (forward by reference needs content storage the ingress and the serving node share).
+    /// Answered 503: the client may send the upload again.
+    ///
+    /// @param objectId the object the handle names
+    record UploadUnavailable(String objectId) implements UploadIngestError {
+        public static UploadUnavailable uploadUnavailable(String objectId) {
+            return new UploadUnavailable(objectId);
+        }
+
+        @Override
+        public String message() {
+            return "upload-unavailable: the uploaded object " + objectId + " is not in this node's content storage";
+        }
+
+        @Override
+        public HttpStatus status() {
+            return HttpStatus.SERVICE_UNAVAILABLE;
+        }
+    }
+
     /// `cause` as an ingest refusal: one of this type's own as it is, anything else as a storage failure.
     static UploadIngestError ingestError(Cause cause) {
         return cause instanceof UploadIngestError ingest

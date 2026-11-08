@@ -23,6 +23,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.ByteBufAllocatorMetricProvider;
 import io.netty.buffer.Unpooled;
@@ -247,7 +248,7 @@ class Http3StreamWireTest {
             var trailers = new DefaultHttp3HeadersFrame();
 
             trailers.headers().add("x-checksum", "abc123");
-            stream.writeAndFlush(trailers).addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
+            Http3TestClient.finishWith(stream, trailers);
         });
         var request = sinks.getFirst().awaitComplete(5);
 
@@ -283,15 +284,16 @@ class Http3StreamWireTest {
             digest.update(piece);
             for (int at = 0; at < piece.length; at += 64 * KIB) {
                 var frame = Unpooled.wrappedBuffer(piece, at, Math.min(64 * KIB, piece.length - at));
+                var last = done + at + frame.readableBytes() >= size;
 
-                assertThat(awaitWrite(stream.writeAndFlush(new DefaultHttp3DataFrame(frame)))).as("frame write at %d", done + at)
-                                                                                            .isTrue();
+                assertThat(awaitWrite(writeData(stream, frame, last))).as("frame write at %d", done + at).isTrue();
             }
 
             done += piece.length;
         }
-
-        stream.shutdownOutput();
+        if (size == 0) {
+            Http3TestClient.finishWith(stream, new DefaultHttp3DataFrame(Unpooled.EMPTY_BUFFER));
+        }
 
         return RecordingSink.hex(digest.digest());
     }
@@ -303,16 +305,24 @@ class Http3StreamWireTest {
         while (remaining > 0 && stream.isActive()) {
             var frame = Math.min(64 * KIB, remaining);
 
-            if (!awaitWrite(stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[frame]))))) {
+            if (!awaitWrite(writeData(stream, Unpooled.wrappedBuffer(new byte[frame]), remaining == frame))) {
                 return;
             }
 
             remaining -= frame;
         }
-
-        if (stream.isActive()) {
-            stream.shutdownOutput();
+        if (size == 0 && stream.isActive()) {
+            Http3TestClient.finishWith(stream, new DefaultHttp3DataFrame(Unpooled.EMPTY_BUFFER));
         }
+    }
+
+    /// One DATA frame; the last carries the stream's FIN itself (#2746), never a FIN-only frame after it.
+    private static ChannelFuture writeData(QuicStreamChannel stream, ByteBuf data, boolean last) {
+        var frame = new DefaultHttp3DataFrame(data);
+
+        return last
+               ? Http3TestClient.finishWith(stream, frame)
+               : stream.writeAndFlush(frame);
     }
 
     private static long sendUntilStalled(QuicStreamChannel stream, int limit) {

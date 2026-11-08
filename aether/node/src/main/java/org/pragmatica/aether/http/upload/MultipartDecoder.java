@@ -34,7 +34,8 @@ import static org.pragmatica.aether.http.upload.UploadIngestError.LimitExceeded.
 /// a part with a `filename` parameter, or with a Content-Type other than `text/plain`, is a file; every other part is a
 /// field. Limits, each refused 413 at the byte or part that crosses it: the route's `max_files`, `max_file_size`,
 /// `max_fields`, `max_field_size`; the part count cap of the aggregated path (128, or `max_files + max_fields` when
-/// larger); and, when the route does not declare `max_field_size`, 1 MiB of field values in all [G: the bound].
+/// larger); and the fields budget ([#fieldsBudget]): the field values of one body in all, which are held in memory until
+/// the request is dispatched, so they are counted before they are buffered.
 ///
 /// Not thread-safe: the sink pushes one chunk at a time, after the previous one was handled. A refusal is final: every
 /// later call answers it again.
@@ -83,6 +84,7 @@ final class MultipartDecoder {
     private final byte[] delimiter;
     private final UploadSpec spec;
     private final long partCap;
+    private final long fieldsBudget;
     private State state = State.PREAMBLE;
     private Option<UploadIngestError> refusal = Option.none();
     private byte[] carry = CRLF.clone();
@@ -97,11 +99,31 @@ final class MultipartDecoder {
     private long fields;
     private long fieldsTotal;
 
-    private MultipartDecoder(byte[] delimiter, UploadSpec spec) {
+    private MultipartDecoder(byte[] delimiter, UploadSpec spec, long fieldsCap) {
         this.delimiter = delimiter;
         this.spec = spec;
         this.partCap = Math.max(DEFAULT_MAX_PARTS,
                                 spec.maxFiles() + spec.maxFields());
+        this.fieldsBudget = Math.min(routeFieldsBound(spec, partCap), fieldsCap);
+    }
+
+    /// What the route lets the fields of one body total: `max_field_size` times `max_fields` (the part cap when it
+    /// declares no `max_fields`), or [#DEFAULT_FIELDS_TOTAL] when it declares no `max_field_size`. Saturates instead of
+    /// overflowing.
+    private static long routeFieldsBound(UploadSpec spec, long partCap) {
+        var count = spec.maxFields() > 0
+                    ? spec.maxFields()
+                    : partCap;
+
+        return spec.maxFieldBytes() <= 0
+               ? DEFAULT_FIELDS_TOTAL
+               : saturatingProduct(spec.maxFieldBytes(), count);
+    }
+
+    private static long saturatingProduct(long size, long count) {
+        return size > Long.MAX_VALUE / count
+               ? Long.MAX_VALUE
+               : size * count;
     }
 
     /// A decoder for a body of `contentType`, under the part limits of `spec`; refused when the type carries no usable
@@ -109,11 +131,25 @@ final class MultipartDecoder {
     ///
     /// The first delimiter of a body may open it without a preceding CRLF, so the decoder starts as if one had arrived.
     static Result<MultipartDecoder> multipartDecoder(String contentType, UploadSpec spec) {
+        return multipartDecoder(contentType, spec, Long.MAX_VALUE);
+    }
+
+    /// [#multipartDecoder(String, UploadSpec)], with the fields budget capped at `fieldsCap` bytes whatever the route
+    /// declares: the most one request may hold in field values.
+    static Result<MultipartDecoder> multipartDecoder(String contentType, UploadSpec spec, long fieldsCap) {
         return HeaderParameters.parameter(contentType, "boundary")
                                .filter(boundary -> !boundary.isEmpty() && boundary.length() <= 70)
                                .map(boundary -> new MultipartDecoder(("\r\n--" + boundary).getBytes(StandardCharsets.ISO_8859_1),
-                                                                     spec))
+                                                                     spec,
+                                                                     fieldsCap))
                                .toResult(UploadIngestError.Malformed.NO_BOUNDARY);
+    }
+
+    /// The most the field values of one body may total, in bytes: the route's bound ([#routeFieldsBound]) capped by the
+    /// decoder's `fieldsCap`. A field byte past it is refused 413 before it is buffered, so it is also the most this
+    /// decoder's caller holds in field values, and what the request reserves for them.
+    long fieldsBudget() {
+        return fieldsBudget;
     }
 
     /// Whether `contentType` is `multipart/form-data`, whatever its case and parameters.
@@ -207,8 +243,8 @@ final class MultipartDecoder {
             return;
         }
 
-        if (spec.maxFieldBytes() == 0 && fieldsTotal > DEFAULT_FIELDS_TOTAL) {
-            refuse(limitExceeded("the fields total", DEFAULT_FIELDS_TOTAL));
+        if (fieldsTotal > fieldsBudget) {
+            refuse(limitExceeded("the fields total", fieldsBudget));
 
             return;
         }

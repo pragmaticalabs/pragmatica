@@ -410,4 +410,54 @@ class RequestGateStreamTest {
                             .containsExactly(IdleStateEvent.FIRST_READER_IDLE_STATE_EVENT);
         channel.finishAndReleaseAll();
     }
+
+    /// P3 (#2841 round A): a sink that does not accept within the stall bound (the route's idle bound) is the server's
+    /// fault, not the client's: 503 with Retry-After, not 408; the sink is aborted STALLED once its accept resolves.
+    @Test
+    void storageStall_pastTheIdleBound_isAnswered503WithRetryAfter_notTimedOut() {
+        var channel = channel(1_000_000, Option.some(BodyBounds.bodyBounds(timeSpan(30).seconds(),
+                                                                                BodyRateLimit.bodyRateLimit(0, timeSpan(1).seconds(), timeSpan(1).seconds()),
+                                                                                timeSpan(0).seconds())));
+
+        channel.writeInbound(head("/up", "Content-Length", "5000"));
+        channel.writeInbound(new DefaultHttpContent(bytes(10)));
+        channel.advanceTimeBy(31, TimeUnit.SECONDS);
+        channel.runScheduledPendingTasks();
+        var answer = response(channel);
+
+        assertThat(answer).as("answered").isNotNull();
+        assertThat(answer.status().code()).as("the server's stall, not the client's idleness").isEqualTo(503);
+        assertThat(answer.headers().get("Retry-After")).isEqualTo("30");
+        assertThat(sink.terminals()).as("not aborted while its accept is outstanding").isEmpty();
+        sink.succeedNext();
+        channel.runPendingTasks();
+        assertThat(sink.terminals()).containsExactly("abort:STALLED");
+        assertThat(sink.violations()).isEmpty();
+        answer.release();
+        channel.finishAndReleaseAll();
+    }
+
+    /// P3: while the gate holds reading off for a slow sink, the body's rate check does not run: a sink that takes 20 s
+    /// (inside the 30 s stall bound) over a 10-byte chunk is not blamed on a client that "sent 10 bytes in 20 s".
+    @Test
+    void slowSink_insideTheStallBound_doesNotTripTheClientsMinimumRate() {
+        var bounds = BodyBounds.bodyBounds(timeSpan(30).seconds(),
+                                           BodyRateLimit.bodyRateLimit(1000, timeSpan(1).seconds(), timeSpan(1).seconds()),
+                                           timeSpan(0).seconds());
+        var channel = channel(1_000_000, Option.some(bounds));
+
+        channel.writeInbound(head("/up", "Content-Length", "5000"));
+        channel.writeInbound(new DefaultHttpContent(bytes(10)));
+        channel.advanceTimeBy(20, TimeUnit.SECONDS);
+        channel.runScheduledPendingTasks();
+
+        assertThat(response(channel)).as("nothing answered while the sink works").isNull();
+        assertThat(sink.terminals()).isEmpty();
+        sink.succeedNext();
+        channel.runPendingTasks();
+        assertThat(reading(channel)).as("reading resumes once the sink accepted").isTrue();
+        assertThat(response(channel)).as("the rate check did not fire for the held time").isNull();
+        assertThat(sink.terminals()).isEmpty();
+        channel.finishAndReleaseAll();
+    }
 }

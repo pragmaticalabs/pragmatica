@@ -17,16 +17,21 @@ package org.pragmatica.http.server;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
+import org.pragmatica.http.HttpStatus;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import io.netty.util.concurrent.EventExecutor;
+import io.netty.util.concurrent.ScheduledFuture;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
@@ -45,6 +50,10 @@ import static org.pragmatica.lang.Unit.unit;
 /// **No copy.** A chunk is handed to the sink as a view of the received buffer (one view per component of a composite
 /// buffer); the buffer is released when the last `accept` given a view of it resolves.
 ///
+/// **Pacing.** Turning reading off and on is reported to the transport ([Pacing#hold], [Pacing#resume]), so the client's
+/// bounds do not run while the server, not the client, is the one waiting. The sink's wait is bounded on its own: an
+/// `accept` outstanding for [Pacing#stallBound] runs [Pacing#onStalled] once; the transport answers and ends the request.
+///
 /// **Exactly one terminal call**, never overlapping an `accept`: [BodySink#complete] once the body ended ([#end]) and
 /// every chunk was accepted; [BodySink#fail] (through the transport's `onFailed`) when an `accept` failed; and
 /// [BodySink#abort] when the server ended the request ([#abort]), deferred until an outstanding `accept` resolves. Every
@@ -52,10 +61,31 @@ import static org.pragmatica.lang.Unit.unit;
 ///
 /// Per request, not sharable.
 final class BodyStream {
+    /// How the transport follows the stream: `hold` runs when the stream turns reading off to wait for its sink, `resume`
+    /// when it turns reading back on; `onStalled` runs once when one `accept` stays outstanding for `stallBound` (zero or
+    /// less: no bound).
+    record Pacing(Runnable hold, Runnable resume, TimeSpan stallBound, Runnable onStalled) {
+        static Pacing pacing(Runnable hold, Runnable resume, TimeSpan stallBound, Runnable onStalled) {
+            return new Pacing(hold, resume, stallBound, onStalled);
+        }
+
+        /// What the transport answers a stalled sink: 503, retryable after the stall bound (at least one second). The
+        /// server is behind, not the client.
+        @Contract
+        void answerStalled(ResponseWriter writer) {
+            writer.header("Retry-After",
+                          String.valueOf(Math.max(1,
+                                                  TimeUnit.NANOSECONDS.toSeconds(stallBound.nanos()))))
+                  .error(HttpStatus.SERVICE_UNAVAILABLE, "Request body storage stalled; retry later");
+        }
+    }
+
     private final EventExecutor executor;
     private final Channel channel;
     private final BodySink sink;
     private final Consumer<Cause> onFailed;
+    private final Pacing pacing;
+    private Option<ScheduledFuture<?>> stallTimer = none();
     private final ArrayDeque<Piece> waiting = new ArrayDeque<>();
     private Option<Piece> accepting = none();
     private Option<Runnable> onEnd = none();
@@ -65,17 +95,27 @@ final class BodyStream {
     /// A view handed to the sink and the received buffer it is a view of, released once per view.
     private record Piece(ByteBuf owner, ByteBuffer view) {}
 
-    private BodyStream(EventExecutor executor, Channel channel, BodySink sink, Consumer<Cause> onFailed) {
+    private BodyStream(EventExecutor executor,
+                       Channel channel,
+                       BodySink sink,
+                       Consumer<Cause> onFailed,
+                       Pacing pacing) {
         this.executor = executor;
         this.channel = channel;
         this.sink = sink;
         this.onFailed = onFailed;
+        this.pacing = pacing;
     }
 
     /// Streams a body read from `channel` into `sink`. `onFailed` answers a failed `accept`: it hands the sink its
-    /// response through [BodySink#fail] and ends what the transport still reads.
-    static BodyStream bodyStream(EventExecutor executor, Channel channel, BodySink sink, Consumer<Cause> onFailed) {
-        return new BodyStream(executor, channel, sink, onFailed);
+    /// response through [BodySink#fail] and ends what the transport still reads. `pacing` is told when reading stops and
+    /// resumes, and when the sink stalls.
+    static BodyStream bodyStream(EventExecutor executor,
+                                 Channel channel,
+                                 BodySink sink,
+                                 Consumer<Cause> onFailed,
+                                 Pacing pacing) {
+        return new BodyStream(executor, channel, sink, onFailed, pacing);
     }
 
     /// Takes the next chunk of the body, and with it the ownership of `content`: it is released when accepted, or when
@@ -98,6 +138,7 @@ final class BodyStream {
         }
 
         channel.config().setAutoRead(false);
+        pacing.hold().run();
         pump();
 
         return unit();
@@ -119,11 +160,17 @@ final class BodyStream {
     Unit abort(Cause cause) {
         if (!ended) {
             ended = true;
+            cancelStall();
             releaseWaiting();
             accepting.apply(() -> sink.abort(cause), _ -> abortAfterAccept = some(cause));
         }
 
         return unit();
+    }
+
+    /// How the transport follows this stream.
+    Pacing pacing() {
+        return pacing;
     }
 
     /// Test seam: whether a received buffer is still held, waiting or being accepted.
@@ -145,13 +192,39 @@ final class BodyStream {
         var next = waiting.poll();
 
         accepting = some(next);
+        armStall();
         sink.accept(next.view()).onResult(result -> executor.execute(() -> settled(next, result)));
     }
 
     private void drained() {
-        onEnd.apply(() -> channel.config()
-                                 .setAutoRead(true),
-                    this::complete);
+        onEnd.apply(this::readOn, this::complete);
+    }
+
+    private void readOn() {
+        channel.config().setAutoRead(true);
+        pacing.resume().run();
+    }
+
+    private void armStall() {
+        stallTimer = pacing.stallBound().nanos() > 0
+                     ? some(executor.schedule(this::stalled,
+                                              pacing.stallBound().nanos(),
+                                              TimeUnit.NANOSECONDS))
+                     : none();
+    }
+
+    private void cancelStall() {
+        stallTimer.onPresent(timer -> timer.cancel(false));
+        stallTimer = none();
+    }
+
+    /// An `accept` stayed outstanding for the stall bound: the transport answers and ends the request, which aborts the
+    /// sink once that `accept` resolves.
+    private void stalled() {
+        stallTimer = none();
+        if (!ended) {
+            pacing.onStalled().run();
+        }
     }
 
     private void complete(Runnable complete) {
@@ -160,6 +233,7 @@ final class BodyStream {
     }
 
     private void settled(Piece piece, Result<Unit> result) {
+        cancelStall();
         accepting = none();
         piece.owner().release();
         abortAfterAccept.apply(() -> proceed(result), sink::abort);
