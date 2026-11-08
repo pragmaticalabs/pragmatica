@@ -7,6 +7,9 @@ package org.pragmatica.aether.storage;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.storage.Namespace;
+import org.pragmatica.storage.Sha256;
+
+import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -44,5 +47,18 @@ class SliceNamespaceTest {
                            .flatMap(SliceNamespace::sliceNamespace)
                            .map(Namespace::value)
                            .unwrap();
+    }
+
+    @Test
+    void sliceNamespace_underscoreInTheGroup_isKeptNotReplaced() {
+        assertThat(namespaceOf("org.my_group:orders")).isEqualTo("org.my_group.orders");
+    }
+
+    @Test
+    void sliceNamespace_digestIsTheSha256OfGroupColonArtifact_notOfThePlainName() {
+        var coordinate = LONG_GROUP + ":inventory-service";
+        var expected = Sha256.sha256(coordinate.getBytes(StandardCharsets.UTF_8)).unwrap().hexString().substring(0, 16);
+
+        assertThat(namespaceOf(coordinate).substring(47)).isEqualTo(expected);
     }
 }

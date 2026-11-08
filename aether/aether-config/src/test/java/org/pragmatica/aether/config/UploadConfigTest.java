@@ -168,4 +168,27 @@ class UploadConfigTest {
         assertThat(base.withStreamingIngest(false).unclaimedTtl()).isEqualTo(UploadConfig.DEFAULT_IDLE_TIMEOUT);
         assertThat(base.withUnclaimedTtl(UploadConfig.DEFAULT_UNCLAIMED_TTL).streamingIngest()).isTrue();
     }
+
+    @Test
+    void sixArgumentFactory_defaultsStreamingIngestOffAndTheTtlTo24Hours() {
+        var config = UploadConfig.uploadConfig(1L, 2, 3, UploadConfig.DEFAULT_IDLE_TIMEOUT, 4, 5L);
+
+        assertThat(config.streamingIngest()).isFalse();
+        assertThat(config.unclaimedTtl()).isEqualTo(UploadConfig.DEFAULT_UNCLAIMED_TTL);
+        assertThat(config.unclaimedTtl().millis()).isEqualTo(24L * 60 * 60 * 1000);
+    }
+
+    @Test
+    void everyWith_keepsTheConfiguredUnclaimedTtl() {
+        var ttl = UploadConfig.DEFAULT_IDLE_TIMEOUT;
+        var base = UploadConfig.DEFAULT.withUnclaimedTtl(ttl);
+
+        assertThat(base.withMaxConcurrent(2).unclaimedTtl()).isEqualTo(ttl);
+        assertThat(base.withMaxConcurrentPerPrincipal(2).unclaimedTtl()).isEqualTo(ttl);
+        assertThat(base.withMaxSizeCeiling(2).unclaimedTtl()).isEqualTo(ttl);
+        assertThat(base.withIdleTimeout(UploadConfig.RATE_WINDOW).unclaimedTtl()).isEqualTo(ttl);
+        assertThat(base.withMinBodyRate(2).unclaimedTtl()).isEqualTo(ttl);
+        assertThat(base.withMaxInFlightBytes(9).unclaimedTtl()).isEqualTo(ttl);
+        assertThat(base.withStreamingIngest(true).unclaimedTtl()).isEqualTo(ttl);
+    }
 }
