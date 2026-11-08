@@ -36,7 +36,7 @@ class ContainerStartupTest {
     void startWithRetry_allAttemptsFail_reportsEveryAttemptWithContainerLog() {
         var created = new AtomicInteger();
 
-        assertThatThrownBy(() -> ContainerStartup.startWithRetry(() -> failing(created, "boom-attempt-"), 3))
+        assertThatThrownBy(() -> ContainerStartup.startWithRetry(() -> failing(created.incrementAndGet(), "boom-attempt-"), 3))
             .isInstanceOf(IllegalStateException.class)
             .hasMessageContaining("3 attempt(s)")
             .hasMessageContaining("attempt 1/3")
@@ -53,7 +53,7 @@ class ContainerStartupTest {
         var created = new AtomicInteger();
 
         var container = ContainerStartup.startWithRetry(() -> created.incrementAndGet() == 1
-                                                              ? failing(created, "boom-once-")
+                                                              ? failing(1, "boom-once-")
                                                               : healthy(),
                                                         3);
         try {
@@ -64,8 +64,8 @@ class ContainerStartupTest {
         }
     }
 
-    private static Fixed failing(AtomicInteger created, String tag) {
-        return configure(new Fixed(IMAGE), "echo " + tag + created.get() + "; exit 126");
+    private static Fixed failing(int attemptNumber, String tag) {
+        return configure(new Fixed(IMAGE), "echo " + tag + attemptNumber + "; exit 126");
     }
 
     private static Fixed healthy() {
