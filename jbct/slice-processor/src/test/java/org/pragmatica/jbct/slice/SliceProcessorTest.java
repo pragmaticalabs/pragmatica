@@ -638,6 +638,16 @@ class SliceProcessorTest {
     }
 
     @Test
+    void errorsPackages_packageListedTwice_mapsItsCauseOnce(@TempDir Path classes) throws IOException {
+        compileWithToml(classes,
+                        errorPackagesToml("packages = [\"shared.errors\", \"shared.errors\"]\nHTTP_429 = [\"*QuotaExceeded*\"]"),
+                        ERRORS_METHOD,
+                        List.of(causeIn("shared.errors", "QuotaError", "QuotaExceeded")));
+
+        assertThat(generatedRoutes(classes).split("case QuotaExceeded _", -1).length - 1).isEqualTo(1);
+    }
+
+    @Test
     void errorsPackages_unlistedPackage_isNotDiscovered(@TempDir Path classes) throws IOException {
         compileWithToml(classes,
                         errorPackagesToml("HTTP_429 = [\"*QuotaExceeded*\"]"),

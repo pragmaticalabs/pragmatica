@@ -27,13 +27,17 @@ import org.pragmatica.lang.Option;
 /// @param statusPatterns   map of HTTP status code to list of glob patterns / exact type references
 /// @param explicitMappings map of exact simple name to HTTP status code
 /// @param strict           whether an unmapped Cause record fails the build (vs. warns)
+/// @param packages         shared packages (`[errors] packages`) scanned for Cause types in addition to the slice's own
+///                         package (#2883); exact package names, no sub-package recursion, declaration order kept
 public record ErrorPatternConfig(int defaultStatus,
                                  Map<Integer, List<String>> statusPatterns,
                                  Map<String, Integer> explicitMappings,
-                                 boolean strict) {
+                                 boolean strict,
+                                 List<String> packages) {
     public ErrorPatternConfig {
         statusPatterns = Map.copyOf(statusPatterns);
         explicitMappings = Map.copyOf(explicitMappings);
+        packages = List.copyOf(packages);
     }
 
     /// Empty configuration with 500 as default status.
@@ -41,14 +45,14 @@ public record ErrorPatternConfig(int defaultStatus,
 
     /// Factory method for empty configuration.
     public static ErrorPatternConfig errorPatternConfig() {
-        return new ErrorPatternConfig(500, Map.of(), Map.of(), false);
+        return new ErrorPatternConfig(500, Map.of(), Map.of(), false, List.of());
     }
 
     /// Factory method without the strict flag (defaults to non-strict / warn-only).
     public static ErrorPatternConfig errorPatternConfig(int defaultStatus,
                                                         Map<Integer, List<String>> statusPatterns,
                                                         Map<String, Integer> explicitMappings) {
-        return new ErrorPatternConfig(defaultStatus, statusPatterns, explicitMappings, false);
+        return new ErrorPatternConfig(defaultStatus, statusPatterns, explicitMappings, false, List.of());
     }
 
     /// Factory method with all parameters.
@@ -56,7 +60,16 @@ public record ErrorPatternConfig(int defaultStatus,
                                                         Map<Integer, List<String>> statusPatterns,
                                                         Map<String, Integer> explicitMappings,
                                                         boolean strict) {
-        return new ErrorPatternConfig(defaultStatus, statusPatterns, explicitMappings, strict);
+        return new ErrorPatternConfig(defaultStatus, statusPatterns, explicitMappings, strict, List.of());
+    }
+
+    /// Factory method with all parameters, including the shared Cause packages (#2883).
+    public static ErrorPatternConfig errorPatternConfig(int defaultStatus,
+                                                        Map<Integer, List<String>> statusPatterns,
+                                                        Map<String, Integer> explicitMappings,
+                                                        boolean strict,
+                                                        List<String> packages) {
+        return new ErrorPatternConfig(defaultStatus, statusPatterns, explicitMappings, strict, packages);
     }
 
     /// Merge this configuration with another, with other taking precedence.
@@ -67,6 +80,7 @@ public record ErrorPatternConfig(int defaultStatus,
     ///   - statusPatterns: combined, with other's patterns added to this's
     ///   - explicitMappings: combined, with other's mappings overriding this's
     ///   - strict: enabled if either configuration enables it
+    ///   - packages: this's packages followed by other's new ones, duplicates dropped
     ///
     ///
     /// @param other the configuration to merge with (takes precedence)
@@ -82,8 +96,16 @@ public record ErrorPatternConfig(int defaultStatus,
                             : this.defaultStatus;
         var mergedPatterns = mergePatterns(this.statusPatterns, other.statusPatterns);
         var mergedExplicit = mergeMappings(this.explicitMappings, other.explicitMappings);
+        var mergedPackages = java.util.stream.Stream.concat(this.packages.stream(),
+                                                            other.packages.stream())
+                                                    .distinct()
+                                                    .toList();
 
-        return errorPatternConfig(mergedDefault, mergedPatterns, mergedExplicit, this.strict || other.strict);
+        return errorPatternConfig(mergedDefault,
+                                  mergedPatterns,
+                                  mergedExplicit,
+                                  this.strict || other.strict,
+                                  mergedPackages);
     }
 
     private static Map<Integer, List<String>> mergePatterns(Map<Integer, List<String>> base,

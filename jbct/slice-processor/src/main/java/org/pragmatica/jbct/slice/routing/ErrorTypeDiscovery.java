@@ -9,8 +9,10 @@ import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.type.TypeMirror;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -18,12 +20,18 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
 
-/// Discovers error types implementing {@link Cause} in a package
-/// and maps them to HTTP status codes using pattern configuration.
+/// Discovers error types implementing {@link Cause} in a slice's package plus the shared packages
+/// listed in `[errors] packages` (#2883) and maps them to HTTP status codes using pattern configuration.
+///
+/// Types from different packages that share a simple name are kept apart by their fully-qualified
+/// names: each is matched and mapped on its own, and the generated error mapper references them
+/// qualified. An `[errors.explicit]` entry is keyed by simple name and so applies to every type of
+/// that name; use a qualified exact type reference to tell them apart.
 ///
 /// Discovery process:
 /// <ol>
-///   - Find all types in the specified package
+///   - Find all types in the slice package and in each listed shared package (a listed package that
+///     does not exist fails the build)
 ///   - Filter to types implementing `org.pragmatica.lang.Cause`
 ///   - Match each type against patterns from configuration
 ///   - Detect conflicts (type matches multiple patterns with different statuses)
@@ -44,9 +52,10 @@ public final class ErrorTypeDiscovery {
         return Option.option(processingEnv.getElementUtils().getTypeElement(CAUSE_QUALIFIED_NAME)).map(TypeElement::asType);
     }
 
-    /// Discover all error types in the package, map to HTTP status codes, and validate totality.
+    /// Discover all error types in the slice package and the configured shared packages, map to HTTP
+    /// status codes, and validate totality.
     ///
-    /// @param packageName   the package to scan for error types
+    /// @param packageName   the slice package to scan for error types (`config.packages()` are scanned too)
     /// @param config        the error pattern configuration
     /// @param routesTomlPath the resource path of the `routes.toml`, named in validation messages
     /// @return success with mappings + validation issues, or failure with conflict details
@@ -55,8 +64,14 @@ public final class ErrorTypeDiscovery {
             return Causes.cause("Cannot resolve " + CAUSE_QUALIFIED_NAME + " - is pragmatica-lite on classpath?").result();
         }
 
-        var errorTypes = findCauseTypes(packageName);
+        return collectCauseTypes(packageName, config, routesTomlPath).flatMap(errorTypes -> mapAndValidate(errorTypes,
+                                                                                                           config,
+                                                                                                           routesTomlPath));
+    }
 
+    private Result<DiscoveryResult> mapAndValidate(List<TypeElement> errorTypes,
+                                                   ErrorPatternConfig config,
+                                                   String routesTomlPath) {
         if (errorTypes.isEmpty()) {
             return Result.success(new DiscoveryResult(List.of(), List.of()));
         }
@@ -65,6 +80,35 @@ public final class ErrorTypeDiscovery {
                                                                                      validate(errorTypes,
                                                                                               config,
                                                                                               routesTomlPath)));
+    }
+
+    /// The slice package first, then each listed package in declaration order, de-duplicated by
+    /// qualified name. A listed package javac cannot resolve is a build error naming it: a silently
+    /// skipped typo would leave its Causes at the default status.
+    private Result<List<TypeElement>> collectCauseTypes(String packageName,
+                                                        ErrorPatternConfig config,
+                                                        String routesTomlPath) {
+        var missing = config.packages().stream().filter(name -> !packageExists(name)).toList();
+
+        if (!missing.isEmpty()) {
+            return Causes.cause("[errors] packages in " + routesTomlPath
+                               + " names package(s) that do not exist: " + String.join(", ", missing)).result();
+        }
+
+        var unique = new LinkedHashMap<String, TypeElement>();
+
+        Stream.concat(Stream.of(packageName),
+                      config.packages().stream())
+              .flatMap(name -> findCauseTypes(name).stream())
+              .forEach(type -> unique.putIfAbsent(type.getQualifiedName().toString(),
+                                                  type));
+
+        return Result.success(List.copyOf(unique.values()));
+    }
+
+    private boolean packageExists(String packageName) {
+        return processingEnv.getElementUtils()
+                            .getPackageElement(packageName) != null;
     }
 
     /// Mappings for the router plus the totality / dead-mapping issues found for this slice.
