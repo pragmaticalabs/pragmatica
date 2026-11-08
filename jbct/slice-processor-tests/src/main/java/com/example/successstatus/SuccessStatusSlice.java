@@ -20,6 +20,10 @@ public interface SuccessStatusSlice {
     Promise<Option<Article>> find(SlugRequest request);
     Promise<Article> broken();
 
+    Promise<Article> locate(ArticleRequest request);
+
+    Promise<Option<Article>> lookup(SlugRequest request);
+
     static SuccessStatusSlice successStatusSlice() {
         return new SuccessStatusSlice() {
             @Override
@@ -58,6 +62,16 @@ public interface SuccessStatusSlice {
             @Override
             public Promise<Article> broken() {
                 return Promise.success(null);
+            }
+
+            @Override
+            public Promise<Article> locate(ArticleRequest request) {
+                return Promise.success(new Article(request.slug(), request.title()));
+            }
+
+            @Override
+            public Promise<Option<Article>> lookup(SlugRequest request) {
+                return find(request);
             }
         };
     }

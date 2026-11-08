@@ -643,6 +643,24 @@ class SliceProcessorTest {
         assertThat(diagnostics).contains("Route 'create' status must be a success status, one of [200, 201, 202, 203, 204] written as a number; got the string \"201\"");
     }
 
+    @Test
+    void fractionalStatus_failsTheBuildWithAClearError(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 201.5 }",
+                                            "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
+
+        assertThat(diagnostics).contains("Route 'create' status must be a success status, one of [200, 201, 202, 203, 204] written as a number; got 201.5");
+    }
+
+    @Test
+    void blankLocation_failsTheBuild(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 201, location = \" \" }",
+                                            "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
+
+        assertThat(diagnostics).contains("Route 'create' location must not be blank");
+    }
+
     /// #2805: a `location` placeholder must name a component of the result record.
     @Test
     void locationNamingAnUnknownField_failsTheBuild(@TempDir Path classes) throws IOException {

@@ -3,7 +3,11 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package com.example.successstatus;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Map;
 
 import org.apache.logging.log4j.Level;
@@ -107,6 +111,42 @@ class GeneratedSuccessStatusRouteTest {
 
         assertThat(response.statusCode()).isEqualTo(200);
         assertThat(body(response)).isEqualTo("{\"slug\":\"known\",\"title\":\"Known\"}");
+    }
+
+    @Test
+    void locationWithoutStatus_answersTheDefault200_withTheLocation() {
+        var response = send("POST", "/api/blog/located", ARTICLE);
+
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.headers()).containsEntry("Location", "/api/blog/articles/hello%20world");
+    }
+
+    @Test
+    void locationOnAnOptionResult_readsThePresentValue_andAnEmptyOneStillAnswers404() {
+        var present = send("GET", "/api/blog/lookup/known", "");
+
+        assertThat(present.statusCode()).isEqualTo(200);
+        assertThat(present.headers()).containsEntry("Location", "/api/blog/articles/known");
+        assertThat(send("GET", "/api/blog/lookup/unknown", "").statusCode()).isEqualTo(404);
+    }
+
+    /// A route that declares neither key generates the source it always did: only the six declaring routes carry
+    /// `.withSuccess(...)`.
+    @Test
+    void undeclaredRoutes_generateNoSuccessDeclaration() throws IOException {
+        var generated = Files.readString(generatedRoutes());
+
+        assertThat(generated.split("\\.withSuccess\\(", -1)).hasSize(7);
+        assertThat(generated).contains(".withSuccess(org.pragmatica.http.routing.SuccessSpec.successSpec(202))");
+    }
+
+    private static Path generatedRoutes() {
+        var relative = Paths.get("target", "generated-sources", "annotations", "com", "example", "successstatus", "SuccessStatusSliceRoutes.java");
+        var moduleDir = Paths.get(System.getProperty("user.dir"));
+
+        return Files.exists(moduleDir.resolve(relative))
+               ? moduleDir.resolve(relative)
+               : moduleDir.resolve(Paths.get("jbct", "slice-processor-tests")).resolve(relative);
     }
 
     private HttpResponseData send(String method, String path, String body) {

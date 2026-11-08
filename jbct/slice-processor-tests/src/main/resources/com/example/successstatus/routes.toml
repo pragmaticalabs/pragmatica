@@ -8,6 +8,8 @@ enqueue = { route = "POST /jobs", status = 202 }
 remove = "DELETE /articles/{slug}"
 find = "GET /articles/{slug}"
 broken = "GET /broken"
+locate = { route = "POST /located", location = "/api/blog/articles/{slug}" }
+lookup = { route = "GET /lookup/{slug}", status = 200, location = "/api/blog/articles/{slug}" }
 
 [errors]
 default = 500
