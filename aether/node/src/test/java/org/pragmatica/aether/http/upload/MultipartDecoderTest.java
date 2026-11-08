@@ -184,7 +184,7 @@ class MultipartDecoderTest {
     @Test
     void headerBlockOverItsBound_isRefusedHeadersTooLarge() {
         var body = ascii("--" + BOUNDARY + "\r\nContent-Disposition: form-data; name=\"n\"\r\nX-Pad: "
-                         + "p".repeat(MultipartDecoder.MAX_HEADER_BYTES) + "\r\n\r\nx\r\n--" + BOUNDARY + "--\r\n");
+                         + "p".repeat(8 * 1024) + "\r\n\r\nx\r\n--" + BOUNDARY + "--\r\n");
 
         assertThat(decode(body, 1000, UNLIMITED, TYPE).refusal()).contains(UploadIngestError.Malformed.HEADERS_TOO_LARGE);
     }
@@ -308,7 +308,7 @@ class MultipartDecoderTest {
     @Test
     void headerBlockOfExactlyTheBound_isAccepted() {
         var prefix = DISPOSITION_A + "\r\nX-Pad: ";
-        var pad = "p".repeat(MultipartDecoder.MAX_HEADER_BYTES - prefix.length() - 4);
+        var pad = "p".repeat(8 * 1024 - prefix.length() - 4);
         var body = singleField(prefix + pad, "x");
 
         assertThat(decode(body, 1000, UNLIMITED, TYPE).refusal()).isEmpty();

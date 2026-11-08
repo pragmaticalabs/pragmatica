@@ -504,6 +504,7 @@ class RequestGateStreamTest {
 
         assertThat(sink.terminals()).containsExactly("complete");
         assertThat(reading(channel)).as("reading stays off until the response is written").isFalse();
+        assertThat(channel.runScheduledPendingTasks()).as("no body-guard timer is left scheduled once the body ended").isEqualTo(-1L);
         channel.advanceTimeBy(31, TimeUnit.SECONDS);
         channel.runScheduledPendingTasks();
 
