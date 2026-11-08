@@ -112,6 +112,19 @@ class OwnerCatchupCommittedLineageTest {
         assertThat(fixture.backfill().redriveCandidates()).as("no survivor is ahead of the committed lineage").isEmpty();
     }
 
+    /// With no other survivor to weigh, the target is the source's lineage end alone: the owner activates at 10 on the first run, and
+    /// the disowned raw tail (20) does not keep the partition on the redrive list.
+    @Test
+    void redrive_ofTheOnlyReplica_holdingADisownedTail_activatesAtItsLineageEnd_andIsNotListedAgain() {
+        var fixture = disownedTailFixture(false);
+
+        var outcome = fixture.backfill().backfill("s", 0).await();
+
+        assertThat(outcome.isSuccess()).as("first run: %s", outcome).isTrue();
+        assertThat(head()).isEqualTo(10L);
+        assertThat(fixture.backfill().redriveCandidates()).as("raw tail 20 is not a survivor ahead").isEmpty();
+    }
+
     /// A cap learned for a replica holds only while its tail is the one observed: new data past it (the tail grew to 25) is read
     /// again, not ranked by the old lineage end.
     @Test
@@ -141,6 +154,10 @@ class OwnerCatchupCommittedLineageTest {
 
     /// R1 (SOURCE) holds a deposed epoch's tail: raw 20, the committed lineage (E3 @ 11) ends at 10. R2 (OTHER) holds the lineage to 15.
     private DisownedTail disownedTailFixture() {
+        return disownedTailFixture(true);
+    }
+
+    private DisownedTail disownedTailFixture(boolean withOther) {
         owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
 
         var registry = ReplicaRegistry.replicaRegistry();
@@ -148,9 +165,12 @@ class OwnerCatchupCommittedLineageTest {
 
         registry.registerReplica("s", 0, SELF);
         registry.registerReplica("s", 0, SOURCE);
-        registry.registerReplica("s", 0, OTHER);
         registry.updateWatermark("s", 0, SOURCE, 20L, ReplicationState.CAUGHT_UP);
-        registry.updateWatermark("s", 0, OTHER, 15L, ReplicationState.CAUGHT_UP);
+
+        if (withOther) {
+            registry.registerReplica("s", 0, OTHER);
+            registry.updateWatermark("s", 0, OTHER, 15L, ReplicationState.CAUGHT_UP);
+        }
 
         var backfill = PartitionBackfill.partitionBackfill(registry,
                                                            owner.alignedRecovery(),
@@ -257,6 +277,44 @@ class OwnerCatchupCommittedLineageTest {
                                                        .extracting(ProvenanceEntry::rank)
                                                        .containsExactly(E1);
         logged.close();
+    }
+
+    /// The clipped page still carries the source's slice to the provenance install: an epoch inside the kept range (E2 @ 3, the
+    /// committed lineage re-assigns only from 5) is recorded, not dropped with the clipped remainder.
+    @Test
+    void catchUpOwnerFrom_aClippedPage_installsTheEpochEntriesTheInstalledRecordsReach() {
+        var logged = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), LastSealedOffsetSource.none());
+
+        logged.createStream(config()).onFailure(cause -> fail(cause.message()));
+        logged.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 5L)));
+
+        var outcome = catchUpFrom(logged, List.of(ProvenanceEntry.provenanceEntry(E1, 0), ProvenanceEntry.provenanceEntry(E2, 3)));
+
+        assertThat(outcome).as("activates at the lineage end, 4").isEqualTo(Option.none());
+        assertThat(logged.epochHistory("s", 0).unwrap()).extracting(ProvenanceEntry::rank).containsExactly(E1, E2);
+        logged.close();
+    }
+
+    /// No clip, no lineage end to target: the owner is held to the source's raw tail. A source that serves less than its tail leaves
+    /// the run short, and the activation stays un-activated.
+    @Test
+    void catchUpOwnerFrom_aShortUnclippedRun_staysUnactivated() {
+        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L)));
+
+        var registry = ReplicaRegistry.replicaRegistry();
+
+        registry.registerReplica("s", 0, SELF);
+        registry.registerReplica("s", 0, SOURCE);
+
+        var backfill = PartitionBackfill.partitionBackfill(registry,
+                                                           owner.alignedRecovery(),
+                                                           (_, request) -> Promise.success(served(request.fromOffset(), 8L, SOURCE, List.of(ProvenanceEntry.provenanceEntry(E1, 0)))),
+                                                           SELF);
+
+        var outcome = backfill.catchUpOwnerFrom("s", 0, SOURCE, SOURCE_TAIL).await();
+
+        assertThat(outcome.isFailure()).as("run reached 8 of 12: %s", outcome).isTrue();
+        assertThat(head()).isEqualTo(8L);
     }
 
     private Option<Object> catchUpFrom(List<ProvenanceEntry> history) {

@@ -284,6 +284,60 @@ class ReplicaWalCatchupTest {
         }
     }
 
+    /// A replica whose partition IS materialized serves catch-up from its ring, and ships the partition's own epoch history
+    /// (the held-WAL history applies only to a partition held without a ring): the history is never answered as empty.
+    @Nested
+    class ServedFromAMaterializedPartition {
+        private StreamPartitionManager manager;
+        private StreamForwardHandler handler;
+
+        @BeforeEach
+        void startWithTheHeldPartitionMaterialized() {
+            var registry = ReplicaRegistry.replicaRegistry();
+
+            registry.registerReplica("held", 0, PEER);
+            manager = streamPartitionManager(Long.MAX_VALUE,
+                                             EvictionListener.NOOP,
+                                             ReplicationManager.replicationManager(SELF, registry),
+                                             Option.some(walDir),
+                                             LastSealedOffsetSource.none());
+            manager.placementRoleSupplier((stream, _) -> roles.getOrDefault(stream, Role.NONE));
+            manager.onStreamConfigPut(configPut(config("held", 1)));
+            roles.put("held", Role.REPLICA);
+            manager.materializePartition("held", 0).onFailure(cause -> fail(cause.message()));
+            handler = StreamForwardHandler.streamForwardHandler(SELF,
+                                                                manager,
+                                                                AcceptingStreamForwardTransport.accepting((_, message) -> record(message)));
+        }
+
+        @AfterEach
+        void stop() {
+            manager.close();
+        }
+
+        @Test
+        void catchupRead_ofAMaterializedPartition_shipsThePartitionsEpochHistory() {
+            handler.onReadForward(readForward(PEER, "corr", "held", 0, 0L, PAGE, false, true));
+
+            var answer = answers.getLast();
+
+            assertThat(answer.success()).as("answer %s", answer.errorMessage()).isTrue();
+            assertThat(answer.events()).extracting(RawEventDto::offset).containsExactly(0L, 1L, 2L, 3L, 4L);
+            assertThat(answer.history()).as("the partition's own history, not an empty one").extracting(ProvenanceEntry::rank).contains(E1);
+        }
+
+        /// A plain consumer read is not a catch-up: it ships no history, however much the partition holds.
+        @Test
+        void aPlainConsumerRead_ofAMaterializedPartition_shipsNoHistory() {
+            handler.onReadForward(readForward(PEER, "corr", "held", 0, 0L, PAGE));
+
+            var answer = answers.getLast();
+
+            assertThat(answer.success()).as("answer %s", answer.errorMessage()).isTrue();
+            assertThat(answer.history()).isEmpty();
+        }
+    }
+
     /// [StreamPartitionManager#readHeldDurable] over an opener that records where each page scan starts.
     @Nested
     class ReadHeldDurable {
