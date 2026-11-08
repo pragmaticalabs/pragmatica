@@ -16,7 +16,9 @@ import org.pragmatica.lang.Option;
 ///
 ///   - `statusPatterns` - Glob patterns or exact type references matched against Cause types
 ///     (e.g., "*NotFound*" -> 404, or "SeatError.SeatNotFound" -> 404)
-///   - `explicitMappings` - Direct simple-name to status code mappings (`[errors.explicit]`)
+///   - `explicitMappings` - Direct simple-name or fully-qualified-name to status code mappings (`[errors.explicit]`);
+///     a simple-name key matching more than one discovered Cause type fails the build (see
+///     [ErrorMappingValidator#ambiguousExplicitMappings])
 ///
 ///
 /// `strict` (from `[errors] strict = true`) escalates the compile-time totality check: when set,
@@ -25,7 +27,7 @@ import org.pragmatica.lang.Option;
 ///
 /// @param defaultStatus    default HTTP status for unmatched errors
 /// @param statusPatterns   map of HTTP status code to list of glob patterns / exact type references
-/// @param explicitMappings map of exact simple name to HTTP status code
+/// @param explicitMappings map of exact simple name or fully-qualified name to HTTP status code
 /// @param strict           whether an unmapped Cause record fails the build (vs. warns)
 /// @param packages         shared packages (`[errors] packages`) scanned for Cause types in addition to the slice's own
 ///                         package (#2883); exact package names, no sub-package recursion, declaration order kept
@@ -38,6 +40,11 @@ public record ErrorPatternConfig(int defaultStatus,
         statusPatterns = Map.copyOf(statusPatterns);
         explicitMappings = Map.copyOf(explicitMappings);
         packages = List.copyOf(packages);
+    }
+
+    /// The `[errors.explicit]` status for a Cause type: the fully-qualified key wins, else the simple-name key.
+    public Option<Integer> explicitStatus(String simpleName, String qualifiedName) {
+        return Option.option(explicitMappings.get(qualifiedName)).orElse(() -> Option.option(explicitMappings.get(simpleName)));
     }
 
     /// Empty configuration with 500 as default status.

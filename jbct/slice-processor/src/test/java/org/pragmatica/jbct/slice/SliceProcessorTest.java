@@ -683,6 +683,51 @@ class SliceProcessorTest {
         assertThat(generated).contains("case shared.two.TwoError.Denied _ -> HttpError.httpError(HttpStatus.CONFLICT, cause);");
     }
 
+    private static final String TWO_DENIED_PACKAGES = "packages = [\"shared.one\", \"shared.two\"]\n\n[errors.explicit]\n";
+
+    private static List<JavaFileObject> twoDenied() {
+        return List.of(causeIn("shared.one", "OneError", "Denied"), causeIn("shared.two", "TwoError", "Denied"));
+    }
+
+    @Test
+    void errorsExplicit_simpleNameMatchingTwoCauses_failsTheBuildNamingEveryMatch(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithToml(classes,
+                                          errorPackagesToml(TWO_DENIED_PACKAGES + "Denied = 404"),
+                                          ERRORS_METHOD,
+                                          twoDenied());
+
+        assertThat(diagnostics).contains("Ambiguous explicit error mapping 'Denied'");
+        assertThat(diagnostics).contains("shared.one.OneError.Denied, shared.two.TwoError.Denied");
+        assertThat(diagnostics).contains("fully-qualified name");
+        assertThat(diagnostics).doesNotContain("Generated routes: UploadService");
+    }
+
+    @Test
+    void errorsExplicit_fullyQualifiedKey_mapsOnlyThatTypeAndTheOtherKeepsTheDefault(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithToml(classes,
+                                          errorPackagesToml(TWO_DENIED_PACKAGES + "\"shared.one.OneError.Denied\" = 404"),
+                                          ERRORS_METHOD,
+                                          twoDenied());
+
+        var generated = generatedRoutes(classes);
+
+        assertThat(diagnostics).doesNotContain("Ambiguous explicit");
+        assertThat(diagnostics).doesNotContain("Dead explicit");
+        assertThat(generated).contains("case shared.one.OneError.Denied _ -> HttpError.httpError(HttpStatus.NOT_FOUND, cause);");
+        assertThat(generated).contains("case shared.two.TwoError.Denied _ -> HttpError.httpError(HttpStatus.INTERNAL_SERVER_ERROR, cause);");
+    }
+
+    @Test
+    void errorsExplicit_unambiguousSimpleName_stillMapsItsCause(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithToml(classes,
+                                          errorPackagesToml("packages = [\"shared.one\"]\n\n[errors.explicit]\nDenied = 404"),
+                                          ERRORS_METHOD,
+                                          List.of(causeIn("shared.one", "OneError", "Denied")));
+
+        assertThat(diagnostics).doesNotContain("Ambiguous explicit");
+        assertThat(generatedRoutes(classes)).contains("case shared.one.OneError.Denied _ -> HttpError.httpError(HttpStatus.NOT_FOUND, cause);");
+    }
+
     private String compileWithRoutes(Path classes, String route, String method) throws IOException {
         return compileWithRoutes(classes, route, method, List.of());
     }

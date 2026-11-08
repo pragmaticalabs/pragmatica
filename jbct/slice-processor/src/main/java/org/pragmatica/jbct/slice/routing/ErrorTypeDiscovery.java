@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.pragmatica.lang.Cause;
@@ -74,6 +75,18 @@ public final class ErrorTypeDiscovery {
                                                    String routesTomlPath) {
         if (errorTypes.isEmpty()) {
             return Result.success(new DiscoveryResult(List.of(), List.of()));
+        }
+
+        var ambiguous = ErrorMappingValidator.ambiguousExplicitMappings(errorTypes.stream()
+                                                                                  .map(ErrorTypeDiscovery::toDescriptor)
+                                                                                  .toList(),
+                                                                        config,
+                                                                        routesTomlPath);
+
+        if (!ambiguous.isEmpty()) {
+            return Causes.cause(ambiguous.stream()
+                                         .map(ErrorMappingValidator.Issue::message)
+                                         .collect(Collectors.joining("\n"))).result();
         }
 
         return mapErrorTypes(errorTypes, config).map(mappings -> new DiscoveryResult(mappings,
@@ -239,13 +252,14 @@ public final class ErrorTypeDiscovery {
     private Result<ErrorTypeMapping> resolveMapping(TypeElement errorType,
                                                     String simpleName,
                                                     ErrorPatternConfig config) {
-        var explicit = config.explicitMappings().get(simpleName);
+        var qualifiedName = errorType.getQualifiedName().toString();
+        var explicit = config.explicitStatus(simpleName, qualifiedName);
 
-        if (explicit != null) {
-            return Result.success(ErrorTypeMapping.errorTypeMapping(errorType, explicit));
+        if (explicit.isPresent()) {
+            return Result.success(ErrorTypeMapping.errorTypeMapping(errorType,
+                                                                    explicit.or(config.defaultStatus())));
         }
 
-        var qualifiedName = errorType.getQualifiedName().toString();
         var matches = findMatchingPatterns(simpleName, qualifiedName, config.statusPatterns());
 
         if (matches.isEmpty()) {

@@ -210,4 +210,45 @@ class ErrorMappingValidatorTest {
             assertThat(issues).isEmpty();
         }
     }
+
+    @Nested
+    class ExplicitAmbiguity {
+
+        private ErrorMappingValidator.CauseDescriptor denied(String pkg) {
+            return new ErrorMappingValidator.CauseDescriptor("Denied", pkg + ".Denied", true);
+        }
+
+        @Test
+        void ambiguousExplicitMappings_flagsSimpleKeyMatchingTwoQualifiedNames() {
+            var issues = ErrorMappingValidator.ambiguousExplicitMappings(List.of(denied("a"), denied("b")),
+                                                                         config(Map.of(), Map.of("Denied", 404)),
+                                                                         PATH);
+
+            assertThat(issues).hasSize(1);
+            assertThat(issues.getFirst().kind()).isEqualTo(ErrorMappingValidator.IssueKind.AMBIGUOUS_EXPLICIT);
+            assertThat(issues.getFirst().message()).contains("'Denied'", "a.Denied, b.Denied", "fully-qualified");
+        }
+
+        @Test
+        void ambiguousExplicitMappings_acceptsQualifiedKeyAndUniqueSimpleKey() {
+            var qualified = ErrorMappingValidator.ambiguousExplicitMappings(List.of(denied("a"), denied("b")),
+                                                                            config(Map.of(), Map.of("a.Denied", 404)),
+                                                                            PATH);
+            var unique = ErrorMappingValidator.ambiguousExplicitMappings(List.of(denied("a")),
+                                                                         config(Map.of(), Map.of("Denied", 404)),
+                                                                         PATH);
+
+            assertThat(qualified).isEmpty();
+            assertThat(unique).isEmpty();
+        }
+
+        @Test
+        void validate_qualifiedExplicitKey_isMappedAndNotDead() {
+            var issues = ErrorMappingValidator.validate(List.of(denied("a")),
+                                                        config(Map.of(), Map.of("a.Denied", 404)),
+                                                        PATH);
+
+            assertThat(issues).isEmpty();
+        }
+    }
 }
