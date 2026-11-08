@@ -397,14 +397,10 @@ public sealed interface Outbox {
                                              NodeId node,
                                              List<Map.Entry<SlicePair, GoalIntent>> entries) {
         entries.stream()
-               .filter(entry -> !stillCurrent(m,
-                                              entry.getKey(),
-                                              entry.getValue().guard()))
+               .filter(entry -> !stands(m, entry))
                .forEach(entry -> Indexer.clearPending(m,
                                                       entry.getKey()));
-        var live = entries.stream().filter(entry -> stillCurrent(m,
-                                                                 entry.getKey(),
-                                                                 entry.getValue().guard())).toList();
+        var live = entries.stream().filter(entry -> stands(m, entry)).toList();
         var mutations = live.stream()
                             .map(entry -> desiredMutation(m,
                                                           ctx,
@@ -440,6 +436,16 @@ public sealed interface Outbox {
                                                                  .routed()
                                                                  .stream()))
                      .toList();
+    }
+
+    /// A goal intent stands while its observed guard is current; a goal ACTIVE also only while no rollback of a blueprint that
+    /// declares the artifact is queued or in flight (#2864): once the rollback is decided, nothing of the blueprint is promoted,
+    /// whichever of the activation and the rollback was derived first in the drain.
+    private static boolean stands(ClusterModel m, Map.Entry<SlicePair, GoalIntent> entry) {
+        return stillCurrent(m,
+                            entry.getKey(),
+                            entry.getValue().guard()) && !(entry.getValue().goal() == SliceGoal.ACTIVE && Outcomes.rollingBack(m,
+                                                                                                                                entry.getKey().artifact()));
     }
 
     /// A decision stands only while the observed value it was derived from is still the one in the mirror.
