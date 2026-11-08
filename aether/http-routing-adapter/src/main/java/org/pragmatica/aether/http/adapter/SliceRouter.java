@@ -33,6 +33,7 @@ import org.pragmatica.http.routing.RouteMountMode;
 import org.pragmatica.http.routing.RouteMounting;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.http.routing.SliceVersionRegistry;
+import org.pragmatica.http.routing.SuccessSpec;
 import org.pragmatica.http.routing.VersionResponseHeaders;
 import org.pragmatica.http.routing.VersionSelectionError;
 import org.pragmatica.http.routing.VersionSelector;
@@ -43,6 +44,8 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Functions.Fn1;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -123,6 +126,11 @@ public interface SliceRouter {
                                                                            "application/json; charset=UTF-8");
 
             private static final Map<String, String> TEXT_HEADERS = Map.of("Content-Type", "text/plain; charset=UTF-8");
+            private static final byte[] NO_BODY = new byte[0];
+
+            private static final Fn1<Cause, String> NULL_SUCCESS = Causes.forOneValue("Route %s completed with a null success value, a JBCT violation: return Unit for no body or Option for an absent value");
+
+            private static final Cause EMPTY_OPTION = Causes.cause("Resource not found");
 
             @Override
             public SliceRouter withObservability(String sliceName, VersioningMetricsSink sink) {
@@ -312,21 +320,18 @@ public interface SliceRouter {
                 var jsonCodec = jsonCodecs.current();
                 var context = SliceRequestContext.sliceRequestContext(request, route, jsonCodec);
 
-                return invokeHandler(route, context).map(result -> resultToResponse(result,
-                                                                                    route.contentType(),
-                                                                                    request,
-                                                                                    jsonCodec))
+                return invokeHandler(route, context).map(result -> resultToResponse(result, route, request, jsonCodec))
                                     .recover(cause -> errorToResponse(cause, request));
             }
 
             private HttpResponseData resultToResponse(Object result,
-                                                      ContentType contentType,
+                                                      Route<?> route,
                                                       HttpRequestContext request,
                                                       JsonCodec jsonCodec) {
                 return switch (result) {
-                    case Result.Success<?> success -> successToResponse(success.value(), contentType, jsonCodec);
+                    case Result.Success<?> success -> successToResponse(success.value(), route, request, jsonCodec);
                     case Result.Failure<?> failure -> errorToResponse(failure.cause(), request);
-                    default -> successToResponse(result, contentType, jsonCodec);
+                    case null, default -> successToResponse(result, route, request, jsonCodec);
                 };
             }
 
@@ -335,18 +340,61 @@ public interface SliceRouter {
                             .handle(context);
             }
 
-            private HttpResponseData successToResponse(Object value, ContentType contentType, JsonCodec jsonCodec) {
-                return Option.option(value)
-                             .map(present -> serializeSuccess(present, contentType, jsonCodec))
-                             .or(HttpResponseData.httpResponseData(204));
+            /// The success answer (#2805). A null value is a JBCT violation and answers 500, logged at WARN with the route;
+            /// an empty [Option] answers 404 and a present one answers its value; a [Unit] answers with no body, 204 unless
+            /// the route declares a status; any other value answers its body, 200 unless the route declares a status.
+            private HttpResponseData successToResponse(Object value,
+                                                       Route<?> route,
+                                                       HttpRequestContext request,
+                                                       JsonCodec jsonCodec) {
+                return switch (value) {
+                    case null -> errorToResponse(HttpStatus.INTERNAL_SERVER_ERROR.with(NULL_SUCCESS.apply(routeLabel(route))),
+                                                 request);
+                    case Option.None<?>_ -> errorToResponse(HttpStatus.NOT_FOUND.with(EMPTY_OPTION), request);
+                    case Option.Some<?> some -> presentToResponse(some.value(), route, jsonCodec);
+                    default -> presentToResponse(value, route, jsonCodec);
+                };
             }
 
-            private HttpResponseData serializeSuccess(Object value, ContentType contentType, JsonCodec jsonCodec) {
-                var headers = headersForContentType(contentType);
+            private static String routeLabel(Route<?> route) {
+                return route.name()
+                            .isEmpty()
+                       ? route.method() + " " + route.path()
+                       : "'" + route.name() + "' (" + route.method() + " " + route.path() + ")";
+            }
+
+            private HttpResponseData presentToResponse(Object value, Route<?> route, JsonCodec jsonCodec) {
+                var success = route.successSpec();
+                var location = locationHeader(success, value);
+
+                return value instanceof Unit
+                       ? HttpResponseData.httpResponseData(success.status().or(204),
+                                                           location,
+                                                           NO_BODY)
+                       : serializeSuccess(value,
+                                          route.contentType(),
+                                          success.status().or(200),
+                                          location,
+                                          jsonCodec);
+            }
+
+            private static Map<String, String> locationHeader(SuccessSpec success, Object value) {
+                return success.location()
+                              .map(location -> Map.of("Location",
+                                                      location.apply(value)))
+                              .or(Map.of());
+            }
+
+            private HttpResponseData serializeSuccess(Object value,
+                                                      ContentType contentType,
+                                                      int status,
+                                                      Map<String, String> location,
+                                                      JsonCodec jsonCodec) {
+                var headers = mergeHeaders(headersForContentType(contentType), location);
 
                 return ResponseSerializer.serialize(value, contentType, jsonCodec).fold(_ -> HttpResponseData.httpResponseData(500,
                                                                                                                                "Serialization failed"),
-                                                                                        body -> HttpResponseData.httpResponseData(200,
+                                                                                        body -> HttpResponseData.httpResponseData(status,
                                                                                                                                   headers,
                                                                                                                                   body));
             }

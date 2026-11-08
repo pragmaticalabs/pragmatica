@@ -31,13 +31,15 @@ import org.pragmatica.lang.utils.Causes;
 /// @param consumes     request body media type ([MediaType#JSON] by default)
 /// @param produces     response body media type ([MediaType#JSON] by default)
 /// @param limits       the ingest limits the route declares (`max_size`, `max_duration`); [RouteLimits#NONE] by default
+/// @param success      the success response the route declares (`status`, `location`); [RouteSuccess#NONE] by default
 public record RouteDsl(String method,
                        String pathTemplate,
                        List<PathParam> pathParams,
                        List<QueryParam> queryParams,
                        MediaType consumes,
                        MediaType produces,
-                       RouteLimits limits) {
+                       RouteLimits limits,
+                       RouteSuccess success) {
     public RouteDsl {
         pathParams = List.copyOf(pathParams);
         queryParams = List.copyOf(queryParams);
@@ -50,12 +52,17 @@ public record RouteDsl(String method,
                     List<QueryParam> queryParams,
                     MediaType consumes,
                     MediaType produces) {
-        this(method, pathTemplate, pathParams, queryParams, consumes, produces, RouteLimits.NONE);
+        this(method, pathTemplate, pathParams, queryParams, consumes, produces, RouteLimits.NONE, RouteSuccess.NONE);
     }
 
     /// This route with the ingest limits it declares.
     public RouteDsl withLimits(RouteLimits limits) {
-        return new RouteDsl(method, pathTemplate, pathParams, queryParams, consumes, produces, limits);
+        return new RouteDsl(method, pathTemplate, pathParams, queryParams, consumes, produces, limits, success);
+    }
+
+    /// This route with the success response it declares.
+    public RouteDsl withSuccess(RouteSuccess success) {
+        return new RouteDsl(method, pathTemplate, pathParams, queryParams, consumes, produces, limits, success);
     }
 
     private static final Set<String> VALID_METHODS = Set.of("GET", "POST", "PUT", "DELETE", "PATCH");

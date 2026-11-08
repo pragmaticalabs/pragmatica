@@ -602,6 +602,104 @@ class SliceProcessorTest {
         assertThat(diagnostics).contains("Generated routes: UploadService");
     }
 
+    /// #2805 (owner ruling 2026-11-08): `status = 204` on a result that is not `Unit` fails the build; a 204 response
+    /// carries no body, so the value would be dropped.
+    @Test
+    void status204_onNonUnitResult_failsTheBuild(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 204 }",
+                                            "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
+
+        assertThat(diagnostics).contains("declares status = 204, which answers with no body");
+    }
+
+    /// Positive control: the same declaration on a `Unit` result builds.
+    @Test
+    void status204_onUnitResult_builds(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 204 }",
+                                            "record Item(String name) {}\n\n    Promise<org.pragmatica.lang.Unit> create(Item request);");
+
+        assertThat(diagnostics).doesNotContain("declares status = 204");
+        assertThat(diagnostics).contains("Generated routes: UploadService");
+    }
+
+    /// #2805: a status that is not a success status is a clear build error naming the route and the accepted values.
+    @Test
+    void nonSuccessStatus_failsTheBuildWithAClearError(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 302 }",
+                                            "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
+
+        assertThat(diagnostics).contains("Route 'create' status must be a success status, one of [200, 201, 202, 204] written as a number; got 302");
+    }
+
+    /// Owner ruling 2026-11-08: only 200, 201, 202 and 204 are declarable; 203 is refused at build time.
+    @Test
+    void status203_failsTheBuildWithAClearError(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 203 }",
+                                            "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
+
+        assertThat(diagnostics).contains("Route 'create' status must be a success status, one of [200, 201, 202, 204] written as a number; got 203");
+    }
+
+    /// Owner ruling 2026-11-08: only 200, 201, 202 and 204 are declarable; 206 is refused at build time.
+    @Test
+    void status206_failsTheBuildWithAClearError(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 206 }",
+                                            "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
+
+        assertThat(diagnostics).contains("Route 'create' status must be a success status, one of [200, 201, 202, 204] written as a number; got 206");
+    }
+
+    @Test
+    void stringStatus_failsTheBuildWithAClearError(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = \"201\" }",
+                                            "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
+
+        assertThat(diagnostics).contains("Route 'create' status must be a success status, one of [200, 201, 202, 204] written as a number; got the string \"201\"");
+    }
+
+    @Test
+    void fractionalStatus_failsTheBuildWithAClearError(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 201.5 }",
+                                            "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
+
+        assertThat(diagnostics).contains("Route 'create' status must be a success status, one of [200, 201, 202, 204] written as a number; got 201.5");
+    }
+
+    @Test
+    void blankLocation_failsTheBuild(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 201, location = \" \" }",
+                                            "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
+
+        assertThat(diagnostics).contains("Route 'create' location must not be blank");
+    }
+
+    /// #2805: a `location` placeholder must name a component of the result record.
+    @Test
+    void locationNamingAnUnknownField_failsTheBuild(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 201, location = \"/items/{slug}\" }",
+                                            "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
+
+        assertThat(diagnostics).contains("location names {slug}, but the result record upload.UploadService.Item has no such component; its components are [name]");
+    }
+
+    @Test
+    void locationOnANonRecordResult_failsTheBuild(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 201, location = \"/items/{slug}\" }",
+                                            "record Item(String name) {}\n\n    Promise<String> create(Item request);");
+
+        assertThat(diagnostics).contains("location names {slug}, but the result type java.lang.String is not a record with fields to read");
+    }
+
     // ========== [errors] packages: Cause types outside the slice package (#2883) ==========
 
     private static JavaFileObject causeIn(String pkg, String outer, String... inner) {
