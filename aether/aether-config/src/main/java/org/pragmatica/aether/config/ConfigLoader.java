@@ -603,8 +603,12 @@ public final class ConfigLoader {
         var roleClaim = doc.getString("app-http", "role_claim").or(JwtConfig.DEFAULT_ROLE_CLAIM);
         var cacheTtl = parseLong(doc, "app-http", "jwks_cache_ttl_seconds", JwtConfig.DEFAULT_CACHE_TTL_SECONDS);
         var clockSkew = parseLong(doc, "app-http", "clock_skew_seconds", JwtConfig.DEFAULT_CLOCK_SKEW_SECONDS);
+        // #2156: an invalid list (empty, a non-token entry, a duplicate) refuses the load through the
+        // IllegalArgumentException boundary of assembleConfig; it is never replaced by the default.
+        var authSchemes = doc.getStringList("app-http", "auth_schemes").or(AuthSchemes.DEFAULT);
 
-        return JwtConfig.jwtConfig(jwksUrl, issuer, audience, roleClaim, cacheTtl, clockSkew).unwrap();
+        return JwtConfig.jwtConfig(jwksUrl, issuer, audience, roleClaim, cacheTtl, clockSkew, authSchemes).getOrThrow(IllegalArgumentException::new,
+                                                                                                                      "invalid [app-http]");
     }
 
     private static void populateBackupConfig(TomlDocument doc,

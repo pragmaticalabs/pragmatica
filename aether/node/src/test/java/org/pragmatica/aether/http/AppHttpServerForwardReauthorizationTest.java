@@ -16,6 +16,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.HttpProtocol;
+import org.pragmatica.aether.config.JwtConfig;
+import org.pragmatica.aether.config.SecurityMode;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.http.HttpRoutePublisher.LocalResolution;
 import org.pragmatica.aether.http.HttpRoutePublisher.LocalRouteInfo;
@@ -78,7 +81,11 @@ class AppHttpServerForwardReauthorizationTest {
     }
 
     private AppHttpServer hostServing(StubRoutePublisher publisher, HttpRequestContext forwarded) {
-        return AppHttpServer.appHttpServer(AppHttpConfig.appHttpConfig(TEST_PORT, Set.of(VALID_API_KEY)),
+        return hostServing(AppHttpConfig.appHttpConfig(TEST_PORT, Set.of(VALID_API_KEY)), publisher, forwarded);
+    }
+
+    private AppHttpServer hostServing(AppHttpConfig config, StubRoutePublisher publisher, HttpRequestContext forwarded) {
+        return AppHttpServer.appHttpServer(config,
                                            ForwardingTimeouts.forwardingTimeouts(),
                                            SELF_NODE,
                                            HttpRouteRegistry.httpRouteRegistry(),
@@ -119,6 +126,39 @@ class AppHttpServerForwardReauthorizationTest {
 
         assertThat(relayed.statusCode()).isEqualTo(401);
         assertThat(relayed.headers()).containsEntry("WWW-Authenticate", "ApiKey realm=\"Aether\"");
+        assertThat(router.handleCount()).isZero();
+    }
+
+    /// #2156: under JWT mode the relayed challenge names the FIRST configured `auth_schemes` entry.
+    @Test
+    void forwardedRequest_withoutACredential_underJwt_challengesWithTheFirstConfiguredScheme() {
+        var jwt = JwtConfig.jwtConfig("http://127.0.0.1:1/.well-known/jwks.json",
+                                      Option.empty(),
+                                      Option.empty(),
+                                      "role",
+                                      3600,
+                                      30,
+                                      List.of("Token", "Bearer"))
+                           .unwrap();
+        var config = AppHttpConfig.appHttpConfig(true,
+                                                 TEST_PORT,
+                                                 Map.of(),
+                                                 AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE,
+                                                 SecurityMode.JWT,
+                                                 Option.some(jwt),
+                                                 HttpProtocol.H1)
+                                  .unwrap();
+        var policy = SecurityPolicy.roleRequired("admin");
+        var host = hostServing(config,
+                               new StubRoutePublisher("GET", "/api/admin/", SELF_NODE, router, policy, policy),
+                               withoutCredential("/api/admin/secret"));
+
+        host.onHttpForwardRequest(forwardRequest("corr-jwt-anon"));
+
+        var relayed = relayedResponse();
+
+        assertThat(relayed.statusCode()).isEqualTo(401);
+        assertThat(relayed.headers()).containsEntry("WWW-Authenticate", "Token realm=\"Aether\"");
         assertThat(router.handleCount()).isZero();
     }
 

@@ -12,6 +12,7 @@ import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.AuthorizationRole;
 import org.pragmatica.aether.http.handler.security.Role;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
+import org.pragmatica.http.HttpStatus;
 import org.pragmatica.lang.Option;
 
 import java.math.BigInteger;
@@ -440,6 +441,82 @@ class JwtSecurityValidatorTest {
     }
 
     // ================== Test Helpers ==================
+
+    /// #2156: the `Authorization` schemes JWT mode accepts come from `auth_schemes` (default `["Bearer"]`), and the
+    /// scheme is matched case-insensitively (RFC 7235 section 2.1). A scheme outside the list is a missing credential,
+    /// answered 401.
+    @Nested
+    class AuthSchemeTests {
+        private static final String JWKS = "https://auth.example.com/.well-known/jwks.json";
+
+        private JwtSecurityValidator validatorAccepting(List<String> schemes) {
+            var config = JwtConfig.jwtConfig(JWKS, Option.empty(), Option.empty(), "role", 3600, 30, schemes).unwrap();
+
+            return new JwtSecurityValidator(config, testKeyStore(rsaKeyPair.getPublic()));
+        }
+
+        private String validToken() {
+            return buildToken(Map.of("sub", TEST_SUBJECT, "exp", futureExp(), "role", "ADMIN"));
+        }
+
+        @Test
+        void validate_defaultSchemes_acceptsBearer() {
+            validator.validate(requestWithAuthorization("Bearer " + validToken()), SecurityPolicy.bearerTokenRequired())
+                     .onFailure(cause -> fail("the default must accept Bearer: " + cause.message()));
+        }
+
+        @Test
+        void validate_defaultSchemes_refusesTokenScheme_401() {
+            assertRefused401(validator, "Token " + validToken());
+        }
+
+        @Test
+        void validate_configuredTokenScheme_isAccepted() {
+            validatorAccepting(List.of("Bearer", "Token")).validate(requestWithAuthorization("Token " + validToken()),
+                                                                    SecurityPolicy.bearerTokenRequired())
+                                                          .onFailure(cause -> fail("a configured Token scheme must be accepted: "
+                                                                                   + cause.message()))
+                                                          .onSuccess(ctx -> assertThat(ctx.principal().value()).isEqualTo("user:" + TEST_SUBJECT));
+        }
+
+        @Test
+        void validate_configuredTokenOnly_refusesBearer_401() {
+            assertRefused401(validatorAccepting(List.of("Token")), "Bearer " + validToken());
+        }
+
+        @Test
+        void validate_unknownScheme_isRefused_401() {
+            assertRefused401(validatorAccepting(List.of("Bearer", "Token")), "Basic " + validToken());
+        }
+
+        @Test
+        void validate_schemeMatch_isCaseInsensitive() {
+            var tokenValidator = validatorAccepting(List.of("Bearer", "Token"));
+
+            for (var scheme : List.of("token", "TOKEN", "ToKeN", "bearer", "BEARER")) {
+                tokenValidator.validate(requestWithAuthorization(scheme + " " + validToken()),
+                                        SecurityPolicy.bearerTokenRequired())
+                              .onFailure(cause -> fail("scheme '" + scheme + "' must match case-insensitively: "
+                                                       + cause.message()));
+            }
+        }
+
+        private void assertRefused401(JwtSecurityValidator target, String authorization) {
+            target.validate(requestWithAuthorization(authorization), SecurityPolicy.bearerTokenRequired())
+                  .onSuccess(ctx -> fail("'" + authorization.substring(0, authorization.indexOf(' ')) + "' was accepted"))
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(SecurityError.MissingCredentials.class))
+                  .onFailure(cause -> assertThat(((SecurityError) cause).httpStatus()).isEqualTo(HttpStatus.UNAUTHORIZED));
+        }
+    }
+
+    private static HttpRequestContext requestWithAuthorization(String value) {
+        return HttpRequestContext.httpRequestContext("/test",
+                                                     "GET",
+                                                     Map.of(),
+                                                     Map.of("Authorization", List.of(value)),
+                                                     new byte[0],
+                                                     "test-request-id");
+    }
 
     private String buildToken(Map<String, Object> claims) {
         return buildRs256Token(claims, rsaKeyPair, TEST_KID);

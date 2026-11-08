@@ -19,6 +19,8 @@ import org.pragmatica.aether.slice.RateGuardError;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.AuthSchemes;
+import org.pragmatica.aether.config.JwtConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SecurityMode;
 import org.pragmatica.aether.config.UploadConfig;
@@ -1736,9 +1738,18 @@ class AppHttpServerAdapter implements AppHttpServer {
         };
     }
 
+    /// #2156: the JWT challenge names the FIRST configured `auth_schemes` entry. JWT mode without a `JwtConfig` is
+    /// refused at config load (#909); the default scheme only satisfies the type.
+    private String jwtChallenge() {
+        return config.jwtConfig()
+                     .map(JwtConfig::challengeScheme)
+                     .or(AuthSchemes.DEFAULT.getFirst())
+             + " realm=\"Aether\"";
+    }
+
     private void addAuthenticateHeader(ResponseWriter response) {
         switch (config.securityMode()) {
-            case JWT -> response.header("WWW-Authenticate", "Bearer realm=\"Aether\"");
+            case JWT -> response.header("WWW-Authenticate", jwtChallenge());
             case API_KEY -> response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"");
             case NONE -> {}
         }
@@ -2243,7 +2254,7 @@ class AppHttpServerAdapter implements AppHttpServer {
 
         return switch (config.securityMode()) {
             case JWT -> status == HttpStatus.UNAUTHORIZED
-                        ? Map.ofEntries(contentType, Map.entry("WWW-Authenticate", "Bearer realm=\"Aether\""))
+                        ? Map.ofEntries(contentType, Map.entry("WWW-Authenticate", jwtChallenge()))
                         : Map.ofEntries(contentType);
             case API_KEY -> status == HttpStatus.UNAUTHORIZED
                             ? Map.ofEntries(contentType, Map.entry("WWW-Authenticate", "ApiKey realm=\"Aether\""))

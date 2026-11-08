@@ -9,9 +9,14 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
+import org.pragmatica.aether.http.security.HttpAuthenticator;
+import org.pragmatica.aether.http.security.SecurityError;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.source.TomlConfigSource;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Result;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 class LaunchHttpTest {
     @Test void parse_namedApiKey_preservesPrincipalAndRoles() {
@@ -42,5 +47,48 @@ class LaunchHttpTest {
         var config = LaunchHttp.launchHttp(Path.of("."), ConfigurationProvider.builder().withDefaults(Map.of("http.security_mode", "none")).build()).unwrap();
         var request = HttpRequestContext.httpRequestContext("/", "GET", Map.of(), Map.of(), "test");
         assertThat(config.authenticator().apply().validate(request, SecurityPolicy.authenticated()).isFailure()).isTrue();
+    }
+
+    /// #2156: `[jwt] auth_schemes`. A scheme in the list reaches token parsing (a malformed token is then refused as
+    /// such); a scheme outside it never does (a missing credential). Absent, only `Bearer` is accepted.
+    @Test void parse_jwtAuthSchemes_configuredTokenSchemeReachesTokenParsing() {
+        var auth = jwtLaunch("auth_schemes = [\"Bearer\", \"Token\"]\n").unwrap().authenticator().apply();
+
+        assertThat(refusal(auth, "Token not-a-jwt")).isInstanceOf(SecurityError.InvalidCredentials.class);
+        assertThat(refusal(auth, "token not-a-jwt")).isInstanceOf(SecurityError.InvalidCredentials.class);
+        assertThat(refusal(auth, "Basic not-a-jwt")).isInstanceOf(SecurityError.MissingCredentials.class);
+    }
+
+    @Test void parse_jwtAuthSchemes_absent_acceptsBearerOnly() {
+        var auth = jwtLaunch("").unwrap().authenticator().apply();
+
+        assertThat(refusal(auth, "Bearer not-a-jwt")).isInstanceOf(SecurityError.InvalidCredentials.class);
+        assertThat(refusal(auth, "Token not-a-jwt")).isInstanceOf(SecurityError.MissingCredentials.class);
+    }
+
+    @Test void parse_jwtAuthSchemes_emptyOrDuplicate_failsTheLaunch() {
+        for (var line : List.of("auth_schemes = []\n", "auth_schemes = [\"Token\", \"token\"]\n")) {
+            var launch = jwtLaunch(line);
+
+            assertThat(launch.isFailure()).as(line).isTrue();
+            launch.onFailure(cause -> assertThat(cause.message()).as(line).contains("auth_schemes"));
+        }
+    }
+
+    private static Result<LaunchHttp> jwtLaunch(String authSchemesLine) {
+        var source = TomlConfigSource.tomlConfigSource("""
+            [http]
+            security_mode = "jwt"
+            [jwt]
+            jwks_url = "https://auth.example.com/.well-known/jwks.json"
+            """ + authSchemesLine).unwrap();
+
+        return LaunchHttp.launchHttp(Path.of("."), ConfigurationProvider.configurationProvider(source));
+    }
+
+    private static Cause refusal(HttpAuthenticator auth, String authorization) {
+        var request = HttpRequestContext.httpRequestContext("/", "GET", Map.of(), Map.of("Authorization", List.of(authorization)), "test");
+        return auth.validate(request, SecurityPolicy.bearerTokenRequired())
+                   .fold(cause -> cause, _ -> fail("accepted: " + authorization));
     }
 }
