@@ -260,12 +260,12 @@ final class DefaultReplicationManager implements ReplicationManager {
     @Override
     public void handleAck(ReplicationMessage.ReplicateAck ack) {
         notifyObserver(ack);
-        registry.updateWatermark(ack.streamName(),
-                                 ack.partition(),
-                                 ack.replicaId(),
-                                 ack.confirmedOffset(),
-                                 promotionState(ack),
-                                 ack.ownerEpoch());
+        registry.advanceWatermark(ack.streamName(),
+                                  ack.partition(),
+                                  ack.replicaId(),
+                                  ack.confirmedOffset(),
+                                  promotionState(ack),
+                                  ack.ownerEpoch());
         notifyObserver(ack);
         if (underCurrentEpoch(ack.streamName(), ack.partition(), ack.ownerEpoch())) {
             resolvePendingAck(ack.streamName(), ack.partition(), ack.replicaId(), ack.confirmedOffset());

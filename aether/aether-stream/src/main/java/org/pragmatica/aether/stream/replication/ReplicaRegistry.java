@@ -249,6 +249,46 @@ public final class ReplicaRegistry {
         watermarkStore.persistWatermark(streamName, partition, nodeId, confirmedOffset);
     }
 
+    /// The owner's live-ack path (#2888): as the six-argument update, but an ack whose offset is LOWER than the row's
+    /// confirmed offset under the SAME epoch is refused, so a reordered or duplicated ack (transport retry, ack resend after
+    /// #2882) cannot move a replica's watermark backwards. A different epoch is a different lineage: its first ack replaces the
+    /// row, lower offset included, because a new tenure may legitimately restart the confirmation. An equal offset is applied,
+    /// so a state upgrade at the same offset is not lost. The persisted watermark follows the surviving row.
+    @Contract
+    public void advanceWatermark(String streamName,
+                                 int partition,
+                                 NodeId nodeId,
+                                 long confirmedOffset,
+                                 ReplicationState state,
+                                 Epoch epoch) {
+        var key = partitionKey(streamName, partition);
+
+        var surviving = option(replicas.get(key)).flatMap(nodeMap -> option(nodeMap.computeIfPresent(nodeId,
+                                                                                                    (_, current) -> monotone(current,
+                                                                                                                             confirmedOffset,
+                                                                                                                             state,
+                                                                                                                             epoch))));
+
+        watermarkStore.persistWatermark(streamName,
+                                        partition,
+                                        nodeId,
+                                        surviving.map(ReplicaDescriptor::confirmedOffset).or(confirmedOffset));
+    }
+
+    private static ReplicaDescriptor monotone(ReplicaDescriptor current,
+                                              long confirmedOffset,
+                                              ReplicationState state,
+                                              Epoch epoch) {
+        return current.epoch().equals(epoch) && current.confirmedOffset() > confirmedOffset
+               ? current
+               : replicaDescriptor(current.nodeId(),
+                                   current.streamName(),
+                                   current.partition(),
+                                   confirmedOffset,
+                                   state,
+                                   epoch);
+    }
+
     @Contract
     public void rebuildFromWatermarks(Map<PartitionKey, Map<NodeId, Long>> watermarks) {
         watermarks.forEach(this::rebuildPartitionWatermarks);
