@@ -284,6 +284,67 @@ class PatchParityTest {
         return Stream.of(FieldPatch.class, SetterPatch.class);
     }
 
+    // ---- the refusal names the property (N1) and covers the write of a non-component (N2) ---
+
+    public static class GetterPatch {
+        public Patch<String> getS() {
+            return Patch.nullValue();
+        }
+    }
+
+    record ExtraGetter(String a) {
+        public Patch<String> getP() {
+            return Patch.nullValue();
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("nonCreatorTypes")
+    void jackson_patchOutsideACreator_refusalNamesThePropertyAndItsOwner(Class<?> type) {
+        var message = failureMessage(VALUE_OBJECTS.readBytes(bytes("{}"), type));
+
+        assertTrue(message.contains(POSITION + ": property 's' of " + type.getName()), message);
+    }
+
+    static Stream<Object> nonComponentWrites() {
+        return Stream.of(new FieldPatch(), new SetterPatch(), new GetterPatch(), new ExtraGetter("a"));
+    }
+
+    // A field or getter that is not a record component is refused on write like on read, whatever the Patch state.
+    @ParameterizedTest
+    @MethodSource("nonComponentWrites")
+    void jackson_patchOutsideARecordComponent_refusedOnWrite_namingThePropertyAndItsOwner(Object value) {
+        var message = failureMessage(VALUE_OBJECTS.writeAsString(value));
+
+        assertTrue(message.contains(POSITION + ": property '"), message);
+        assertTrue(message.contains("' of " + value.getClass().getName()), message);
+        assertRefused(DEFAULT.writeAsString(value));
+    }
+
+    record OptionOfListOfPatch(Option<List<Patch<String>>> x) {}
+
+    record OptionOfOptionOfPatch(Option<Option<Patch<String>>> x) {}
+
+    record OptionOfMapOfListOfPatch(Option<Map<String, List<Patch<String>>>> x) {}
+
+    record ListOfOptionOfListOfPatch(List<Option<List<Patch<String>>>> x) {}
+
+    static Stream<Class<?>> wrappersOfWrappers() {
+        return Stream.of(OptionOfListOfPatch.class,
+                         OptionOfOptionOfPatch.class,
+                         OptionOfMapOfListOfPatch.class,
+                         ListOfOptionOfListOfPatch.class);
+    }
+
+    // The type is refused when it is first resolved, so a body that omits the member or sends null still fails.
+    @ParameterizedTest
+    @MethodSource("wrappersOfWrappers")
+    void jackson_patchBehindAWrapperOfAWrapper_refusedOnReadWhateverTheBody(Class<?> type) {
+        assertRefused(VALUE_OBJECTS.readBytes(bytes("{}"), type));
+        assertRefused(VALUE_OBJECTS.readBytes(bytes("{\"x\":null}"), type));
+        assertRefused(DEFAULT.readBytes(bytes("{}"), type));
+    }
+
     @Test
     void jackson_valueOfNull_normalisedToNull_roundTrips() {
         var json = VALUE_OBJECTS.writeAsString(new PlainUpdate(Patch.value(null), Patch.absent())).unwrap();
