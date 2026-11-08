@@ -1,0 +1,93 @@
+/*
+ *  Copyright (c) 2025 Sergiy Yevtushenko.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
+ */
+package org.pragmatica.json;
+
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Patch;
+
+import tools.jackson.core.JacksonException;
+import tools.jackson.core.JsonGenerator;
+import tools.jackson.databind.BeanProperty;
+import tools.jackson.databind.DatabindException;
+import tools.jackson.databind.JavaType;
+import tools.jackson.databind.SerializationContext;
+import tools.jackson.databind.ValueSerializer;
+import tools.jackson.databind.jsontype.TypeSerializer;
+
+import static org.pragmatica.lang.Option.option;
+
+
+/// Jackson serializer for [Patch] record components: [Patch.Value] writes its value, [Patch.Null] writes `null`, and
+/// [Patch.Absent] is empty ([#isEmpty]), which [PragmaticaModule]'s as-property inclusion for `Patch` turns into a
+/// left-out member, whatever the mapper's null inclusion.
+///
+/// The value is written by its runtime type, in the stream context of the member, so a value object stays bare as in
+/// any other member. Every position other than a record component is refused when the serializer is
+/// contextualized, as [PatchDeserializer] refuses it, and so is an `Absent` that reaches [#serialize] (a property
+/// whose own inclusion overrides the module's): writing it as `null` would turn "leave the field" into "clear it".
+public class PatchSerializer extends ValueSerializer<Patch<?>> {
+    private static final String ABSENT_WRITTEN = "an Absent Patch must be left out, but this member's inclusion writes it";
+
+    @Contract
+    @Override
+    public void serialize(Patch<?> value, JsonGenerator gen, SerializationContext provider) throws JacksonException {
+        switch (value) {
+            case Patch.Value<?> present -> provider.writeValue(gen, present.value());
+            case Patch.Null<?>_ -> gen.writeNull();
+            case Patch.Absent<?>_ -> refused(provider, ABSENT_WRITTEN);
+        }
+    }
+
+    @Override
+    public ValueSerializer<?> createContextual(SerializationContext prov, BeanProperty property) {
+        return option(property).map(BeanProperty::getType)
+                     .filter(type -> type.getRawClass() == Patch.class)
+                     .filter(PatchSerializer::hasSupportedElement)
+                     .<ValueSerializer<?>> map(_ -> this)
+                     .or(() -> refused(prov, PatchDeserializer.POSITION));
+    }
+
+    // Jackson's failure channel is an exception (JsonMapper lifts it into a Result). Thrown as a DatabindException,
+    // not reported through reportBadDefinition: the mapper turns an InvalidDefinitionException into a bare
+    // "invalid definition" and would drop the reason.
+    private static <T> T refused(SerializationContext provider, String reason) {
+        throw DatabindException.from(provider, reason);
+    }
+
+    private static boolean hasSupportedElement(JavaType type) {
+        return option(type.containedTypeCount() == 1
+                      ? type.containedType(0)
+                      : type.getContentType()).map(JavaType::getRawClass)
+                     .filter(raw -> raw == Option.class || raw == Patch.class)
+                     .isEmpty();
+    }
+
+    @Contract
+    @Override
+    public void serializeWithType(Patch<?> value,
+                                  JsonGenerator gen,
+                                  SerializationContext provider,
+                                  TypeSerializer typeSer) throws JacksonException {
+        serialize(value, gen, provider);
+    }
+
+    @Override
+    public boolean isEmpty(SerializationContext provider, Patch<?> value) {
+        return value instanceof Patch.Absent;
+    }
+}

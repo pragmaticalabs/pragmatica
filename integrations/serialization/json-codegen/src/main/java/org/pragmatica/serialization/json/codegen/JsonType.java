@@ -46,6 +46,10 @@ sealed interface JsonType {
 
     record OptionalOf(JsonType element) implements JsonType {}
 
+    /// `org.pragmatica.lang.Patch`: only ever a record component's type, over an element that is neither an
+    /// `OptionalOf` nor a `PatchOf` ([JsonTypeAnalyzer] refuses every other position).
+    record PatchOf(JsonType element) implements JsonType {}
+
     record ListOf(JsonType element, boolean set) implements JsonType {}
 
     /// Keys are a string, an enum, or a value object over a string.

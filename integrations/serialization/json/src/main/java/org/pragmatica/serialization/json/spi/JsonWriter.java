@@ -34,7 +34,8 @@ import org.pragmatica.serialization.json.JsonOptions;
 /// Of the [JsonOptions], only `nullInclusion` concerns writing, and it costs only an empty `Option` component
 /// ([#writeEmpty]): leaving out an object's leading members would leave the next member's comma after the `{`, so
 /// the omission records that comma's position and the comma is removed when the bytes are taken ([#toByteArray],
-/// [#buffer], [#size]), which costs one comparison per document otherwise.
+/// [#buffer], [#size]), which costs one comparison per document otherwise. An `Absent` `Patch` component
+/// ([#writeAbsent]) is left out the same way, under any options.
 @Contract
 public final class JsonWriter {
     private static final byte[] HEX = "0123456789ABCDEF".getBytes(StandardCharsets.ISO_8859_1);
@@ -136,6 +137,12 @@ public final class JsonWriter {
 
         writeRaw(name);
         writeNull();
+    }
+
+    /// An `Absent` `Patch` record component: the member is left out whatever the options, because writing it as
+    /// `null` would turn "leave the field" into "clear the field".
+    public void writeAbsent() {
+        omitMember();
     }
 
     // Nothing is written. If nothing was written in this object yet either (the last byte is its `{`), the next member
