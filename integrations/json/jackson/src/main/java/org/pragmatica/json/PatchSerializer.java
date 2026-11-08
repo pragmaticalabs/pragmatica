@@ -54,7 +54,6 @@ public class PatchSerializer extends ValueSerializer<Patch<?>> {
     @Override
     public ValueSerializer<?> createContextual(SerializationContext prov, BeanProperty property) {
         return option(property).map(BeanProperty::getType)
-                     .filter(type -> type.getRawClass() == Patch.class)
                      .filter(PatchSerializer::hasSupportedElement)
                      .<ValueSerializer<?>> map(_ -> this)
                      .or(() -> refused(prov, PatchDeserializer.POSITION));
@@ -65,8 +64,9 @@ public class PatchSerializer extends ValueSerializer<Patch<?>> {
         return provider.reportBadDefinition(Patch.class, reason);
     }
 
-    // Checked here because the value is written by its runtime type: a Null or Absent inner Patch would otherwise never
-    // reach a serializer that could refuse it. A Patch deeper inside a container value (Patch<List<Patch<X>>>) is
+    // The property is the Patch component, or a container or wrapper property that hands itself on to this element;
+    // the latter's element is this Patch itself, refused here. Checked here because the value is written by its
+    // runtime type: a Null or Absent inner Patch would otherwise never reach a serializer that could refuse it. A Patch deeper inside a container value (Patch<List<Patch<X>>>) is
     // refused only when one is written, by its own contextualization; PatchDeserializer refuses that type outright.
     private static boolean hasSupportedElement(JavaType type) {
         return option(type.containedTypeCount() == 1

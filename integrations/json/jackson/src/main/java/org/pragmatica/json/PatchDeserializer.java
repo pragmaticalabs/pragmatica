@@ -60,10 +60,12 @@ public class PatchDeserializer extends ValueDeserializer<Patch<?>> {
         return Patch.value(valueDeserializer.map(deser -> deser.deserialize(p, ctxt)).or(() -> refused(ctxt)));
     }
 
+    /// `property` is the `Patch` record component, or none (the whole document, or an element resolved by type, as
+    /// [#contextualized] resolves one): refused. A container or wrapper property hands itself on to this element, and
+    /// then its "element" is this `Patch` type itself, which, resolved again without a property, refuses itself.
     @Override
     public ValueDeserializer<?> createContextual(DeserializationContext ctxt, BeanProperty property) {
         return option(property).map(BeanProperty::getType)
-                     .filter(type -> type.getRawClass() == Patch.class)
                      .flatMap(PatchDeserializer::elementType)
                      .filter(PatchDeserializer::isSupportedElement)
                      .<ValueDeserializer<?>> map(type -> contextualized(ctxt, type))
