@@ -362,9 +362,6 @@ public sealed interface StreamAssembly {
                                                                                    clusterNode,
                                                                                    ownershipEpochHighWater,
                                                                                    streamOwnerEpochSource,
-                                                                                   // #1971/#1938 (PR-6a): the committed epoch starts a
-                                                                                   // non-owner copy's doubted prefix and a catch-up
-                                                                                   // from a log-less source are judged by.
                                                                                    CommittedEpochStarts.committedEpochStarts(kvStore),
                                                                                    streamLogs(streamStorage),
                                                                                    streamSegmentIndex::lastSealedOffset,
