@@ -749,7 +749,8 @@ class SliceProcessorTest {
         var keys = List.of("Alpha", "Beta", "Denied", "Mid", "Zeta");
         var positions = keys.stream().map(key -> diagnostics.indexOf("Ambiguous explicit error mapping '" + key + "'")).toList();
 
-        assertThat(positions).isSorted().doesNotContain(-1);
+        assertThat(positions).doesNotContain(-1);
+        assertThat(positions).isInStrictOrder();
         assertThat(diagnostics).contains("upload/routes.toml.\nAmbiguous explicit error mapping 'Beta'");
     }
 
