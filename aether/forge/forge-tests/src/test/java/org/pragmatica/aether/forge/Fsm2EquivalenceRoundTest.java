@@ -511,24 +511,28 @@ class Fsm2EquivalenceRoundTest {
     }
 
     /// The monitor hook's control (CTO ruling on plan 3.3): each invariant's violation is committed into the LIVE store, read back through the
-    /// same snapshot path the recorder uses, and checked by a monitor with 1 s bounds; all four must trip. Runs after the arm's data is taken, so
+    /// same snapshot path the recorder uses, and sampled every 250 ms and checked by a monitor with 250 ms bounds (an engine may clean a planted row within a tick); all four must trip. Runs after the arm's data is taken, so
     /// it contaminates no comparison; the rows are removed again. A miss is a silent control.
     private void monitorLiveControl(EmberCluster cluster, DeploymentEngine engine) {
         var node = leader(cluster);
         var rows = EquivalenceDivergentControl.livePlant();
-        var monitor = new EquivalenceMonitor(1_000L, 1_000L);
+        var monitor = new EquivalenceMonitor(250L, 250L);
         var samples = new ArrayList<EquivalenceMonitor.Sample>();
         var start = System.currentTimeMillis();
 
         rows.forEach((key, value) -> commit(node, key, Option.none(), Option.some(value)));
-        for (var index = 0; index < 8; index++) {
+        for (var index = 0; index < 32; index++) {
             samples.add(new EquivalenceMonitor.Sample(System.currentTimeMillis() - start, new EquivalenceKv(snapshot(cluster))));
-            sleep(1_000L);
+            sleep(250L);
         }
         rows.forEach((key, value) -> commit(node, key, Option.some(value), Option.none()));
         var tripped = monitor.check(samples).stream().map(EquivalenceMonitor.Violation::invariant).collect(Collectors.toCollection(TreeSet::new));
 
-        log("monitor live plant (%s): tripped=%s".formatted(engine, tripped));
+        log("monitor live plant (%s): tripped=%s; plant rows seen in %d of %d samples (iii: %d)".formatted(engine,
+                                                                                                          tripped,
+                                                                                                          samples.stream().filter(sample -> sample.kv().entries().keySet().containsAll(rows.keySet())).count(),
+                                                                                                          samples.size(),
+                                                                                                          samples.stream().filter(sample -> !sample.kv().departed().isEmpty()).count()));
         monitorLive.put(engine, tripped.containsAll(Set.of("i", "ii", "iii", "iv")));
     }
 
