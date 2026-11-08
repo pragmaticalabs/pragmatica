@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
+import org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
@@ -16,7 +17,6 @@ import org.pragmatica.aether.stream.OwnerActivation;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
@@ -58,7 +58,7 @@ class EscapePromotedReplicaServesNoUnackedTailTest {
         manager.ownerEpochSource((_, _) -> E2);
         manager.createStream(StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 600_000), "earliest"));
         manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
-        manager.epochStarts((_, _, epoch) -> epoch.equals(E2) ? Option.some(5L) : Option.none());
+        manager.epochStarts((_, _) -> List.of(new EpochStart(E2, 5L)));
         for (var i = 0; i < tailLength; i++) {
             var text = i < 5 ? "shared-" + i : label + "-" + i;
 

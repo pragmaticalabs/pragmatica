@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -11,7 +12,6 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
-import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -43,9 +43,7 @@ class ReplicaEpochVerificationTest {
         manager.createStream(StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 600_000), "earliest"))
                .onFailure(cause -> fail(cause.message()));
         manager.placementRoleSupplier((_, _) -> role.get());
-        manager.epochStarts((_, _, epoch) -> epoch.equals(E2)
-                                              ? Option.some(5L)
-                                              : Option.none());
+        manager.epochStarts((_, _) -> List.of(new EpochStart(E2, 5L)));
     }
 
     @AfterEach
