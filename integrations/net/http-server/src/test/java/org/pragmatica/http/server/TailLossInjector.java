@@ -79,6 +79,11 @@ final class TailLossInjector extends ChannelOutboundHandlerAdapter {
         return log;
     }
 
+    /// Datagrams held after the burst so far: the endpoint's probes. Read on the channel's event loop.
+    int heldAfterBurst() {
+        return held.size() - burstEnd;
+    }
+
     /// Datagrams written through this handler so far, held or not.
     long written() {
         return written;

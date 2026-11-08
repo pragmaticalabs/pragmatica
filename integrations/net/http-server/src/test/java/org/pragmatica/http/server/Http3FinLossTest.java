@@ -55,6 +55,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Http3FinLossTest {
     private static final int HEAD = 512 * 1024;
     private static final int TAIL = 6 * 1024;
+    private static final int PROBES = 4;
 
     private final TailLossInjector injector = new TailLossInjector();
     private Http3Server server;
@@ -150,7 +151,7 @@ class Http3FinLossTest {
     /// The tail and the `FIN` are written in ONE task on the client's event loop, between [TailLossInjector#arm] and
     /// [TailLossInjector#endBurst]: the burst is exactly their datagrams, by position, whatever the load (#2866: the
     /// pattern used to be tagged by sleeps between the writes, and under load it missed the FIN-only frame). The
-    /// release comes 600 ms later, after the PTO probes the client sent while nothing reached the server.
+    /// release comes once the client has sent four PTO probes while nothing reached the server (at most 10 s).
     private void writeRequest(QuicStreamChannel stream, Ending ending, Loss loss) throws Exception {
         var udp = stream.parent().parent();
 
@@ -162,7 +163,7 @@ class Http3FinLossTest {
 
         awaitQuiet(udp);
         stream.eventLoop().submit(() -> writeTail(stream, ending)).sync();
-        Thread.sleep(600);
+        awaitProbes(udp);
         injector.release(udp, loss.drop);
     }
 
@@ -185,6 +186,15 @@ class Http3FinLossTest {
         }
 
         throw new AssertionError("the client kept sending for 10 s");
+    }
+
+    /// Returns once the injector holds four datagrams past the burst: the PTO probes, enough for the FIN-only frame to count as lost by packet threshold (a deadline of 10 s only bounds a hang).
+    private void awaitProbes(Channel udp) throws Exception {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+        while (System.nanoTime() < deadline && udp.eventLoop().submit(injector::heldAfterBurst).syncUninterruptibly().getNow() < PROBES) {
+            Thread.sleep(20);
+        }
     }
 
     private long writtenOnLoop(Channel udp) {
