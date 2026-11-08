@@ -124,6 +124,25 @@ class EquivalenceInstrumentTest {
             assertThat(EquivalenceDivergentControl.silentFamilies(fsm2Divergences, fsm2Divergences)).containsExactlyElementsOf(EquivalenceDivergentControl.FAMILIES);
         }
 
+        /// E-09 regression: LEGACY wrote FAILED and FSM2 wrote ROLLED_BACK; the O1 control must still differ from LEGACY (it once flipped to FAILED).
+        @Test
+        void o1Control_firesWhenLegacyFailedAndFsm2RolledBack() {
+            var legacy = withVerdict(arm("legacy", false), AetherValue.DeploymentOutcomeStatus.FAILED);
+            var fsm2 = withVerdict(arm("fsm2", true), AetherValue.DeploymentOutcomeStatus.ROLLED_BACK);
+            var control = EquivalenceDivergentControl.of(fsm2, legacy, MONITOR);
+            var silent = EquivalenceDivergentControl.silentFamilies(EquivalenceComparison.compare(legacy, fsm2, MONITOR), EquivalenceComparison.compare(legacy, control, MONITOR));
+
+            assertThat(silent).doesNotContain("O1");
+        }
+
+        private static Arm withVerdict(Arm arm, AetherValue.DeploymentOutcomeStatus status) {
+            var kv = new HashMap<>(arm.quiescent().entries());
+
+            kv.put(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(BLUEPRINT), new AetherValue.DeploymentOutcomeValue(status, List.of(), "", 1L, 2L, "a1"));
+
+            return new Arm(arm.engine(), new EquivalenceKv(kv), arm.liveNodes(), arm.samples(), arm.o4Batches(), arm.o5PlacementMs(), arm.o6());
+        }
+
         @Test
         void underPlacement_isO2_andAFlippedVerdict_isO1() {
             var legacy = arm("legacy", false);
