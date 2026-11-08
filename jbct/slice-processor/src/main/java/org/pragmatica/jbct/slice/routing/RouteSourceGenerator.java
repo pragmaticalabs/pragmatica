@@ -1136,11 +1136,17 @@ public class RouteSourceGenerator {
     }
 
     private DeclaredType optionElement(DeclaredType type) {
-        return "org.pragmatica.lang.Option".equals(types.erasure(type).toString()) && type.getTypeArguments()
-                                                                                          .size() == 1 && type.getTypeArguments()
-                                                                                                              .getFirst() instanceof DeclaredType element
-               ? element
+        return isOption(type)
+               ? Option.from(type.getTypeArguments()
+                                 .stream()
+                                 .filter(DeclaredType.class::isInstance)
+                                 .map(DeclaredType.class::cast)
+                                 .findFirst()).or(type)
                : type;
+    }
+
+    private boolean isOption(DeclaredType type) {
+        return "org.pragmatica.lang.Option".equals(types.erasure(type).toString());
     }
 
     private String versionedTrailer(int version) {
