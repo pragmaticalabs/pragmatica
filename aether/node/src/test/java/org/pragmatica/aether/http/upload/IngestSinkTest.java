@@ -328,6 +328,43 @@ class IngestSinkTest {
         await(() -> catalog(store).isEmpty(), "the discarded upload's objects are deleted");
     }
 
+    /// #2921: the dispatch path answers once this promise resolves, so a delete that FAILS must still resolve it (as a
+    /// success: the failure is logged). Mutation: letting a failed delete fail the promise leaves every refusal that waits
+    /// on it unanswered.
+    @Test
+    void discardedUpload_whoseDeleteFails_stillResolvesSuccessfully() throws Exception {
+        var spy = new Spy(false);
+        var store = spy(store(storage(64L * MIB)), spy);
+        var sink = sink(store, binary());
+
+        assertThat(push(sink, random(MIB, 12), MIB)).isEmpty();
+        sink.complete(head("application/octet-stream"), writer());
+        await(() -> dispatched.get() != null, "the request is dispatched");
+        spy.deleteGate.resolve(Causes.cause("delete failed").result());
+
+        var discarded = IngestedRequest.discardedUpload(dispatched.get()).await(WAIT);
+
+        assertThat(spy.deletes.get()).as("the delete ran").isEqualTo(1);
+        assertThat(discarded.isSuccess()).as("a failed delete still ends the discard").isTrue();
+    }
+
+    /// #2921: as above for a delete that never resolves: it is given up on at the delete bound and the discard resolves.
+    @Test
+    void discardedUpload_whoseDeleteTimesOut_stillResolvesSuccessfully() throws Exception {
+        var spy = new Spy(false);
+        var store = spy(store(storage(64L * MIB)), spy);
+        var sink = sink(store, binary(), TimeSpan.timeSpan(300).millis());
+
+        assertThat(push(sink, random(MIB, 13), MIB)).isEmpty();
+        sink.complete(head("application/octet-stream"), writer());
+        await(() -> dispatched.get() != null, "the request is dispatched");
+
+        var discarded = IngestedRequest.discardedUpload(dispatched.get()).await(WAIT);
+
+        assertThat(spy.deleteGate.isResolved()).as("the delete itself never resolved").isFalse();
+        assertThat(discarded.isSuccess()).as("a timed-out delete still ends the discard").isTrue();
+    }
+
     // ---- observing the store the sink writes to ----
     /// What a [#spy] records and controls: writer aborts and object deletes seen, a gate every delete waits on, and whether
     /// commits fail.
