@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -70,8 +71,10 @@ class ReplicationSendBudgetPublishTest {
 
         replicaPath.countDown();
 
-        assertThat(publishOnceSent()).as("the next offset, once the replica path returned").isEqualTo(3L);
-        assertThat(accepted(manager.publishLocalBatchAtFloor(STREAM, P, List.of(new byte[EVENT]), 1L, 0))).isEqualTo(4L);
+        assertThat(acceptedOnceSent(this::publish)).as("the next offset, once the replica path returned").isEqualTo(3L);
+        assertThat(acceptedOnceSent(() -> manager.publishLocalBatchAtFloor(STREAM, P, List.of(new byte[EVENT]), 1L, 0)))
+                  .as("a batch publish, too")
+                  .isEqualTo(4L);
     }
 
     private void start() {
@@ -125,12 +128,13 @@ class ReplicationSendBudgetPublishTest {
         return manager.publishLocal(STREAM, P, new byte[EVENT], 1L);
     }
 
-    /// Polls the publish until the released sends free the budget (bounded); a refusal other than the budget's fails.
-    private long publishOnceSent() {
+    /// Polls `publish` until the returning sends free enough of the budget (bounded): the replica path returns batch by
+    /// batch, so the budget frees in steps. A refusal other than the budget's fails.
+    private static long acceptedOnceSent(Supplier<Result<Long>> publish) {
         var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
 
         while (System.nanoTime() < deadline) {
-            var outcome = publish();
+            var outcome = publish.get();
 
             if (outcome.isSuccess()) {
                 return accepted(outcome);

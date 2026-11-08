@@ -269,11 +269,13 @@ class ReplicationBatcherSendLaneTest {
         batcher.add(STREAM, PARTITION, 1, new byte[4], 1, Epoch.ZERO);
 
         var oneShotThread = new AtomicReference<Thread>();
+        var publisher = new AtomicReference<Thread>();
         var queue = new HookedQueue() {
             @Override
             public boolean add(Object queued) {
                 if (oneShotThread.compareAndSet(Thread.currentThread(), null)) {
-                    awaitParkedOrDone(Thread.ofPlatform().start(() -> batcher.add(STREAM, PARTITION, 2, new byte[4], 2, Epoch.ZERO)));
+                    publisher.set(Thread.ofPlatform().start(() -> batcher.add(STREAM, PARTITION, 2, new byte[4], 2, Epoch.ZERO)));
+                    awaitParkedOrDone(publisher.get());
                 }
 
                 return super.add(queued);
@@ -287,7 +289,9 @@ class ReplicationBatcherSendLaneTest {
         oneShotThread.set(oneShot);
         oneShot.start();
         oneShot.join(TimeUnit.SECONDS.toMillis(5));
-        awaitAccepted(batcher);
+        // The publisher's hand-over of offset 2 (and its lane start) comes after its fresh accumulator is visible, so
+        // the test waits for the publisher itself, not for the accumulator.
+        joinOn(publisher.get());
         runLanes();
 
         assertThat(delivered).as("lane order").containsExactly(0L, 1L, 2L);
@@ -405,14 +409,6 @@ class ReplicationBatcherSendLaneTest {
         var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
 
         while (publisher.isAlive() && publisher.getState() != Thread.State.WAITING && System.nanoTime() < deadline) {
-            Thread.onSpinWait();
-        }
-    }
-
-    private static void awaitAccepted(ReplicationBatcher batcher) {
-        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-
-        while (batcher.accumulatorFor(STREAM, PARTITION).isEmpty() && System.nanoTime() < deadline) {
             Thread.onSpinWait();
         }
     }
