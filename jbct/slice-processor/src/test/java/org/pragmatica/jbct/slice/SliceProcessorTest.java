@@ -637,14 +637,16 @@ class SliceProcessorTest {
         assertThat(generatedRoutes(classes)).contains("case QuotaExceeded _ -> HttpError.httpError(HttpStatus.TOO_MANY_REQUESTS, cause);");
     }
 
+    /// The slice's own package is always scanned; listing it again must not map its Causes twice. (A name repeated
+    /// within one list is collapsed earlier, when the base and slice configs merge.)
     @Test
-    void errorsPackages_packageListedTwice_mapsItsCauseOnce(@TempDir Path classes) throws IOException {
+    void errorsPackages_sliceOwnPackageListed_mapsItsCauseOnce(@TempDir Path classes) throws IOException {
         compileWithToml(classes,
-                        errorPackagesToml("packages = [\"shared.errors\", \"shared.errors\"]\nHTTP_429 = [\"*QuotaExceeded*\"]"),
+                        errorPackagesToml("packages = [\"upload\"]\nHTTP_429 = [\"*OwnQuota*\"]"),
                         ERRORS_METHOD,
-                        List.of(causeIn("shared.errors", "QuotaError", "QuotaExceeded")));
+                        List.of(causeIn("upload", "OwnError", "OwnQuota")));
 
-        assertThat(generatedRoutes(classes).split("case QuotaExceeded _", -1).length - 1).isEqualTo(1);
+        assertThat(generatedRoutes(classes).split("case OwnQuota _", -1).length - 1).isEqualTo(1);
     }
 
     @Test
