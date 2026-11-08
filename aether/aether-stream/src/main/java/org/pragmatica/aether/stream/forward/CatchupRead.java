@@ -15,6 +15,7 @@ import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 
 
 /// The replication-class read of this node's copy of a partition, up to the APPENDED head: the ring, and for a
@@ -36,7 +37,7 @@ public sealed interface CatchupRead {
                                                                   int partition,
                                                                   long fromOffset,
                                                                   int maxEvents) {
-        var request = new Span(manager, tieredReader, streamName, partition, fromOffset, maxEvents);
+        var request = new Span(manager, tieredReader, streamName, partition, fromOffset, maxEvents, false);
 
         return manager.readAppended(request.streamName(),
                                     request.partition(),
@@ -47,9 +48,58 @@ public sealed interface CatchupRead {
     }
 
     private static Promise<List<OffHeapRingBuffer.RawEvent>> recoverEvicted(Span request, Cause cause) {
+        if (cause instanceof StreamError.CursorExpired) {
+            return readEvictedPrefix(request, cause);
+        }
+
+        return cause == StreamError.General.PARTITION_NOT_LOCAL
+               ? readHeld(request.asHeld(), cause)
+               : cause.promise();
+    }
+
+    /// I-27 (#1759): a partition this node HOLDS but has not materialized (paced, or deferred for off-heap budget) has no
+    /// ring, and is read from its WAL READ-ONLY ([StreamPartitionManager#readHeldDurable]) -- no ring is created, no budget is
+    /// taken -- and, for a prefix sealed below the WAL, from the tier, as the ring's evicted prefix is. An owner behind a
+    /// budget-deferred replica that holds records above it can then catch up from that replica and activate; before this,
+    /// such a replica answered only its watermark until it materialized, which budget may never allow.
+    ///
+    /// A partition not held here, or held without a log, keeps the ring's `PARTITION_NOT_LOCAL`. Every refusal of the WAL
+    /// read other than `CursorExpired` -- a torn or damaged frame, a hole, an unreadable log -- answers that same
+    /// `PARTITION_NOT_LOCAL`, which the forward handler names as the held partition's watermark, exactly as before the WAL
+    /// read existed: a damaged WAL answers unavailable, never a partial range. The page is shipped with the WAL's own
+    /// owner-epoch history ([StreamForwardHandler]), never an empty or substituted one.
+    private static Promise<List<OffHeapRingBuffer.RawEvent>> readHeld(Span request, Cause notLocal) {
+        return localRead(request,
+                         request.fromOffset(),
+                         request.maxEvents(),
+                         notLocal).fold(cause -> heldRefused(request, cause),
+                                        Promise::success);
+    }
+
+    private static Promise<List<OffHeapRingBuffer.RawEvent>> heldRefused(Span request, Cause cause) {
         return cause instanceof StreamError.CursorExpired
                ? readEvictedPrefix(request, cause)
                : cause.promise();
+    }
+
+    /// This node's own copy of `[from, from + max)`: the ring, or for a held partition the WAL, every refusal of which
+    /// other than `CursorExpired` is answered `notLocal` ([#readHeld]).
+    private static Result<List<OffHeapRingBuffer.RawEvent>> localRead(Span request, long from, int max, Cause notLocal) {
+        return request.held()
+               ? request.manager()
+                        .readHeldDurable(request.streamName(),
+                                         request.partition(),
+                                         from,
+                                         max)
+                        .map(read -> read.mapError(cause -> cause instanceof StreamError.CursorExpired
+                                                            ? cause
+                                                            : notLocal))
+                        .or(notLocal::result)
+               : request.manager()
+                        .readAppended(request.streamName(),
+                                      request.partition(),
+                                      from,
+                                      max);
     }
 
     /// An evicted offset the sealer still retains is IN FLIGHT: its seal may not be indexed yet (and for a moment
@@ -98,12 +148,19 @@ public sealed interface CatchupRead {
                : appendRingTail(request, sealed);
     }
 
+    /// The ring's appended head, or for a held partition its durable watermark (the higher of the WAL head and the sealed
+    /// bound, [StreamPartitionManager#heldNotMaterializedWatermark]).
     private static long appendedHead(Span request) {
-        return request.manager()
-                      .partitionBuffer(request.streamName(),
-                                       request.partition())
-                      .map(OffHeapRingBuffer::headOffset)
-                      .or(-1L);
+        return request.held()
+               ? request.manager()
+                        .heldNotMaterializedWatermark(request.streamName(),
+                                                      request.partition())
+                        .or(-1L)
+               : request.manager()
+                        .partitionBuffer(request.streamName(),
+                                         request.partition())
+                        .map(OffHeapRingBuffer::headOffset)
+                        .or(-1L);
     }
 
     /// The ring's share of the page starts right after the sealed prefix, and it is NOT best-effort: the pull
@@ -123,11 +180,10 @@ public sealed interface CatchupRead {
 
         var next = sealed.getLast().offset() + 1;
 
-        return request.manager()
-                      .readAppended(request.streamName(),
-                                    request.partition(),
-                                    next,
-                                    remaining)
+        return localRead(request,
+                         next,
+                         remaining,
+                         StreamError.General.PARTITION_NOT_LOCAL)
                       .map(ring -> List.copyOf(Stream.concat(sealed.stream(),
                                                              ring.stream()).toList()))
                       .fold(cause -> ringTailRefused(request, next, cause),
@@ -143,12 +199,18 @@ public sealed interface CatchupRead {
                : cause.promise();
     }
 
+    /// `held`: the partition is held here without a ring, and the local share of a read is its WAL ([#readHeld]).
     record Span(StreamPartitionManager manager,
                 Option<TieredStreamReader> tier,
                 String streamName,
                 int partition,
                 long fromOffset,
-                int maxEvents) {}
+                int maxEvents,
+                boolean held) {
+        Span asHeld() {
+            return new Span(manager, tier, streamName, partition, fromOffset, maxEvents, true);
+        }
+    }
 
     record unused() implements CatchupRead {}
 }

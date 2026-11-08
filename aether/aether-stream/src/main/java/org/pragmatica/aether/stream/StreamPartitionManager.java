@@ -322,6 +322,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Bumped on every ring install and release; a watermark read that started before a bump is never cached, so a
     /// slow read cannot put a pre-install value back after the drop.
     private final AtomicLong watermarkGeneration = new AtomicLong();
+    /// Where the next page of a held-unmaterialized partition's read-only WAL scan starts ([#readHeldDurable]), so a reader
+    /// paging the log sequentially reads it once rather than once per page. A hint is only a start position: a page read
+    /// from it that does not begin at the expected offset is read again from the start of the file.
+    private final ConcurrentHashMap<PartitionRef, ScanHint> heldScanHints = new ConcurrentHashMap<>();
     /// Source of the durable last-sealed offset per `(stream, partition)` (streaming-persistence W4).
     /// Bounds WAL replay when a partition ring is (re)built: sealed segments already serve
     /// `[0, lastSealedOffset]`, so a recovered ring is seeded above that bound and replays only the
@@ -5527,9 +5531,148 @@ public final class StreamPartitionManager implements AutoCloseable {
     private void dropDurableWatermark(PartitionRef ref) {
         watermarkGeneration.incrementAndGet();
         ringScoped(ref.streamName()).durableWatermarks().remove(ref.partition());
+        heldScanHints.remove(ref);
     }
 
     record CachedWatermark(long watermark, long atNanos) {}
+
+    /// The next page of a held partition's WAL scan starts at byte `position`, with offset `nextOffset`.
+    record ScanHint(long nextOffset, long position) {}
+
+    /// I-27 (#1759): a replication-class read of a partition this node HOLDS but has not materialized (paced or
+    /// budget-deferred, [#heldNotMaterializedWatermark]), served READ-ONLY from its WAL ([AppendLog.Opener#readRange]): no
+    /// ring is created and no off-heap budget is taken, so an owner behind such a replica can catch up from it without the
+    /// replica materializing. None when the partition is materialized, is not held here, or keeps no log; the caller then
+    /// answers as before.
+    ///
+    /// The page is the records `fromOffset, fromOffset + 1, ...`, contiguous, up to `maxEvents`. A `fromOffset` below the
+    /// WAL's lowest record -- a prefix sealed to the tier -- is answered `CursorExpired` naming that record (the sealed
+    /// floor's successor when the WAL holds nothing at or above `fromOffset`), so the caller can read the prefix from the
+    /// tier. Never a partial range: a torn or damaged frame before the page is full ([AppendLog.WalError.LogDamaged]), a
+    /// hole inside the page ([StreamError.WalReplayMismatch]) and an unreadable log each fail the read.
+    public Option<Result<List<OffHeapRingBuffer.RawEvent>>> readHeldDurable(String streamName,
+                                                                            int partition,
+                                                                            long fromOffset,
+                                                                            int maxEvents) {
+        return option(streams.get(streamName)).filter(entry -> isHeldWithoutRing(entry, streamName, partition))
+                     .flatMap(entry -> logs.map(opener -> heldPage(opener,
+                                                                   new PartitionRef(streamName, partition),
+                                                                   StreamEntry.logName(entry.config(),
+                                                                                       partition),
+                                                                   fromOffset,
+                                                                   maxEvents)));
+    }
+
+    /// The owner-epoch history of a held-unmaterialized partition's WAL, READ-ONLY ([AppendLog.Opener#readEpochHistory]):
+    /// what a [#readHeldDurable] page is vouched by (#1759). None when the partition is materialized, is not held here, or
+    /// keeps no log; a failure when the history cannot be read, which the caller must not answer as an empty one.
+    public Option<Result<List<ProvenanceEntry>>> heldEpochHistory(String streamName, int partition) {
+        return option(streams.get(streamName)).filter(entry -> isHeldWithoutRing(entry, streamName, partition))
+                     .flatMap(entry -> logs.map(opener -> opener.readEpochHistory(StreamEntry.logName(entry.config(),
+                                                                                                      partition))
+                                                                .flatMap(StreamPartitionManager::provenanceOf)));
+    }
+
+    private static Result<List<ProvenanceEntry>> provenanceOf(List<AppendLog.EpochStart> history) {
+        return Result.allOf(history.stream()
+                                   .map(ProvenanceEntry::provenanceEntry)
+                                   .toList());
+    }
+
+    private Result<List<OffHeapRingBuffer.RawEvent>> heldPage(AppendLog.Opener opener,
+                                                              PartitionRef ref,
+                                                              String logName,
+                                                              long fromOffset,
+                                                              int maxEvents) {
+        var start = option(heldScanHints.get(ref)).filter(hint -> hint.nextOffset() == fromOffset)
+                          .map(ScanHint::position)
+                          .or(0L);
+
+        return pageFrom(opener, logName, fromOffset, maxEvents, start).onSuccess(page -> rememberHint(ref, page))
+                       .flatMap(page -> contiguousFrom(ref, logName, fromOffset, page.records()));
+    }
+
+    /// A page read from a hint that fails, or does not begin at `fromOffset`, is read again from the start of the file: a hint
+    /// can be stale (the log was rewritten while materialized), never trusted.
+    private static Result<AppendLog.RangePage> pageFrom(AppendLog.Opener opener,
+                                                        String logName,
+                                                        long fromOffset,
+                                                        int maxEvents,
+                                                        long start) {
+        var page = opener.readRange(logName, fromOffset, maxEvents, start);
+
+        return start == 0L
+               ? page
+               : page.filter(StreamError.General.PARTITION_NOT_LOCAL,
+                             read -> startsAt(read, fromOffset))
+                     .orElse(() -> opener.readRange(logName, fromOffset, maxEvents, 0L));
+    }
+
+    private static boolean startsAt(AppendLog.RangePage page, long fromOffset) {
+        return !page.records()
+                    .isEmpty() && page.records()
+                                      .getFirst()
+                                      .offset() == fromOffset;
+    }
+
+    @Contract
+    private void rememberHint(PartitionRef ref, AppendLog.RangePage page) {
+        if (!page.records()
+                 .isEmpty()) {
+            heldScanHints.put(ref,
+                              new ScanHint(page.records()
+                                               .getLast()
+                                               .offset() + 1,
+                                           page.endPosition()));
+        }
+    }
+
+    private Result<List<OffHeapRingBuffer.RawEvent>> contiguousFrom(PartitionRef ref,
+                                                                    String logName,
+                                                                    long fromOffset,
+                                                                    List<WalRecord> records) {
+        if (records.isEmpty()) {
+            return belowSealedFloor(ref, fromOffset);
+        }
+
+        if (records.getFirst()
+                   .offset() > fromOffset) {
+            return new StreamError.CursorExpired(fromOffset,
+                                                 records.getFirst()
+                                                        .offset()).result();
+        }
+
+        return firstHole(records, fromOffset).<Result<List<OffHeapRingBuffer.RawEvent>>> map(i -> new StreamError.WalReplayMismatch(ref.streamName(),
+                                                                                                                                  ref.partition(),
+                                                                                                                                  Path.of(logName),
+                                                                                                                                  fromOffset + i,
+                                                                                                                                  records.get(i)
+                                                                                                                                         .offset()).result())
+                                                 .or(() -> success(records.stream()
+                                                                          .map(record -> OffHeapRingBuffer.RawEvent.rawEvent(record.offset(),
+                                                                                                                             record.payload(),
+                                                                                                                             record.timestampMillis()))
+                                                                          .toList()));
+    }
+
+    private static Option<Integer> firstHole(List<WalRecord> records, long fromOffset) {
+        return Option.from(IntStream.range(0,
+                                           records.size())
+                                    .filter(i -> records.get(i)
+                                                        .offset() != fromOffset + i)
+                                    .boxed()
+                                    .findFirst());
+    }
+
+    /// The WAL holds nothing at or above `fromOffset`: the read is past the end, unless the sealed floor covers it -- the WAL's
+    /// prefix was sealed to the tier and compacted away -- in which case the tier holds it.
+    private Result<List<OffHeapRingBuffer.RawEvent>> belowSealedFloor(PartitionRef ref, long fromOffset) {
+        var floor = lastSealedOffset.lastSealedOffset(ref.streamName(), ref.partition());
+
+        return fromOffset <= floor
+               ? new StreamError.CursorExpired(fromOffset, floor + 1).result()
+               : success(List.of());
+    }
 
     private Option<Long> readDurableWatermark(String streamName, int partition) {
         return logs.fold(() -> Option.some(lastSealedOffset.lastSealedOffset(streamName, partition)),

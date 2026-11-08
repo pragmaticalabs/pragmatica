@@ -1489,9 +1489,7 @@ public sealed interface StreamAssembly {
     /// unusable and streams degraded to no WAL.
     static Option<AppendLog.Opener> streamLogs(StorageInstance streamStorage) {
         return streamStorage.logRoot()
-                            .<AppendLog.Opener> map(_ -> AppendLog.Opener.opener(streamStorage::openLog,
-                                                                                 streamStorage::inspectLog,
-                                                                                 streamStorage::listLogs));
+                            .map(_ -> AppendLog.Opener.storage(streamStorage));
     }
 
     /// Build a named daemon thread for a single-thread executor's `ThreadFactory`. Extracted so the

@@ -19,6 +19,7 @@ import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.VisibleBounds;
 import org.pragmatica.aether.stream.control.ControlLog;
+import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.aether.stream.control.ControlOutcome;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ControlAppendForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ControlAppendForwardResponse;
@@ -32,6 +33,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
 
@@ -445,13 +447,21 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     /// the read rather than shipping records without their provenance. Every other answer carries none.
     private ReadForwardResponse withCatchupHistory(ReadForward request, ReadForwardResponse answer) {
         return isReplicaCatchup(request)
-               ? partitionManager.epochHistory(request.streamName(),
-                                               request.partition())
-                                 .fold(cause -> ReadForwardResponse.failureResponse(selfNodeId,
+               ? catchupHistory(request).fold(cause -> ReadForwardResponse.failureResponse(selfNodeId,
                                                                                     request.correlationId(),
                                                                                     HttpError.clientMessage(cause)),
                                        answer::withHistory)
                : answer;
+    }
+
+    /// #1759: a page served from the WAL of a partition held here without a ring ([CatchupRead#readAppended]) is vouched by
+    /// that WAL's own history, read read-only; a materialized partition's by its open log's. A held partition whose history
+    /// cannot be read fails the read, as an undecodable one does: an empty history would ship its records unattributed.
+    private Result<List<ProvenanceEntry>> catchupHistory(ReadForward request) {
+        return partitionManager.heldEpochHistory(request.streamName(),
+                                                 request.partition())
+                               .or(() -> partitionManager.epochHistory(request.streamName(),
+                                                                       request.partition()));
     }
 
     /// #1333: every successful answer carries this node's visible bounds of the partition, read AFTER
