@@ -396,15 +396,8 @@ public sealed interface Outbox {
                                              Ctx ctx,
                                              NodeId node,
                                              List<Map.Entry<SlicePair, GoalIntent>> entries) {
-        entries.stream()
-               .filter(entry -> !stillCurrent(m,
-                                              entry.getKey(),
-                                              entry.getValue().guard()))
-               .forEach(entry -> Indexer.clearPending(m,
-                                                      entry.getKey()));
-        var live = entries.stream().filter(entry -> stillCurrent(m,
-                                                                 entry.getKey(),
-                                                                 entry.getValue().guard())).toList();
+        entries.stream().filter(entry -> !stands(m, entry)).forEach(entry -> releaseUnwritten(m, entry.getKey()));
+        var live = entries.stream().filter(entry -> stands(m, entry)).toList();
         var mutations = live.stream()
                             .map(entry -> desiredMutation(m,
                                                           ctx,
@@ -440,6 +433,35 @@ public sealed interface Outbox {
                                                                  .routed()
                                                                  .stream()))
                      .toList();
+    }
+
+    /// A goal released unwritten (its guard moved, or it is past the resubmission bound) is derived again by the next reconcile. A goal
+    /// UNLOADED of a removed target or blueprint has no deriving sweep but the orphan audit, so the audit is made due: the unload is
+    /// derived again at the next reconcile, not at the tenth tick (#2864, the observed/desired residue after a rollback).
+    private static ClusterModel releaseUnwritten(ClusterModel m, SlicePair pair) {
+        m.auditDue = m.auditDue || m.pendingGoals.get(pair)
+                                                 .map(pending -> pending.goal() == SliceGoal.UNLOADED)
+                                                 .or(false);
+
+        return Indexer.clearPending(m, pair);
+    }
+
+    /// A goal intent stands while its observed guard is current; a goal ACTIVE also only while nothing retires the artifact's blueprint
+    /// (#2864): no rollback of a blueprint that declares the artifact is queued or in flight, and the target's owning blueprint is not
+    /// gone. Once the rollback is decided nothing of the blueprint is promoted, whichever of the activation and the rollback was derived
+    /// first, and also between the rollback's commit and the commit of the removal of its targets.
+    private static boolean stands(ClusterModel m, Map.Entry<SlicePair, GoalIntent> entry) {
+        return stillCurrent(m,
+                            entry.getKey(),
+                            entry.getValue().guard()) && !promotesRetired(m, entry);
+    }
+
+    private static boolean promotesRetired(ClusterModel m, Map.Entry<SlicePair, GoalIntent> entry) {
+        var artifact = entry.getKey().artifact();
+
+        return entry.getValue()
+                    .goal() == SliceGoal.ACTIVE && (Outcomes.rollingBack(m, artifact) || Blueprints.ownerRemoved(m,
+                                                                                                                 artifact));
     }
 
     /// A decision stands only while the observed value it was derived from is still the one in the mirror.
@@ -658,7 +680,7 @@ public sealed interface Outbox {
     }
 
     private static ClusterModel dropPending(ClusterModel m, TxDraft draft) {
-        draft.pairs().forEach(pair -> Indexer.clearPending(m, pair));
+        draft.pairs().forEach(pair -> releaseUnwritten(m, pair));
 
         return m;
     }
@@ -827,7 +849,7 @@ public sealed interface Outbox {
             var pairMoved = pairMoved(m, mutation, guard);
             // FER: a pair past the resubmission bound is released and re-derived by the next reconcile (6.2); one that moved is re-derived by it.
             if (pairMoved || draft.attempt() >= limit) {
-                Indexer.clearPending(m, pair);
+                releaseUnwritten(m, pair);
                 movedAny = movedAny || pairMoved;
                 continue;
             }

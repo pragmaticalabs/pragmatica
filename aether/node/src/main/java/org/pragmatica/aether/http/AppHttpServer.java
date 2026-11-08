@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
+import org.pragmatica.aether.invoke.InvocationAdmission;
 import org.pragmatica.aether.slice.RateGuardError;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
@@ -44,6 +45,9 @@ import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.aether.http.handler.security.SecurityContextHolder;
 import org.pragmatica.aether.http.security.AuditLog;
+import org.pragmatica.aether.http.upload.IngestedRequest;
+import org.pragmatica.aether.http.upload.UploadIngest;
+import org.pragmatica.aether.http.upload.UploadIngestError;
 import org.pragmatica.aether.http.security.SecurityError;
 import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.invoke.InvocationContext;
@@ -89,6 +93,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.parse.Number;
+import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.messaging.MessageReceiver;
@@ -120,6 +125,11 @@ public interface AppHttpServer {
     /// Binds the operator-event sink for certificate-rotation refusals and the upload node-cap saturation (and their recoveries).
     @Contract
     void setOperatorWarningSink(OperatorWarningSink sink);
+
+    /// Binds the node's `content` storage instance, where `[app-http.upload] streaming_ingest` writes upload bodies (U2).
+    /// Until it is bound, or with the flag off, upload routes aggregate their bodies as before.
+    @Contract
+    void setUploadStorage(StorageInstance contentStorage);
 
     Option<Integer> boundPort();
 
@@ -320,6 +330,9 @@ class AppHttpServerAdapter implements AppHttpServer {
     private final AppHttpContext context;
     private final TimeSpan requestBudget;
     private final UploadAdmission uploadAdmission;
+
+    private final AtomicReference<Option<UploadIngest>> uploadIngest = new AtomicReference<>(Option.none());
+
     private volatile PartLimitExecutor partLimitExecutor = PartLimitExecutor.partLimitExecutor();
 
     private final AtomicReference<OperatorWarningSink> warningSink = new AtomicReference<>(OperatorWarningSink.logOnly());
@@ -698,6 +711,14 @@ class AppHttpServerAdapter implements AppHttpServer {
         tlsRotation.useSink(sink);
     }
 
+    @Contract
+    @Override
+    public void setUploadStorage(StorageInstance contentStorage) {
+        uploadIngest.set(Option.some(UploadIngest.uploadIngest(contentStorage,
+                                                               config.upload().unclaimedTtl(),
+                                                               config.upload().maxInFlightBytes())));
+    }
+
     /// The node's upload cap was reached: one operator event for the episode, not one per refused request (the
     /// per-principal cap and the size and time refusals are client errors and raise nothing).
     private void uploadNodeCapSaturated() {
@@ -979,6 +1000,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                       ctx -> admit(ctx,
                                                    head,
                                                    uploadSpecOf(local, routeTable, method, normalizedPath),
+                                                   servingArtifact(local, routeTable, method, normalizedPath),
                                                    path,
                                                    requestId));
     }
@@ -1006,16 +1028,62 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                      .or(UploadSpec.NONE));
     }
 
+    /// The artifact (`groupId:artifactId:version`) of the slice that will serve the request: the local route's, else the
+    /// first, in coordinate order, of those that published the matching remote route. Its namespace is where a streamed
+    /// upload is stored; every version of one slice shares it.
+    private Option<String> servingArtifact(Option<LocalResolution> local,
+                                           RouteTable routeTable,
+                                           String method,
+                                           String normalizedPath) {
+        return local.map(resolution -> resolution.route()
+                                                 .artifactCoord())
+                    .orElse(() -> findMatchingRemoteRoute(routeTable.remoteRoutes(),
+                                                          method,
+                                                          normalizedPath).flatMap(AppHttpServerAdapter::publishingArtifact));
+    }
+
+    private static Option<String> publishingArtifact(HttpRouteRegistry.RouteInfo route) {
+        return Option.from(route.securityBySource()
+                                .keySet()
+                                .stream()
+                                .map(HttpRouteRegistry.RouteSource::artifact)
+                                .sorted()
+                                .findFirst());
+    }
+
+    /// An upload route streams its body into content storage when `[app-http.upload] streaming_ingest` is on and the
+    /// node's content storage is bound (U2); otherwise it aggregates the body under a permit, as before.
     private Disposition admit(SecurityContext securityContext,
                               HttpRequest head,
                               UploadSpec spec,
+                              Option<String> artifact,
                               String path,
                               String requestId) {
-        var maxBytes = effectiveMaxBytes(spec);
-
         if (!spec.upload()) {
-            return Disposition.aggregate(maxBytes);
+            return Disposition.aggregate(effectiveMaxBytes(spec));
         }
+
+        if (config.upload().streamingIngest()) {
+            return uploadIngest.get()
+                               .fold(() -> admitAggregate(securityContext, head, spec, path, requestId),
+                                     ingest -> admitStream(ingest,
+                                                           securityContext,
+                                                           head,
+                                                           spec,
+                                                           artifact,
+                                                           path,
+                                                           requestId));
+        }
+
+        return admitAggregate(securityContext, head, spec, path, requestId);
+    }
+
+    private Disposition admitAggregate(SecurityContext securityContext,
+                                       HttpRequest head,
+                                       UploadSpec spec,
+                                       String path,
+                                       String requestId) {
+        var maxBytes = effectiveMaxBytes(spec);
 
         return uploadAdmission.tryAcquire(securityContext.principal().value(),
                                           declaredBytes(head, maxBytes))
@@ -1023,6 +1091,57 @@ class AppHttpServerAdapter implements AppHttpServer {
                                     release -> Disposition.aggregate(maxBytes,
                                                                      uploadBounds(spec),
                                                                      release));
+    }
+
+    /// Plans the streamed upload (its namespace's store, how its body is read), then takes its permit. A plan that cannot be
+    /// made is answered on the headers: 400 for a multipart type without a boundary, else 503 `storage-unavailable`.
+    private Disposition admitStream(UploadIngest ingest,
+                                    SecurityContext securityContext,
+                                    HttpRequest head,
+                                    UploadSpec spec,
+                                    Option<String> artifact,
+                                    String path,
+                                    String requestId) {
+        return artifact.toResult(NO_SERVING_ARTIFACT)
+                       .flatMap(coordinate -> ingest.plan(head, spec, coordinate))
+                       .fold(cause -> refuseIngest(UploadIngestError.ingestError(cause),
+                                                   path,
+                                                   requestId),
+                             plan -> streamUnderPermit(plan, securityContext, head, spec, path, requestId));
+    }
+
+    /// A streamed upload reserves, from the byte budget, the smaller of its declared length and what it holds in memory
+    /// (its writes in flight and its fields budget, [UploadIngest.Plan#memoryBytes]); its limit is the route's (or the
+    /// listener's) capped by the ceiling, with no in-memory bound.
+    private Disposition streamUnderPermit(UploadIngest.Plan plan,
+                                          SecurityContext securityContext,
+                                          HttpRequest head,
+                                          UploadSpec spec,
+                                          String path,
+                                          String requestId) {
+        var maxBytes = streamMaxBytes(spec);
+
+        return uploadAdmission.tryAcquire(securityContext.principal().value(),
+                                          Math.min(declaredBytes(head, maxBytes),
+                                                   plan.memoryBytes()))
+                              .fold(cause -> tooManyUploads(cause, path, requestId),
+                                    release -> Disposition.stream(maxBytes,
+                                                                  uploadBounds(spec),
+                                                                  plan.sink(release,
+                                                                            this::handleRequest,
+                                                                            (response, cause) -> refuseUpload(response,
+                                                                                                              cause,
+                                                                                                              path,
+                                                                                                              requestId))));
+    }
+
+    private Disposition refuseIngest(UploadIngestError cause, String path, String requestId) {
+        return Disposition.reject(response -> refuseUpload(response, cause, path, requestId));
+    }
+
+    @Contract
+    private void refuseUpload(ResponseWriter response, UploadIngestError cause, String path, String requestId) {
+        sendProblem(response, cause.status(), HttpError.clientMessage(cause), path, requestId);
     }
 
     /// What an upload reserves from the byte budget: its `Content-Length` when it declares one that is a size, else the most
@@ -1034,6 +1153,17 @@ class AppHttpServerAdapter implements AppHttpServer {
                    .filter(length -> length >= 0)
                    .map(length -> Math.min(length, maxBytes))
                    .or(maxBytes);
+    }
+
+    /// `min(declared or the listener's `max_request_size`, ceiling)`: a streamed body is never held whole, so no in-memory
+    /// bound applies.
+    private long streamMaxBytes(UploadSpec spec) {
+        var declared = spec.maxBodyBytes() > 0
+                       ? spec.maxBodyBytes()
+                       : config.maxRequestSize();
+
+        return Math.min(declared,
+                        config.upload().maxSizeCeiling());
     }
 
     /// `min(declared or the listener's `max_request_size`, ceiling, IN_MEMORY_LIMIT)`: the operator's ceiling caps what a
@@ -1075,7 +1205,9 @@ class AppHttpServerAdapter implements AppHttpServer {
         sendProblem(response, status, HttpError.clientMessage(cause), path, requestId);
     }
 
-    private void handleRequest(HttpRequest request, ResponseWriter response) {
+    /// Package-private so the gate tests can dispatch a stored upload whose route or security changed after its head.
+    @Contract
+    void handleRequest(HttpRequest request, ResponseWriter response) {
         var requestId = request.requestId();
 
         InvocationContext.runWithRequestId(requestId, () -> handleRequestInScope(request, response, requestId));
@@ -1099,7 +1231,7 @@ class AppHttpServerAdapter implements AppHttpServer {
         var effectivePolicy = resolveEffectivePolicy(method, normalizedPath, routeTable, local);
 
         if (requiresAuthentication(effectivePolicy) && config.securityMode() == SecurityMode.NONE) {
-            handleSecurityFailure(response, SecurityError.NO_VALIDATOR_CONFIGURED, path, requestId, method);
+            refuseDispatch(request, response, SecurityError.NO_VALIDATOR_CONFIGURED, path, requestId, method);
 
             return;
         }
@@ -1108,7 +1240,7 @@ class AppHttpServerAdapter implements AppHttpServer {
 
         securityValidator.validate(httpContext, effectivePolicy)
                          .flatMap(ctx -> enforceRoleIfRequired(ctx, effectivePolicy))
-                         .apply(cause -> handleSecurityFailure(response, cause, path, requestId, method),
+                         .apply(cause -> refuseDispatch(request, response, cause, path, requestId, method),
                                 ctx -> dispatchAuthenticated(request,
                                                              response,
                                                              routeTable,
@@ -1118,6 +1250,18 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                              path,
                                                              requestId,
                                                              local));
+    }
+
+    /// A request refused on dispatch reaches no slice, so an upload the ingress stored for it is deleted [G] first.
+    @Contract
+    private void refuseDispatch(HttpRequest request,
+                                ResponseWriter response,
+                                Cause cause,
+                                String path,
+                                String requestId,
+                                String method) {
+        IngestedRequest.discardUpload(request);
+        handleSecurityFailure(response, cause, path, requestId, method);
     }
 
     private SecurityPolicy resolveEffectivePolicy(String method,
@@ -1235,8 +1379,11 @@ class AppHttpServerAdapter implements AppHttpServer {
         }
     }
 
+    /// A request whose upload the ingress stored was checked against the part limits as it streamed (U2): never again.
     private static boolean needsPartCheck(HttpRequest request, UploadSpec spec) {
-        return spec.hasPartLimits() && MultipartParser.isMultipart(request.headers().get("content-type"));
+        return IngestedRequest.uploadOf(request).isEmpty()
+               && spec.hasPartLimits()
+               && MultipartParser.isMultipart(request.headers().get("content-type"));
     }
 
     /// 503 with `Retry-After`: every part-limit worker is busy and the queue is full.
@@ -1322,8 +1469,10 @@ class AppHttpServerAdapter implements AppHttpServer {
     /// The part limit a multipart `request` exceeds, or the nested part it carries (400), if the route declares any. A body that is not multipart, or is not a
     /// closed multipart, is not a breach: the handler answers it as it always has.
     private static Option<MultipartError> partLimitBreach(HttpRequest request, UploadSpec spec) {
-        return spec.partBreach(request.body(),
-                               request.headers().get("content-type").or(""));
+        return IngestedRequest.uploadOf(request).isPresent()
+               ? Option.none()
+               : spec.partBreach(request.body(),
+                                 request.headers().get("content-type").or(""));
     }
 
     private void dispatchToRoute(HttpRequest request,
@@ -1389,7 +1538,10 @@ class AppHttpServerAdapter implements AppHttpServer {
         handleRemoteRoute(request, response, route, requestId);
     }
 
+    /// A stored upload whose route no longer resolves reaches no slice: its objects are deleted [G] before it is answered
+    /// as any request without a route is.
     private void sendNoRouteFound(ResponseWriter response, HttpRequest request, String method, String requestId) {
+        IngestedRequest.discardUpload(request);
         var routeReady = isRouteReady();
 
         if (!routeReady && httpRoutePublisher.isPresent()) {
@@ -1733,7 +1885,8 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                        cause,
                                                        routeInfo,
                                                        startTime,
-                                                       httpCtx),
+                                                       httpCtx,
+                                                       request),
                      data -> handleLocalRouterSuccess(response, data, requestId, routeInfo, startTime, httpCtx));
     }
 
@@ -1756,9 +1909,22 @@ class AppHttpServerAdapter implements AppHttpServer {
                                           Cause cause,
                                           Option<ResolvedRoute> routeInfo,
                                           long startTime,
-                                          HttpRequestContext httpCtx) {
+                                          HttpRequestContext httpCtx,
+                                          HttpRequest request) {
         routeInfo.onPresent(info -> recordMetricsFailure(info, startTime, httpCtx.body().length, cause));
+        discardUnreached(request, cause);
         handleLocalRouteFailure(response, path, requestId, cause);
+    }
+
+    /// A stored upload whose request the node refused before the slice ran (invocation admission, rate limit) reaches no
+    /// slice: its objects are deleted [G]. Any other failure may have run the slice, which may have claimed the upload, so
+    /// the objects stay for the unclaimed TTL.
+    @Contract
+    private static void discardUnreached(HttpRequest request, Cause cause) {
+        switch (cause) {
+            case InvocationAdmission.Error _, RateGuardError.LimitExceeded _ -> IngestedRequest.discardUpload(request);
+            default -> {}
+        }
     }
 
     private void handleLocalRouteFailure(ResponseWriter response, String path, String requestId, Cause cause) {
@@ -1801,7 +1967,8 @@ class AppHttpServerAdapter implements AppHttpServer {
         sendProblem(response, HttpStatus.TOO_MANY_REQUESTS, exceeded.message(), path, requestId);
     }
 
-    /// #2310: the trailers travel with the request, to a local slice and across a forward alike.
+    /// #2310: the trailers travel with the request, to a local slice and across a forward alike. U2: so does the handle of
+    /// an upload the ingress stored, in place of the body.
     private HttpRequestContext toHttpRequestContext(HttpRequest request, String requestId) {
         return HttpRequestContext.httpRequestContext(request.path(),
                                                      request.method().name(),
@@ -1810,7 +1977,8 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                      request.body(),
                                                      request.trailers().asMap(),
                                                      requestId,
-                                                     SecurityContext.securityContext());
+                                                     SecurityContext.securityContext(),
+                                                     IngestedRequest.uploadOf(request));
     }
 
     private void handleRemoteRoute(HttpRequest request,
@@ -1824,6 +1992,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                   requestId);
         if (httpForwarder.isEmpty()) {
             log.error("HTTP forwarding not configured [{}]", requestId);
+            IngestedRequest.discardUpload(request);
             sendProblem(response,
                         HttpStatus.SERVICE_UNAVAILABLE,
                         "HTTP forwarding not available",
@@ -1838,6 +2007,7 @@ class AppHttpServerAdapter implements AppHttpServer {
         httpForwarder.unwrap()
                      .forward(httpCtx, route, requestId)
                      .onSuccess(responseData -> sendResponse(response, responseData, requestId))
+                     .onFailure(cause -> discardUnsent(request, cause))
                      .onFailure(cause -> sendProblem(response,
                                                      forwardFailureStatus(cause),
                                                      HttpError.clientMessage(cause),
@@ -1860,6 +2030,17 @@ class AppHttpServerAdapter implements AppHttpServer {
         return BodyRateLimit.bodyRateLimit(config.minBodyRate(),
                                            BodyRateLimit.DEFAULT_GRACE,
                                            BodyRateLimit.DEFAULT_WINDOW);
+    }
+
+    /// A stored upload whose forward never left this node ([ForwardError.NotSent], [ForwardError.TooLargeToForward]) reached
+    /// no slice: its objects are deleted [G]. A forward that may have reached a node (outcome unknown) keeps them: the
+    /// serving node may have claimed the upload.
+    @Contract
+    private static void discardUnsent(HttpRequest request, Cause cause) {
+        switch (cause) {
+            case ForwardError.NotSent _, ForwardError.TooLargeToForward _ -> IngestedRequest.discardUpload(request);
+            default -> {}
+        }
     }
 
     /// A [ForwardError] names its own status: 503 per the 2026-10-07 ruling (know 14a3606152), whose detail says
@@ -2084,7 +2265,7 @@ class AppHttpServerAdapter implements AppHttpServer {
 
         routeInfo.onPresent(this::recordArrival);
         routeInfo.onPresent(this::recordMetricsStart);
-        invocationAdmission.execute(() -> router.handle(httpCtx),
+        invocationAdmission.execute(() -> uploadAvailable(httpCtx).flatMap(_ -> router.handle(httpCtx)),
                                     result -> emitForwardResult(result,
                                                                 network,
                                                                 request,
@@ -2092,6 +2273,18 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                 routeInfo,
                                                                 startTime,
                                                                 httpCtx));
+    }
+
+    /// U2: a forwarded request that carries an upload reaches the slice only when this node's content storage holds every
+    /// object its handle names. An object deleted after the ingress stored it, or stored where this node does not read,
+    /// fails the request typed ([UploadIngestError.UploadUnavailable], 503) instead of handing the slice a reference that
+    /// opens nothing, or opens a deleted object's blocks.
+    private Promise<Unit> uploadAvailable(HttpRequestContext httpCtx) {
+        return httpCtx.upload()
+                      .fold(Promise::unitPromise,
+                            upload -> uploadIngest.get()
+                                                  .fold(NO_CONTENT_STORAGE::<Unit> promise,
+                                                        ingest -> ingest.available(upload)));
     }
 
     private void emitForwardResult(Result<HttpResponseData> result,
@@ -2337,6 +2530,9 @@ class AppHttpServerAdapter implements AppHttpServer {
     /// declaration or ceiling lifts the effective limit past it (a `Content-Length` over it is refused 413 on the head,
     /// never counted in an int). Streaming storage (U2) lifts it.
     static final long IN_MEMORY_LIMIT = Integer.MAX_VALUE - 8L;
+    private static final Cause NO_SERVING_ARTIFACT = Causes.cause("No slice artifact serves the upload route");
+
+    private static final Cause NO_CONTENT_STORAGE = Causes.cause("upload-unavailable: this node has no content storage bound");
 
     private static final Cause PART_LIMIT_BUSY = Causes.cause("Too many multipart uploads are being checked at once; retry shortly");
 

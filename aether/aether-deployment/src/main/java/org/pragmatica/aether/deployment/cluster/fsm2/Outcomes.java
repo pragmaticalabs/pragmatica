@@ -424,6 +424,14 @@ public sealed interface Outcomes {
         return new KVCommand.Mutation<>(new SliceTargetKey(base), Option.some((AetherValue) target), Option.none());
     }
 
+    /// #2864: a rollback of a blueprint that declares `artifact` is queued or in flight.
+    static boolean rollingBack(ClusterModel m, Artifact artifact) {
+        return Idx.members(m.blueprintsByArtifact, artifact)
+                  .toList()
+                  .stream()
+                  .anyMatch(id -> rollbackInFlight(m, id));
+    }
+
     private static boolean rollbackInFlight(ClusterModel m, BlueprintId id) {
         var key = new AppBlueprintKey(id);
 

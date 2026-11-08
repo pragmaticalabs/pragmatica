@@ -210,6 +210,10 @@ public final class ConfigValidator {
         if (upload.maxInFlightBytes() < 1) {
             errors.add("[app-http.upload] max_in_flight_size must be a positive size such as \"512MB\". Got: " + upload.maxInFlightBytes());
         }
+
+        if (upload.unclaimedTtl().millis() <= 0) {
+            errors.add("[app-http.upload] unclaimed_ttl must be a positive duration such as \"24h\"");
+        }
     }
 
     private static void archiveRetentionErrors(SliceConfig slice, List<String> errors) {

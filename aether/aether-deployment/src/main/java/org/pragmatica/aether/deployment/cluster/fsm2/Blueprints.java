@@ -59,6 +59,15 @@ public sealed interface Blueprints {
                         .or(false);
     }
 
+    /// #2864: the committed target of `artifact` names an owning blueprint that is gone (removed or rolled back, its target not yet
+    /// removed).
+    static boolean ownerRemoved(ClusterModel m, Artifact artifact) {
+        return m.targets.get(artifact.base())
+                        .flatMap(SliceTargetValue::owningBlueprint)
+                        .map(owner -> !m.blueprints.containsKey(owner))
+                        .or(false);
+    }
+
     private static boolean routingNames(ClusterModel m, ArtifactBase base, Version version) {
         return m.routings.get(base)
                          .map(routing -> routing.oldVersion()
