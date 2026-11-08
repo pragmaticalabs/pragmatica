@@ -31,7 +31,8 @@ public final class FactoryGenerator {
                              List<MapperColumn> mapperColumns,
                              boolean needsMapper,
                              Option<JavaTypeAccessor.AccessorInfo> scalarAccessor,
-                             Option<MapperColumn> documentColumn) {}
+                             Option<MapperColumn> documentColumn,
+                             Option<String> scalarColumn) {}
 
     public record MethodParam(String name, String typeName, String accessor) {
         public static MethodParam simple(String name, String typeName) {
@@ -206,7 +207,9 @@ public final class FactoryGenerator {
         } else if (method.scalarAccessor().isPresent()) {
             appendGenericScalarMapper(sb, method);
         } else if (method.returnKind == MethodAnalyzer.ReturnKind.LONG || method.returnKind == MethodAnalyzer.ReturnKind.BOOLEAN) {
-            appendScalarMapper(sb, method.returnKind, method.sql);
+            appendScalarMapper(sb,
+                               method.returnKind,
+                               method.scalarColumn.expect("scalar methods carry a resolved column"));
         }
 
         appendParamArguments(sb, method.params);
@@ -229,7 +232,7 @@ public final class FactoryGenerator {
 
     private static void appendGenericScalarMapper(StringBuilder sb, MethodInfo method) {
         var accessor = method.scalarAccessor().expect("checked with isPresent above");
-        var columnName = inferScalarColumnName(method.sql, method.returnKind);
+        var columnName = method.scalarColumn.expect("scalar methods carry a resolved column");
 
         sb.append(",\n                    row -> row.")
           .append(accessor.method())
@@ -274,215 +277,12 @@ public final class FactoryGenerator {
         sb.append(").mapToUnit();\n");
     }
 
-    private static void appendScalarMapper(StringBuilder sb, MethodAnalyzer.ReturnKind kind, String sql) {
-        var columnName = inferScalarColumnName(sql, kind);
-
+    private static void appendScalarMapper(StringBuilder sb, MethodAnalyzer.ReturnKind kind, String columnName) {
         switch (kind) {
             case LONG -> sb.append(",\n                    row -> row.getLong(\"").append(columnName).append("\")");
             case BOOLEAN -> sb.append(",\n                    row -> row.getBoolean(\"").append(columnName).append("\")");
             default -> {}
         }
-    }
-
-    static String inferScalarColumnName(String sql, MethodAnalyzer.ReturnKind kind) {
-        var returning = returningColumn(sql);
-
-        if (returning.isPresent()) {
-            return returning.unwrap();
-        }
-
-        var outer = outerSelectClause(sql);
-        var upper = outer.toUpperCase();
-        var alias = selectItemText(outer).flatMap(FactoryGenerator::topLevelAlias);
-
-        if (alias.isPresent()) {
-            return cleanIdentifier(alias.unwrap().toLowerCase());
-        }
-
-        var firstSelectItem = firstSelectItem(outer);
-
-        if (firstSelectItem.isPresent()) {
-            return firstSelectItem.unwrap();
-        }
-
-        if (kind == MethodAnalyzer.ReturnKind.BOOLEAN && upper.contains("EXISTS")) {
-            return "exists";
-        }
-
-        if (kind == MethodAnalyzer.ReturnKind.LONG && upper.contains("COUNT")) {
-            return "count";
-        }
-
-        return kind == MethodAnalyzer.ReturnKind.BOOLEAN
-               ? "exists"
-               : "count";
-    }
-
-    /// A `RETURNING` clause names the statement's own output columns, so it decides the scalar
-    /// column whenever it is present. The SELECT list cannot: in
-    /// `INSERT ... SELECT :a, :b ... RETURNING version` the first SELECT item is a bind
-    /// placeholder, which after rewriting is `$1` -- a column no relation has.
-    private static Option<String> returningColumn(String sql) {
-        var idx = sql.toUpperCase().lastIndexOf("RETURNING");
-
-        if (idx < 0) {
-            return Option.none();
-        }
-
-        var rest = sql.substring(idx + "RETURNING".length()).trim();
-
-        if (rest.startsWith("*")) {
-            return Option.none();
-        }
-
-        var cleaned = cleanIdentifier(topLevelAlias(rest).or(rest));
-
-        return cleaned.isEmpty()
-               ? Option.none()
-               : Option.some(cleaned);
-    }
-
-    private static String outerSelectClause(String sql) {
-        var lastSelect = -1;
-        var depth = 0;
-        var upper = sql.toUpperCase();
-        var n = sql.length();
-
-        for (var i = 0; i < n; i++) {
-            var c = sql.charAt(i);
-
-            if (c == '(') {
-                depth++;
-            } else if (c == ')') {
-                depth--;
-            } else if (depth == 0 && (c == 'S' || c == 's')) {
-                if (i + 6 <= n && upper.startsWith("SELECT", i) && (i == 0 || !Character.isLetterOrDigit(sql.charAt(i - 1))) && (i + 6 == n || !Character.isLetterOrDigit(sql.charAt(i + 6)))) {
-                    lastSelect = i;
-                }
-            }
-        }
-
-        return lastSelect >= 0
-               ? sql.substring(lastSelect)
-               : sql;
-    }
-
-    private static String cleanIdentifier(String raw) {
-        var sb = new StringBuilder();
-
-        for (var c : raw.toCharArray()) {
-            if (Character.isLetterOrDigit(c) || c == '_') {
-                sb.append(c);
-            } else {
-                break;
-            }
-        }
-
-        return sb.toString();
-    }
-
-    /// The alias after the last `AS` that sits outside every parenthesis, so the `AS` of
-    /// `CAST(x AS int)` is never taken for the alias of the item (#2886). Case-insensitive.
-    private static Option<String> topLevelAlias(String item) {
-        var depth = 0;
-        var aliasStart = -1;
-
-        for (var i = 0; i < item.length(); i++) {
-            var c = item.charAt(i);
-
-            if (c == '(') {
-                depth++;
-            } else if (c == ')') {
-                depth--;
-            } else if (depth == 0 && isAsKeywordAt(item, i)) {
-                aliasStart = i + 2;
-            }
-        }
-
-        return aliasStart < 0
-               ? Option.none()
-               : Option.some(item.substring(aliasStart).trim());
-    }
-
-    private static boolean isAsKeywordAt(String text, int index) {
-        return index > 0
-               && index + 2 < text.length()
-               && Character.isWhitespace(text.charAt(index - 1))
-               && Character.isWhitespace(text.charAt(index + 2))
-               && text.regionMatches(true, index, "AS", 0, 2);
-    }
-
-    private static Option<String> firstSelectItem(String sql) {
-        return selectItemText(sql).flatMap(FactoryGenerator::selectItemName);
-    }
-
-    /// The text of the first select item, without a leading `DISTINCT`; none when the item is empty or `*`.
-    private static Option<String> selectItemText(String sql) {
-        var upper = sql.toUpperCase();
-        var selectIdx = upper.indexOf("SELECT");
-
-        if (selectIdx < 0) {
-            return Option.none();
-        }
-
-        var rest = sql.substring(selectIdx + "SELECT".length()).trim();
-
-        if (rest.toUpperCase().startsWith("DISTINCT ")) {
-            rest = rest.substring("DISTINCT ".length()).trim();
-        }
-
-        var depth = 0;
-        var end = rest.length();
-
-        for (var i = 0; i < rest.length(); i++) {
-            var c = rest.charAt(i);
-
-            if (c == '(') {
-                depth++;
-            } else if (c == ')') {
-                depth--;
-            } else if (depth == 0 && (c == ',' || (c == ' ' && startsWithFrom(rest, i)))) {
-                end = i;
-                break;
-            }
-        }
-
-        var item = rest.substring(0, end).trim();
-
-        return item.isEmpty() || item.equals("*")
-               ? Option.none()
-               : Option.some(item);
-    }
-
-    /// Name Postgres gives an unaliased item. An unaliased `CAST(x AS t)` is named after the target
-    /// type's internal name (`int4`, `int8`, ...), which is not derivable here, so it falls under the
-    /// function-call rule and yields `cast`: alias such items (`CAST(x AS int) AS n`).
-    private static Option<String> selectItemName(String item) {
-        var openParen = item.indexOf('(');
-
-        if (openParen > 0) {
-            return Option.some(item.substring(0, openParen).trim().toLowerCase());
-        }
-
-        var lastDot = item.lastIndexOf('.');
-        var bare = lastDot >= 0
-                   ? item.substring(lastDot + 1)
-                   : item;
-
-        return Option.some(bare.toLowerCase());
-    }
-
-    private static boolean startsWithFrom(String text, int index) {
-        var i = index;
-
-        while (i < text.length() && Character.isWhitespace(text.charAt(i))) {
-            i++;
-        }
-
-        return i + 4 <= text.length()
-               && text.substring(i, i + 4)
-                      .equalsIgnoreCase("FROM")
-               && (i + 4 == text.length() || Character.isWhitespace(text.charAt(i + 4)));
     }
 
     private static void appendRecordClose(StringBuilder sb, String factoryMethod) {

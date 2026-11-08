@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.pg.codegen.processor;
 
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -10,96 +11,132 @@ import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// #2885: an array parameter is one bind parameter, never spread into the connector's varargs.
-/// #2886: the scalar column is the alias of the top-level select item, not the `AS` of a `CAST`.
+/// #2885: a reference-array parameter is one bind parameter, never spread into the connector's varargs,
+/// on every generated kind. #2886: the scalar column is the output column the query's parse tree names,
+/// never a text scan; an unaliased expression is a build error.
 class ScalarAliasAndArrayBindTest {
     @TempDir
     Path tempDir;
 
-    @Test
-    void castAsInt_withAlias_inferredAsAlias() {
-        assertThat(column("SELECT CAST(count(*) AS int) AS n FROM t")).isEqualTo("n");
+    @Nested
+    class ArrayBinding {
+        @Test
+        void unit() throws Exception {
+            assertThat(factory("Promise<Unit>", "DELETE FROM users WHERE name = ANY(:names)")).contains("(Object) (names)");
+        }
+
+        @Test
+        void single() throws Exception {
+            assertThat(factory("Promise<String>", "SELECT name AS n FROM users WHERE name = ANY(:names)")).contains("(Object) (names)");
+        }
+
+        @Test
+        void optional() throws Exception {
+            assertThat(factory("Promise<Option<String>>", "SELECT name AS n FROM users WHERE name = ANY(:names)")).contains("(Object) (names)");
+        }
+
+        @Test
+        void list() throws Exception {
+            assertThat(factory("Promise<List<String>>", "SELECT name AS n FROM users WHERE name = ANY(:names)")).contains("(Object) (names)");
+        }
+
+        @Test
+        void longKind() throws Exception {
+            assertThat(factory("Promise<Long>", "SELECT count(*) AS n FROM users WHERE name = ANY(:names)")).contains("(Object) (names)");
+        }
+
+        @Test
+        void booleanKind() throws Exception {
+            assertThat(factory("Promise<Boolean>", "SELECT EXISTS(SELECT 1 FROM users WHERE name = ANY(:names)) AS found")).contains("(Object) (names)");
+        }
     }
 
-    @Test
-    void nestedParenthesesWithAs_inferredAsOuterAlias() {
-        assertThat(column("SELECT COALESCE(CAST((SELECT max(x) AS m FROM u) AS bigint), 0) AS total FROM t"))
-            .isEqualTo("total");
+    @Nested
+    class ScalarColumn {
+        @Test
+        void castWithAlias_isTheAlias() throws Exception {
+            assertThat(factory("Promise<Long>", "SELECT CAST(count(*) AS int) AS n FROM users WHERE name = ANY(:names)"))
+                .contains("row.getLong(\"n\")");
+        }
+
+        @Test
+        void nestedParenthesesWithAs_isTheOuterAlias() throws Exception {
+            assertThat(factory("Promise<Long>", "SELECT COALESCE(CAST((SELECT max(id) AS m FROM users) AS bigint), 0) AS total FROM users WHERE name = ANY(:names)"))
+                .contains("row.getLong(\"total\")");
+        }
+
+        @Test
+        void lowercaseAs_isTheAlias() throws Exception {
+            assertThat(factory("Promise<Long>", "select cast(count(*) as int) as n from users where name = any(:names)"))
+                .contains("row.getLong(\"n\")");
+        }
+
+        @Test
+        void tableAlias_isNotTheColumn() throws Exception {
+            assertThat(factory("Promise<String>", "SELECT u.name FROM users AS u WHERE u.name = ANY(:names)"))
+                .contains("\"name\"")
+                .doesNotContain("\"u\"");
+        }
+
+        @Test
+        void quotedAlias_isTheColumn() throws Exception {
+            assertThat(factory("Promise<Long>", "SELECT count(*) AS \"total\" FROM users WHERE name = ANY(:names)"))
+                .contains("row.getLong(\"total\")");
+        }
+
+        @Test
+        void returningCastWithAlias_isTheAlias() throws Exception {
+            assertThat(factory("Promise<Long>", "UPDATE users SET active = true WHERE name = ANY(:names) RETURNING CAST(id AS bigint) AS v"))
+                .contains("row.getLong(\"v\")");
+        }
+
+        @Test
+        void literalContainingAs_doesNotConfuse() throws Exception {
+            assertThat(factory("Promise<Long>", "SELECT count(*) AS n FROM users WHERE name = ANY(:names) AND email <> ' x AS y '"))
+                .contains("row.getLong(\"n\")");
+        }
+
+        @Test
+        void unaliasedCast_failsTheBuildAskingForAnAlias() throws Exception {
+            var result = compile("Promise<Long>", "SELECT CAST(count(*) AS bigint) FROM users WHERE name = ANY(:names)");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("add an alias");
+        }
+
+        @Test
+        void unaliasedFunction_failsTheBuildAskingForAnAlias() throws Exception {
+            var result = compile("Promise<Long>", "SELECT count(*) FROM users WHERE name = ANY(:names)");
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("add an alias");
+        }
     }
 
-    @Test
-    void lowercaseAs_inferredAsAlias() {
-        assertThat(column("select cast(count(*) as int) as n from t")).isEqualTo("n");
-    }
-
-    @Test
-    void fromAliasWithAs_isNotTheSelectAlias() {
-        assertThat(column("SELECT count(*) FROM orders AS o")).isEqualTo("count");
-    }
-
-    @Test
-    void castWithoutAlias_followsFunctionRule_documentedAsCast() {
-        assertThat(column("SELECT CAST(count(*) AS bigint) FROM t")).isEqualTo("cast");
-    }
-
-    @Test
-    void itemEndingInAsLetters_isNotTakenForTheKeyword() {
-        assertThat(column("SELECT bias + 1 FROM t")).isNotBlank();
-    }
-
-    @Test
-    void returningCast_withAlias_inferredAsAlias() {
-        assertThat(column("INSERT INTO t (a) VALUES (1) RETURNING CAST(a AS int) AS n")).isEqualTo("n");
-    }
-
-    @Test
-    void unitMethod_withSingleArrayParam_bindsOneParameter() throws Exception {
-        var generated = generated("""
-            package test;
-
-            import org.pragmatica.aether.pg.codegen.annotation.Query;
-            import org.pragmatica.aether.resource.db.PgSql;
-            import org.pragmatica.lang.Promise;
-            import org.pragmatica.lang.Unit;
-
-            @PgSql
-            public interface TagRepo {
-                @Query("DELETE FROM users WHERE name = ANY(:names)")
-                Promise<Unit> remove(String[] names);
-            }
-            """);
-
-        assertThat(generated).contains("(Object) (names)");
-    }
-
-    @Test
-    void queryMethod_withSingleArrayParam_bindsOneParameter() throws Exception {
-        var generated = generated("""
-            package test;
-
-            import org.pragmatica.aether.pg.codegen.annotation.Query;
-            import org.pragmatica.aether.resource.db.PgSql;
-            import org.pragmatica.lang.Promise;
-
-            @PgSql
-            public interface TagRepo {
-                @Query("SELECT count(*) FROM users WHERE name = ANY(:names)")
-                Promise<Long> countBy(String[] names);
-            }
-            """);
-
-        assertThat(generated).contains("(Object) (names)");
-    }
-
-    private static String column(String sql) {
-        return FactoryGenerator.inferScalarColumnName(sql, MethodAnalyzer.ReturnKind.LONG);
-    }
-
-    private String generated(String source) throws Exception {
-        var result = TestCompilationHelper.compileWithProcessor(source, "test/TagRepo.java", tempDir);
+    private String factory(String returnType, String sql) throws Exception {
+        var result = compile(returnType, sql);
 
         assertThat(result.success()).as(result.diagnostics()).isTrue();
 
         return result.generatedSource("test.TagRepoFactory");
+    }
+
+    private TestCompilationHelper.CompilationResult compile(String returnType, String sql) throws Exception {
+        return TestCompilationHelper.compileWithProcessor("""
+            package test;
+
+            import org.pragmatica.aether.pg.codegen.annotation.Query;
+            import org.pragmatica.aether.resource.db.PgSql;
+            import org.pragmatica.lang.Option;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import java.util.List;
+
+            @PgSql
+            public interface TagRepo {
+                @Query("%s")
+                %s run(String[] names);
+            }
+            """.formatted(sql.replace("\"", "\\\""), returnType), "test/TagRepo.java", tempDir);
     }
 }
