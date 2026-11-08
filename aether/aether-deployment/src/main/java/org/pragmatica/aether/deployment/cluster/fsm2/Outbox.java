@@ -396,10 +396,7 @@ public sealed interface Outbox {
                                              Ctx ctx,
                                              NodeId node,
                                              List<Map.Entry<SlicePair, GoalIntent>> entries) {
-        entries.stream()
-               .filter(entry -> !stands(m, entry))
-               .forEach(entry -> Indexer.clearPending(m,
-                                                      entry.getKey()));
+        entries.stream().filter(entry -> !stands(m, entry)).forEach(entry -> Indexer.clearPending(m, entry.getKey()));
         var live = entries.stream().filter(entry -> stands(m, entry)).toList();
         var mutations = live.stream()
                             .map(entry -> desiredMutation(m,
@@ -444,8 +441,13 @@ public sealed interface Outbox {
     private static boolean stands(ClusterModel m, Map.Entry<SlicePair, GoalIntent> entry) {
         return stillCurrent(m,
                             entry.getKey(),
-                            entry.getValue().guard()) && !(entry.getValue().goal() == SliceGoal.ACTIVE && Outcomes.rollingBack(m,
-                                                                                                                                entry.getKey().artifact()));
+                            entry.getValue().guard()) && !promotesRollingBack(m, entry);
+    }
+
+    private static boolean promotesRollingBack(ClusterModel m, Map.Entry<SlicePair, GoalIntent> entry) {
+        return entry.getValue()
+                    .goal() == SliceGoal.ACTIVE && Outcomes.rollingBack(m,
+                                                                        entry.getKey().artifact());
     }
 
     /// A decision stands only while the observed value it was derived from is still the one in the mirror.
