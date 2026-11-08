@@ -48,7 +48,8 @@ final class ContainerStartup {
                                           ToStringConsumer consumer,
                                           RuntimeException e) {
         return "--- attempt " + attempt + "/" + attempts + " failed ---\n"
-               + causeChain(e) + "\n--- container log ---\n" + tail(capturedLogs(container, consumer));
+               + causeChain(e) + "\ncontainer exit code: " + exitCode(container)
+               + "\n--- container log ---\n" + tail(capturedLogs(container, consumer));
     }
 
     private static String causeChain(Throwable t) {
@@ -70,6 +71,14 @@ final class ContainerStartup {
             return container.getLogs();
         } catch (RuntimeException e) {
             return "";
+        }
+    }
+
+    private static String exitCode(GenericContainer<?> container) {
+        try {
+            return String.valueOf(container.getCurrentContainerInfo().getState().getExitCodeLong());
+        } catch (RuntimeException e) {
+            return "<unavailable: " + e.getClass().getSimpleName() + ">";
         }
     }
 
