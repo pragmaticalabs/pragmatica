@@ -7,13 +7,18 @@ package org.pragmatica.aether.stream.replication;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.LongSupplier;
 
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -57,23 +62,72 @@ import static org.pragmatica.lang.Unit.unit;
 /// by `closeBarrier` (default [#DEFAULT_CLOSE_BARRIER]). At the bound, or if the closing thread is
 /// interrupted, it logs a WARN naming the number still in flight and returns; the flushes still complete on
 /// their own threads (late, never lost), and `close()` never hangs on a transport that does not return.
+///
+/// #263 (overhaul 7.2 item 3): a drained batch is not sent by the thread that drained it. The drain hands the batch to
+/// its partition's send lane UNDER the accumulator lock, so the lane receives a partition's batches in the order their
+/// accumulators were retired, which is offset order: a successor accumulator can only receive events after its
+/// predecessor is retired. One runner at a time drains a lane on the send executor and calls the [BatchSender]. So a
+/// size flush, an epoch flush or a run no longer encode and send on the publishing thread (inside the partition's
+/// append section), and a one-shot flush can no longer be overtaken by its successor's size flush. Lanes are a fixed
+/// stripe array keyed by partition hash, so an idle partition still costs no map entry. A batch waiting in, or being
+/// sent by, a lane counts as in flight for the `close()` barrier.
+///
+/// Adaptive first event (overhaul 7.2 item 2, production manager only): when `sendFirstAtOnce` is set, the event that
+/// opens an accumulator of an IDLE partition, one that last flushed more than `maxDelay` ago (or never), is handed to
+/// the lane at once, alone, and the accumulator stays open as a window of `maxDelay` that later events join. So an
+/// isolated publish pays no batching delay. A partition that flushed within `maxDelay` is under load: its next event
+/// opens an ordinary window and waits for it, so a loaded partition sends one batch per window, not a lone event plus a
+/// batch (#2896 review: with every window's first event sent alone, 192 concurrent publishes cost 79-103 messages
+/// instead of the spec's <= 96). The last flush time is kept per partition that flushed (one map entry each, kept while
+/// the batcher lives; the accumulators are still evicted). The flush rules of the window are the ones above.
+///
+/// #263 condition 1, the send budget: the batcher holds a cloned copy of every accepted event, in an accumulator or in a
+/// lane, until its batch's send returns, and counts those bytes ([#heldBytes]). An owner append reserves its payload
+/// bytes ([#reserve]) before its partition's ordered section takes an offset, and releases the reservation once the
+/// append returns, after the event was handed over (`StreamPartitionManager#publishInSection`). A reservation is
+/// granted only while held plus reserved bytes stay within `sendBudgetBytes`; otherwise the append is refused with
+/// [StreamError.General#REPLICATION_BEHIND], a transient capacity refusal, before it takes an offset. Every held byte
+/// of the production path was reserved before it was added and stays reserved until it is held, so held bytes never
+/// exceed the budget. One exception keeps a partition able to progress: a reservation is granted when nothing is held
+/// or reserved, even for an event larger than the budget. Nothing is dropped and nothing waits: a refused append is
+/// not in the log. The standalone factories are unbudgeted (`Long.MAX_VALUE`) and their callers reserve nothing.
 public final class ReplicationBatcher implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(ReplicationBatcher.class);
     static final int DEFAULT_MAX_EVENTS = 100;
     static final TimeSpan DEFAULT_MAX_DELAY = TimeSpan.timeSpan(1).millis();
     static final TimeSpan DEFAULT_CLOSE_BARRIER = TimeSpan.timeSpan(5).seconds();
     private static final long BARRIER_POLL_NANOS = 100_000L;
+    /// The standalone factories' send budget: none.
+    static final long UNBUDGETED = Long.MAX_VALUE;
+    /// Send lanes of a production batcher. A GUESS: one per core, so sends of distinct partitions proceed in parallel
+    /// up to the core count; what would settle it is the flusher's CPU share under a many-partition load.
+    static final int SEND_LANES = Math.max(2,
+                                           Runtime.getRuntime().availableProcessors());
+
+    /// The production send executor: a virtual thread per lane run, never the publishing thread.
+    private static final Executor FLUSHER_THREADS = runnable -> Thread.ofVirtual()
+                                                                      .name("replication-flusher")
+                                                                      .start(runnable);
+
+    /// The standalone factories' executor: a lane run happens on the thread that handed it the batch, after the
+    /// accumulator lock is released, as every send did before #263.
+    private static final Executor CALLER_THREAD = Runnable::run;
 
     private final ConcurrentHashMap<PartitionKey, BatchAccumulator> accumulators = new ConcurrentHashMap<>();
-    private final ReplicationTransport transport;
-    private final ReplicaRegistry registry;
-    private final NodeId governorId;
+    private final BatchSender sender;
     private final int maxEvents;
     private final TimeSpan maxDelay;
     private final TimeSpan closeBarrier;
     private final FlushScheduler flushScheduler;
+    private final boolean sendFirstAtOnce;
+    private final SendLane[] lanes;
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final AtomicInteger inFlightFlushes = new AtomicInteger();
+    private final long sendBudgetBytes;
+    private final AtomicLong heldBytes = new AtomicLong();
+    private final AtomicLong reservedBytes = new AtomicLong();
+    private final LongSupplier nanoClock;
+    private final ConcurrentHashMap<PartitionKey, Long> lastFlushNanos = new ConcurrentHashMap<>();
 
     /// Schedules one batch's one-shot flush. Production uses `SharedScheduler.schedule`; tests substitute a
     /// capturing scheduler to observe cancellation.
@@ -82,32 +136,112 @@ public final class ReplicationBatcher implements AutoCloseable {
         ScheduledFuture<?> schedule(Runnable flush, TimeSpan delay);
     }
 
-    private ReplicationBatcher(ReplicationTransport transport,
-                               ReplicaRegistry registry,
-                               NodeId governorId,
+    /// Sends one drained batch of one partition to its replicas. The production manager passes its own chunking,
+    /// re-sending send path (`DefaultReplicationManager#replicateImmediately`, #1287 K3 and #2820); the standalone
+    /// factories pass [#transportSender], one plain send per replica.
+    @FunctionalInterface
+    interface BatchSender {
+        @Contract
+        void deliver(PartitionKey key, BatchSnapshot snapshot);
+    }
+
+    private ReplicationBatcher(BatchSender sender,
                                int maxEvents,
                                TimeSpan maxDelay,
                                TimeSpan closeBarrier,
-                               FlushScheduler flushScheduler) {
-        this.transport = transport;
-        this.registry = registry;
-        this.governorId = governorId;
+                               FlushScheduler flushScheduler,
+                               boolean sendFirstAtOnce,
+                               Executor sendExecutor,
+                               int laneCount,
+                               long sendBudgetBytes,
+                               LongSupplier nanoClock) {
+        this.sender = sender;
+        this.nanoClock = nanoClock;
+        this.sendBudgetBytes = sendBudgetBytes;
         this.maxEvents = maxEvents;
         this.maxDelay = maxDelay;
         this.closeBarrier = closeBarrier;
         this.flushScheduler = flushScheduler;
+        this.sendFirstAtOnce = sendFirstAtOnce;
+        this.lanes = new SendLane[laneCount];
+        for (var i = 0; i < laneCount; i++) {
+            lanes[i] = new SendLane(sendExecutor);
+        }
     }
 
     public static ReplicationBatcher replicationBatcher(ReplicationTransport transport,
                                                         ReplicaRegistry registry,
                                                         NodeId governorId) {
-        return new ReplicationBatcher(transport,
-                                      registry,
-                                      governorId,
-                                      DEFAULT_MAX_EVENTS,
-                                      DEFAULT_MAX_DELAY,
+        return replicationBatcher(transport,
+                                  registry,
+                                  governorId,
+                                  DEFAULT_MAX_EVENTS,
+                                  DEFAULT_MAX_DELAY,
+                                  DEFAULT_CLOSE_BARRIER,
+                                  SharedScheduler::schedule);
+    }
+
+    /// The production batcher (#263): batches are sent by `sender` on flusher threads, [#SEND_LANES] lanes, and the
+    /// first event of an idle partition goes out at once (adaptive first event). At most `sendBudgetBytes` of accepted
+    /// payload are held (see the class doc).
+    static ReplicationBatcher adaptiveReplicationBatcher(BatchSender sender,
+                                                         int maxEvents,
+                                                         TimeSpan maxDelay,
+                                                         long sendBudgetBytes) {
+        return adaptiveReplicationBatcher(sender,
+                                          maxEvents,
+                                          maxDelay,
+                                          sendBudgetBytes,
+                                          SharedScheduler::schedule,
+                                          FLUSHER_THREADS,
+                                          System::nanoTime);
+    }
+
+    /// Test seam of [#adaptiveReplicationBatcher(BatchSender, int, TimeSpan, long)], unbudgeted, every partition idle.
+    static ReplicationBatcher adaptiveReplicationBatcher(BatchSender sender,
+                                                         int maxEvents,
+                                                         TimeSpan maxDelay,
+                                                         FlushScheduler flushScheduler,
+                                                         Executor sendExecutor) {
+        return adaptiveReplicationBatcher(sender, maxEvents, maxDelay, UNBUDGETED, flushScheduler, sendExecutor);
+    }
+
+    /// Test seam: the one-shot scheduler and the send executor are the caller's, and every partition reads as idle, so
+    /// every window's opening event is sent at once (the hand-driven lane tests assume it).
+    static ReplicationBatcher adaptiveReplicationBatcher(BatchSender sender,
+                                                         int maxEvents,
+                                                         TimeSpan maxDelay,
+                                                         long sendBudgetBytes,
+                                                         FlushScheduler flushScheduler,
+                                                         Executor sendExecutor) {
+        return adaptiveReplicationBatcher(sender,
+                                          maxEvents,
+                                          maxDelay,
+                                          sendBudgetBytes,
+                                          flushScheduler,
+                                          sendExecutor,
+                                          everyReadIdle(maxDelay));
+    }
+
+    /// Test seam of [#adaptiveReplicationBatcher(BatchSender, int, TimeSpan, long)]: the one-shot scheduler, the send
+    /// executor and the clock that times the last flush are the caller's.
+    static ReplicationBatcher adaptiveReplicationBatcher(BatchSender sender,
+                                                         int maxEvents,
+                                                         TimeSpan maxDelay,
+                                                         long sendBudgetBytes,
+                                                         FlushScheduler flushScheduler,
+                                                         Executor sendExecutor,
+                                                         LongSupplier nanoClock) {
+        return new ReplicationBatcher(sender,
+                                      maxEvents,
+                                      maxDelay,
                                       DEFAULT_CLOSE_BARRIER,
-                                      SharedScheduler::schedule);
+                                      flushScheduler,
+                                      true,
+                                      sendExecutor,
+                                      SEND_LANES,
+                                      sendBudgetBytes,
+                                      nanoClock);
     }
 
     public static ReplicationBatcher replicationBatcher(ReplicationTransport transport,
@@ -141,17 +275,112 @@ public final class ReplicationBatcher implements AutoCloseable {
                                                  TimeSpan maxDelay,
                                                  TimeSpan closeBarrier,
                                                  FlushScheduler flushScheduler) {
-        return new ReplicationBatcher(transport, registry, governorId, maxEvents, maxDelay, closeBarrier, flushScheduler);
+        return new ReplicationBatcher(transportSender(transport, registry, governorId),
+                                      maxEvents,
+                                      maxDelay,
+                                      closeBarrier,
+                                      flushScheduler,
+                                      false,
+                                      CALLER_THREAD,
+                                      SEND_LANES,
+                                      UNBUDGETED,
+                                      System::nanoTime);
+    }
+
+    /// A clock each read of which is more than `maxDelay` past the previous one: no flush is ever recent.
+    private static LongSupplier everyReadIdle(TimeSpan maxDelay) {
+        var now = new AtomicLong();
+
+        return () -> now.addAndGet(maxDelay.nanos() + 1);
+    }
+
+    /// One plain `ReplicateEvents` per replica other than `governorId`, no chunking and no re-send. Only the standalone
+    /// factories use it; the production manager sends through its own path (see [BatchSender]).
+    static BatchSender transportSender(ReplicationTransport transport, ReplicaRegistry registry, NodeId governorId) {
+        return (key, snapshot) -> sendBatch(transport, registry, governorId, key, snapshot);
+    }
+
+    /// Hand a run of consecutive events (`payloads.get(i)` at `fromOffset + i`) to the partition's send lane as one
+    /// batch, behind the partition's open batch, which is flushed first so the lane keeps offset order. Refused with
+    /// [ReplicationError.Lifecycle#BATCHER_CLOSED] once `close()` has run.
+    public Result<Unit> addRun(String streamName,
+                               int partition,
+                               long fromOffset,
+                               List<byte[]> payloads,
+                               List<Long> timestamps,
+                               Epoch ownerEpoch) {
+        var run = new BatchSnapshot(fromOffset,
+                                    payloads.stream().map(byte[]::clone).toList(),
+                                    List.copyOf(timestamps),
+                                    ownerEpoch);
+
+        heldBytes.addAndGet(run.bytes());
+
+        return (closed.get()
+                ? ReplicationError.Lifecycle.BATCHER_CLOSED.<Unit> result()
+                : success(acceptRun(partitionKey(streamName, partition), run))).onFailure(_ -> heldBytes.addAndGet(-run.bytes()));
     }
 
     /// Accept one event into its partition's batch, or refuse it with
-    /// [ReplicationError.Lifecycle#BATCHER_CLOSED] once `close()` has run.
+    /// [ReplicationError.Lifecycle#BATCHER_CLOSED] once `close()` has run. An accepted event's bytes are held until its
+    /// batch's send returns; a refused one holds nothing.
     public Result<Unit> add(String streamName,
                             int partition,
                             long offset,
                             byte[] payload,
                             long timestamp,
                             Epoch ownerEpoch) {
+        heldBytes.addAndGet(payload.length);
+
+        return addHeld(streamName, partition, offset, payload, timestamp, ownerEpoch).onFailure(_ -> heldBytes.addAndGet(-payload.length));
+    }
+
+    /// Reserve `bytes` of the send budget for an owner append about to take an offset, or refuse with
+    /// [StreamError.General#REPLICATION_BEHIND] when held plus reserved bytes would exceed it (see the class doc).
+    public Result<Unit> reserve(long bytes) {
+        return tryReserve(bytes)
+               ? Result.unitResult()
+               : StreamError.General.REPLICATION_BEHIND.result();
+    }
+
+    /// Return a reservation of [#reserve] once its append has returned: its event, if appended, is held by now.
+    @Contract
+    public void release(long bytes) {
+        reservedBytes.addAndGet(-bytes);
+    }
+
+    /// Payload bytes accepted and not yet sent: in accumulators, in lanes, or being sent.
+    long heldBytes() {
+        return heldBytes.get();
+    }
+
+    long reservedBytes() {
+        return reservedBytes.get();
+    }
+
+    private boolean tryReserve(long bytes) {
+        while (true) {
+            var reserved = reservedBytes.get();
+            var committed = heldBytes.get() + reserved;
+
+            if (committed > 0 && committed + bytes > sendBudgetBytes) {
+                return false;
+            }
+
+            if (reservedBytes.compareAndSet(reserved, reserved + bytes)) {
+                return true;
+            }
+        }
+    }
+
+    /// [#add] after its bytes are counted; the retry after an eviction race re-enters here, not in [#add], so an event's
+    /// bytes are counted once.
+    private Result<Unit> addHeld(String streamName,
+                                 int partition,
+                                 long offset,
+                                 byte[] payload,
+                                 long timestamp,
+                                 Epoch ownerEpoch) {
         return closed.get()
                ? ReplicationError.Lifecycle.BATCHER_CLOSED.result()
                : accept(partitionKey(streamName, partition), offset, payload, timestamp, ownerEpoch);
@@ -188,21 +417,49 @@ public final class ReplicationBatcher implements AutoCloseable {
     }
 
     private Result<Unit> accept(PartitionKey key, long offset, byte[] payload, long timestamp, Epoch ownerEpoch) {
-        var accumulator = accumulators.computeIfAbsent(key, _ -> new BatchAccumulator());
-        var outcome = accumulator.add(offset, payload, timestamp, ownerEpoch, maxEvents);
+        var accumulator = accumulators.computeIfAbsent(key, this::newAccumulator);
+        var outcome = accumulator.add(offset, payload, timestamp, ownerEpoch, maxEvents, sendFirstAtOnce && idle(key));
 
         return switch (outcome) {
             case RETIRED -> retryOnFreshAccumulator(key, accumulator, offset, payload, timestamp, ownerEpoch);
             case EPOCH_CHANGED -> flushThenRetry(key, accumulator, offset, payload, timestamp, ownerEpoch);
-            case OPENED, APPENDED, FULL -> success(onAccepted(key, accumulator, outcome));
+            case OPENED, SENT_AT_ONCE, APPENDED, FULL -> success(onAccepted(key, accumulator, outcome));
         };
     }
 
-    /// #1577: the open batch was accumulated under another owner epoch. It is flushed -- sent, on this thread,
-    /// before the event of the new epoch enters any batch -- and the event goes to a fresh accumulator, so a
-    /// batch never spans two epochs and its stamp is the epoch of every event in it. A replica records the
-    /// batch epoch as the provenance of the batch's first offset (#1596); a stamp covering earlier-epoch events
-    /// would mislabel them and make a healthy partition read as divergent after every failover.
+    /// Overhaul 7.2 item 2: the partition last flushed more than `maxDelay` ago, or never.
+    private boolean idle(PartitionKey key) {
+        return option(lastFlushNanos.get(key)).map(flushedAt -> nanoClock.getAsLong() - flushedAt > maxDelay.nanos())
+                     .or(true);
+    }
+
+    private BatchAccumulator newAccumulator(PartitionKey key) {
+        return new BatchAccumulator(key, laneFor(key));
+    }
+
+    private SendLane laneFor(PartitionKey key) {
+        return lanes[Math.floorMod(key.hashCode(), lanes.length)];
+    }
+
+    /// The partition's open batch, if any, is flushed to the lane first; the run follows it, so the lane holds the
+    /// partition's events in offset order. Callers hand a partition's events in offset order (the owner's append
+    /// section); a one-shot that drains the open batch concurrently has handed it to the lane under the accumulator
+    /// lock before `cancelAndFlush` can find it retired.
+    private Unit acceptRun(PartitionKey key, BatchSnapshot run) {
+        option(accumulators.get(key)).onPresent(open -> cancelAndFlush(key, open));
+        var lane = laneFor(key);
+
+        lane.offer(key, run);
+        lane.start();
+
+        return unit();
+    }
+
+    /// #1577: the open batch was accumulated under another owner epoch. It is flushed -- handed to the send lane
+    /// before the event of the new epoch enters any batch -- and the event goes to a fresh accumulator, so a batch
+    /// never spans two epochs and its stamp is the epoch of every event in it. A replica records the batch epoch as the
+    /// provenance of the batch's first offset (#1596); a stamp covering earlier-epoch events would mislabel them and
+    /// make a healthy partition read as divergent after every failover.
     private Result<Unit> flushThenRetry(PartitionKey key,
                                         BatchAccumulator stale,
                                         long offset,
@@ -217,9 +474,18 @@ public final class ReplicationBatcher implements AutoCloseable {
     private Unit onAccepted(PartitionKey key, BatchAccumulator accumulator, AddOutcome outcome) {
         return switch (outcome) {
             case OPENED -> scheduleFlush(key, accumulator);
+            case SENT_AT_ONCE -> sentAtOnce(key, accumulator);
             case FULL -> flushNow(key, accumulator);
             case APPENDED, RETIRED, EPOCH_CHANGED -> unit();
         };
+    }
+
+    /// The opening event is already in the lane (handed over under the accumulator lock); start the lane and open the
+    /// window: the accumulator's one-shot closes it `maxDelay` later.
+    private Unit sentAtOnce(PartitionKey key, BatchAccumulator accumulator) {
+        laneFor(key).start();
+
+        return scheduleFlush(key, accumulator);
     }
 
     private Unit scheduleFlush(PartitionKey key, BatchAccumulator accumulator) {
@@ -248,7 +514,7 @@ public final class ReplicationBatcher implements AutoCloseable {
                                                  Epoch ownerEpoch) {
         accumulators.remove(key, retired);
 
-        return add(key.streamName(), key.partition(), offset, payload, timestamp, ownerEpoch);
+        return addHeld(key.streamName(), key.partition(), offset, payload, timestamp, ownerEpoch);
     }
 
     private void cancelAndFlush(PartitionKey key, BatchAccumulator accumulator) {
@@ -256,22 +522,21 @@ public final class ReplicationBatcher implements AutoCloseable {
         flushPartition(key, accumulator);
     }
 
-    /// Counted in flight from before the drain until the send returns, so `close()` can see a flush that
-    /// already owns a batch it will never find in the map.
+    /// Counted in flight from before the drain until the batch is in the lane, where the lane's own count takes over
+    /// until the send returns, so `close()` can see a flush that already owns a batch it will never find in the map.
     private void flushPartition(PartitionKey key, BatchAccumulator accumulator) {
         inFlightFlushes.incrementAndGet();
         try {
-            var snapshot = accumulator.drain();
-
+            accumulator.drainToLane();
             accumulators.remove(key, accumulator);
-            if (snapshot.isEmpty()) {
-                return;
+            if (sendFirstAtOnce) {
+                lastFlushNanos.put(key, nanoClock.getAsLong());
             }
-
-            sendBatch(key, snapshot);
         } finally {
             inFlightFlushes.decrementAndGet();
         }
+
+        laneFor(key).start();
     }
 
     /// Returns when no flush is in flight, or at the bound, or when the closing thread is interrupted (the
@@ -299,7 +564,12 @@ public final class ReplicationBatcher implements AutoCloseable {
         }
     }
 
-    private void sendBatch(PartitionKey key, BatchSnapshot snapshot) {
+    @Contract
+    private static void sendBatch(ReplicationTransport transport,
+                                  ReplicaRegistry registry,
+                                  NodeId governorId,
+                                  PartitionKey key,
+                                  BatchSnapshot snapshot) {
         // #262.2/.5: the HRW replica set is owner-first, so it contains self — exclude it. Replicating
         // a batch to self would loop it back through onReplicateEvents (double-append).
         var replicas = registry.replicasFor(key.streamName(),
@@ -320,18 +590,83 @@ public final class ReplicationBatcher implements AutoCloseable {
                                       snapshot.payloads(),
                                       snapshot.timestamps(),
                                       snapshot.ownerEpoch());
-        // #2820: no re-send of a provably-not-sent outcome here, unlike DefaultReplicationManager#sendChunk: no
-        // production assembly wires the batcher (StreamAssembly builds the direct manager), so the ruling covers that path.
+        // #2820: no re-send of a provably-not-sent outcome here, unlike DefaultReplicationManager#sendChunk: this sender
+        // serves only the standalone factories; the production manager (#263) passes its own re-sending sender.
         replicas.forEach(replica -> transport.send(replica, message, DefaultReplicationManager.DEFAULT_ACK_TIMEOUT));
     }
 
     enum AddOutcome {
         OPENED,
+        /// The event opened the accumulator and was handed to the lane alone (adaptive first event, #263).
+        SENT_AT_ONCE,
         APPENDED,
         FULL,
         RETIRED,
         /// The batch is open under another owner epoch; nothing was added (#1577).
         EPOCH_CHANGED
+    }
+
+    private record QueuedBatch(PartitionKey key, BatchSnapshot snapshot) {}
+
+    /// One stripe of send work (#263): FIFO, drained by at most one runner at a time on the send executor. `offer` may
+    /// run under an accumulator lock; `start` must not, since with the caller-thread executor it sends.
+    private final class SendLane {
+        private final ConcurrentLinkedQueue<QueuedBatch> queue = new ConcurrentLinkedQueue<>();
+        private final AtomicBoolean running = new AtomicBoolean(false);
+        private final Executor executor;
+
+        private SendLane(Executor executor) {
+            this.executor = executor;
+        }
+
+        @Contract
+        void offer(PartitionKey key, BatchSnapshot snapshot) {
+            inFlightFlushes.incrementAndGet();
+            queue.add(new QueuedBatch(key, snapshot));
+        }
+
+        @Contract
+        void start() {
+            if (!queue.isEmpty() && running.compareAndSet(false, true)) {
+                executor.execute(this::run);
+            }
+        }
+
+        /// Re-checks the queue after releasing `running`: a batch offered while this runner was finishing found it
+        /// running and did not start another, so this runner takes it.
+        private void run() {
+            do {
+                try {
+                    sendQueued();
+                } finally {
+                    running.set(false);
+                }
+            } while (!queue.isEmpty() && running.compareAndSet(false, true));
+        }
+
+        private void sendQueued() {
+            for (var queued = queue.poll(); queued != null; queued = queue.poll()) {
+                sendOne(queued);
+            }
+        }
+
+        /// FER: a sender that throws loses this one batch, logged; the lane goes on with the next, so one bad batch
+        /// cannot stall the partitions behind it. The replica's gap rule and backfill repair the lost range, and the
+        /// owner's ack wait times out as for any lost frame (overhaul 7.2, failure modes).
+        private void sendOne(QueuedBatch queued) {
+            try {
+                sender.deliver(queued.key(), queued.snapshot());
+            } catch (RuntimeException failure) {
+                log.warn("Replication batch {}[{}]@{} not sent: {}",
+                         queued.key().streamName(),
+                         queued.key().partition(),
+                         queued.snapshot().fromOffset(),
+                         failure.toString());
+            } finally {
+                heldBytes.addAndGet(-queued.snapshot().bytes());
+                inFlightFlushes.decrementAndGet();
+            }
+        }
     }
 
     /// One batch of one partition. Single-use: the first `drain` retires it, after which `add` refuses
@@ -340,10 +675,18 @@ public final class ReplicationBatcher implements AutoCloseable {
         private final ReentrantLock lock = new ReentrantLock();
         private final List<byte[]> payloads = new ArrayList<>();
         private final List<Long> timestamps = new ArrayList<>();
+        private final PartitionKey key;
+        private final SendLane lane;
         private long fromOffset = -1;
         private Epoch ownerEpoch = Epoch.ZERO;
+        private boolean started;
         private boolean retired;
         private volatile Option<ScheduledFuture<?>> flush = none();
+
+        private BatchAccumulator(PartitionKey key, SendLane lane) {
+            this.key = key;
+            this.lane = lane;
+        }
 
         @Contract
         void attachFlush(ScheduledFuture<?> scheduled) {
@@ -355,20 +698,37 @@ public final class ReplicationBatcher implements AutoCloseable {
             flush.onPresent(scheduled -> scheduled.cancel(false));
         }
 
-        AddOutcome add(long offset, byte[] payload, long timestamp, Epoch ownerEpoch, int maxEvents) {
+        AddOutcome add(long offset,
+                       byte[] payload,
+                       long timestamp,
+                       Epoch ownerEpoch,
+                       int maxEvents,
+                       boolean sendAtOnce) {
             lock.lock();
             try {
                 if (retired) {
                     return AddOutcome.RETIRED;
                 }
 
-                var opened = payloads.isEmpty();
+                var opened = !started;
+                var empty = payloads.isEmpty();
 
-                if (!opened && !this.ownerEpoch.equals(ownerEpoch)) {
+                started = true;
+                if (!empty && !this.ownerEpoch.equals(ownerEpoch)) {
                     return AddOutcome.EPOCH_CHANGED;
                 }
 
-                if (opened) {
+                if (opened && sendAtOnce) {
+                    lane.offer(key,
+                               new BatchSnapshot(offset,
+                                                 List.of(payload.clone()),
+                                                 List.of(timestamp),
+                                                 ownerEpoch));
+
+                    return AddOutcome.SENT_AT_ONCE;
+                }
+
+                if (empty) {
                     fromOffset = offset;
                 }
                 // One batch, one epoch (#1577): the stamp is set when the batch opens and every later event
@@ -389,17 +749,37 @@ public final class ReplicationBatcher implements AutoCloseable {
         BatchSnapshot drain() {
             lock.lock();
             try {
-                var alreadyDrained = retired;
-
-                retired = true;
-                if (alreadyDrained || payloads.isEmpty()) {
-                    return BatchSnapshot.EMPTY;
-                }
-
-                return new BatchSnapshot(fromOffset, payloads, timestamps, ownerEpoch);
+                return retire();
             } finally {
                 lock.unlock();
             }
+        }
+
+        /// [#drain], and the batch, if any, handed to the partition's send lane under the same lock (#263): a successor
+        /// accumulator receives events only after this one is retired, so the lane receives them after this batch.
+        @Contract
+        void drainToLane() {
+            lock.lock();
+            try {
+                var snapshot = retire();
+
+                if (!snapshot.isEmpty()) {
+                    lane.offer(key, snapshot);
+                }
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        private BatchSnapshot retire() {
+            var alreadyDrained = retired;
+
+            retired = true;
+            if (alreadyDrained || payloads.isEmpty()) {
+                return BatchSnapshot.EMPTY;
+            }
+
+            return new BatchSnapshot(fromOffset, payloads, timestamps, ownerEpoch);
         }
 
         private AddOutcome outcome(boolean opened, int maxEvents) {
@@ -418,6 +798,12 @@ public final class ReplicationBatcher implements AutoCloseable {
 
         boolean isEmpty() {
             return payloads.isEmpty();
+        }
+
+        long bytes() {
+            return payloads.stream()
+                           .mapToLong(payload -> payload.length)
+                           .sum();
         }
     }
 }

@@ -53,7 +53,7 @@ public interface AnalyticsPersistence {
           + "WHERE customer_id = :customerId")
     Promise<List<OrderMetric>> metricsByCustomer(Long customerId);
 
-    @Query("SELECT count(*) FROM daily_snapshot")
+    @Query("SELECT count(*) AS count FROM daily_snapshot")
     Promise<Long> countSnapshots();
 
     @Query("WITH recent AS (SELECT customer_id, revenue FROM order_metrics WHERE created_at > :since) "

@@ -402,18 +402,39 @@ public interface SliceRouter {
             private HttpResponseData errorToResponse(Cause cause, HttpRequestContext request) {
                 var httpError = resolveHttpError(cause);
 
-                log.warn("[requestId={}] SliceRouter error: {} {} -> {} {} (cause chain: {})",
-                         request.requestId(),
-                         request.method(),
-                         request.path(),
-                         httpError.status().code(),
-                         cause.message(),
-                         HttpError.causeChain(cause));
+                logFailure(cause, httpError, request);
                 var problemDetail = ProblemDetail.fromHttpError(httpError, request.path(), request.requestId());
 
                 return HttpResponseData.httpResponseData(httpError.status().code(),
                                                          JSON_HEADERS,
                                                          encodeProblem(problemDetail));
+            }
+
+            private static final String FAILURE_LOG_FORMAT = "[requestId={}] SliceRouter error: {} {} -> {} {} (cause chain: {})";
+
+            /// #2881: the level keys on the resolved outer status -- 5xx (503 included) is a server-side fault and is
+            /// logged at WARN with the cause chain; 4xx is the caller's fault and is logged at DEBUG. The requestId in
+            /// the RFC 9457 body still correlates a 4xx response.
+            private void logFailure(Cause cause, HttpError httpError, HttpRequestContext request) {
+                var status = httpError.status().code();
+
+                if (status >= 500) {
+                    log.warn(FAILURE_LOG_FORMAT,
+                             request.requestId(),
+                             request.method(),
+                             request.path(),
+                             status,
+                             cause.message(),
+                             HttpError.causeChain(cause));
+                } else {
+                    log.debug(FAILURE_LOG_FORMAT,
+                              request.requestId(),
+                              request.method(),
+                              request.path(),
+                              status,
+                              cause.message(),
+                              HttpError.causeChain(cause));
+                }
             }
 
             /// Resolve the HTTP error for a failure. A boundary parse failure — e.g. a value-object

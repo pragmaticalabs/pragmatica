@@ -904,7 +904,7 @@ public final class StreamApiRoutes implements RouteSource {
     /// The list is the owner's own: `StreamForwardHandler.isRetryable` is the set of causes the owner answers a FORWARDED
     /// publish with the retryable response for, and a publish this node serves as the owner uses the same predicate, so
     /// a refusal answers the same status on both paths. It includes the transient capacity refusals (`ReshufflePaced`,
-    /// `MaterializeBudgetExceeded`, `STREAM_MEMORY_EXCEEDED`, `SEALING_BEHIND`, `SEGMENT_TIER_FULL`; #1980).
+    /// `MaterializeBudgetExceeded`, `STREAM_MEMORY_EXCEEDED`, `SEALING_BEHIND`, `SEGMENT_TIER_FULL`; #1980; `REPLICATION_BEHIND`, #263).
     static Cause retryableRefusal(String streamName, Cause cause) {
         return isPreAppendRefusal(cause)
                ? new ManagementServerError.PublishRetryable(streamName, cause)

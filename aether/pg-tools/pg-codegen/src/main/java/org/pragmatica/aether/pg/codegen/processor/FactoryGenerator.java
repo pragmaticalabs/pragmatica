@@ -31,7 +31,8 @@ public final class FactoryGenerator {
                              List<MapperColumn> mapperColumns,
                              boolean needsMapper,
                              Option<JavaTypeAccessor.AccessorInfo> scalarAccessor,
-                             Option<MapperColumn> documentColumn) {}
+                             Option<MapperColumn> documentColumn,
+                             Option<String> scalarColumn) {}
 
     public record MethodParam(String name, String typeName, String accessor) {
         public static MethodParam simple(String name, String typeName) {
@@ -206,19 +207,32 @@ public final class FactoryGenerator {
         } else if (method.scalarAccessor().isPresent()) {
             appendGenericScalarMapper(sb, method);
         } else if (method.returnKind == MethodAnalyzer.ReturnKind.LONG || method.returnKind == MethodAnalyzer.ReturnKind.BOOLEAN) {
-            appendScalarMapper(sb, method.returnKind, method.sql);
+            appendScalarMapper(sb,
+                               method.returnKind,
+                               method.scalarColumn.expect("scalar methods carry a resolved column"));
         }
 
-        for (var param : method.params) {
-            sb.append(", ").append(param.accessor());
-        }
-
+        appendParamArguments(sb, method.params);
         sb.append(");\n");
+    }
+
+    /// A sole reference-array argument passed to the `Object...` parameter of the connector would BE
+    /// the varargs array, spreading its elements into separate bind parameters (#2885); the `(Object)`
+    /// cast keeps an array argument one bind parameter.
+    private static void appendParamArguments(StringBuilder sb, List<MethodParam> params) {
+        for (var param : params) {
+            sb.append(", ");
+            if (param.typeName().endsWith("[]")) {
+                sb.append("(Object) (").append(param.accessor()).append(')');
+            } else {
+                sb.append(param.accessor());
+            }
+        }
     }
 
     private static void appendGenericScalarMapper(StringBuilder sb, MethodInfo method) {
         var accessor = method.scalarAccessor().expect("checked with isPresent above");
-        var columnName = inferScalarColumnName(method.sql, method.returnKind);
+        var columnName = method.scalarColumn.expect("scalar methods carry a resolved column");
 
         sb.append(",\n                    row -> row.")
           .append(accessor.method())
@@ -259,191 +273,16 @@ public final class FactoryGenerator {
     private static void appendUnitMethodBody(StringBuilder sb, MethodInfo method) {
         sb.append("                return db.update(");
         sb.append(method.sqlConstantName);
-        for (var param : method.params) {
-            sb.append(", ").append(param.accessor());
-        }
-
+        appendParamArguments(sb, method.params);
         sb.append(").mapToUnit();\n");
     }
 
-    private static void appendScalarMapper(StringBuilder sb, MethodAnalyzer.ReturnKind kind, String sql) {
-        var columnName = inferScalarColumnName(sql, kind);
-
+    private static void appendScalarMapper(StringBuilder sb, MethodAnalyzer.ReturnKind kind, String columnName) {
         switch (kind) {
             case LONG -> sb.append(",\n                    row -> row.getLong(\"").append(columnName).append("\")");
             case BOOLEAN -> sb.append(",\n                    row -> row.getBoolean(\"").append(columnName).append("\")");
             default -> {}
         }
-    }
-
-    static String inferScalarColumnName(String sql, MethodAnalyzer.ReturnKind kind) {
-        var returning = returningColumn(sql);
-
-        if (returning.isPresent()) {
-            return returning.unwrap();
-        }
-
-        var outer = outerSelectClause(sql);
-        var upper = outer.toUpperCase();
-        var asIdx = upper.indexOf(" AS ");
-
-        if (asIdx >= 0) {
-            var afterAs = outer.substring(asIdx + 4).trim();
-            var spaceIdx = afterAs.indexOf(' ');
-            var alias = spaceIdx >= 0
-                        ? afterAs.substring(0, spaceIdx).toLowerCase()
-                        : afterAs.toLowerCase();
-
-            return cleanIdentifier(alias);
-        }
-
-        var firstSelectItem = firstSelectItem(outer);
-
-        if (firstSelectItem.isPresent()) {
-            return firstSelectItem.unwrap();
-        }
-
-        if (kind == MethodAnalyzer.ReturnKind.BOOLEAN && upper.contains("EXISTS")) {
-            return "exists";
-        }
-
-        if (kind == MethodAnalyzer.ReturnKind.LONG && upper.contains("COUNT")) {
-            return "count";
-        }
-
-        return kind == MethodAnalyzer.ReturnKind.BOOLEAN
-               ? "exists"
-               : "count";
-    }
-
-    /// A `RETURNING` clause names the statement's own output columns, so it decides the scalar
-    /// column whenever it is present. The SELECT list cannot: in
-    /// `INSERT ... SELECT :a, :b ... RETURNING version` the first SELECT item is a bind
-    /// placeholder, which after rewriting is `$1` -- a column no relation has.
-    private static Option<String> returningColumn(String sql) {
-        var idx = sql.toUpperCase().lastIndexOf("RETURNING");
-
-        if (idx < 0) {
-            return Option.none();
-        }
-
-        var rest = sql.substring(idx + "RETURNING".length()).trim();
-
-        if (rest.startsWith("*")) {
-            return Option.none();
-        }
-
-        var asIdx = rest.toUpperCase().indexOf(" AS ");
-        var item = asIdx >= 0
-                   ? rest.substring(asIdx + 4).trim()
-                   : rest;
-        var cleaned = cleanIdentifier(item);
-
-        return cleaned.isEmpty()
-               ? Option.none()
-               : Option.some(cleaned);
-    }
-
-    private static String outerSelectClause(String sql) {
-        var lastSelect = -1;
-        var depth = 0;
-        var upper = sql.toUpperCase();
-        var n = sql.length();
-
-        for (var i = 0; i < n; i++) {
-            var c = sql.charAt(i);
-
-            if (c == '(') {
-                depth++;
-            } else if (c == ')') {
-                depth--;
-            } else if (depth == 0 && (c == 'S' || c == 's')) {
-                if (i + 6 <= n && upper.startsWith("SELECT", i) && (i == 0 || !Character.isLetterOrDigit(sql.charAt(i - 1))) && (i + 6 == n || !Character.isLetterOrDigit(sql.charAt(i + 6)))) {
-                    lastSelect = i;
-                }
-            }
-        }
-
-        return lastSelect >= 0
-               ? sql.substring(lastSelect)
-               : sql;
-    }
-
-    private static String cleanIdentifier(String raw) {
-        var sb = new StringBuilder();
-
-        for (var c : raw.toCharArray()) {
-            if (Character.isLetterOrDigit(c) || c == '_') {
-                sb.append(c);
-            } else {
-                break;
-            }
-        }
-
-        return sb.toString();
-    }
-
-    private static Option<String> firstSelectItem(String sql) {
-        var upper = sql.toUpperCase();
-        var selectIdx = upper.indexOf("SELECT");
-
-        if (selectIdx < 0) {
-            return Option.none();
-        }
-
-        var rest = sql.substring(selectIdx + "SELECT".length()).trim();
-
-        if (rest.toUpperCase().startsWith("DISTINCT ")) {
-            rest = rest.substring("DISTINCT ".length()).trim();
-        }
-
-        var depth = 0;
-        var end = rest.length();
-
-        for (var i = 0; i < rest.length(); i++) {
-            var c = rest.charAt(i);
-
-            if (c == '(') {
-                depth++;
-            } else if (c == ')') {
-                depth--;
-            } else if (depth == 0 && (c == ',' || (c == ' ' && startsWithFrom(rest, i)))) {
-                end = i;
-                break;
-            }
-        }
-
-        var item = rest.substring(0, end).trim();
-
-        if (item.isEmpty() || item.equals("*")) {
-            return Option.none();
-        }
-
-        var openParen = item.indexOf('(');
-
-        if (openParen > 0) {
-            return Option.some(item.substring(0, openParen).trim().toLowerCase());
-        }
-
-        var lastDot = item.lastIndexOf('.');
-        var bare = lastDot >= 0
-                   ? item.substring(lastDot + 1)
-                   : item;
-
-        return Option.some(bare.toLowerCase());
-    }
-
-    private static boolean startsWithFrom(String text, int index) {
-        var i = index;
-
-        while (i < text.length() && Character.isWhitespace(text.charAt(i))) {
-            i++;
-        }
-
-        return i + 4 <= text.length()
-               && text.substring(i, i + 4)
-                      .equalsIgnoreCase("FROM")
-               && (i + 4 == text.length() || Character.isWhitespace(text.charAt(i + 4)));
     }
 
     private static void appendRecordClose(StringBuilder sb, String factoryMethod) {

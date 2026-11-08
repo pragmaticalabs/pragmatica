@@ -2824,7 +2824,7 @@ class ClusterEventAggregatorTest {
     }
 
     /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the three consumer pairs of #2201
-    /// C-16 (behind the ring, the hole, and the cursor expiry), the 13 FSM2 recoveries of the D.6 ruling (#2761), the oversized-event refusal and the
+    /// C-16 (behind the ring, the hole, and the cursor expiry), the held detach flush of #1960, the 13 FSM2 recoveries of the D.6 ruling (#2761), the oversized-event refusal and the
     /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the refused consensus restore of #2316, a stream partition's WAL fail-stop of #2201); every other code keeps the plain 60 s throttle.
     /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the departure sole-copy pair of #2034); every other code keeps the plain 60 s throttle.
     /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the refused consensus restore of #2316); every other code keeps the plain 60 s throttle.
@@ -2851,6 +2851,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_CONSUMER_BACK_IN_RING,
                 OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_RESTORED,
                 OperatorWarningCode.STREAM_CONSUMER_CURSOR_RESUMED,
+                OperatorWarningCode.STREAM_CONSUMER_DETACH_WAIT_SETTLED,
                 OperatorWarningCode.STREAM_RETENTION_RESUMED,
                 OperatorWarningCode.STREAM_SEGMENT_UNREADABLE_RECLAIMED,
                 OperatorWarningCode.STREAM_SEGMENT_DELETE_RECOVERED,
@@ -2945,6 +2946,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_CONSUMER_BEHIND_RING,
                 OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_MISSING,
                 OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED,
+                OperatorWarningCode.STREAM_CONSUMER_DETACH_WAIT_EXCEEDED,
                 OperatorWarningCode.STREAM_RETENTION_WITHHELD,
                 OperatorWarningCode.STREAM_SEGMENT_UNREADABLE,
                 OperatorWarningCode.STREAM_SEGMENT_DELETE_FAILING,

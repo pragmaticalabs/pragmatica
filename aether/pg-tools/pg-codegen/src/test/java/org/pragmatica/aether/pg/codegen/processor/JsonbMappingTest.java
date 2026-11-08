@@ -1322,7 +1322,7 @@ class JsonbMappingTest {
             @Table(DocumentRow.class)
             Promise<List<DocumentRow>> findByTitleAndLegacy(String title, Profile legacy);
 
-            @Query("SELECT count(*) FROM documents WHERE profile = :probe")
+            @Query("SELECT count(*) AS count FROM documents WHERE profile = :probe")
             Promise<Long> countEqual(Probe probe);
 
             @Query("UPDATE documents SET previous = :previous WHERE id = :id")

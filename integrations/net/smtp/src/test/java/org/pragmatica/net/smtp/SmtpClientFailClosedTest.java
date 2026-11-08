@@ -38,7 +38,12 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// - A malformed reply or a command timeout failed the promise but left the channel open; under
 ///   retry the sockets stacked. Both must close the channel.
 class SmtpClientFailClosedTest {
-    private static final TimeSpan SHORT = TimeSpan.timeSpan(1).seconds();
+    /// Wall-time budget for every wait and for the session timer that is NOT the subject of a test (#2905):
+    /// under load a loopback session (event-loop start, class loading, three round trips) outran the
+    /// former 1 s, so the session timer fired first (`Timeout`, not `Rejected`) or `await` gave up. A
+    /// completing session returns at once, so a large budget costs nothing; only the deliberate 300 ms
+    /// timeout test relies on the clock.
+    private static final TimeSpan GENEROUS = TimeSpan.timeSpan(60).seconds();
 
     private EventLoopGroup eventLoop;
 
@@ -63,7 +68,7 @@ class SmtpClientFailClosedTest {
                                                server.port(),
                                                SmtpTlsMode.STARTTLS,
                                                SmtpAuth.smtpAuth("u", "p"))
-                                   .withCommandTimeout(SHORT);
+                                   .withCommandTimeout(GENEROUS);
             var client = SmtpClient.smtpClient(config,
                                                eventLoop,
                                                () -> new SmtpError.TlsSetupFailed("no trust store").result());
@@ -71,7 +76,7 @@ class SmtpClientFailClosedTest {
                                                              List.of("b@example.com"),
                                                              "s",
                                                              "b"))
-                               .await(SHORT);
+                               .await(GENEROUS);
 
             assertThat(result.isFailure()).as("a TLS setup failure must fail the send, never fall back to cleartext")
                       .isTrue();
@@ -98,10 +103,10 @@ class SmtpClientFailClosedTest {
                                                server.port(),
                                                SmtpTlsMode.STARTTLS,
                                                SmtpAuth.smtpAuth("u", "p"))
-                                   .withCommandTimeout(SHORT);
+                                   .withCommandTimeout(GENEROUS);
             var client = SmtpClient.smtpClient(config, eventLoop, SmtpClientImpl::buildInsecureSslContext);
 
-            client.send(SmtpMessage.smtpMessage("a@example.com", List.of("b@example.com"), "s", "b")).await(SHORT);
+            client.send(SmtpMessage.smtpMessage("a@example.com", List.of("b@example.com"), "s", "b")).await(GENEROUS);
             assertThat(server.commands).anyMatch(line -> line.startsWith("STARTTLS"));
             assertThat(server.commands).noneMatch(line -> line.startsWith("AUTH"));
         }
@@ -117,10 +122,10 @@ class SmtpClientFailClosedTest {
                                                              List.of("b@example.com"),
                                                              "s",
                                                              "b"))
-                               .await(SHORT);
+                               .await(GENEROUS);
 
             assertThat(result.isFailure()).isTrue();
-            assertThat(server.awaitClientClosed(3_000)).as("the session must close the socket it cannot parse").isTrue();
+            assertThat(server.awaitClientClosed(30_000)).as("the session must close the socket it cannot parse").isTrue();
         }
     }
 
@@ -136,11 +141,11 @@ class SmtpClientFailClosedTest {
                                                              List.of("b@example.com"),
                                                              "s",
                                                              "b"))
-                               .await(SHORT);
+                               .await(GENEROUS);
 
             assertThat(result.isFailure()).isTrue();
             result.onFailure(cause -> assertThat(cause).isInstanceOf(SmtpError.Timeout.class));
-            assertThat(server.awaitClientClosed(3_000)).as("a timed-out session must close its socket").isTrue();
+            assertThat(server.awaitClientClosed(30_000)).as("a timed-out session must close its socket").isTrue();
         }
     }
 
@@ -157,7 +162,7 @@ class SmtpClientFailClosedTest {
                                                              List.of("b@example.com"),
                                                              "s",
                                                              "b"))
-                               .await(SHORT);
+                               .await(GENEROUS);
 
             assertThat(result.isFailure()).as("354 at MAIL FROM is not a completion").isTrue();
             result.onFailure(cause -> {
@@ -172,7 +177,7 @@ class SmtpClientFailClosedTest {
     private static SmtpConfig plain(int port) {
         return SmtpConfig.smtpConfig("127.0.0.1", port)
                          .withTlsMode(SmtpTlsMode.NONE)
-                         .withCommandTimeout(SHORT);
+                         .withCommandTimeout(GENEROUS);
     }
 
     /// One reply GROUP per client line (the greeting group first, unprompted); records commands;

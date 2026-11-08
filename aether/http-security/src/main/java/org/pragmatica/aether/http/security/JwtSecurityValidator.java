@@ -26,7 +26,6 @@ import static org.pragmatica.lang.Result.success;
 @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"})
 class JwtSecurityValidator implements HttpAuthenticator {
     private static final Logger log = LoggerFactory.getLogger(JwtSecurityValidator.class);
-    private static final String BEARER_PREFIX = "Bearer ";
 
     private final JwtConfig config;
     private final JwksKeyStore keyStore;
@@ -65,8 +64,8 @@ class JwtSecurityValidator implements HttpAuthenticator {
     }
 
     private Result<SecurityContext> validateBearerToken(HttpRequestContext request) {
-        return extractBearerToken(request.headers()).toResult(SecurityError.MISSING_BEARER_TOKEN)
-                                 .flatMap(this::validateToken);
+        return extractToken(request.headers()).toResult(SecurityError.MISSING_BEARER_TOKEN)
+                           .flatMap(this::validateToken);
     }
 
     private Result<SecurityContext> validateToken(String token) {
@@ -210,36 +209,46 @@ class JwtSecurityValidator implements HttpAuthenticator {
                                                 e -> String.valueOf(e.getValue())));
     }
 
-    private static Option<String> extractBearerToken(Map<String, List<String>> headers) {
-        return extractAuthHeaderCaseSensitive(headers).orElse(() -> extractAuthHeaderCaseInsensitive(headers));
-    }
-
-    private static Option<String> extractAuthHeaderCaseSensitive(Map<String, List<String>> headers) {
+    /// #2156: the token behind an `Authorization` value whose scheme is one of the configured `auth_schemes` (default
+    /// `Bearer`), matched case-insensitively per RFC 7235 section 2.1. The exactly-named header is consulted first,
+    /// then any header whose name matches `authorization` case-insensitively. A value naming any other scheme yields
+    /// nothing, which the caller answers as a missing credential (401).
+    private Option<String> extractToken(Map<String, List<String>> headers) {
         return Option.option(headers.get("Authorization"))
-                     .flatMap(values -> Option.from(values.stream().findFirst()))
-                     .filter(v -> v.startsWith(BEARER_PREFIX))
-                     .map(v -> v.substring(BEARER_PREFIX.length())
-                                .trim());
+                     .flatMap(JwtSecurityValidator::firstValue)
+                     .flatMap(this::tokenFor)
+                     .orElse(() -> extractTokenCaseInsensitive(headers));
     }
 
-    private static Option<String> extractAuthHeaderCaseInsensitive(Map<String, List<String>> headers) {
+    private Option<String> extractTokenCaseInsensitive(Map<String, List<String>> headers) {
         var value = headers.entrySet()
                            .stream()
                            .filter(e -> "authorization".equalsIgnoreCase(e.getKey()))
                            .map(Map.Entry::getValue)
                            .flatMap(values -> Option.option(values)
                                                     .flatMap(JwtSecurityValidator::firstValue)
+                                                    .flatMap(this::tokenFor)
                                                     .stream())
-                           .filter(v -> v.regionMatches(true,
-                                                        0,
-                                                        BEARER_PREFIX,
-                                                        0,
-                                                        BEARER_PREFIX.length()))
-                           .map(v -> v.substring(BEARER_PREFIX.length())
-                                      .trim())
                            .findFirst();
 
         return Option.from(value);
+    }
+
+    /// `<scheme> <token>`: the token when the scheme is configured, else nothing.
+    private Option<String> tokenFor(String headerValue) {
+        var separator = headerValue.indexOf(' ');
+
+        return Option.some(separator)
+                     .filter(index -> index > 0)
+                     .filter(index -> acceptsScheme(headerValue.substring(0, index)))
+                     .map(index -> headerValue.substring(index + 1)
+                                              .trim());
+    }
+
+    private boolean acceptsScheme(String scheme) {
+        return config.authSchemes()
+                     .stream()
+                     .anyMatch(scheme::equalsIgnoreCase);
     }
 
     /// Only the FIRST value of a header counts: a later value must never be promoted to the credential.

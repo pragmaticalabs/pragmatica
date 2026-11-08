@@ -13,6 +13,8 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.logging.log4j.Level;
@@ -1058,6 +1060,28 @@ class KvBackupServiceTest {
             assertThat(service.isLeader()).isFalse();
         }
 
+        /// #2903: the promise `stopFlushed` returns is resolved only once the service is stopped. The stop is held at a latch, so no timing is involved: while it
+        /// is held, a reader of the promise must not see it resolved. Before the fix the stop ran as an `onResultRun` action AFTER the result was visible, so a
+        /// caller that awaited it (the overrun test above, under load) could read `isLeader()` as true on a stop it had just seen complete.
+        @Test
+        void stopFlushed_isNotResolved_whileTheStopIsStillRunning() throws InterruptedException {
+            var remote = bareRemote(temp.resolve("remote.git"));
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var service = heldStopService(Option.some(remote), entered, release);
+
+            service.onLeaderChange(leaderChange(true));
+            scheduler.advance(TIMING.quietMillis());
+
+            var stopping = service.stopFlushed(TimeSpan.timeSpan(100).millis());
+
+            assertThat(entered.await(10, TimeUnit.SECONDS)).as("control: the stop has begun (the flush overran its deadline)").isTrue();
+            assertThat(stopping.isResolved()).as("the stop is still running, so the stop promise is not resolved").isFalse();
+            release.countDown();
+            assertThat(stopping.await(TimeSpan.timeSpan(10).seconds()).isSuccess()).isTrue();
+            assertThat(service.isLeader()).isFalse();
+        }
+
         /// The failure raised while a node stopped is closed by the next successful flush of that node's backup, in a LATER process: the
         /// marker the failure left beside the repository carries it across. Control: the refused push is the only difference from the quiet stops.
         @Test
@@ -1426,6 +1450,25 @@ class KvBackupServiceTest {
         scheduler.advance(TIMING.quietMillis());
 
         return service;
+    }
+
+    /// A leader-capable service whose release action (run by `stop`) announces itself and then waits to be released.
+    private KvBackupService heldStopService(Option<String> remote, CountDownLatch entered, CountDownLatch release) {
+        var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local"), remote, "backup", TimeSpan.timeSpan(30).seconds());
+
+        incarnation(1);
+
+        return KvBackupService.kvBackupService(kvStore, CODEC, repository, scheduler, scheduler::now, warnings::add, TIMING,
+                                               () -> holdUntilReleased(entered, release));
+    }
+
+    private static void holdUntilReleased(CountDownLatch entered, CountDownLatch release) {
+        entered.countDown();
+        try {
+            release.await(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     /// Another cluster at this test's lineage and incarnation 1, as incarnation id `incarnation id`: its own KV store,

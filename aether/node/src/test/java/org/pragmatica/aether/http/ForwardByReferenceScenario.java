@@ -67,6 +67,7 @@ import org.pragmatica.storage.StorageInstance;
 
 import static org.pragmatica.lang.Unit.unit;
 
+
 /// U2 forward by reference across two nodes: node A (the ingress, `streaming_ingest` on) takes an upload for a route only
 /// node B serves, stores it in content storage, and forwards the request with the upload's handle and an empty body over
 /// the production codec; node B's slice opens the object through the handle and hashes it. Run in-process by
@@ -82,6 +83,7 @@ final class ForwardByReferenceScenario {
     /// Sorts before [#ARTIFACT]: a second slice on node B that serves the same route (see [Fault#TWO_PUBLISHERS]).
     private static final Artifact EARLIER_ARTIFACT = Artifact.artifact("com.example:aaa:1.0.0").unwrap();
     private static final long GIB = 1024L * 1024 * 1024;
+    private static final long SLOW_DELETE_MILLIS = 1500;
     private static final TimeSpan WAIT = TimeSpan.timeSpan(60).seconds();
 
     private ForwardByReferenceScenario() {}
@@ -99,8 +101,17 @@ final class ForwardByReferenceScenario {
     /// @param sliceCalls     how many requests reached B's slice
     /// @param catalogDelta   how many objects A's content storage gained from the request (kept orphans), net of deletions
     /// @param handleNamespace the namespace the handle B's slice received names
-    record Outcome(int status, String sentSha, String servedSha, long handleSize, long bodyOnB, long forwardedBytes,
-                   long forwards, String text, long sliceCalls, long catalogDelta, String handleNamespace) {}
+    record Outcome(int status,
+                   String sentSha,
+                   String servedSha,
+                   long handleSize,
+                   long bodyOnB,
+                   long forwardedBytes,
+                   long forwards,
+                   String text,
+                   long sliceCalls,
+                   long catalogDelta,
+                   String handleNamespace) {}
 
     /// What happens to the stored object between A's store and B's read.
     enum Fault {
@@ -112,6 +123,9 @@ final class ForwardByReferenceScenario {
         HOLDER_GONE,
         /// The transport refuses A's write to B: the forward never leaves A.
         PEER_UNREACHABLE,
+        /// As [#PEER_UNREACHABLE], and the storage takes `SLOW_DELETE_MILLIS` to finish each read and delete: the answer must still
+        /// not be observable before the stored upload is gone (#2915).
+        PEER_UNREACHABLE_SLOW_DELETE,
         /// The cluster frame limit refuses the forward before it is sent ([ForwardError.TooLargeToForward]): it never left A.
         OVERSIZED_FRAME,
         /// Nothing is lost, but two slices on B publish the route; the ingress stores in the namespace of the first of them
@@ -132,7 +146,9 @@ final class ForwardByReferenceScenario {
         System.out.println("FORWARDED_BYTES=" + outcome.forwardedBytes());
         System.out.println("FORWARDS=" + outcome.forwards());
         System.out.flush();
-        System.exit(outcome.status() == 200 ? 0 : 1);
+        System.exit(outcome.status() == 200
+                    ? 0
+                    : 1);
     }
 
     static Outcome run(long size) throws Exception {
@@ -146,22 +162,27 @@ final class ForwardByReferenceScenario {
             return run(size, dir, fault);
         } finally {
             try (var paths = Files.walk(dir)) {
-                paths.sorted(Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
+                paths.sorted(Comparator.reverseOrder()).forEach(path -> path.toFile()
+                                                                            .delete());
             }
         }
     }
 
     private static Outcome run(long size, Path dir, Fault fault) throws Exception {
-        var storage = StorageInstance.storageInstance("content", List.of(LocalDiskTier.localDiskTier(dir, 8 * GIB).unwrap()));
+        var tier = new DelayedDeleteTier(LocalDiskTier.localDiskTier(dir, 8 * GIB).unwrap());
+        var storage = StorageInstance.storageInstance("content", List.of(tier));
         var codec = org.pragmatica.aether.node.NodeCodecs.nodeCodecs(org.pragmatica.serialization.FrameworkCodecs.frameworkCodecs());
         var toB = new Link(NODE_B);
         var toA = new Link(NODE_A);
         var slice = new HashingSlice(storage);
         var upload = UploadConfig.DEFAULT.withStreamingIngest(true).withMaxSizeCeiling(8 * GIB);
         var registryA = HttpRouteRegistry.httpRouteRegistry();
-        var a = server(NODE_A, registryA, toB, codec, upload,
-                       new IngestGateRoutes(slice, SecurityPolicy.publicRoute()));
-        var b = server(NODE_B, HttpRouteRegistry.httpRouteRegistry(), toA, codec, upload,
+        var a = server(NODE_A, registryA, toB, codec, upload, new IngestGateRoutes(slice, SecurityPolicy.publicRoute()));
+        var b = server(NODE_B,
+                       HttpRouteRegistry.httpRouteRegistry(),
+                       toA,
+                       codec,
+                       upload,
                        new IngestGateRoutes(slice,
                                             SecurityPolicy.publicRoute(),
                                             Map.of("/remote/", UploadSpec.uploadSpec(true, 4 * GIB, 0))));
@@ -171,19 +192,30 @@ final class ForwardByReferenceScenario {
         a.setUploadStorage(storage);
         b.setUploadStorage(storage);
         try {
-            TlsProbe.requireStarted(a.start().await(), "node A");
-            TlsProbe.requireStarted(b.start().await(), "node B");
+            TlsProbe.requireStarted(a.start().await(),
+                                    "node A");
+            TlsProbe.requireStarted(b.start().await(),
+                                    "node B");
             a.onQuorumStateChange(ClusterStateNotification.active());
             b.onQuorumStateChange(ClusterStateNotification.active());
-
-            var entry = RouteEntry.activeRoute("POST", "/remote/", "upload", "UNSPECIFIED", "UNSPECIFIED", 0, List.of(), List.of(),
-                                               true, 4 * GIB, 0);
+            var entry = RouteEntry.activeRoute("POST",
+                                               "/remote/",
+                                               "upload",
+                                               "UNSPECIFIED",
+                                               "UNSPECIFIED",
+                                               0,
+                                               List.of(),
+                                               List.of(),
+                                               true,
+                                               4 * GIB,
+                                               0);
 
             registryA.onNodeRoutesPut(new ValuePut<>(new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(NODE_B, ARTIFACT),
                                                                          NodeRoutesValue.nodeRoutesValue(List.of(entry))),
                                                      Option.none()));
             if (fault == Fault.TWO_PUBLISHERS) {
-                registryA.onNodeRoutesPut(new ValuePut<>(new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(NODE_B, EARLIER_ARTIFACT),
+                registryA.onNodeRoutesPut(new ValuePut<>(new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(NODE_B,
+                                                                                                         EARLIER_ARTIFACT),
                                                                              NodeRoutesValue.nodeRoutesValue(List.of(entry))),
                                                          Option.none()));
             }
@@ -193,8 +225,7 @@ final class ForwardByReferenceScenario {
             awaitRouteServed(a, port);
             toB.reset();
             slice.calls.set(0);
-            injectFault(fault, storage, b, dir, toB);
-
+            injectFault(fault, storage, b, dir, toB, tier);
             var catalogBefore = catalogSize(storage);
             var answer = post(port, size);
 
@@ -215,11 +246,17 @@ final class ForwardByReferenceScenario {
         }
     }
 
-    private static void injectFault(Fault fault, StorageInstance storage, AppHttpServer b, Path dir, Link toB) throws Exception {
+    private static void injectFault(Fault fault,
+                                    StorageInstance storage,
+                                    AppHttpServer b,
+                                    Path dir,
+                                    Link toB,
+                                    DelayedDeleteTier tier) throws Exception {
         switch (fault) {
             case NONE, TWO_PUBLISHERS -> {}
             case DELETE_MID_FORWARD -> toB.beforeDelivery.set(() -> deleteEverything(storage));
             case PEER_UNREACHABLE -> toB.unreachable.set(true);
+            case PEER_UNREACHABLE_SLOW_DELETE -> slowDeletesToB(toB, tier);
             case OVERSIZED_FRAME -> toB.oversized.set(true);
             case HOLDER_GONE -> b.setUploadStorage(StorageInstance.storageInstance("content-b",
                                                                                    List.of(LocalDiskTier.localDiskTier(Files.createDirectory(dir.resolve("b")),
@@ -227,24 +264,41 @@ final class ForwardByReferenceScenario {
         }
     }
 
+    private static void slowDeletesToB(Link toB, DelayedDeleteTier tier) {
+        toB.unreachable.set(true);
+        tier.delayBy(SLOW_DELETE_MILLIS);
+    }
+
     private static ContentStore sliceStore(StorageInstance storage) {
         var namespace = SliceNamespace.sliceNamespace(ArtifactBase.artifactBase(ARTIFACT)).unwrap();
 
-        return UploadIngest.uploadIngest(storage, TimeSpan.timeSpan(1).hours()).store(namespace).unwrap();
+        return UploadIngest.uploadIngest(storage,
+                                         TimeSpan.timeSpan(1).hours())
+                           .store(namespace)
+                           .unwrap();
     }
 
     private static long catalogSize(StorageInstance storage) {
-        return sliceStore(storage).list(Option.none(), Option.none(), 1000).await(WAIT).unwrap().items().size();
+        return sliceStore(storage).list(Option.none(),
+                                        Option.none(),
+                                        1000)
+                         .await(WAIT)
+                         .unwrap()
+                         .items()
+                         .size();
     }
 
     private static void deleteEverything(StorageInstance storage) {
         var store = sliceStore(storage);
 
-        store.list(Option.none(), Option.none(), 1000)
+        store.list(Option.none(),
+                   Option.none(),
+                   1000)
              .await(WAIT)
              .unwrap()
              .items()
-             .forEach(info -> store.delete(info.ref().id()).await(WAIT));
+             .forEach(info -> store.delete(info.ref().id())
+                                   .await(WAIT));
     }
 
     private static AppHttpServer server(NodeId self,
@@ -280,6 +334,7 @@ final class ForwardByReferenceScenario {
                 Thread.sleep(50);
             }
         }
+
         if (status != 200) {
             throw new IllegalStateException("the remote route was never served (last status " + status + ")");
         }
@@ -299,8 +354,9 @@ final class ForwardByReferenceScenario {
             var out = socket.getOutputStream();
 
             out.write(("POST /remote/file HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/octet-stream\r\n"
-                       + "Content-Length: " + size + "\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
-            for (var sent = 0L; sent < size; ) {
+                      + "Content-Length: " + size
+                      + "\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+            for (var sent = 0L; sent < size;) {
                 var length = (int) Math.min(buffer.length, size - sent);
 
                 random.nextBytes(buffer);
@@ -308,8 +364,8 @@ final class ForwardByReferenceScenario {
                 out.write(buffer, 0, length);
                 sent += length;
             }
-            out.flush();
 
+            out.flush();
             var response = readAll(socket.getInputStream());
 
             return new Answer(Integer.parseInt(response.substring(9, 12)),
@@ -366,14 +422,17 @@ final class ForwardByReferenceScenario {
                                                                                         defaults.writeWindow(),
                                                                                         defaults.readAhead()))
                                     .unwrap();
-            var stream = store.open(UploadObjects.objectRef(object).unwrap(), ByteRange.whole()).await(WAIT).unwrap();
+            var stream = store.open(UploadObjects.objectRef(object).unwrap(),
+                                    ByteRange.whole()).await(WAIT).unwrap();
             var digest = MessageDigest.getInstance("SHA-256");
 
-            for (var next = stream.next().await(WAIT).unwrap(); next.isPresent(); next = stream.next().await(WAIT).unwrap()) {
+            for (var next = stream.next().await(WAIT).unwrap(); next.isPresent(); next = stream.next()
+                                                                                               .await(WAIT)
+                                                                                               .unwrap()) {
                 next.onPresent(digest::update);
             }
-            stream.close().await(WAIT);
 
+            stream.close().await(WAIT);
             var sha = HexFormat.of().formatHex(digest.digest());
 
             handleSize.set(object.size());
@@ -406,8 +465,11 @@ final class ForwardByReferenceScenario {
         final AtomicReference<AppHttpServer> peer = new AtomicReference<>();
         final AtomicLong maxRequestBytes = new AtomicLong();
         final AtomicLong requests = new AtomicLong();
+
         final java.util.concurrent.atomic.AtomicBoolean unreachable = new java.util.concurrent.atomic.AtomicBoolean();
+
         final java.util.concurrent.atomic.AtomicBoolean oversized = new java.util.concurrent.atomic.AtomicBoolean();
+
         final AtomicReference<Runnable> beforeDelivery = new AtomicReference<>(() -> {});
 
         Link(NodeId target) {
@@ -438,9 +500,11 @@ final class ForwardByReferenceScenario {
                     requests.incrementAndGet();
                     maxRequestBytes.accumulateAndGet(request.requestData().length, Math::max);
                     beforeDelivery.get().run();
-                    Thread.ofVirtual().start(() -> peer.get().onHttpForwardRequest(request));
+                    Thread.ofVirtual().start(() -> peer.get()
+                                                       .onHttpForwardRequest(request));
                 }
-                case HttpForwardResponse response -> Thread.ofVirtual().start(() -> peer.get().onHttpForwardResponse(response));
+                case HttpForwardResponse response -> Thread.ofVirtual().start(() -> peer.get()
+                                                                                        .onHttpForwardResponse(response));
                 default -> {}
             }
 

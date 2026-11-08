@@ -80,6 +80,17 @@ class AppHttpServerForwardByReferenceTest {
         assertThat(outcome.catalogDelta()).as("the stored upload is deleted: %s", outcome).isZero();
     }
 
+    /// The 503 is answered only after the stored upload is gone: the storage takes 1.5 s per delete, and a client holding the
+    /// answer must already see the catalog empty (#2915). Mutation: answering before the delete finishes (the former
+    /// fire-and-forget discard) leaves the object visible when the 503 arrives.
+    @Test
+    void upload_whoseForwardNeverLeftA_isGoneBeforeTheAnswerIsObservable_whenTheDeleteIsSlow() throws Exception {
+        var outcome = ForwardByReferenceScenario.run(2 * MIB, ForwardByReferenceScenario.Fault.PEER_UNREACHABLE_SLOW_DELETE);
+
+        assertThat(outcome.status()).as("%s", outcome).isEqualTo(503);
+        assertThat(outcome.catalogDelta()).as("the stored upload is deleted before the answer: %s", outcome).isZero();
+    }
+
     /// The cluster frame limit refuses the forward before it is sent: nothing left A, so the stored upload is deleted
     /// and the client is told 413. Mutation: removing the `TooLargeToForward` arm of `discardUnsent` leaves the object.
     @Test

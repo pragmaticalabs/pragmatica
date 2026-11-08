@@ -185,6 +185,13 @@ HTTP_429 = ["*RateLimit*", "*TooMany*"]
 OrderNotFoundButValid = 200
 ```
 
+An `[errors.explicit]` key is a simple name or a fully-qualified name. A simple-name key that matches more than one discovered `Cause` type (for example two listed `[errors] packages` that each declare a `Denied`) fails the build with a message naming every match; use the fully-qualified key to map exactly one of them:
+
+```toml
+[errors.explicit]
+"shared.one.OneError.Denied" = 404
+```
+
 ### Inline route keys
 
 An inline-table route takes these keys: `route` (required), `consumes`, `produces`, `security`, `method` (versioned bind keys only), the per-route ingest limits `max_size` and `max_duration`, and the multipart part limits `max_files`, `max_file_size`, `max_fields` and `max_field_size`:

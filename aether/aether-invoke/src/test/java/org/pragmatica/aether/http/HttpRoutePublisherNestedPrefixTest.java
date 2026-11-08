@@ -4,18 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http;
 
-import java.io.IOException;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.Collections;
-import java.util.Enumeration;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.http.handler.HttpRequestHandlerFactory;
 import org.pragmatica.aether.slice.MethodHandle;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -31,7 +23,6 @@ import org.pragmatica.lang.utils.Causes;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -55,9 +46,6 @@ class HttpRoutePublisherNestedPrefixTest {
     private static final NodeId SELF = NodeId.nodeId("self-nested").unwrap();
     private static final String REQUEST_PATH = "/api/v1/pricing/analytics/report";
 
-    @TempDir
-    Path tempDir;
-
     @Test
     void outerIteratesFirst_inAFreshConcurrentHashMap() {
         var map = new ConcurrentHashMap<Artifact, String>();
@@ -71,14 +59,14 @@ class HttpRoutePublisherNestedPrefixTest {
     }
 
     @Test
-    void nestedPrefixes_resolveToTheLongestPrefix_outerPublishedFirst() throws IOException {
+    void nestedPrefixes_resolveToTheLongestPrefix_outerPublishedFirst() {
         var publisher = publisherWith(List.of(OUTER, INNER));
 
         assertResolvesToInner(publisher);
     }
 
     @Test
-    void nestedPrefixes_resolveToTheLongestPrefix_innerPublishedFirst() throws IOException {
+    void nestedPrefixes_resolveToTheLongestPrefix_innerPublishedFirst() {
         var publisher = publisherWith(List.of(INNER, OUTER));
 
         assertResolvesToInner(publisher);
@@ -86,7 +74,7 @@ class HttpRoutePublisherNestedPrefixTest {
 
     /// A request under the outer prefix but outside the inner one still resolves to the outer route.
     @Test
-    void pathOutsideTheNestedPrefix_resolvesToTheOuterRoute() throws IOException {
+    void pathOutsideTheNestedPrefix_resolvesToTheOuterRoute() {
         var publisher = publisherWith(List.of(OUTER, INNER));
 
         var resolved = publisher.findLocalRoute(NestedPrefixRouteFactories.METHOD, "/api/v1/pricing/items/42");
@@ -104,11 +92,11 @@ class HttpRoutePublisherNestedPrefixTest {
         assertThat(resolved.map(HttpRoutePublisher.LocalRouteInfo::pathPrefix).or("<none>")).isEqualTo(NestedPrefixRouteFactories.INNER_PREFIX);
     }
 
-    private HttpRoutePublisher publisherWith(List<Artifact> order) throws IOException {
+    private HttpRoutePublisher publisherWith(List<Artifact> order) {
         var publisher = HttpRoutePublisher.httpRoutePublisher(SELF, new SilentCluster());
 
         for (var artifact : order) {
-            publisher.publishRoutes(artifact, loaderServing(artifact), stubInvokerFacade())
+            publisher.publishRoutes(artifact, getClass().getClassLoader(), sliceFor(artifact), stubInvokerFacade())
                      .await(timeSpan(30).seconds())
                      .onFailure(cause -> Assertions.fail("route publication must succeed: " + cause.message()));
         }
@@ -116,28 +104,12 @@ class HttpRoutePublisherNestedPrefixTest {
         return publisher;
     }
 
-    /// A class loader whose `ServiceLoader` lookup for [HttpRequestHandlerFactory] names exactly the
-    /// factory for `artifact`, so each artifact publishes its own single route through the real
-    /// 3-arg `publishRoutes` path. Class loading itself is delegated to the test class loader.
-    private ClassLoader loaderServing(Artifact artifact) throws IOException {
-        var factory = artifact.equals(OUTER)
-                      ? NestedPrefixRouteFactories.OuterFactory.class
-                      : NestedPrefixRouteFactories.InnerFactory.class;
-        var servicesFile = tempDir.resolve(artifact.artifactId().toString() + ".services");
-
-        Files.writeString(servicesFile, factory.getName() + "\n", StandardCharsets.UTF_8);
-
-        var serviceResource = "META-INF/services/" + HttpRequestHandlerFactory.class.getName();
-        var url = servicesFile.toUri().toURL();
-
-        return new ClassLoader(getClass().getClassLoader()) {
-            @Override
-            public Enumeration<URL> getResources(String name) throws IOException {
-                return name.equals(serviceResource)
-                       ? Collections.enumeration(List.of(url))
-                       : super.getResources(name);
-            }
-        };
+    /// The slice instance whose type selects exactly the factory for `artifact`, so each artifact publishes its own
+    /// single route through the real `publishRoutes` path.
+    private static Object sliceFor(Artifact artifact) {
+        return artifact.equals(OUTER)
+               ? new NestedPrefixRouteFactories.OuterSlice()
+               : new NestedPrefixRouteFactories.InnerSlice();
     }
 
     private static SliceInvokerFacade stubInvokerFacade() {

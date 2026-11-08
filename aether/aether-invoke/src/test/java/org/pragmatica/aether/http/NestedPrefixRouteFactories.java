@@ -4,53 +4,90 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http;
 
-import java.util.List;
+import java.util.stream.Stream;
 
-import org.pragmatica.aether.http.handler.HttpRequestContext;
-import org.pragmatica.aether.http.handler.HttpRequestHandler;
-import org.pragmatica.aether.http.handler.HttpRequestHandlerFactory;
-import org.pragmatica.aether.http.handler.HttpResponseData;
-import org.pragmatica.aether.http.handler.HttpRouteDefinition;
-import org.pragmatica.aether.slice.SliceInvokerFacade;
+import org.pragmatica.aether.http.adapter.ErrorMapper;
+import org.pragmatica.aether.http.adapter.SliceRouter;
+import org.pragmatica.aether.http.adapter.SliceRouterFactory;
+import org.pragmatica.aether.http.handler.security.SecurityPolicy;
+import org.pragmatica.http.routing.Route;
+import org.pragmatica.http.routing.RouteSource;
+import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Promise;
 
-/// Two [HttpRequestHandlerFactory] implementations advertising NESTED prefixes, one per artifact,
-/// for [HttpRoutePublisherNestedPrefixTest] (#884). Neither is registered in
-/// `META-INF/services` — the 3-arg `publishRoutes` takes the FIRST factory `ServiceLoader` finds on
-/// the given class loader, so each artifact is published through a class loader whose service
-/// lookup names exactly one of these.
-final class NestedPrefixRouteFactories {
+/// Two [SliceRouterFactory] implementations advertising NESTED prefixes, one per slice type, for
+/// [HttpRoutePublisherNestedPrefixTest] (#884). Both are registered in `META-INF/services`; the publisher selects
+/// the one whose slice type matches the published slice instance, so each artifact publishes exactly its own route.
+public final class NestedPrefixRouteFactories {
     static final String METHOD = "GET";
     static final String OUTER_PREFIX = "/api/v1/pricing/";
     static final String INNER_PREFIX = "/api/v1/pricing/analytics/";
 
     private NestedPrefixRouteFactories() {}
 
-    public static final class OuterFactory implements HttpRequestHandlerFactory {
+    public static final class OuterSlice {}
+
+    public static final class InnerSlice {}
+
+    public static final class OuterFactory implements RouteSource, SliceRouterFactory<OuterSlice> {
         @Override
-        public HttpRequestHandler create(SliceInvokerFacade invoker) {
-            return handler(HttpRouteDefinition.httpRouteDefinition(METHOD, OUTER_PREFIX, HttpRoutePublisherNestedPrefixTest.OUTER.asString(), "catalog"));
+        public Class<OuterSlice> sliceType() {
+            return OuterSlice.class;
+        }
+
+        @Override
+        public int routeSecurityContract() {
+            return ROUTE_SECURITY_CONTRACT;
+        }
+
+        @Override
+        public SliceRouter create(OuterSlice slice) {
+            return create(slice, JsonMapper.defaultJsonMapper());
+        }
+
+        @Override
+        public SliceRouter create(OuterSlice slice, JsonMapper jsonMapper) {
+            return SliceRouter.sliceRouter(this, ErrorMapper.defaultMapper(), jsonMapper);
+        }
+
+        @Override
+        public Stream<Route<?>> routes() {
+            return Stream.of(prefixRoute(OUTER_PREFIX, "catalog"));
         }
     }
 
-    public static final class InnerFactory implements HttpRequestHandlerFactory {
+    public static final class InnerFactory implements RouteSource, SliceRouterFactory<InnerSlice> {
         @Override
-        public HttpRequestHandler create(SliceInvokerFacade invoker) {
-            return handler(HttpRouteDefinition.httpRouteDefinition(METHOD, INNER_PREFIX, HttpRoutePublisherNestedPrefixTest.INNER.asString(), "report"));
+        public Class<InnerSlice> sliceType() {
+            return InnerSlice.class;
+        }
+
+        @Override
+        public int routeSecurityContract() {
+            return ROUTE_SECURITY_CONTRACT;
+        }
+
+        @Override
+        public SliceRouter create(InnerSlice slice) {
+            return create(slice, JsonMapper.defaultJsonMapper());
+        }
+
+        @Override
+        public SliceRouter create(InnerSlice slice, JsonMapper jsonMapper) {
+            return SliceRouter.sliceRouter(this, ErrorMapper.defaultMapper(), jsonMapper);
+        }
+
+        @Override
+        public Stream<Route<?>> routes() {
+            return Stream.of(prefixRoute(INNER_PREFIX, "report"));
         }
     }
 
-    private static HttpRequestHandler handler(HttpRouteDefinition route) {
-        return new HttpRequestHandler() {
-            @Override
-            public Promise<HttpResponseData> handle(HttpRequestContext ctx) {
-                return Promise.success(HttpResponseData.httpResponseData(204));
-            }
-
-            @Override
-            public List<HttpRouteDefinition> routes() {
-                return List.of(route);
-            }
-        };
+    private static Route<?> prefixRoute(String prefix, String name) {
+        return Route.<String>get(prefix)
+                    .withoutParameters()
+                    .to(_ -> Promise.success(name))
+                    .named(name).withSecurity(SecurityPolicy.publicRoute())
+                    .asJson();
     }
 }

@@ -134,6 +134,18 @@ public interface ReplicationManager extends AutoCloseable {
         return Result.unitResult();
     }
 
+    /// Reserve `bytes` of the owner's replication send budget (#263) for an append about to take an offset: refused with
+    /// [org.pragmatica.aether.stream.StreamError.General#REPLICATION_BEHIND] when the budget is spent, so the refused
+    /// append is not in the log. The caller releases a granted reservation with [#releaseSend] once the append returned.
+    /// The default, an unbatched manager holding nothing, grants every reservation.
+    default Result<Unit> reserveSend(long bytes) {
+        return Result.unitResult();
+    }
+
+    /// Return a reservation granted by [#reserveSend]. The default holds none.
+    @Contract
+    default void releaseSend(long bytes) {}
+
     @Contract
     @Override
     default void close() {}
@@ -175,6 +187,28 @@ public interface ReplicationManager extends AutoCloseable {
         var batcher = replicationBatcher(transport, registry, governorId, maxEvents, maxDelay);
 
         return new DefaultReplicationManager(governorId, registry, transport, batcher);
+    }
+
+    /// The production manager (#263): owner-aware as [#replicationManager(NodeId, ReplicaRegistry, ReplicationTransport, EarliestRetainedOffset)],
+    /// with an adaptive batcher of `maxEvents` / `maxDelay`. Events and runs are handed over in the owner's append section
+    /// and encoded and sent on flusher threads in offset order, through the same chunking, re-sending path as the direct
+    /// manager; the first event of an idle partition goes out at once. At most `sendBudgetBytes` of accepted payload wait
+    /// for their sends; past it, [#reserveSend] refuses owner appends before they take an offset.
+    static ReplicationManager batchingReplicationManager(NodeId governorId,
+                                                         ReplicaRegistry registry,
+                                                         ReplicationTransport transport,
+                                                         EarliestRetainedOffset earliestRetained,
+                                                         int maxEvents,
+                                                         TimeSpan maxDelay,
+                                                         long sendBudgetBytes) {
+        return new DefaultReplicationManager(governorId,
+                                             registry,
+                                             transport,
+                                             earliestRetained,
+                                             sender -> ReplicationBatcher.adaptiveReplicationBatcher(sender,
+                                                                                                     maxEvents,
+                                                                                                     maxDelay,
+                                                                                                     sendBudgetBytes));
     }
 
     private static ReplicationManager noOpReplicationManager() {

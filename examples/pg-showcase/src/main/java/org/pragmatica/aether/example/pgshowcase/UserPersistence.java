@@ -32,6 +32,6 @@ public interface UserPersistence {
     Promise<List<UserRow>> findByDeletedAtIsNull();
     Promise<List<UserRow>> findByDeletedAtIsNotNull();
 
-    @Query("SELECT count(*) FROM users WHERE active = :active AND deleted_at IS NULL")
+    @Query("SELECT count(*) AS count FROM users WHERE active = :active AND deleted_at IS NULL")
     Promise<Long> countActiveUsers(Boolean active);
 }

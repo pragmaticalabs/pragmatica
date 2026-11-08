@@ -19,7 +19,6 @@ import org.pragmatica.aether.http.HttpRoutePublisher.LocalRouteInfo;
 import org.pragmatica.aether.http.adapter.RouteDecorator;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
-import org.pragmatica.aether.http.handler.HttpRequestHandler;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
@@ -213,6 +212,30 @@ class AppHttpServerSecurityGridTest {
         assertThat(response.headers().firstValue("WWW-Authenticate")).contains("Bearer realm=\"Aether\"");
     }
 
+    /// #2156: the JWT challenge names the FIRST configured `auth_schemes` entry; the default config challenges `Bearer`.
+    @Test
+    void jwtMode_challengeNamesTheFirstConfiguredScheme() throws Exception {
+        var jwt = JwtConfig.jwtConfig(UNREACHABLE_JWKS, Option.empty(), Option.empty(), "role", 3600, 30, List.of("Token", "Bearer"))
+                           .unwrap();
+
+        startServer(Setup.appHttp(SecurityMode.JWT, Option.some(jwt)), SecurityPolicy.roleRequired("admin"));
+
+        var response = get("/local/thing", Option.none());
+
+        assertThat(response.statusCode()).isEqualTo(401);
+        assertThat(response.headers().firstValue("WWW-Authenticate")).contains("Token realm=\"Aether\"");
+    }
+
+    @Test
+    void jwtMode_defaultConfig_challengesBearer() throws Exception {
+        startServer(Setup.JWT_WITH_CONFIG, SecurityPolicy.roleRequired("admin"));
+
+        var response = get("/local/thing", Option.none());
+
+        assertThat(response.statusCode()).isEqualTo(401);
+        assertThat(response.headers().firstValue("WWW-Authenticate")).contains("Bearer realm=\"Aether\"");
+    }
+
     /// No credential can satisfy the no-config validator either: a bearer token presented to a node
     /// that has nothing to verify it against is refused, not waved through.
     @Test
@@ -274,11 +297,15 @@ class AppHttpServerSecurityGridTest {
     }
 
     private void startServer(Setup setup, SecurityPolicy routePolicy) {
+        startServer(setup.config(), routePolicy);
+    }
+
+    private void startServer(AppHttpConfig config, SecurityPolicy routePolicy) {
         httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
 
         var publisher = StubRoutePublisher.hosting("GET", "/local/", routePolicy);
 
-        server = AppHttpServer.appHttpServer(setup.config(),
+        server = AppHttpServer.appHttpServer(config,
                                              ForwardingTimeouts.forwardingTimeouts(),
                                              SELF_NODE,
                                              HttpRouteRegistry.httpRouteRegistry(),
@@ -342,11 +369,6 @@ class AppHttpServerSecurityGridTest {
         }
 
         @Override
-        public Promise<Unit> publishRoutes(Artifact artifact, ClassLoader classLoader, SliceInvokerFacade invokerFacade) {
-            return Promise.success(unit());
-        }
-
-        @Override
         public Promise<Unit> publishRoutes(Artifact artifact,
                                            ClassLoader classLoader,
                                            Object sliceInstance,
@@ -362,11 +384,6 @@ class AppHttpServerSecurityGridTest {
         @Override
         public Promise<Unit> unpublishRoutes(Artifact artifact) {
             return Promise.success(unit());
-        }
-
-        @Override
-        public Option<HttpRequestHandler> getHandler(Artifact artifact) {
-            return Option.none();
         }
 
         @Override

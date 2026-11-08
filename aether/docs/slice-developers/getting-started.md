@@ -1079,7 +1079,8 @@ The app HTTP server defaults to `api-key` mode when `security_mode` is omitted f
 random ADMIN key on first startup and prints it once, prominently, to its log:
 
 - **`api-key`** -- authenticate via `X-API-Key` header, reuses management API keys (**default**)
-- **`jwt`** -- authenticate via `Authorization: Bearer` header with JWKS validation (RS256/ES256)
+- **`jwt`** -- authenticate via `Authorization: Bearer` header with JWKS validation (RS256/ES256); `[app-http] auth_schemes`
+  (default `["Bearer"]`) names the accepted schemes, matched case-insensitively, and the `401` challenge names the first
 - **`none`** -- no authentication; must be set explicitly, dev/eval only, never for anything
   reachable over an untrusted network (Forge/Ember's in-JVM dev harness hardcodes this for local
   iteration, which is a separate, unrelated default from a real node's `aether.toml`)

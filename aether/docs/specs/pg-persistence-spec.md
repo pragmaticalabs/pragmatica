@@ -291,8 +291,8 @@ Promise<List<UserName>> findActiveNames();
 | `Promise<Option<T>>` | Zero or one row | `Option.empty()` if no rows |
 | `Promise<List<T>>` | Zero or more rows | Empty list if no rows |
 | `Promise<Unit>` | No result (DML) | Returns successfully |
-| `Promise<Long>` | Scalar count | Maps to long |
-| `Promise<Boolean>` | Scalar boolean | Maps to boolean |
+| `Promise<Long>` | Scalar count | Maps to long; an expression such as `count(*)` must be aliased (`SELECT count(*) AS n`), else the build fails |
+| `Promise<Boolean>` | Scalar boolean | Maps to boolean; an expression such as `EXISTS(..)` must be aliased, else the build fails |
 
 ## Auto-Generated CRUD Methods
 

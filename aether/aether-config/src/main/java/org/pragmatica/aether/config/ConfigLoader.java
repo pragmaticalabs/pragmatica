@@ -254,6 +254,14 @@ public final class ConfigLoader {
                                                 "streaming",
                                                 "seal_pending_cap_bytes",
                                                 defaults.sealPendingCapBytes());
+        var replicationBatchMaxEvents = parseInt(doc,
+                                                 "streaming",
+                                                 "replication_batch_max_events",
+                                                 defaults.replicationBatchMaxEvents());
+        var replicationBatchMaxDelay = parseTimeSpan(doc,
+                                                     "streaming",
+                                                     "replication_batch_max_delay",
+                                                     defaults.replicationBatchMaxDelay());
 
         builder.streaming(StreamingConfig.streamingConfig(publishTimeout,
                                                           readTimeout,
@@ -266,7 +274,8 @@ public final class ConfigLoader {
                                          .withIsrLagMax(isrLagMax)
                                          .withPromotionEscapeAfter(promotionEscapeAfter)
                                          .withSealRun(sealRunBytes, sealRunEvents, sealRunAge, sealMergeBytes)
-                                         .withMemoryBudget(maxMemoryBytes, sealPendingCapBytes));
+                                         .withMemoryBudget(maxMemoryBytes, sealPendingCapBytes)
+                                         .withReplicationBatch(replicationBatchMaxEvents, replicationBatchMaxDelay));
     }
 
     /// #2201 C-03 (spec 4.4 items 1 and 3, D-12): a written `[streaming] max_memory_bytes` or `seal_pending_cap_bytes` must be
@@ -603,8 +612,12 @@ public final class ConfigLoader {
         var roleClaim = doc.getString("app-http", "role_claim").or(JwtConfig.DEFAULT_ROLE_CLAIM);
         var cacheTtl = parseLong(doc, "app-http", "jwks_cache_ttl_seconds", JwtConfig.DEFAULT_CACHE_TTL_SECONDS);
         var clockSkew = parseLong(doc, "app-http", "clock_skew_seconds", JwtConfig.DEFAULT_CLOCK_SKEW_SECONDS);
+        // #2156: an invalid list (empty, a non-token entry, a duplicate) refuses the load through the
+        // IllegalArgumentException boundary of assembleConfig; it is never replaced by the default.
+        var authSchemes = doc.getStringList("app-http", "auth_schemes").or(AuthSchemes.DEFAULT);
 
-        return JwtConfig.jwtConfig(jwksUrl, issuer, audience, roleClaim, cacheTtl, clockSkew).unwrap();
+        return JwtConfig.jwtConfig(jwksUrl, issuer, audience, roleClaim, cacheTtl, clockSkew, authSchemes).getOrThrow(IllegalArgumentException::new,
+                                                                                                                      "invalid [app-http]");
     }
 
     private static void populateBackupConfig(TomlDocument doc,

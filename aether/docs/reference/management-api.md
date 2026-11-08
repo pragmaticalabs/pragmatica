@@ -515,6 +515,8 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `stream-consumer-cursor-resumed` (INFO — its recovery, same subject: the cursor is re-established, because a read from the offset it moved to succeeded, the cursor moved again first (a later expiry or a rewind), or the consumer was cancelled (the message says which); it closes the alert, not the loss: the skipped range stays undelivered)
 - `stream-consumer-sealed-range-missing` (WARNING — the group waits at an offset that no sealed segment holds while a later one is sealed, a hole above what retention reclaimed; the cursor does not move; subject `stream[partition]/group@<offset>`, the message names the range, issue #2201)
 - `stream-consumer-sealed-range-restored` (INFO — its recovery, same subject: a read from that offset succeeded, the cursor moved off it, or the consumer was cancelled)
+- `stream-consumer-detach-wait-exceeded` (WARNING — a consumer re-subscribed on this node started without the previous consumer's detach flush, which did not settle within the 30s detach-wait bound (#1960): its cursor-store commit is wedged. The successor starts from the cursor the store holds; a held commit that lands later with a lower cursor is refused by the cluster checkpoint (#1961), while the node-local cursor can still be lowered and a resume ranks both by (epoch, offset). Once per held flush; subject `stream[partition]/group`. Recovery: none needed for delivery; investigate the cursor store if it recurs)
+- `stream-consumer-detach-wait-settled` (INFO — its recovery, same subject: the held detach flush has settled)
 - `entity-ownership-unsettled-mint` (WARNING — the leader minted a durable-entity keyspace's first ownership records over a hosting set that kept changing for the first-mint ceiling (6 tick intervals of time, 30 s); `subject` is the keyspace, the message gives the number of set changes seen. Owners may move once the set settles, each move opening a transient not-held window for that arc; nothing to clear, the state ends when the set has been quiet for 2 tick intervals (10 s), issue #1734)
 - `slice-start-awaiting-target` (WARNING — a LOAD, ACTIVATE or ACTIVE claim this node refused for want of a committed `SliceTarget` has stayed parked for 2 minutes on the node's clock; the park is untouched and is re-driven when the target arrives, issue #1109; `subject` is `<artifact>@<node>`)
 - `slice-start-deferral-ended` (INFO — the recovery: the target arrived, or the parked entry was superseded, removed or dropped as stale; raised only for a subject whose `slice-start-awaiting-target` was raised)
@@ -6617,13 +6619,14 @@ Default: `10MB` (10,485,760 bytes). This is the default body limit of every rout
 
 ```toml
 [app-http]
-read_timeout = "60s"     # Default: 60s. Zero disables.
+read_timeout = "60s"     # Default: 60s. Zero disables the idle clock (see the abort-wait floor below).
 min_body_rate = "1KB"    # Bytes per second. Default: 1KB. Zero disables.
 ```
 
 Both bounds apply the same way over HTTP/1.1 and HTTP/3.
 
 - `read_timeout` is an idle bound: a request that receives no body byte for this long is refused. Over HTTP/1.1, a connection that is silent for this long while no response is pending (a stalled body, an idle keep-alive connection) is closed. Over HTTP/3, a request stream whose body is silent this long receives `408 Request Timeout` and its input is reset. Upgraded WebSocket connections are exempt.
+- A zero `read_timeout` disables the idle clock only. When the server ends a streamed request while the upload sink is still working on a chunk, it waits for that chunk for at most `read_timeout`, or 30 s when `read_timeout` is zero: the abort deadline keeps a 30 s floor, so a hung sink never holds the request's admission forever.
 - `min_body_rate` bounds a client that trickles just inside the idle bound. After a 10 s grace from the start of the request, the body's bytes are averaged over each 10 s window. A body arriving below the rate is refused: over HTTP/1.1 the connection is closed, and over HTTP/3 the request receives `408` and its stream input is reset. A slow upload above the rate completes however long it takes.
 
 #### Request trailers

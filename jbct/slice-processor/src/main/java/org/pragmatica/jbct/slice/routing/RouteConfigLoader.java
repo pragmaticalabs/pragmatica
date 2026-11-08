@@ -52,6 +52,7 @@ import org.pragmatica.serialization.json.NamingStrategy;
 /// default = 500
 /// HTTP_404 = ["*NotFound*", "*Missing*"]
 /// HTTP_400 = ["*Invalid*"]
+/// packages = ["com.acme.shared.errors"]   # extra packages scanned for Cause types (#2883)
 ///
 /// [errors.explicit]
 /// SomeAmbiguousType = 404
@@ -627,8 +628,9 @@ public final class RouteConfigLoader {
         var statusPatterns = parseStatusPatterns(toml);
         var explicitMappings = parseExplicitMappings(toml);
         var strict = toml.getBoolean("errors", "strict").or(false);
+        var packages = toml.getStringList("errors", "packages").or(List.of());
 
-        return ErrorPatternConfig.errorPatternConfig(defaultStatus, statusPatterns, explicitMappings, strict);
+        return ErrorPatternConfig.errorPatternConfig(defaultStatus, statusPatterns, explicitMappings, strict, packages);
     }
 
     /// Parse the status-to-patterns entries of `[errors]`. A status key is EITHER the legacy
