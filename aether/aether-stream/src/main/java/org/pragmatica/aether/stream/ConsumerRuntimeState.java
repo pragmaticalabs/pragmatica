@@ -1154,8 +1154,25 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// then would start a second pass beside it.
     @Contract
     private void drainPass(ConsumerKey key, ConsumerState state) {
+        if (state.inEscapeBackoff(clockMs.getAsLong())) {
+            yieldToBackoff(key, state);
+
+            return;
+        }
+
         state.clearDirty();
         vmBoundedCycle(key, state).onResult(result -> afterDrainPass(key, state, result));
+    }
+
+    /// #2875: a trigger that passed [#requestDrain]'s backoff check just before a pass parked the loop wins `running` the
+    /// moment that pass releases it, so a pass could start INSIDE the hold and re-read at once (a first hold measured 0 ms).
+    /// The check is repeated here, once the pass owns `running`: it releases the loop untouched (`dirty` stays set) and the
+    /// park's end re-drives it. If the park ended while this pass held `running`, [#requestDrain] re-starts the loop, because
+    /// the park's own re-drive found `running` taken.
+    @Contract
+    private void yieldToBackoff(ConsumerKey key, ConsumerState state) {
+        state.finishDrain();
+        requestDrain(key, state);
     }
 
     /// #1367: since #1311 `Result.lift` rethrows a [VirtualMachineError] instead of mapping it, so one thrown out of
