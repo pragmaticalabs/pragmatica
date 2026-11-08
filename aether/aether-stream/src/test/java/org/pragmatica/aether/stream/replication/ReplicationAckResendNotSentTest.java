@@ -15,9 +15,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.WriteOutcome;
@@ -25,9 +23,14 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateEvents.replicateEvents;
 import static org.pragmatica.aether.stream.replication.ReplicationReceiveHandler.replicationReceiveHandler;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// #2847: a replica's ack the transport refused to write (FORWARD-lane backpressure) is re-sent. The owner's await of a publish
 /// needs an ack from every in-sync replica and waits [DefaultReplicationManager#DEFAULT_ACK_TIMEOUT] (5 s) for it, longer than
@@ -60,10 +63,12 @@ class ReplicationAckResendNotSentTest {
     @Test
     void refusedAck_isResent_untilWritten_onTheProductionScheduler() throws InterruptedException {
         var transport = new ScriptedTransport(1);
-        var handler = replicationReceiveHandler(SELF, appendingAll(), transport, (_, _) -> {});
+        var handler = replicationReceiveHandler(SELF,
+                                                appendingAll(),
+                                                transport,
+                                                (_, _) -> {});
 
         handler.onReplicateEvents(batch(10L, 3));
-
         var deadline = System.currentTimeMillis() + WAIT_MS;
 
         while (transport.delivered().isEmpty() && System.currentTimeMillis() < deadline) {
@@ -72,8 +77,8 @@ class ReplicationAckResendNotSentTest {
 
         assertThat(transport.attempts()).as("the refused ack was sent again").hasSize(2);
         assertThat(transport.delivered()).as("the re-send carries the refused ack, to its owner")
-                                         .extracting(ReplicationMessage.ReplicateAck::confirmedOffset)
-                                         .containsExactly(12L);
+                  .extracting(ReplicationMessage.ReplicateAck::confirmedOffset)
+                  .containsExactly(12L);
         assertThat(transport.targets()).containsOnly(OWNER);
     }
 
@@ -83,7 +88,6 @@ class ReplicationAckResendNotSentTest {
         var handler = manualTimerHandler(transport);
 
         handler.onReplicateEvents(batch(10L, 3));
-
         assertThat(transport.attempts()).hasSize(1);
         assertThat(scheduled).as("a written ack schedules nothing").isEmpty();
     }
@@ -94,16 +98,17 @@ class ReplicationAckResendNotSentTest {
         var handler = manualTimerHandler(transport);
 
         handler.onReplicateEvents(batch(10L, 3));
-
-        assertThat(scheduled).extracting(Scheduled::delay).containsExactly(DefaultReplicationManager.FIRST_RESEND_BACKOFF);
+        assertThat(scheduled).extracting(Scheduled::delay)
+                  .containsExactly(DefaultReplicationManager.FIRST_RESEND_BACKOFF);
         runNextResend();
         assertThat(scheduled).extracting(Scheduled::delay)
-                             .containsExactly(DefaultReplicationManager.nextBackoff(DefaultReplicationManager.FIRST_RESEND_BACKOFF));
+                  .containsExactly(DefaultReplicationManager.nextBackoff(DefaultReplicationManager.FIRST_RESEND_BACKOFF));
         runNextResend();
-
         assertThat(scheduled).as("written on the third attempt: nothing more scheduled").isEmpty();
-        assertThat(transport.attempts()).extracting(ReplicationMessage.ReplicateAck::confirmedOffset).containsExactly(12L, 12L, 12L);
-        assertThat(transport.delivered()).extracting(ReplicationMessage.ReplicateAck::confirmedOffset).containsExactly(12L);
+        assertThat(transport.attempts()).extracting(ReplicationMessage.ReplicateAck::confirmedOffset)
+                  .containsExactly(12L, 12L, 12L);
+        assertThat(transport.delivered()).extracting(ReplicationMessage.ReplicateAck::confirmedOffset)
+                  .containsExactly(12L);
     }
 
     /// The owner overwrites a replica's confirmed offset with each ack it gets, so a refused ack re-sent after a newer one was
@@ -116,8 +121,8 @@ class ReplicationAckResendNotSentTest {
         handler.onReplicateEvents(batch(10L, 3));
         handler.onReplicateEvents(batch(13L, 1));
         runNextResend();
-
-        assertThat(transport.attempts()).extracting(ReplicationMessage.ReplicateAck::confirmedOffset).containsExactly(12L, 13L);
+        assertThat(transport.attempts()).extracting(ReplicationMessage.ReplicateAck::confirmedOffset)
+                  .containsExactly(12L, 13L);
         assertThat(scheduled).isEmpty();
     }
 
@@ -128,10 +133,10 @@ class ReplicationAckResendNotSentTest {
         var handler = manualTimerHandler(transport);
 
         handler.onReplicateEvents(batch(10L, 3));
-        clock.set(DefaultReplicationManager.DEFAULT_ACK_TIMEOUT.nanos() - DefaultReplicationManager.FIRST_RESEND_BACKOFF.nanos()
-                  - TimeSpan.timeSpan(10).millis().nanos());
+        clock.set(DefaultReplicationManager.DEFAULT_ACK_TIMEOUT.nanos() - DefaultReplicationManager.FIRST_RESEND_BACKOFF.nanos() - TimeSpan.timeSpan(10)
+                                                                                                                                           .millis()
+                                                                                                                                           .nanos());
         runNextResend();
-
         assertThat(transport.attempts()).as("re-sent once, then the next backoff would outlive the deadline").hasSize(2);
         assertThat(scheduled).as("no re-send past the ack deadline").isEmpty();
     }
@@ -145,13 +150,15 @@ class ReplicationAckResendNotSentTest {
         handler.onReplicateEvents(batch(10L, 3));
         handler.forgetDeferredAcks(STREAM);
         runNextResend();
-
         assertThat(transport.attempts()).hasSize(1);
         assertThat(scheduled).isEmpty();
     }
 
     private ReplicationReceiveHandler manualTimerHandler(ScriptedTransport transport) {
-        var handler = replicationReceiveHandler(SELF, appendingAll(), transport, (_, _) -> {});
+        var handler = replicationReceiveHandler(SELF,
+                                                appendingAll(),
+                                                transport,
+                                                (_, _) -> {});
 
         handler.ackResendTimer(this::schedule, clock::get);
 
@@ -185,7 +192,9 @@ class ReplicationAckResendNotSentTest {
     private ScheduledFuture<?> schedule(Runnable task, TimeSpan delay) {
         scheduled.add(new Scheduled(task, delay));
 
-        return neverFires.schedule(() -> {}, 1, TimeUnit.HOURS);
+        return neverFires.schedule(() -> {},
+                                   1,
+                                   TimeUnit.HOURS);
     }
 
     private record Scheduled(Runnable task, TimeSpan delay) {}
@@ -209,7 +218,6 @@ class ReplicationAckResendNotSentTest {
 
             attempts.add(ack);
             targets.add(target);
-
             if (sends.getAndIncrement() < refusals) {
                 return Promise.success(new WriteOutcome.BackpressureRefused(target));
             }

@@ -13,10 +13,6 @@ import java.time.Duration;
 import java.util.HashSet;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
-import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -29,8 +25,14 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
+
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// #2847 end to end: a publish whose one replica ack the transport refuses (as a backpressured FORWARD lane refuses it) is
 /// acknowledged inside the entry node's management forward. The owner's await of a `confirmation_factor` 2 publish needs an
@@ -85,20 +87,24 @@ class EmberRefusedReplicaAckTest {
     void publish_isAcknowledgedInsideTheManagementForward_whenOneReplicasAckIsRefused() {
         cluster = EmberTestPorts.startedCluster(PORTS, this::threeNodes, START_BOUND);
         awaitLeader();
-
-        assertThat(post(leaderPort(), "/api/v1/streams/" + NAMESPACE + "/" + NAME + "/" + VERSION, "{\"partitions\":1}"))
-            .as("create %s", NAME)
-            .startsWith("2");
+        assertThat(post(leaderPort(),
+                        "/api/v1/streams/" + NAMESPACE + "/" + NAME + "/" + VERSION,
+                        "{\"partitions\":1}")).as("create %s", NAME)
+                  .startsWith("2");
         var owner = awaitFullIsr().owner().id();
         var governor = streamingGovernor();
 
         assertThat(publishRetryingRefusal(governor, "ack-0")).as("publish ack-0, before any refusal").startsWith("2");
-
-        var replica = cluster.allNodes().stream().filter(node -> !node.self().id().equals(owner)).findFirst().orElseThrow();
+        var replica = cluster.allNodes()
+                             .stream()
+                             .filter(node -> !node.self()
+                                                  .id()
+                                                  .equals(owner))
+                             .findFirst()
+                             .orElseThrow();
         var refused = new AtomicBoolean();
 
         refuseFirstAckAboveZero(replica, refused);
-
         var startedAt = System.nanoTime();
         var response = publishRetryingRefusal(governor, "ack-1");
         var elapsedMs = (System.nanoTime() - startedAt) / 1_000_000L;
@@ -114,7 +120,6 @@ class EmberRefusedReplicaAckTest {
                           response.lines().findFirst().orElse(""));
         assertThat(refused.get()).as("positive control: the fault fired on a replica's ack of the publish").isTrue();
         assertThat(response).as("the publish is acknowledged, not 503 outcome unknown").startsWith("2");
-
         for (var i = 2; i < 5; i++) {
             assertThat(publishRetryingRefusal(governor, "ack-" + i)).as("publish ack-%d", i).startsWith("2");
         }
@@ -122,20 +127,23 @@ class EmberRefusedReplicaAckTest {
 
     /// Refuses `node`'s FIRST ack of the test stream at an offset at or above 1, once.
     private static void refuseFirstAckAboveZero(AetherNode node, AtomicBoolean fired) {
-        ((QuicClusterNetwork) StreamTripwireSupport.component(node, "clusterNode", RabiaNode.class)
-                                                   .network()).setOutboundRefusalFilter((_, message) -> isTestAckAboveZero(message)
-                                                                       && fired.compareAndSet(false, true));
+        ((QuicClusterNetwork) StreamTripwireSupport.component(node, "clusterNode", RabiaNode.class).network()).setOutboundRefusalFilter((_, message) -> isTestAckAboveZero(message) && fired.compareAndSet(false,
+                                                                                                                                                                                                           true));
     }
 
     private static boolean isTestAckAboveZero(Object message) {
-        return message instanceof ReplicationMessage.ReplicateAck ack && ack.streamName().equals(ENGINE_KEY) && ack.confirmedOffset() >= 1;
+        return message instanceof ReplicationMessage.ReplicateAck ack
+               && ack.streamName()
+                     .equals(ENGINE_KEY)
+               && ack.confirmedOffset() >= 1;
     }
 
     private StreamPartitionOwnershipValue awaitFullIsr() {
         var deadline = System.currentTimeMillis() + ISR_BUDGET_MS;
 
         while (System.currentTimeMillis() < deadline) {
-            var record = committedRecord().filter(value -> value.isrVersion() > 0 && value.isr().size() == CLUSTER_SIZE);
+            var record = committedRecord().filter(value -> value.isrVersion() > 0 && value.isr()
+                                                                                          .size() == CLUSTER_SIZE);
 
             if (record.isPresent()) {
                 return record.unwrap();
@@ -144,7 +152,10 @@ class EmberRefusedReplicaAckTest {
             sleepQuietly(50L);
         }
 
-        throw new AssertionError("no committed ISR of " + CLUSTER_SIZE + " for " + ENGINE_KEY + " within " + ISR_BUDGET_MS + "ms");
+        throw new AssertionError("no committed ISR of " + CLUSTER_SIZE
+                                + " for " + ENGINE_KEY
+                                + " within " + ISR_BUDGET_MS
+                                + "ms");
     }
 
     /// The record every node agrees on, or none while they differ.
@@ -153,7 +164,8 @@ class EmberRefusedReplicaAckTest {
 
         cluster.allNodes()
                .forEach(node -> node.kvStore()
-                                    .getTyped(AetherKey.StreamPartitionOwnershipKey.streamPartitionOwnershipKey(ENGINE_KEY, 0),
+                                    .getTyped(AetherKey.StreamPartitionOwnershipKey.streamPartitionOwnershipKey(ENGINE_KEY,
+                                                                                                                0),
                                               StreamPartitionOwnershipValue.class)
                                     .onPresent(seen::add));
 
@@ -171,7 +183,10 @@ class EmberRefusedReplicaAckTest {
         var response = publishResponse(entryNode(governor).mgmtPort(), payload);
 
         for (var attempt = 1; attempt < REFUSAL_RETRY_ATTEMPTS && isRetryableRefusal(response) && System.currentTimeMillis() < deadline; attempt++) {
-            System.out.printf("PUBLISH-REFUSAL-RETRY %s attempt=%d -> %s%n", payload, attempt, response.lines().findFirst().orElse(""));
+            System.out.printf("PUBLISH-REFUSAL-RETRY %s attempt=%d -> %s%n",
+                              payload,
+                              attempt,
+                              response.lines().findFirst().orElse(""));
             sleepQuietly(REFUSAL_RETRY_PAUSE_MS);
             response = publishResponse(entryNode(governor).mgmtPort(), payload);
         }
@@ -199,17 +214,24 @@ class EmberRefusedReplicaAckTest {
         return cluster.status()
                       .nodes()
                       .stream()
-                      .filter(node -> !node.id().equals(governor))
+                      .filter(node -> !node.id()
+                                           .equals(governor))
                       .findFirst()
                       .orElseThrow();
     }
 
     private String publishResponse(int mgmtPort, String payload) {
-        return post(mgmtPort, "/api/v1/streams/" + NAMESPACE + "/" + NAME + "/" + VERSION + "/publish", "{\"data\":\"" + payload + "\"}");
+        return post(mgmtPort,
+                    "/api/v1/streams/" + NAMESPACE + "/" + NAME + "/" + VERSION + "/publish",
+                    "{\"data\":\"" + payload + "\"}");
     }
 
     private EmberCluster threeNodes(int basePort) {
-        var built = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "refusedack");
+        var built = emberCluster(CLUSTER_SIZE,
+                                 basePort,
+                                 basePort + MGMT_OFFSET,
+                                 basePort + APP_HTTP_OFFSET,
+                                 "refusedack");
 
         built.withDataBaseDir(dataDir);
 
@@ -217,7 +239,8 @@ class EmberRefusedReplicaAckTest {
     }
 
     private int leaderPort() {
-        return cluster.getLeaderManagementPort().or(-1);
+        return cluster.getLeaderManagementPort()
+                      .or(-1);
     }
 
     private void awaitLeader() {

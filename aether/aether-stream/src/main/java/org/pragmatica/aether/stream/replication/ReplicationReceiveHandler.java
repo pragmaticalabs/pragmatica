@@ -205,7 +205,11 @@ public final class ReplicationReceiveHandler {
     private final ConcurrentHashMap<PartitionKey, DeferredAck> deferredAcks = new ConcurrentHashMap<>();
 
     /// #2847: an ack sent to `owner`, re-sendable until `deadlineNanos` (the owner's ack timeout from its first send).
-    private record SentAck(NodeId owner, ReplicationMessage.ReplicateAck ack, long deadlineNanos) {}
+    private record SentAck(NodeId owner, ReplicationMessage.ReplicateAck ack, long deadlineNanos) {
+        static SentAck sentAck(NodeId owner, ReplicationMessage.ReplicateAck ack, long deadlineNanos) {
+            return new SentAck(owner, ack, deadlineNanos);
+        }
+    }
 
     /// #2847: the latest ack sent per partition. Every ack is sent inside this map's per-key section, and a refused one is
     /// re-sent only while it is still its partition's latest: the owner takes an ack's offset as given
@@ -700,9 +704,9 @@ public final class ReplicationReceiveHandler {
     /// carries a confirmed offset, not an increment. An ack that was written and then lost is still the owner's to time out.
     @Contract
     private void sendAck(NodeId owner, String streamName, int partition, long through, Epoch ownerEpoch) {
-        var sent = new SentAck(owner,
-                               replicateAck(self, streamName, partition, through, ownerEpoch),
-                               nanoClock.getAsLong() + DEFAULT_ACK_TIMEOUT.nanos());
+        var sent = SentAck.sentAck(owner,
+                                   replicateAck(self, streamName, partition, through, ownerEpoch),
+                                   nanoClock.getAsLong() + DEFAULT_ACK_TIMEOUT.nanos());
 
         latestAcks.compute(partitionKey(streamName, partition),
                            (key, _) -> sentWithResend(key, sent, FIRST_RESEND_BACKOFF));
