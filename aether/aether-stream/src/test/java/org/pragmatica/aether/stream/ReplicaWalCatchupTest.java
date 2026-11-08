@@ -2,6 +2,7 @@ package org.pragmatica.aether.stream;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
@@ -150,21 +151,24 @@ class ReplicaWalCatchupTest {
 
             assertThat(answer.success()).isFalse();
             assertThat(answer.events()).isEmpty();
-            assertThat(StreamError.PartitionHeldNotMaterialized.watermarkOf(new StreamForwardError.ReadForwardFailed(answer.errorMessage())))
+            assertThat(StreamError.PartitionHeldNotMaterialized.watermarkOf(new StreamForwardError.ReadForwardFailed(answer.errorMessage()))
+                                  .isPresent())
                 .as("named as the held partition, %s", answer.errorMessage())
-                .isPresent();
+                .isTrue();
         }
 
         @Test
         void catchupRead_ofAWalWithATornTail_answersUnavailable() throws Exception {
-            Files.write(walFile(), new byte[]{0, 0, 0, 40, 1, 2}, java.nio.file.StandardOpenOption.APPEND);
+            Files.write(walFile(), new byte[]{0, 0, 0, 40, 1, 2}, StandardOpenOption.APPEND);
 
             var answer = catchupRead(0L, PAGE);
 
             assertThat(answer.success()).isFalse();
             assertThat(answer.events()).isEmpty();
-            assertThat(StreamError.PartitionHeldNotMaterialized.watermarkOf(new StreamForwardError.ReadForwardFailed(answer.errorMessage())))
-                .isPresent();
+            assertThat(StreamError.PartitionHeldNotMaterialized.watermarkOf(new StreamForwardError.ReadForwardFailed(answer.errorMessage()))
+                                  .isPresent())
+                .as("named as the held partition, %s", answer.errorMessage())
+                .isTrue();
         }
 
         /// D1: the page ships the WAL's own history or fails; an unreadable history is never answered as an empty one.
