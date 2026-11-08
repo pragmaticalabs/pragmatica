@@ -23,6 +23,7 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -129,6 +130,8 @@ class QuicActivityKickStrandedLossTest {
     private QuicheStall.Reading strand() {
         connect();
         var stream = dialerSide.stream(LANE).unwrap();
+        // Armed before A is written: induction happens on the event loop at the first sight of the loss timer (#2904).
+        var induced = watchAndInduce();
 
         relay.dropNextDialerPacket();
         stream.writeAndFlush(Unpooled.wrappedBuffer(codec.encode(LaneProbe.laneProbe(DIALER, LANE, "A" + PAD))));
@@ -138,19 +141,7 @@ class QuicActivityKickStrandedLossTest {
         assertThat(relay.droppedByDialer.get()).as("exactly A was dropped").isEqualTo(1);
 
         // B's ACK reaching the dialer arms quiche's loss timer for A (tens of ms away; the PTO is ~1 s).
-        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-        var timer = -1L;
-
-        while (System.nanoTime() < deadline) {
-            timer = timer();
-            if (timer > 0 && timer < LOSS_TIMER_MAX_NANOS) {
-                break;
-            }
-            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
-        }
-        assertThat(timer).as("quiche armed the loss timer for A once B was acked").isBetween(1L, LOSS_TIMER_MAX_NANOS);
-
-        var reading = induce();
+        var reading = awaitReading(induced);
 
         assertThat(reading.quicheTimerBefore()).as("quiche's timer was due when connectionSend ran").isLessThanOrEqualTo(0);
         assertThat(received("A" + PAD)).as("A is not delivered by anything else").isFalse();
@@ -162,19 +153,16 @@ class QuicActivityKickStrandedLossTest {
         return receivedByAcceptor.stream().anyMatch(m -> m instanceof LaneProbe p && p.marker().equals(marker));
     }
 
-    private long timer() {
-        try {
-            return QuicheStall.quicheTimerNanos(dialerSide.connection());
-        } catch (Exception e) {
-            return fail("timer read failed: " + e);
-        }
+    private CompletableFuture<QuicheStall.Reading> watchAndInduce() {
+        return QuicheStall.induceWhenLossTimerArmed(dialerSide.connection(), LOSS_TIMER_MAX_NANOS,
+                                                    () -> relay.sentByDialerSinceArm.get() >= 2);
     }
 
-    private QuicheStall.Reading induce() {
+    private static QuicheStall.Reading awaitReading(CompletableFuture<QuicheStall.Reading> induced) {
         try {
-            return QuicheStall.induceLateTimer(dialerSide.connection());
+            return induced.get(15, TimeUnit.SECONDS);
         } catch (Exception e) {
-            return fail("stall induction failed: " + e);
+            return fail("quiche armed the loss timer for A once B was acked, and the stall was induced: " + e);
         }
     }
 
