@@ -987,6 +987,60 @@ class ClusterCursorStoreTest {
         }
     }
 
+    /// NT-167 (#1960 after #1961): the detach-wait bound lets a re-subscribed successor start while the old consumer's
+    /// flush commit is still in flight. That commit lands late, after the successor's higher one, under the same token and
+    /// scope; the real applier refuses it and the resume keeps the successor's cursor, even though the node-local cursor
+    /// ref (a plain replace) was lowered by the late write. Green since #1961's scoped advance-only arm; red without it.
+    @Nested
+    class LateDetachFlushAfterTheWaitBound {
+        @Test
+        void lateOldFlushCommit_afterTheSuccessorsCommit_isRefused_andTheResumeKeepsTheSuccessorsCursor() {
+            var kv = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+            var held = new java.util.ArrayList<List<KVCommand<AetherKey>>>();
+            var holding = new java.util.concurrent.atomic.AtomicBoolean(true);
+            var localOffset = new AtomicReference<Long>();
+            var local = recordingLocal(localOffset);
+
+            kv.process(kv.createBatch(List.of(assignment(SELF, EPOCH))));
+
+            var store = ClusterCursorStore.clusterCursorStore(local,
+                                                              SELF,
+                                                              key -> kv.getTyped(key, StreamCursorCheckpointValue.class),
+                                                              assignmentsIn(kv),
+                                                              commands -> holdOrApply(kv, holding, held, commands),
+                                                              () -> false);
+
+            store.commit(GROUP, STREAM, PARTITION, 1L, EPOCH);
+            holding.set(false);
+            store.commit(GROUP, STREAM, PARTITION, 1000L, EPOCH).await();
+            held.forEach(commands -> kv.process(kv.createBatch(commands)));
+            local.commit(GROUP, STREAM, PARTITION, 1L).await();
+
+            assertThat(held).as("the old flush's proposal was held past the successor's commit").hasSize(1);
+            assertThat(kv.getTyped(CHECKPOINT_KEY, StreamCursorCheckpointValue.class).map(StreamCursorCheckpointValue::committedOffset))
+                .as("the late lower checkpoint is refused").isEqualTo(Option.some(1000L));
+            store.fetch(GROUP, STREAM, PARTITION, EPOCH)
+                 .await()
+                 .onFailure(cause -> Assertions.fail(cause.message()))
+                 .onSuccess(offset -> assertThat(offset).as("the resume keeps the successor's cursor, not the lowered local 1")
+                                                        .isEqualTo(Option.some(1000L)));
+        }
+
+        private static Promise<Unit> holdOrApply(KVStore<AetherKey, AetherValue> kv,
+                                                 java.util.concurrent.atomic.AtomicBoolean holding,
+                                                 List<List<KVCommand<AetherKey>>> held,
+                                                 List<KVCommand<AetherKey>> commands) {
+            if (holding.get()) {
+                held.add(commands);
+
+                return Promise.promise();
+            }
+            kv.process(kv.createBatch(commands));
+
+            return Promise.unitPromise();
+        }
+    }
+
     /// A cluster node whose consensus is the real applier: every batch is applied to `kv` and recorded.
     private record ApplyingClusterNode(KVStore<AetherKey, AetherValue> kv, List<KVCommand<AetherKey>> issued) implements ClusterNode<KVCommand<AetherKey>> {
         static ApplyingClusterNode applyingClusterNode(KVStore<AetherKey, AetherValue> kv, List<KVCommand<AetherKey>> issued) {

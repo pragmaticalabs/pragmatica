@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.pragmatica.aether.slice.ConsumerConfig;
@@ -19,6 +20,9 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -563,6 +567,302 @@ class DetachAwaitsInFlightAdvanceTest {
             releaseCommit.countDown();
             blockingRuntime.close();
         }
+    }
+
+    /// NT-166 (#1960): the old consumer's detach flush commit never settles. The re-subscribed successor is marked
+    /// awaiting-cursor-fetch while it waits, so the idle reaper leaves it alone, and it fetches its cursor and starts at
+    /// the detach-wait bound, raising `stream-consumer-detach-wait-exceeded`; when the wedged commit finally settles,
+    /// `stream-consumer-detach-wait-settled` follows. Red under "the gate waits without a bound" (the successor never
+    /// fetches) and under "the successor is marked only after the gate" (the reaper removes it).
+    @Test
+    void wedgedFlushCommit_successorStartsAfterBound_andIsNotReaped() throws InterruptedException {
+        var wedge = new AtomicBoolean();
+        var wedged = Promise.<CommitOutcome>promise();
+        var fetches = new AtomicInteger();
+        var successorFetched = new CountDownLatch(1);
+        var warnings = new CopyOnWriteArrayList<OperatorWarning>();
+        var wedging = new ConsumerCursorStore() {
+            @Override
+            public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                return wedge.get()
+                       ? wedged
+                       : Promise.success(CommitOutcome.persisted());
+            }
+
+            @Override
+            public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                if (fetches.incrementAndGet() == 2) {
+                    successorFetched.countDown();
+                }
+
+                return Promise.success(Option.none());
+            }
+        };
+        var wedgingRuntime = (ConsumerRuntimeState) streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), wedging);
+
+        wedgingRuntime.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+        wedgingRuntime.detachWaitBound(timeSpan(1).seconds());
+        try {
+            wedgingRuntime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> Promise.unitPromise());
+            assertThat(fetches.get()).as("the first consumer fetched its cursor").isEqualTo(1);
+            wedge.set(true);
+            wedgingRuntime.unsubscribe(STREAM, 0, GROUP);
+            wedgingRuntime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> Promise.unitPromise());
+
+            assertThat(fetches.get()).as("the successor waits on the held flush").isEqualTo(1);
+            assertThat(wedgingRuntime.subscriptions()).singleElement()
+                                                      .satisfies(s -> assertThat(s.awaitingCursorFetch()).as("marked while gated").isTrue());
+
+            wedgingRuntime.reapIdleConsumers(System.currentTimeMillis() + 120_000L);
+
+            assertThat(wedgingRuntime.subscriptions()).as("the gated successor is not reaped as idle").hasSize(1);
+            assertThat(successorFetched.await(10, TimeUnit.SECONDS)).as("the successor fetches at the bound").isTrue();
+            awaitWarning(warnings, OperatorWarningCode.STREAM_CONSUMER_DETACH_WAIT_EXCEEDED);
+            assertThat(warnings).extracting(OperatorWarning::code)
+                                .as("no recovery while the flush is still wedged")
+                                .doesNotContain(OperatorWarningCode.STREAM_CONSUMER_DETACH_WAIT_SETTLED);
+
+            wedgingRuntime.unsubscribe(STREAM, 0, GROUP);
+            wedgingRuntime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> Promise.unitPromise());
+            awaitFetches(fetches, 3);
+
+            assertThat(warnings).extracting(OperatorWarning::code)
+                                .as("a second successor past the same held flush raises no second warning")
+                                .containsExactly(OperatorWarningCode.STREAM_CONSUMER_DETACH_WAIT_EXCEEDED);
+
+            wedged.succeed(CommitOutcome.persisted());
+            awaitWarning(warnings, OperatorWarningCode.STREAM_CONSUMER_DETACH_WAIT_SETTLED);
+
+            assertThat(warnings).extracting(OperatorWarning::code)
+                                .containsExactly(OperatorWarningCode.STREAM_CONSUMER_DETACH_WAIT_EXCEEDED,
+                                                 OperatorWarningCode.STREAM_CONSUMER_DETACH_WAIT_SETTLED);
+            assertThat(warnings).extracting(OperatorWarning::subject).containsOnly(STREAM + "[0]/" + GROUP);
+        } finally {
+            wedged.succeed(CommitOutcome.persisted());
+            wedgingRuntime.close();
+        }
+    }
+
+    /// #1960: a successor unsubscribed while it waits on the held flush still runs its fetch at the bound, but raises no
+    /// `stream-consumer-detach-wait-exceeded`: no successor starts past the flush. The fetch it runs is the signal that
+    /// the bound has passed. Red under "the warning ignores the successor's cancel".
+    @Test
+    void wedgedFlushCommit_successorCancelledWhileWaiting_raisesNoWarning() throws InterruptedException {
+        var wedge = new AtomicBoolean();
+        var wedged = Promise.<CommitOutcome>promise();
+        var fetches = new AtomicInteger();
+        var warnings = new CopyOnWriteArrayList<OperatorWarning>();
+        var wedging = new ConsumerCursorStore() {
+            @Override
+            public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                return wedge.get()
+                       ? wedged
+                       : Promise.success(CommitOutcome.persisted());
+            }
+
+            @Override
+            public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                fetches.incrementAndGet();
+
+                return Promise.success(Option.none());
+            }
+        };
+        var wedgingRuntime = (ConsumerRuntimeState) streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), wedging);
+
+        wedgingRuntime.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+        wedgingRuntime.detachWaitBound(timeSpan(200).millis());
+        try {
+            wedgingRuntime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> Promise.unitPromise());
+            wedge.set(true);
+            wedgingRuntime.unsubscribe(STREAM, 0, GROUP);
+            wedgingRuntime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> Promise.unitPromise());
+            wedgingRuntime.unsubscribe(STREAM, 0, GROUP);
+            awaitFetches(fetches, 2);
+
+            assertThat(warnings).as("the cancelled successor raised nothing at the bound").isEmpty();
+        } finally {
+            wedged.succeed(CommitOutcome.persisted());
+            wedgingRuntime.close();
+        }
+    }
+
+    /// #1960: a held flush that settles BEFORE the bound lets the successor fetch and raises nothing: neither the
+    /// exceeded warning nor its recovery. Red under "a settled flush is treated as an elapsed bound".
+    @Test
+    void heldFlushSettlingBeforeTheBound_successorFetches_andNothingIsRaised() throws InterruptedException {
+        var wedge = new AtomicBoolean();
+        var held = Promise.<CommitOutcome>promise();
+        var fetches = new AtomicInteger();
+        var warnings = new CopyOnWriteArrayList<OperatorWarning>();
+        var holding = new ConsumerCursorStore() {
+            @Override
+            public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                return wedge.get()
+                       ? held
+                       : Promise.success(CommitOutcome.persisted());
+            }
+
+            @Override
+            public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                fetches.incrementAndGet();
+
+                return Promise.success(Option.none());
+            }
+        };
+        var holdingRuntime = (ConsumerRuntimeState) streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), holding);
+
+        holdingRuntime.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+        holdingRuntime.detachWaitBound(timeSpan(30).seconds());
+        try {
+            holdingRuntime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> Promise.unitPromise());
+            wedge.set(true);
+            holdingRuntime.unsubscribe(STREAM, 0, GROUP);
+            holdingRuntime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> Promise.unitPromise());
+            assertThat(fetches.get()).as("the successor waits on the held flush").isEqualTo(1);
+
+            held.succeed(CommitOutcome.persisted());
+            awaitFetches(fetches, 2);
+
+            assertThat(warnings).as("the flush settled inside the bound: nothing raised").isEmpty();
+        } finally {
+            held.succeed(CommitOutcome.persisted());
+            holdingRuntime.close();
+        }
+    }
+
+    /// #1960 (F10), retry path: a retry timer that fires after the consumer was unsubscribed delivers nothing. The first
+    /// attempt fails, the unsubscribe lands once the retry hold is set (the backoff is at least tens of milliseconds
+    /// away), and no second attempt may run. Red under "the retry claims its slot without the cancel check": the
+    /// cancelled consumer's handler runs a second time.
+    @Test
+    void retryTimerFiringAfterUnsubscribe_deliversNothing() throws InterruptedException {
+        var attempts = new AtomicInteger();
+        var retried = new CountDownLatch(2);
+        var retrying = (ConsumerRuntimeState) runtime;
+
+        retrying.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> {
+            attempts.incrementAndGet();
+            retried.countDown();
+
+            return StreamError.General.BUFFER_EMPTY.promise();
+        });
+        manager.publishLocal(STREAM, 0, "event-0".getBytes(UTF_8), 1000L);
+        awaitRetryHold(retrying);
+        retrying.unsubscribe(STREAM, 0, GROUP);
+
+        assertThat(retried.await(1, TimeUnit.SECONDS)).as("no second attempt after the unsubscribe").isFalse();
+        assertThat(attempts.get()).isEqualTo(1);
+    }
+
+    private void awaitRetryHold(ConsumerRuntimeState retrying) throws InterruptedException {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+
+        while (!retrying.isRetryInFlight(STREAM, 0, GROUP) && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertThat(retrying.isRetryInFlight(STREAM, 0, GROUP)).as("the first attempt failed and a retry is scheduled").isTrue();
+    }
+
+    private static void awaitFetches(AtomicInteger fetches, int count) throws InterruptedException {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+        while (fetches.get() < count && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(fetches.get()).as("fetches").isGreaterThanOrEqualTo(count);
+    }
+
+    /// NT-166b (#1960 F10): the cancel check and the in-flight-slot claim are one step. Each round subscribes a fresh
+    /// group over a published backlog, and a detacher released by a spin barrier at the first delivery unsubscribes after
+    /// a swept number of spins, landing the cancel around the next delivery's cancel check. A delivery that ran past the
+    /// cursor the detach flush committed would be delivered again by a successor. Red under "the cancel check and the
+    /// claim are separate steps" when the interleaving is reached inside the deadline. A round is judged when the next one
+    /// ends, so its racing delivery, if any, has long run; the last round is not judged.
+    @Test
+    void cancelCheckAndSlotClaim_areAtomic_noDuplicateDelivery() throws InterruptedException {
+        var lastCommit = new java.util.concurrent.ConcurrentHashMap<String, Long>();
+        var delivered = new java.util.concurrent.ConcurrentHashMap<String, List<Long>>();
+        var racing = new ConsumerCursorStore() {
+            @Override
+            public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                lastCommit.put(consumerGroup, offset);
+
+                return Promise.success(CommitOutcome.persisted());
+            }
+
+            @Override
+            public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                return Promise.success(Option.none());
+            }
+        };
+        var racingRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), racing);
+
+        for (var i = 0; i < 8; i++) {
+            manager.publishLocal(STREAM, 0, ("event-" + i).getBytes(UTF_8), 1000L + i);
+        }
+
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        var rounds = 0;
+        var duplicates = new CopyOnWriteArrayList<String>();
+
+        try {
+            while (System.nanoTime() < deadline && duplicates.isEmpty()) {
+                var group = "race-" + rounds;
+                var offsets = new CopyOnWriteArrayList<Long>();
+                var armed = new AtomicBoolean();
+                var spins = (rounds * 7) % 400;
+
+                delivered.put(group, offsets);
+                racingRuntime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(group), (offset, _, _) -> {
+                    offsets.add(offset);
+                    armed.set(true);
+
+                    return Promise.unitPromise();
+                });
+                var spinDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+
+                while (!armed.get() && System.nanoTime() < spinDeadline) {
+                    Thread.onSpinWait();
+                }
+                for (var s = 0; s < spins; s++) {
+                    Thread.onSpinWait();
+                }
+                racingRuntime.unsubscribe(STREAM, 0, group);
+                if (rounds > 0) {
+                    collectDuplicate("race-" + (rounds - 1), lastCommit, delivered, duplicates);
+                }
+                rounds++;
+            }
+
+            assertThat(rounds).as("the stress ran").isGreaterThan(50);
+            assertThat(duplicates).as("deliveries at or past the committed detach cursor in %d rounds", rounds).isEmpty();
+        } finally {
+            racingRuntime.close();
+        }
+    }
+
+    private static void collectDuplicate(String group,
+                                         java.util.Map<String, Long> lastCommit,
+                                         java.util.Map<String, List<Long>> delivered,
+                                         List<String> duplicates) {
+        var committed = lastCommit.get(group);
+
+        if (committed == null) {
+            return;
+        }
+        delivered.get(group)
+                 .stream()
+                 .filter(offset -> offset >= committed)
+                 .forEach(offset -> duplicates.add(group + ": delivered " + offset + ", committed " + committed));
+    }
+
+    private static void awaitWarning(List<OperatorWarning> warnings, OperatorWarningCode code) throws InterruptedException {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+
+        while (warnings.stream().noneMatch(w -> w.code() == code) && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(warnings).extracting(OperatorWarning::code).contains(code);
     }
 
     private boolean awaitCommits(int count) throws InterruptedException {

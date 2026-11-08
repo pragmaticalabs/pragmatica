@@ -452,6 +452,16 @@ public enum OperatorWarningCode {
                                           "stream-consumer",
                                           WarningLevel.INFO,
                                           STREAM_CONSUMER_SEALED_RANGE_MISSING),
+    /// A stream consumer re-subscribed on a node started without the previous consumer's detach flush, which did not
+    /// settle within the detach-wait bound (#1960, 30s): the flush's cursor-store commit is wedged. The successor starts
+    /// from the cursor the store holds; if the held commit lands later with a lower cursor, the cluster checkpoint refuses
+    /// it (#1961). Raised once per held flush, subject the consumer.
+    STREAM_CONSUMER_DETACH_WAIT_EXCEEDED("stream-consumer-detach-wait-exceeded", "stream-consumer", WarningLevel.WARNING),
+    /// The recovery of a [#STREAM_CONSUMER_DETACH_WAIT_EXCEEDED], same subject: the held detach flush has settled.
+    STREAM_CONSUMER_DETACH_WAIT_SETTLED("stream-consumer-detach-wait-settled",
+                                        "stream-consumer",
+                                        WarningLevel.INFO,
+                                        STREAM_CONSUMER_DETACH_WAIT_EXCEEDED),
     /// A partition's owner promotion is refused because a peer ANSWERED its watermark probe with a page cut before its
     /// first event: that event alone exceeds the peer's read cap (#1431). Not an unreachable peer; the operator raises
     /// the peer's `maxReadResponseBytes`. The message names the partition, the peer and the offset.
