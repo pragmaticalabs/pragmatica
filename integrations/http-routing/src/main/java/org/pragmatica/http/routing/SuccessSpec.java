@@ -33,7 +33,8 @@ public record SuccessSpec(Option<Integer> status, Option<Fn1<String, Object>> lo
     /// A field value rendered as one `Location` path segment: percent-encoded, so a `/` or a space in the value cannot
     /// change the path's shape.
     public static String pathSegment(Object value) {
-        return URLEncoder.encode(String.valueOf(value), StandardCharsets.UTF_8)
+        return URLEncoder.encode(String.valueOf(value),
+                                 StandardCharsets.UTF_8)
                          .replace("+", "%20");
     }
 }

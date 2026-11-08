@@ -126,7 +126,6 @@ public interface SliceRouter {
                                                                            "application/json; charset=UTF-8");
 
             private static final Map<String, String> TEXT_HEADERS = Map.of("Content-Type", "text/plain; charset=UTF-8");
-
             private static final byte[] NO_BODY = new byte[0];
 
             private static final Fn1<Cause, String> NULL_SUCCESS = Causes.forOneValue("Route %s completed with a null success value, a JBCT violation: return Unit for no body or Option for an absent value");
@@ -351,7 +350,7 @@ public interface SliceRouter {
                 return switch (value) {
                     case null -> errorToResponse(HttpStatus.INTERNAL_SERVER_ERROR.with(NULL_SUCCESS.apply(routeLabel(route))),
                                                  request);
-                    case Option.None<?> _ -> errorToResponse(HttpStatus.NOT_FOUND.with(EMPTY_OPTION), request);
+                    case Option.None<?>_ -> errorToResponse(HttpStatus.NOT_FOUND.with(EMPTY_OPTION), request);
                     case Option.Some<?> some -> presentToResponse(some.value(), route, jsonCodec);
                     default -> presentToResponse(value, route, jsonCodec);
                 };
@@ -369,17 +368,20 @@ public interface SliceRouter {
                 var location = locationHeader(success, value);
 
                 return value instanceof Unit
-                       ? HttpResponseData.httpResponseData(success.status()
-                                                                  .or(204),
+                       ? HttpResponseData.httpResponseData(success.status().or(204),
                                                            location,
                                                            NO_BODY)
-                       : serializeSuccess(value, route.contentType(), success.status()
-                                                                            .or(200), location, jsonCodec);
+                       : serializeSuccess(value,
+                                          route.contentType(),
+                                          success.status().or(200),
+                                          location,
+                                          jsonCodec);
             }
 
             private static Map<String, String> locationHeader(SuccessSpec success, Object value) {
                 return success.location()
-                              .map(location -> Map.of("Location", location.apply(value)))
+                              .map(location -> Map.of("Location",
+                                                      location.apply(value)))
                               .or(Map.of());
             }
 

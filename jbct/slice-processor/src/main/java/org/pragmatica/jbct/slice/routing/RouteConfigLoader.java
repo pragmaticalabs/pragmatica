@@ -539,7 +539,8 @@ public final class RouteConfigLoader {
     private static Result<Integer> successStatus(String key, Object raw) {
         return raw instanceof Number number && number.doubleValue() == number.longValue() && SUCCESS_STATUSES.contains(number.longValue())
                ? Result.success(number.intValue())
-               : Causes.cause("Route '" + key + "' status must be a success status, one of " + new TreeSet<>(SUCCESS_STATUSES)
+               : Causes.cause("Route '" + key
+                             + "' status must be a success status, one of " + new TreeSet<>(SUCCESS_STATUSES)
                              + " written as a number; got " + describe(raw)).result();
     }
 
@@ -554,7 +555,8 @@ public final class RouteConfigLoader {
                      .map(Object::toString)
                      .map(location -> Verify.ensure(location,
                                                     Verify.Is::notBlank,
-                                                    Causes.cause("Route '" + key + "' location must not be blank")).map(Option::some))
+                                                    Causes.cause("Route '" + key + "' location must not be blank"))
+                                            .map(Option::some))
                      .or(Result.success(Option.none()));
     }
 

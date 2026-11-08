@@ -832,8 +832,9 @@ public class RouteSourceGenerator {
                     ? ","
                     : "";
         var security = securityExpression(routeConfig, handlerName);
-        var trailer = uploadTrailer(routeDsl) + versionedTrailer(version) + outputCall(routeDsl)
-                      + successTrailer(routeDsl, method, sliceElement) + comma;
+        var trailer = uploadTrailer(routeDsl) + versionedTrailer(version) + outputCall(routeDsl) + successTrailer(routeDsl,
+                                                                                                                  method,
+                                                                                                                  sliceElement) + comma;
         // A refused route (F2) is still emitted, as a body-only route, so its one clear error is the only one: emitting
         // the parameter merge would add a misleading "add a record component" error for a MultipartRequest body.
         var hasPath = routeDsl.hasPathParams() && !paramsRefused;
@@ -1042,20 +1043,22 @@ public class RouteSourceGenerator {
 
         if (!unit && success.status().filter(status -> status == 204).isPresent()) {
             messager.printMessage(Diagnostic.Kind.ERROR,
-                                  "Route '" + method.name() + "' declares status = 204, which answers with no body, but '"
-                                  + method.name() + "' returns " + method.responseType()
-                                  + "; return Promise<Unit> for a response with no body, or declare a status that carries one",
+                                  "Route '" + method.name()
+                                 + "' declares status = 204, which answers with no body, but '" + method.name()
+                                 + "' returns " + method.responseType()
+                                 + "; return Promise<Unit> for a response with no body, or declare a status that carries one",
                                   sliceElement);
         }
 
         var status = success.status().or(unit
-                                          ? 204
-                                          : 200);
+                                         ? 204
+                                         : 200);
 
         return success.location()
                       .map(template -> locationExpression(template, method, sliceElement))
-                      .map(location -> ".withSuccess(org.pragmatica.http.routing.SuccessSpec.successSpec(" + status + ", value -> "
-                                       + location + "))")
+                      .map(location -> ".withSuccess(org.pragmatica.http.routing.SuccessSpec.successSpec(" + status
+                                      + ", value -> " + location
+                                      + "))")
                       .or(".withSuccess(org.pragmatica.http.routing.SuccessSpec.successSpec(" + status + "))");
     }
 
@@ -1082,7 +1085,10 @@ public class RouteSourceGenerator {
         return String.join(" + ", parts);
     }
 
-    private String locationField(String field, Option<TypeElement> record, MethodModel method, TypeElement sliceElement) {
+    private String locationField(String field,
+                                 Option<TypeElement> record,
+                                 MethodModel method,
+                                 TypeElement sliceElement) {
         var component = record.flatMap(type -> Option.from(type.getRecordComponents()
                                                                .stream()
                                                                .filter(candidate -> candidate.getSimpleName()
@@ -1091,18 +1097,28 @@ public class RouteSourceGenerator {
 
         if (component.isEmpty()) {
             messager.printMessage(Diagnostic.Kind.ERROR,
-                                  "Route '" + method.name() + "' location names {" + field + "}, but "
-                                  + record.map(type -> "the result record " + type.getQualifiedName() + " has no such component; its components are "
-                                                       + type.getRecordComponents().stream().map(c -> c.getSimpleName().toString()).toList())
-                                          .or("the result type " + method.responseType() + " is not a record with fields to read"),
+                                  "Route '" + method.name()
+                                 + "' location names {" + field
+                                 + "}, but " + record.map(type -> "the result record " + type.getQualifiedName()
+                                                                 + " has no such component; its components are " + type.getRecordComponents()
+                                                                                                                       .stream()
+                                                                                                                       .map(c -> c.getSimpleName()
+                                                                                                                                  .toString())
+                                                                                                                       .toList())
+                                                     .or("the result type " + method.responseType()
+                                                        + " is not a record with fields to read"),
                                   sliceElement);
+
             return "\"\"";
         }
 
-        var recordType = record.map(type -> type.getQualifiedName().toString()).or("");
+        var recordType = record.map(type -> type.getQualifiedName()
+                                                .toString()).or("");
         var read = "((" + recordType + ") value)." + field + "()";
         var rendered = component.flatMap(c -> ValueMappingResolver.resolve(c.asType()))
-                                .map(binding -> binding.voQualifiedName() + ".valueMapping().lower().apply(" + read + ")")
+                                .map(binding -> binding.voQualifiedName()
+                                               + ".valueMapping().lower().apply(" + read
+                                               + ")")
                                 .or(read);
 
         return "org.pragmatica.http.routing.SuccessSpec.pathSegment(" + rendered + ")";
@@ -1120,8 +1136,9 @@ public class RouteSourceGenerator {
     }
 
     private DeclaredType optionElement(DeclaredType type) {
-        return "org.pragmatica.lang.Option".equals(types.erasure(type).toString()) && type.getTypeArguments().size() == 1
-               && type.getTypeArguments().getFirst() instanceof DeclaredType element
+        return "org.pragmatica.lang.Option".equals(types.erasure(type).toString()) && type.getTypeArguments()
+                                                                                          .size() == 1 && type.getTypeArguments()
+                                                                                                              .getFirst() instanceof DeclaredType element
                ? element
                : type;
     }

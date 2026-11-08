@@ -5,6 +5,7 @@ package org.pragmatica.jbct.slice.routing;
 
 import org.pragmatica.lang.Option;
 
+
 /// The success response an inline-table route declares in `routes.toml` (#2805): `status` (the success status) and
 /// `location` (a `Location` template whose `{field}` placeholders name components of the result record). Nothing
 /// declared is [#NONE]: the route answers 200, or 204 for a `Unit` result, and generates the source it always did.

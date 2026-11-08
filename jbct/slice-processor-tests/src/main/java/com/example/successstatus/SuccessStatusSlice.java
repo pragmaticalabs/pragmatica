@@ -8,21 +8,16 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+
 /// Routes declaring a success status and Location in routes.toml (#2805), plus the undeclared defaults.
 @Slice
 public interface SuccessStatusSlice {
     Promise<Article> create(ArticleRequest request);
-
     Promise<Article> register(ArticleRequest request);
-
     Promise<Draft> draft(ArticleRequest request);
-
     Promise<Unit> enqueue(ArticleRequest request);
-
     Promise<Unit> remove(SlugRequest request);
-
     Promise<Option<Article>> find(SlugRequest request);
-
     Promise<Article> broken();
 
     static SuccessStatusSlice successStatusSlice() {
