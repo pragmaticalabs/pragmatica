@@ -42,8 +42,7 @@ class ContainerStartupTest {
             .hasMessageContaining("attempt 1/3")
             .hasMessageContaining("attempt 3/3")
             .hasMessageContaining("boom-attempt-1")
-            .hasMessageContaining("boom-attempt-3")
-            .hasMessageContaining("container exit code: 126");
+            .hasMessageContaining("boom-attempt-3");
         assertThat(created.get()).isEqualTo(3);
     }
 

@@ -6,11 +6,8 @@ package org.pragmatica.aether.environment.aws;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Map;
-import java.util.UUID;
 import java.util.function.Supplier;
 
-import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.output.ToStringConsumer;
 
@@ -23,7 +20,6 @@ import org.testcontainers.containers.output.ToStringConsumer;
 /// attempt's failure chain and logs. Test-support code: exceptions are the JUnit failure channel.
 final class ContainerStartup {
     private static final int MAX_LOG_CHARS = 8_000;
-    private static final String ATTEMPT_LABEL = "aether.test.startup-attempt";
 
     private ContainerStartup() {}
 
@@ -32,13 +28,12 @@ final class ContainerStartup {
         for (int attempt = 1; attempt <= attempts; attempt++) {
             var container = factory.get();
             var consumer = new ToStringConsumer();
-            var label = UUID.randomUUID().toString();
-            container.withLogConsumer(consumer).withLabel(ATTEMPT_LABEL, label);
+            container.withLogConsumer(consumer);
             try {
                 container.start();
                 return container;
             } catch (RuntimeException e) {
-                failures.add(describeFailure(attempt, attempts, container, consumer, label, e));
+                failures.add(describeFailure(attempt, attempts, container, consumer, e));
                 stopQuietly(container);
             }
         }
@@ -50,11 +45,9 @@ final class ContainerStartup {
                                           int attempts,
                                           GenericContainer<?> container,
                                           ToStringConsumer consumer,
-                                          String label,
                                           RuntimeException e) {
         return "--- attempt " + attempt + "/" + attempts + " failed ---\n"
-               + causeChain(e) + "\ncontainer exit code: " + exitCode(label)
-               + "\n--- container log ---\n" + tail(capturedLogs(container, consumer));
+               + causeChain(e) + "\n--- container log ---\n" + tail(capturedLogs(container, consumer));
     }
 
     private static String causeChain(Throwable t) {
@@ -76,20 +69,6 @@ final class ContainerStartup {
             return container.getLogs();
         } catch (RuntimeException e) {
             return "";
-        }
-    }
-
-    /// The container handle is unusable after a failed start, so the exit code is read from the
-    /// daemon by the per-attempt label.
-    private static String exitCode(String label) {
-        try {
-            var client = DockerClientFactory.lazyClient();
-            var found = client.listContainersCmd().withShowAll(true).withLabelFilter(Map.of(ATTEMPT_LABEL, label)).exec();
-            return found.isEmpty()
-                   ? "<container not found>"
-                   : String.valueOf(client.inspectContainerCmd(found.getFirst().getId()).exec().getState().getExitCodeLong());
-        } catch (RuntimeException e) {
-            return "<unavailable: " + e.getClass().getSimpleName() + ">";
         }
     }
 
