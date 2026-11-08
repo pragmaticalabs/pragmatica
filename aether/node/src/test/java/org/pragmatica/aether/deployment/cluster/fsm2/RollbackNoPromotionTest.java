@@ -208,6 +208,27 @@ class RollbackNoPromotionTest {
 
         quiesce(h, nodes);
         assertActiveOnAllCores(h, INVENTORY);
+        assertPromotedBeforeTerminal(h, INVENTORY);
+    }
+
+    // Pins the gate's reach over the queued rollback (#2864): a blueprint that does not declare the rolled-back artifacts loads in the
+    // drain that decides the rollback, so its activation rides the flush of the still-queued rollback draft and still promotes.
+    // Red when: the gate drops goal ACTIVE for every artifact while any rollback draft is queued.
+    @Test
+    void unrelatedBlueprintLoadedInTheRollbackDrain_stillPromotes() {
+        var h = active();
+        var nodes = nodes(h);
+
+        publish(h, blueprint("org.example:other:1.0.0", false, "attempt-0", slice(INVENTORY, 3, 1, Set.of())));
+        publish(h, BLUEPRINT);
+        nodes.forEach(node -> node.follows(INVENTORY));
+        nodes.forEach(node -> node.follows(BILLING));
+        nodes.getFirst().fails(ORDERS, true);
+        h.drain();
+
+        quiesce(h, nodes);
+        assertActiveOnAllCores(h, INVENTORY);
+        assertPromotedBeforeTerminal(h, INVENTORY);
     }
 
     // Pins the gate's quantifier (#2864): a second, registered-only version of the blueprint declares the same healthy artifact, so
@@ -340,6 +361,39 @@ class RollbackNoPromotionTest {
         assertThat(terminal).as("control: a step carries the ROLLED_BACK outcome").isGreaterThanOrEqualTo(0);
         assertThat(activeGoalsFrom(h, terminal)).as("goal ACTIVE written at or after the ROLLED_BACK batch").isEmpty();
         assertThat(residue(h)).as("observed/desired rows left after the rollback").isEmpty();
+    }
+
+    /// The index of the first step that submits goal ACTIVE of `artifact` on any node, or -1.
+    private static int firstActiveStep(FsmHarness h, Artifact artifact) {
+        for (var i = 0; i < h.steps.size(); i++) {
+            if (h.steps.get(i).stream().anyMatch(effect -> submitsActive(effect, artifact))) {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    private static boolean submitsActive(ClusterEffect effect, Artifact artifact) {
+        return effect instanceof ClusterEffect.Submit submit && submit.transaction()
+                                                                      .mutations()
+                                                                      .stream()
+                                                                      .anyMatch(mutation -> mutation.key() instanceof SliceDesiredKey key
+                                                                                            && key.artifact().equals(artifact)
+                                                                                            && mutation.replacement()
+                                                                                                       .filter(SliceDesiredValue.class::isInstance)
+                                                                                                       .map(SliceDesiredValue.class::cast)
+                                                                                                       .map(goal -> goal.goal() == SliceGoal.ACTIVE)
+                                                                                                       .or(false));
+    }
+
+    /// The unrelated artifact was promoted before the rollback's terminal batch: the gate delayed nothing.
+    private static void assertPromotedBeforeTerminal(FsmHarness h, Artifact artifact) {
+        var active = firstActiveStep(h, artifact);
+        var terminal = firstTerminalStep(h);
+
+        assertThat(terminal).as("control: a step carries the ROLLED_BACK outcome").isGreaterThanOrEqualTo(0);
+        assertThat(active).as("step of the first goal ACTIVE of " + artifact).isGreaterThanOrEqualTo(0).isLessThanOrEqualTo(terminal);
     }
 
     private static int firstTerminalStep(FsmHarness h) {
