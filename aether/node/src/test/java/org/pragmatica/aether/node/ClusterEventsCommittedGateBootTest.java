@@ -152,8 +152,14 @@ class ClusterEventsCommittedGateBootTest {
             .as("control: the committed record names another node, not the one this node bootstrapped").isEqualTo(OTHER);
         assertThat(raisedBy("record-names-another")).as("the record outranks the leader (ownership route and lookup)").isFalse();
 
+        // #2550: this node is still the committed leader, so its ownership writer re-mints a record naming itself for the partition
+        // left without one, at any moment after the removal; under load it lands before the next read. Either state passes the
+        // gate, so this half holds whichever the node reached. The removal route itself is pinned deterministically by
+        // bootedNode_doesNotRaiseAKvDerivedFact_whenTheCommittedLeaderNotificationNamesAnotherNode, where no re-mint can land
+        // (the same batch names another leader) and a missed removal leaves this node's own record in the gate.
         commitAsLeader(record, Option.some(awaitFailoverRefusal(record)), Option.none());
-        assertThat(node.kvStore().getTyped(record, StreamPartitionOwnershipValue.class).isPresent()).as("control: the record is gone").isFalse();
+        assertThat(node.kvStore().getTyped(record, StreamPartitionOwnershipValue.class).map(StreamPartitionOwnershipValue::owner).or(node.self()))
+            .as("control: the record naming another node is gone (none left, or the leader's re-mint naming this node)").isEqualTo(node.self());
         assertThat(raisedBy("record-removed")).as("the removal route clears the owner this node holds").isTrue();
     }
 
@@ -265,6 +271,19 @@ class ClusterEventsCommittedGateBootTest {
         node.start()
             .await(START_BOUND)
             .onFailure(cause -> fail("start() must succeed: " + cause.message()));
+        awaitBootReplay();
+    }
+
+    /// #2550: the engine replays the store's notifications once it is serving, AFTER the start promise resolves
+    /// (`RabiaEngine.announceRestoreIfPending`), and the burst is computed from the store when the dispatcher dequeues it. A
+    /// test write racing it is replayed back as a notification: a snapshot this test installs "with no notification" is then
+    /// delivered after all, and the gate follows it. So every test starts once the boot replay is delivered: a replay item has
+    /// been enqueued (the replay-phase queue high-water is set at its append), and everything enqueued so far is delivered.
+    private void awaitBootReplay() {
+        await().atMost(15, SECONDS)
+               .untilAsserted(() -> assertThat(node.kvStore().deliveryMetrics().queueHighWaterReplay())
+                   .as("the engine enqueues its boot replay").isPositive());
+        awaitDelivery();
     }
 
     /// Whether the committed gate let the fact through: raised through `emitCommitted`, and counted by the aggregator as passed.
