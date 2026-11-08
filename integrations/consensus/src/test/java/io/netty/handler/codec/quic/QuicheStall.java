@@ -28,7 +28,8 @@ public final class QuicheStall {
     private QuicheStall() {}
 
     /// The state read around the induced stall. Times are quiche's own: nanos until its timer, -1 = no timer.
-    public record Reading(long quicheTimerBefore, long quicheTimerAfter, boolean nettyTimerArmedAfter, String sendResult) {}
+    public record Reading(long quicheTimerBefore, long quicheTimerAfter, boolean nettyTimerArmedAfter, String sendResult,
+                          long timerAtTrigger, long triggerNanos) {}
 
     /// quiche's current timer in nanos (-1: none), read on the channel's event loop.
     public static long quicheTimerNanos(QuicChannel channel) throws Exception {
@@ -41,7 +42,7 @@ public final class QuicheStall {
     /// netty does after every write/recv. `scheduleTimeout()` then finds the elapsed timer and runs it inline from
     /// inside the send; quiche declares the in-flight packet lost; the nested send is a re-entrant no-op.
     public static Reading induceLateTimer(QuicChannel channel) throws Exception {
-        return channel.eventLoop().submit(() -> induce((QuicheQuicChannel) channel)).get(10, TimeUnit.SECONDS);
+        return channel.eventLoop().submit(() -> induce((QuicheQuicChannel) channel, -1)).get(10, TimeUnit.SECONDS);
     }
 
     /// #2904: closes the race between the test thread and netty's own timer. quiche's loss timer for the dropped
@@ -65,7 +66,7 @@ public final class QuicheStall {
             var timer = Quiche.quiche_conn_timeout_as_nanos(connection(channel).address());
 
             if (ready.getAsBoolean() && timer > 0 && timer < maxNanos) {
-                result.complete(induce(channel));
+                result.complete(induce(channel, timer));
                 return;
             }
             channel.eventLoop().schedule(() -> watch(channel, maxNanos, ready, result), 1, TimeUnit.MILLISECONDS);
@@ -74,7 +75,8 @@ public final class QuicheStall {
         }
     }
 
-    private static Reading induce(QuicheQuicChannel channel) throws Exception {
+    private static Reading induce(QuicheQuicChannel channel, long timerAtTrigger) throws Exception {
+        var triggerNanos = System.nanoTime();
         var connection = connection(channel);
         var handler = field(QuicheQuicChannel.class, "timeoutHandler").get(channel);
         var timeoutFuture = field(handler.getClass(), "timeoutFuture");
@@ -100,7 +102,7 @@ public final class QuicheStall {
         var after = Quiche.quiche_conn_timeout_as_nanos(connection.address());
         var armed = timeoutFuture.get(handler) != null;
 
-        return new Reading(before, after, armed, String.valueOf(result));
+        return new Reading(before, after, armed, String.valueOf(result), timerAtTrigger, triggerNanos);
     }
 
     private static QuicheQuicConnection connection(QuicChannel channel) throws Exception {
