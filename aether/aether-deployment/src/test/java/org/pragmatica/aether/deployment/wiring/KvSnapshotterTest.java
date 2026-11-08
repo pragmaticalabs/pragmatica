@@ -62,6 +62,8 @@ class KvSnapshotterTest {
                                                                                   "NodeRoutesKey",
                                                                                   "NodePlacementKey",
                                                                                   "CommunityPlacementOperationKey",
+                                                                                  "TopicSubscriptionKey",
+                                                                                  "TopicPublisherKey",
                                                                                   "ClusterConfigKey"));
 
     private final KVStore<AetherKey, AetherValue> store = WiringFixtures.store();

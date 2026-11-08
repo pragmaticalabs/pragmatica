@@ -271,7 +271,7 @@ public sealed interface Outcomes {
     }
 
     /// Whether a draft of `kind` on `key` is submitted and unsettled, or waits in the outbox.
-    private static boolean inFlight(ClusterModel m, SubmitKind kind, AetherKey key) {
+    static boolean inFlight(ClusterModel m, SubmitKind kind, AetherKey key) {
         return m.submitted.values()
                           .stream()
                           .flatMap(submitted -> submitted.drafts()
