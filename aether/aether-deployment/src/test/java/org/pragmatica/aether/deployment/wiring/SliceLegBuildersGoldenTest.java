@@ -13,9 +13,9 @@ import java.util.function.Function;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentContext;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentState;
 import org.pragmatica.aether.deployment.node.machine.LegCommand;
@@ -89,6 +89,9 @@ class SliceLegBuildersGoldenTest {
         [scheduling.nightly]
         cron = "0 0 * * *"
         execution_mode = "single"
+
+        [undeclared_tier]
+        durability = "sometimes"
         """;
 
     private final KVStore<AetherKey, AetherValue> kv = WiringFixtures.store();
@@ -524,17 +527,68 @@ class SliceLegBuildersGoldenTest {
         assertThat(legacyCommands("doUnpublishTopicSubscriptions", slice)).isEmpty();
     }
 
+    // -- R-CF.22 (#2394, NT-155): the config-update sections, the [json] settings section included ------------------------------------
+    /// The sections the legacy reader registers for `slice`, read through its private `readConfigUpdateEntriesFromManifest`.
+    @SuppressWarnings("unchecked")
+    private List<String> legacyConfigSections(Slice slice) throws Exception {
+        Method reader = NodeDeploymentState.Active.class.getDeclaredMethod("readConfigUpdateEntriesFromManifest", Artifact.class, Slice.class);
+
+        reader.setAccessible(true);
+        var entries = (List<Object>) reader.invoke(legacyState(), ARTIFACT, slice);
+        var sections = new ArrayList<String>();
+
+        for (var entry : entries) {
+            Method section = entry.getClass().getDeclaredMethod("configSection");
+
+            section.setAccessible(true);
+            sections.add((String) section.invoke(entry));
+        }
+
+        return sections;
+    }
+
+    /// Red when: the FSM2 builders drop the manifest's `json.settings.section`, which legacy registers since #2394.
+    @Test
+    void configUpdateSections_equalTheLegacyReader_withTheJsonSettingsSection() throws Exception {
+        var slice = new ConfigCarryForwardChainTest.JsonRoutedSlice();
+
+        var legacy = legacyConfigSections(slice);
+        var adapter = builders.configUpdates(ARTIFACT, slice);
+
+        assertThat(legacy).as("the legacy reader registers the binding and the json section, so the comparison is not vacuous")
+                          .containsExactly("database", "json");
+        assertThat(adapter.sections()).isEqualTo(legacy);
+        assertThat(adapter.factoryClassName()).isEqualTo(ConfigCarryForwardChainTest.JsonProbe.class.getName());
+    }
+
+    /// The control: a slice whose manifest names a factory and no section registers nothing, under both readers.
+    @Test
+    void configUpdateSections_ofASliceWithoutSections_areEmpty_likeLegacy() throws Exception {
+        var slice = new ConfigCarryForwardChainTest.UnroutedSlice();
+
+        assertThat(legacyConfigSections(slice)).isEmpty();
+        assertThat(builders.configUpdates(ARTIFACT, slice).isEmpty()).isTrue();
+    }
+
     // -- #1337 parity (CUTOVER-BLOCKER) -------------------------------------------------------------------------------------
-    // rc5 #1337 gave the LEGACY topic pass a tier on the subscription row, a TopicPublisher row and a deploy-time refusal of a tier conflict.
-    // The FSM2 legs carry the tier; the publisher row and the refusal are not built yet. Each gap is pinned twice: an ENABLED tripwire asserting
-    // today's behaviour, and a @Disabled parity test beside it. When FSM2 gains the behaviour the tripwire goes red: enable the parity test and
-    // delete the tripwire. Both are required before the FSM2 cutover.
+    // rc5 #1337 gave the LEGACY topic pass a tier on the subscription row, a TopicPublisher row and a deploy-time refusal of a tier conflict
+    // in both orders. The FSM2 legs build all three (R-CF.12..14); each parity test compares them with the legacy builders on the same inputs.
     private static final String PARITY = "#1337 parity: required before the FSM2 cutover";
     private static final Artifact OTHER_PUBLISHER = Artifact.artifact("org.example:other-publisher:1.0.0").unwrap();
     private static final NodeId OTHER_NODE = NodeId.nodeId("core-9").unwrap();
 
     /// A slice that only publishes `orders`; its manifest is `PublisherSlice.manifest` (absent `orders` section: the ephemeral tier).
     interface PublisherSlice extends Slice {}
+
+    /// A slice that publishes `orders` under a section that cannot be bound; its manifest is `F2bUndeclaredTierPublisherSlice.manifest`.
+    interface F2bUndeclaredTierPublisherSlice extends Slice {}
+
+    static final class UndeclaredTierPublisherSlice implements F2bUndeclaredTierPublisherSlice {
+        @Override
+        public List<SliceMethod<?, ?>> methods() {
+            return List.of();
+        }
+    }
 
     /// A slice whose `orders` handler takes a MessageContext (`context=message`); its manifest is `ContextSubscriberSlice.manifest`.
     interface ContextSubscriberSlice extends Slice {}
@@ -582,20 +636,6 @@ class SliceLegBuildersGoldenTest {
         assertThat(((TopicSubscriptionValue) ((KVCommand.Put<?, ?>) adapter.getFirst()).value()).tier()).isEqualTo(TopicTier.DURABLE);
     }
 
-    /// CUTOVER-BLOCKER tripwire (#1337): the legacy topic pass writes this node's TopicPublisher row; the FSM2 legs write none.
-    @Test
-    void tripwire_fsm2WritesNoTopicPublisherRow_whereLegacyWritesOne() throws Exception {
-        var slice = new PublisherOnlySlice();
-
-        var legacy = legacyCommands("doPublishTopicSubscriptions", slice);
-        var adapter = allLegs(slice);
-
-        assertThat(legacy).as("the legacy builders wrote the publisher row, so the tripwire is not vacuous").anyMatch(SliceLegBuildersGoldenTest::isPublisherPut);
-        assertThat(adapter).as(PARITY + ": FSM2 now writes a TopicPublisher row; enable parity_fsm2WritesTheTopicPublisherRow_likeLegacy and delete this tripwire")
-                           .noneMatch(SliceLegBuildersGoldenTest::isPublisherPut);
-    }
-
-    @Disabled(PARITY)
     @Test
     void parity_fsm2WritesTheTopicPublisherRow_likeLegacy() throws Exception {
         var slice = new PublisherOnlySlice();
@@ -605,22 +645,85 @@ class SliceLegBuildersGoldenTest {
         assertThat(allLegs(slice)).as(PARITY + ": the FSM2 legs must write the TopicPublisher row the legacy topic pass writes").isEqualTo(legacy);
     }
 
-    /// CUTOVER-BLOCKER tripwire (#1337): with an ephemeral publisher row standing, the legacy topic pass refuses a durable subscriber; the FSM2
-    /// legs build its row anyway.
+    /// R-CF.12, the durable branch: a publisher whose own section declares `durability = "durable"` writes a DURABLE row, as legacy does.
     @Test
-    void tripwire_fsm2DoesNotRefuseATierConflict_whereLegacyDoes() throws Exception {
-        var slice = new DurableSubscriberSlice();
+    void aDurablePublisher_recordsTheDurableTier_likeLegacy() throws Exception {
+        ConfigService.setInstance(realBinderOver(TOML + "\n[orders]\ntopic_name = \"orders\"\ndurability = \"durable\"\n"));
+        var slice = new PublisherOnlySlice();
 
-        seedConflictingEphemeralPublisher(slice);
+        var legacy = legacyCommands("doPublishTopicSubscriptions", slice);
+
+        assertThat(legacy).as("the legacy builders wrote the publisher row, so the comparison is not vacuous").hasSize(1);
+        assertThat(allLegs(slice)).isEqualTo(legacy);
+        assertThat(((TopicPublisherValue) ((KVCommand.Put<?, ?>) legacy.getFirst()).value()).tier()).isEqualTo(TopicTier.DURABLE);
+    }
+
+    /// R-CF.12: a publisher whose tier cannot be read writes no row (nothing is refused on a guess), and its teardown still removes the key,
+    /// as legacy does.
+    @Test
+    void anUndeclaredTierPublisher_writesNoRow_butItsTeardownRemovesTheKey_likeLegacy() throws Exception {
+        var slice = new UndeclaredTierPublisherSlice();
+
+        var legacyPublish = legacyCommands("doPublishTopicSubscriptions", slice);
+        var legacyUnpublish = legacyCommands("doUnpublishTopicSubscriptions", slice);
+
+        assertThat(legacyPublish).as("legacy writes no row for an UNDECLARED tier").isEmpty();
+        assertThat(legacyUnpublish).as("but removes the key, so the comparison is not vacuous").hasSize(1);
+        assertThat(allLegs(slice)).isEqualTo(legacyPublish);
+        assertThat(teardown(slice, LegKind.TOPIC_SUBSCRIPTION)).isEqualTo(legacyUnpublish);
+    }
+
+    /// R-CF.12, the unload half: the teardown removes this node's TopicPublisher row, as the legacy unpublish pass does.
+    @Test
+    void parity_fsm2TeardownRemovesTheTopicPublisherRow_likeLegacy() throws Exception {
+        var slice = new PublisherOnlySlice();
+
+        var legacy = legacyCommands("doUnpublishTopicSubscriptions", slice);
+        var adapter = teardown(slice, LegKind.TOPIC_SUBSCRIPTION);
+
+        assertThat(legacy).as("the legacy unpublish removed the publisher row, so the comparison is not vacuous")
+                          .anyMatch(command -> command instanceof KVCommand.Remove<?> remove && remove.key() instanceof TopicPublisherKey);
+        assertThat(adapter).isEqualTo(legacy);
+    }
+
+    /// The controls of R-CF.13/14: a conflicting row of the SAME slice at another version is an upgrade, not a conflict, and refuses nothing.
+    @Test
+    void aConflictingRowOfTheSameSliceAtAnotherVersion_refusesNothing_likeLegacy() throws Exception {
+        var slice = new DurableSubscriberSlice();
+        var subscription = (KVCommand.Put<?, ?>) legacyCommands("doPublishTopicSubscriptions", slice).getFirst();
+        var address = ((TopicSubscriptionKey) subscription.key()).address();
+        var previous = ARTIFACT.base().withVersion(Version.version("0.9.0").unwrap());
+
+        kv.process(kv.createBatch(List.of(new KVCommand.Put<AetherKey, AetherValue>(TopicPublisherKey.topicPublisherKey(address, previous, OTHER_NODE),
+                                                                                    TopicPublisherValue.topicPublisherValue(OTHER_NODE, TopicTier.EPHEMERAL)))));
         var legacyFailure = legacyPublish("doPublishTopicSubscriptions", slice).await().fold(cause -> cause.message(), _ -> "no failure");
         var adapterFailure = builders.legs(ARTIFACT, slice).fold(cause -> cause.message(), _ -> "no failure");
 
-        assertThat(legacyFailure).as("the legacy topic pass refused the conflict, so the tripwire is not vacuous").contains("needs a durable topic");
-        assertThat(adapterFailure).as(PARITY + ": FSM2 now refuses a tier conflict; enable parity_fsm2RefusesATierConflict_likeLegacy and delete this tripwire")
-                                  .isEqualTo("no failure");
+        assertThat(legacyFailure).as("control: legacy refuses nothing").isEqualTo("no failure");
+        assertThat(adapterFailure).isEqualTo("no failure");
     }
 
-    @Disabled(PARITY)
+    /// The controls of R-CF.13/14: a row whose tier does not conflict (a DURABLE publisher at the subscriber's topic) and a conflicting row at
+    /// another topic each refuse nothing, under legacy and FSM2 alike.
+    @Test
+    void aNonConflictingTier_andAConflictAtAnotherTopic_refuseNothing_likeLegacy() throws Exception {
+        var slice = new DurableSubscriberSlice();
+        var subscription = (KVCommand.Put<?, ?>) legacyCommands("doPublishTopicSubscriptions", slice).getFirst();
+        var address = ((TopicSubscriptionKey) subscription.key()).address();
+        var parts = address.asString().split(":");
+        var elsewhere = ResourceAddress.resourceAddress(parts[0], "elsewhere", parts[2]).unwrap();
+
+        kv.process(kv.createBatch(List.of(new KVCommand.Put<AetherKey, AetherValue>(TopicPublisherKey.topicPublisherKey(address, OTHER_PUBLISHER, OTHER_NODE),
+                                                                                    TopicPublisherValue.topicPublisherValue(OTHER_NODE, TopicTier.DURABLE)),
+                                          new KVCommand.Put<AetherKey, AetherValue>(TopicPublisherKey.topicPublisherKey(elsewhere, OTHER_PUBLISHER, OTHER_NODE),
+                                                                                    TopicPublisherValue.topicPublisherValue(OTHER_NODE, TopicTier.EPHEMERAL)))));
+        var legacyFailure = legacyPublish("doPublishTopicSubscriptions", slice).await().fold(cause -> cause.message(), _ -> "no failure");
+        var adapterFailure = builders.legs(ARTIFACT, slice).fold(cause -> cause.message(), _ -> "no failure");
+
+        assertThat(legacyFailure).as("control: legacy refuses nothing").isEqualTo("no failure");
+        assertThat(adapterFailure).isEqualTo("no failure");
+    }
+
     @Test
     void parity_fsm2RefusesATierConflict_likeLegacy() throws Exception {
         var slice = new DurableSubscriberSlice();
@@ -632,7 +735,8 @@ class SliceLegBuildersGoldenTest {
         assertThat(adapterFailure).as(PARITY + ": the FSM2 legs must refuse the tier conflict the legacy topic pass refuses").isEqualTo(legacyFailure);
     }
 
-    /// Seeds a durable subscriber row of another slice on another node at the address the publisher resolves to.
+    /// Seeds two durable subscriber rows (two handlers) of another slice on another node at the address the publisher resolves to: the refusal
+    /// names that slice once, as legacy's does.
     private void seedConflictingDurableSubscriber(Slice publisher) throws Exception {
         var row = (KVCommand.Put<?, ?>) legacyCommands("doPublishTopicSubscriptions", publisher).getFirst();
         var address = ((TopicPublisherKey) row.key()).address();
@@ -641,25 +745,14 @@ class SliceLegBuildersGoldenTest {
                                                                                                                               OTHER_PUBLISHER,
                                                                                                                               MethodName.methodName("onMessage").unwrap(),
                                                                                                                               OTHER_NODE),
+                                                                                    TopicSubscriptionValue.topicSubscriptionValue(OTHER_NODE, TopicTier.DURABLE)),
+                                          new KVCommand.Put<AetherKey, AetherValue>(TopicSubscriptionKey.topicSubscriptionKey(address,
+                                                                                                                              OTHER_PUBLISHER,
+                                                                                                                              MethodName.methodName("onReplay").unwrap(),
+                                                                                                                              OTHER_NODE),
                                                                                     TopicSubscriptionValue.topicSubscriptionValue(OTHER_NODE, TopicTier.DURABLE)))));
     }
 
-    /// CUTOVER-BLOCKER tripwire (#1337, the other order): with a durable subscriber row standing, the legacy topic pass refuses an ephemeral
-    /// publisher; the FSM2 legs build anyway.
-    @Test
-    void tripwire_fsm2DoesNotRefuseAnEphemeralPublisher_whereLegacyDoes() throws Exception {
-        var slice = new PublisherOnlySlice();
-
-        seedConflictingDurableSubscriber(slice);
-        var legacyFailure = legacyPublish("doPublishTopicSubscriptions", slice).await().fold(cause -> cause.message(), _ -> "no failure");
-        var adapterFailure = builders.legs(ARTIFACT, slice).fold(cause -> cause.message(), _ -> "no failure");
-
-        assertThat(legacyFailure).as("the legacy topic pass refused the conflict, so the tripwire is not vacuous").contains("published on the EPHEMERAL tier");
-        assertThat(adapterFailure).as(PARITY + ": FSM2 now refuses an ephemeral publisher; enable parity_fsm2RefusesAnEphemeralPublisher_likeLegacy and delete this tripwire")
-                                  .isEqualTo("no failure");
-    }
-
-    @Disabled(PARITY)
     @Test
     void parity_fsm2RefusesAnEphemeralPublisher_likeLegacy() throws Exception {
         var slice = new PublisherOnlySlice();

@@ -44,7 +44,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// The handler answers 100 ms after dispatch, in a task of its own on the server's event loop, outside the QUIC
 /// channel's read handling, as an application handler's answer runs: each stream write is then packetised as soon as it
 /// is made. The same task arms the injector, writes the answer and ends the injector's burst, so the burst is exactly
+<<<<<<< HEAD
 /// the answer's datagrams under any load (#2862). The injector releases them once the endpoint has sent four PTO probes (#2866), at the earliest 600 ms later.
+=======
+/// the answer's datagrams under any load (#2862). The injector releases them 600 ms later, after the PTO probes.
+>>>>>>> origin/release-1.0.0-rc5
 class Http3ResponseFinLossTest {
     private static final int PROBES = 4;
     private static final int BODY_BYTES = 6 * 1024;
@@ -142,7 +146,10 @@ class Http3ResponseFinLossTest {
     }
 
     private void release(boolean drop) {
+<<<<<<< HEAD
         injector.awaitProbes(udp, PROBES);
+=======
+>>>>>>> origin/release-1.0.0-rc5
         injector.release(udp, drop);
     }
 }

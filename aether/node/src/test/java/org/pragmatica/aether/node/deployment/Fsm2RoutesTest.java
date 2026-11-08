@@ -42,6 +42,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
+import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -64,6 +66,7 @@ class Fsm2RoutesTest {
     private static final NodeId PEER = NodeId.nodeId("core-2").unwrap();
     private static final Artifact ORDERS = Artifact.artifact("org.example:orders:1.0.0").unwrap();
     private static final BlueprintId BLUEPRINT = BlueprintId.blueprintId("org.example:app:1.0.0").unwrap();
+    private static final ResourceAddress TOPIC = ResourceAddress.resourceAddress("org.example", "orders", "1.0.0").unwrap();
     private static final Path INDEXER = Path.of("..", "aether-deployment", "src", "main", "java", "org", "pragmatica", "aether", "deployment", "cluster", "fsm2", "Indexer.java");
     private static final AetherValue HARMLESS = new AetherValue.DeploymentApplyValue("attempt", Option.none(), 1L);
 
@@ -235,6 +238,8 @@ class Fsm2RoutesTest {
                              Map.entry("NodeRoutesKey", AetherKey.NodeRoutesKey.nodeRoutesKey(PEER, ORDERS)),
                              Map.entry("NodePlacementKey", new AetherKey.NodePlacementKey(PEER)),
                              Map.entry("CommunityPlacementOperationKey", new AetherKey.CommunityPlacementOperationKey("c1")),
+                             Map.entry("TopicSubscriptionKey", AetherKey.TopicSubscriptionKey.topicSubscriptionKey(TOPIC, ORDERS, MethodName.methodName("onOrder").unwrap(), PEER)),
+                             Map.entry("TopicPublisherKey", AetherKey.TopicPublisherKey.topicPublisherKey(TOPIC, ORDERS, PEER)),
                              Map.entry("ClusterConfigKey", AetherKey.ClusterConfigKey.clusterConfigKey(1L)));
     }
 
@@ -260,8 +265,8 @@ class Fsm2RoutesTest {
             var removes = indexerFamilies("indexRemove", "// -- blueprints, targets, routings");
             var samples = samples();
 
-            assertThat(puts).as("the scan read the Indexer's put switch").hasSizeGreaterThanOrEqualTo(18);
-            assertThat(removes).as("and its remove switch").hasSizeGreaterThanOrEqualTo(17);
+            assertThat(puts).as("the scan read the Indexer's put switch").hasSizeGreaterThanOrEqualTo(20);
+            assertThat(removes).as("and its remove switch").hasSizeGreaterThanOrEqualTo(19);
             assertThat(samples.keySet()).as("a sample key exists for every family the Indexer names").containsAll(puts);
             var rig = new Rig();
 
