@@ -110,7 +110,14 @@ class Fsm2EquivalenceRoundTest {
         for (var index = 0; index < engines.size(); index++) {
             var engine = engines.get(index);
 
-            arms.put(engine, runArm(scenario, engine, 33000 + 400 * index, oracle, o4Controls));
+            try {
+                arms.put(engine, runArm(scenario, engine, 33000 + 400 * index, oracle, o4Controls));
+            } catch (RuntimeException | AssertionError e) {
+                log("arm %s ERROR %s".formatted(engine, e));
+                log("VERDICT ERROR");
+                write(scenario, round);
+                throw e;
+            }
         }
         var legacy = arms.get(DeploymentEngine.LEGACY);
         var fsm2 = arms.get(DeploymentEngine.FSM2);
