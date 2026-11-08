@@ -6,10 +6,20 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.PendingGoal;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.Submitted;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.TxDraft;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
@@ -123,6 +133,43 @@ class RollbackNoPromotionTest {
 
         quiesce(h, nodes, 3);
         assertTerminalWithoutPromotion(h);
+    }
+
+    // Red when: a goal released at the resubmission bound (its pair did not move) does not make the orphan audit due, so an UNLOADED
+    // goal of a removed target is derived again only at the tenth tick.
+    @Test
+    void unloadReleasedAtTheBound_makesTheAuditDue() {
+        assertThat(auditDueAfterRelease(SliceGoal.UNLOADED)).isTrue();
+    }
+
+    // Red when: every released goal makes the audit due, not only a released UNLOADED one (a full observed scan per released goal).
+    @Test
+    void loadedReleasedAtTheBound_leavesTheAuditAlone() {
+        assertThat(auditDueAfterRelease(SliceGoal.LOADED)).isFalse();
+    }
+
+    private static boolean auditDueAfterRelease(SliceGoal goal) {
+        var m = new ClusterModel();
+        var pair = SlicePair.slicePair(CORE_1, ORDERS);
+        var leader = new LeaderValue(FsmHarness.SELF, 1L);
+        var put = new KVCommand.Mutation<AetherKey, AetherValue>(new SliceDesiredKey(CORE_1, ORDERS),
+                                                                 Option.some(desired(SliceGoal.LOADED, gen(1))),
+                                                                 Option.some(desired(goal, gen(2))));
+        var draft = new TxDraft(SubmitKind.GOALS,
+                                new ArtifactJudgmentKey(ORDERS),
+                                List.of(put),
+                                List.of(),
+                                Set.of(pair),
+                                Option.none(),
+                                Outbox.GOAL_RESUBMISSIONS,
+                                List.of());
+
+        Indexer.indexDesired(m, SurvivorPinSupport.ctx(1_000L, 0L), pair, desired(SliceGoal.LOADED, gen(1)));
+        Indexer.putPending(m, pair, new PendingGoal(goal, gen(2)));
+        m.submitted = m.submitted.put("c1", new Submitted("c1", SubmitKind.GOALS, List.of(draft), 1L, leader, 0L));
+        Outbox.settle(m, SurvivorPinSupport.ctx(1_000L, 0L), new ClusterInput.WriteSettled("c1", 1L, new Settlement.Refused(Option.some(leader), Map.of())));
+
+        return m.auditDue;
     }
 
     // Pins the gate's reach (#2864): a blueprint that does not declare the rolled-back artifacts, deployed while the rollback is in
