@@ -53,18 +53,18 @@ class AlignedRecoveryOwnerAttributionTest {
     @Test
     void threeArgumentSeam_routesTheOwnerPageThroughTheAttributedApplier() {
         var recovery = AlignedRecovery.alignedRecovery((_, _, offset, _, _) -> Result.success(offset),
-                                                       (_, _, _, _, _, _) -> {
-                                                           calls.add("attributed");
-                                                           return Result.success(9L);
+                                                       (stream, partition, from, to, _, _) -> {
+                                                           calls.add("attributed:" + stream + partition);
+                                                           return Result.success(from * 10 + to);
                                                        },
                                                        (_, _, toOffset, _) -> Result.success(toOffset));
 
-        var result = recovery.applyOwnerAttributed("s", 0, 0L, 1L, Epoch.ZERO, List.of(), () -> {
+        var result = recovery.applyOwnerAttributed("s", 3, 2L, 5L, Epoch.ZERO, List.of(), () -> {
             calls.add("apply");
             return Result.success(1L);
         });
 
-        assertThat(result.unwrap()).isEqualTo(9L);
-        assertThat(calls).containsExactly("attributed");
+        assertThat(result.unwrap()).as("offsets reach the attributed applier unchanged").isEqualTo(25L);
+        assertThat(calls).as("stream and partition reach it unchanged").containsExactly("attributed:s3");
     }
 }
