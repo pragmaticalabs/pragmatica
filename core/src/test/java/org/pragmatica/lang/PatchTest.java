@@ -31,6 +31,12 @@ class PatchTest {
     }
 
     @Test
+    void value_ofNull_isNormalisedToNullValue() {
+        assertThat(Patch.<String>value(null)).isSameAs(Patch.<String>nullValue());
+        assertThat(Patch.value("a").map(_ -> (String) null)).isSameAs(Patch.<String>nullValue());
+    }
+
+    @Test
     void factories_absentAndNull_areDistinctSingletons() {
         assertThat(Patch.<String>absent()).isSameAs(Patch.<Integer>absent())
                                           .isNotEqualTo(Patch.nullValue());

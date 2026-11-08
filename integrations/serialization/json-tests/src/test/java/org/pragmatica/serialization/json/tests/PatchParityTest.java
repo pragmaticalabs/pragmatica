@@ -226,6 +226,73 @@ class PatchParityTest {
         assertRefused(VALUE_OBJECTS.writeAsString(value));
     }
 
+    record ListOfListOfPatch(List<List<Patch<String>>> x) {}
+
+    record MapOfListOfPatch(Map<String, List<Patch<String>>> x) {}
+
+    record ObjectMember(Object x) {}
+
+    static Stream<Object> deepWrites() {
+        return Stream.of(new ListOfListOfPatch(List.of(List.of(Patch.value("a")))),
+                         new ListOfListOfPatch(List.of(List.of(Patch.nullValue()))),
+                         new MapOfListOfPatch(Map.of("k", List.of(Patch.value("a")))),
+                         new MapOfListOfPatch(Map.of("k", List.of(Patch.nullValue()))),
+                         new ObjectMember(List.of(Patch.nullValue())),
+                         new ObjectMember(List.of(Patch.value("a"))),
+                         new ObjectMember(Patch.nullValue()),
+                         new ObjectMember(Patch.value("a")));
+    }
+
+    // The write side refuses a Patch at any container depth, as the read side refuses the type (G3, G8, H1, H2).
+    @ParameterizedTest
+    @MethodSource("deepWrites")
+    void jackson_patchNestedTwoLevelsOrBehindAnObject_refusedOnWrite(Object value) {
+        assertRefused(VALUE_OBJECTS.writeAsString(value));
+    }
+
+    @Test
+    void jackson_patchInContainersDeep_refusedOnRead() {
+        assertRefused(VALUE_OBJECTS.readBytes(bytes("{\"x\":null}"), ListOfListOfPatch.class));
+        assertRefused(VALUE_OBJECTS.readBytes(bytes("{\"x\":null}"), MapOfListOfPatch.class));
+    }
+
+    public static class FieldPatch {
+        public Patch<String> s;
+    }
+
+    public static class SetterPatch {
+        private Patch<String> s;
+
+        public Patch<String> getS() {
+            return s;
+        }
+
+        public void setS(Patch<String> s) {
+            this.s = s;
+        }
+    }
+
+    // Jackson reads a missing member of a field or setter property as Java null, not Absent: refused (F1).
+    @ParameterizedTest
+    @MethodSource("nonCreatorTypes")
+    void jackson_patchOutsideACreator_refusedOnRead(Class<?> type) {
+        assertRefused(VALUE_OBJECTS.readBytes(bytes("{}"), type));
+        assertRefused(VALUE_OBJECTS.readBytes(bytes("{\"s\":\"a\"}"), type));
+    }
+
+    static Stream<Class<?>> nonCreatorTypes() {
+        return Stream.of(FieldPatch.class, SetterPatch.class);
+    }
+
+    @Test
+    void jackson_valueOfNull_normalisedToNull_roundTrips() {
+        var json = VALUE_OBJECTS.writeAsString(new PlainUpdate(Patch.value(null), Patch.absent())).unwrap();
+
+        assertEquals("{\"name\":null}", json);
+        assertEquals(Patch.nullValue(),
+                     VALUE_OBJECTS.readBytes(bytes(json), PlainUpdate.class).unwrap().name());
+    }
+
     @Test
     void jackson_patchAsTheWholeDocument_refusedOnReadAndWrite() {
         assertRefused(VALUE_OBJECTS.readBytes(bytes("\"a\""), new TypeToken<Patch<String>>() {}));
