@@ -3531,6 +3531,49 @@ class PartitionBackfillTest {
             assertThat(survivor.confirmedOffset()).isEqualTo(10L);
         }
 
+        /// #2888: the survivor confirmation keeps the late-side-effect gate (#1638): a pull that settles AFTER its flight timed
+        /// out, while the NEXT flight holds the slot, records no survivor row. Red under "the confirmation is not gated".
+        @Test
+        void backfill_lateSurvivorPull_afterTheTimeout_recordsNoSurvivorRow() {
+            seedLocal(5);
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.updateWatermark(STREAM, PARTITION, OWNER, 4L);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+            var pending = new CopyOnWriteArrayList<Promise<ReplicationMessage.CatchupResponse>>();
+            var requests = new CopyOnWriteArrayList<ReplicationMessage.CatchupRequest>();
+            var served = survivorSource(SURVIVOR, 5L, eventsFrom(5, 15));
+            CatchupTransport gated = (_, request) -> {
+                var response = Promise.<ReplicationMessage.CatchupResponse>promise();
+
+                pending.add(response);
+                requests.add(request);
+
+                return response;
+            };
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             gated,
+                                             ReplicationTransport.NOOP,
+                                             (target, _, _) -> Promise.success(target.equals(SURVIVOR) ? 19L : - 1L),
+                                             localHeadWatermark(),
+                                             OWNER,
+                                             TimeSpan.timeSpan(1).millis(),
+                                             () -> MEMBERS,
+                                             CommittedStreamOwnerSource.none(),
+                                             ReplicationReceiveHandler.NO_DURABILITY_BARRIER,
+                                             QuarantineView.NONE,
+                                             Option.some(TimeSpan.timeSpan(500).millis()));
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds()).isFailure())
+                    .as("the old flight timed out").isTrue();
+            backfill.backfill(STREAM, PARTITION);
+
+            served.requestCatchup(SURVIVOR, requests.getFirst()).onResult(pending.getFirst()::resolve);
+            Promise.<Long>promise(TimeSpan.timeSpan(200).millis(), () -> org.pragmatica.lang.Result.success(0L)).await();
+
+            assertThat(descriptorFor(SURVIVOR).confirmedOffset()).as("the late run recorded no survivor row").isEqualTo(-1L);
+        }
+
         @Test
         void backfill_blindSurvivorPulled_rowIsRaisedToTheSurvivorTail() {
             // #2888: the monotone rule keeps the survivor confirmation's legitimate effect: a blind (ZERO-epoch) row is raised.
