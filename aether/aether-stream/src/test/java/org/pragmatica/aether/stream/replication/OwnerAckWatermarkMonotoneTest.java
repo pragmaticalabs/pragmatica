@@ -5,6 +5,7 @@
 package org.pragmatica.aether.stream.replication;
 
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
@@ -30,13 +31,15 @@ class OwnerAckWatermarkMonotoneTest {
     private ReplicaRegistry registry;
     private ReplicationManager replication;
     private CopyOnWriteArrayList<Long> persisted;
+    private AtomicLong retainedFloor;
 
     @BeforeEach
     void setUp() {
         persisted = new CopyOnWriteArrayList<>();
         registry = replicaRegistry((_, _, _, offset) -> persisted.add(offset));
         registry.registerReplica(STREAM, PARTITION, PEER);
-        replication = replicationManager(SELF, registry);
+        retainedFloor = new AtomicLong(-1L);
+        replication = replicationManager(SELF, registry, ReplicationTransport.NOOP, (_, _) -> retainedFloor.get());
     }
 
     @Test
@@ -58,10 +61,15 @@ class OwnerAckWatermarkMonotoneTest {
 
     @Test
     void equalAck_inTheSameEpoch_isApplied() {
+        retainedFloor.set(20L);
         replication.handleAck(replicateAck(PEER, STREAM, PARTITION, 10L, EPOCH_1));
+        assertThat(state()).as("below the retained floor the replica is still syncing").isEqualTo(ReplicationState.SYNCING);
+
+        retainedFloor.set(5L);
         replication.handleAck(replicateAck(PEER, STREAM, PARTITION, 10L, EPOCH_1));
 
         assertThat(watermark()).isEqualTo(10L);
+        assertThat(state()).as("an equal-offset ack carries the state upgrade").isEqualTo(ReplicationState.CAUGHT_UP);
     }
 
     @Test
@@ -80,6 +88,10 @@ class OwnerAckWatermarkMonotoneTest {
 
         assertThat(watermark()).isEqualTo(4L);
         assertThat(registry.replicasFor(STREAM, PARTITION).getFirst().epoch()).isEqualTo(EPOCH_2);
+    }
+
+    private ReplicationState state() {
+        return registry.replicasFor(STREAM, PARTITION).getFirst().state();
     }
 
     private long watermark() {

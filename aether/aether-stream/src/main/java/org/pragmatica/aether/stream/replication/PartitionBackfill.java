@@ -1808,26 +1808,20 @@ public final class PartitionBackfill {
     /// "a CAUGHT_UP non-owner exists" check see the survivor CAUGHT_UP@survivorTail immediately, without
     /// waiting for the survivor's next live ack or the #333 redrive. Fires ONLY on a successful pull
     /// ({@link Promise#withSuccess}) and only for the survivor actually pulled from, at the tail actually
-    /// applied. Guarded MONOTONIC-UP: {@link ReplicaRegistry#updateWatermark} overwrites unconditionally, so
-    /// it is invoked only when `survivorTail` exceeds the survivor's currently-recorded offset — a concurrent
-    /// higher live ack is never clobbered down. On the local-registry HIT path this is a no-op (the survivor's
-    /// row already carries `survivorTail`).
+    /// applied. Routed through {@link ReplicaRegistry#advanceWatermark} (#2888) with the ZERO epoch this evidence carries, so
+    /// the monotone rule is decided under the row's own lock: a concurrent higher live ack is never clobbered down, and a row
+    /// already confirmed under a real owner epoch is not replaced by an uncounted ZERO-epoch row. On the local-registry HIT path
+    /// this is a no-op (the survivor's row already carries `survivorTail`).
+    @Contract
     private void recordSurvivorConfirmed(String streamName, int partition, NodeId survivorNode, long survivorTail) {
-        if (survivorTail > recordedOffset(streamName, partition, survivorNode)) {
-            updateWatermark(streamName, partition, survivorNode, survivorTail);
+        if (current.getAsBoolean()) {
+            registry.advanceWatermark(streamName,
+                                      partition,
+                                      survivorNode,
+                                      survivorTail,
+                                      ReplicationState.CAUGHT_UP,
+                                      Epoch.ZERO);
         }
-    }
-
-    /// The survivor's currently-recorded `confirmedOffset` in the owner's registry, or `-1` when it has no
-    /// row yet (blind). Used by {@link #recordSurvivorConfirmed} to keep the survivor-row update monotonic-up.
-    private long recordedOffset(String streamName, int partition, NodeId nodeId) {
-        return registry.replicasFor(streamName, partition)
-                       .stream()
-                       .filter(descriptor -> descriptor.nodeId()
-                                                       .equals(nodeId))
-                       .mapToLong(ReplicaDescriptor::confirmedOffset)
-                       .findFirst()
-                       .orElse(-1L);
     }
 
     /// Peer-watermark-blind fallback (#336): reached when the local-registry {@link #aheadSurvivor} finds NO
