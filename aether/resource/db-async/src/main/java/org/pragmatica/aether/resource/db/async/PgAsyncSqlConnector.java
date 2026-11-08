@@ -14,6 +14,7 @@ import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.PinnedSessionBound;
 import org.pragmatica.aether.resource.db.RowMapper;
 import org.pragmatica.aether.resource.db.SqlConnector;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -83,16 +84,14 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
             return Promise.success(new int[0]);
         }
 
-        return connectible.getConnection()
-                          .flatMap(conn -> executeBatch(conn,
-                                                        convertPlaceholders(sql),
-                                                        paramsList));
+        return borrowed(conn -> executeBatch(conn,
+                                             convertPlaceholders(sql),
+                                             paramsList));
     }
 
     @Override
     public <T> Promise<T> transactional(TransactionCallback<T> callback) {
-        return connectible.getConnection()
-                          .flatMap(conn -> runTransaction(conn, callback));
+        return borrowed(conn -> runTransaction(conn, config, callback));
     }
 
     /// postgres-async has no per-statement timeout, so `statementTimeout` is not enforced here: the bound is the
@@ -111,7 +110,7 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
     @Override
     public Promise<Listening> subscribe(String channel, Consumer<String> onNotification) {
         return connectible.getConnection()
-                          .flatMap(conn -> conn.subscribe(channel, onNotification));
+                          .flatMap(conn -> subscribeOwning(conn, channel, onNotification));
     }
 
     @Override
@@ -209,10 +208,6 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
                            Promise::success);
     }
 
-    private <T> Promise<T> runTransaction(Connection conn, TransactionCallback<T> callback) {
-        return runTransaction(conn, config, callback);
-    }
-
     private static <T> Promise<T> runTransaction(Connection conn,
                                                  DatabaseConnectorConfig config,
                                                  TransactionCallback<T> callback) {
@@ -251,6 +246,38 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
         return invoke(release, session).fold(_ -> closeAndResolve(conn, bodyResult));
     }
 
+    /// The pooled connection goes back on EVERY exit of `body` (success, failure, a throw): `Connection.close()` of a pooled
+    /// connection is the release (`PgConnection.close` runs the pool's `onRelease`, PgConnectionPool wires it at
+    /// connection creation), and neither commit nor rollback returns it. A release that fails is absorbed (design-out: the
+    /// pool's release cannot fail), so the body's own result or cause is what the caller sees.
+    private <T> Promise<T> borrowed(Fn1<Promise<T>, Connection> body) {
+        return connectible.getConnection()
+                          .flatMap(conn -> runAndRelease(conn, body));
+    }
+
+    private static <T> Promise<T> runAndRelease(Connection conn, Fn1<Promise<T>, Connection> body) {
+        return Promise.lift(DatabaseConnectorError::databaseFailure,
+                            () -> body.apply(conn))
+                      .flatMap(promise -> promise)
+                      .fold(result -> closeAndResolve(conn, result));
+    }
+
+    /// A subscription pins its pooled connection for as long as it listens (LISTEN is session state), so the connection
+    /// goes back when the subscription ends: on a failed subscribe at once, otherwise on a successful `unlisten`. A failed
+    /// `unlisten` leaves the connection with the subscription, because a connection still listening must not be handed to
+    /// another borrower.
+    private static Promise<Listening> subscribeOwning(Connection conn, String channel, Consumer<String> onNotification) {
+        return conn.subscribe(channel, onNotification)
+                   .map(listening -> releasingOnUnlisten(conn, listening))
+                   .fold(result -> result.fold(_ -> closeAndResolve(conn, result),
+                                               _ -> Promise.resolved(result)));
+    }
+
+    private static Listening releasingOnUnlisten(Connection conn, Listening listening) {
+        return () -> listening.unlisten()
+                              .flatMap(_ -> conn.close());
+    }
+
     private static <T> Promise<T> closeAndResolve(Connection conn, Result<T> bodyResult) {
         return conn.close()
                    .fold(_ -> Promise.resolved(bodyResult));
@@ -261,8 +288,7 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
                                                        TransactionCallback<T> callback) {
         var txConnector = new TransactionalSqlConnector(config, tx);
 
-        return callback.execute(txConnector)
-                       .fold(result -> resolveTransaction(tx, result));
+        return invoke(callback, txConnector).fold(result -> resolveTransaction(tx, result));
     }
 
     private static <T> Promise<T> resolveTransaction(Transaction tx, Result<T> result) {
