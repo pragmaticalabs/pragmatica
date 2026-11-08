@@ -201,14 +201,16 @@ class RollbackNoPromotionTest {
         var nodes = nodes(h);
 
         rollbackHeld(h, nodes);
-        publish(h, blueprint("org.example:other:1.0.0", false, "attempt-2", slice(INVENTORY, 3, 1, Set.of())));
         h.policy = FsmHarness.SettlePolicy.APPLY;
+        publish(h, blueprint("org.example:other:1.0.0", false, "attempt-2", slice(INVENTORY, 3, 1, Set.of())));
+        quiesce(h, nodes, 3);
+
+        assertThat(h.held).as("control: the rollback is still in flight").isNotEmpty();
+        assertActiveOnAllCores(h, INVENTORY);
         List.copyOf(h.held.values()).forEach(submit -> h.settle(submit, h.applyHeld(submit.correlationId())));
         h.drain();
-
         quiesce(h, nodes);
         assertActiveOnAllCores(h, INVENTORY);
-        assertPromotedBeforeTerminal(h, INVENTORY);
     }
 
     // Pins the gate's reach over the queued rollback (#2864): a blueprint that does not declare the rolled-back artifacts loads in the
