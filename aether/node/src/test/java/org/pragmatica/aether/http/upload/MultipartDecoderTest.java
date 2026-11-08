@@ -236,4 +236,124 @@ class MultipartDecoderTest {
         assertThat(decoder.finish().fold(Option::some, _ -> Option.<Cause>none()).toOptional())
             .contains(UploadIngestError.Malformed.BAD_DELIMITER);
     }
+
+    private static final String DISPOSITION_A = "Content-Disposition: form-data; name=\"a\"";
+
+    private static byte[] singleField(String headers, String value) {
+        return ascii("--" + BOUNDARY + "\r\n" + headers + "\r\n\r\n" + value + "\r\n--" + BOUNDARY + "--\r\n");
+    }
+
+    @Test
+    void boundary_ofExactlySeventyCharacters_isAccepted_andEmptyOrOverlongIsNot() {
+        var seventy = "multipart/form-data; boundary=" + "b".repeat(70);
+
+        assertThat(MultipartDecoder.multipartDecoder(seventy, UNLIMITED).isSuccess()).isTrue();
+        assertThat(MultipartDecoder.multipartDecoder(seventy + "b", UNLIMITED).isFailure()).isTrue();
+        assertThat(MultipartDecoder.multipartDecoder("multipart/form-data; boundary=", UNLIMITED).isFailure()).isTrue();
+        assertThat(MultipartDecoder.multipartDecoder("multipart/form-data; boundary=\"\"", UNLIMITED).isFailure()).isTrue();
+    }
+
+    @Test
+    void isFormData_acceptsOnlyFormData_whateverTheCaseAndParameters() {
+        assertThat(MultipartDecoder.isFormData("Multipart/Form-Data ; boundary=x")).isTrue();
+        assertThat(MultipartDecoder.isFormData("multipart/mixed; boundary=x")).isFalse();
+        assertThat(MultipartDecoder.isFormData("multipart/form-data-x; boundary=x")).isFalse();
+    }
+
+    @Test
+    void fieldsTotalOfExactlyTheUndeclaredBound_isAccepted_oneByteMoreIsNot() {
+        var atBound = "v".repeat((int) MultipartDecoder.DEFAULT_FIELDS_TOTAL);
+
+        assertThat(decode(singleField(DISPOSITION_A, atBound), 64 * 1024, UNLIMITED, TYPE).refusal()).isEmpty();
+        assertThat(decode(singleField(DISPOSITION_A, atBound + "v"), 64 * 1024, UNLIMITED, TYPE).refusal()).isNotEmpty();
+    }
+
+    @Test
+    void routeDeclaringMaxFieldSize_isNotHeldToTheUndeclaredTotal() {
+        var value = "v".repeat(600 * 1024);
+        var body = ascii("--" + BOUNDARY + "\r\n" + DISPOSITION_A + "\r\n\r\n" + value + "\r\n--" + BOUNDARY + "\r\n"
+                         + "Content-Disposition: form-data; name=\"b\"\r\n\r\n" + value + "\r\n--" + BOUNDARY + "--\r\n");
+        var spec = UploadSpec.uploadSpec(true, 0, 0, 0, 0, 0, 700 * 1024);
+
+        assertThat(decode(body, 64 * 1024, spec, TYPE).refusal())
+            .as("1.2 MiB of fields under a declared 700 KiB per field and the default part cap").isEmpty();
+    }
+
+    @Test
+    void secondField_doesNotCarryTheFirstValue() {
+        var body = ascii("--" + BOUNDARY + "\r\n" + DISPOSITION_A + "\r\n\r\n1\r\n--" + BOUNDARY
+                         + "\r\nContent-Disposition: form-data; name=\"b\"\r\n\r\n2\r\n--" + BOUNDARY + "--\r\n");
+
+        assertThat(decode(body, 7, UNLIMITED, TYPE).events()).containsExactly("field:a=1", "field:b=2");
+    }
+
+    @Test
+    void fieldValue_isDecodedAsUtf8_acrossChunks() {
+        var value = "h\u00e9llo \u20ac \u4e16\u754c";
+        var body = ("--" + BOUNDARY + "\r\n" + DISPOSITION_A + "\r\n\r\n" + value + "\r\n--" + BOUNDARY + "--\r\n")
+            .getBytes(StandardCharsets.UTF_8);
+
+        assertThat(decode(body, 3, UNLIMITED, TYPE).events()).containsExactly("field:a=" + value);
+    }
+
+    @Test
+    void delimiterFollowedByOneDashAndAnotherByte_isBadDelimiter_eitherOrder() {
+        var dashFirst = ascii("--" + BOUNDARY + "-xzz");
+        var dashSecond = ascii("--" + BOUNDARY + "x-zz");
+
+        assertThat(decode(dashFirst, 4, UNLIMITED, TYPE).refusal()).contains(UploadIngestError.Malformed.BAD_DELIMITER);
+        assertThat(decode(dashSecond, 4, UNLIMITED, TYPE).refusal()).contains(UploadIngestError.Malformed.BAD_DELIMITER);
+    }
+
+    @Test
+    void headerBlockOfExactlyTheBound_isAccepted() {
+        var prefix = DISPOSITION_A + "\r\nX-Pad: ";
+        var pad = "p".repeat(MultipartDecoder.MAX_HEADER_BYTES - prefix.length() - 4);
+        var body = singleField(prefix + pad, "x");
+
+        assertThat(decode(body, 1000, UNLIMITED, TYPE).refusal()).isEmpty();
+    }
+
+    @Test
+    void partWithNoHeaderAtAll_isRefusedNoDisposition() {
+        var body = ascii("--" + BOUNDARY + "\r\n\r\nx\r\n--" + BOUNDARY + "--\r\n");
+
+        assertThat(decode(body, 4, UNLIMITED, TYPE).refusal()).contains(UploadIngestError.Malformed.NO_DISPOSITION);
+    }
+
+    @Test
+    void headerLineWithEmptyName_isRefusedBadHeaders() {
+        var body = singleField(DISPOSITION_A + "\r\n: v", "x");
+
+        assertThat(decode(body, 4, UNLIMITED, TYPE).refusal()).contains(UploadIngestError.Malformed.BAD_HEADERS);
+    }
+
+    @Test
+    void dispositionThatIsNotFormData_isRefusedNoDisposition() {
+        var body = singleField("Content-Disposition: attachment; name=\"a\"", "x");
+
+        assertThat(decode(body, 4, UNLIMITED, TYPE).refusal()).contains(UploadIngestError.Malformed.NO_DISPOSITION);
+    }
+
+    @Test
+    void anyNestedMultipartType_isRefusedNested_notOnlyMixed() {
+        var body = singleField(DISPOSITION_A + "\r\nContent-Type: multipart/alternative; boundary=inner", "x");
+
+        assertThat(decode(body, 4, UNLIMITED, TYPE).refusal()).contains(UploadIngestError.Malformed.NESTED_MULTIPART);
+    }
+
+    @Test
+    void textPlainPartWithoutFilename_isAField_notAFile() {
+        var body = singleField(DISPOSITION_A + "\r\nContent-Type: text/plain; charset=utf-8", "hello");
+
+        assertThat(decode(body, 4, UNLIMITED, TYPE).events()).containsExactly("field:a=hello");
+    }
+
+    @Test
+    void fieldBytesAcrossChunks_areSummed_againstMaxFieldSize() {
+        var body = singleField(DISPOSITION_A, "abcdef");
+
+        assertThat(decode(body, 3, UploadSpec.uploadSpec(true, 0, 0, 0, 0, 0, 5), TYPE).refusal())
+            .contains(UploadIngestError.LimitExceeded.limitExceeded("max_field_size", 5));
+    }
 }
