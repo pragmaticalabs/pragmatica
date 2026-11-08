@@ -1072,8 +1072,11 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
 
         var trust = standing(streamName).epochTrust()
-                                        .compute(partition,
-                                                 (_, known) -> judged(streamName, partition, epoch, Option.option(known)));
+                            .compute(partition,
+                                     (_, known) -> judged(streamName,
+                                                          partition,
+                                                          epoch,
+                                                          Option.option(known)));
 
         return trust.verified()
                ? none()
@@ -1097,8 +1100,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// A copy whose head is below the doubt start holds nothing a later epoch re-assigned: it follows `epoch`'s lineage now.
     private EpochTrust judgedFrom(String streamName, int partition, Epoch epoch, Option<Epoch> lineage) {
-        var head = resolvePartitionBuffer(streamName, partition).map(OffHeapRingBuffer::headOffset)
-                                         .or(-1L);
+        var head = resolvePartitionBuffer(streamName, partition).map(OffHeapRingBuffer::headOffset).or(-1L);
 
         return head < doubtStart(streamName, partition, epoch, lineage)
                ? EpochTrust.verifiedFor(epoch)
@@ -3223,8 +3225,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                        })
                        .onFailure(_ -> {
                            if (wrote.get()) {
-                               restoreWitness(streamName, partition, wal);
-                           }
+                           restoreWitness(streamName, partition, wal);
+                       }
                        })
                        .onSuccess(_ -> option(preserved.get()).onPresent(segment -> reportPreserved(streamName,
                                                                                                     partition,
@@ -5062,20 +5064,18 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// epoch whose range is empty (the next epoch began at the same offset: it wrote nothing) is skipped, as an owner with a
     /// log records an epoch only at its first write; an epoch beginning above `toOffset` attributes nothing here.
     static List<ProvenanceEntry> committedProvenance(List<EpochStart> starts, long toOffset) {
-        return IntStream.range(0, starts.size())
+        return IntStream.range(0,
+                               starts.size())
                         .filter(i -> starts.get(i)
                                            .coversFrom()
-                                           .equals(starts.get(i)
-                                                         .epoch()))
+                                           .equals(starts.get(i).epoch()))
                         .filter(i -> starts.get(i)
                                            .startOffset() <= toOffset)
                         .filter(i -> i == starts.size() - 1 || starts.get(i + 1)
                                                                      .startOffset() > starts.get(i)
                                                                                             .startOffset())
-                        .mapToObj(i -> ownedProvenance(starts.get(i)
-                                                             .epoch(),
-                                                       starts.get(i)
-                                                             .startOffset()))
+                        .mapToObj(i -> ownedProvenance(starts.get(i).epoch(),
+                                                       starts.get(i).startOffset()))
                         .toList();
     }
 

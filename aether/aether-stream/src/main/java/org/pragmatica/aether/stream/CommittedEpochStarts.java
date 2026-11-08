@@ -13,6 +13,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 
+
 /// Where each committed owner epoch of a `(stream, partition)` began (#1971, #1938; PR-6a): the committed
 /// `StreamPartitionOwnershipValue.epochStarts()`, oldest first, with the record's fold (`coversFrom`) intact. Every owner
 /// commits the start of its epoch before it is activated (#1873, `streamLineageCommit`), so the list is the consensus
@@ -27,14 +28,13 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 public interface CommittedEpochStarts {
     /// The committed epoch starts of `(streamName, partition)`, oldest first; empty when no ownership record is committed.
     List<EpochStart> startsOf(String streamName, int partition);
-
     /// No committed history: the default of every factory that is not the production one.
     CommittedEpochStarts NONE = (_, _) -> List.of();
 
     /// Reads the committed ownership record of the partition from `kvStore`.
     static CommittedEpochStarts committedEpochStarts(KVStore<AetherKey, AetherValue> kvStore) {
         return (streamName, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(streamName,
-                                                                                                                  partition),
+                                                                                                                   partition),
                                                            StreamPartitionOwnershipValue.class)
                                                  .map(StreamPartitionOwnershipValue::epochStarts)
                                                  .or(List.of());
