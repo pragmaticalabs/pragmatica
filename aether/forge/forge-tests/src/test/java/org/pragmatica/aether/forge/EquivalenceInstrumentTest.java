@@ -386,7 +386,7 @@ class EquivalenceInstrumentTest {
             append(ring, 5);
             assertThat(cursor.read(ring)).extracting(ReplicaEntry::slot).containsExactly(5L);
             assertThat(cursor.gapped()).isTrue();
-            assertThat(cursor.describe()).contains("[1,5)");
+            assertThat(cursor.describe()).as("a gap before the read, not one during it").endsWith("gaps=[[1,5)]");
         }
 
         /// A gap on every node read makes the O4 count unknown: an exception (the round's arm ERROR), not a negative count. One node that read
