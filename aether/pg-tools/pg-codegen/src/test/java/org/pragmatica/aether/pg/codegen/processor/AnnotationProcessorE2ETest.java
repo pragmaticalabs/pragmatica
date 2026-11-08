@@ -110,7 +110,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface StatsRepo {
 
-                    @Query("SELECT COUNT(*) FROM events WHERE type = :eventType")
+                    @Query("SELECT COUNT(*) AS count FROM events WHERE type = :eventType")
                     Promise<Long> countByType(String eventType);
                 }
                 """;
