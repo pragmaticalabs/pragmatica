@@ -5587,6 +5587,84 @@ class SliceProcessorTest {
         assertCompilation(compilation).succeeded();
     }
 
+    // ========== RequestHeaders injected parameter (#2879) ==========
+
+    private static final JavaFileObject REQUEST_HEADERS = JavaFileObjects.forSourceString(
+            "org.pragmatica.aether.http.handler.RequestHeaders",
+            """
+            package org.pragmatica.aether.http.handler;
+
+            public record RequestHeaders(java.util.Map<String, java.util.List<String>> fields) {}
+            """);
+
+    private Compilation compileProfileService(String method) {
+        var source = JavaFileObjects.forSourceString("test.ProfileService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.aether.http.handler.RequestHeaders;
+            import org.pragmatica.aether.http.handler.security.Principal;
+            @Slice
+            public interface ProfileService {
+                %s
+                static ProfileService profileService() { return null; }
+            }
+            """.formatted(method));
+        var sources = commonSources();
+        sources.add(PRINCIPAL);
+        sources.add(REQUEST_HEADERS);
+        sources.add(source);
+        return javac().withProcessors(new SliceProcessor()).compile(sources);
+    }
+
+    @Test
+    void should_fail_on_request_headers_method_with_multiple_business_params() {
+        var compilation = compileProfileService("Promise<String> updateProfile(RequestHeaders headers, String name, String email);");
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("exactly one request record");
+        assertCompilation(compilation).hadErrorContaining("ProfileService.updateProfile");
+        assertCompilation(compilation).hadErrorContaining("RequestHeaders");
+    }
+
+    @Test
+    void should_process_request_headers_method_with_single_business_param_in_either_order() {
+        assertCompilation(compileProfileService("Promise<String> getProfile(RequestHeaders headers, String userId);")).succeeded();
+        assertCompilation(compileProfileService("Promise<String> getProfile(String userId, RequestHeaders headers);")).succeeded();
+    }
+
+    @Test
+    void should_process_request_headers_method_without_any_business_param() {
+        assertCompilation(compileProfileService("Promise<String> whoAmI(RequestHeaders headers);")).succeeded();
+    }
+
+    @Test
+    void should_process_request_headers_beside_principal_and_one_business_param() {
+        assertCompilation(compileProfileService("Promise<String> getProfile(Principal principal, RequestHeaders headers, String userId);")).succeeded();
+    }
+
+    @Test
+    void should_fail_on_principal_and_request_headers_with_multiple_business_params() {
+        var compilation = compileProfileService("Promise<String> updateProfile(Principal principal, RequestHeaders headers, String name, String email);");
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("exactly one request record");
+    }
+
+    /// Headers exist at the HTTP edge only (#2879): the slice's generated factory keeps `RequestHeaders` as an
+    /// ordinary argument of the wire request, so a slice that calls this method passes the headers itself and nothing
+    /// is added on its behalf.
+    @Test
+    void request_headers_stay_an_explicit_argument_of_the_inter_slice_request() throws IOException {
+        var compilation = compileProfileService("Promise<String> getProfile(RequestHeaders headers, String userId);");
+
+        assertCompilation(compilation).succeeded();
+        var factory = compilation.generatedSourceFile("test.ProfileServiceFactory").get().getCharContent(false).toString();
+
+        assertThat(factory).contains("record GetProfileRequest(RequestHeaders headers, String userId)");
+    }
+
     // ========== Promise.all() dependency-count batching (issues #395 / arity-15 ceiling) ==========
 
     @Test

@@ -24,6 +24,7 @@ import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.http.adapter.ErrorMapper;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.adapter.SliceRouterFactory;
+import org.pragmatica.aether.http.handler.RequestHeaders;
 import org.pragmatica.aether.http.handler.security.SecurityContextHolder;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.http.security.HttpAuthenticator;
@@ -359,6 +360,35 @@ class TerraHttpServerTest {
 
             assertThat(response.body()).as("body-decoded lambda: the holder is still bound today; if this fails the decode became async (the hazard is real for body routes)").contains(":reader");
         } finally { close(host); }
+    }
+
+    /// #2879: a Terra route declared the way a slice's generated route is (`Route.withRequestContext`) hands the
+    /// slice the headers of the request on the wire: case-insensitive, every value of a repeated name, in order.
+    @Test void serve_requestHeadersRoutes_receiveTheWireHeaders_forNoParamPathAndBodyShapes() throws Exception {
+        var none = Route.withRequestContext(Route.<Handler<String>>get("/h/none").withoutParameters()
+            .to(_ -> Promise.success(request -> Promise.success(describe(request, "none"))))
+            .withSecurity(SecurityPolicy.publicRoute()).asText());
+        var path = Route.withRequestContext(Route.<Handler<String>>get("/h/path/").withPath(PathParameter.aLong())
+            .to(id -> Promise.success(request -> Promise.success(describe(request, "id=" + id))))
+            .withSecurity(SecurityPolicy.publicRoute()).asText());
+        var body = Route.withRequestContext(Route.<Handler<String>>post("/h/body").withBody(String.class)
+            .to(text -> Promise.success(request -> Promise.success(describe(request, "text=" + text))))
+            .withSecurity(SecurityPolicy.publicRoute()).asText());
+        var host = start(List.of(none, path, body), HttpAuthenticator.denyUnlessPublicValidator(), new AtomicInteger());
+        try (var client = HttpClient.newHttpClient()) {
+            assertThat(get(client, host, "/h/none", "X-Probe", "a", "x-probe", "b").body()).isEqualTo("none|a|a,b");
+            assertThat(get(client, host, "/h/path/7", "X-Probe", "a", "x-probe", "b").body()).isEqualTo("id=7|a|a,b");
+            var posted = client.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + host.port() + "/h/body"))
+                .timeout(Duration.ofSeconds(5)).header("X-Probe", "a").header("x-probe", "b").header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("\"hi\"")).build(), HttpResponse.BodyHandlers.ofString());
+            assertThat(posted.body()).isEqualTo("text=hi|a|a,b");
+            assertThat(get(client, host, "/h/none").body()).as("a request without the header: none, and an empty list").isEqualTo("none|none|");
+        } finally { close(host); }
+    }
+
+    private static String describe(RequestContext request, String detail) {
+        var headers = RequestHeaders.requestHeaders(request.headers());
+        return detail + "|" + headers.first("X-PROBE").or("none") + "|" + String.join(",", headers.all("x-probe"));
     }
 
     private static TerraHttpServer start(List<Route<?>> routes, HttpAuthenticator auth, AtomicInteger released) {
