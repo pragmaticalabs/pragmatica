@@ -36,6 +36,18 @@ class NodeWiringSurvivorPinsTest {
         assertThat(code()).containsOnlyOnce("switchableCluster.switchTo(forwardingClusterNode);passiveClientActivation.run();");
     }
 
+    /// B4 (EmberFsm2WorkerArmTest no longer pins this, #2842): the node binds B4 to the FSM2 system through the deployment wiring's passive-client switch.
+    @Test
+    void node_bindsB4ThroughThePassiveClientSwitch() {
+        assertThat(code()).containsOnlyOnce("varpassiveClientActivation=deploymentWiring.passiveClientSwitch(()->reconcileNodeActivation(");
+    }
+
+    /// B4: the bound activation is the one handed to the worker assembly, not a substitute.
+    @Test
+    void node_handsTheB4BindingToTheWorkerAssembly() {
+        assertThat(code()).containsOnlyOnce("controlLoop,passiveClientActivation,workerEndpointDirectory,");
+    }
+
     private static String code() {
         return AssemblySource.stripped();
     }

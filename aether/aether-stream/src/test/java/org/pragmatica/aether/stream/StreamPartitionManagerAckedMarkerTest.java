@@ -332,6 +332,33 @@ class StreamPartitionManagerAckedMarkerTest {
         assertThat(markerOffset()).as("clamped to the recovered head (9) at open, durably").isEqualTo(Option.some(9L));
     }
 
+    /// A marker that could not be clamped is never restored in this incarnation (`forgoAckedRestore`), even though it is
+    /// otherwise trusted: valid CRC, the log's real epoch token, the committed record naming this node under the same
+    /// epoch (no `restartOn` bump: a bumped epoch would fail the lineage check and distrust the marker for another reason).
+    /// Without the forgo the unclamped marker (50) would raise visible to `min(durable, 50)` = 9 at the first admission.
+    @Test
+    void markerWhoseClampFailed_isNeverTrustedToRaiseVisible() throws IOException {
+        startOwner(walDir);
+        publish(10);
+        replication.handleAck(replicateAck(PEER, STREAM, PARTITION, 4L));
+        manager.repeatVisible();
+        manager.close();
+        manager = null;
+        var token = AppendLog.readAckedMarker(walFile(walDir))
+                             .flatMap(AppendLog.AckedMark::epoch)
+                             .map(AppendLog.EpochKey::token)
+                             .or("missing-token");
+        var sidecar = walFile(walDir).resolveSibling(PARTITION + ".acked");
+
+        Files.writeString(sidecar, validMarkerLine(token, 50L));
+        Files.createDirectories(sidecar.resolveSibling(PARTITION + ".acked.tmp").resolve("blocks-the-clamp-rewrite"));
+        startOwner(walDir);
+        servedRead();
+        servedRead();
+        assertThat(markerOffset()).as("control: the clamp rewrite failed, the marker is still above the head").isEqualTo(Option.some(50L));
+        assertThat(visible()).as("a marker that could not be clamped never raises visible").isEqualTo(-1L);
+    }
+
     // ---- scenarios ----------------------------------------------------------------------------------------------------
 
     /// Publish 0..9; the peer acks 4; one tick; the peer acks 7; then the node is KILLED: its files are copied as they
