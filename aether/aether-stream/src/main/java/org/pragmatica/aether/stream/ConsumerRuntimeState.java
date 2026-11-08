@@ -114,6 +114,13 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// [#close] flush still commits inside the shutdown bound. [design intent — unverified: 1s is a judgment call,
     /// not derived from a measured handler-latency distribution.]
     static final TimeSpan DETACH_ADVANCE_BOUND = timeSpan(1).seconds();
+    /// #1960: how long a same-key re-subscription waits for the detach flushes still held on this node
+    /// ([#loadCursorAndStart]) before it fetches its cursor anyway. The flush's store commit has no bound of its own, so
+    /// without this a wedged commit parks the successor forever. Past the bound the successor starts, the condition is
+    /// raised as `stream-consumer-detach-wait-exceeded`, and the late flush, if it ever lands, is refused at consensus
+    /// by the scoped advance-only arm (#1961). [guess: 30s, not derived from a measured commit-latency distribution;
+    /// well above [#PERIODIC_COMMIT_BOUND] so a slow but live commit is still waited for.]
+    static final TimeSpan DETACH_WAIT_BOUND = timeSpan(30).seconds();
 
     private static final Consumer<CheckpointIssuePoint> NO_CHECKPOINT_ISSUE_PROBE = _ -> {};
 
@@ -166,7 +173,13 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// touched only inside `compute`, which is atomic per key.
     private static final class PendingDetaches {
         final Promise<CommitOutcome> settled = Promise.promise();
+        /// #1960: one `stream-consumer-detach-wait-exceeded` per held group, however many successors outwait it.
+        private final AtomicBoolean boundExceeded = new AtomicBoolean(false);
         private int pending = 1;
+
+        boolean claimBoundExceeded() {
+            return boundExceeded.compareAndSet(false, true);
+        }
 
         PendingDetaches added() {
             pending++;
@@ -183,6 +196,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// issuing thread is a delivery continuation or the shared scheduler, which already exist when a test
     /// installs it; one volatile read per checkpoint is nothing.
     private volatile Consumer<CheckpointIssuePoint> checkpointIssueProbe = NO_CHECKPOINT_ISSUE_PROBE;
+    /// #1960: [#DETACH_WAIT_BOUND], shortened by [DetachAwaitsInFlightAdvanceTest] through [#detachWaitBound(TimeSpan)].
+    private volatile TimeSpan detachWaitBound = DETACH_WAIT_BOUND;
 
     ConsumerRuntimeState(StreamPartitionManager partitionManager, DeadLetterHandler dlHandler) {
         this(partitionManager, dlHandler, none(), none());
@@ -633,11 +648,87 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// (#1961: a lower offset inside the same `(rewind epoch, owner epoch)` scope, or any offset in an older scope, does
     /// not land, while an operator rewind or a KIP-320 re-seek mints a newer scope and still does). The node-local cursor
     /// ref is a plain replace and can still be lowered; a resume ranks it against the cluster cursor by (epoch, offset).
+    ///
+    /// #1960: the wait is bounded by [#DETACH_WAIT_BOUND] ([#awaitPendingDetaches]); a flush still held at the bound is
+    /// exactly the late commit the #1961 arm refuses at consensus.
     private void loadCursorAndStart(ConsumerKey key, ConsumerState state) {
-        cursorStore.onPresent(store -> option(pendingDetachFlushes.get(key)).map(detaches -> detaches.settled)
-                                             .or(NO_PREDECESSOR)
-                                             .onResult(_ -> fetchCursorAndStart(store, key, state, 1)))
+        cursorStore.onPresent(store -> awaitPendingDetaches(key, state).onResult(_ -> fetchCursorAndStart(store,
+                                                                                                           key,
+                                                                                                           state,
+                                                                                                           1)))
                    .onEmpty(() -> startConsumer(key, state));
+    }
+
+    /// #1960 (I-33): the successor is marked awaiting-cursor-fetch BEFORE it waits on the gate, so the idle reaper
+    /// ([#reapIfIdleConsumer]) never removes a successor that has not started because an old flush is held.
+    private Promise<Unit> awaitPendingDetaches(ConsumerKey key, ConsumerState state) {
+        state.markAwaitingCursorFetch();
+
+        return option(pendingDetachFlushes.get(key)).fold(Promise::unitPromise,
+                                                          detaches -> boundedDetachWait(key, state, detaches));
+    }
+
+    /// #1960: settles when the held flushes of `key` settle, or at [#detachWaitBound] — which is WARNed and raised
+    /// ([#detachWaitExceeded]). Waits on its own promise, never on `settled`, because a timeout fails the promise it is
+    /// attached to, and `settled` is shared by every successor of the key.
+    private Promise<Unit> boundedDetachWait(ConsumerKey key, ConsumerState state, PendingDetaches detaches) {
+        var waiter = Promise.<Unit> promise();
+        var bound = detachWaitBound;
+
+        detaches.settled.withResult(_ -> waiter.succeed(unit()));
+
+        return waiter.timeout(bound)
+                     .fold(result -> result.fold(_ -> detachWaitExceeded(key, state, detaches, bound),
+                                                 _ -> Promise.unitPromise()));
+    }
+
+    /// #1960: the successor proceeds past a held flush. Raised once per held group, and only while a successor is still
+    /// waiting to start; its recovery is raised when the held flush settles. A flush that never settles is never
+    /// recovered: the condition stands, and [#close] reports the commit unsettled at its shutdown bound.
+    private Promise<Unit> detachWaitExceeded(ConsumerKey key,
+                                             ConsumerState state,
+                                             PendingDetaches detaches,
+                                             TimeSpan bound) {
+        if (!closed.get() && !state.isCancelled() && detaches.claimBoundExceeded()) {
+            warnDetachWaitExceeded(key, bound);
+            detaches.settled.onResult(_ -> raiseDetachWaitSettled(key));
+        }
+
+        return Promise.unitPromise();
+    }
+
+    @Contract
+    private void warnDetachWaitExceeded(ConsumerKey key, TimeSpan bound) {
+        OperatorWarnings.raise(WARNINGS_LOG,
+                               operatorWarnings,
+                               OperatorWarningCode.STREAM_CONSUMER_DETACH_WAIT_EXCEEDED,
+                               consumerSubject(key),
+                               "Consumer group {} on {}[{}] re-subscribed on this node starts without waiting further for the "
+                              + "previous consumer's detach flush, which has not settled within {}ms. If that commit lands later "
+                              + "with a lower cursor, the cluster checkpoint refuses it (#1961); the node-local cursor can still "
+                              + "be lowered, and a resume ranks both by (epoch, offset)",
+                               key.groupId(),
+                               key.streamName(),
+                               key.partition(),
+                               bound.millis());
+    }
+
+    @Contract
+    private void raiseDetachWaitSettled(ConsumerKey key) {
+        OperatorWarnings.raise(WARNINGS_LOG,
+                               operatorWarnings,
+                               OperatorWarningCode.STREAM_CONSUMER_DETACH_WAIT_SETTLED,
+                               consumerSubject(key),
+                               "Consumer group {} on {}[{}]: the previous consumer's held detach flush has settled",
+                               key.groupId(),
+                               key.streamName(),
+                               key.partition());
+    }
+
+    /// Test-only seam (#1960): shortens [#DETACH_WAIT_BOUND] so the bound is pinned without waiting 30s.
+    @Contract
+    void detachWaitBound(TimeSpan bound) {
+        detachWaitBound = bound;
     }
 
     /// rev1272 F7: the fetch is LIFTED. A store whose `fetch` threw used to escape out of `subscribe` with
@@ -1928,9 +2019,19 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     ///
     /// #1403: the delivery holds the consumer's in-flight-advance slot from the handler call until its outcome (the
     /// cursor advance, or the error strategy) has run, so a detach flush issued in between commits after it.
+    ///
+    /// #1960 (F10): the slot is claimed in one step with the cancel check ([ConsumerState#claimAdvance]). A delivery
+    /// whose cancel check passed before a detach, but whose slot was claimed after the detach flush read it, committed
+    /// the cursor before this event and then delivered it, so the successor delivered it again.
     private Promise<Unit> deliverSingleEvent(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
-        var inFlight = state.beginAdvance(event.offset());
+        return state.claimAdvance(event.offset())
+                    .fold(Promise::unitPromise, inFlight -> deliverClaimed(key, state, event, inFlight));
+    }
 
+    private Promise<Unit> deliverClaimed(ConsumerKey key,
+                                         ConsumerState state,
+                                         OffHeapRingBuffer.RawEvent event,
+                                         ConsumerState.InFlightAdvance inFlight) {
         return invokeHandler(state, event).fold(result -> lifted(() -> deliveryOutcome(key, state, event, result)))
                             .withResult(_ -> inFlight.settle());
     }
@@ -2067,12 +2168,20 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// [#appendDeadLetterThenAdvance] applies — so an append arriving during the backoff cannot re-read
     /// the un-advanced cursor and deliver this event in parallel with its own retry.
     private void retryDeliverEvent(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
-        if (state.isCancelled() || state.isStalled()) {
+        if (state.isStalled()) {
             return;
         }
 
-        var inFlight = state.beginAdvance(event.offset());
+        state.claimAdvance(event.offset())
+             .onPresent(inFlight -> retryClaimed(key, state, event, inFlight));
+    }
 
+    /// #1960 (F10): runs only under a slot claimed in one step with the cancel check, as [#deliverSingleEvent].
+    @Contract
+    private void retryClaimed(ConsumerKey key,
+                              ConsumerState state,
+                              OffHeapRingBuffer.RawEvent event,
+                              ConsumerState.InFlightAdvance inFlight) {
         invokeHandler(state, event).onSuccess(_ -> settledAfter(inFlight,
                                                                 () -> completeRetry(key, state, event)))
                      .onFailure(cause -> settledAfter(inFlight,
@@ -2675,6 +2784,15 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             return inFlight;
         }
 
+        /// #1960 (F10): claims the in-flight-advance slot for `offset` unless the consumer is cancelled, in one step with
+        /// [#cancel] (same monitor). After `cancel()` returns, a detach flush reading [#inFlightAdvance] therefore sees
+        /// every delivery that will still run, and no delivery starts that it did not see.
+        synchronized Option<InFlightAdvance> claimAdvance(long offset) {
+            return cancelled.get()
+                   ? none()
+                   : some(beginAdvance(offset));
+        }
+
         /// #1403: one unit of work that advances the cursor past `offset` when it completes; `done` settles once its
         /// outcome has run, whichever way it went.
         record InFlightAdvance(long offset, Promise<Unit> done) {
@@ -2878,7 +2996,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         @Contract
         /// Also releases the delivery holds (#1266 review): a cancelled consumer delivers nothing, so the
         /// holds would only mislead — every outcome, cancellation included, ends with both clear.
-        void cancel() {
+        synchronized void cancel() {
             cancelled.set(true);
             retryInFlight.set(false);
             deadLetterInFlight.set(false);
