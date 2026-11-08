@@ -819,6 +819,36 @@ class QueryValidatorTest {
                 .isEqualTo(Option.present(List.of("id", "name")));
         }
 
+        @Test void selectOutputColumnNames_subqueryInTarget_isNotATarget() {
+            assertThat(outputColumns("SELECT EXISTS(SELECT 1 FROM users WHERE id = 1) AS found"))
+                .isEqualTo(Option.present(List.of("found")));
+        }
+
+        @Test void selectOutputColumnNames_castAliasAndTableAlias_useTheTargetAlias() {
+            assertThat(outputColumns("SELECT CAST(count(*) AS int) AS n FROM users AS u"))
+                .isEqualTo(Option.present(List.of("n")));
+        }
+
+        @Test void selectOutputColumnNames_qualifiedColumnOverTableAlias_isTheColumn() {
+            assertThat(outputColumns("SELECT u.name FROM users AS u")).isEqualTo(Option.present(List.of("name")));
+        }
+
+        @Test void selectOutputColumnNames_quotedAlias_isTheAlias() {
+            assertThat(outputColumns("SELECT count(*) AS \"total\" FROM users"))
+                .isEqualTo(Option.present(List.of("total")));
+        }
+
+        @Test void selectOutputColumnNames_unaliasedExpressions_areAbsent() {
+            assertThat(outputColumns("SELECT count(*) FROM users")).isEqualTo(Option.empty());
+            assertThat(outputColumns("SELECT CAST(count(*) AS bigint) FROM users")).isEqualTo(Option.empty());
+            assertThat(outputColumns("SELECT max(u.id) FROM users u")).isEqualTo(Option.empty());
+        }
+
+        @Test void selectOutputColumnNames_returningCastAlias_isTheAlias() {
+            assertThat(outputColumns("UPDATE users SET active = true RETURNING CAST(id AS bigint) AS v"))
+                .isEqualTo(Option.present(List.of("v")));
+        }
+
         @Test void selectOutputColumnNames_star_isAbsent() {
             assertThat(outputColumns("SELECT * FROM users")).isEqualTo(Option.empty());
         }
