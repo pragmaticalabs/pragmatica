@@ -479,6 +479,7 @@ class RequestGateStreamTest {
 
         channel.advanceTimeBy(31, TimeUnit.SECONDS);
         channel.runScheduledPendingTasks();
+        assertThat(sink.terminals()).as("aborted at the deadline, before the late resolution").containsExactly("abort:STALLED");
         sink.succeedNext();
         channel.runPendingTasks();
         assertThat(sink.terminals()).as("one abort, none from the late resolution").containsExactly("abort:STALLED");

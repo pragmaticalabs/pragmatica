@@ -56,8 +56,10 @@ import static org.pragmatica.lang.Unit.unit;
 ///
 /// **Exactly one terminal call**, never overlapping an `accept`: [BodySink#complete] once the body ended ([#end]) and
 /// every chunk was accepted; [BodySink#fail] (through the transport's `onFailed`) when an `accept` failed; and
-/// [BodySink#abort] when the server ended the request ([#abort]), deferred until an outstanding `accept` resolves. Every
-/// buffer held is released on every one of those exits.
+/// [BodySink#abort] when the server ended the request ([#abort]), deferred until an outstanding `accept` resolves, but
+/// no longer than [Pacing#stallBound]: an `accept` that stays outstanding past that is abandoned and the sink is aborted
+/// anyway (the one deliberate overlap), so a hung sink cannot hold the request's admission forever; the abandoned
+/// `accept`'s late resolution only releases its buffer. Every buffer held is released on every one of those exits.
 ///
 /// Per request, not sharable.
 final class BodyStream {
@@ -90,6 +92,8 @@ final class BodyStream {
     private Option<Piece> accepting = none();
     private Option<Runnable> onEnd = none();
     private Option<Cause> abortAfterAccept = none();
+    private Option<ScheduledFuture<?>> abortTimer = none();
+    private boolean abandoned;
     private boolean ended;
 
     /// A view handed to the sink and the received buffer it is a view of, released once per view.
@@ -162,10 +166,33 @@ final class BodyStream {
             ended = true;
             cancelStall();
             releaseWaiting();
-            accepting.apply(() -> sink.abort(cause), _ -> abortAfterAccept = some(cause));
+            accepting.apply(() -> sink.abort(cause), _ -> deferAbort(cause));
         }
 
         return unit();
+    }
+
+    /// The abort waits for the outstanding `accept`, for at most the stall bound.
+    private void deferAbort(Cause cause) {
+        abortAfterAccept = some(cause);
+        abortTimer = pacing.stallBound().nanos() > 0
+                     ? some(executor.schedule(this::abortDeadline,
+                                              pacing.stallBound().nanos(),
+                                              TimeUnit.NANOSECONDS))
+                     : none();
+    }
+
+    /// The `accept` is still outstanding at the deadline: it is abandoned and the sink aborted now. Its late resolution
+    /// finds the abort already given and does nothing but release its buffer.
+    private void abortDeadline() {
+        abortTimer = none();
+        abortAfterAccept.onPresent(this::abandonAccept);
+        abortAfterAccept = none();
+    }
+
+    private void abandonAccept(Cause cause) {
+        abandoned = true;
+        sink.abort(cause);
     }
 
     /// How the transport follows this stream.
@@ -234,9 +261,13 @@ final class BodyStream {
 
     private void settled(Piece piece, Result<Unit> result) {
         cancelStall();
+        abortTimer.onPresent(timer -> timer.cancel(false));
+        abortTimer = none();
         accepting = none();
         piece.owner().release();
-        abortAfterAccept.apply(() -> proceed(result), sink::abort);
+        if (!abandoned) {
+            abortAfterAccept.apply(() -> proceed(result), sink::abort);
+        }
     }
 
     private void proceed(Result<Unit> result) {
