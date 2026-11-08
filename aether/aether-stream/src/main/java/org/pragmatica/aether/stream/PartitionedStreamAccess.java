@@ -706,7 +706,8 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
                                                          metrics,
                                                          committedOwnerSource,
                                                          epochHighWater,
-                                                         barrier);
+                                                         barrier,
+                                                         partitionManager::behindCommittedOwner);
     }
 
     ForwardingReadRouter<StreamEvent<T>> readRouter() {

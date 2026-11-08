@@ -81,12 +81,37 @@ public sealed interface Strays {
     }
 
     private static ClusterModel condemn(ClusterModel m, Ctx ctx, SlicePair pair) {
+        m.strayWarned = Idx.add(m.strayWarned, pair.artifact(), pair.node());
         ctx.warn("stray-instance",
                  pair.artifact().asString(),
                  "Condemning stray instance of " + pair.artifact() + " on " + pair.node().id());
         ctx.metric("aether_deployment_fsm_stray_total", Map.of("fsm", "cluster", "action", "condemn"));
 
         return Outbox.goal(m, pair, SliceGoal.UNLOADED, GoalMode.FRESH, Option.none(), "stray");
+    }
+
+    /// D.6 row 20: the observed row of a condemned stray disappeared. The row going is both the remediation completing and the subject
+    /// leaving the model (the node's departure removes its rows through C17b the same way).
+    static ClusterModel onRowGone(ClusterModel m, Ctx ctx, SlicePair pair) {
+        return Idx.members(m.strayWarned,
+                           pair.artifact())
+                  .contains(pair.node())
+               ? strayGone(m, ctx, pair)
+               : m;
+    }
+
+    /// D.6 row 20 (CTO ruling on #2831): `stray-instance` has the artifact as its subject, so `stray-instance-removed` (same subject) is
+    /// raised only when the LAST condemned instance of the artifact is gone; one going while another remains closes nothing.
+    private static ClusterModel strayGone(ClusterModel m, Ctx ctx, SlicePair pair) {
+        m.strayWarned = Idx.remove(m.strayWarned, pair.artifact(), pair.node());
+        if (!m.strayWarned.containsKey(pair.artifact())) {
+            ctx.warn(Recoveries.STRAY_INSTANCE_REMOVED,
+                     pair.artifact().asString(),
+                     Recoveries.gone(pair.artifact().asString(),
+                                     "the condemned stray instance on " + pair.node().id() + " was removed"));
+        }
+
+        return m;
     }
 
     record unused() implements Strays {}

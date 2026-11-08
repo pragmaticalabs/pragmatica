@@ -933,8 +933,8 @@ class AppHttpServerIngestGateTest {
                     }).statusCode());
                 }
 
-                stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[5])))
-                      .addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
+                // #2746: the last frame carries the FIN; a FIN-only frame after it can be lost for good
+                H3Probe.writeLastData(stream, new byte[5]);
             });
 
             return new Held(during, admittedAfterRelease(this, path, holderKey), "");
@@ -970,8 +970,8 @@ class AppHttpServerIngestGateTest {
 
                 frame.headers().add("content-type", contentType);
                 stream.write(frame);
-                stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(body))).sync();
-                stream.shutdownOutput();
+                // #2746: the body's frame carries the FIN; a FIN-only frame after it can be lost for good
+                H3Probe.writeLastData(stream, body).sync();
             });
 
             return new Reply(answer.statusCode(), answer.body());
@@ -1003,7 +1003,10 @@ class AppHttpServerIngestGateTest {
 
             while (sent < size && stream.isActive()) {
                 var frame = (int) Math.min(64 * 1024, size - sent);
-                var written = stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[frame])));
+                // #2746: when `end`, the last frame carries the FIN; a FIN-only frame after it can be lost for good
+                var written = end && sent + frame == size
+                              ? H3Probe.writeLastData(stream, new byte[frame])
+                              : stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[frame])));
 
                 if (!written.await(2_000) || !written.isSuccess()) {
                     return sent;
@@ -1012,7 +1015,8 @@ class AppHttpServerIngestGateTest {
                 sent += frame;
             }
 
-            if (end && stream.isActive()) {
+            // no DATA frame to carry the FIN: a request without a body, one datagram
+            if (end && size == 0 && stream.isActive()) {
                 stream.shutdownOutput();
             }
 

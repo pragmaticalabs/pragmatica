@@ -10,6 +10,8 @@ public sealed interface ContentStoreError extends Cause {
         MANIFEST_PARSE_FAILED("Failed to parse content manifest"),
         CHUNK_MISSING("One or more content chunks are missing"),
         ENTRY_PARSE_FAILED("Failed to parse object entry"),
+        CATALOG_PAGE_PARSE_FAILED("Failed to parse catalog page"),
+        CATALOG_ROOT_PARSE_FAILED("Failed to parse catalog root"),
         WRITER_CLOSED("The object writer is committed or aborted");
         private final String message;
         General(String message) {

@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.stream.forward.AcceptingStreamForwardTransport;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -132,7 +133,30 @@ class StreamReadRouterTest {
         assertThat(codes()).containsExactly(STREAM_CONSUMER_BEHIND_RING, STREAM_CONSUMER_BACK_IN_RING);
     }
 
+    /// PR-2f S2 wiring pin: the router built over a partition manager consults [StreamPartitionManager#behindCommittedOwner].
+    /// A REPLICA copy that holds the partition's ring but has no announcement from the owner forwards the GOVERNOR read: the
+    /// owner's 20..22 arrive, where the copy's own (empty) ring would answer nothing.
+    @Test
+    void governorRead_ofAReplicaCopyWithNoAnnouncement_forwardsToTheOwner() {
+        var copy = streamPartitionManager();
+
+        try {
+            copy.placementRoleSupplier((_, _) -> Role.REPLICA);
+            copy.createStream(config()).onFailure(cause -> fail(cause.message()));
+
+            assertThat(copy.readLocal(STREAM, PARTITION, 20L, 3).isSuccess()).as("control: the copy holds the ring, so only the stale probe can forward").isTrue();
+            assertThat(forwardingRouter(copy).read(STREAM, PARTITION, 20L, 3, ReadPreference.GOVERNOR).await().unwrap())
+                .as("served by the owner").hasSize(3);
+        } finally {
+            copy.close();
+        }
+    }
+
     private StreamReadRouter forwardingRouter() {
+        return forwardingRouter(assignee);
+    }
+
+    private StreamReadRouter forwardingRouter(StreamPartitionManager local) {
         var clientRef = new StreamForwardClient[1];
         StreamForwardTransport ownerToAssignee = AcceptingStreamForwardTransport.accepting((_, message) -> clientRef[0].onReadForwardResponse(boundsOf((ReadForwardResponse) message)));
         var ownerHandler = StreamForwardHandler.streamForwardHandler(OWNER, owner, ownerToAssignee);
@@ -140,7 +164,7 @@ class StreamReadRouterTest {
 
         clientRef[0] = StreamForwardClient.streamForwardClient(ASSIGNEE, assigneeToOwner, TimeSpan.timeSpan(5).seconds());
 
-        return StreamReadRouter.streamReadRouter(assignee,
+        return StreamReadRouter.streamReadRouter(local,
                                                  Option.none(),
                                                  Option.some(clientRef[0]),
                                                  ASSIGNEE,

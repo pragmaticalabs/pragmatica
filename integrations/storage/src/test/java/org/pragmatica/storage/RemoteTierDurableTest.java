@@ -305,6 +305,20 @@ class RemoteTierDurableTest {
             return gate.onSuccess(_ -> objects.put(key, content));
         }
 
+        @Override
+        public Promise<Option<ObjectStat>> statObject(String key) {
+            return unsupported();
+        }
+
+        @Override
+        public Promise<ObjectListing> listObjectStats(String prefix, Option<String> startAfter, int maxKeys) {
+            return unsupported();
+        }
+
+        private static <T> Promise<T> unsupported() {
+            return new S3Error.ApiError(501, "NotImplemented", "not used by these tests").promise();
+        }
+
         /// A held PUT stops counting as running BEFORE its promise resolves, so the count never includes a
         /// request whose completion the limiter may already have seen (continuations run on other threads).
         void releaseOne() {

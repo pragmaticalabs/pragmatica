@@ -309,12 +309,7 @@ final class LocalObjectWriter implements ObjectWriter {
                                          spec.attributes());
         var entry = ObjectEntry.objectEntry(manifestId, meta);
 
-        return entry.toBytes()
-                    .async()
-                    .flatMap(bytes -> storage.swapRef(store.entryRef(id),
-                                                      bytes))
-                    .map(_ -> entry.info(store.namespaceValue(),
-                                         id));
+        return store.insert(id, entry);
     }
 
     private <T> Promise<T> unwindOnFailure(Promise<T> attempt, List<BlockId> credited) {

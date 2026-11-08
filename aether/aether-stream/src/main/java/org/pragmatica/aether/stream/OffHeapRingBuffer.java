@@ -851,12 +851,22 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// exactly as on a fresh ring. Rejected with NO mutation on a non-fresh ring, a negative `base`,
     /// or a closed buffer.
     public Result<Unit> seedHead(long base) {
+        return seedHead(base, base);
+    }
+
+    /// [#seedHead], with the VISIBLE position seeded at `visibleSeed` instead of at `base` (#1463, PR-2f): a prefix sealed
+    /// while nothing acknowledged it is durable in the tier and must not read as visible after a restart, so recovery seeds
+    /// visible at the owner's acked marker when that lies below the sealed floor. Durable stays at `base`. This is the one
+    /// place visible is ever set below a value it could have had: the ring is fresh, has no listener and is not installed,
+    /// so no notifier can race it, and every later change only raises it ([#advanceVisible]). Rejected with
+    /// [StreamError.SeedRejected], and NO mutation, when `visibleSeed` lies outside `[-1, base]`.
+    public Result<Unit> seedHead(long base, long visibleSeed) {
         if (closed.get()) {
             return StreamError.General.BUFFER_CLOSED.result();
         }
 
         synchronized (appendLock) {
-            return guardedAccess(() -> seedHeadChecked(base));
+            return guardedAccess(() -> seedHeadChecked(base, visibleSeed));
         }
     }
 
@@ -1020,10 +1030,10 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     /// Native half of [#seedHead], behind the [#guardedAccess] boundary: the `closed` check above is a
     /// TOCTOU test that a concurrent release can win, so the header reads and writes here must still fail
     /// closed as `BUFFER_CLOSED` rather than throw out of the `Result` chain (#999).
-    private Result<Unit> seedHeadChecked(long base) {
+    private Result<Unit> seedHeadChecked(long base, long visibleSeed) {
         var currentHead = rawHeadOffset();
 
-        if (base < 0 || currentHead != -1) {
+        if (base < 0 || currentHead != -1 || visibleSeed < - 1 || visibleSeed > base) {
             return new StreamError.SeedRejected(base, currentHead).result();
         }
         // Tail first, then fence, then head — as evictOldest orders it: a reader that saw head = base
@@ -1034,7 +1044,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         controlSegment.set(ValueLayout.JAVA_LONG, HEADER_HEAD_OFFSET, base);
         lastSealedOffset = base;
         durableOffset.set(base);
-        visibleOffset.set(base);
+        visibleOffset.set(visibleSeed);
 
         return unitResult();
     }

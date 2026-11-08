@@ -54,6 +54,17 @@ public sealed interface WriteOutcome {
         return this instanceof Sent;
     }
 
+    /// True only for the outcomes that prove the frame never left this node: [BackpressureRefused],
+    /// [NoPeerState] and [EncodeFailed]. A caller may re-send such a frame without risking a second delivery
+    /// (#2820). [Sent] and [ConnectionDead] are false: the frame may yet arrive (written, or held in the
+    /// offline buffer), so re-sending it could deliver it twice.
+    default boolean provablyNotSent() {
+        return switch (this) {
+            case BackpressureRefused _, NoPeerState _, EncodeFailed _ -> true;
+            case Sent _, ConnectionDead _ -> false;
+        };
+    }
+
     record Sent(NodeId peerId) implements WriteOutcome {}
 
     record BackpressureRefused(NodeId peerId) implements WriteOutcome {}

@@ -4,9 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.Comparator;
+
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.lang.utils.JitterUtil;
 
@@ -30,7 +34,7 @@ public sealed interface Failures {
         var reason = row.failureReason().or(UNKNOWN_REASON);
 
         Outbox.artifactGoal(m, pair, SliceGoal.UNLOADED);
-        m.holdSignatures = m.holdSignatures.remove(pair);
+        Slices.holdGone(m, ctx, pair, "the slice failed: " + reason);
 
         return row.fatal()
                ? settle(m, ctx, pair, reason)
@@ -45,6 +49,53 @@ public sealed interface Failures {
                      .sorted(Rows.PAIR_ORDER)
                      .forEach(pair -> m.observed.get(pair)
                                                 .onPresent(row -> onFailed(m, ctx, pair, row)));
+
+        return closeSettled(m, ctx);
+    }
+
+    /// D.6 row 14, level-triggered with the sweep: a reported artifact whose judgment has since settled (permanently failed) or that has an
+    /// ACTIVE instance again closes its episode: `retry-exhausted-settled`, same subject.
+    private static ClusterModel closeSettled(ClusterModel m, Ctx ctx) {
+        m.retryExhaustedWarned.toList()
+                              .stream()
+                              .sorted(Comparator.comparing(Artifact::asString))
+                              .filter(artifact -> Slices.permanentlyFailed(m, artifact) || hasActiveInstance(m, artifact))
+                              .forEach(artifact -> closeOne(m,
+                                                            ctx,
+                                                            artifact,
+                                                            Slices.permanentlyFailed(m, artifact)
+                                                            ? "the judgment settled"
+                                                            : "an instance is ACTIVE"));
+
+        return m;
+    }
+
+    private static boolean hasActiveInstance(ClusterModel m, Artifact artifact) {
+        return Idx.members(m.observedByArtifact, artifact)
+                  .toList()
+                  .stream()
+                  .anyMatch(node -> m.observed.get(SlicePair.slicePair(node, artifact))
+                                              .map(row -> row.state() == SliceObservedState.ACTIVE)
+                                              .or(false));
+    }
+
+    /// Closes every reported `retry-exhausted-unsettled` of `base` with `retry-exhausted-settled`, the reason being `why`.
+    static ClusterModel closeReported(ClusterModel m, Ctx ctx, ArtifactBase base, String why) {
+        m.retryExhaustedWarned.toList()
+                              .stream()
+                              .filter(artifact -> artifact.base()
+                                                          .equals(base))
+                              .sorted(Comparator.comparing(Artifact::asString))
+                              .forEach(artifact -> closeOne(m, ctx, artifact, why));
+
+        return m;
+    }
+
+    private static ClusterModel closeOne(ClusterModel m, Ctx ctx, Artifact artifact, String why) {
+        m.retryExhaustedWarned = m.retryExhaustedWarned.remove(artifact);
+        ctx.warn(Recoveries.RETRY_EXHAUSTED_SETTLED,
+                 artifact.asString(),
+                 "Retries of " + artifact.asString() + ": " + why);
 
         return m;
     }
@@ -126,6 +177,7 @@ public sealed interface Failures {
         }
 
         routeFailed(m, ctx, pair, reason);
+        m.retryExhaustedWarned = m.retryExhaustedWarned.add(artifact);
         ctx.warn("retry-exhausted-unsettled",
                  artifact.asString(),
                  "Max retries exceeded for " + artifact

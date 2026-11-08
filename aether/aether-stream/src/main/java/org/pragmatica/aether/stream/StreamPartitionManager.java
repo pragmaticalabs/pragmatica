@@ -290,8 +290,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// A copy's verdict on an epoch ([PartitionState.Standing#epochTrust]).
     record EpochTrust(Epoch epoch, boolean verified) {}
 
-    /// The owner's reported visible position ([PartitionState.Standing#replicaCommitted]).
-    record CommittedMark(Epoch epoch, long through) {}
+    /// The owner's reported visible position ([PartitionState.Standing#replicaCommitted]). `announced` is whether the owner of
+    /// `epoch` has reported it in this node's life (PR-2f S2, know `e10cf838c9`): a mark a batch opened, or carried over from
+    /// an earlier epoch, is not one, and [#behindCommittedOwner] treats this copy as stale until it is.
+    record CommittedMark(Epoch epoch, long through, boolean announced) {}
 
     /// The offset the owner of `epoch` began writing at.
     @FunctionalInterface
@@ -872,8 +874,102 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Whether this node may currently serve `(streamName, partition)` as its owner (#1555): the reported
     /// `servedByOwner` is true only when placement names self AND this holds.
     public boolean mayServeAsOwner(String streamName, int partition) {
+        return admitAsOwner(streamName, partition).isSuccess();
+    }
+
+    /// The owner promotion gate (#1555) at every owner-admission site ([#mayServeAsOwner], owner-role reads, owner writes),
+    /// and the one place the acked marker may RAISE visible (PR-2f, know `6665558916` S1): only after the gate admits,
+    /// which in production means [OwnerActivation#admit] found this node activated -- consensus active, a committed record
+    /// naming self read after a barrier round, the lineage commit landed. A ring rebuild never raises from the marker.
+    private Result<Unit> admitAsOwner(String streamName, int partition) {
         return ownerServeGate.admit(streamName, partition)
-                             .isSuccess();
+                             .onSuccess(_ -> restoreAckedMarker(streamName, partition));
+    }
+
+    /// PR-2f (I-05): restore the owner's acked marker once per ring incarnation, at its first owner admission that finds the
+    /// committed record naming this node. While the role is not OWNER, or no record is committed, or the record names
+    /// another node, the marker stays pending and is not read; once those hold it is taken -- whatever the verdict -- and
+    /// raises visible only if [#trustedMarker]. After that the check is one volatile read per admission.
+    @Contract
+    private void restoreAckedMarker(String streamName, int partition) {
+        walFor(streamName, partition).filter(AppendLog::hasAckedRestore)
+              .filter(_ -> ownsTheCommittedRecord(streamName, partition))
+              .onPresent(wal -> restoreTrustedMarker(streamName, partition, wal));
+    }
+
+    private boolean ownsTheCommittedRecord(String streamName, int partition) {
+        return placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER
+               && ownershipRecords.committed(streamName, partition)
+                                  .isPresent()
+               && ownerWriteAdmission.remoteCommittedOwner(streamName, partition)
+                                     .isEmpty();
+    }
+
+    @Contract
+    private void restoreTrustedMarker(String streamName, int partition, AppendLog wal) {
+        wal.takeAckedRestore().onPresent(marker -> restoreMarker(streamName, partition, wal, marker));
+    }
+
+    /// The marker is taken once per ring incarnation, so its verdict is logged once: an operator reading a restart that
+    /// still waits for replica re-acks can tell a distrusted marker from a missing one.
+    @Contract
+    private void restoreMarker(String streamName, int partition, AppendLog wal, AppendLog.AckedMark marker) {
+        var trusted = trustedMarker(streamName, partition, wal, marker);
+
+        log.info("Stream {} partition {}: acked marker at offset {} (epoch {}) {}",
+                 streamName,
+                 partition,
+                 marker.offset(),
+                 marker.epoch().map(AppendLog.EpochKey::token).or("none"),
+                 trusted
+                 ? "trusted at owner admission: visible raised to it"
+                 : "not trusted at owner admission: visible waits for replica re-acks");
+        if (trusted) {
+            raiseToMarker(streamName, partition, marker);
+        }
+    }
+
+    /// The trust predicate (I-05): the log's epoch history attributes the marker's offset to the marker's epoch, and the
+    /// committed record's epoch starts keep that prefix in the live lineage -- no committed epoch after the marker's began
+    /// at or below its offset ([EpochValidation#admit], the question a consumer cursor at `offset + 1` is asked). A marker
+    /// with no epoch, or one the history no longer attributes (a cut, a rewritten history), is not trusted.
+    private boolean trustedMarker(String streamName, int partition, AppendLog wal, AppendLog.AckedMark marker) {
+        return marker.epoch()
+                     .filter(key -> attributes(wal, marker, key))
+                     .filter(key -> inLiveLineage(streamName,
+                                                  partition,
+                                                  key,
+                                                  marker.offset()))
+                     .isPresent();
+    }
+
+    private static boolean attributes(AppendLog wal, AppendLog.AckedMark marker, AppendLog.EpochKey key) {
+        return wal.attributedEpoch(marker.offset())
+                  .equals(some(key));
+    }
+
+    private boolean inLiveLineage(String streamName, int partition, AppendLog.EpochKey key, long offset) {
+        return ownershipRecords.committed(streamName, partition)
+                               .filter(record -> admitsTheMarkedPrefix(streamName, partition, record, key, offset))
+                               .isPresent();
+    }
+
+    private static boolean admitsTheMarkedPrefix(String streamName,
+                                                 int partition,
+                                                 StreamPartitionOwnershipValue record,
+                                                 AppendLog.EpochKey key,
+                                                 long offset) {
+        return ProvenanceEntry.rankOf(key)
+                              .flatMap(epoch -> EpochValidation.admit(streamName, partition, record, epoch, offset + 1))
+                              .isSuccess();
+    }
+
+    /// Bounded by durable as every raise of visible is. The open-time clamp already bounds the marker by the recovered head,
+    /// which a replayed ring holds durably, so the bound is a guard here rather than a cut.
+    @Contract
+    private void raiseToMarker(String streamName, int partition, AppendLog.AckedMark marker) {
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> ring.advanceVisible(Math.min(ring.durableOffset(),
+                                                                                                     marker.offset())));
     }
 
     /// A client-facing local read (#1555). On the placement OWNER it passes the owner promotion gate first, so a
@@ -923,11 +1019,20 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// committed epoch, and this copy holds records at or above that epoch's start that it has not compared with its owner.
     /// Evaluated lazily at the first call after the committed epoch advances: a copy whose head is still below the start then
     /// holds nothing from the old lineage at or above it, and stays trusted; a head that reached the start by then is doubted
-    /// (conservative: its backfill compare clears it). The owner itself is never doubted here.
+    /// (conservative: its backfill compare clears it). The placement owner is never doubted here; the ack gate is
+    /// ([#replicaVerified]).
     public Option<Long> unverifiedFrom(String streamName, int partition) {
+        return placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER
+               ? none()
+               : doubtedFrom(streamName, partition);
+    }
+
+    /// The offset from which this copy has not been compared with the committed owner of the current epoch, whatever its
+    /// placement role, or none when there is no committed epoch or the copy is trusted for it ([#unverifiedFrom]).
+    private Option<Long> doubtedFrom(String streamName, int partition) {
         var epoch = ownerEpochSource.currentOwnerEpoch(streamName, partition);
 
-        if (epoch.equals(Epoch.ZERO) || placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER) {
+        if (epoch.equals(Epoch.ZERO)) {
             return none();
         }
 
@@ -950,9 +1055,13 @@ public final class StreamPartitionManager implements AutoCloseable {
                        .verified();
     }
 
-    /// Whether this node may acknowledge to the owner what it holds ([#unverifiedFrom]).
+    /// Whether this node may acknowledge to the owner what it holds. #2753: only a verification for the
+    /// committed epoch opens it, never the placement role. That role comes from HRW placement, not from the committed record,
+    /// so a node placed OWNER while the committed owner still sends at the current epoch is a follower whose copy may hold an
+    /// older lineage. Its backfill compares it with the committed owner (`PartitionBackfill` sources from that owner), which
+    /// verifies it.
     public boolean replicaVerified(String streamName, int partition) {
-        return unverifiedFrom(streamName, partition).isEmpty();
+        return doubtedFrom(streamName, partition).isEmpty();
     }
 
     /// A backfill compared this copy with the committed owner of `epoch` (captured BEFORE the compare, so an epoch that advanced
@@ -1147,7 +1256,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     private Result<Unit> ownerRoleGate(String streamName, int partition) {
         return placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER
-               ? ownerServeGate.admit(streamName, partition)
+               ? admitAsOwner(streamName, partition)
                : Result.unitResult();
     }
 
@@ -2339,15 +2448,18 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     /// A rebuilt ring's replayed WAL tail is durable and not visible ([StreamEntry#placeRecord], #1387); this
-    /// restores `visible` to what the ack state supports, before the ring can be read. Nothing about acks
-    /// is persisted — the production [ReplicaRegistry] writes through `WatermarkStore.NOOP` — so on an
-    /// OWNER every peer is blind after a restart and the tail stays at the seed (the sealed bound) until a
-    /// live ack covers it, exactly its state before the restart; a stream with no peer barrier
-    /// (`confirmationFactor <= 1`) sees the whole tail at once, as before. A REPLICA's visible position is its
-    /// OWN durability (#1235 replica side), so its tail is visible at once. `NONE` — the role unresolved —
-    /// takes the owner rule: an unresolved role must not expose more than the owner would. The confirmation
-    /// count is read from `config`, not [#confirmationFactorFor]: on a fresh create the entry is not in
-    /// `streams` yet, and the lookup would report `0` — no barrier — and expose the tail.
+    /// restores `visible` to what the ack state supports, before the ring can be read. The production [ReplicaRegistry]
+    /// persists no acks (`WatermarkStore.NOOP`), so on an OWNER every peer is blind after a restart and the tail stays at
+    /// the seed here; it rises at the owner's first admission to the acked marker the owner recorded before the restart, when
+    /// that marker is trusted ([#admitAsOwner], PR-2f), and otherwise when a live ack covers it. A stream with no peer
+    /// barrier (`confirmationFactor <= 1`) sees the whole tail at once, as before. The seed is the sealed floor, or the acked marker below it (#1463, [StreamEntry#visibleSeed]).
+    /// A REPLICA holds its recovered tail until it is verified against its owner ([#holdRecoveredTailUntilVerified]).
+    ///
+    /// PR-2f: OWNER and NONE are separate arms with the same rule. NONE -- the role unresolved -- must not expose more
+    /// than the owner would, and it never reads the acked marker: the marker can raise visible only at the
+    /// owner-admission edge, which re-checks the OWNER role when it runs (know `6665558916`, S1/S5), never here at the
+    /// rebuild. The confirmation count is read from `config`, not [#confirmationFactorFor]: on a fresh create the entry is
+    /// not in `streams` yet, and the lookup would report `0` -- no barrier -- and expose the tail.
     /// `state` is where the hold is recorded: the hydrating life's state while a hydrate builds the entry, the entry's own
     /// life's state when one partition materializes later (know `f7bc44d170`).
     @Contract
@@ -2357,14 +2469,19 @@ public final class StreamPartitionManager implements AutoCloseable {
                                 Supplier<PartitionState> state) {
         switch (placementRoleSupplier.roleFor(config.name(), partition)) {
             case REPLICA -> holdRecoveredTailUntilVerified(state, partition, ring);
-            case OWNER, NONE -> ring.advanceVisible(Math.min(ring.durableOffset(),
-                                                             replicationManager.replicatedThrough(config.name(),
-                                                                                                  partition,
-                                                                                                  config.confirmationFactor() - 1)));
+            case OWNER -> ring.advanceVisible(replicaAckedBound(config, partition, ring));
+            case NONE -> ring.advanceVisible(replicaAckedBound(config, partition, ring));
         }
 
         ring.addAppendListener(visible -> announceVisible(config.name(), partition, visible));
         ring.addTruncationListener(keepThrough -> partitionLogEvents.truncated(config.name(), partition, keepThrough));
+    }
+
+    /// `min(durable, replicatedThrough(CF - 1))`: what the live replica acks support, the restore rule of the OWNER and NONE
+    /// arms of [#restoreVisible].
+    private long replicaAckedBound(StreamConfig config, int partition, OffHeapRingBuffer ring) {
+        return Math.min(ring.durableOffset(),
+                        replicationManager.replicatedThrough(config.name(), partition, config.confirmationFactor() - 1));
     }
 
     /// #2087: the owner's visible position moved: tell the replicas. Runs on the ring's serial notifier -- never under
@@ -2385,6 +2502,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// an announcement stays BEHIND, never ahead, and this closes the gap: after the last ack a replica's visible
     /// position lags the owner's by at most one tick interval plus one message delivery. Cost: one small message per
     /// owned partition per replica per tick, independent of the publish rate.
+    ///
+    /// PR-2f: the same tick records the owner's visible position as the partition log's acked marker
+    /// ([#recordAckedMarker]), at most one small unforced rename per owned partition per tick, and only when visible moved.
     @Contract
     public void repeatVisible() {
         materializedHeads().forEach(head -> resolvePartitionBuffer(head.streamName(), head.partition()).onSuccess(ring -> repeatVisible(head,
@@ -2395,7 +2515,52 @@ public final class StreamPartitionManager implements AutoCloseable {
     private void repeatVisible(PartitionHead head, OffHeapRingBuffer ring) {
         if (ring.visibleOffset() >= 0) {
             announceVisible(head.streamName(), head.partition(), ring.visibleOffset());
+        } else if (ring.durableOffset() < 0) {
+            announceEmptyLog(head.streamName(), head.partition());
         }
+
+        recordAckedMarker(head.streamName(), head.partition(), ring);
+    }
+
+    /// PR-2f S2 (know `e10cf838c9`): an owner whose log holds nothing reports `-1` to its replicas, so they stop forwarding
+    /// reads of a never-written partition after one tick ([#behindCommittedOwner]). Only an EMPTY log: an owner holding records
+    /// below its visible position may be waiting for its first admission to raise it from the marker, and a `-1` from it would
+    /// tell its replicas that nothing is acknowledged. Nothing is committed, so the partition log is told nothing.
+    @Contract
+    private void announceEmptyLog(String streamName, int partition) {
+        if (placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER) {
+            replicationManager.announceCommitted(streamName,
+                                                 partition,
+                                                 - 1L,
+                                                 ownerEpochSource.currentOwnerEpoch(streamName, partition));
+        }
+    }
+
+    /// PR-2f (I-05): on the OWNER, write its visible position to the partition log's acked marker -- a no-op unless visible
+    /// moved past the last marker (or past the visible position the ring was seeded at). A node that is not the owner
+    /// writes nothing: a replica's visible position is not the owner's acknowledgement state.
+    ///
+    /// FER (degrade forward): a failed write is a WARN and is otherwise ignored. The marker is an optimisation; without
+    /// the advance it would have recorded, a restart waits for replica re-acks of those records, bounded as before the
+    /// marker existed. Nothing is retried here -- the next tick writes again if visible is still ahead.
+    @Contract
+    private void recordAckedMarker(String streamName, int partition, OffHeapRingBuffer ring) {
+        if (placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER) {
+            walFor(streamName, partition).onPresent(wal -> wal.recordAckedMarker(ring.visibleOffset())
+                                                              .onFailure(cause -> log.warn("Stream {} partition {}: the acked marker was not written (a restart waits for replica re-acks of the records it would have covered): {}",
+                                                                                           streamName,
+                                                                                           partition,
+                                                                                           cause.message())));
+        }
+    }
+
+    /// PR-2f: the tick's marker write for every materialized partition, run by [#close] before the logs close, so a graceful
+    /// stop restarts with the acked marker it had (a kill loses at most the last tick's advance).
+    @Contract
+    private void flushAckedMarkers() {
+        materializedHeads().forEach(head -> resolvePartitionBuffer(head.streamName(), head.partition()).onSuccess(ring -> recordAckedMarker(head.streamName(),
+                                                                                                                                            head.partition(),
+                                                                                                                                            ring)));
     }
 
     /// #2087: the owner told this replica how far its visible position reaches. Ignored on the owner itself (it is the
@@ -2408,7 +2573,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         standing(streamName).replicaCommitted()
                 .merge(partition,
-                       new CommittedMark(ownerEpoch, through),
+                       new CommittedMark(ownerEpoch, through, true),
                        StreamPartitionManager::newerMark);
         resolvePartitionBuffer(streamName, partition).onSuccess(ring -> exposeReplicaCommitted(streamName,
                                                                                                partition,
@@ -2426,6 +2591,27 @@ public final class StreamPartitionManager implements AutoCloseable {
                : committedMarkThrough(streamName, partition);
     }
 
+    /// PR-2f S2 (owner ruling `ab33af11c6`, mechanism `e10cf838c9`): whether a GOVERNOR read of `(streamName, partition)` on
+    /// this node must go to the owner instead of this node's ring. Never on the owner. Elsewhere, true while the owner of the
+    /// recorded epoch has announced nothing in this node's life (after a restart the owner raises visible from its acked
+    /// marker only at its first admission, which a forwarded read triggers), or while this ring's visible position is below
+    /// the announced one (a lagging copy, or a recovered tail still held until verified).
+    public boolean behindCommittedOwner(String streamName, int partition) {
+        if (placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER) {
+            return false;
+        }
+
+        return existingStanding(streamName).flatMap(standing -> option(standing.replicaCommitted().get(partition)))
+                               .filter(CommittedMark::announced)
+                               .map(mark -> localVisible(streamName, partition) < mark.through())
+                               .or(true);
+    }
+
+    private long localVisible(String streamName, int partition) {
+        return resolvePartitionBuffer(streamName, partition).map(OffHeapRingBuffer::visibleOffset)
+                                     .or(-1L);
+    }
+
     /// A batch landed under `epoch`: the owner of that epoch is the one this replica now follows, so a position reported
     /// under an OLDER epoch -- a deposed owner's, still in flight -- must be refused from here on (#2087). The recorded
     /// position carries over: what was acknowledged under the earlier lineage stays acknowledged.
@@ -2433,11 +2619,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     private void noteBatchEpoch(String streamName, int partition, Epoch epoch) {
         standing(streamName).replicaCommitted()
                 .merge(partition,
-                       new CommittedMark(epoch, -1L),
+                       new CommittedMark(epoch, -1L, false),
                        (known, batch) -> batch.epoch()
                                               .isStrictlyAfter(known.epoch())
                                          ? new CommittedMark(batch.epoch(),
-                                                             known.through())
+                                                             known.through(),
+                                                             false)
                                          : known);
     }
 
@@ -2447,8 +2634,10 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
 
         return reported.epoch()
-                       .equals(known.epoch()) && reported.through() > known.through()
-               ? reported
+                       .equals(known.epoch())
+               ? new CommittedMark(known.epoch(),
+                                   Math.max(known.through(), reported.through()),
+                                   true)
                : known;
     }
 
@@ -3191,7 +3380,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                 .computeIfPresent(partition,
                                   (_, mark) -> mark.through() > keep
                                                ? new CommittedMark(mark.epoch(),
-                                                                   keep)
+                                                                   keep,
+                                                                   mark.announced())
                                                : mark);
         standing.lastReplicatedWalWrite().computeIfPresent(partition,
                                                            (_, write) -> write.offset() > keep
@@ -3516,7 +3706,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                   .map(owner -> new StreamError.NotOwnerAppend(streamName, partition, owner).<Unit> result())
                                   .or(Result::unitResult)
                                   .flatMap(_ -> ensureOwnerRing(streamName, partition))
-                                  .flatMap(_ -> ownerServeGate.admit(streamName, partition))
+                                  .flatMap(_ -> admitAsOwner(streamName, partition))
                                   .flatMap(_ -> ensureReplicaFloor(streamName, partition, minAcks))
                                   .flatMap(_ -> ensureSegmentTierRoom());
     }
@@ -5578,6 +5768,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     @Override
     public void close() {
+        flushAckedMarkers();
         streams.values().forEach(StreamEntry::close);
         streams.clear();
         scheduler.clearOnClose();
@@ -7155,6 +7346,11 @@ public final class StreamPartitionManager implements AutoCloseable {
         ///
         /// #1638 F6: a trim that fails leaves the ghost in place, so the partition stays closed on this node -- detect and
         /// flag, never guess -- and the failure is reported with its own cause ([TrimFailure]).
+        ///
+        /// PR-2f (S3, know `6665558916`): the acked marker is clamped here too, to the same head -- the larger of the ring head
+        /// and the log's last offset, because a log whose sealed prefix was compacted away reopens with no records while the
+        /// data continues in the sealed tier -- and rewritten durably, so a crash that left it above the data never vouches
+        /// for records this copy does not hold.
         private static Result<Unit> trimAtOpen(String streamName,
                                                int partition,
                                                AppendLog wal,
@@ -7163,7 +7359,25 @@ public final class StreamPartitionManager implements AutoCloseable {
             var head = ring.headOffset();
 
             return wal.truncateEpochsAboveHead(head)
-                      .mapError(cause -> trimFailed.trimFailed(streamName, partition, head, cause));
+                      .mapError(cause -> trimFailed.trimFailed(streamName, partition, head, cause))
+                      .onSuccess(_ -> clampAckedMarker(streamName, partition, wal, head));
+        }
+
+        /// Design-out, not a refusal: a marker that could not be clamped is never restored in this incarnation (its restore
+        /// is taken and dropped), so it can raise nothing, and the tail waits for replica re-acks as it would with no marker.
+        /// The partition stays open: the marker is an optimisation, and the lowering it seeded already happened.
+        @Contract
+        private static void clampAckedMarker(String streamName, int partition, AppendLog wal, long head) {
+            wal.clampAckedMarker(head).onFailure(cause -> forgoAckedRestore(streamName, partition, wal, cause));
+        }
+
+        @Contract
+        private static void forgoAckedRestore(String streamName, int partition, AppendLog wal, Cause cause) {
+            log.warn("Stream {} partition {}: the acked marker could not be clamped to the head; it is not restored on this start: {}",
+                     streamName,
+                     partition,
+                     cause.message());
+            wal.takeAckedRestore();
         }
 
         /// Place the WAL's un-sealed tail (records above the durable last-sealed offset `base`) at its
@@ -7177,6 +7391,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                AppendLog wal,
                                                long base) {
             var records = new ArrayList<WalRecord>();
+            var visibleSeed = visibleSeed(wal, base);
 
             return wal.replay(-1L, records::add)
                       .flatMap(_ -> placeTail(streamName,
@@ -7184,7 +7399,9 @@ public final class StreamPartitionManager implements AutoCloseable {
                                               wal.path(),
                                               ring,
                                               base,
+                                              visibleSeed,
                                               sortedByOffset(streamName, partition, records)))
+                      .onSuccess(_ -> wal.ackedMarkerBaseline(visibleSeed))
                       .onFailure(cause -> log.error("Stream {} is not materialized on this node: partition {} refused its WAL: {}",
                                                     streamName,
                                                     partition,
@@ -7209,6 +7426,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                               Path walFile,
                                               OffHeapRingBuffer ring,
                                               long base,
+                                              long visibleSeed,
                                               List<WalRecord> fileRecords) {
             var tail = recordsAbove(fileRecords, base);
 
@@ -7217,7 +7435,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                  walFile,
                                                                                                                  base,
                                                                                                                  tail))
-                              .flatMap(_ -> seedRing(ring, base))
+                              .flatMap(_ -> seedRing(ring, base, visibleSeed))
                               .flatMap(_ -> appendTail(streamName, partition, walFile, ring, tail));
         }
 
@@ -7250,9 +7468,27 @@ public final class StreamPartitionManager implements AutoCloseable {
         /// Position the fresh ring so the next append is `seed + 1`; a no-op when `seed < 0` (nothing
         /// sealed, and the WAL starts at offset 0 or is empty).
         private static Result<Unit> seedRing(OffHeapRingBuffer ring, long seed) {
+            return seedRing(ring, seed, seed);
+        }
+
+        /// [#seedRing], with visible seeded at `visibleSeed` (#1463, PR-2f): see [#visibleSeed].
+        private static Result<Unit> seedRing(OffHeapRingBuffer ring, long seed, long visibleSeed) {
             return seed >= 0
-                   ? ring.seedHead(seed)
+                   ? ring.seedHead(seed, visibleSeed)
                    : success(unit());
+        }
+
+        /// #1463 (PR-2f, know `6665558916` S5/S6): a prefix sealed while unacknowledged is durable in the tier and must not
+        /// read as visible after a restart, so the WAL path seeds visible at the acked marker when the marker lies below the
+        /// sealed floor `base`. The lowering is role-agnostic -- it can only hide, never expose -- and runs before any
+        /// listener exists, so every later change only raises visible. No marker (a log written by an older build, a torn or
+        /// CRC-bad marker) means no lowering: visible is seeded at the floor, as before. A log created by this build is born
+        /// with a `-1` marker, so a prefix sealed before anything was acknowledged is hidden.
+        private static long visibleSeed(AppendLog wal, long base) {
+            return wal.ackedMarker()
+                      .map(marker -> Math.min(base,
+                                              marker.offset()))
+                      .or(base);
         }
 
         /// The file's LOWEST stored offset must be at most `base + 1` (#1278). `base` already counts every offset

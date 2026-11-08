@@ -43,6 +43,29 @@ public interface S3Client {
     Promise<Unit> deleteObject(String key);
     /// Lists object keys matching a prefix.
     Promise<List<String>> listObjects(String prefix, int maxKeys);
+    /// The object's size and last-modified time from a HEAD: none only on a 404, any other failure fails the promise.
+    Promise<Option<ObjectStat>> statObject(String key);
+    /// One ListObjectsV2 page: at most `maxKeys` objects under `prefix` whose keys sort strictly after `startAfter` (when
+    /// present), in ascending key order, with each object's size and last-modified time.
+    Promise<ObjectListing> listObjectStats(String prefix, Option<String> startAfter, int maxKeys);
+
+    /// What a HEAD or a LIST reports of one object; `lastModifiedMillis` is the provider's clock, in epoch milliseconds.
+    record ObjectStat(String key, long size, long lastModifiedMillis) {
+        public static ObjectStat objectStat(String key, long size, long lastModifiedMillis) {
+            return new ObjectStat(key, size, lastModifiedMillis);
+        }
+    }
+
+    /// One LIST page; `truncated` is the provider's word that more objects follow.
+    record ObjectListing(List<ObjectStat> objects, boolean truncated) {
+        public ObjectListing {
+            objects = List.copyOf(objects);
+        }
+
+        public static ObjectListing objectListing(List<ObjectStat> objects, boolean truncated) {
+            return new ObjectListing(objects, truncated);
+        }
+    }
 
     /// Creates an S3Client with default HTTP operations.
     static S3Client s3Client(S3Config config) {

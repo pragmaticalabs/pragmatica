@@ -148,8 +148,20 @@ are gone from the membership.
 
 ## Mixed-Version Clusters
 
-Aether supports mixed-version clusters through envelope versioning. A partially-upgraded cluster is
-fully functional. See [`../reference/versioning-and-compatibility.md`](../reference/versioning-and-compatibility.md)
+Aether's slice-envelope versioning lets old-format and new-format slices coexist across a rolling upgrade. That is
+not a guarantee that every mixed-version cluster is fully functional: nothing refuses a mixed-version cluster (#666,
+open), and some changes need every node on the same build.
+
+> **Flag day for consumer cursors (#1961, PR-5a).** Crossing this release is a flag day for stream consumer cursors: the
+> advance-only cursor-checkpoint arm lives in the consensus applier, so it holds only when every node runs a build that has
+> it. While any node runs an older build, that node's applier can admit a late lower checkpoint that upgraded nodes refuse,
+> so the cursor can regress (the pre-fix #1961 behaviour) and replicas' KV values for it can differ until the next advancing
+> commit. The consequence is at most redelivery (at-least-once). Nothing refuses a mixed cluster yet: #666 (a version field
+> on `Hello` and a join-time mismatch policy) is open and is the tracker. The procedure available today is the
+> replacement-based rolling upgrade (`aether cluster upgrade --wait`); cursor regression stays possible until every node
+> runs the new build. Pre-GA there are no users to migrate.
+
+See [`../reference/versioning-and-compatibility.md`](../reference/versioning-and-compatibility.md)
 for what that does and does not cover.
 
 ## How Versions Are Compared
