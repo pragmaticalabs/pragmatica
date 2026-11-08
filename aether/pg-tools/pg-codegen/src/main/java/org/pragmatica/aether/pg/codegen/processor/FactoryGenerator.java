@@ -209,11 +209,22 @@ public final class FactoryGenerator {
             appendScalarMapper(sb, method.returnKind, method.sql);
         }
 
-        for (var param : method.params) {
-            sb.append(", ").append(param.accessor());
-        }
-
+        appendParamArguments(sb, method.params);
         sb.append(");\n");
+    }
+
+    /// A sole reference-array argument passed to the `Object...` parameter of the connector would BE
+    /// the varargs array, spreading its elements into separate bind parameters (#2885); the `(Object)`
+    /// cast keeps an array argument one bind parameter.
+    private static void appendParamArguments(StringBuilder sb, List<MethodParam> params) {
+        for (var param : params) {
+            sb.append(", ");
+            if (param.typeName().endsWith("[]")) {
+                sb.append("(Object) (").append(param.accessor()).append(')');
+            } else {
+                sb.append(param.accessor());
+            }
+        }
     }
 
     private static void appendGenericScalarMapper(StringBuilder sb, MethodInfo method) {
@@ -259,10 +270,7 @@ public final class FactoryGenerator {
     private static void appendUnitMethodBody(StringBuilder sb, MethodInfo method) {
         sb.append("                return db.update(");
         sb.append(method.sqlConstantName);
-        for (var param : method.params) {
-            sb.append(", ").append(param.accessor());
-        }
-
+        appendParamArguments(sb, method.params);
         sb.append(").mapToUnit();\n");
     }
 
@@ -285,16 +293,10 @@ public final class FactoryGenerator {
 
         var outer = outerSelectClause(sql);
         var upper = outer.toUpperCase();
-        var asIdx = upper.indexOf(" AS ");
+        var alias = selectItemText(outer).flatMap(FactoryGenerator::topLevelAlias);
 
-        if (asIdx >= 0) {
-            var afterAs = outer.substring(asIdx + 4).trim();
-            var spaceIdx = afterAs.indexOf(' ');
-            var alias = spaceIdx >= 0
-                        ? afterAs.substring(0, spaceIdx).toLowerCase()
-                        : afterAs.toLowerCase();
-
-            return cleanIdentifier(alias);
+        if (alias.isPresent()) {
+            return cleanIdentifier(alias.unwrap().toLowerCase());
         }
 
         var firstSelectItem = firstSelectItem(outer);
@@ -333,11 +335,7 @@ public final class FactoryGenerator {
             return Option.none();
         }
 
-        var asIdx = rest.toUpperCase().indexOf(" AS ");
-        var item = asIdx >= 0
-                   ? rest.substring(asIdx + 4).trim()
-                   : rest;
-        var cleaned = cleanIdentifier(item);
+        var cleaned = cleanIdentifier(topLevelAlias(rest).or(rest));
 
         return cleaned.isEmpty()
                ? Option.none()
@@ -383,7 +381,43 @@ public final class FactoryGenerator {
         return sb.toString();
     }
 
+    /// The alias after the last `AS` that sits outside every parenthesis, so the `AS` of
+    /// `CAST(x AS int)` is never taken for the alias of the item (#2886). Case-insensitive.
+    private static Option<String> topLevelAlias(String item) {
+        var depth = 0;
+        var aliasStart = -1;
+
+        for (var i = 0; i < item.length(); i++) {
+            var c = item.charAt(i);
+
+            if (c == '(') {
+                depth++;
+            } else if (c == ')') {
+                depth--;
+            } else if (depth == 0 && isAsKeywordAt(item, i)) {
+                aliasStart = i + 2;
+            }
+        }
+
+        return aliasStart < 0
+               ? Option.none()
+               : Option.some(item.substring(aliasStart).trim());
+    }
+
+    private static boolean isAsKeywordAt(String text, int index) {
+        return index > 0
+               && index + 2 < text.length()
+               && Character.isWhitespace(text.charAt(index - 1))
+               && Character.isWhitespace(text.charAt(index + 2))
+               && text.regionMatches(true, index, "AS", 0, 2);
+    }
+
     private static Option<String> firstSelectItem(String sql) {
+        return selectItemText(sql).flatMap(FactoryGenerator::selectItemName);
+    }
+
+    /// The text of the first select item, without a leading `DISTINCT`; none when the item is empty or `*`.
+    private static Option<String> selectItemText(String sql) {
         var upper = sql.toUpperCase();
         var selectIdx = upper.indexOf("SELECT");
 
@@ -415,10 +449,15 @@ public final class FactoryGenerator {
 
         var item = rest.substring(0, end).trim();
 
-        if (item.isEmpty() || item.equals("*")) {
-            return Option.none();
-        }
+        return item.isEmpty() || item.equals("*")
+               ? Option.none()
+               : Option.some(item);
+    }
 
+    /// Name Postgres gives an unaliased item. An unaliased `CAST(x AS t)` is named after the target
+    /// type's internal name (`int4`, `int8`, ...), which is not derivable here, so it falls under the
+    /// function-call rule and yields `cast`: alias such items (`CAST(x AS int) AS n`).
+    private static Option<String> selectItemName(String item) {
         var openParen = item.indexOf('(');
 
         if (openParen > 0) {
