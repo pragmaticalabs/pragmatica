@@ -44,7 +44,9 @@ import org.pragmatica.lang.Patch.Value;
 ///
 /// A record component is the only position a `Patch` may take. A list or set element, a map value, the whole body,
 /// or the element of an `Option` or another `Patch` has no "missing" state, so both paths refuse such a type with a
-/// message naming the position, instead of silently reading `Absent` as `null`.
+/// message naming the position, instead of silently reading `Absent` as `null`: the generated codecs at build time,
+/// Jackson when it first reads the type (on write, a `Patch` nested inside a container value is refused when one is
+/// written).
 ///
 /// ## Applying
 ///

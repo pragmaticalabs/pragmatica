@@ -65,6 +65,9 @@ public class PatchSerializer extends ValueSerializer<Patch<?>> {
         return provider.reportBadDefinition(Patch.class, reason);
     }
 
+    // Checked here because the value is written by its runtime type: a Null or Absent inner Patch would otherwise never
+    // reach a serializer that could refuse it. A Patch deeper inside a container value (Patch<List<Patch<X>>>) is
+    // refused only when one is written, by its own contextualization; PatchDeserializer refuses that type outright.
     private static boolean hasSupportedElement(JavaType type) {
         return option(type.containedTypeCount() == 1
                       ? type.containedType(0)

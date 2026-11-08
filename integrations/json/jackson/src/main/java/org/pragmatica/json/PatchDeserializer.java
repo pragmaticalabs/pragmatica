@@ -20,7 +20,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Patch;
 
 import tools.jackson.core.JsonParser;
-import tools.jackson.core.JsonToken;
 import tools.jackson.databind.BeanProperty;
 import tools.jackson.databind.DeserializationContext;
 import tools.jackson.databind.JavaType;
@@ -54,12 +53,10 @@ public class PatchDeserializer extends ValueDeserializer<Patch<?>> {
         return new PatchDeserializer(none());
     }
 
+    /// Reached only for a present, non-null member: Jackson hands a record component's `null` to [#getNullValue]
+    /// and its absence to [#getAbsentValue]. Only a contextualized instance is ever asked to read.
     @Override
     public Patch<?> deserialize(JsonParser p, DeserializationContext ctxt) {
-        if (p.currentToken() == JsonToken.VALUE_NULL) {
-            return Patch.nullValue();
-        }
-
         return Patch.value(valueDeserializer.map(deser -> deser.deserialize(p, ctxt)).or(() -> refused(ctxt)));
     }
 
@@ -69,7 +66,7 @@ public class PatchDeserializer extends ValueDeserializer<Patch<?>> {
                      .filter(type -> type.getRawClass() == Patch.class)
                      .flatMap(PatchDeserializer::elementType)
                      .filter(PatchDeserializer::isSupportedElement)
-                     .<ValueDeserializer<?>> map(type -> contextualized(ctxt, property, type))
+                     .<ValueDeserializer<?>> map(type -> contextualized(ctxt, type))
                      .or(() -> refused(ctxt));
     }
 
@@ -85,20 +82,18 @@ public class PatchDeserializer extends ValueDeserializer<Patch<?>> {
                : option(type.getContentType());
     }
 
+    // An Option element would read `null` itself; a Patch element is refused by its own contextualization (below).
     private static boolean isSupportedElement(JavaType element) {
-        return element.getRawClass() != Option.class && element.getRawClass() != Patch.class;
+        return element.getRawClass() != Option.class;
     }
 
-    // A container element is resolved without the property, unlike OptionDeserializer's: the container would hand
-    // this property to its own elements, and a Patch element would then pass for a record component. Resolved here,
-    // not at the first value, so a Patch among the elements is refused even when the member is null or missing, as
-    // the generated codecs refuse the type itself.
-    private static PatchDeserializer contextualized(DeserializationContext ctxt,
-                                                    BeanProperty property,
-                                                    JavaType element) {
-        return new PatchDeserializer(option(element.isContainerType()
-                                            ? ctxt.findRootValueDeserializer(element)
-                                            : ctxt.findContextualValueDeserializer(element, property)));
+    // The element is resolved without the property, unlike OptionDeserializer's: a container element would hand this
+    // property on to its own elements, and a Patch among them would then pass for a record component. Without it, a
+    // Patch anywhere inside the element is refused here, at contextualization, even when the member is null or
+    // missing, as the generated codecs refuse the type itself. The cost: an annotation on the component
+    // (`@JsonFormat`) does not reach the value, on read as on write (PatchSerializer writes by runtime type).
+    private static PatchDeserializer contextualized(DeserializationContext ctxt, JavaType element) {
+        return new PatchDeserializer(option(ctxt.findRootValueDeserializer(element)));
     }
 
     @Override

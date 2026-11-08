@@ -215,7 +215,7 @@ class PatchParityTest {
                          new Object[]{MapOfPatch.class, new MapOfPatch(Map.of("k", Patch.value("a")))},
                          new Object[]{OptionOfPatch.class, new OptionOfPatch(Option.some(Patch.value("a")))},
                          new Object[]{PatchOfOption.class, new PatchOfOption(Patch.value(Option.some("a")))},
-                         new Object[]{PatchOfPatch.class, new PatchOfPatch(Patch.value(Patch.value("a")))},
+                         new Object[]{PatchOfPatch.class, new PatchOfPatch(Patch.nullValue())},
                          new Object[]{PatchOfListOfPatch.class, new PatchOfListOfPatch(Patch.value(List.of(Patch.value("a"))))});
     }
 
