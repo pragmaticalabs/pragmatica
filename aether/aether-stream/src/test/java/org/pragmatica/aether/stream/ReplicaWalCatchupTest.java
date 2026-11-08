@@ -1,5 +1,6 @@
 package org.pragmatica.aether.stream;
 
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -53,6 +54,7 @@ class ReplicaWalCatchupTest {
     private static final Epoch E1 = Epoch.epoch(0, 1, 0);
     private static final int PAGE = 16;
     private static final int EVENTS = 5;
+    private static final int FRAME_HEADER_BYTES = 4 + 8 + 8 + 4;
 
     @TempDir
     Path walDir;
@@ -262,7 +264,8 @@ class ReplicaWalCatchupTest {
 
         @Test
         void readHeldDurable_aHoleInsideThePage_failsTheRead_neverSkipsIt() throws Exception {
-            rewriteWal(0, 1, 3);
+            rewriteWal(0, 1, 2, 3);
+            cutFrame(2);
 
             assertThat(failure(read2("held", 0, PAGE))).isInstanceOf(StreamError.WalReplayMismatch.class);
         }
@@ -344,6 +347,29 @@ class ReplicaWalCatchupTest {
             wal.append(offset, longPayload(offset), 2000L + offset).await().onFailure(cause -> fail(cause.message()));
         }
         wal.close();
+    }
+
+    /// Splice the frame at `index` out of `held`'s WAL, leaving every other frame byte-identical with a valid CRC: a hole
+    /// the append path itself refuses to write. A frame is `[payloadLen:4][offset:8][timestamp:8][crc:4]` + payload.
+    private void cutFrame(int index) throws Exception {
+        var file = walFile();
+        var bytes = Files.readAllBytes(file);
+        var start = frameStart(bytes, index);
+        var end = frameStart(bytes, index + 1);
+        var cut = new byte[bytes.length - (end - start)];
+
+        System.arraycopy(bytes, 0, cut, 0, start);
+        System.arraycopy(bytes, end, cut, start, bytes.length - end);
+        Files.write(file, cut);
+    }
+
+    private static int frameStart(byte[] bytes, int index) {
+        var position = 0;
+
+        for (var i = 0; i < index; i++) {
+            position += FRAME_HEADER_BYTES + ByteBuffer.wrap(bytes, position, 4).getInt();
+        }
+        return position;
     }
 
     private Path walFile() {
