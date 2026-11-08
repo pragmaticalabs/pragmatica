@@ -6,19 +6,25 @@ package org.pragmatica.aether.stream.replication;
 
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
 import java.util.function.BiConsumer;
+import java.util.function.LongSupplier;
 
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.utility.warning.OperatorWarnings;
@@ -26,6 +32,9 @@ import org.pragmatica.utility.warning.OperatorWarnings;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.aether.stream.replication.DefaultReplicationManager.DEFAULT_ACK_TIMEOUT;
+import static org.pragmatica.aether.stream.replication.DefaultReplicationManager.FIRST_RESEND_BACKOFF;
+import static org.pragmatica.aether.stream.replication.DefaultReplicationManager.nextBackoff;
 import static org.pragmatica.aether.stream.replication.PartitionKey.partitionKey;
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateAck.replicateAck;
 import static org.pragmatica.lang.Option.none;
@@ -194,6 +203,25 @@ public final class ReplicationReceiveHandler {
     /// this map's per-key section, and so does the backfill's ack of its watermark once wired ([#ackBackfill]), so a deferred
     /// ack is never released after a live ack that covers it or a backfill ack of its epoch at or above it.
     private final ConcurrentHashMap<PartitionKey, DeferredAck> deferredAcks = new ConcurrentHashMap<>();
+
+    /// #2847: an ack sent to `owner`, re-sendable until `deadlineNanos` (the owner's ack timeout from its first send).
+    private record SentAck(NodeId owner, ReplicationMessage.ReplicateAck ack, long deadlineNanos) {}
+
+    /// #2847: the latest ack sent per partition. Every ack is sent inside this map's per-key section, and a refused one is
+    /// re-sent only while it is still its partition's latest: the owner takes an ack's offset as given
+    /// (`ReplicaRegistry#updateWatermark` overwrites), so a re-send landing after a newer ack would lower the replica's
+    /// confirmed offset there.
+    private final ConcurrentHashMap<PartitionKey, SentAck> latestAcks = new ConcurrentHashMap<>();
+    private volatile Fn2<ScheduledFuture<?>, Runnable, TimeSpan> resendScheduler = SharedScheduler::schedule;
+    private volatile LongSupplier nanoClock = System::nanoTime;
+
+    /// Test seam (#2847): `scheduler` schedules the re-sends of an ack the transport refused to write, and `clock` is the clock
+    /// their deadline is measured on, so a test drives both attempts and deadline by hand. Set once, before the first ack.
+    @Contract
+    void ackResendTimer(Fn2<ScheduledFuture<?>, Runnable, TimeSpan> scheduler, LongSupplier clock) {
+        this.resendScheduler = scheduler;
+        this.nanoClock = clock;
+    }
 
     /// Late-bind the [AckGate]. Set once at wiring.
     @Contract
@@ -652,17 +680,77 @@ public final class ReplicationReceiveHandler {
     }
 
     /// #2599: the stream was removed; the acks deferred for its partitions are dropped with it, so none is released into a
-    /// stream recreated under the same name. Production calls it from `StreamPartitionManager::onStreamRemoved`.
+    /// stream recreated under the same name. Production calls it from `StreamPartitionManager::onStreamRemoved`. #2847: so are
+    /// its latest sent acks, so no pending re-send reaches the owner of a stream recreated under the same name.
     @Contract
     public void forgetDeferredAcks(String streamName) {
         deferredAcks.keySet().removeIf(key -> key.streamName()
                                                  .equals(streamName));
+        latestAcks.keySet().removeIf(key -> key.streamName()
+                                               .equals(streamName));
     }
 
-    /// Fire-and-forget, as every ack here: an ack the transport loses is the owner's to time out.
+    /// Fire-and-forget, as every ack here, but for one outcome (#2847): an ack the transport proves it never wrote
+    /// ([WriteOutcome#provablyNotSent], a FORWARD-lane backpressure refusal) is sent again, the same message, after
+    /// [DefaultReplicationManager#FIRST_RESEND_BACKOFF] doubling, until it is written, a newer ack of the partition supersedes
+    /// it, or [DefaultReplicationManager#DEFAULT_ACK_TIMEOUT] from its first send has passed. Nothing else would re-send it:
+    /// the owner's await of a publish needs an ack from every in-sync replica (`DefaultReplicationManager#awaitReplication`),
+    /// so one refused ack held that publish for the full ack timeout (5 s), past the entry node's 2.5 s management forward,
+    /// and the client got 503 "outcome unknown" for a publish every replica held. The owner cannot take it twice: an ack
+    /// carries a confirmed offset, not an increment. An ack that was written and then lost is still the owner's to time out.
     @Contract
     private void sendAck(NodeId owner, String streamName, int partition, long through, Epoch ownerEpoch) {
-        transport.send(owner, replicateAck(self, streamName, partition, through, ownerEpoch));
+        var sent = new SentAck(owner,
+                               replicateAck(self, streamName, partition, through, ownerEpoch),
+                               nanoClock.getAsLong() + DEFAULT_ACK_TIMEOUT.nanos());
+
+        latestAcks.compute(partitionKey(streamName, partition),
+                           (key, _) -> sentWithResend(key, sent, FIRST_RESEND_BACKOFF));
+    }
+
+    private SentAck sentWithResend(PartitionKey key, SentAck sent, TimeSpan backoff) {
+        writeAck(key, sent, backoff);
+
+        return sent;
+    }
+
+    @Contract
+    private void writeAck(PartitionKey key, SentAck sent, TimeSpan backoff) {
+        transport.send(sent.owner(), sent.ack()).onSuccess(outcome -> resendIfNotSent(key, sent, outcome, backoff));
+    }
+
+    @Contract
+    private void resendIfNotSent(PartitionKey key, SentAck sent, WriteOutcome outcome, TimeSpan backoff) {
+        if (outcome.provablyNotSent()) {
+            scheduleResend(key, sent, outcome, backoff);
+        }
+    }
+
+    /// A re-send goes out only if it would still leave before the deadline; otherwise one WARN, and the owner's await fails on
+    /// its own timer, as it did before #2847.
+    @Contract
+    private void scheduleResend(PartitionKey key, SentAck sent, WriteOutcome outcome, TimeSpan backoff) {
+        if (backoff.nanos() >= sent.deadlineNanos() - nanoClock.getAsLong()) {
+            log.warn("Ack of {}[{}]@{} to owner {} not written before the ack deadline, last outcome {}; giving up re-sending",
+                     key.streamName(),
+                     key.partition(),
+                     sent.ack().confirmedOffset(),
+                     sent.owner(),
+                     outcome);
+
+            return;
+        }
+
+        resendScheduler.apply(() -> resend(key, sent, backoff), backoff);
+    }
+
+    /// Re-sends `sent` only while it is still the partition's latest ack; a superseded one is dropped, the newer ack covers it.
+    @Contract
+    private void resend(PartitionKey key, SentAck sent, TimeSpan backoff) {
+        latestAcks.computeIfPresent(key,
+                                    (_, latest) -> latest == sent
+                                                   ? sentWithResend(key, sent, nextBackoff(backoff))
+                                                   : latest);
     }
 
     private Unit reportWithheldAck(String streamName, int partition, long highestHeld, Cause cause) {
