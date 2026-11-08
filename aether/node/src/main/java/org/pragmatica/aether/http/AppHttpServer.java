@@ -2012,10 +2012,7 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     /// The failure is answered only once the unsent upload is deleted, so a client that has the answer can rely on the
     /// objects being gone (#2915).
-    private static void answerForwardFailure(HttpRequest request,
-                                             ResponseWriter response,
-                                             Cause cause,
-                                             String requestId) {
+    private void answerForwardFailure(HttpRequest request, ResponseWriter response, Cause cause, String requestId) {
         discardUnsent(request, cause).onResultRun(() -> sendProblem(response,
                                                                     forwardFailureStatus(cause),
                                                                     HttpError.clientMessage(cause),
