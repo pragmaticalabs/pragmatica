@@ -22,6 +22,8 @@ class RouteWithRequestContextTest {
         }
     };
 
+    private static final UploadSpec UPLOAD = UploadSpec.uploadSpec(true, 1_000, 5_000);
+
     private static Route<Handler<String>> bound() {
         return Route.<Handler<String>>get("/items/")
                     .withPath(aLong(), spacer("detail"))
@@ -29,6 +31,7 @@ class RouteWithRequestContextTest {
                     .named("getItem")
                     .withSecurity(DENY_ALL)
                     .versioned(3)
+                    .withUpload(UPLOAD)
                     .asJson();
     }
 
@@ -68,7 +71,7 @@ class RouteWithRequestContextTest {
         assertThat(route.pathParamCount()).isEqualTo(declared.pathParamCount()).isEqualTo(2);
         assertThat(route.spacers()).containsExactly("detail");
         assertThat(route.spacerSlots()).isEqualTo(declared.spacerSlots());
-        assertThat(route.uploadSpec()).isEqualTo(declared.uploadSpec());
+        assertThat(route.uploadSpec()).isEqualTo(UPLOAD);
     }
 
     @Test
