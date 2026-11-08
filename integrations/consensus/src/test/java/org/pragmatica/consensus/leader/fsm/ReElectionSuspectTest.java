@@ -57,6 +57,7 @@ class ReElectionSuspectTest {
     private final List<Proposal> proposals = new CopyOnWriteArrayList<>();
     private final List<Send> sent = new CopyOnWriteArrayList<>();
     private FsmTestHarness<LeaderElectionState, ClusterFsmEvent> harness;
+    private LeaderElectionContext context;
 
     @AfterEach
     void tearDown() {
@@ -106,6 +107,7 @@ class ReElectionSuspectTest {
         }
 
         harness = h;
+        context = holder.get();
         return h;
     }
 
@@ -195,6 +197,16 @@ class ReElectionSuspectTest {
             .isEqualTo(A);
     }
 
+    /// The suspect holds no staircase slot: with A excluded SELF ranks 1 (proposes at base + 1 step) instead of 2.
+    @Test
+    void rankOfSelf_withSuspectExcluded_movesNextLowestNodeUpOneStep() {
+        buildHarness(List.of(A, B, SELF), _ -> true, false);
+
+        assertThat(context.rankOfSelf(Option.none())).as("no suspect: SELF is third of [A, B, SELF]").isEqualTo(2);
+        assertThat(context.rankOfSelf(Option.some(A))).as("suspect A left out of the ranking").isEqualTo(1);
+        assertThat(context.rankOfSelf(Option.some(SELF))).as("a suspected SELF ranks after everyone").isEqualTo(2);
+    }
+
     /// T4 — the suspect belongs to one ReElecting instance. After B is committed and then goes silent too, the
     /// next re-election excludes B — and A, the earlier suspect, is a candidate again.
     @Test
@@ -206,11 +218,12 @@ class ReElectionSuspectTest {
         var first = awaitProposal(0);
         assertThat(first.candidate()).as("first re-election excludes A").isEqualTo(B);
 
+        // Production order: the LeaderKey ValuePut advances the committed viewSequence before the FSM sees
+        // LeaderCommitted, so the commit postdates the ReElecting entry baseline and is adopted.
+        context.observeViewSequence(first.viewSequence());
+        // The ReElecting instance retries only after 60 s, so a second proposal within the await window can only
+        // come from a fresh ReElecting entered after Led(B) tripped its own lease.
         h.dispatch(new LeaderCommitted(B, first.viewSequence()));
-        assertThat(awaitCondition(state -> state instanceof LeaderElectionState.Led led && led.leader().equals(B), h)
-                   || proposals.size() > 1)
-            .as("the commit naming B is adopted")
-            .isTrue();
 
         var second = awaitProposal(1);
         assertThat(second.candidate())
