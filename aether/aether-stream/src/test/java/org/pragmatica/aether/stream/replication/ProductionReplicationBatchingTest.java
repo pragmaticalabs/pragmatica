@@ -17,6 +17,7 @@ import java.util.stream.LongStream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.Promise;
@@ -193,6 +194,43 @@ class ProductionReplicationBatchingTest {
         runLanes();
 
         assertThat(sent.stream().map(ReplicationMessage.ReplicateEvents::fromOffset).toList()).containsExactly(0L, 1L, 2L);
+    }
+
+    /// #263 condition 1 through the manager: `reserveSend` is the batcher's send budget. With the lanes not run (a stuck
+    /// replica path) the budget fills and further reservations are refused, typed; the sends free it.
+    @Test
+    void reserveSend_isRefusedAtTheBatchersBudget_andGrantedAgainOnceTheSendsReturned() {
+        var manager = budgetedManager(3L * 16);
+
+        for (var offset = 0L; offset < 3; offset++) {
+            assertThat(manager.reserveSend(16).isSuccess()).as("reservation %d", offset).isTrue();
+            manager.replicateEvent(STREAM, PARTITION, offset, new byte[16], offset, Epoch.ZERO);
+            manager.releaseSend(16);
+        }
+
+        var refused = manager.reserveSend(16);
+
+        assertThat(refused.isFailure()).as("the budget is spent").isTrue();
+        refused.onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.REPLICATION_BEHIND));
+
+        closeWindow();
+        runLanes();
+
+        assertThat(sent).hasSize(2);
+        assertThat(manager.reserveSend(16).isSuccess()).as("granted once the sends returned").isTrue();
+    }
+
+    private DefaultReplicationManager budgetedManager(long budget) {
+        return new DefaultReplicationManager(OWNER,
+                                             registry,
+                                             capturingTransport(),
+                                             (_, _) -> -1L,
+                                             sender -> ReplicationBatcher.adaptiveReplicationBatcher(sender,
+                                                                                                    100,
+                                                                                                    WINDOW,
+                                                                                                    budget,
+                                                                                                    capturingScheduler,
+                                                                                                    manualExecutor));
     }
 
     private DefaultReplicationManager manager(ReplicationTransport transport, int maxEvents) {

@@ -341,6 +341,19 @@ final class DefaultReplicationManager implements ReplicationManager {
         return registry;
     }
 
+    /// The batcher's send budget (#263); a manager without a batcher holds nothing and grants every reservation.
+    @Override
+    public Result<Unit> reserveSend(long bytes) {
+        return batcher.map(b -> b.reserve(bytes))
+                      .or(Result::unitResult);
+    }
+
+    @Contract
+    @Override
+    public void releaseSend(long bytes) {
+        batcher.onPresent(b -> b.release(bytes));
+    }
+
     @Contract
     @Override
     public void close() {
