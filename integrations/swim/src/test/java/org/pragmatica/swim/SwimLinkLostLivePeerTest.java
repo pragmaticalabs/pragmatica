@@ -248,8 +248,10 @@ class SwimLinkLostLivePeerTest {
                                              SELF_ADDR,
                                              () -> false,
                                              liveTransport::contains).unwrap();
-        protocol.addObservationListener(observations::add);
+        // Listeners run in registration order on the protocol thread: recordDeath must precede observations::add,
+        // or the awaiting test thread sees the death in `observations` while the ping count still holds its -1 sentinel.
         protocol.addObservationListener(transport::recordDeath);
+        protocol.addObservationListener(observations::add);
         transport.protocol.set(protocol);
         seed(LEADER, ADDR_A);
         seed(NODE_B, ADDR_B);
@@ -331,7 +333,6 @@ class SwimLinkLostLivePeerTest {
         @Override
         public Promise<Unit> send(InetSocketAddress target, SwimMessage message) {
             if (message instanceof Ping ping && PEERS.containsKey(target)) {
-                pings.add(target);
                 var peer = PEERS.get(target);
 
                 if (!hinted.get() || answersAfterHint.getOrDefault(peer, true)) {
@@ -355,6 +356,10 @@ class SwimLinkLostLivePeerTest {
                                                                                               TransportObservation.HintOrigin.PEER_UNRESPONSIVE));
                     }
                 }
+
+                // Counted LAST: a test thread that sees this Ping in `pings` must also see its Ack (and the hint)
+                // already processed, or it races the protocol thread (everSeenHealthy, member state).
+                pings.add(target);
             }
 
             return Promise.success(Unit.unit());
