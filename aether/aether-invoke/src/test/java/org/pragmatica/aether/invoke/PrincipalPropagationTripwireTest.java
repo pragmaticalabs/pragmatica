@@ -7,12 +7,12 @@ package org.pragmatica.aether.invoke;
 import java.lang.reflect.RecordComponent;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.stream.Stream;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Disabled;
@@ -30,17 +30,18 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.lang.ContextPropagation;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
-import org.pragmatica.lang.utils.Deadline;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #2157 part a (P9a): the caller's principal is NOT propagated across an inter-slice invoke, and nothing tested it.
 ///
-/// Each behaviour has two tests beside each other:
+/// Each behaviour that propagation can change has two tests beside each other (the guards marked "permanent pin" and the
+/// local-hop guard have no twin and carry their own failure messages, not the LANDED text):
 /// - an ENABLED tripwire that asserts TODAY's behaviour and fails with "#2157: propagation landed; flip this
 ///   tripwire to the real assertion" when P9b lands, and
 /// - the REAL assertion, `@Disabled` until then. Flipping means deleting the tripwire and enabling its twin.
@@ -51,7 +52,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 ///   carrying a principal string, which is what `AppHttpServer.dispatchScoped` binds). The [InvokeRequest] it hands the
 ///   transport is delivered to a second node's [InvocationHandler]; the slice there records what it can see.
 /// - LOCAL: the same sender scope, the target slice registered on the sender itself.
-/// - ASYNC: a [SecurityContextHolder] binding read from a continuation that runs after, or outside, the binding scope.
+/// - ASYNC: a [SecurityContextHolder] binding read after a plain continuation (permanent pins, no twin) and after a
+///   [ContextPropagation] executor-hop restore (tripwire + twin).
 class PrincipalPropagationTripwireTest {
     private static final String LANDED = "#2157: propagation landed; flip this tripwire to the real assertion";
     private static final NodeId SENDER = new NodeId("sender-node");
@@ -189,60 +191,131 @@ class PrincipalPropagationTripwireTest {
                                             new StubDeploymentManager());
     }
 
-    // ---- ASYNC continuation (the suspected Terra/runAsync binding hazard) ------------------------------------
+    // ---- ASYNC boundaries (the suspected Terra/runAsync binding hazard) ---------------------------------------
 
-    /// The hazard behind Terra's `TerraHttpRoutes.invoke`: a ScopedValue binding lives only while its scope is on the
-    /// stack. A continuation attached inside the scope but resolved after the scope returned runs outside it.
+    /// Two different async mechanisms, two different obligations:
+    /// - A plain `Promise.map` continuation runs inline on whichever thread resolves the promise. It never passes
+    ///   through [ContextPropagation], so no propagation fix can reach it. These are PERMANENT pins (no twin): a
+    ///   non-empty holder there would mean the Promise continuation model changed.
+    /// - An executor hop (`Promise.async`) captures a [ContextPropagation] snapshot and restores it on the worker.
+    ///   That is where propagation can land: [AetherContextPropagation] would carry the [SecurityContext] next to the
+    ///   trace identity it carries today. These have a tripwire + twin, and the tripwire's control assertion proves the
+    ///   snapshot did restore the trace identity, so the empty holder is the SPI's omission and not a broken harness.
+    private static final AetherContextPropagation PROPAGATION = new AetherContextPropagation();
+
     @Test
-    void asyncContinuation_afterBindingScopeEnded_readsEmptyHolder_today() {
+    void plainContinuation_afterBindingScopeEnded_readsEmptyHolder_permanentPin() {
         var gate = Promise.<Unit>promise();
         var seen = ScopedValue.where(SecurityContextHolder.scopedValue(), ALICE)
                               .call(() -> gate.map(_ -> SecurityContextHolder.currentContext()));
 
         gate.succeed(Unit.unit());
 
-        assertThat(seen.await().unwrap().toOptional()).as(LANDED).isEmpty();
+        assertThat(seen.await().unwrap().toOptional())
+            .as("plain map continuation after the scope ended: a non-empty holder means the Promise continuation model changed")
+            .isEmpty();
     }
 
-    @Disabled("#2157 part b: enable when the generated code passes the edge-captured context instead of reading the holder")
     @Test
-    void asyncContinuation_afterBindingScopeEnded_readsTheCallersContext() {
-        var gate = Promise.<Unit>promise();
-        var seen = ScopedValue.where(SecurityContextHolder.scopedValue(), ALICE)
-                              .call(() -> gate.map(_ -> SecurityContextHolder.currentContext()));
+    void plainContinuation_resolvedOnAnotherThreadWhileScopeIsOpen_readsEmptyHolder_permanentPin() {
+        var observed = resolvedOnAnotherThreadWhileScopeIsOpen();
 
-        gate.succeed(Unit.unit());
-
-        assertThat(seen.await().unwrap().toOptional()).contains(ALICE);
+        assertThat(observed.insideScope().toOptional()).as("control: the scope is open while the other thread resolves").contains(ALICE);
+        assertThat(observed.continuation().await().unwrap().toOptional())
+            .as("plain map continuation on a thread that does not inherit the binding: a non-empty holder means the Promise continuation model changed")
+            .isEmpty();
     }
 
-    /// Same hazard while the scope is still on the stack: the continuation runs on whichever thread resolves the
-    /// promise, and a ScopedValue binding is not inherited by a plain thread.
     @Test
-    void asyncContinuation_resolvedOnAnotherThread_readsEmptyHolder_today() throws Exception {
+    void executorHop_restoredAfterBindingScopeEnded_dropsSecurityContext_today() {
+        var restored = restoreOnCallerThread(captureInAliceScope());
+
+        assertThat(restored.tracePrincipal().toOptional()).as("control: the snapshot restored the trace identity").contains(ALICE_NAME);
+        assertThat(restored.securityContext().toOptional()).as(LANDED).isEmpty();
+    }
+
+    @Disabled("#2157 part b: enable when AetherContextPropagation carries the SecurityContext across executor hops")
+    @Test
+    void executorHop_restoredAfterBindingScopeEnded_carriesSecurityContext() {
+        var restored = restoreOnCallerThread(captureInAliceScope());
+
+        assertThat(restored.securityContext().toOptional()).contains(ALICE);
+    }
+
+    @Test
+    void executorHop_restoredOnAnotherThread_dropsSecurityContext_today() {
+        var restored = restoreOnAnotherThread(captureInAliceScope());
+
+        assertThat(restored.tracePrincipal().toOptional()).as("control: the snapshot restored the trace identity").contains(ALICE_NAME);
+        assertThat(restored.securityContext().toOptional()).as(LANDED).isEmpty();
+    }
+
+    @Disabled("#2157 part b: enable when AetherContextPropagation carries the SecurityContext across executor hops")
+    @Test
+    void executorHop_restoredOnAnotherThread_carriesSecurityContext() {
+        var restored = restoreOnAnotherThread(captureInAliceScope());
+
+        assertThat(restored.securityContext().toOptional()).contains(ALICE);
+    }
+
+    private record Observed(Option<SecurityContext> insideScope, Promise<Option<SecurityContext>> continuation) {}
+
+    private record Restored(Option<SecurityContext> securityContext, Option<String> tracePrincipal) {}
+
+    private static Observed resolvedOnAnotherThreadWhileScopeIsOpen() {
         var gate = Promise.<Unit>promise();
-        var seen = new AtomicReference<Promise<Option<SecurityContext>>>();
+        var inside = new AtomicReference<Option<SecurityContext>>();
+        var continuation = gate.map(_ -> SecurityContextHolder.currentContext());
 
         ScopedValue.where(SecurityContextHolder.scopedValue(), ALICE)
-                   .run(() -> seen.set(gate.map(_ -> SecurityContextHolder.currentContext())));
-        var resolver = Thread.ofPlatform().start(() -> gate.succeed(Unit.unit()));
+                   .run(() -> resolveOnAnotherThread(gate, inside));
 
-        resolver.join();
-        assertThat(seen.get().await().unwrap().toOptional()).as(LANDED).isEmpty();
+        return new Observed(inside.get(), continuation);
     }
 
-    @Disabled("#2157 part b: enable when the context is carried across runAsync / registered as a ContextPropagation")
-    @Test
-    void asyncContinuation_resolvedOnAnotherThread_readsTheCallersContext() throws Exception {
-        var gate = Promise.<Unit>promise();
-        var seen = new AtomicReference<Promise<Option<SecurityContext>>>();
+    private static void resolveOnAnotherThread(Promise<Unit> gate, AtomicReference<Option<SecurityContext>> inside) {
+        inside.set(SecurityContextHolder.currentContext());
+        runOnAnotherThreadAndJoin(() -> gate.succeed(Unit.unit()));
+    }
 
-        ScopedValue.where(SecurityContextHolder.scopedValue(), ALICE)
-                   .run(() -> seen.set(gate.map(_ -> SecurityContextHolder.currentContext())));
-        var resolver = Thread.ofPlatform().start(() -> gate.succeed(Unit.unit()));
+    /// The snapshot `Promise.async` would take when called from the edge scope.
+    private static Object captureInAliceScope() {
+        var snapshot = new AtomicReference<Object>();
 
-        resolver.join();
-        assertThat(seen.get().await().unwrap().toOptional()).contains(ALICE);
+        inAliceScope(() -> snapshot.set(PROPAGATION.capture()));
+
+        return snapshot.get();
+    }
+
+    private static Restored restoreOnCallerThread(Object snapshot) {
+        var restored = new AtomicReference<Restored>();
+
+        PROPAGATION.runWith(snapshot, () -> restored.set(observeRestored()));
+
+        return restored.get();
+    }
+
+    private static Restored restoreOnAnotherThread(Object snapshot) {
+        var restored = new AtomicReference<Restored>();
+
+        runOnAnotherThreadAndJoin(() -> PROPAGATION.runWith(snapshot, () -> restored.set(observeRestored())));
+
+        return restored.get();
+    }
+
+    private static Restored observeRestored() {
+        return new Restored(SecurityContextHolder.currentContext(), InvocationContext.currentPrincipal());
+    }
+
+    private static void runOnAnotherThreadAndJoin(Runnable action) {
+        var thread = Thread.ofPlatform().start(action);
+
+        try {
+            thread.join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(e);
+        }
     }
 
     // ---- helpers --------------------------------------------------------------------------------------------
@@ -253,7 +326,7 @@ class PrincipalPropagationTripwireTest {
                    .run(() -> InvocationContext.runWithContext("req-2157", ALICE_NAME, SENDER.id(), 0, true, action));
     }
 
-    private static java.util.Optional<String> principalOf(Option<SecurityContext> context) {
+    private static Optional<String> principalOf(Option<SecurityContext> context) {
         return context.map(SecurityContext::principal)
                       .map(principal -> principal.value())
                       .toOptional();

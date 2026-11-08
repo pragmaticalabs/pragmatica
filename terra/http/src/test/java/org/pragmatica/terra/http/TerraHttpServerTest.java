@@ -16,6 +16,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Disabled;
@@ -293,44 +294,64 @@ class TerraHttpServerTest {
         } finally { close(host); }
     }
 
-    // ---- #2157 part a (P9a): Terra ScopedValue binding vs async continuations --------------------------------
-    // TerraHttpRoutes.invoke binds SecurityContextHolder only while route.handler().handle(..) is on the stack. Each
-    // behaviour has an ENABLED tripwire asserting today's behaviour and a @Disabled twin with the real assertion.
+    // ---- #2157 part a (P9a): Terra ScopedValue binding vs async steps ---------------------------------------
+    // TerraHttpRoutes.invoke binds SecurityContextHolder only while route.handler().handle(..) is on the stack.
+    // Two async mechanisms: a plain Promise.map continuation never passes through ContextPropagation (permanent pin,
+    // no twin: no propagation fix can reach it); an executor hop (Promise.async) captures the ContextPropagation
+    // snapshot while still inside the binding, so a registered SPI that carries the SecurityContext would restore it
+    // (ENABLED tripwire asserting today's behaviour + @Disabled twin). This module registers no ContextPropagation.
 
     private static final String LANDED = "#2157: propagation landed; flip this tripwire to the real assertion";
 
-    /// A handler that returns a Promise resolved later by another thread reads an empty holder in its continuation:
-    /// the binding ended when `handle` returned (and is not inherited by the resolving thread anyway).
-    @Test void holder_readInContinuationResolvedAfterHandleReturned_isEmpty_today() throws Exception {
-        assertThat(asyncHandlerBody()).as(LANDED).isEqualTo("none");
+    /// A handler that returns a Promise resolved later by another thread reads an empty holder in its plain map
+    /// continuation: the binding ended when `handle` returned (and is not inherited by the resolving thread anyway).
+    @Test void holder_readInPlainContinuationResolvedAfterHandleReturned_isEmpty_permanentPin() throws Exception {
+        var body = serve("/async", gate -> awaitedPrincipal(gate), true);
+
+        assertThat(body).as("plain map continuation after handle returned: a non-empty holder means the Promise continuation model changed").isEqualTo("none");
     }
 
-    @Disabled("#2157 part b: enable when generated code receives the edge-captured context instead of reading the holder")
-    @Test void holder_readInContinuationResolvedAfterHandleReturned_seesCaller() throws Exception {
-        assertThat(asyncHandlerBody()).isEqualTo("reader");
+    /// The handler hops to the executor from inside the binding; the hop captures the ContextPropagation snapshot there.
+    @Test void holder_readAfterExecutorHopFromHandler_isEmpty_today() throws Exception {
+        assertThat(serve("/hop", gate -> hoppedPrincipal(), false)).as(LANDED).isEqualTo("none");
     }
 
-    private static String asyncHandlerBody() throws Exception {
+    @Disabled("#2157 part b: enable when a ContextPropagation on the classpath carries the SecurityContext across executor hops")
+    @Test void holder_readAfterExecutorHopFromHandler_seesCaller() throws Exception {
+        assertThat(serve("/hop", gate -> hoppedPrincipal(), false)).isEqualTo("reader");
+    }
+
+    private static String serve(String path, Function<AtomicReference<Promise<Unit>>, Promise<String>> handler, boolean gated) throws Exception {
         var gate = new AtomicReference<Promise<Unit>>();
-        var route = Route.<String>get("/async").withoutParameters().to(_ -> awaitedPrincipal(gate))
+        var route = Route.<String>get(path).withoutParameters().to(_ -> handler.apply(gate))
             .withSecurity(SecurityPolicy.unspecified()).asText();
         var host = start(List.of(route), HttpAuthenticator.apiKeyValidator(KEYS), new AtomicInteger());
         try (var client = HttpClient.newHttpClient()) {
             var response = CompletableFuture.supplyAsync(() -> {
-                try { return get(client, host, "/async", "X-API-Key", "reader-secret"); } catch (Exception e) { throw new IllegalStateException(e); }
+                try { return get(client, host, path, "X-API-Key", "reader-secret"); } catch (Exception e) { throw new IllegalStateException(e); }
             });
-            // the handler has returned its pending Promise (and its scope has ended on the request thread) before the gate is opened here
-            while (gate.get() == null) { Thread.onSpinWait(); }
-            gate.get().succeed(Unit.unit());
+            if (gated) {
+                // the handler has returned its pending Promise (and its scope has ended on the request thread) before the gate is opened here
+                while (gate.get() == null) { Thread.onSpinWait(); }
+                gate.get().succeed(Unit.unit());
+            }
             return response.get(5, TimeUnit.SECONDS).body();
         } finally { close(host); }
     }
 
     private static Promise<String> awaitedPrincipal(AtomicReference<Promise<Unit>> gate) {
         var pending = Promise.<Unit>promise();
-        var principal = pending.map(_ -> SecurityContextHolder.currentContext().map(c -> c.principal().value()).or("none"));
+        var principal = pending.map(_ -> currentPrincipalOrNone());
         gate.set(pending);
         return principal;
+    }
+
+    private static Promise<String> hoppedPrincipal() {
+        return Promise.<String>promise().async(promise -> promise.succeed(currentPrincipalOrNone()));
+    }
+
+    private static String currentPrincipalOrNone() {
+        return SecurityContextHolder.currentContext().map(c -> c.principal().value()).or("none");
     }
 
     /// A body route: the question the analysis left open is whether decoding the body is an async step that lets a

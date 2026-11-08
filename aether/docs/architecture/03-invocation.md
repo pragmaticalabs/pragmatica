@@ -140,7 +140,8 @@ What a slice sees today, by hop:
 | Entry route (HTTP, on the node that authenticated) | bound to the caller's context | bound |
 | Local slice-to-slice call | still bound, only because the encode/invoke/decode chain completes synchronously on the caller's thread | still bound, same reason |
 | Remote slice-to-slice call (`InvokeRequest` to another node) | **empty** | **empty** (`InvocationHandler.onInvokeRequest` binds `null`) |
-| Continuation resolved on another thread, or after the binding scope ended | **empty** | follows `ContextPropagation` (captured) |
+| Plain `Promise.map` continuation resolved on another thread, or after the binding scope ended | **empty** | **empty** (continuations run inline on the resolving thread and never pass through `ContextPropagation`) |
+| Executor hop (`Promise.async`) taken inside the binding | **empty** (`AetherContextPropagation` does not carry it) | restored, where the `ContextPropagation` SPI is registered (aether node) |
 
 Consequences for slice authors:
 - `Principal` / `SecurityContext` method parameters are injected **only** by the generated route lambda at the HTTP entry
@@ -152,10 +153,12 @@ Consequences for slice authors:
 
 The ruling for the fix (#2157 part b): carry the full `SecurityContext` on `InvokeRequest`; the receiving node uses it as caller
 identity for slice logic and audit, never as authorization for its own route table; generated route code passes the context
-captured at the edge straight into the lambda instead of reading the holder. Until it lands, the behaviour above is pinned by
-enabled tripwire tests (`PrincipalPropagationTripwireTest` in `aether-invoke`, the `holder_*` tests in `TerraHttpServerTest`),
-each of which fails with "#2157: propagation landed; flip this tripwire to the real assertion"; the real assertions sit beside
-them, `@Disabled`.
+captured at the edge straight into the lambda instead of reading the holder. Until it lands, the behaviour above is pinned by tests in `PrincipalPropagationTripwireTest` (`aether-invoke`) and the
+`holder_*` tests in `TerraHttpServerTest`. Three kinds:
+- Enabled tripwires (wire, remote hop, executor hop) assert today's behaviour and fail with "#2157: propagation landed;
+  flip this tripwire to the real assertion"; the real assertion sits beside each, `@Disabled`.
+- The local-hop test and the body-route test are regression guards with their own failure messages and no twin.
+- The plain-continuation tests are permanent pins with no twin: no propagation fix can reach a plain `map` continuation.
 
 ## EndpointRegistry
 
