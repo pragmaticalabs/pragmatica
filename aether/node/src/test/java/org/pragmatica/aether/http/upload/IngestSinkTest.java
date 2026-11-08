@@ -629,7 +629,8 @@ class IngestSinkTest {
         hung.succeed(Unit.unit());
         await(() -> spy.deletes.get() == 1, "the late commit's delete started");
 
-        assertThat(chain.await(WAIT).isFailure()).as("the chain ended though its delete never resolved").isTrue();
+        await(chain::isResolved, "the abandoned chain ended though its delete never resolved");
+        assertThat(chain.await(WAIT).isFailure()).as("the chain failed as abandoned").isTrue();
     }
 
     private static byte[] multipartBody(byte[] first, byte[] second) {
