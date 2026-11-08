@@ -46,7 +46,7 @@ class JwtSecurityValidator implements HttpAuthenticator {
     }
 
     /// HS256 mode never reads a JWKS, so it never opens a store (nor the HTTP client behind it) (#2880).
-    private static Option<JwksKeyStore> jwksStoreFor(JwtConfig config) {
+    static Option<JwksKeyStore> jwksStoreFor(JwtConfig config) {
         return config.keyMode() == JwtKeyMode.JWKS
                ? Option.some(new JwksKeyStore(config.jwksUrl(), config.cacheTtlSeconds()))
                : Option.empty();

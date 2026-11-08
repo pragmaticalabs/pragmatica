@@ -227,4 +227,15 @@ class JwtHs256ValidatorTest {
 
         assertThat(config.toString()).doesNotContain(SECRET_TEXT).contains("redacted");
     }
+
+    @Test
+    void keyStore_isOpenedOnlyInJwksMode() {
+        var jwks = JwtConfig.jwtConfig("https://auth.example.com/jwks.json", Option.empty(), Option.empty(), "role", 3600, 30, AuthSchemes.DEFAULT)
+                            .unwrap();
+        var hs = JwtConfig.jwtConfig("", Option.empty(), Option.empty(), "role", 3600, 30, AuthSchemes.DEFAULT, JwtKeyMode.HS256, Option.some(secret(SECRET_TEXT)))
+                          .unwrap();
+
+        assertThat(JwtSecurityValidator.jwksStoreFor(jwks).isPresent()).isTrue();
+        assertThat(JwtSecurityValidator.jwksStoreFor(hs).isEmpty()).isTrue();
+    }
 }

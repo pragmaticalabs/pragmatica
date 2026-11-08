@@ -175,6 +175,11 @@ class LaunchHttpHs256AndAuthenticatorTest {
     }
 
     @Test
+    void custom_withABlankName_isTreatedAsMissing() {
+        assertRefused(LaunchHttp.launchHttp(Path.of("."), settings(Map.of("http.security_mode", "custom", "http.authenticator", " "))), "requires http.authenticator");
+    }
+
+    @Test
     void authenticatorName_beside_anotherMode_refusesTheLaunch() {
         assertRefused(LaunchHttp.launchHttp(Path.of("."), settings(Map.of("http.security_mode", "none", "http.authenticator", "test-header"))),
                       "http.authenticator is set but http.security_mode is not custom");
