@@ -59,7 +59,7 @@ class ScalarAliasAndArrayBindTest {
 
             @PgSql
             public interface TagRepo {
-                @Query("DELETE FROM tags WHERE name = ANY(:names)")
+                @Query("DELETE FROM users WHERE name = ANY(:names)")
                 Promise<Unit> remove(String[] names);
             }
             """);
@@ -78,7 +78,7 @@ class ScalarAliasAndArrayBindTest {
 
             @PgSql
             public interface TagRepo {
-                @Query("SELECT count(*) FROM tags WHERE name = ANY(:names)")
+                @Query("SELECT count(*) FROM users WHERE name = ANY(:names)")
                 Promise<Long> countBy(String[] names);
             }
             """);
