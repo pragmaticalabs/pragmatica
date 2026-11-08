@@ -196,8 +196,11 @@ class KvBackupStopFlushRaceTest {
         assertThat(harness.thrown().get()).isNull();
     }
 
-    /// At the production bound the loop keeps deciding again until the end of the 10 s, the last push lands near it, and nothing is pushed once
-    /// `stopFlushed` has returned.
+    /// At the production bound the loop keeps deciding again until the end of the 10 s, and nothing is pushed once `stopFlushed` has returned.
+    /// The bound is read from the return of `stopFlushed`, not from the time of the last push: a pass is a clone, a race and a push and takes as long
+    /// as the machine lets it, and the loop checks the deadline only after a pass, so the last push may start any pass-duration before the bound
+    /// (#2924: 640 ms early on a loaded runner). The loop ending early returns early (a mutation at half the deadline returns at ~5 s); the clock is
+    /// the production one (`nanoTime`), so the bound has no margin to guess.
     @Test
     void reDecide_runsUntilTheProductionDeadline_andPushesNothingAfterTheStop() throws Exception {
         var remote = bareRemote(temp.resolve("remote.git"));
@@ -207,15 +210,18 @@ class KvBackupStopFlushRaceTest {
         seedHead(remote);
         installRacingHook(node, remote, stamps);
         var startedEpoch = System.currentTimeMillis();
+        var startedNanos = System.nanoTime();
 
         await(node.service().stopFlushed(TimeSpan.timeSpan(10).seconds()));
+        var returnedAfterMs = (System.nanoTime() - startedNanos) / 1_000_000;
         var stoppedEpoch = System.currentTimeMillis();
 
         Thread.sleep(3_000);
         var lines = Files.readAllLines(stamps);
         var last = Long.parseLong(lines.getLast().strip()) - startedEpoch;
 
-        assertThat(last).as("the loop was still deciding again near the 10 s bound").isGreaterThanOrEqualTo(9_500L);
+        assertThat(returnedAfterMs).as("the loop kept deciding again until the 10 s bound; it never gave up early").isGreaterThanOrEqualTo(10_000L);
+        assertThat(lines).as("control: it did decide again, every push being a lost race").hasSizeGreaterThanOrEqualTo(2);
         assertThat(last).as("nothing is pushed after the stop returned").isLessThanOrEqualTo(stoppedEpoch - startedEpoch + 200);
         assertThat(node.warnings()).extracting(BackupWarning::code).containsExactly(Code.BACKUP_STOP_FLUSH_FAILED);
     }
