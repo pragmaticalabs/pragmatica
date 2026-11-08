@@ -191,6 +191,8 @@ class Fsm2EquivalenceRoundTest {
             awaitTrue("a leader", WAIT, () -> cluster.currentLeader().isPresent());
             awaitTrue("quorum on every node", WAIT, () -> healthy(cluster));
             awaitTrue("every node counts all " + scenario.nodes + " core members (placement determinism)", WAIT, () -> fullMembership(cluster, scenario.nodes));
+            awaitTrue("every node's commit ring under the committed cluster incarnation", WAIT, () -> incarnationCommitted(cluster));
+            log("every ring under incarnation %s".formatted(cluster.allNodes().getFirst().kvStore().replicaRing().tag()));
             awaitLeaderReadiness(cluster, scenario.nodes);
             var recorder = new Recorder(cluster);
 
@@ -599,10 +601,10 @@ class Fsm2EquivalenceRoundTest {
     }
 
     /// One node's read position in its commit ring. The first read starts at the ring's floor, not at slot 0: a ring that holds no entry yet
-    /// (cleared by the incarnation commit or a snapshot install, the floor at the frontier) has dropped nothing the recorder could have read,
-    /// and starting at 0 reported `[0, floor)` as a gap on every node whose ring was empty at the first read (#2763, F4 r1/r3: LEGACY o4=-1 when
-    /// it ran second). A gap is a floor above the position: either before this read (`floor > position`), or a clear or eviction between the
-    /// floor read and the entry read that left no entry below the new floor.
+    /// (cleared at the frontier by the incarnation commit or a snapshot install) has dropped nothing the recorder could have read. A gap is a
+    /// floor above the position: either before this read (`floor > position`), or a clear or eviction between the floor read and the entry
+    /// read that left no entry below the new floor. A ring clear is real loss: the clearing batch itself is never in the ring (F4 r1/r3, #2763:
+    /// the recorder started before the cluster incarnation committed, and the incarnation batch cleared every node's ring).
     static final class RingCursor {
         private final String node;
         private final List<String> gaps = new ArrayList<>();
@@ -857,6 +859,16 @@ class Fsm2EquivalenceRoundTest {
     /// counts every core member. The per-arm placement record is the check that this suffices: a mismatch voids the round.
     private static boolean fullMembership(EmberCluster cluster, int nodes) {
         return cluster.allNodes().stream().allMatch(node -> node.membershipFsm().coreCountedMembers().size() == nodes);
+    }
+
+    /// O4 ring determinism (#2763, F4 r1/r3: LEGACY o4=-1 whenever it ran second). The batch that commits the cluster incarnation clears every
+    /// node's commit ring (`KVStore.applyEffects`: an incarnation-touching batch invalidates the ring, the batch is not recorded), so a
+    /// recorder started before it sees a gap on every node. A warm JVM (the second arm) forms full membership before the incarnation commits;
+    /// the first arm did not. Both arms start recording only once every ring carries the same committed incarnation tag.
+    private static boolean incarnationCommitted(EmberCluster cluster) {
+        var tags = cluster.allNodes().stream().map(node -> node.kvStore().replicaRing().tag()).toList();
+
+        return !tags.isEmpty() && tags.stream().allMatch(tag -> tag.matches(tags.getFirst()));
     }
 
     /// Placement determinism, second half (#2763, F4 r2 E09: LEGACY "deployed with 2 slices across 1 allocatable nodes" 0.3 s after its

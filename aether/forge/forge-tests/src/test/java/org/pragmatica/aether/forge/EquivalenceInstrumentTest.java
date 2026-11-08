@@ -355,8 +355,8 @@ class EquivalenceInstrumentTest {
             ring.append(TAG, slot, "id-" + slot, List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, "v" + slot)), slot + 1);
         }
 
-        /// F4 r1/r3: LEGACY ran second, every ring was empty at the first read (cleared at the frontier) and the old cursor started at 0, so
-        /// `[0, floor)` read as a gap on every node and O4 was -1. Mutation: start the first read at 0 instead of the floor; this goes red.
+        /// A ring cleared at the frontier (floor 40, no entry) dropped nothing a recorder could have read; a cursor starting at 0 would report
+        /// `[0, 40)` as a gap. Mutation: start the first read at 0 instead of the floor; this goes red.
         @Test
         void aRingEmptyAtTheFirstRead_dropsNothing_andLaterEntriesAreRead() {
             var ring = ring(40);
@@ -371,7 +371,8 @@ class EquivalenceInstrumentTest {
             Fsm2EquivalenceRoundTest.RingCursor.requireCovered(List.of(cursor));
         }
 
-        /// A clear between reads (an incarnation-touching batch, a snapshot install) loses the batches after the position. Mutation: drop the
+        /// A clear between reads (an incarnation-touching batch, as in F4 r1/r3; a snapshot install) loses the batches after the position, and
+        /// the clearing batch itself. Mutation: drop the
         /// `floorBefore > start` check; this goes red.
         @Test
         void aFloorAboveThePosition_isAGap() {
