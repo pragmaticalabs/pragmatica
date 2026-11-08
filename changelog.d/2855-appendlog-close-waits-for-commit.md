@@ -1,0 +1,3 @@
+### Fixed (2026-11-08 — #2855: AppendLog commit after close wrote a fail-stop mark beside a closed log)
+- **A group commit that ran after `AppendLog.close()` forced the closed channel, fail-stopped the log and wrote `<log>.failstopped`**, racing directory cleanup (`AppendLogTest$Ordering.append_writesFrameBeforeReturning`, `@TempDir` could not delete its root).
+- `close()` now takes `writeLock` then `syncLock`, so an in-flight write or commit finishes first; its close-time fsync publishes `syncedSeq`, and a commit that it did not cover is refused as closed without forcing the channel. [verified: `integrations/storage/src/test/java/org/pragmatica/storage/AppendLogTest.java` `commitAfterClose_mutatesNoFile_andResolvesFromTheCloseTimeSync`, red before and green after]
