@@ -751,7 +751,7 @@ class SliceProcessorTest {
 
         assertThat(positions).doesNotContain(-1);
         assertThat(positions).isInStrictOrder();
-        assertThat(diagnostics).contains("upload/routes.toml.\nAmbiguous explicit error mapping 'Beta'");
+        assertThat(diagnostics).contains("upload/routes.toml.\n  Ambiguous explicit error mapping 'Beta'");
     }
 
     private String compileWithRoutes(Path classes, String route, String method) throws IOException {
