@@ -686,6 +686,83 @@ class DetachAwaitsInFlightAdvanceTest {
         }
     }
 
+    /// #1960: a held flush that settles BEFORE the bound lets the successor fetch and raises nothing: neither the
+    /// exceeded warning nor its recovery. Red under "a settled flush is treated as an elapsed bound".
+    @Test
+    void heldFlushSettlingBeforeTheBound_successorFetches_andNothingIsRaised() throws InterruptedException {
+        var wedge = new AtomicBoolean();
+        var held = Promise.<CommitOutcome>promise();
+        var fetches = new AtomicInteger();
+        var warnings = new CopyOnWriteArrayList<OperatorWarning>();
+        var holding = new ConsumerCursorStore() {
+            @Override
+            public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                return wedge.get()
+                       ? held
+                       : Promise.success(CommitOutcome.persisted());
+            }
+
+            @Override
+            public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                fetches.incrementAndGet();
+
+                return Promise.success(Option.none());
+            }
+        };
+        var holdingRuntime = (ConsumerRuntimeState) streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), holding);
+
+        holdingRuntime.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+        holdingRuntime.detachWaitBound(timeSpan(30).seconds());
+        try {
+            holdingRuntime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> Promise.unitPromise());
+            wedge.set(true);
+            holdingRuntime.unsubscribe(STREAM, 0, GROUP);
+            holdingRuntime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> Promise.unitPromise());
+            assertThat(fetches.get()).as("the successor waits on the held flush").isEqualTo(1);
+
+            held.succeed(CommitOutcome.persisted());
+            awaitFetches(fetches, 2);
+
+            assertThat(warnings).as("the flush settled inside the bound: nothing raised").isEmpty();
+        } finally {
+            held.succeed(CommitOutcome.persisted());
+            holdingRuntime.close();
+        }
+    }
+
+    /// #1960 (F10), retry path: a retry timer that fires after the consumer was unsubscribed delivers nothing. The first
+    /// attempt fails, the unsubscribe lands once the retry hold is set (the backoff is at least tens of milliseconds
+    /// away), and no second attempt may run. Red under "the retry claims its slot without the cancel check": the
+    /// cancelled consumer's handler runs a second time.
+    @Test
+    void retryTimerFiringAfterUnsubscribe_deliversNothing() throws InterruptedException {
+        var attempts = new AtomicInteger();
+        var retried = new CountDownLatch(2);
+        var retrying = (ConsumerRuntimeState) runtime;
+
+        retrying.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> {
+            attempts.incrementAndGet();
+            retried.countDown();
+
+            return StreamError.General.BUFFER_EMPTY.promise();
+        });
+        manager.publishLocal(STREAM, 0, "event-0".getBytes(UTF_8), 1000L);
+        awaitRetryHold(retrying);
+        retrying.unsubscribe(STREAM, 0, GROUP);
+
+        assertThat(retried.await(1, TimeUnit.SECONDS)).as("no second attempt after the unsubscribe").isFalse();
+        assertThat(attempts.get()).isEqualTo(1);
+    }
+
+    private void awaitRetryHold(ConsumerRuntimeState retrying) throws InterruptedException {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+
+        while (!retrying.isRetryInFlight(STREAM, 0, GROUP) && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertThat(retrying.isRetryInFlight(STREAM, 0, GROUP)).as("the first attempt failed and a retry is scheduled").isTrue();
+    }
+
     private static void awaitFetches(AtomicInteger fetches, int count) throws InterruptedException {
         var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
 
