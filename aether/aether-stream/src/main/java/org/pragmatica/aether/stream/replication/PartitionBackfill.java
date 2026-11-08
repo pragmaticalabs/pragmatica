@@ -196,7 +196,6 @@ public final class PartitionBackfill {
     /// offset and becomes a no-op once the replica reaches the owner's true tail — never a per-tick probe.
     /// A failed re-verify leaves `confirmedOffset` unchanged AND unrecorded, so the next tick retries.
     private final ConcurrentHashMap<PartitionKey, Long> reverifiedAtOffset;
-
     /// I-27 (#1759, CTO A1): per partition and source replica, where that replica's committed lineage ENDS, learned when an owner
     /// catch-up clipped its page ([#withinCommittedLineage]). The replica's `confirmedOffset` is its raw WAL tail, which may run past
     /// the lineage into a deposed epoch's records; ranking by the raw tail would pick it again on every redrive. The entry is valid
@@ -1758,17 +1757,20 @@ public final class PartitionBackfill {
     /// I-27 (#1759, CTO A1): the offset up to which `replica` is a source for the owner: its `confirmedOffset`, capped at the
     /// committed-lineage end an earlier clipped catch-up learned for it, while its tail is still the one observed then.
     private long lineageEnd(ReplicaDescriptor replica) {
-        return Option.option(committedLineageEnds.get(partitionKey(replica.streamName(), replica.partition())))
+        return Option.option(committedLineageEnds.get(partitionKey(replica.streamName(),
+                                                                   replica.partition())))
                      .flatMap(ends -> Option.option(ends.get(replica.nodeId())))
                      .filter(lineage -> replica.confirmedOffset() <= lineage.rawTail())
-                     .map(lineage -> Math.min(replica.confirmedOffset(), lineage.end()))
+                     .map(lineage -> Math.min(replica.confirmedOffset(),
+                                              lineage.end()))
                      .or(replica.confirmedOffset());
     }
 
     private void rememberLineageEnd(String streamName, int partition, NodeId source, long rawTail, long end) {
         committedLineageEnds.computeIfAbsent(partitionKey(streamName, partition),
                                              _ -> new ConcurrentHashMap<>())
-                            .put(source, new Lineage(rawTail, end));
+                            .put(source,
+                                 new Lineage(rawTail, end));
     }
 
     /// The highest [#lineageEnd] among the survivors other than `source`: what the owner must still reach before it may be
@@ -1863,15 +1865,15 @@ public final class PartitionBackfill {
         var end = bound.map(b -> Math.min(survivorTail, b - 1))
                        .onPresent(e -> rememberLineageEnd(streamName, partition, survivorNode, survivorTail, e));
         var target = end.map(e -> weighOthers
-                                  ? Math.max(e, otherSurvivorsEnd(streamName, partition, survivorNode))
+                                  ? Math.max(e,
+                                             otherSurvivorsEnd(streamName, partition, survivorNode))
                                   : e)
                         .or(survivorTail);
 
         return applyAndPromote(streamName,
                                partition,
                                target,
-                               bound.map(b -> clippedBefore(response, b))
-                                    .or(response));
+                               bound.map(b -> clippedBefore(response, b)).or(response));
     }
 
     /// I-27 (#1759, CTO D1): the activating owner takes a source's records only up to the lowest offset a later committed epoch
