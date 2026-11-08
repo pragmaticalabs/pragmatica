@@ -89,6 +89,7 @@ class Fsm2EquivalenceRoundTest {
 
     private final HttpOperations http = jdkHttpOperations();
     private final List<String> report = new ArrayList<>();
+    private final Map<DeploymentEngine, Boolean> monitorLive = new HashMap<>();
 
     /// The scenarios of design 9.3 that this harness drives. Node counts leave room to re-place after a loss (one instance per node).
     enum Scenario {
@@ -133,6 +134,11 @@ class Fsm2EquivalenceRoundTest {
         o4Controls.forEach((engine, fired) -> {
             if (!fired) {
                 silent.add("O4-scripted-batch(" + engine + ")");
+            }
+        });
+        monitorLive.forEach((engine, fired) -> {
+            if (!fired) {
+                silent.add("MONITOR-live-plant(" + engine + ")");
             }
         });
         oracle.forEach(verdict -> {
@@ -195,6 +201,7 @@ class Fsm2EquivalenceRoundTest {
                               placementMs,
                               o6(cluster));
 
+            monitorLiveControl(cluster, engine);
             log("arm %s end %s load=%s".formatted(engine, Instant.now(), loadAverage()));
 
             return arm;
@@ -454,6 +461,28 @@ class Fsm2EquivalenceRoundTest {
         log("O4 scripted batch: slots carrying it=" + slots);
 
         return slots.size() == 1;
+    }
+
+    /// The monitor hook's control (CTO ruling on plan 3.3): each invariant's violation is committed into the LIVE store, read back through the
+    /// same snapshot path the recorder uses, and checked by a monitor with 1 s bounds; all four must trip. Runs after the arm's data is taken, so
+    /// it contaminates no comparison; the rows are removed again. A miss is a silent control.
+    private void monitorLiveControl(EmberCluster cluster, DeploymentEngine engine) {
+        var node = leader(cluster);
+        var rows = EquivalenceDivergentControl.livePlant();
+        var monitor = new EquivalenceMonitor(1_000L, 1_000L);
+        var samples = new ArrayList<EquivalenceMonitor.Sample>();
+        var start = System.currentTimeMillis();
+
+        rows.forEach((key, value) -> commit(node, key, Option.none(), Option.some(value)));
+        for (var index = 0; index < 8; index++) {
+            samples.add(new EquivalenceMonitor.Sample(System.currentTimeMillis() - start, new EquivalenceKv(snapshot(cluster))));
+            sleep(1_000L);
+        }
+        rows.forEach((key, value) -> commit(node, key, Option.some(value), Option.none()));
+        var tripped = monitor.check(samples).stream().map(EquivalenceMonitor.Violation::invariant).collect(Collectors.toCollection(TreeSet::new));
+
+        log("monitor live plant (%s): tripped=%s".formatted(engine, tripped));
+        monitorLive.put(engine, tripped.containsAll(Set.of("i", "ii", "iii", "iv")));
     }
 
     private static void commit(AetherNode node, AetherKey key, Option<AetherValue> expected, Option<AetherValue> replacement) {

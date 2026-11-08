@@ -184,6 +184,25 @@ final class EquivalenceDivergentControl {
         return out;
     }
 
+    /// The four monitor violations as committed rows, for planting into a LIVE store (the monitor hook's control: the state the monitor reads,
+    /// not the samples after collection). No steady targets: invariant (i) is a count above a bound of 0, which three rows exceed.
+    static Map<AetherKey, AetherValue> livePlant() {
+        var rows = new LinkedHashMap<AetherKey, AetherValue>();
+
+        for (var index = 0; index < 3; index++) {
+            rows.put(AetherKey.SliceObservedKey.sliceObservedKey(NodeId.nodeId("f4-control-i-" + index).unwrap(), I_PLANT), observed(AetherValue.SliceObservedState.LOADING));
+        }
+        rows.put(AetherKey.SliceTargetKey.sliceTargetKey(II_PLANT.base()), AetherValue.SliceTargetValue.sliceTargetValue(II_PLANT.version(), 0, Option.some(II_OWNER)));
+        rows.put(new AetherKey.NodeDepartureKey(DEPARTED),
+                 new AetherValue.NodeDepartureValue(AetherValue.DepartureState.DEPARTED, 1L, new AetherValue.ProcessIncarnation(1L, 1L), Option.none(), 0L));
+        rows.put(AetherKey.SliceObservedKey.sliceObservedKey(DEPARTED, III_PLANT), observed(AetherValue.SliceObservedState.ACTIVE));
+        rows.put(new AetherKey.AppBlueprintKey(IV_PLANT),
+                 AetherValue.AppBlueprintValue.appBlueprintValue(ExpandedBlueprint.expandedBlueprint(IV_PLANT, List.of()), false, "f4-control-current-attempt"));
+        rows.put(AetherKey.DeploymentApplyKey.deploymentApplyKey(IV_PLANT), new AetherValue.DeploymentApplyValue("f4-control-superseded-attempt", Option.none(), 0L));
+
+        return rows;
+    }
+
     private static Map<AetherKey, AetherValue> withPlantTargets(Map<AetherKey, AetherValue> entries) {
         var kv = new LinkedHashMap<>(entries);
 
