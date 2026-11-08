@@ -210,6 +210,30 @@ class RollbackNoPromotionTest {
         assertActiveOnAllCores(h, INVENTORY);
     }
 
+    // Pins the gate's quantifier (#2864): a second, registered-only version of the blueprint declares the same healthy artifact, so
+    // the artifact has two owners and only one of them is being rolled back. The gate holds while any owner is rolling back.
+    // Red when: the gate requires every owner of the artifact to be rolling back (anyMatch weakened to allMatch).
+    @Test
+    void sharedArtifactWithOneOwnerRollingBack_isNotPromoted() {
+        var h = active();
+        var nodes = nodes(h);
+
+        publish(h, blueprint("org.example:app:1.0.1", true, "attempt-0", slice(BILLING, 3, 1, Set.of())));
+        publish(h, BLUEPRINT);
+        h.policy = FsmHarness.SettlePolicy.HOLD;
+        nodes.getFirst().fails(ORDERS, true);
+        h.drain();
+        assertThat(h.submits(SubmitKind.ROLLBACK)).as("control: the rollback is in flight").hasSize(1);
+        nodes.forEach(node -> node.follows(BILLING));
+        h.drain();
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        List.copyOf(h.held.values()).forEach(submit -> h.settle(submit, h.applyHeld(submit.correlationId())));
+        h.drain();
+
+        quiesce(h, nodes);
+        assertTerminalWithoutPromotion(h);
+    }
+
     // Pins the gate's end (#2864): once the rollback has settled and its targets are removed, a fresh deployment of the rolled-back
     // artifact promotes. Red when: the gate outlives the rollback (the in-flight draft or the owner test never clears).
     @Test
