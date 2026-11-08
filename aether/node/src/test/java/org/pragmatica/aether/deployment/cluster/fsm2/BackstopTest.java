@@ -598,4 +598,37 @@ class BackstopTest {
         assertThat(w.present(new SliceObservedKey(CORE_2, ORDERS))).isTrue();
         assertThat(w.h.warns("worker-absence-unjudgeable")).singleElement().satisfies(warn -> assertThat(warn.subject()).isEqualTo("worker"));
     }
+
+    // Red when: a directive-less seed core recorded STALE by the backstop is not re-admitted by membership's join (J2, same process).
+    @Test
+    void seedCore_recordedStale_isReadmittedOnJoin_sameProcess() {
+        var w = withoutCore2(departedSeedCore(Set.of(CORE_1, CORE_2)));
+
+        w.activate();
+        assertRecordedAfterBrm_andRowsRemoved(w);
+        assertThat(w.counts(CORE_2)).as("departed: not counted").isFalse();
+        w.refreshSeams(s -> s.withCountedCores(Set.of(CORE_1, CORE_2))
+                             .withCoreView(Option.some(Set.of(CORE_1, CORE_2)))
+                             .withLocalAlive(Option.some(Set.of(CORE_1, CORE_2))));
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admit(CORE_2, 0x2222L)));
+        assertThat(w.recordOf(CORE_2).map(NodeDepartureValue::state)).isEqualTo(Option.some(DepartureState.ADMITTED));
+        assertThat(w.counts(CORE_2)).isTrue();
+        assertThat(w.since(CORE_2).isEmpty()).as("no absence clock once back in the core view").isTrue();
+    }
+
+    // Red when: a restarted (different process) seed core recorded STALE is refused instead of taking J8's core arm.
+    @Test
+    void seedCore_recordedStale_isReadmittedOnJoin_differentProcess() {
+        var w = withoutCore2(departedSeedCore(Set.of(CORE_1, CORE_2)));
+
+        w.activate();
+        assertRecordedAfterBrm_andRowsRemoved(w);
+        w.refreshSeams(s -> s.withCountedCores(Set.of(CORE_1, CORE_2))
+                             .withCoreView(Option.some(Set.of(CORE_1, CORE_2)))
+                             .withLocalAlive(Option.some(Set.of(CORE_1, CORE_2))));
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admit(CORE_2, 0x3333L)));
+        assertThat(w.recordOf(CORE_2).map(NodeDepartureValue::state)).isEqualTo(Option.some(DepartureState.ADMITTED));
+        assertThat(w.counts(CORE_2)).isTrue();
+        assertThat(w.h.warns("join-refused-process")).isEmpty();
+    }
 }
