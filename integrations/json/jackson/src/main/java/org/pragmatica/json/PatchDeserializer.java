@@ -75,7 +75,7 @@ public class PatchDeserializer extends ValueDeserializer<Patch<?>> {
                      .filter(PatchDeserializer::isSupportedElement)
                      .<ValueDeserializer<?>> map(type -> contextualized(ctxt, type))
                      .or(() -> refused(ctxt,
-                                       reason(property)));
+                                       reason(option(property))));
     }
 
     // Jackson's failure channel is an exception, which JsonMapper lifts into a Result whose message keeps the reason.
