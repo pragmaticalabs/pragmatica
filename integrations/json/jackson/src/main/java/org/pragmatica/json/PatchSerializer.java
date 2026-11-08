@@ -108,7 +108,9 @@ public class PatchSerializer extends ValueSerializer<Patch<?>> {
 
     /// Refuses, when a bean serializer is built for a type (before any value is written), a property that holds a
     /// `Patch` anywhere in its declared type but is not a `Patch` record component: the runtime-typed
-    /// [#createContextual] check alone would see it only once a non-null value is written.
+    /// [#createContextual] check alone would see it only once a non-null value is written. `@Contract`: Jackson's
+    /// failure channel for a bean serializer under construction is an exception.
+    @Contract
     static final class Guard extends ValueSerializerModifier {
         @Override
         public List<BeanPropertyWriter> changeProperties(SerializationConfig config,
