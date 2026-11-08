@@ -287,7 +287,15 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         schemaOpt.onPresent(schema -> validateReturnTypeMapping(execElement, resolved, parsedCst));
         validateRewrittenSql(execElement, methodName, rewritten.sql(), schemaOpt);
         var mapperColumns = boundMapperColumns(execElement, resolved, resolveMapperColumns(execElement, resolved), Set.of());
-        var documentColumn = documentRepr.map(repr -> documentColumn(repr, rewritten.sql(), resolved.kind()));
+        var scalarNeeded = needsScalarColumn(resolved, documentRepr.isPresent());
+        var scalarColumn = scalarNeeded
+                           ? outputColumn(parsedCst)
+                           : Option.<String>none();
+        if (scalarNeeded && scalarColumn.isEmpty()) {
+            error(ProcessorError.scalarColumnNeedsAlias(methodName), execElement);
+            return null;
+        }
+        var documentColumn = documentRepr.map(repr -> documentColumn(repr, scalarColumn.expect("document methods are scalar")));
         var bodyParams = reorderedParams(boundBody, rewritten.parameterOrder());
         // #648: the generated method OVERRIDES the interface method, so its signature is the
         // declaration order, always. Only the bind list follows placeholder order — it is emitted by
@@ -305,7 +313,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                mapperColumns,
                                                resolved.needsMapper(),
                                                resolved.scalarAccessor(),
-                                               documentColumn);
+                                               documentColumn,
+                                               scalarColumn);
     }
 
     /// The document handling of a `@Jsonb` method's result: empty for an unmarked method, a failure (already
@@ -340,10 +349,62 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                : ((DeclaredType) inner).getTypeArguments().getFirst();
     }
 
-    private static FactoryGenerator.MapperColumn documentColumn(ColumnRepr repr,
-                                                                String sql,
-                                                                MethodAnalyzer.ReturnKind kind) {
-        var columnName = FactoryGenerator.inferScalarColumnName(sql, kind);
+    /// A method whose result is one value read from one column: a document, a `long`/`boolean`, or a
+    /// scalar accessor. Its column is named by the query's CST, never by scanning the text (#2886).
+    private static boolean needsScalarColumn(TypeMirrorResolver.ResolvedReturn resolved, boolean document) {
+        return !resolved.needsMapper()
+               && resolved.kind() != MethodAnalyzer.ReturnKind.UNIT
+               && (document
+                   || resolved.scalarAccessor().isPresent()
+                   || resolved.kind() == MethodAnalyzer.ReturnKind.LONG
+                   || resolved.kind() == MethodAnalyzer.ReturnKind.BOOLEAN);
+    }
+
+    /// The first output column NAME of the statement, from the parse tree: the alias `ColLabel` of a
+    /// target, else its column. Absent when the query does not parse or a target is an unaliased
+    /// expression or `*`.
+    private static Option<String> outputColumn(Result<CstNode> parsedCst) {
+        return parsedCst.option()
+                        .flatMap(CstNavigator::wrap)
+                        .flatMap(QueryValidator::selectOutputColumnNames)
+                        .flatMap(names -> Option.from(names.stream().findFirst()));
+    }
+
+    /// CRUD SQL is generated here, so an unaliased `count(*)` / `EXISTS(..)` has the column name
+    /// PostgreSQL gives it: `count` / `exists`.
+    private Option<String> crudScalarColumn(ExecutableElement execElement,
+                                            String methodName,
+                                            String sql,
+                                            MethodNameParser.Operation operation,
+                                            TypeMirrorResolver.ResolvedReturn resolved) {
+        if (!needsScalarColumn(resolved, false)) {
+            return Option.none();
+        }
+
+        var column = crudOutputColumn(sql, operation);
+
+        if (column.isEmpty()) {
+            error(ProcessorError.scalarColumnNeedsAlias(methodName), execElement);
+        }
+
+        return column;
+    }
+
+    private Option<String> crudOutputColumn(String sql, MethodNameParser.Operation operation) {
+        var named = outputColumn(sqlParseCache.computeIfAbsent(sql, sqlParser::parseCst));
+
+        if (named.isPresent()) {
+            return named;
+        }
+
+        return switch (operation) {
+            case COUNT -> Option.some("count");
+            case EXISTS -> Option.some("exists");
+            default -> Option.none();
+        };
+    }
+
+    private static FactoryGenerator.MapperColumn documentColumn(ColumnRepr repr, String columnName) {
         var accessor = repr.pAccessor();
         return new FactoryGenerator.MapperColumn(columnName,
                                                  accessor.method(),
@@ -468,6 +529,10 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         }
         var crudSql = sqlOpt.expect("checked with isEmpty above");
         validateRewrittenSql(execElement, methodName, crudSql, schemaOpt);
+        var scalarColumn = crudScalarColumn(execElement, methodName, crudSql, parsed.operation(), resolved);
+        if (needsScalarColumn(resolved, false) && scalarColumn.isEmpty()) {
+            return null;
+        }
         var mapperColumns = boundMapperColumns(execElement,
                                                resolved,
                                                resolved.needsMapper()
@@ -486,7 +551,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                mapperColumns,
                                                resolved.needsMapper(),
                                                resolved.scalarAccessor(),
-                                               Option.empty());
+                                               Option.empty(),
+                                               scalarColumn);
     }
 
     private FactoryGenerator.MethodInfo buildCrudMethodInfoWithoutSchema(
@@ -500,6 +566,10 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     RecordExpansionResult recordExpansion) {
         var selectColumns = List.<String>of();
         var sql = generateCrudSqlWithoutSchema(parsed, tableName, selectColumns, inputFieldNames, resolved.kind());
+        var scalarColumn = crudScalarColumn(execElement, methodName, sql, parsed.operation(), resolved);
+        if (needsScalarColumn(resolved, false) && scalarColumn.isEmpty()) {
+            return null;
+        }
         var mapperColumns = boundMapperColumns(execElement, resolved, resolveMapperColumns(execElement, resolved), Set.of());
         var boundBody = boundBodyParams(execElement,
                                         recordExpansion.hasExpansion()
@@ -517,7 +587,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                mapperColumns,
                                                resolved.needsMapper(),
                                                resolved.scalarAccessor(),
-                                               Option.empty());
+                                               Option.empty(),
+                                               scalarColumn);
     }
 
     private String generateCrudSqlWithoutSchema(

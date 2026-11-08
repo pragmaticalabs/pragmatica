@@ -110,7 +110,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface StatsRepo {
 
-                    @Query("SELECT COUNT(*) FROM events WHERE type = :eventType")
+                    @Query("SELECT COUNT(*) AS count FROM events WHERE type = :eventType")
                     Promise<Long> countByType(String eventType);
                 }
                 """;
@@ -980,7 +980,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface ExistsRepo {
 
-                    @Query("SELECT EXISTS(SELECT 1 FROM orders WHERE id = :id)")
+                    @Query("SELECT EXISTS(SELECT 1 FROM orders WHERE id = :id) AS found")
                     Promise<Boolean> existsById(Long id);
                 }
                 """;
@@ -991,7 +991,7 @@ class AnnotationProcessorE2ETest {
 
             var generated = result.generatedSource("test.ExistsRepoFactory");
             assertThat(generated).isNotNull();
-            assertThat(generated).contains("row.getBoolean(\"exists\")");
+            assertThat(generated).contains("row.getBoolean(\"found\")");
         }
 
         @Test

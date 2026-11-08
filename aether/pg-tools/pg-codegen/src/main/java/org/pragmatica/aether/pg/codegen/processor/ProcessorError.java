@@ -86,6 +86,13 @@ public final class ProcessorError {
              + "' is not listed in migrations.list (kept via auto-discovery)";
     }
 
+    public static String scalarColumnNeedsAlias(String method) {
+        return PREFIX
+             + "Method '" + method
+             + "' reads a single column, but the query's output column has no name: add an alias to the selected"
+             + " expression (e.g. 'count(*) AS n') and select no '*'";
+    }
+
     public static String returnFieldNotInSelect(String field, String recordType) {
         return PREFIX + "Field '" + field + "' in return type " + recordType + " has no matching SELECT column";
     }

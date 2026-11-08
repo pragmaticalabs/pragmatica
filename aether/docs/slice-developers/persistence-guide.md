@@ -172,8 +172,8 @@ Promise<Unit> updateUser(long id, UpdateUserRequest request);
 | `Promise<Option<T>>` | Zero or one row |
 | `Promise<List<T>>` | Zero or more rows |
 | `Promise<Unit>` | No result (DML) |
-| `Promise<Long>` | Scalar count |
-| `Promise<Boolean>` | Scalar boolean |
+| `Promise<Long>` | Scalar count (an expression such as `count(*)` needs an alias: `SELECT count(*) AS n FROM t`) |
+| `Promise<Boolean>` | Scalar boolean (an expression such as `EXISTS(..)` needs an alias: `SELECT EXISTS(..) AS found`) |
 
 ### Query Narrowing
 

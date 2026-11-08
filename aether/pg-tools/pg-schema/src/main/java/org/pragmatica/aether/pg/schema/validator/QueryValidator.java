@@ -129,7 +129,7 @@ public final class QueryValidator {
 
         if (targetListOpt.isEmpty()) return Option.empty();
 
-        var targets = targetListOpt.unwrap().findAll("TargetElem");
+        var targets = targetListOpt.unwrap().allChildren("TargetElem");
 
         if (targets.isEmpty()) return Option.empty();
 
@@ -146,18 +146,22 @@ public final class QueryValidator {
         return Option.present(names);
     }
 
-    /// Resolves a single target's output column name. Reuses `inferTargetColumnName` for the
-    /// explicit-alias and qualified-reference cases; falls back to `bareColumnName` for a plain
-    /// unqualified column; leaves `*` and compound expressions unresolved (absent) so the caller
+    /// Resolves a single target's output column name: the alias `ColLabel` that is a direct child of the
+    /// target (the `AS` of a `CAST` is followed by a `DataType`, so it is never one), else
+    /// `bareColumnName` for a plain, possibly qualified, column reference; leaves `*` and compound expressions unresolved (absent) so the caller
     /// skips the whole check.
     private static Option<String> outputColumnName(CstNavigator target) {
-        var aliasedOrQualified = inferTargetColumnName(target);
+        var aliasedOrQualified = explicitAlias(target);
 
         if (aliasedOrQualified.isPresent()) return aliasedOrQualified;
 
         if (target.has("StarExpr")) return Option.empty();
 
         return bareColumnName(target);
+    }
+
+    private static Option<String> lastNamePart(CstNavigator qualifiedName) {
+        return Option.from(CstExtractor.extractQualifiedName(qualifiedName).parts().stream().reduce((_, last) -> last)).map(part -> part.normalized());
     }
 
     /// Resolves a bare (unqualified, unaliased) column reference by descending the single-child
@@ -169,6 +173,13 @@ public final class QueryValidator {
 
         if (colId.isPresent()) {
             return Option.present(CstExtractor.extractIdentifier(colId.unwrap()).normalized());
+        }
+
+        var qualified = node.child("QualifiedName").filter(_ -> node.children()
+                                                                    .size() == 1);
+
+        if (qualified.isPresent()) {
+            return qualified.flatMap(QueryValidator::lastNamePart);
         }
 
         if (node.children().size() != 1) return Option.empty();
@@ -387,14 +398,22 @@ public final class QueryValidator {
         return Option.present(cols);
     }
 
-    private static Option<String> inferTargetColumnName(CstNavigator target) {
+    /// The alias `ColLabel` that is a direct child of the target. The `AS` of a `CAST` is followed by a
+    /// `DataType`, so it never produces one.
+    private static Option<String> explicitAlias(CstNavigator target) {
         if (target.has("StarExpr")) return Option.empty();
 
         var colLabels = target.allChildren("ColLabel");
 
-        if (!colLabels.isEmpty()) {
-            return Option.present(CstExtractor.extractIdentifier(colLabels.getLast()).normalized());
-        }
+        return colLabels.isEmpty()
+               ? Option.empty()
+               : Option.present(CstExtractor.extractIdentifier(colLabels.getLast()).normalized());
+    }
+
+    private static Option<String> inferTargetColumnName(CstNavigator target) {
+        var alias = explicitAlias(target);
+
+        if (alias.isPresent() || target.has("StarExpr")) return alias;
 
         var qnames = target.findAll("QualifiedName");
 
