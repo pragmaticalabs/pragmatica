@@ -48,7 +48,8 @@ public final class CstExtractor {
         return classifyRawIdentifier(nav.span(),
                                      nav.firstTokenText()
                                         .orElse(nav::firstLeafText)
-                                        .expect("identifier node '" + nav.rule() + "' carries no lexeme at " + nav.span()));
+                                        .expect("identifier node '" + nav.rule()
+                                               + "' carries no lexeme at " + nav.span()));
     }
 
     /// peglib 0.7.x lexes an identifier as ONE token — `ColId`, or the kind of whatever keyword rule

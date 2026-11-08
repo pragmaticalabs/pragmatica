@@ -116,8 +116,7 @@ public record CstNavigator(CstNode.NonTerminal node) {
                                  .filter(CstNavigator::isNonEmpty)
                                  .map(CstNavigator::firstLeafOf)
                                  .filter(Option::isPresent)
-                                 .findFirst())
-                     .flatMap(found -> found);
+                                 .findFirst()).flatMap(found -> found);
     }
 
     public <T> List<T> collectList(String itemRule, Function<CstNavigator, T> mapper) {
