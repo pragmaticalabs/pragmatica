@@ -139,6 +139,29 @@ class ProductionReplicationBatchingTest {
         assertThat(offsetsSent()).containsExactly(List.of(0L), List.of(1L, 2L));
     }
 
+    /// #577/#1596 on the lane: an event of a new owner epoch hands the open batch to the lane first, off the publishing
+    /// thread, and each batch leaves stamped with its own epoch, in offset order.
+    @Test
+    void epochChange_handsTheOpenBatchToTheLane_firstAndStampedWithItsOwnEpoch() {
+        var manager = manager(capturingTransport(), 100);
+        var e1 = Epoch.epoch(0, 1, 0);
+        var e2 = Epoch.epoch(0, 2, 0);
+
+        manager.replicateEvent(STREAM, PARTITION, 0L, payload(0), 1L, e1);
+        manager.replicateEvent(STREAM, PARTITION, 1L, payload(1), 2L, e1);
+        manager.replicateEvent(STREAM, PARTITION, 2L, payload(2), 3L, e1);
+        manager.replicateEvent(STREAM, PARTITION, 3L, payload(3), 4L, e2);
+
+        assertThat(sent).as("the publishing thread sent nothing").isEmpty();
+
+        runLanes();
+        closeWindow();
+        runLanes();
+
+        assertThat(offsetsSent()).containsExactly(List.of(0L), List.of(1L, 2L), List.of(3L));
+        assertThat(sent.stream().map(ReplicationMessage.ReplicateEvents::ownerEpoch).toList()).containsExactly(e1, e1, e2);
+    }
+
     /// #2820 on the batch path: the production batcher sends through the direct path, so a batch the transport
     /// provably did not write is sent again. The batcher's own plain sender never re-sends.
     @Test
