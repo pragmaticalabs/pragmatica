@@ -246,6 +246,18 @@ public final class KvBackupService {
                                    worker::shutdownNow);
     }
 
+    /// A service with a caller-supplied release action, so a test can hold [#stop] at a latch.
+    static KvBackupService kvBackupService(KVStore<AetherKey, AetherValue> kvStore,
+                                           BackupEntryCodec codec,
+                                           GitBackupRepository repository,
+                                           Scheduler scheduler,
+                                           LongSupplier clock,
+                                           BackupWarning.Sink warnings,
+                                           Timing timing,
+                                           Runnable onStop) {
+        return new KvBackupService(kvStore, codec, repository, scheduler, clock, warnings, timing, onStop);
+    }
+
     @Contract
     private static void nothingToRelease() {}
 
@@ -286,7 +298,16 @@ public final class KvBackupService {
     public Promise<Unit> stopFlushed(TimeSpan deadline, Replica replica) {
         return stopped.get()
                ? Promise.unitPromise()
-               : flushBounded(deadline, replica).onResultRun(this::stop);
+               : flushBounded(deadline, replica).map(this::stopAfterFlush);
+    }
+
+    /// The stop runs INSIDE the transformation, so the promise [#stopFlushed] returns is resolved only once the service is stopped: a
+    /// reader of that promise (`await`, `isResolved`) never sees it resolved with the stop still pending (an `onResultRun` action runs after
+    /// the result is visible). The flush cannot fail here ([#boundedFlush] absorbs its failure), so the stop runs on every path.
+    private Unit stopAfterFlush(Unit flushed) {
+        stop();
+
+        return flushed;
     }
 
     private Promise<Unit> flushBounded(TimeSpan deadline, Replica replica) {
