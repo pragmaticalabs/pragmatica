@@ -46,10 +46,57 @@ final class EquivalenceComparison {
                long o5PlacementMs,
                Map<String, Double> o6) {}
 
+    /// A RULED outcome change, not a divergence: in `scenario` (and nowhere else), LEGACY's `legacy` verdict and the other arm's `other` verdict
+    /// on the same blueprint are equal by an owner ruling, recorded as the `know` commit. Never a general normaliser: one named mapping per ruling.
+    record RuledVerdict(String scenario, AetherValue.DeploymentOutcomeStatus legacy, AetherValue.DeploymentOutcomeStatus other, String know) {}
+
+    /// E-09 only: owner ruling know `8018203973` (2026-10-21; #970 folds into the FSM rewrite with terminal ROLLED_BACK, matching #922
+    /// ALL_OR_NOTHING). LEGACY writes FAILED, FSM2 writes ROLLED_BACK; the round treats the pair as one verdict.
+    static final RuledVerdict E09_ROLLED_BACK = new RuledVerdict("E09",
+                                                                 AetherValue.DeploymentOutcomeStatus.FAILED,
+                                                                 AetherValue.DeploymentOutcomeStatus.ROLLED_BACK,
+                                                                 "8018203973");
+
+    /// E-09 only, the O4 allow-list (CTO R2 on #2763): the batch signatures (`Family op detail`) that are rollback actions the ROLLED_BACK terminal
+    /// requires: unloading each placed instance, removing its observed and desired rows, removing the targets. A batch is excluded from O4 only
+    /// when EVERY effect it carries matches one of these; a batch that mixes in anything else (the terminal batch, a promotion) stays counted.
+    /// Allow-listed per family and transition, never per family alone: `SliceObservedKey put LOADING` / `ACTIVATING` / `ACTIVE` stay counted.
+    static final Set<String> E09_ROLLBACK_SIGNATURES = Set.of("SliceObservedKey put UNLOADING",
+                                                              "SliceObservedKey put UNLOADED",
+                                                              "SliceObservedKey remove -",
+                                                              "SliceDesiredKey put UNLOADED",
+                                                              "SliceDesiredKey remove -",
+                                                              "SliceTargetKey remove -");
+
+    /// The O4 count of one arm from its per-slot effects (`Family op detail key`): every slot, minus, on E-09 only, the slots made solely of
+    /// [#E09_ROLLBACK_SIGNATURES]. The same function for both arms.
+    static long o4Counted(Map<Long, List<String>> slotEffects, String scenario) {
+        return slotEffects.values().stream().filter(effects -> !isRuledRollback(effects, scenario)).count();
+    }
+
+    private static boolean isRuledRollback(List<String> effects, String scenario) {
+        return E09_ROLLED_BACK.scenario().equals(scenario)
+               && !effects.isEmpty()
+               && effects.stream().map(EquivalenceComparison::signature).allMatch(E09_ROLLBACK_SIGNATURES::contains);
+    }
+
+    /// The `Family op detail` part of one effect description `Family op detail key`.
+    static String signature(String effect) {
+        var parts = effect.split(" ", 4);
+
+        return parts.length < 3 ? effect : parts[0] + " " + parts[1] + " " + parts[2];
+    }
+
+    /// Compares outside any ruled scenario: no outcome mapping applies.
     static List<Divergence> compare(Arm legacy, Arm other, EquivalenceMonitor monitor) {
+        return compare(legacy, other, monitor, "");
+    }
+
+    /// Compares one round of `scenario`; the only scenario-scoped exemption is [#E09_ROLLED_BACK], applied in O1 when `scenario` is E09.
+    static List<Divergence> compare(Arm legacy, Arm other, EquivalenceMonitor monitor, String scenario) {
         var divergences = new ArrayList<Divergence>();
 
-        o1(legacy, other, divergences);
+        o1(legacy, other, divergences, scenario);
         o2(legacy, divergences);
         o2(other, divergences);
         residue(other).forEach(row -> divergences.add(new Divergence("O3", other.engine() + " residue " + row)));
@@ -69,14 +116,30 @@ final class EquivalenceComparison {
         return divergences;
     }
 
-    /// O1: the verdict per blueprint, on the durable outcome record.
-    private static void o1(Arm legacy, Arm other, List<Divergence> divergences) {
+    /// O1: the verdict per blueprint, on the durable outcome record, after the scenario's ruled mapping (E-09 only).
+    private static void o1(Arm legacy, Arm other, List<Divergence> divergences, String scenario) {
         var left = verdicts(legacy.quiescent());
-        var right = verdicts(other.quiescent());
+        var right = ruled(left, verdicts(other.quiescent()), scenario);
 
         if (!left.equals(right)) {
             divergences.add(new Divergence("O1", legacy.engine() + "=" + left + " " + other.engine() + "=" + right));
         }
+    }
+
+    /// The other arm's verdicts with [#E09_ROLLED_BACK] applied: on E-09 only, a blueprint LEGACY recorded FAILED and the other arm recorded
+    /// ROLLED_BACK reads as FAILED. Every other verdict, and every verdict of every other scenario, is unchanged.
+    static Map<String, String> ruled(Map<String, String> legacy, Map<String, String> other, String scenario) {
+        var mapped = new TreeMap<String, String>();
+
+        other.forEach((blueprint, status) -> mapped.put(blueprint, isRuled(scenario, legacy.get(blueprint), status) ? E09_ROLLED_BACK.legacy().name() : status));
+
+        return mapped;
+    }
+
+    private static boolean isRuled(String scenario, String legacy, String other) {
+        return E09_ROLLED_BACK.scenario().equals(scenario)
+               && E09_ROLLED_BACK.legacy().name().equals(legacy)
+               && E09_ROLLED_BACK.other().name().equals(other);
     }
 
     static Map<String, String> verdicts(EquivalenceKv kv) {

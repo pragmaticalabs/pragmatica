@@ -13,6 +13,7 @@ import java.net.http.HttpRequest;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -99,7 +100,7 @@ class Fsm2EquivalenceRoundTest {
 
     /// The scenarios of design 9.3 that this harness drives. Node counts leave room to re-place after a loss (one instance per node).
     enum Scenario {
-        E01(3), E02(5), E03(3), E04(4), E05(4), E06(5), E07(4), E09(3), E10(4), E11(4);
+        E01(3), E02(5), E03(3), E04(4), E05(4), E06(5), E07(4), E08(3), E09(3), E10(4), E11(4);
 
         final int nodes;
 
@@ -133,8 +134,8 @@ class Fsm2EquivalenceRoundTest {
         var legacy = arms.get(DeploymentEngine.LEGACY);
         var fsm2 = arms.get(DeploymentEngine.FSM2);
         var control = EquivalenceDivergentControl.of(fsm2, legacy, MONITOR);
-        var fsm2Divergences = EquivalenceComparison.compare(legacy, fsm2, MONITOR);
-        var controlDivergences = EquivalenceComparison.compare(legacy, control, MONITOR);
+        var fsm2Divergences = EquivalenceComparison.compare(legacy, fsm2, MONITOR, scenario.name());
+        var controlDivergences = EquivalenceComparison.compare(legacy, control, MONITOR, scenario.name());
         var silent = new ArrayList<>(EquivalenceDivergentControl.silentFamilies(fsm2Divergences, controlDivergences));
 
         o4Controls.forEach((engine, fired) -> {
@@ -188,9 +189,11 @@ class Fsm2EquivalenceRoundTest {
             var quiescent = awaitQuiescence(cluster);
 
             recorder.stop();
-            var o4 = recorder.batches();
+            var slots = recorder.slotEffects();
+            var o4 = recorder.batches() < 0 ? -1L : EquivalenceComparison.o4Counted(slots, scenario.name());
 
-            logSlots(engine, recorder.slotEffects());
+            logSlots(engine, slots);
+            log("O4 (%s): %d slots, %d counted after the %s allow-list".formatted(engine, recorder.batches(), o4, scenario));
             var kv = new EquivalenceKv(snapshot(cluster));
             var live = cluster.allNodes().stream().map(AetherNode::self).collect(Collectors.toUnmodifiableSet());
 
@@ -299,6 +302,26 @@ class Fsm2EquivalenceRoundTest {
                 awaitTrue("3 ACTIVE after the leader heal", WAIT, () -> active(cluster, echo) == 3);
                 yield System.currentTimeMillis() - at;
             }
+            case E08 -> {
+                // A transient load failure (design 9.3 E-08): one instance placed, then the jar is moved out of the local repository the nodes
+                // resolve from, so the scale-up loads fail with ArtifactNotFound (Intermittent, retried); once a FAILED row is committed the jar is
+                // restored and the retry must succeed. The fixture's own control: no FAILED row within the bound fails the arm (no silent pass).
+                publishAndPlace(cluster, echo, 1);
+                var jar = localJar(echo);
+                var aside = jar.resolveSibling(jar.getFileName() + ".f4-aside");
+                var at = System.currentTimeMillis();
+
+                move(jar, aside);
+                try {
+                    expectAccepted(scale(cluster, 3));
+                    awaitTrue("a transient load failure (E-08 fixture fired)", Duration.ofSeconds(90), () -> failed(cluster, echo) > 0);
+                    log("E08 transient failure observed after %d ms: %s".formatted(System.currentTimeMillis() - at, failedRows(cluster, echo)));
+                } finally {
+                    move(aside, jar);
+                }
+                awaitTrue("3 ACTIVE after the retry", WAIT, () -> active(cluster, echo) == 3);
+                yield System.currentTimeMillis() - at;
+            }
             case E09 -> {
                 // A fatal failure under ALL_OR_NOTHING: a second slice whose jar is present but carries no slice manifest (unloadable, so a fatal
                 // load failure, not a publish-time rejection); the verdict is whatever the durable record says.
@@ -346,6 +369,37 @@ class Fsm2EquivalenceRoundTest {
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
+    }
+
+    /// The artifact's jar in the local Maven repository the Ember nodes resolve from (the `LocalRepository` layout).
+    private static Path localJar(Artifact artifact) {
+        var version = artifact.version().withQualifier();
+
+        return Path.of(MavenLocalRepoLocator.findLocalRepository(),
+                       artifact.groupId().id().replace('.', '/'),
+                       artifact.artifactId().id(),
+                       version,
+                       artifact.artifactId().id() + "-" + version + ".jar");
+    }
+
+    private void move(Path from, Path to) {
+        try {
+            Files.move(from, to, StandardCopyOption.REPLACE_EXISTING);
+            log("moved " + from + " -> " + to);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    private static long failed(EmberCluster cluster, Artifact artifact) {
+        return failedRows(cluster, artifact).size();
+    }
+
+    private static List<EquivalenceKv.Instance> failedRows(EmberCluster cluster, Artifact artifact) {
+        return new EquivalenceKv(snapshot(cluster)).instances()
+                                                   .stream()
+                                                   .filter(instance -> instance.base().equals(artifact.base()) && instance.state().equals("FAILED"))
+                                                   .toList();
     }
 
     /// Publishes and waits for placement; returns O5 in ms.
@@ -543,15 +597,9 @@ class Fsm2EquivalenceRoundTest {
     private void logSlots(DeploymentEngine engine, Map<Long, List<String>> slots) {
         var signatures = new TreeMap<String, Long>();
 
-        slots.values().forEach(effects -> signatures.merge(effects.stream().map(Fsm2EquivalenceRoundTest::signature).distinct().sorted().toList().toString(), 1L, Long::sum));
+        slots.values().forEach(effects -> signatures.merge(effects.stream().map(EquivalenceComparison::signature).distinct().sorted().toList().toString(), 1L, Long::sum));
         signatures.forEach((signature, count) -> log("O4 families (%s): %d x %s".formatted(engine, count, signature)));
         new TreeMap<>(slots).forEach((slot, effects) -> log("O4 slot (%s) %d: %s".formatted(engine, slot, effects)));
-    }
-
-    private static String signature(String effect) {
-        var parts = effect.split(" ", 4);
-
-        return parts[0] + " " + parts[1] + " " + parts[2];
     }
 
     /// The scripted extra batch (design 9.5 O4 positive control): one leader transaction putting a control outcome key. Counted = exactly one

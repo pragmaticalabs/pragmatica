@@ -135,6 +135,57 @@ class EquivalenceInstrumentTest {
             assertThat(silent).doesNotContain("O1");
         }
 
+        /// The E-09 ruled verdict (know 8018203973): LEGACY FAILED vs FSM2 ROLLED_BACK is no O1 divergence on E-09, and the O1 control (FSM2's
+        /// verdict flipped to SUCCEEDED) still fires there with the mapping in place.
+        @Test
+        void e09RuledVerdict_hidesFailedVsRolledBack_andTheO1ControlStillFires() {
+            var legacy = withVerdict(arm("legacy", false), AetherValue.DeploymentOutcomeStatus.FAILED);
+            var fsm2 = withVerdict(arm("fsm2", true), AetherValue.DeploymentOutcomeStatus.ROLLED_BACK);
+            var control = EquivalenceDivergentControl.of(fsm2, legacy, MONITOR);
+            var fsm2Divergences = EquivalenceComparison.compare(legacy, fsm2, MONITOR, "E09");
+            var controlDivergences = EquivalenceComparison.compare(legacy, control, MONITOR, "E09");
+
+            assertThat(fsm2Divergences).extracting(EquivalenceComparison.Divergence::family).doesNotContain("O1");
+            assertThat(controlDivergences).extracting(EquivalenceComparison.Divergence::family).contains("O1");
+            assertThat(EquivalenceDivergentControl.silentFamilies(fsm2Divergences, controlDivergences)).doesNotContain("O1");
+        }
+
+        /// The mapping is scoped: outside E-09 the same pair diverges, and on E-09 only the ruled pair is mapped (FSM2 SUCCEEDED vs LEGACY FAILED,
+        /// or ROLLED_BACK against a LEGACY SUCCEEDED, still diverge).
+        @Test
+        void e09RuledVerdict_appliesToE09AndToTheRuledPairOnly() {
+            var failed = withVerdict(arm("legacy", false), AetherValue.DeploymentOutcomeStatus.FAILED);
+            var succeeded = withVerdict(arm("legacy", false), AetherValue.DeploymentOutcomeStatus.SUCCEEDED);
+            var rolledBack = withVerdict(arm("fsm2", true), AetherValue.DeploymentOutcomeStatus.ROLLED_BACK);
+            var fsm2Succeeded = withVerdict(arm("fsm2", true), AetherValue.DeploymentOutcomeStatus.SUCCEEDED);
+
+            assertThat(EquivalenceComparison.compare(failed, rolledBack, MONITOR, "E01")).extracting(EquivalenceComparison.Divergence::family).contains("O1");
+            assertThat(EquivalenceComparison.compare(failed, rolledBack, MONITOR)).extracting(EquivalenceComparison.Divergence::family).contains("O1");
+            assertThat(EquivalenceComparison.compare(failed, fsm2Succeeded, MONITOR, "E09")).extracting(EquivalenceComparison.Divergence::family).contains("O1");
+            assertThat(EquivalenceComparison.compare(succeeded, rolledBack, MONITOR, "E09")).extracting(EquivalenceComparison.Divergence::family).contains("O1");
+        }
+
+        /// The E-09 O4 allow-list (CTO R2): a slot made only of rollback transitions is excluded on E-09; a slot that mixes one in with anything
+        /// else (the ROLLED_BACK terminal batch, which also promotes a goal) and every load-side transition stay counted; no other scenario excludes.
+        @Test
+        void e09RollbackAllowList_excludesPureRollbackSlotsOnly() {
+            var slots = Map.of(1L, List.of("SliceObservedKey put LOADING slice-observed/n1/a"),
+                               2L, List.of("SliceObservedKey put ACTIVE slice-observed/n1/a"),
+                               3L, List.of("SliceDesiredKey put UNLOADED slice-desired/n1/a",
+                                           "SliceDesiredKey put ACTIVE slice-desired/n1/b",
+                                           "DeploymentOutcomeKey put ROLLED_BACK deployment-outcome/x"),
+                               4L, List.of("SliceObservedKey put UNLOADING slice-observed/n1/a"),
+                               5L, List.of("SliceObservedKey put UNLOADED slice-observed/n1/a"),
+                               6L, List.of("SliceObservedKey remove - slice-observed/n1/a"),
+                               7L, List.of("SliceDesiredKey remove - slice-desired/n1/a"),
+                               8L, List.of("SliceTargetKey remove - slice-target/a", "SliceTargetKey remove - slice-target/b"),
+                               9L, List.of("SliceDesiredKey put UNLOADED slice-desired/n1/b", "SliceDesiredKey put UNLOADED slice-desired/n2/b"));
+
+            assertThat(EquivalenceComparison.o4Counted(slots, "E09")).isEqualTo(3L);
+            assertThat(EquivalenceComparison.o4Counted(slots, "E01")).isEqualTo(9L);
+            assertThat(EquivalenceComparison.o4Counted(slots, "")).isEqualTo(9L);
+        }
+
         private static Arm withVerdict(Arm arm, AetherValue.DeploymentOutcomeStatus status) {
             var kv = new HashMap<>(arm.quiescent().entries());
 
