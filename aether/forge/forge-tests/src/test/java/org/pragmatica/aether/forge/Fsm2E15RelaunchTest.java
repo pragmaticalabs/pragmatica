@@ -29,7 +29,9 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
@@ -82,10 +84,19 @@ class Fsm2E15RelaunchTest {
         var violations = new CopyOnWriteArrayList<String>();
 
         awaitTrue("C17b removed C's slice rows before the relaunch", WAIT, () -> rowsOf(victim).isEmpty());
-        log("relaunch -> " + cluster.relaunchNode(victim.id(), true).await());
+        var drained = cluster.exitCodeOf(victim.id());
+        // The start promise of a refused process never resolves (the node stops during its start; EmberSameIdentityRelaunchTest), so awaiting it
+        // only times out (dev11: the test's 10 min bound). The arm observes from the launch; the refusal's evidence is the relaunched process's
+        // own exit (a code other than the drain's) and a start that never completed.
+        var launch = cluster.relaunchNode(victim.id(), true);
+
         observe(victim, departed, violations);
         assertThat(violations).as("C's record stayed DEPARTED(e, p1) and none of C's rows was counted after the relaunch").isEmpty();
-        log("relaunched " + victim.id() + " exit code=" + cluster.exitCodeOf(victim.id()));
+        awaitTrue("the relaunched old-NodeId process exits (refused)", WAIT, () -> cluster.exitCodeOf(victim.id()).filter(code -> drained.filter(code::equals).isEmpty()).isPresent());
+        log("relaunched " + victim.id() + " exit code=" + cluster.exitCodeOf(victim.id()) + " (drain exit " + drained + ")");
+        assertThat(launch.await(TimeSpan.timeSpan(1).seconds()).fold(Cause::message, _ -> "launched"))
+            .as("the relaunched old-NodeId process never completes a start")
+            .isNotEqualTo("launched");
         awaitTrue("3 ACTIVE on the others", WAIT, () -> active() == 3);
     }
 
