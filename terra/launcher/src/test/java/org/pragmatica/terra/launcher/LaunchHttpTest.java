@@ -75,9 +75,21 @@ class LaunchHttpTest {
 
     /// A blank entry is refused by the shared AuthSchemes rule, as in Aether; it is not silently dropped.
     @Test void parse_jwtAuthSchemes_blankEntry_failsTheLaunch() {
-        for (var line : List.of("auth_schemes = [\"Bearer\", \"\"]\n", "auth_schemes = [\"Bearer\", \" \"]\n", "auth_schemes = \"Bearer,,Token\"\n")) {
+        for (var line : List.of("auth_schemes = [\"Bearer\", \"\"]\n", "auth_schemes = [\"Bearer\", \" \"]\n", "auth_schemes = \"Bearer,,Token\"\n", "auth_schemes = \"Bearer,\"\n")) {
             assertThat(jwtLaunch(line).isFailure()).as(line).isTrue();
         }
+    }
+
+    /// A list written with spaces around its entries ("Bearer , Token") names the same schemes as one without.
+    @Test void parse_jwtAuthSchemes_paddedEntries_areTrimmed() {
+        var settings = ConfigurationProvider.builder()
+                                            .withDefaults(Map.of("http.security_mode", "jwt",
+                                                                 "jwt.jwks_url", "https://auth.example.com/.well-known/jwks.json",
+                                                                 "jwt.auth_schemes", "[ Bearer ,  Token ]"))
+                                            .build();
+        var auth = LaunchHttp.launchHttp(Path.of("."), settings).unwrap().authenticator().apply();
+
+        assertThat(refusal(auth, "Token not-a-jwt")).isInstanceOf(SecurityError.InvalidCredentials.class);
     }
 
     private static void assertLaunchRefused(Result<LaunchHttp> launch, String line, String reason) {
