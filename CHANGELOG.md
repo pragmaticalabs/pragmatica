@@ -6,9 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc5] - Unreleased
 
-### Fixed (2026-11-08 — #2889 pg-codegen: a nullable query output mapped to a non-Option field fails the build)
-- **BREAKING: a `@Query` output not proven non-null that is read into a non-`Option` record component or a scalar/`@Jsonb` result is now a build error** (it used to read `NULL` as `""`/0 or fail at runtime). The error names the method, output, reason and fix (`COALESCE(..., <default>)` or `Option<T>`). Nullability is computed per output expression from the parse tree, not from column metadata (outer joins, `max`/`min`/`sum` over empty groups, `CASE` without `ELSE`, `NULLIF`, empty scalar subqueries, nullable set-operation branches). Proven non-null: `NOT NULL` columns of the FROM root and inner-joined tables, `count(..)`, literals, `COALESCE` with a proven last argument, casts/parentheses over those. `Option<T>` on a proven output gets no warning. Scalar outputs are read non-nullably, so `Promise<Option<T>>` does not permit NULL. CRUD-generated methods are not analysed. An internal failure while analysing a method is now a build error naming the method and its SQL instead of a processor crash. `[mechanism: OutputNullability in pg-schema, check in QueryAnnotationProcessor.validateOutputNullability]`
-
 ## [1.0.0-rc4] - 2026-10-17
 
 ### Fixed (2026-10-17 — disruption-budget suite mistook the slice-floor 409 for the quorum budget)
