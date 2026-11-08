@@ -629,7 +629,8 @@ final class DefaultReplicationManager implements ReplicationManager {
         sendUntilWritten(replica, message, remaining, deadlineNanos, nextBackoff(backoff));
     }
 
-    private static TimeSpan nextBackoff(TimeSpan backoff) {
+    /// Doubles `backoff`, capped at [#MAX_RESEND_BACKOFF]; also the replica's ack re-send schedule (#2847).
+    static TimeSpan nextBackoff(TimeSpan backoff) {
         return TimeSpan.timeSpan(Math.min(backoff.nanos() * 2, MAX_RESEND_BACKOFF.nanos())).nanos();
     }
 
