@@ -23,6 +23,8 @@ import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
@@ -170,6 +172,25 @@ class RollbackNoPromotionTest {
         Outbox.settle(m, SurvivorPinSupport.ctx(1_000L, 0L), new ClusterInput.WriteSettled("c1", 1L, new Settlement.Refused(Option.some(leader), Map.of())));
 
         return m.auditDue;
+    }
+
+    // Red when: a target with no owning blueprint (a direct deployment) or no target at all counts as owner-removed (`.or(false)` weakened
+    // to `.or(true)`), or an owner still present counts as removed.
+    @Test
+    void ownerRemoved_onlyWhenTheNamedOwnerIsGone() {
+        var m = new ClusterModel();
+        var owner = blueprintId(APP);
+
+        assertThat(Blueprints.ownerRemoved(m, BILLING)).as("no target").isFalse();
+
+        Indexer.indexTarget(m, new SliceTargetKey(BILLING.base()), SliceTargetValue.sliceTargetValue(BILLING.version(), 3));
+        assertThat(Blueprints.ownerRemoved(m, BILLING)).as("target without an owning blueprint").isFalse();
+
+        Indexer.indexTarget(m, new SliceTargetKey(BILLING.base()), SliceTargetValue.sliceTargetValue(BILLING.version(), 3, Option.some(owner)));
+        assertThat(Blueprints.ownerRemoved(m, BILLING)).as("owner absent from the mirror").isTrue();
+
+        Indexer.indexBlueprint(m, owner, BLUEPRINT);
+        assertThat(Blueprints.ownerRemoved(m, BILLING)).as("owner present").isFalse();
     }
 
     // Pins the gate's reach (#2864): a blueprint that does not declare the rolled-back artifacts, deployed while the rollback is in
