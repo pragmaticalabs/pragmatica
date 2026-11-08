@@ -6619,13 +6619,14 @@ Default: `10MB` (10,485,760 bytes). This is the default body limit of every rout
 
 ```toml
 [app-http]
-read_timeout = "60s"     # Default: 60s. Zero disables.
+read_timeout = "60s"     # Default: 60s. Zero disables the idle clock (see the abort-wait floor below).
 min_body_rate = "1KB"    # Bytes per second. Default: 1KB. Zero disables.
 ```
 
 Both bounds apply the same way over HTTP/1.1 and HTTP/3.
 
 - `read_timeout` is an idle bound: a request that receives no body byte for this long is refused. Over HTTP/1.1, a connection that is silent for this long while no response is pending (a stalled body, an idle keep-alive connection) is closed. Over HTTP/3, a request stream whose body is silent this long receives `408 Request Timeout` and its input is reset. Upgraded WebSocket connections are exempt.
+- A zero `read_timeout` disables the idle clock only. When the server ends a streamed request while the upload sink is still working on a chunk, it waits for that chunk for at most `read_timeout`, or 30 s when `read_timeout` is zero: the abort deadline keeps a 30 s floor, so a hung sink never holds the request's admission forever.
 - `min_body_rate` bounds a client that trickles just inside the idle bound. After a 10 s grace from the start of the request, the body's bytes are averaged over each 10 s window. A body arriving below the rate is refused: over HTTP/1.1 the connection is closed, and over HTTP/3 the request receives `408` and its stream input is reset. A slow upload above the rate completes however long it takes.
 
 #### Request trailers
