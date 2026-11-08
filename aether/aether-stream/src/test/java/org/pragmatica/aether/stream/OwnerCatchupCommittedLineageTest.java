@@ -1,0 +1,161 @@
+package org.pragmatica.aether.stream;
+
+import java.util.List;
+import java.util.stream.LongStream;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.ConsistencyMode;
+import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.StreamCompression;
+import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart;
+import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
+import org.pragmatica.aether.stream.replication.BackfillError;
+import org.pragmatica.aether.stream.replication.PartitionBackfill;
+import org.pragmatica.aether.stream.replication.ReplicaRegistry;
+import org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupResponse;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
+
+/// #1759, CTO ruling D1: a replica serving catch-up from its WAL ships what it holds, vouched by its OWN history, a deposed
+/// epoch's tail included. The RECEIVER -- the activating owner -- clips the page against the committed epoch starts by 6a's
+/// min-over-history rule, with its own pending epoch treated as not started: for each recorded epoch it takes records only
+/// up to the lowest committed start of a later epoch, and never installs a re-assigned prior-epoch prefix.
+///
+/// The source serves offsets 0..12; the activating owner holds nothing and catches up through the real backfill
+/// ([PartitionBackfill#catchUpOwnerFrom]) into a real partition manager.
+class OwnerCatchupCommittedLineageTest {
+    private static final NodeId SELF = NodeId.randomNodeId();
+    private static final NodeId SOURCE = NodeId.randomNodeId();
+    private static final Epoch E1 = Epoch.epoch(0, 1, 0);
+    private static final Epoch E2 = Epoch.epoch(0, 2, 0);
+    private static final Epoch E3 = Epoch.epoch(0, 3, 0);
+    private static final Epoch E4 = Epoch.epoch(0, 4, 0);
+    private static final long SOURCE_TAIL = 12L;
+
+    private StreamPartitionManager owner;
+
+    @BeforeEach
+    void startTheActivatingOwner() {
+        owner = streamPartitionManager();
+        owner.createStream(config()).onFailure(cause -> fail(cause.message()));
+    }
+
+    @AfterEach
+    void stop() {
+        owner.close();
+    }
+
+    /// The ruling's case: the replica holds E1's records 11-12, which the committed E3 @ 11 re-assigned. It serves them; the
+    /// owner installs 0..10 and not 11-12, and the activation's catch-up is short of the source's tail.
+    @Test
+    void catchUpOwnerFrom_aReplicaHoldingE1PastACommittedE3Start_servesThem_andTheOwnerDoesNotInstallThem() {
+        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
+
+        var outcome = catchUpFrom(List.of(ProvenanceEntry.provenanceEntry(E1, 0)));
+
+        assertThat(outcome).isEqualTo(Option.some(BackfillError.General.INCOMPLETE_BACKFILL));
+        assertThat(head()).as("installed through the committed re-assignment, not past it").isEqualTo(10L);
+    }
+
+    /// Control: a source whose history follows the committed lineage (its 11-12 are E3's) is installed whole.
+    @Test
+    void catchUpOwnerFrom_aSourceFollowingTheCommittedLineage_isInstalledWhole() {
+        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
+
+        var outcome = catchUpFrom(List.of(ProvenanceEntry.provenanceEntry(E1, 0), ProvenanceEntry.provenanceEntry(E3, 11)));
+
+        assertThat(outcome).isEqualTo(Option.none());
+        assertThat(head()).isEqualTo(SOURCE_TAIL);
+    }
+
+    /// The activating owner's own epoch is pending -- its start is committed only after this catch-up -- and is not
+    /// started: the records of the epoch it succeeds are what it catches up on, whole.
+    @Test
+    void catchUpOwnerFrom_withTheOwnersEpochPending_installsThePriorEpochsRecordsWhole() {
+        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L)));
+
+        var outcome = catchUpFrom(List.of(ProvenanceEntry.provenanceEntry(E1, 0)));
+
+        assertThat(outcome).isEqualTo(Option.none());
+        assertThat(head()).isEqualTo(SOURCE_TAIL);
+    }
+
+    @Test
+    void reassignedFrom_isJudgedOnEveryRecordedEpoch_byTheLowestLaterCommittedStart() {
+        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L), new EpochStart(E4, 9L)));
+
+        assertThat(owner.reassignedFrom("s", 0, 0, 12, List.of(ProvenanceEntry.provenanceEntry(E1, 0))))
+            .as("the lowest later start, not the first after E1").isEqualTo(Option.some(9L));
+        assertThat(owner.reassignedFrom("s", 0, 11, 12, List.of(ProvenanceEntry.provenanceEntry(E1, 0))))
+            .as("a page wholly re-assigned").isEqualTo(Option.some(9L));
+        assertThat(owner.reassignedFrom("s", 0, 0, 12, List.of(ProvenanceEntry.provenanceEntry(E1, 0),
+                                                               ProvenanceEntry.provenanceEntry(E4, 9))))
+            .as("E1 ends where E4 begins").isEqualTo(Option.none());
+    }
+
+    @Test
+    void reassignedFrom_ofARangeEndingBeforeThePage_orAnEmptySlice_isNone() {
+        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E2, 3L), new EpochStart(E3, 11L)));
+
+        assertThat(owner.reassignedFrom("s", 0, 6, 12, List.of(ProvenanceEntry.provenanceEntry(E1, 0),
+                                                               ProvenanceEntry.provenanceEntry(E2, 5),
+                                                               ProvenanceEntry.provenanceEntry(E3, 11))))
+            .as("E1's re-assigned 3-4 lie below the page").isEqualTo(Option.none());
+        assertThat(owner.reassignedFrom("s", 0, 0, 12, List.of())).isEqualTo(Option.none());
+    }
+
+    private Option<Object> catchUpFrom(List<ProvenanceEntry> history) {
+        var registry = ReplicaRegistry.replicaRegistry();
+
+        registry.registerReplica("s", 0, SELF);
+        registry.registerReplica("s", 0, SOURCE);
+
+        var backfill = PartitionBackfill.partitionBackfill(registry,
+                                                           owner.alignedRecovery(),
+                                                           (_, request) -> Promise.success(served(request.fromOffset(), history)),
+                                                           SELF);
+
+        return backfill.catchUpOwnerFrom("s", 0, SOURCE, SOURCE_TAIL)
+                       .await()
+                       .fold(cause -> Option.<Object>some(cause), _ -> Option.<Object>none());
+    }
+
+    private long head() {
+        return owner.partitionBuffer("s", 0).map(OffHeapRingBuffer::headOffset).or(-1L);
+    }
+
+    private static CatchupResponse served(long from, List<ProvenanceEntry> history) {
+        var offsets = LongStream.rangeClosed(from, SOURCE_TAIL).boxed().toList();
+
+        return CatchupResponse.catchupResponse(SOURCE,
+                                               "s",
+                                               0,
+                                               from,
+                                               SOURCE_TAIL,
+                                               offsets.stream().map(offset -> ("e" + offset).getBytes()).toList(),
+                                               offsets.stream().map(offset -> 1000L + offset).toList(),
+                                               history);
+    }
+
+    private static StreamConfig config() {
+        return StreamConfig.streamConfig("s",
+                                         1,
+                                         RetentionPolicy.retentionPolicy(100, 64 * 1024L, 3_600_000L),
+                                         "latest",
+                                         1_048_576L,
+                                         ConsistencyMode.EVENTUAL,
+                                         1,
+                                         1,
+                                         StreamCompression.NONE,
+                                         Option.none());
+    }
+}
