@@ -728,6 +728,31 @@ class SliceProcessorTest {
         assertThat(generatedRoutes(classes)).contains("case Denied _ -> HttpError.httpError(HttpStatus.NOT_FOUND, cause);");
     }
 
+    @Test
+    void errorsExplicit_simpleAndQualifiedKeyForOneType_qualifiedKeyDecides(@TempDir Path classes) throws IOException {
+        compileWithToml(classes,
+                        errorPackagesToml("packages = [\"shared.one\"]\n\n[errors.explicit]\nDenied = 404\n\"shared.one.OneError.Denied\" = 403"),
+                        ERRORS_METHOD,
+                        List.of(causeIn("shared.one", "OneError", "Denied")));
+
+        assertThat(generatedRoutes(classes)).contains("case Denied _ -> HttpError.httpError(HttpStatus.FORBIDDEN, cause);");
+    }
+
+    @Test
+    void errorsExplicit_twoAmbiguousKeys_reportOneMessagePerKeySortedAndNewlineJoined(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithToml(classes,
+                                          errorPackagesToml(TWO_DENIED_PACKAGES + "Zeta = 404\nDenied = 404\nAlpha = 404\nMid = 404\nBeta = 404"),
+                                          ERRORS_METHOD,
+                                          List.of(causeIn("shared.one", "OneError", "Alpha", "Beta", "Denied", "Mid", "Zeta"),
+                                                  causeIn("shared.two", "TwoError", "Alpha", "Beta", "Denied", "Mid", "Zeta")));
+
+        var keys = List.of("Alpha", "Beta", "Denied", "Mid", "Zeta");
+        var positions = keys.stream().map(key -> diagnostics.indexOf("Ambiguous explicit error mapping '" + key + "'")).toList();
+
+        assertThat(positions).isSorted().doesNotContain(-1);
+        assertThat(diagnostics).contains("upload/routes.toml.\nAmbiguous explicit error mapping 'Beta'");
+    }
+
     private String compileWithRoutes(Path classes, String route, String method) throws IOException {
         return compileWithRoutes(classes, route, method, List.of());
     }
