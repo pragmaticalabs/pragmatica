@@ -36,6 +36,10 @@ import static org.pragmatica.lang.Unit.unit;
 ///
 /// The first bound a body breaks is reported once, through `onRefuse`, and the guard then stops. [#stop] ends the guard
 /// and releases the permit; it is idempotent.
+///
+/// **Server holds are not client time.** While the server itself holds reading off to wait for a streamed body's sink
+/// ([#hold] until [#resume]), the idle bound is not armed and the rate check's clock stops ([BodyRateGuard#hold]): the
+/// client cannot send, so neither bound may blame it. The whole-body duration keeps running.
 final class BodyGuard {
     /// Which bound a body broke.
     enum Refusal {
@@ -53,6 +57,7 @@ final class BodyGuard {
     private final BodyRateGuard rateGuard;
     private long received;
     private boolean stopped;
+    private boolean held;
     private Option<ScheduledFuture<?>> idleTimer = none();
     private Option<ScheduledFuture<?>> durationTimer = none();
 
@@ -119,6 +124,31 @@ final class BodyGuard {
         return true;
     }
 
+    /// The server stopped reading the body to wait for its sink: the idle bound is disarmed and the rate check's clock
+    /// stops until [#resume]. Idempotent.
+    Unit hold() {
+        if (!held && !stopped) {
+            held = true;
+            idleTimer.onPresent(timer -> timer.cancel(false));
+            idleTimer = none();
+            rateGuard.hold();
+        }
+
+        return unit();
+    }
+
+    /// The server reads the body again: the idle bound is re-armed from now and the rate check's clock runs on.
+    /// Idempotent.
+    Unit resume() {
+        if (held && !stopped) {
+            held = false;
+            armIdle();
+            rateGuard.resume();
+        }
+
+        return unit();
+    }
+
     /// The body is complete or the request is over: no further check, and the permit is returned.
     Unit stop() {
         if (!stopped) {
@@ -136,7 +166,7 @@ final class BodyGuard {
 
     private void armIdle() {
         idleTimer.onPresent(timer -> timer.cancel(false));
-        idleTimer = !stopped && idle.nanos() > 0
+        idleTimer = !stopped && !held && idle.nanos() > 0
                     ? some(executor.schedule(() -> refuse(Refusal.IDLE), idle.nanos(), TimeUnit.NANOSECONDS))
                     : none();
     }

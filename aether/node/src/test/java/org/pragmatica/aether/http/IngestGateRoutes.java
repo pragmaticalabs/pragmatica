@@ -50,15 +50,21 @@ import static org.pragmatica.lang.Unit.unit;
 import org.pragmatica.net.tcp.TlsConfig;
 
 /// Routes, each with its declared ingest limits, all behind an API key:
-/// `/api/small/` 1 MiB; `/api/big/` 100 MiB; `/api/undeclared/` none; `/api/upload/` an upload route;
+/// `/api/small/` 1 MiB; `/api/big/` 100 MiB; `/api/undeclared/` none; `/api/openupload/` an upload route that declares no body limit; `/api/upload/` an upload route;
 /// `/api/timed/` an upload route with `max_duration = 1500 ms`; `/api/files/` `max_files = 2`; `/api/filesize/`
 /// `max_file_size = 100`; `/api/fields/` `max_fields = 2`; `/api/fieldsize/` `max_field_size = 10` (each an upload route); `/api/huge/` an upload route declaring 4 GiB; `/upload/` 1 MiB, for tests that post to it; `/api/admin/` requires the role `admin`.
-record IngestGateRoutes(SliceRouter router, SecurityPolicy security) implements HttpRoutePublisher {
+record IngestGateRoutes(SliceRouter router, SecurityPolicy security, Map<String, UploadSpec> specs) implements HttpRoutePublisher {
+    /// The routes listed above.
+    IngestGateRoutes(SliceRouter router, SecurityPolicy security) {
+        this(router, security, SPECS);
+    }
+
     private static final int MIB = 1024 * 1024;
     private static final Artifact ARTIFACT = Artifact.artifact("com.example:svc:1.0.0").unwrap();
     private static final Map<String, UploadSpec> SPECS = Map.ofEntries(Map.entry("/api/small/", UploadSpec.uploadSpec(false, MIB, 0)),
                                                                        Map.entry("/api/big/", UploadSpec.uploadSpec(false, 100L * MIB, 0)),
                                                                        Map.entry("/api/undeclared/", UploadSpec.NONE),
+                                                                       Map.entry("/api/openupload/", UploadSpec.uploadSpec(true, 0, 0)),
                                                                        Map.entry("/api/upload/", UploadSpec.uploadSpec(true, 100L * MIB, 0)),
                                                                        Map.entry("/api/timed/", UploadSpec.uploadSpec(true, 100L * MIB, 1500)),
                                                                        Map.entry("/upload/", UploadSpec.uploadSpec(false, MIB, 0)),
@@ -72,7 +78,7 @@ record IngestGateRoutes(SliceRouter router, SecurityPolicy security) implements 
 
     private Option<LocalRouteInfo> routeFor(String method, String path) {
         return "POST".equalsIgnoreCase(method)
-               ? SPECS.entrySet()
+               ? specs.entrySet()
                       .stream()
                       .filter(entry -> path.startsWith(entry.getKey()))
                       .findFirst()
