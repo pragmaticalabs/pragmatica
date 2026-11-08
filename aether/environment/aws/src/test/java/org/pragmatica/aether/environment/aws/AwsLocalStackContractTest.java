@@ -81,6 +81,7 @@ class AwsLocalStackContractTest {
     private static final String REGION = "us-east-1";
     private static final String INSTANCE_SIZE = "t3.micro";
     private static final String FALLBACK_AMI = "ami-1234567890abcdef0";
+    private static final int STARTUP_ATTEMPTS = 3;
     private static final TimeSpan TEST_AWAIT = timeSpan(90).seconds();
 
     private static LocalStackContainer localstack;
@@ -95,10 +96,13 @@ class AwsLocalStackContractTest {
         if (!dockerAvailable()) {
             return;
         }
-        localstack = new LocalStackContainer(LOCALSTACK_IMAGE).withEnv("SERVICES", "ec2,elbv2,secretsmanager");
-        localstack.start();
+        localstack = ContainerStartup.startWithRetry(AwsLocalStackContractTest::newLocalStack, STARTUP_ATTEMPTS);
         client = AwsClient.awsClient(localStackConfig());
         prepareNetwork();
+    }
+
+    private static LocalStackContainer newLocalStack() {
+        return new LocalStackContainer(LOCALSTACK_IMAGE).withEnv("SERVICES", "ec2,elbv2,secretsmanager");
     }
 
     @BeforeEach
