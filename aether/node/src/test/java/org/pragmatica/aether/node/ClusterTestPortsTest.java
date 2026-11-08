@@ -24,6 +24,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.IntSupplier;
 import java.util.stream.Stream;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -42,7 +43,13 @@ class ClusterTestPortsTest {
     /// call is also how tests deliberately HOLD a taken port, so no text pattern separates the two without false
     /// positives; telling them apart needs data flow (the port came from a closed socket), which this scan cannot see.
     private static final java.util.regex.Pattern RESERVES = java.util.regex.Pattern.compile("ServerSocket\\(\\s*0|ServerSocketChannel|\\.bind\\(\\s*new (?:java\\.net\\.)?InetSocketAddress\\([^()]*(?:\\([^()]*\\))?[^()]*\\b0\\s*\\)\\s*\\)");
+    private final List<int[]> reservations = new ArrayList<>();
     private static final String TCP_ONLY_MANAGEMENT_TEST = "ManagementServerDhtCatchUpGaugeTest.java";
+
+    @AfterEach
+    void dropLeftoverReservations() {
+        reservations.forEach(ClusterTestPorts::unreserve);
+    }
 
     @Test
     void issuedPort_hasFreeClusterUdpTcpAndSwimUdp() {
@@ -116,7 +123,7 @@ class ClusterTestPortsTest {
     /// socket closes, the SAME candidate is accepted, so the refusal came from the occupation and nothing else.
     @Test
     void freeClusterPort_skipsACandidateWhoseClusterUdpIsHeld_andAcceptsItOnceReleased() throws IOException {
-        var taken = occupiableClusterCandidate();
+        var taken = occupiableClusterCandidate(true);
 
         try (var held = new DatagramSocket(new InetSocketAddress(taken))) {
             var got = ClusterTestPorts.freeClusterPort(offering(taken));
@@ -128,7 +135,7 @@ class ClusterTestPortsTest {
 
     @Test
     void freeClusterPort_skipsACandidateWhoseSwimUdpIsHeld_andAcceptsItOnceReleased() throws IOException {
-        var taken = occupiableClusterCandidate();
+        var taken = occupiableClusterCandidate(true);
 
         try (var held = new DatagramSocket(new InetSocketAddress(taken + SWIM))) {
             assertThat(ClusterTestPorts.freeClusterPort(offering(taken))).as("SWIM UDP held").isNotEqualTo(taken);
@@ -139,7 +146,7 @@ class ClusterTestPortsTest {
     /// The both-protocol helper must skip a candidate whose TCP side is taken, and one whose UDP side is taken.
     @Test
     void freeTcpAndUdpPort_skipsACandidateWithTcpTaken() throws IOException {
-        var taken = occupiableClusterCandidate();
+        var taken = occupiableClusterCandidate(false);
 
         try (var held = new ServerSocket()) {
             held.bind(new InetSocketAddress(taken));
@@ -150,7 +157,7 @@ class ClusterTestPortsTest {
 
     @Test
     void freeTcpAndUdpPort_skipsACandidateWithUdpTaken() throws IOException {
-        var taken = occupiableClusterCandidate();
+        var taken = occupiableClusterCandidate(false);
 
         try (var held = new DatagramSocket(new InetSocketAddress(taken))) {
             assertThat(ClusterTestPorts.freeTcpAndUdpPort(offering(taken))).as("UDP held").isNotEqualTo(taken);
@@ -260,16 +267,21 @@ class ClusterTestPortsTest {
         }
     }
 
-    /// A window port free right now on cluster UDP, cluster TCP and SWIM UDP and NOT held by this JVM: a test occupies
-    /// it. A port this JVM already holds would be refused for that reason, and the released-port control would then fail
-    /// (seen on cloudbb-d1 in the full suite, where earlier tests had issued hundreds of ports).
-    private static int occupiableClusterCandidate() {
+    /// A window port free right now on cluster UDP, cluster TCP and SWIM UDP and NOT held by this JVM: a test occupies it.
+    /// #2902: the cross-JVM lock on it (and on its SWIM port, when `withSwim`) is taken first and kept through the whole test, so
+    /// no other allocator can issue it between the probe and the control "released, accepted again" (the allocation attempt adopts
+    /// the reservation, see [ClusterTestPorts#reserve]). A port another JVM holds is simply not chosen.
+    private int occupiableClusterCandidate(boolean withSwim) {
         for (int attempt = 0; attempt < 200; attempt++) {
             var port = ClusterTestPorts.windowCandidate();
+            var ports = withSwim ? new int[] {port, port + SWIM} : new int[] {port};
 
-            if (ClusterTestPorts.WINDOW.contains(port + SWIM) && !ClusterTestPorts.heldHere(port)
-                && !ClusterTestPorts.heldHere(port + SWIM) && ClusterTestPorts.isFreeClusterPort(port)) {
-                return port;
+            if (ClusterTestPorts.WINDOW.contains(port + SWIM) && ClusterTestPorts.reserve(ports)) {
+                if (ClusterTestPorts.isFreeClusterPort(port)) {
+                    reservations.add(ports);
+                    return port;
+                }
+                ClusterTestPorts.unreserve(ports);
             }
         }
         throw new IllegalStateException("no free window port to occupy");
