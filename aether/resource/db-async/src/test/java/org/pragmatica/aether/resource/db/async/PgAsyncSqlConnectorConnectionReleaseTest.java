@@ -17,6 +17,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -42,13 +43,25 @@ class PgAsyncSqlConnectorConnectionReleaseTest {
     private static final Cause BODY_FAILED = Causes.cause("body failed (injected by the test)");
     private static final String INSERT_UNIQUE = "INSERT INTO release_probe(id) VALUES (?)";
     private static PostgreSQLContainer<?> postgres;
-    private static AsyncSqlConnector connector;
+    private AsyncSqlConnector connector;
 
     @BeforeAll
     static void startPostgres() {
         assumeTrue(DockerRequirement.dockerAvailable(), "Docker is required for the live-PostgreSQL pin");
         postgres = new PostgreSQLContainer<>("postgres:16");
         postgres.start();
+    }
+
+    @AfterAll
+    static void stopPostgres() {
+        if (postgres != null) {
+            postgres.stop();
+        }
+    }
+
+    /// A pool per test: a leak in one test must starve only that test's own pool, not its successors'.
+    @BeforeEach
+    void freshPoolAndTables() {
         var pool = PoolConfig.poolConfigBuilder().withMinConnections(0).withMaxConnections(POOL_SIZE).build().unwrap();
         var config = databaseConnectorConfigBuilder().withName("release")
                                                      .withAsyncUrl("postgresql://" + postgres.getHost() + ":" + postgres.getMappedPort(5432) + "/" + postgres.getDatabaseName())
@@ -59,20 +72,6 @@ class PgAsyncSqlConnectorConnectionReleaseTest {
                                                      .unwrap();
 
         connector = (AsyncSqlConnector) new AsyncSqlConnectorFactory().provision(config).await().unwrap();
-    }
-
-    @AfterAll
-    static void stopPostgres() {
-        if (connector != null) {
-            connector.stop().await();
-        }
-        if (postgres != null) {
-            postgres.stop();
-        }
-    }
-
-    @BeforeEach
-    void freshTable() {
         connector.update("DROP TABLE IF EXISTS release_probe").await(timeSpan(10).seconds()).unwrap();
         connector.update("CREATE TABLE release_probe(id INT PRIMARY KEY)").await(timeSpan(10).seconds()).unwrap();
         connector.update("DROP TABLE IF EXISTS release_deferred").await(timeSpan(10).seconds()).unwrap();
@@ -81,11 +80,17 @@ class PgAsyncSqlConnectorConnectionReleaseTest {
                  .unwrap();
     }
 
+    /// A pool that leaked never finishes closing, so the stop is bounded and its outcome is not the test's verdict.
+    @AfterEach
+    void abandonPool() {
+        connector.stop().await(timeSpan(2).seconds());
+    }
+
     private static <T> List<Result<T>> runAll(Supplier<Promise<T>> operation) {
         var results = new ArrayList<Result<T>>();
 
         for (int i = 0; i < OPERATIONS; i++) {
-            results.add(operation.get().await(timeSpan(5).seconds()));
+            results.add(operation.get().await(timeSpan(3).seconds()));
         }
 
         return results;
@@ -101,7 +106,7 @@ class PgAsyncSqlConnectorConnectionReleaseTest {
                            .allSatisfy(result -> result.onFailure(cause -> assertThat(cause.message()).contains(message)));
     }
 
-    private static void assertPoolStillServes() {
+    private void assertPoolStillServes() {
         var count = connector.queryOne("SELECT 1 AS n", COUNT).await(timeSpan(5).seconds());
 
         assertThat(count.isSuccess()).as("a plain query after the run: %s", count).isTrue();
