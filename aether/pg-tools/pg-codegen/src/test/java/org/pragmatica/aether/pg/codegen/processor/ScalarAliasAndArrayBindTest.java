@@ -113,6 +113,33 @@ class ScalarAliasAndArrayBindTest {
         }
     }
 
+    /// Generated CRUD `count` / `exists` SQL is unaliased by construction; its column is the one PostgreSQL names.
+    @Test
+    void crudCountAndExists_readThePostgresNamedColumn() throws Exception {
+        var result = TestCompilationHelper.compileWithProcessor("""
+            package test;
+
+            import org.pragmatica.aether.pg.codegen.annotation.Table;
+            import org.pragmatica.aether.resource.db.PgSql;
+            import org.pragmatica.lang.Promise;
+
+            record UserRow(long id, String name, String email, boolean active) {}
+
+            @PgSql
+            public interface UserCrud {
+                @Table(UserRow.class)
+                Promise<Long> countByActive(boolean active);
+
+                @Table(UserRow.class)
+                Promise<Boolean> existsByEmail(String email);
+            }
+            """, "test/UserCrud.java", tempDir);
+
+        assertThat(result.success()).as(result.diagnostics()).isTrue();
+        assertThat(result.generatedSource("test.UserCrudFactory")).contains("row.getLong(\"count\")")
+                                                                  .contains("row.getBoolean(\"exists\")");
+    }
+
     private String factory(String returnType, String sql) throws Exception {
         var result = compile(returnType, sql);
 
