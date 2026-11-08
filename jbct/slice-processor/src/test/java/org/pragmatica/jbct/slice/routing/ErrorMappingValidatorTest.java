@@ -220,7 +220,7 @@ class ErrorMappingValidatorTest {
 
         @Test
         void ambiguousExplicitMappings_flagsSimpleKeyMatchingTwoQualifiedNames() {
-            var issues = ErrorMappingValidator.ambiguousExplicitMappings(List.of(denied("a"), denied("b")),
+            var issues = ErrorMappingValidator.ambiguousExplicitMappings(List.of(denied("b"), denied("a")),
                                                                          config(Map.of(), Map.of("Denied", 404)),
                                                                          PATH);
 
@@ -240,6 +240,15 @@ class ErrorMappingValidatorTest {
 
             assertThat(qualified).isEmpty();
             assertThat(unique).isEmpty();
+        }
+
+        @Test
+        void ambiguousExplicitMappings_sameQualifiedNameTwice_isNotAmbiguous() {
+            var issues = ErrorMappingValidator.ambiguousExplicitMappings(List.of(denied("a"), denied("a")),
+                                                                         config(Map.of(), Map.of("Denied", 404)),
+                                                                         PATH);
+
+            assertThat(issues).isEmpty();
         }
 
         @Test
