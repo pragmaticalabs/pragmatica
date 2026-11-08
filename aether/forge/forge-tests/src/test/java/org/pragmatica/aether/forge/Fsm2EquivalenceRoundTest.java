@@ -21,8 +21,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
@@ -187,6 +189,8 @@ class Fsm2EquivalenceRoundTest {
 
             recorder.stop();
             var o4 = recorder.batches();
+
+            logSlots(engine, recorder.slotEffects());
             var kv = new EquivalenceKv(snapshot(cluster));
             var live = cluster.allNodes().stream().map(AetherNode::self).collect(Collectors.toUnmodifiableSet());
 
@@ -422,6 +426,7 @@ class Fsm2EquivalenceRoundTest {
         private final long startMs = System.currentTimeMillis();
         private final List<EquivalenceMonitor.Sample> samples = new CopyOnWriteArrayList<>();
         private final Set<Long> familySlots = new ConcurrentSkipListSet<>();
+        private final Map<Long, List<String>> slotEffects = new ConcurrentSkipListMap<>();
         private final Map<String, Long> nextSlot = Collections.synchronizedMap(new HashMap<>());
         private final Set<String> gaps = new ConcurrentSkipListSet<>();
         private final ScheduledExecutorService executor = Executors.newScheduledThreadPool(2);
@@ -464,6 +469,7 @@ class Fsm2EquivalenceRoundTest {
                         if (entry.slot() > last) {
                             if (touchesFamily(entry)) {
                                 familySlots.add(entry.slot());
+                                slotEffects.put(entry.slot(), familyEffects(entry));
                             }
                             last = entry.slot();
                         }
@@ -477,6 +483,11 @@ class Fsm2EquivalenceRoundTest {
 
         List<EquivalenceMonitor.Sample> samples() {
             return List.copyOf(samples);
+        }
+
+        /// Per counted slot, its O4-family effects (`Family op detail key`), in slot order: the batch attribution of R2 (#2763).
+        Map<Long, List<String>> slotEffects() {
+            return Map.copyOf(slotEffects);
         }
 
         /// A gap on one node is covered when another node read the same window; the count is void only when every node had one.
@@ -495,6 +506,52 @@ class Fsm2EquivalenceRoundTest {
             case KVCommand.LeaderTransaction<?, ?> transaction -> transaction.mutations().stream().anyMatch(mutation -> EquivalenceKv.inO4Family(mutation.key()));
             default -> false;
         });
+    }
+
+    /// The O4-family effects of one committed batch, each as `Family op detail key` (op = put / remove; detail = the value's state, goal or
+    /// status), the reading the per-family O4 attribution is built from.
+    static List<String> familyEffects(ReplicaEntry entry) {
+        return entry.effects().stream().<String>mapMulti((effect, sink) -> {
+            switch (effect) {
+                case KVCommand.Put<?, ?> put when EquivalenceKv.inO4Family(put.key()) -> sink.accept(describeEffect(put.key(), Option.some(put.value())));
+                case KVCommand.Remove<?> remove when EquivalenceKv.inO4Family(remove.key()) -> sink.accept(describeEffect(remove.key(), Option.none()));
+                case KVCommand.LeaderTransaction<?, ?> transaction -> transaction.mutations()
+                                                                                .stream()
+                                                                                .filter(mutation -> EquivalenceKv.inO4Family(mutation.key()))
+                                                                                .forEach(mutation -> sink.accept(describeEffect(mutation.key(), mutation.replacement())));
+                default -> {}
+            }
+        }).toList();
+    }
+
+    private static String describeEffect(Object key, Option<?> value) {
+        return key.getClass().getSimpleName() + value.map(present -> " put " + valueDetail(present)).or(" remove -") + " " + key;
+    }
+
+    private static String valueDetail(Object value) {
+        return switch (value) {
+            case AetherValue.SliceDesiredValue desired -> desired.goal().name();
+            case AetherValue.SliceObservedValue observed -> observed.state().name();
+            case AetherValue.NodeArtifactValue artifact -> artifact.state().name();
+            case AetherValue.DeploymentOutcomeValue outcome -> outcome.status().name();
+            case AetherValue.ArtifactJudgmentValue judgment -> judgment.permanentFailure() ? "permanent" : "retries=" + judgment.retries().size();
+            default -> value.getClass().getSimpleName();
+        };
+    }
+
+    /// Logs the O4 batches of one arm: the count per family signature (the families and ops one batch carries), then every slot.
+    private void logSlots(DeploymentEngine engine, Map<Long, List<String>> slots) {
+        var signatures = new TreeMap<String, Long>();
+
+        slots.values().forEach(effects -> signatures.merge(effects.stream().map(Fsm2EquivalenceRoundTest::signature).distinct().sorted().toList().toString(), 1L, Long::sum));
+        signatures.forEach((signature, count) -> log("O4 families (%s): %d x %s".formatted(engine, count, signature)));
+        new TreeMap<>(slots).forEach((slot, effects) -> log("O4 slot (%s) %d: %s".formatted(engine, slot, effects)));
+    }
+
+    private static String signature(String effect) {
+        var parts = effect.split(" ", 4);
+
+        return parts[0] + " " + parts[1] + " " + parts[2];
     }
 
     /// The scripted extra batch (design 9.5 O4 positive control): one leader transaction putting a control outcome key. Counted = exactly one
