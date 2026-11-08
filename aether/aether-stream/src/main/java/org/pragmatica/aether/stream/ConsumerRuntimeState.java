@@ -653,9 +653,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// exactly the late commit the #1961 arm refuses at consensus.
     private void loadCursorAndStart(ConsumerKey key, ConsumerState state) {
         cursorStore.onPresent(store -> awaitPendingDetaches(key, state).onResult(_ -> fetchCursorAndStart(store,
-                                                                                                           key,
-                                                                                                           state,
-                                                                                                           1)))
+                                                                                                          key,
+                                                                                                          state,
+                                                                                                          1)))
                    .onEmpty(() -> startConsumer(key, state));
     }
 
@@ -2025,7 +2025,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// the cursor before this event and then delivered it, so the successor delivered it again.
     private Promise<Unit> deliverSingleEvent(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
         return state.claimAdvance(event.offset())
-                    .fold(Promise::unitPromise, inFlight -> deliverClaimed(key, state, event, inFlight));
+                    .fold(Promise::unitPromise,
+                          inFlight -> deliverClaimed(key, state, event, inFlight));
     }
 
     private Promise<Unit> deliverClaimed(ConsumerKey key,
@@ -2172,8 +2173,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             return;
         }
 
-        state.claimAdvance(event.offset())
-             .onPresent(inFlight -> retryClaimed(key, state, event, inFlight));
+        state.claimAdvance(event.offset()).onPresent(inFlight -> retryClaimed(key, state, event, inFlight));
     }
 
     /// #1960 (F10): runs only under a slot claimed in one step with the cancel check, as [#deliverSingleEvent].
