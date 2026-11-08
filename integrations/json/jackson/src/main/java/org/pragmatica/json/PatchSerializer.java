@@ -27,6 +27,8 @@ import tools.jackson.databind.SerializationContext;
 import tools.jackson.databind.ValueSerializer;
 import tools.jackson.databind.jsontype.TypeSerializer;
 
+import java.util.stream.Stream;
+
 import static org.pragmatica.lang.Option.option;
 
 
@@ -53,10 +55,9 @@ public class PatchSerializer extends ValueSerializer<Patch<?>> {
 
     @Override
     public ValueSerializer<?> createContextual(SerializationContext prov, BeanProperty property) {
-        return option(property).map(BeanProperty::getType)
-                     .filter(PatchSerializer::hasSupportedElement)
+        return option(property).filter(PatchSerializer::isPatchRecordComponent)
                      .<ValueSerializer<?>> map(_ -> this)
-                     .or(() -> refused(prov, PatchDeserializer.POSITION));
+                     .or(() -> refused(prov, PatchDeserializer.reason(option(property))));
     }
 
     // Jackson's failure channel is an exception, which JsonMapper lifts into a Result whose message keeps the reason.
@@ -69,6 +70,21 @@ public class PatchSerializer extends ValueSerializer<Patch<?>> {
     // depth (List<List<Patch>>, Map<K, List<Patch>>, an Object holding a Patch), and its type is not a Patch, so it is
     // refused here, as PatchDeserializer refuses the type outright. Checked here because the value is written by its
     // runtime type: a Null or Absent inner Patch would otherwise never reach a serializer that could refuse it.
+    private static boolean isPatchRecordComponent(BeanProperty property) {
+        return hasSupportedElement(property.getType()) && isComponentOfItsRecord(property);
+    }
+
+    // A field or a getter of a plain class, or an extra getter of a record, is no component: refused as on read.
+    private static boolean isComponentOfItsRecord(BeanProperty property) {
+        return option(property.getMember()).filter(_ -> PatchDeserializer.isRecordMember(property))
+                     .map(member -> isComponentName(member.getDeclaringClass(), member.getName()))
+                     .or(false);
+    }
+
+    private static boolean isComponentName(Class<?> owner, String name) {
+        return Stream.of(owner.getRecordComponents()).anyMatch(component -> component.getName().equals(name));
+    }
+
     private static boolean hasSupportedElement(JavaType type) {
         return type.getRawClass() == Patch.class && hasPlainElement(type);
     }

@@ -92,6 +92,14 @@ public class OptionDeserializer extends ValueDeserializer<Option<?>> {
     private OptionDeserializer createContextualDeserializer(DeserializationContext ctxt,
                                                             BeanProperty property,
                                                             JavaType elementType) {
+        // A Patch anywhere in the element is refused here, when the type is first resolved: the lazily read
+        // container and Option elements below would otherwise refuse it only once a value shows up.
+        return PatchDeserializer.containsPatch(elementType)
+               ? PatchDeserializer.refused(ctxt, PatchDeserializer.reason(option(property)))
+               : withDelegate(ctxt, property, elementType);
+    }
+
+    private OptionDeserializer withDelegate(DeserializationContext ctxt, BeanProperty property, JavaType elementType) {
         // Two element shapes must NOT get a property-contextualized delegate, or contextualization
         // re-enters with the same property and recurses: a same-wrapper element (Option<Option<X>> —
         // forbidden in JBCT, but a crash is never the contract), and a container element
