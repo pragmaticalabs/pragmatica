@@ -322,8 +322,12 @@ class Fsm2EquivalenceRoundTest {
             out.putNextEntry(new ZipEntry("org/f4/broken/Nothing.txt"));
             out.write("not a slice".getBytes(StandardCharsets.UTF_8));
             out.closeEntry();
-            var target = Path.of(MavenLocalRepoLocator.findLocalRepository(), "org/f4/broken/unloadable/1.0.0/unloadable-1.0.0.jar");
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        var target = Path.of(MavenLocalRepoLocator.findLocalRepository(), "org/f4/broken/unloadable/1.0.0/unloadable-1.0.0.jar");
 
+        try {
             Files.createDirectories(target.getParent());
             Files.write(target, jar.toByteArray());
             log("installed unloadable jar at " + target);
@@ -511,19 +515,19 @@ class Fsm2EquivalenceRoundTest {
     }
 
     /// The monitor hook's control (CTO ruling on plan 3.3): each invariant's violation is committed into the LIVE store, read back through the
-    /// same snapshot path the recorder uses, and sampled every 250 ms and checked by a monitor with 250 ms bounds (an engine may clean a planted row within a tick); all four must trip. Runs after the arm's data is taken, so
+    /// same snapshot path the recorder uses, and sampled every 25 ms and checked by a monitor with zero bounds (FSM2 removes the ACTIVE row of a DEPARTED node within a few samples, so any longer bound can never trip); all four must trip. Runs after the arm's data is taken, so
     /// it contaminates no comparison; the rows are removed again. A miss is a silent control.
     private void monitorLiveControl(EmberCluster cluster, DeploymentEngine engine) {
         var node = leader(cluster);
         var rows = EquivalenceDivergentControl.livePlant();
-        var monitor = new EquivalenceMonitor(250L, 250L);
+        var monitor = new EquivalenceMonitor(0L, 0L);
         var samples = new ArrayList<EquivalenceMonitor.Sample>();
         var start = System.currentTimeMillis();
 
         rows.forEach((key, value) -> commit(node, key, Option.none(), Option.some(value)));
-        for (var index = 0; index < 32; index++) {
+        for (var index = 0; index < 320; index++) {
             samples.add(new EquivalenceMonitor.Sample(System.currentTimeMillis() - start, new EquivalenceKv(snapshot(cluster))));
-            sleep(250L);
+            sleep(25L);
         }
         rows.forEach((key, value) -> commit(node, key, Option.some(value), Option.none()));
         var tripped = monitor.check(samples).stream().map(EquivalenceMonitor.Violation::invariant).collect(Collectors.toCollection(TreeSet::new));
