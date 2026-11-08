@@ -93,6 +93,10 @@ class QuicActivityKickWiringTest {
         awaitTrue(() -> attempt.received().stream().anyMatch(probe -> probe.marker().equals("A" + PAD)),
                   RECOVERY_BOUND,
                   "the production kick recovered the stranded data A within " + RECOVERY_BOUND.millis() + " ms");
+        // #2920: recovery must be attributed to the lane-write kick. Other traffic reaching the stalled connection can
+        // re-arm netty's timer and deliver A without any kick; only a kick frame sent by the production wiring counts.
+        assertThat(attempt.connection().activityKicksSent()).as("the recovery came from a kick frame sent by the production wiring")
+                                                            .isGreaterThanOrEqualTo(1);
     }
 
     /// #2920: the stall is only reachable in a ~1/8 RTT window after B's ACK, so reaching it is a retried precondition
@@ -139,7 +143,7 @@ class QuicActivityKickWiringTest {
         if (reading != MISSED) {
             assertThat(received.stream().anyMatch(probe -> probe.marker().equals("A" + PAD))).as("A is not delivered by anything else").isFalse();
         }
-        return new Attempt(reading, received);
+        return new Attempt(reading, received, connection);
     }
 
     /// A watcher that never fired means the loss timer was never seen armed (the ACK was processed too late and
@@ -155,7 +159,7 @@ class QuicActivityKickWiringTest {
         }
     }
 
-    private record Attempt(QuicheStall.Reading reading, List<LaneProbe> received) {}
+    private record Attempt(QuicheStall.Reading reading, List<LaneProbe> received, QuicPeerConnection connection) {}
 
     /// With the real 1 s transport keepalive running, an idle link sends no kicks: the keepalive rides the
     /// CONTROL lane and must not hold the window open. v-2023 measured 9.79 kicks/s here before that fix.
