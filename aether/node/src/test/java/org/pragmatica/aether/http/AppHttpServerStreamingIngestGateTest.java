@@ -445,6 +445,17 @@ class AppHttpServerStreamingIngestGateTest extends AppHttpServerIngestGateTest {
         assertThat(((Disposition.Stream) huge).maxBytes()).isEqualTo(4L * 1024 * MIB);
     }
 
+    /// A route that declares no `max_body_bytes` takes the listener's `max_request_size`, not an unbounded or zero limit.
+    @Test
+    void streamedLimit_ofARouteDeclaringNone_isTheListenersMaxRequestSize() throws Exception {
+        start(Protocol.H1, defaults(), 10 * MIB);
+
+        var undeclared = classify(HttpMethod.POST, "/api/openupload/x", Option.some(KEY_A));
+
+        assertThat(undeclared).isInstanceOf(Disposition.Stream.class);
+        assertThat(((Disposition.Stream) undeclared).maxBytes()).isEqualTo(10L * MIB);
+    }
+
     /// The ceiling caps a route that declares more: the 4 GiB route streams under the default 256 MiB ceiling.
     @Test
     void streamedLimit_aboveTheCeiling_isTheCeiling() throws Exception {

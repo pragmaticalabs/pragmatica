@@ -89,6 +89,23 @@ class AppHttpServerForwardByReferenceTest {
         assertThat(outcome.catalogDelta()).as("kept: %s", outcome).isEqualTo(1);
     }
 
+    /// Two slices on B serve the route: the ingress stores in the namespace of the first, in coordinate order, so the choice
+    /// does not depend on the order the route table lists them.
+    @Test
+    void upload_forARouteTwoSlicesPublish_isStoredInTheNamespaceOfTheFirstInCoordinateOrder() throws Exception {
+        var outcome = ForwardByReferenceScenario.run(2 * MIB, ForwardByReferenceScenario.Fault.TWO_PUBLISHERS);
+
+        assertThat(outcome.status()).as("%s", outcome).isEqualTo(200);
+        assertThat(outcome.handleNamespace()).as("%s", outcome).isEqualTo("com.example.aaa");
+    }
+
+    @Test
+    void upload_forARouteOneSlicePublishes_isStoredInThatSlicesNamespace() throws Exception {
+        var outcome = ForwardByReferenceScenario.run(2 * MIB);
+
+        assertThat(outcome.handleNamespace()).as("%s", outcome).isEqualTo("com.example.svc");
+    }
+
     @Test
     void oneGiBUpload_forwardedByReference_underA256MiBHeap_inAChildJvm() throws Exception {
         var size = 1024 * MIB;

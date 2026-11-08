@@ -77,6 +77,8 @@ final class ForwardByReferenceScenario {
     static final NodeId NODE_A = NodeId.nodeId("u2-ingress-a").unwrap();
     static final NodeId NODE_B = NodeId.nodeId("u2-serving-b").unwrap();
     private static final Artifact ARTIFACT = Artifact.artifact("com.example:svc:1.0.0").unwrap();
+    /// Sorts before [#ARTIFACT]: a second slice on node B that serves the same route (see [Fault#TWO_PUBLISHERS]).
+    private static final Artifact EARLIER_ARTIFACT = Artifact.artifact("com.example:aaa:1.0.0").unwrap();
     private static final long GIB = 1024L * 1024 * 1024;
     private static final TimeSpan WAIT = TimeSpan.timeSpan(60).seconds();
 
@@ -94,8 +96,9 @@ final class ForwardByReferenceScenario {
     /// @param text           the body of A's answer
     /// @param sliceCalls     how many requests reached B's slice
     /// @param catalogDelta   how many objects A's content storage gained from the request (kept orphans), net of deletions
+    /// @param handleNamespace the namespace the handle B's slice received names
     record Outcome(int status, String sentSha, String servedSha, long handleSize, long bodyOnB, long forwardedBytes,
-                   long forwards, String text, long sliceCalls, long catalogDelta) {}
+                   long forwards, String text, long sliceCalls, long catalogDelta, String handleNamespace) {}
 
     /// What happens to the stored object between A's store and B's read.
     enum Fault {
@@ -106,7 +109,10 @@ final class ForwardByReferenceScenario {
         /// B reads a content storage that does not hold A's object: the node that held it is gone.
         HOLDER_GONE,
         /// The transport refuses A's write to B: the forward never leaves A.
-        PEER_UNREACHABLE
+        PEER_UNREACHABLE,
+        /// Nothing is lost, but two slices on B publish the route; the ingress stores in the namespace of the first of them
+        /// in coordinate order.
+        TWO_PUBLISHERS
     }
 
     public static void main(String[] args) throws Exception {
@@ -172,6 +178,12 @@ final class ForwardByReferenceScenario {
             registryA.onNodeRoutesPut(new ValuePut<>(new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(NODE_B, ARTIFACT),
                                                                          NodeRoutesValue.nodeRoutesValue(List.of(entry))),
                                                      Option.none()));
+            if (fault == Fault.TWO_PUBLISHERS) {
+                registryA.onNodeRoutesPut(new ValuePut<>(new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(NODE_B, EARLIER_ARTIFACT),
+                                                                             NodeRoutesValue.nodeRoutesValue(List.of(entry))),
+                                                         Option.none()));
+            }
+
             var port = TlsProbe.requireBoundPort(a.boundPort(), "node A");
 
             awaitRouteServed(a, port);
@@ -191,7 +203,8 @@ final class ForwardByReferenceScenario {
                                toB.requests.get(),
                                answer.text(),
                                slice.calls.get(),
-                               catalogSize(storage) - catalogBefore);
+                               catalogSize(storage) - catalogBefore,
+                               slice.handleNamespace.get());
         } finally {
             a.stop().await(WAIT);
             b.stop().await(WAIT);
@@ -200,7 +213,7 @@ final class ForwardByReferenceScenario {
 
     private static void injectFault(Fault fault, StorageInstance storage, AppHttpServer b, Path dir, Link toB) throws Exception {
         switch (fault) {
-            case NONE -> {}
+            case NONE, TWO_PUBLISHERS -> {}
             case DELETE_MID_FORWARD -> toB.beforeDelivery.set(() -> deleteEverything(storage));
             case PEER_UNREACHABLE -> toB.unreachable.set(true);
             case HOLDER_GONE -> b.setUploadStorage(StorageInstance.storageInstance("content-b",
@@ -313,6 +326,7 @@ final class ForwardByReferenceScenario {
         private final StorageInstance storage;
         final AtomicReference<String> servedSha = new AtomicReference<>("<none>");
         final AtomicLong handleSize = new AtomicLong(-1);
+        final AtomicReference<String> handleNamespace = new AtomicReference<>("<none>");
         final AtomicLong bodyLength = new AtomicLong(-1);
         final AtomicLong calls = new AtomicLong();
 
@@ -358,6 +372,7 @@ final class ForwardByReferenceScenario {
             var sha = HexFormat.of().formatHex(digest.digest());
 
             handleSize.set(object.size());
+            handleNamespace.set(object.namespace());
             servedSha.set(sha);
 
             return HttpResponseData.httpResponseData(200, sha);

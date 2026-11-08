@@ -37,4 +37,35 @@ class HttpRequestContextTrailersTest {
 
         assertThat(context.trailers()).isEmpty();
     }
+
+    @Test
+    void canonicalConstructor_refusesNullUpload() {
+        assertThatThrownBy(() -> new HttpRequestContext("/p",
+                                                        "GET",
+                                                        Map.of(),
+                                                        Map.of(),
+                                                        new byte[0],
+                                                        Map.of(),
+                                                        "req",
+                                                        SecurityContext.securityContext(),
+                                                        null))
+            .isInstanceOf(NullPointerException.class)
+            .hasMessage("upload");
+    }
+
+    @Test
+    void withSecurity_keepsTheUploadOfAnIngestedRequest() {
+        var upload = UploadHandle.uploadHandle(List.of(), Map.of("k", List.of("v")));
+        var context = HttpRequestContext.httpRequestContext("/p",
+                                                            "POST",
+                                                            Map.of(),
+                                                            Map.of(),
+                                                            new byte[0],
+                                                            Map.of(),
+                                                            "req",
+                                                            SecurityContext.securityContext(),
+                                                            Option.some(upload));
+
+        assertThat(context.withSecurity(SecurityContext.securityContext()).upload()).isEqualTo(Option.some(upload));
+    }
 }
