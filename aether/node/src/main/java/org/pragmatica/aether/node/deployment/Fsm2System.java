@@ -216,23 +216,20 @@ public final class Fsm2System {
                                                        splitTimeout))
                                   .unwrap();
         var sizing = config.deploymentDefaults().communitySizing();
+        var paced = Settings.settings(config.self(),
+                                      config.atomicity(),
+                                      Set.of(),
+                                      bounds)
+                            .withTiming(Timing.DEFAULT.withTick(config.timeouts()
+                                                                      .deployment()
+                                                                      .reconciliationInterval()
+                                                                      .millis()))
+                            .withCommunitySizing(sizing.targetSize(),
+                                                 sizing.viabilityFloor());
 
-        return Settings.settings(config.self(),
-                                 config.atomicity(),
-                                 Set.of(),
-                                 bounds)
-                       .withTiming(Timing.DEFAULT.withTick(config.timeouts()
-                                                                 .deployment()
-                                                                 .reconciliationInterval()
-                                                                 .millis()))
-                       .withCommunitySizing(sizing.targetSize(),
-                                            sizing.viabilityFloor())
-                       .withSubmissionExpiry(config.protocol()
-                                                   .applyTimeout()
-                                                   .plus(TimeSpan.timeSpan(5).seconds())
-                                                   .millis())
-                       .withProcess(process)
-                       .withSeedCores(seedCores(config.topology()));
+        return paced.withSubmissionExpiry(config.protocol().applyTimeout().plus(TimeSpan.timeSpan(5).seconds()).millis())
+                    .withProcess(process)
+                    .withSeedCores(seedCores(config.topology()));
     }
 
     /// The configured core nodes, which `Absence.classOf` classes CORE without a directive (#2868).
