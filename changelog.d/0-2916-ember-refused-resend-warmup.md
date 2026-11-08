@@ -1,0 +1,2 @@
+### Fixed (2026-11-08 — #2916: EmberReplicateRefusedResendTest warm-up flake)
+- **The warm-up publish of `EmberReplicateRefusedResendTest` no longer fails on the owner's transient "not yet promoted" refusal** (#2916). The warm-up retries only that refusal (raised before any write) within the shared activation bound; the armed publish that pins the #2820 re-send stays a single attempt. [verified: `EmberReplicateRefusedResendTest`]

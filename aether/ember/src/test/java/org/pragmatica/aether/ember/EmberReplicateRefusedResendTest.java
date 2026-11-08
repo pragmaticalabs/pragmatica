@@ -98,7 +98,7 @@ class EmberReplicateRefusedResendTest {
         var governor = streamingGovernor();
 
         for (var i = 0; i < WARMUP_PUBLISHES; i++) {
-            assertThat(publishResponse(entryNode(governor).mgmtPort(), "warm-" + i)).as("warm-up publish %d", i).startsWith("2");
+            assertThat(warmUpPublish(entryNode(governor).mgmtPort(), "warm-" + i)).as("warm-up publish %d", i).startsWith("2");
         }
 
         armed.set(true);
@@ -190,6 +190,15 @@ class EmberReplicateRefusedResendTest {
 
     private String publishResponse(int mgmtPort, String payload) {
         return post(mgmtPort, "/api/v1/streams/" + NAMESPACE + "/" + NAME + "/" + VERSION + "/publish", "{\"data\":\"" + payload + "\"}");
+    }
+
+    /// The warm-up publish, retried only while the owner is not yet promoted (#2916): a full ISR does not mean the owner finished
+    /// activating, and that refusal is raised before anything is written, so a retry cannot duplicate. The armed publish is not
+    /// routed through here: its single attempt is the scenario.
+    private String warmUpPublish(int mgmtPort, String payload) {
+        var response = StreamTripwireSupport.publishViaOnceActivated(mgmtPort, NAME, payload);
+
+        return response.status() + " " + response.body();
     }
 
     private EmberCluster threeNodes(int basePort) {
