@@ -43,6 +43,11 @@ class ScalarAliasAndArrayBindTest {
     }
 
     @Test
+    void itemEndingInAsLetters_isNotTakenForTheKeyword() {
+        assertThat(column("SELECT bias + 1 FROM t")).isNotBlank();
+    }
+
+    @Test
     void returningCast_withAlias_inferredAsAlias() {
         assertThat(column("INSERT INTO t (a) VALUES (1) RETURNING CAST(a AS int) AS n")).isEqualTo("n");
     }
