@@ -262,12 +262,11 @@ public final class ReplicaRegistry {
                                  ReplicationState state,
                                  Epoch epoch) {
         var key = partitionKey(streamName, partition);
-
-        var surviving = option(replicas.get(key)).flatMap(nodeMap -> option(nodeMap.computeIfPresent(nodeId,
-                                                                                                    (_, current) -> monotone(current,
-                                                                                                                             confirmedOffset,
-                                                                                                                             state,
-                                                                                                                             epoch))));
+        var surviving = option(replicas.get(key)).flatMap(nodeMap -> advanceRow(nodeMap,
+                                                                                nodeId,
+                                                                                confirmedOffset,
+                                                                                state,
+                                                                                epoch));
 
         watermarkStore.persistWatermark(streamName,
                                         partition,
@@ -275,11 +274,20 @@ public final class ReplicaRegistry {
                                         surviving.map(ReplicaDescriptor::confirmedOffset).or(confirmedOffset));
     }
 
+    private static Option<ReplicaDescriptor> advanceRow(ConcurrentHashMap<NodeId, ReplicaDescriptor> nodeMap,
+                                                        NodeId nodeId,
+                                                        long confirmedOffset,
+                                                        ReplicationState state,
+                                                        Epoch epoch) {
+        return option(nodeMap.computeIfPresent(nodeId, (_, current) -> monotone(current, confirmedOffset, state, epoch)));
+    }
+
     private static ReplicaDescriptor monotone(ReplicaDescriptor current,
                                               long confirmedOffset,
                                               ReplicationState state,
                                               Epoch epoch) {
-        return current.epoch().equals(epoch) && current.confirmedOffset() > confirmedOffset
+        return current.epoch()
+                      .equals(epoch) && current.confirmedOffset() > confirmedOffset
                ? current
                : replicaDescriptor(current.nodeId(),
                                    current.streamName(),
