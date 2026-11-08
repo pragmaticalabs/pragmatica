@@ -129,6 +129,34 @@ Per-request context carried via `ScopedValue` (no thread-local leaking):
 | `sampled` | Whether this request is sampled for detailed metrics |
 | `principal` | Security principal (if authenticated) |
 
+### Known gap: the caller's principal does not cross an inter-slice invoke (#2157)
+
+`principal` above is a trace string (logs, MDC, metrics). It is **not** the caller's `SecurityContext`, and neither travels
+on `InvokeRequest` (its fields are sender, correlation/request ids, target, method, payload, flags, depth, hops, sampled).
+What a slice sees today, by hop:
+
+| Hop | `SecurityContextHolder` | `InvocationContext.currentPrincipal()` |
+|-----|-------------------------|----------------------------------------|
+| Entry route (HTTP, on the node that authenticated) | bound to the caller's context | bound |
+| Local slice-to-slice call | still bound, only because the encode/invoke/decode chain completes synchronously on the caller's thread | still bound, same reason |
+| Remote slice-to-slice call (`InvokeRequest` to another node) | **empty** | **empty** (`InvocationHandler.onInvokeRequest` binds `null`) |
+| Continuation resolved on another thread, or after the binding scope ended | **empty** | follows `ContextPropagation` (captured) |
+
+Consequences for slice authors:
+- `Principal` / `SecurityContext` method parameters are injected **only** by the generated route lambda at the HTTP entry
+  (`SecurityContextHolder.currentContext()`, falling back to the anonymous context). They are not injected on an inter-slice
+  call; a downstream slice that needs the caller's identity must receive it as an explicit argument.
+- Do not read `SecurityContextHolder` from code that runs after an asynchronous step. A binding exists only while its scope is
+  on the stack, and an empty holder looks the same as an unauthenticated caller.
+- Authorization is decided once, at the edge. A downstream slice must not treat an empty holder as "anonymous caller".
+
+The ruling for the fix (#2157 part b): carry the full `SecurityContext` on `InvokeRequest`; the receiving node uses it as caller
+identity for slice logic and audit, never as authorization for its own route table; generated route code passes the context
+captured at the edge straight into the lambda instead of reading the holder. Until it lands, the behaviour above is pinned by
+enabled tripwire tests (`PrincipalPropagationTripwireTest` in `aether-invoke`, the `holder_*` tests in `TerraHttpServerTest`),
+each of which fails with "#2157: propagation landed; flip this tripwire to the real assertion"; the real assertions sit beside
+them, `@Disabled`.
+
 ## EndpointRegistry
 
 Pure event-driven component - watches KV-Store, maintains local routing cache.

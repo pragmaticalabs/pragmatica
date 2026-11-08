@@ -15,8 +15,10 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.http.adapter.ErrorMapper;
@@ -288,6 +290,61 @@ class TerraHttpServerTest {
         var host = start(List.of(route), HttpAuthenticator.denyUnlessPublicValidator(), new AtomicInteger());
         try (var client = HttpClient.newHttpClient()) {
             assertThat(get(client, host, "/null").statusCode()).isEqualTo(500);
+        } finally { close(host); }
+    }
+
+    // ---- #2157 part a (P9a): Terra ScopedValue binding vs async continuations --------------------------------
+    // TerraHttpRoutes.invoke binds SecurityContextHolder only while route.handler().handle(..) is on the stack. Each
+    // behaviour has an ENABLED tripwire asserting today's behaviour and a @Disabled twin with the real assertion.
+
+    private static final String LANDED = "#2157: propagation landed; flip this tripwire to the real assertion";
+
+    /// A handler that returns a Promise resolved later by another thread reads an empty holder in its continuation:
+    /// the binding ended when `handle` returned (and is not inherited by the resolving thread anyway).
+    @Test void holder_readInContinuationResolvedAfterHandleReturned_isEmpty_today() throws Exception {
+        assertThat(asyncHandlerBody()).as(LANDED).isEqualTo("none");
+    }
+
+    @Disabled("#2157 part b: enable when generated code receives the edge-captured context instead of reading the holder")
+    @Test void holder_readInContinuationResolvedAfterHandleReturned_seesCaller() throws Exception {
+        assertThat(asyncHandlerBody()).isEqualTo("reader");
+    }
+
+    private static String asyncHandlerBody() throws Exception {
+        var gate = new AtomicReference<Promise<Unit>>();
+        var route = Route.<String>get("/async").withoutParameters().to(_ -> awaitedPrincipal(gate))
+            .withSecurity(SecurityPolicy.unspecified()).asText();
+        var host = start(List.of(route), HttpAuthenticator.apiKeyValidator(KEYS), new AtomicInteger());
+        try (var client = HttpClient.newHttpClient()) {
+            var response = CompletableFuture.supplyAsync(() -> {
+                try { return get(client, host, "/async", "X-API-Key", "reader-secret"); } catch (Exception e) { throw new IllegalStateException(e); }
+            });
+            // the handler has returned its pending Promise (and its scope has ended on the request thread) before the gate is opened here
+            while (gate.get() == null) { Thread.onSpinWait(); }
+            gate.get().succeed(Unit.unit());
+            return response.get(5, TimeUnit.SECONDS).body();
+        } finally { close(host); }
+    }
+
+    private static Promise<String> awaitedPrincipal(AtomicReference<Promise<Unit>> gate) {
+        var pending = Promise.<Unit>promise();
+        var principal = pending.map(_ -> SecurityContextHolder.currentContext().map(c -> c.principal().value()).or("none"));
+        gate.set(pending);
+        return principal;
+    }
+
+    /// A body route: the question the analysis left open is whether decoding the body is an async step that lets a
+    /// generated lambda run outside the binding. Today it does not: the lambda still reads the caller's principal.
+    @Test void holder_readInBodyRouteLambda_seesCaller_today() throws Exception {
+        var route = Route.<String>post("/body").withBody(String.class).to(body -> Promise.success(body + ":" + SecurityContextHolder.currentContext().map(c -> c.principal().value()).or("none")))
+            .withSecurity(SecurityPolicy.unspecified()).asText();
+        var host = start(List.of(route), HttpAuthenticator.apiKeyValidator(KEYS), new AtomicInteger());
+        try (var client = HttpClient.newHttpClient()) {
+            var response = client.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + host.port() + "/body"))
+                .timeout(Duration.ofSeconds(5)).header("X-API-Key", "reader-secret").header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("\"x\"")).build(), HttpResponse.BodyHandlers.ofString());
+
+            assertThat(response.body()).as("body-decoded lambda: the holder is still bound today; if this fails the decode became async (the hazard is real for body routes)").contains(":reader");
         } finally { close(host); }
     }
 
