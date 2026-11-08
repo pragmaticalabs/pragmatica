@@ -73,6 +73,13 @@ class LaunchHttpTest {
         cases.forEach((line, reason) -> assertLaunchRefused(jwtLaunch(line), line, reason));
     }
 
+    /// A blank entry is refused by the shared AuthSchemes rule, as in Aether; it is not silently dropped.
+    @Test void parse_jwtAuthSchemes_blankEntry_failsTheLaunch() {
+        for (var line : List.of("auth_schemes = [\"Bearer\", \"\"]\n", "auth_schemes = [\"Bearer\", \" \"]\n", "auth_schemes = \"Bearer,,Token\"\n")) {
+            assertThat(jwtLaunch(line).isFailure()).as(line).isTrue();
+        }
+    }
+
     private static void assertLaunchRefused(Result<LaunchHttp> launch, String line, String reason) {
         assertThat(launch.isFailure()).as(line).isTrue();
         launch.onFailure(cause -> assertThat(cause.message()).as(line).contains("Invalid [jwt]").contains(reason));

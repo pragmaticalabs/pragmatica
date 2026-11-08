@@ -501,6 +501,52 @@ class JwtSecurityValidatorTest {
             }
         }
 
+        /// tokenFor edges: no space, a non-space separator, a leading space or an empty header never yields a token.
+        @Test
+        void validate_schemeWithoutTokenSlice_isMissingCredential_401() {
+            var target = validatorAccepting(List.of("Bearer"));
+
+            for (var header : List.of("Bearer", "", " ", " Bearer " + validToken(), "Bearer\t" + validToken(),
+                                      "BearerX " + validToken(), "Bearer" + validToken())) {
+                assertRefused401(target, header);
+            }
+        }
+
+        @Test
+        void validate_schemeOnlyWithSpaces_isRefused_401() {
+            var target = validatorAccepting(List.of("Bearer"));
+
+            for (var header : List.of("Bearer ", "Bearer   ")) {
+                target.validate(requestWithAuthorization(header), SecurityPolicy.bearerTokenRequired())
+                      .onSuccess(ctx -> fail("'" + header + "' was accepted"))
+                      .onFailure(cause -> assertThat(((SecurityError) cause).httpStatus()).isEqualTo(HttpStatus.UNAUTHORIZED));
+            }
+        }
+
+        /// The token is the slice after the first space, trimmed: extra spaces around it do not corrupt it.
+        @Test
+        void validate_multipleSpacesBeforeToken_tokenIsTrimmed() {
+            validatorAccepting(List.of("Bearer")).validate(requestWithAuthorization("Bearer    " + validToken() + "  "),
+                                                           SecurityPolicy.bearerTokenRequired())
+                                                 .onFailure(cause -> fail("padded token must be trimmed: " + cause.message()));
+        }
+
+        /// Whole-scheme equality: "Tok" never claims a "Token ..." header, and "Token" never claims "Tok ...".
+        @Test
+        void validate_prefixCollidingSchemes_matchWholeScheme() {
+            var target = validatorAccepting(List.of("Tok", "Token"));
+
+            for (var scheme : List.of("Tok", "Token")) {
+                target.validate(requestWithAuthorization(scheme + " " + validToken()), SecurityPolicy.bearerTokenRequired())
+                      .onFailure(cause -> fail(scheme + " must be accepted: " + cause.message()));
+            }
+            for (var scheme : List.of("To", "Tokens", "TokenX")) {
+                assertRefused401(target, scheme + " " + validToken());
+            }
+            assertRefused401(validatorAccepting(List.of("Tok")), "Token " + validToken());
+            assertRefused401(validatorAccepting(List.of("Token")), "Tok " + validToken());
+        }
+
         private void assertRefused401(JwtSecurityValidator target, String authorization) {
             target.validate(requestWithAuthorization(authorization), SecurityPolicy.bearerTokenRequired())
                   .onSuccess(ctx -> fail("'" + authorization.substring(0, authorization.indexOf(' ')) + "' was accepted"))

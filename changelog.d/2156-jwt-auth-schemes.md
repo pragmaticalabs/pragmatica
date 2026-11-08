@@ -10,9 +10,11 @@
   `aether/node/src/test/java/org/pragmatica/aether/http/AppHttpServerForwardReauthorizationTest.java`]. Terra sends no
   challenge header, before or after this change.
 - **An empty list, a scheme named twice (case-insensitively) or an entry that is not an auth-scheme token refuses the
-  config load** (Aether) or the launch (Terra); it is never replaced by the default. One rule, `AuthSchemes`, serves both
+  config load** (Aether) or the launch (Terra); it is never replaced by the default. A blank entry such as `["Bearer", ""]` is refused in both runtimes. One rule, `AuthSchemes`, serves both
   runtimes [verified: `aether/aether-config/src/test/java/org/pragmatica/aether/config/ConfigLoaderAuthSchemesTest.java`].
 - **Removed: the raw `HttpRequestHandlerFactory` / `HttpRequestHandler` route path.** No production code implemented it;
   its only reach was a `ServiceLoader` fallback in `HttpRoutePublisher` that advertised a slice's routes cluster-wide
   while no node ever dispatched to the handler. A slice that no generated `SliceRouterFactory` serves now publishes no
   routes [verified: `aether/aether-invoke/src/test/java/org/pragmatica/aether/http/HttpRoutePublisherUnmatchedSliceTest.java`].
+  This is a breaking change for any external implementor of the removed SPI (pre-GA, intended): such an implementation
+  no longer compiles and is no longer discovered.

@@ -169,11 +169,15 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
                        .or(AuthSchemes.DEFAULT);
     }
 
+    /// Blank entries are kept so [AuthSchemes] refuses them, as Aether does; only a wholly blank list is empty.
     private static List<String> listEntries(String raw) {
-        return Arrays.stream(raw.replace("[", "").replace("]", "").split(","))
-                     .map(String::trim)
-                     .filter(entry -> !entry.isBlank())
-                     .toList();
+        var body = raw.replace("[", "").replace("]", "");
+
+        return body.isBlank()
+               ? List.of()
+               : Arrays.stream(body.split(",", -1))
+                       .map(String::trim)
+                       .toList();
     }
 
     private static Result<Option<TlsConfig>> tls(Path directory, ConfigurationProvider settings) {
