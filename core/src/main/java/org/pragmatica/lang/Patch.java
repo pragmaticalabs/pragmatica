@@ -118,8 +118,7 @@ public sealed interface Patch<T> permits Absent, Null, Value {
     ///
     /// @return Created instance
     static <U> Patch<U> value(U value) {
-        return Option.option(value)
-                     .<Patch<U>>fold(Patch::nullValue, Value::new);
+        return Option.option(value).<Patch<U>> fold(Patch::nullValue, Value::new);
     }
 
     record Absent<T>() implements Patch<T> {
