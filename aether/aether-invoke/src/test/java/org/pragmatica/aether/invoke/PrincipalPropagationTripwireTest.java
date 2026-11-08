@@ -40,22 +40,28 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// #2157 part a (P9a): the caller's principal is NOT propagated across an inter-slice invoke, and nothing tested it.
 ///
-/// Each behaviour that propagation can change has two tests beside each other (the guards marked "permanent pin" and the
-/// local-hop guard have no twin and carry their own failure messages, not the LANDED text):
-/// - an ENABLED tripwire that asserts TODAY's behaviour and fails with "#2157: propagation landed; flip this
-///   tripwire to the real assertion" when P9b lands, and
-/// - the REAL assertion, `@Disabled` until then. Flipping means deleting the tripwire and enabling its twin.
+/// Ruling for the landing (#2157 part b): the full SecurityContext is carried on [InvokeRequest] and reaches the slice as an
+/// explicit parameter, not through SecurityContextHolder or a ScopedValue. Three kinds of test:
+/// - ENABLED tripwire + `@Disabled` twin (WIRE shape, REMOTE value on the wire): the tripwire asserts today's behaviour and
+///   fails with "#2157: propagation landed; flip this tripwire to the real assertion"; flipping means deleting it and
+///   enabling the twin.
+/// - Permanent pins (no twin, own failure messages): ambient state at the receiver, the local hop, plain continuations.
+/// - ENABLED hazard tripwires (no twin, own message): an executor hop does not carry the holder; red only if an unruled
+///   second carrier appears.
 ///
 /// What is observed, per hop:
-/// - WIRE: the components of [InvokeRequest].
+/// - WIRE: the exact component list of [InvokeRequest].
 /// - REMOTE: the sender runs inside an edge-style scope (a bound [SecurityContextHolder] and an [InvocationContext]
-///   carrying a principal string, which is what `AppHttpServer.dispatchScoped` binds). The [InvokeRequest] it hands the
-///   transport is delivered to a second node's [InvocationHandler]; the slice there records what it can see.
+///   carrying a principal string, which is what `AppHttpServer.dispatchScoped` binds). The values on the [InvokeRequest] it
+///   hands the transport are inspected; the request is also delivered to a second node's [InvocationHandler], where the
+///   slice records its ambient state (permanent pin). How the receiving slice gets the explicit parameter is part b's
+///   design and is not pinned here.
 /// - LOCAL: the same sender scope, the target slice registered on the sender itself.
-/// - ASYNC: a [SecurityContextHolder] binding read after a plain continuation (permanent pins, no twin) and after a
-///   [ContextPropagation] executor-hop restore (tripwire + twin).
+/// - ASYNC: a [SecurityContextHolder] binding read after a plain continuation (permanent pins) and after a
+///   [ContextPropagation] executor-hop restore (hazard tripwires).
 class PrincipalPropagationTripwireTest {
     private static final String LANDED = "#2157: propagation landed; flip this tripwire to the real assertion";
+    private static final String HOLDER_CHANGED = "#2157: the ambient SecurityContextHolder now survives an executor hop; the ruled carrier is the explicit parameter, so revisit the async-hazard notes";
     private static final NodeId SENDER = new NodeId("sender-node");
     private static final NodeId RECEIVER = new NodeId("receiver-node");
     private static final Artifact ARTIFACT = Artifact.artifact("org.example:downstream:1.0.0").unwrap();
@@ -78,47 +84,82 @@ class PrincipalPropagationTripwireTest {
 
     // ---- WIRE -----------------------------------------------------------------------------------------------
 
+    private static final List<String> TODAY_COMPONENTS = List.of("sender:NodeId",
+                                                                 "correlationId:String",
+                                                                 "requestId:String",
+                                                                 "targetSlice:Artifact",
+                                                                 "method:MethodName",
+                                                                 "payload:byte[]",
+                                                                 "expectResponse:boolean",
+                                                                 "depth:int",
+                                                                 "hops:int",
+                                                                 "sampled:boolean");
+
+    /// The exact component list, so ANY new component goes red, whatever its name or declared type (a SecurityContext
+    /// carried as `caller`, `Object ctx`, or a renamed wrapper included).
     @Test
-    void invokeRequest_carriesNoSecurityContext_today() {
-        assertThat(securityComponents()).as(LANDED).isEmpty();
+    void invokeRequest_hasTheKnownContextFreeShape_today() {
+        assertThat(componentSignatures()).as(LANDED + ": InvokeRequest changed shape").containsExactlyElementsOf(TODAY_COMPONENTS);
     }
 
-    @Disabled("#2157 part b: enable when InvokeRequest carries the SecurityContext")
+    @Disabled("#2157 part b: enable when InvokeRequest declares a SecurityContext component (adjust if the carrier type differs)")
     @Test
-    void invokeRequest_carriesTheSecurityContext() {
-        assertThat(securityComponents()).as("InvokeRequest must carry the caller's SecurityContext").isNotEmpty();
+    void invokeRequest_declaresASecurityContextComponent() {
+        assertThat(Arrays.stream(InvokeRequest.class.getRecordComponents()).map(RecordComponent::getType))
+            .as("InvokeRequest must carry the caller's SecurityContext")
+            .contains(SecurityContext.class);
     }
 
-    private static List<String> securityComponents() {
+    private static List<String> componentSignatures() {
         return Arrays.stream(InvokeRequest.class.getRecordComponents())
-                     .filter(PrincipalPropagationTripwireTest::isSecurityComponent)
-                     .map(RecordComponent::getName)
+                     .map(component -> component.getName() + ":" + component.getType().getSimpleName())
                      .toList();
     }
 
-    private static boolean isSecurityComponent(RecordComponent component) {
-        return component.getType() == SecurityContext.class
-               || component.getName().toLowerCase().contains("principal")
-               || component.getName().toLowerCase().contains("security");
+    private static List<Object> componentValues(InvokeRequest request) {
+        return Arrays.stream(InvokeRequest.class.getRecordComponents())
+                     .map(component -> valueOf(component, request))
+                     .toList();
+    }
+
+    private static Object valueOf(RecordComponent component, InvokeRequest request) {
+        try {
+            return component.getAccessor().invoke(request);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     // ---- REMOTE hop -----------------------------------------------------------------------------------------
+    //
+    // Ruling for the landing: the SecurityContext rides on InvokeRequest and reaches the slice as an explicit
+    // parameter, NOT through SecurityContextHolder or a ScopedValue. So the tripwire and its twin observe the
+    // request the sender hands the transport (the carrier); the receiving side's ambient state is a permanent pin.
 
     @Test
-    void remoteInvoke_downstreamSliceSeesNoPrincipal_today() throws Exception {
-        var seen = remoteHopSeenByDownstream();
+    void remoteInvoke_requestOnTheWireCarriesNoCallerContext_today() {
+        var values = componentValues(senderRequestFromAliceScope());
 
-        assertThat(seen.securityContext().toOptional()).as(LANDED).isEmpty();
-        assertThat(seen.tracePrincipal().toOptional()).as(LANDED).isEmpty();
+        assertThat(values).as(LANDED + ": a SecurityContext value is on the wire").noneMatch(SecurityContext.class::isInstance);
+        assertThat(values.stream().filter(value -> !(value instanceof byte[])).map(String::valueOf))
+            .as(LANDED + ": the caller's identity is on the wire under another form")
+            .noneMatch(text -> text.contains(ALICE_NAME));
     }
 
-    @Disabled("#2157 part b: enable when the receiving node injects the SecurityContext carried on InvokeRequest")
+    @Disabled("#2157 part b: enable when the sender puts the caller's SecurityContext on InvokeRequest")
     @Test
-    void remoteInvoke_downstreamSliceSeesTheCallersPrincipal() throws Exception {
+    void remoteInvoke_requestOnTheWireCarriesTheCallersContext() {
+        assertThat(componentValues(senderRequestFromAliceScope())).contains(ALICE);
+    }
+
+    /// The ambient state at the receiver stays empty by design under the ruling (no holder or ScopedValue carrier). A
+    /// non-empty value here means a second, unruled carrier appeared. No twin.
+    @Test
+    void remoteInvoke_ambientContextDoesNotReachDownstream_permanentPin() throws Exception {
         var seen = remoteHopSeenByDownstream();
 
-        assertThat(principalOf(seen.securityContext())).contains(ALICE_NAME);
-        assertThat(seen.tracePrincipal().toOptional()).contains(ALICE_NAME);
+        assertThat(seen.securityContext().toOptional()).as("ambient holder at the receiver: an unruled carrier appeared").isEmpty();
+        assertThat(seen.tracePrincipal().toOptional()).as("ambient trace principal at the receiver: an unruled carrier appeared").isEmpty();
     }
 
     private Seen remoteHopSeenByDownstream() throws Exception {
@@ -198,9 +239,10 @@ class PrincipalPropagationTripwireTest {
     ///   through [ContextPropagation], so no propagation fix can reach it. These are PERMANENT pins (no twin): a
     ///   non-empty holder there would mean the Promise continuation model changed.
     /// - An executor hop (`Promise.async`) captures a [ContextPropagation] snapshot and restores it on the worker.
-    ///   That is where propagation can land: [AetherContextPropagation] would carry the [SecurityContext] next to the
-    ///   trace identity it carries today. These have a tripwire + twin, and the tripwire's control assertion proves the
-    ///   snapshot did restore the trace identity, so the empty holder is the SPI's omission and not a broken harness.
+    ///   The ruled carrier for #2157 is the explicit parameter on [InvokeRequest], not the holder, so no twin exists:
+    ///   these are enabled hazard tripwires that go red only if [AetherContextPropagation] starts carrying the
+    ///   [SecurityContext] (an unruled second carrier). The control assertion proves the snapshot did restore the trace
+    ///   identity, so the empty holder is the SPI's omission and not a broken harness.
     private static final AetherContextPropagation PROPAGATION = new AetherContextPropagation();
 
     @Test
@@ -231,15 +273,7 @@ class PrincipalPropagationTripwireTest {
         var restored = restoreOnCallerThread(captureInAliceScope());
 
         assertThat(restored.tracePrincipal().toOptional()).as("control: the snapshot restored the trace identity").contains(ALICE_NAME);
-        assertThat(restored.securityContext().toOptional()).as(LANDED).isEmpty();
-    }
-
-    @Disabled("#2157 part b: enable when AetherContextPropagation carries the SecurityContext across executor hops")
-    @Test
-    void executorHop_restoredAfterBindingScopeEnded_carriesSecurityContext() {
-        var restored = restoreOnCallerThread(captureInAliceScope());
-
-        assertThat(restored.securityContext().toOptional()).contains(ALICE);
+        assertThat(restored.securityContext().toOptional()).as(HOLDER_CHANGED).isEmpty();
     }
 
     @Test
@@ -247,15 +281,7 @@ class PrincipalPropagationTripwireTest {
         var restored = restoreOnAnotherThread(captureInAliceScope());
 
         assertThat(restored.tracePrincipal().toOptional()).as("control: the snapshot restored the trace identity").contains(ALICE_NAME);
-        assertThat(restored.securityContext().toOptional()).as(LANDED).isEmpty();
-    }
-
-    @Disabled("#2157 part b: enable when AetherContextPropagation carries the SecurityContext across executor hops")
-    @Test
-    void executorHop_restoredOnAnotherThread_carriesSecurityContext() {
-        var restored = restoreOnAnotherThread(captureInAliceScope());
-
-        assertThat(restored.securityContext().toOptional()).contains(ALICE);
+        assertThat(restored.securityContext().toOptional()).as(HOLDER_CHANGED).isEmpty();
     }
 
     private record Observed(Option<SecurityContext> insideScope, Promise<Option<SecurityContext>> continuation) {}

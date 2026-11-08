@@ -141,7 +141,7 @@ What a slice sees today, by hop:
 | Local slice-to-slice call | still bound, only because the encode/invoke/decode chain completes synchronously on the caller's thread | still bound, same reason |
 | Remote slice-to-slice call (`InvokeRequest` to another node) | **empty** | **empty** (`InvocationHandler.onInvokeRequest` binds `null`) |
 | Plain `Promise.map` continuation resolved on another thread, or after the binding scope ended | **empty** | **empty** (continuations run inline on the resolving thread and never pass through `ContextPropagation`) |
-| Executor hop (`Promise.async`) taken inside the binding | **empty** (`AetherContextPropagation` does not carry it) | restored, where the `ContextPropagation` SPI is registered (aether node) |
+| Executor hop (`Promise.async`) taken inside the binding | **empty** (`AetherContextPropagation` does not carry it) | restored, where the `ContextPropagation` SPI is registered (aether node; `aether-invoke` itself registers none) |
 
 Consequences for slice authors:
 - `Principal` / `SecurityContext` method parameters are injected **only** by the generated route lambda at the HTTP entry
@@ -155,10 +155,12 @@ The ruling for the fix (#2157 part b): carry the full `SecurityContext` on `Invo
 identity for slice logic and audit, never as authorization for its own route table; generated route code passes the context
 captured at the edge straight into the lambda instead of reading the holder. Until it lands, the behaviour above is pinned by tests in `PrincipalPropagationTripwireTest` (`aether-invoke`) and the
 `holder_*` tests in `TerraHttpServerTest`. Three kinds:
-- Enabled tripwires (wire, remote hop, executor hop) assert today's behaviour and fail with "#2157: propagation landed;
-  flip this tripwire to the real assertion"; the real assertion sits beside each, `@Disabled`.
-- The local-hop test and the body-route test are regression guards with their own failure messages and no twin.
-- The plain-continuation tests are permanent pins with no twin: no propagation fix can reach a plain `map` continuation.
+- Enabled tripwires with a `@Disabled` twin (`InvokeRequest` shape, caller context on the wire) assert today's behaviour and
+  fail with "#2157: propagation landed; flip this tripwire to the real assertion".
+- Enabled hazard tripwires without a twin (executor hop does not carry the holder) go red only if the holder starts
+  surviving a hop, which is an unruled second carrier.
+- Permanent pins without a twin (ambient state at the receiving node, the local hop, the body route, plain continuations)
+  have their own failure messages; no propagation fix can reach a plain `map` continuation.
 
 ## EndpointRegistry
 

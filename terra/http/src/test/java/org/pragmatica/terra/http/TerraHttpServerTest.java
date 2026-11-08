@@ -19,7 +19,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.stream.Stream;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.http.adapter.ErrorMapper;
@@ -299,9 +298,7 @@ class TerraHttpServerTest {
     // Two async mechanisms: a plain Promise.map continuation never passes through ContextPropagation (permanent pin,
     // no twin: no propagation fix can reach it); an executor hop (Promise.async) captures the ContextPropagation
     // snapshot while still inside the binding, so a registered SPI that carries the SecurityContext would restore it
-    // (ENABLED tripwire asserting today's behaviour + @Disabled twin). This module registers no ContextPropagation.
-
-    private static final String LANDED = "#2157: propagation landed; flip this tripwire to the real assertion";
+    // (ENABLED hazard tripwire, no twin: the ruled carrier is the explicit parameter). This module registers no ContextPropagation.
 
     /// A handler that returns a Promise resolved later by another thread reads an empty holder in its plain map
     /// continuation: the binding ended when `handle` returned (and is not inherited by the resolving thread anyway).
@@ -313,12 +310,7 @@ class TerraHttpServerTest {
 
     /// The handler hops to the executor from inside the binding; the hop captures the ContextPropagation snapshot there.
     @Test void holder_readAfterExecutorHopFromHandler_isEmpty_today() throws Exception {
-        assertThat(serve("/hop", gate -> hoppedPrincipal(), false)).as(LANDED).isEqualTo("none");
-    }
-
-    @Disabled("#2157 part b: enable when a ContextPropagation on the classpath carries the SecurityContext across executor hops")
-    @Test void holder_readAfterExecutorHopFromHandler_seesCaller() throws Exception {
-        assertThat(serve("/hop", gate -> hoppedPrincipal(), false)).isEqualTo("api-key:reader");
+        assertThat(serve("/hop", gate -> hoppedPrincipal(), false)).as("#2157: a ContextPropagation now carries the SecurityContext across executor hops; the ruled carrier is the explicit parameter, so revisit the async-hazard notes").isEqualTo("none");
     }
 
     private static String serve(String path, Function<AtomicReference<Promise<Unit>>, Promise<String>> handler, boolean gated) throws Exception {
