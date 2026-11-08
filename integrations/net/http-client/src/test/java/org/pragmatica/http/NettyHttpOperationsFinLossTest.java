@@ -40,6 +40,7 @@ import io.netty.handler.codec.http3.Http3HeadersFrame;
 import io.netty.handler.codec.http3.Http3RequestStreamInboundHandler;
 import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicSslContextBuilder;
+import io.netty.handler.codec.quic.QuicStreamChannel;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.util.ReferenceCountUtil;
 import org.junit.jupiter.api.AfterEach;
@@ -48,6 +49,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.http.server.ResponseWriter;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -59,11 +61,12 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// ([TailLossInjector]); the server then held the whole request, never saw its end, never dispatched it, and the
 /// connection idled out after 5 s. The writer now sends `FIN` with the request's last bytes ([QuicStreamFinisher]).
 ///
-/// The request is written by the client's own writer, on a stream the test opened, from the test thread. Inside
-/// `NettyHttpOperations` the writer runs while the QUIC channel handles the handshake's last read, and Netty then defers
-/// sending until that read completes, so the `FIN` happened to leave with the last data; written outside that window,
-/// each write is packetised at once and the `FIN` travelled alone. The injector holds the client's 1-RTT datagrams from
-/// just before the request and releases them 700 ms later, after the PTO probes.
+/// The request is written by the client's own writer, on a stream the test opened, in a task of its own on the
+/// client's event loop. Inside `NettyHttpOperations` the writer runs while the QUIC channel handles the handshake's last
+/// read, and Netty then defers sending until that read completes, so the `FIN` happened to leave with the last data;
+/// written outside that window, as here, each write is packetised at once and the `FIN` travelled alone. The same task
+/// arms the injector, writes the request and ends the injector's burst, so the burst is exactly the request's datagrams
+/// under any load (#2862). The injector releases them 700 ms later, after the PTO probes.
 class NettyHttpOperationsFinLossTest {
     private static final int BODY_BYTES = 6 * 1024;
     private static final String PAD = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ".repeat(80);
@@ -170,8 +173,7 @@ class NettyHttpOperationsFinLossTest {
         var stream = Http3.newRequestStream(quic, reader).sync().getNow();
 
         Thread.sleep(100);
-        injector.arm();
-        NettyHttpOperations.writeHttp3Request(stream, request);
+        udp.eventLoop().submit(() -> writeTail(stream, request)).sync();
         scheduler.schedule(() -> injector.release(udp, drop), 700, TimeUnit.MILLISECONDS);
 
         try {
@@ -180,6 +182,13 @@ class NettyHttpOperationsFinLossTest {
             quic.close().sync();
             udp.close().sync();
         }
+    }
+
+    @Contract
+    private void writeTail(QuicStreamChannel stream, HttpRequest request) {
+        injector.arm();
+        NettyHttpOperations.writeHttp3Request(stream, request);
+        injector.endBurst();
     }
 
     private static int freeUdpPort() {
