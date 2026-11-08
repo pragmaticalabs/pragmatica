@@ -246,6 +246,7 @@ public final class ConfigValidator {
         if (streaming.replicationBatchMaxEvents() < 1) {
             errors.add("streaming.replication_batch_max_events must be >= 1. Got: " + streaming.replicationBatchMaxEvents());
         }
+
         if (streaming.replicationBatchMaxDelay().nanos() <= 0) {
             errors.add("streaming.replication_batch_max_delay must be > 0. Got: " + streaming.replicationBatchMaxDelay());
         }

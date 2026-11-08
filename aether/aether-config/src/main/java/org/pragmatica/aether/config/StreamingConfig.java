@@ -111,7 +111,6 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
     /// The largest derived `seal_pending_cap_bytes`: 256 MiB. A GUESS (spec 4.4 item 3): it decouples the heap the sealer may
     /// hold from the off-heap budget, so raising the budget does not raise the heap exposure past this.
     public static final long MAX_DERIVED_SEAL_PENDING_CAP_BYTES = 256 * 1024 * 1024L;
-
     /// #263 `replication_batch_max_events`: an owner's replication batch of one partition is sent once it holds this many
     /// events, or ...
     public static final int DEFAULT_REPLICATION_BATCH_MAX_EVENTS = 100;

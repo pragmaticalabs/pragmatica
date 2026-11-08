@@ -118,7 +118,14 @@ final class DefaultReplicationManager implements ReplicationManager {
                               ReplicationTransport transport,
                               Runnable betweenSteps,
                               Fn2<ScheduledFuture<?>, Runnable, TimeSpan> timerScheduler) {
-        this(governorId, registry, transport, _ -> none(), ALWAYS_PROMOTE, betweenSteps, timerScheduler, System::nanoTime);
+        this(governorId,
+             registry,
+             transport,
+             _ -> none(),
+             ALWAYS_PROMOTE,
+             betweenSteps,
+             timerScheduler,
+             System::nanoTime);
     }
 
     /// Test seam (#2820): `timerScheduler` also schedules the re-sends of a chunk the transport refused to write, and

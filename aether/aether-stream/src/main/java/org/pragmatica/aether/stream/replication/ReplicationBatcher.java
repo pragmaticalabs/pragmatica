@@ -79,14 +79,16 @@ public final class ReplicationBatcher implements AutoCloseable {
     static final TimeSpan DEFAULT_MAX_DELAY = TimeSpan.timeSpan(1).millis();
     static final TimeSpan DEFAULT_CLOSE_BARRIER = TimeSpan.timeSpan(5).seconds();
     private static final long BARRIER_POLL_NANOS = 100_000L;
-
     /// Send lanes of a production batcher. A GUESS: one per core, so sends of distinct partitions proceed in parallel
     /// up to the core count; what would settle it is the flusher's CPU share under a many-partition load.
-    static final int SEND_LANES = Math.max(2, Runtime.getRuntime().availableProcessors());
+    static final int SEND_LANES = Math.max(2,
+                                           Runtime.getRuntime().availableProcessors());
+
     /// The production send executor: a virtual thread per lane run, never the publishing thread.
     private static final Executor FLUSHER_THREADS = runnable -> Thread.ofVirtual()
                                                                       .name("replication-flusher")
                                                                       .start(runnable);
+
     /// The standalone factories' executor: a lane run happens on the thread that handed it the batch, after the
     /// accumulator lock is released, as every send did before #263.
     private static final Executor CALLER_THREAD = Runnable::run;
@@ -306,7 +308,6 @@ public final class ReplicationBatcher implements AutoCloseable {
     /// lock before `cancelAndFlush` can find it retired.
     private Unit acceptRun(PartitionKey key, BatchSnapshot run) {
         option(accumulators.get(key)).onPresent(open -> cancelAndFlush(key, open));
-
         var lane = laneFor(key);
 
         lane.offer(key, run);
@@ -392,6 +393,7 @@ public final class ReplicationBatcher implements AutoCloseable {
         } finally {
             inFlightFlushes.decrementAndGet();
         }
+
         laneFor(key).start();
     }
 
@@ -553,7 +555,12 @@ public final class ReplicationBatcher implements AutoCloseable {
             flush.onPresent(scheduled -> scheduled.cancel(false));
         }
 
-        AddOutcome add(long offset, byte[] payload, long timestamp, Epoch ownerEpoch, int maxEvents, boolean sendFirstAtOnce) {
+        AddOutcome add(long offset,
+                       byte[] payload,
+                       long timestamp,
+                       Epoch ownerEpoch,
+                       int maxEvents,
+                       boolean sendFirstAtOnce) {
             lock.lock();
             try {
                 if (retired) {
@@ -569,7 +576,11 @@ public final class ReplicationBatcher implements AutoCloseable {
                 }
 
                 if (opened && sendFirstAtOnce) {
-                    lane.offer(key, new BatchSnapshot(offset, List.of(payload.clone()), List.of(timestamp), ownerEpoch));
+                    lane.offer(key,
+                               new BatchSnapshot(offset,
+                                                 List.of(payload.clone()),
+                                                 List.of(timestamp),
+                                                 ownerEpoch));
 
                     return AddOutcome.SENT_AT_ONCE;
                 }

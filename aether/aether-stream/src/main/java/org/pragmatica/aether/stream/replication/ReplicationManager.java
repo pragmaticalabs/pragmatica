@@ -192,8 +192,8 @@ public interface ReplicationManager extends AutoCloseable {
                                              transport,
                                              earliestRetained,
                                              sender -> ReplicationBatcher.adaptiveReplicationBatcher(sender,
-                                                                                                    maxEvents,
-                                                                                                    maxDelay));
+                                                                                                     maxEvents,
+                                                                                                     maxDelay));
     }
 
     private static ReplicationManager noOpReplicationManager() {
