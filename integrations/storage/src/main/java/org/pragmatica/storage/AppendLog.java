@@ -305,9 +305,12 @@ public final class AppendLog implements AutoCloseable {
     /// recovered or cut. The scan starts at byte `startPosition`, the [RangePage#endPosition] of an earlier page of the same
     /// file, or `0`; the caller checks that a page read from a remembered position begins where it expects.
     ///
-    /// Never a partial range: a scan that meets a frame it cannot validate (a torn tail, a CRC mismatch, a length past the
-    /// end) before it has `maxRecords` records fails with [WalError.LogDamaged], rather than return the valid prefix as if it
-    /// were the log's end. A log that was never created holds nothing: an empty page. Same validity rules and the same fixed
+    /// A torn FINAL frame -- a header or a payload cut short by the end of the file, the normal outcome of a crash -- ends the
+    /// log (#1759, CTO A2): the intact prefix is the page, as [#replay] recovers it. A frame that fits in the file but fails
+    /// validation (a CRC mismatch, a negative length) is damage inside the log: the scan fails with [WalError.LogDamaged]
+    /// rather than return the valid prefix as if it were the log's end. A length field damaged to run past the end of the
+    /// file cannot be told from a torn payload and ends the log the same way. A log that was never created holds nothing: an
+    /// empty page. Same validity rules and the same fixed
     /// [#REPLAY_BUFFER_BYTES] buffer as [#replay]; only delivered payloads are allocated.
     public static Result<RangePage> readRange(Path file, long fromOffset, int maxRecords, long startPosition) {
         return Files.exists(file)
@@ -1219,8 +1222,8 @@ public final class AppendLog implements AutoCloseable {
         try (var channel = FileChannel.open(file, StandardOpenOption.READ)) {
             var size = channel.size();
 
-            while (records.size() < maxRecords && position < size) {
-                if (size - position < HEADER_BYTES || readAt(channel, window, HEADER_BYTES, position) != HEADER_BYTES) {
+            while (records.size() < maxRecords && size - position >= HEADER_BYTES) {
+                if (readAt(channel, window, HEADER_BYTES, position) != HEADER_BYTES) {
                     return new WalError.LogDamaged(file, position, size).result();
                 }
 
@@ -1230,8 +1233,12 @@ public final class AppendLog implements AutoCloseable {
                 var timestampMillis = header.getLong();
                 var storedCrc = header.getInt();
 
-                if (payloadLen < 0 || payloadLen > size - position - HEADER_BYTES) {
+                if (payloadLen < 0) {
                     return new WalError.LogDamaged(file, position, size).result();
+                }
+
+                if (payloadLen > size - position - HEADER_BYTES) {
+                    break;
                 }
 
                 var crc = new CRC32();
@@ -1865,10 +1872,9 @@ public final class AppendLog implements AutoCloseable {
             }
         }
 
-        /// A read-only range scan ([AppendLog#readRange]) met a frame it cannot validate at byte `position` of a `fileBytes`-byte
-        /// log -- a torn tail or a damaged record -- before the page was full (#1759). The records past it are unknown, so the
-        /// scan answers nothing rather than a partial range. Recovery: materializing the partition reopens the log, which cuts a
-        /// torn tail; a damaged record needs the log inspected.
+        /// A read-only range scan ([AppendLog#readRange]) met a damaged frame -- a CRC mismatch or an impossible length, inside the
+        /// file -- at byte `position` of a `fileBytes`-byte log before the page was full (#1759). The records past it are unknown, so the
+        /// scan answers nothing rather than a partial range. (A torn FINAL frame is not damage: it ends the log.) The log needs inspecting.
         record LogDamaged(Path file, long position, long fileBytes) implements WalError {
             @Override
             public String message() {

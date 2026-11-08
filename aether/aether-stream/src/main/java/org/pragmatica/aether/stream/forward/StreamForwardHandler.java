@@ -252,7 +252,9 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
             return;
         }
 
-        serveRead(request).onSuccess(events -> sendReadSuccess(request, events, Epoch.ZERO))
+        var history = catchupHistoryBeforeRead(request);
+
+        serveRead(request).onSuccess(events -> sendReadSuccess(request, events, Epoch.ZERO, history))
                  .onFailure(cause -> sendReadFailure(request, cause));
     }
 
@@ -277,7 +279,8 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                            request.consumerEpoch())
                         .onSuccess(read -> sendReadSuccess(request,
                                                            read.events(),
-                                                           read.ownerEpoch()))
+                                                           read.ownerEpoch(),
+                                                           Option.none()))
                         .onFailure(cause -> sendReadFailure(request, cause));
     }
 
@@ -442,16 +445,28 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                  errorMessage);
     }
 
-    /// #1596: a replica catch-up answer carries this node's owner-epoch history, read AFTER the events so it covers
-    /// every one of them; the replica installs it before applying them. A history this node cannot decode fails
-    /// the read rather than shipping records without their provenance. Every other answer carries none.
-    private ReadForwardResponse withCatchupHistory(ReadForward request, ReadForwardResponse answer) {
+    /// #1596: a replica catch-up answer carries this node's owner-epoch history; the replica installs it before applying
+    /// the records. A history this node cannot decode fails the read rather than shipping records without their
+    /// provenance. Every other answer carries none.
+    ///
+    /// I-27 (#1759, CTO A3): the history is read BEFORE the page, on the WAL path and on the ring path alike. A partition
+    /// that materializes between the two reads (recovery can rewrite a log's history) would otherwise label bytes read
+    /// from the deposed WAL with the history of the log that replaced it. Read first, the history is the one the page was
+    /// vouched by at its start; the receiver judges the page against the committed lineage with it.
+    private Option<Result<List<ProvenanceEntry>>> catchupHistoryBeforeRead(ReadForward request) {
         return isReplicaCatchup(request)
-               ? catchupHistory(request).fold(cause -> ReadForwardResponse.failureResponse(selfNodeId,
+               ? Option.some(catchupHistory(request))
+               : Option.none();
+    }
+
+    private ReadForwardResponse withCatchupHistory(ReadForward request,
+                                                   ReadForwardResponse answer,
+                                                   Option<Result<List<ProvenanceEntry>>> history) {
+        return history.fold(() -> answer,
+                            read -> read.fold(cause -> ReadForwardResponse.failureResponse(selfNodeId,
                                                                                            request.correlationId(),
                                                                                            HttpError.clientMessage(cause)),
-                                              answer::withHistory)
-               : answer;
+                                              answer::withHistory));
     }
 
     /// #1759: a page served from the WAL of a partition held here without a ring ([CatchupRead#readAppended]) is vouched by
@@ -467,7 +482,10 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     /// #1333: every successful answer carries this node's visible bounds of the partition, read AFTER
     /// the events so the head is never behind the last event served.
     @Contract
-    private void sendReadSuccess(ReadForward request, List<OffHeapRingBuffer.RawEvent> events, Epoch ownerEpoch) {
+    private void sendReadSuccess(ReadForward request,
+                                 List<OffHeapRingBuffer.RawEvent> events,
+                                 Epoch ownerEpoch,
+                                 Option<Result<List<ProvenanceEntry>>> history) {
         var capped = applyCap(events);
         var bounds = partitionManager.visibleBounds(request.streamName(),
                                                     request.partition())
@@ -478,7 +496,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                                              capped.events(),
                                                              bounds)
                      : ReadForwardResponse.successResponse(selfNodeId, request.correlationId(), capped.events(), bounds);
-        var response = withCatchupHistory(request, answer.withOwnerEpoch(ownerEpoch));
+        var response = withCatchupHistory(request, answer.withOwnerEpoch(ownerEpoch), history);
 
         if (capped.truncated()) {
             metrics.recordTruncated();

@@ -4,12 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.LongStream;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
@@ -20,10 +23,14 @@ import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.aether.stream.replication.BackfillError;
 import org.pragmatica.aether.stream.replication.PartitionBackfill;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
+import org.pragmatica.aether.stream.replication.ReplicationState;
+import org.pragmatica.aether.stream.replication.ReplicationTransport;
+import org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupRequest;
 import org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupResponse;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -39,11 +46,15 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 class OwnerCatchupCommittedLineageTest {
     private static final NodeId SELF = NodeId.randomNodeId();
     private static final NodeId SOURCE = NodeId.randomNodeId();
+    private static final NodeId OTHER = NodeId.randomNodeId();
     private static final Epoch E1 = Epoch.epoch(0, 1, 0);
     private static final Epoch E2 = Epoch.epoch(0, 2, 0);
     private static final Epoch E3 = Epoch.epoch(0, 3, 0);
     private static final Epoch E4 = Epoch.epoch(0, 4, 0);
     private static final long SOURCE_TAIL = 12L;
+
+    @TempDir
+    Path walDir;
 
     private StreamPartitionManager owner;
 
@@ -59,15 +70,62 @@ class OwnerCatchupCommittedLineageTest {
     }
 
     /// The ruling's case: the replica holds E1's records 11-12, which the committed E3 @ 11 re-assigned. It serves them; the
-    /// owner installs 0..10 and not 11-12, and the activation's catch-up is short of the source's tail.
+    /// owner installs 0..10 and not 11-12. A1: the target is the source's committed-lineage end (10), not its raw tail (12), so
+    /// the activation completes at 10 -- it is not left short of a tail no committed lineage owns.
     @Test
     void catchUpOwnerFrom_aReplicaHoldingE1PastACommittedE3Start_servesThem_andTheOwnerDoesNotInstallThem() {
         owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
 
         var outcome = catchUpFrom(List.of(ProvenanceEntry.provenanceEntry(E1, 0)));
 
-        assertThat(outcome).isEqualTo(Option.some(BackfillError.General.INCOMPLETE_BACKFILL));
+        assertThat(outcome).isEqualTo(Option.none());
         assertThat(head()).as("installed through the committed re-assignment, not past it").isEqualTo(10L);
+    }
+
+    /// A1, the second redrive: R1 holds a deposed epoch's tail (raw 20, committed lineage ends at 10), R2 holds the committed
+    /// lineage to 15. The first redrive reads R1 (the highest raw tail), learns its lineage end and stays short of R2's; the
+    /// second ranks by committed-lineage end, reads R2 and activates at 15. At the previous head R1 is picked again on every redrive.
+    @Test
+    void redrive_ofAnOwnerBehindADisownedTail_secondRound_readsTheReplicaHoldingTheCommittedLineage_andActivates() {
+        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
+
+        var registry = ReplicaRegistry.replicaRegistry();
+        var served = new CopyOnWriteArrayList<NodeId>();
+
+        registry.registerReplica("s", 0, SELF);
+        registry.registerReplica("s", 0, SOURCE);
+        registry.registerReplica("s", 0, OTHER);
+        registry.updateWatermark("s", 0, SOURCE, 20L, ReplicationState.CAUGHT_UP);
+        registry.updateWatermark("s", 0, OTHER, 15L, ReplicationState.CAUGHT_UP);
+
+        var backfill = PartitionBackfill.partitionBackfill(registry,
+                                                           owner.alignedRecovery(),
+                                                           (node, request) -> servedBy(node, request, served),
+                                                           ReplicationTransport.NOOP,
+                                                           (_, _, _) -> BackfillError.General.NO_SOURCE_REPLICA.promise(),
+                                                           (_, _) -> head(),
+                                                           SELF,
+                                                           TimeSpan.timeSpan(Long.MAX_VALUE).nanos(),
+                                                           () -> List.of(SELF),
+                                                           CommittedStreamOwnerSource.none());
+        var first = backfill.backfill("s", 0).await();
+
+        assertThat(first.isFailure()).as("short of R2's lineage: not activated").isTrue();
+        assertThat(head()).as("R1 installed through its lineage end").isEqualTo(10L);
+
+        var second = backfill.backfill("s", 0).await();
+
+        assertThat(second.isSuccess()).as("second redrive activates: %s", second).isTrue();
+        assertThat(head()).isEqualTo(15L);
+        assertThat(served).as("R1 once, then the replica holding the lineage").containsExactly(SOURCE, OTHER);
+    }
+
+    private Promise<CatchupResponse> servedBy(NodeId node, CatchupRequest request, List<NodeId> served) {
+        served.add(node);
+
+        return node.equals(SOURCE)
+               ? Promise.success(served(request.fromOffset(), 20L, SOURCE, List.of(ProvenanceEntry.provenanceEntry(E1, 0))))
+               : Promise.success(served(request.fromOffset(), 15L, OTHER, List.of(ProvenanceEntry.provenanceEntry(E1, 0), ProvenanceEntry.provenanceEntry(E3, 11))));
     }
 
     /// Control: a source whose history follows the committed lineage (its 11-12 are E3's) is installed whole.
@@ -135,14 +193,38 @@ class OwnerCatchupCommittedLineageTest {
             .as("E1 [0,5) holds nothing of the page [5,12]; E4 has no later committed epoch").isEqualTo(Option.none());
     }
 
+    /// The clip's `toOffset` reaches the provenance install: a source slice with an epoch starting AT the clip bound (E2 @ 5, the
+    /// committed lineage re-assigns 5 to E3) must leave the owner's history with no entry no record of its reaches. Needs a
+    /// log-backed owner: a manager without a log installs no provenance.
+    @Test
+    void catchUpOwnerFrom_aClippedPage_installsNoEpochEntryThatNoInstalledRecordReaches() {
+        var logged = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), LastSealedOffsetSource.none());
+
+        logged.createStream(config()).onFailure(cause -> fail(cause.message()));
+        logged.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 5L)));
+
+        var outcome = catchUpFrom(logged, List.of(ProvenanceEntry.provenanceEntry(E1, 0), ProvenanceEntry.provenanceEntry(E2, 5)));
+
+        assertThat(outcome).as("activates at the lineage end, 4").isEqualTo(Option.none());
+        assertThat(logged.partitionBuffer("s", 0).map(OffHeapRingBuffer::headOffset)).isEqualTo(Option.some(4L));
+        assertThat(logged.epochHistory("s", 0).unwrap()).as("E1 only: nothing installed reaches E2 @ 5")
+                                                       .extracting(ProvenanceEntry::rank)
+                                                       .containsExactly(E1);
+        logged.close();
+    }
+
     private Option<Object> catchUpFrom(List<ProvenanceEntry> history) {
+        return catchUpFrom(owner, history);
+    }
+
+    private Option<Object> catchUpFrom(StreamPartitionManager target, List<ProvenanceEntry> history) {
         var registry = ReplicaRegistry.replicaRegistry();
 
         registry.registerReplica("s", 0, SELF);
         registry.registerReplica("s", 0, SOURCE);
 
         var backfill = PartitionBackfill.partitionBackfill(registry,
-                                                           owner.alignedRecovery(),
+                                                           target.alignedRecovery(),
                                                            (_, request) -> Promise.success(served(request.fromOffset(), history)),
                                                            SELF);
 
@@ -156,13 +238,17 @@ class OwnerCatchupCommittedLineageTest {
     }
 
     private static CatchupResponse served(long from, List<ProvenanceEntry> history) {
-        var offsets = LongStream.rangeClosed(from, SOURCE_TAIL).boxed().toList();
+        return served(from, SOURCE_TAIL, SOURCE, history);
+    }
 
-        return CatchupResponse.catchupResponse(SOURCE,
+    private static CatchupResponse served(long from, long tail, NodeId node, List<ProvenanceEntry> history) {
+        var offsets = LongStream.rangeClosed(from, tail).boxed().toList();
+
+        return CatchupResponse.catchupResponse(node,
                                                "s",
                                                0,
                                                from,
-                                               SOURCE_TAIL,
+                                               tail,
                                                offsets.stream().map(offset -> ("e" + offset).getBytes()).toList(),
                                                offsets.stream().map(offset -> 1000L + offset).toList(),
                                                history);

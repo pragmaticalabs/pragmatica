@@ -84,18 +84,78 @@ class AppendLogReadRangeTest {
         assertDamagedAt(AppendLog.readRange(file, 0, 10, 0), ends[2]);
     }
 
+    /// A2 (CTO): a torn FINAL frame ends the log; the intact prefix is the page.
     @Test
-    void readRange_aTornHeaderAtTheTail_failsThePage() throws Exception {
+    void readRange_aTornHeaderAtTheTail_endsTheLog_theIntactPrefixIsServed() throws Exception {
         Files.write(file, new byte[]{0, 0, 0, 40, 1, 2, 3}, StandardOpenOption.APPEND);
 
-        assertDamagedAt(AppendLog.readRange(file, 3, 10, 0), ends[4]);
+        var page = AppendLog.readRange(file, 3, 10, 0).unwrap();
+
+        assertThat(offsets(page)).containsExactly(3L, 4L);
+        assertThat(page.endPosition()).as("where the torn frame starts").isEqualTo(ends[4]);
     }
 
     @Test
-    void readRange_aPayloadCutShortAtTheTail_failsThePage() throws Exception {
+    void readRange_aCompleteHeaderWhosePayloadIsCutShortAtTheTail_endsTheLog() throws Exception {
+        var header = new byte[HEADER];
+
+        header[3] = 40;
+        Files.write(file, header, StandardOpenOption.APPEND);
+        Files.write(file, new byte[]{1, 2, 3}, StandardOpenOption.APPEND);
+
+        var page = AppendLog.readRange(file, 0, 10, 0).unwrap();
+
+        assertThat(offsets(page)).containsExactly(0L, 1L, 2L, 3L, 4L);
+        assertThat(page.endPosition()).isEqualTo(ends[4]);
+    }
+
+    @Test
+    void readRange_aPayloadCutShortAtTheTail_endsTheLog_theIntactPrefixIsServed() throws Exception {
         var bytes = Files.readAllBytes(file);
 
         Files.write(file, Arrays.copyOf(bytes, (int) ends[4] - 2));
+
+        var page = AppendLog.readRange(file, 0, 10, 0).unwrap();
+
+        assertThat(offsets(page)).containsExactly(0L, 1L, 2L, 3L);
+        assertThat(page.endPosition()).isEqualTo(ends[3]);
+    }
+
+    /// B3 (verifier): an empty payload is a valid record, the last frame included -- exactly one header long, not torn.
+    @Test
+    void readRange_aZeroLengthPayloadAsTheLastFrame_isServedAsARecord() throws Exception {
+        var log = AppendLog.open(file).unwrap();
+
+        log.append(RECORDS, new byte[0], 2_000L).await().onFailure(c -> fail(c.message()));
+        log.close();
+
+        var page = AppendLog.readRange(file, 4, 10, 0).unwrap();
+
+        assertThat(offsets(page)).containsExactly(4L, 5L);
+        assertThat(page.records().getLast().payload()).isEmpty();
+        assertThat(page.endPosition()).isEqualTo(Files.size(file));
+    }
+
+    /// The same frame cut one byte short is a torn header: the log ends before it.
+    @Test
+    void readRange_aZeroLengthLastFrameCutOneByteShort_endsTheLogBeforeIt() throws Exception {
+        var log = AppendLog.open(file).unwrap();
+
+        log.append(RECORDS, new byte[0], 2_000L).await().onFailure(c -> fail(c.message()));
+        log.close();
+        Files.write(file, Arrays.copyOf(Files.readAllBytes(file), (int) ends[RECORDS - 1] + HEADER - 1));
+
+        var page = AppendLog.readRange(file, 4, 10, 0).unwrap();
+
+        assertThat(offsets(page)).containsExactly(4L);
+        assertThat(page.endPosition()).isEqualTo(ends[RECORDS - 1]);
+    }
+
+    /// A frame that fits in the file but fails its CRC is damage, the final frame included: only a frame cut by the end of
+    /// the file is torn.
+    @Test
+    void readRange_aCrcMismatchInTheFinalFullFrame_isStillDamage() throws Exception {
+        flipByteAt(ends[4] - 1);
 
         assertDamagedAt(AppendLog.readRange(file, 0, 10, 0), ends[3]);
     }
@@ -144,7 +204,7 @@ class AppendLogReadRangeTest {
         var listing = listing();
 
         AppendLog.readRange(file, 0, 2, 0).onFailure(c -> fail(c.message()));
-        AppendLog.readRange(file, 0, 10, 0).onSuccess(_ -> fail("the torn tail must fail the page"));
+        assertThat(offsets(AppendLog.readRange(file, 0, 10, 0).unwrap())).containsExactly(0L, 1L, 2L, 3L, 4L);
 
         assertThat(Files.readAllBytes(file)).isEqualTo(before);
         assertThat(Files.getLastModifiedTime(file)).isEqualTo(modified);

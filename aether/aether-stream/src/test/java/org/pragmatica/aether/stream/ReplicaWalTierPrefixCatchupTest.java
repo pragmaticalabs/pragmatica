@@ -5,11 +5,16 @@
 package org.pragmatica.aether.stream;
 
 import java.nio.file.Files;
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 import java.util.stream.IntStream;
@@ -62,6 +67,7 @@ class ReplicaWalTierPrefixCatchupTest {
     private static final NodeId SELF = NodeId.randomNodeId();
     private static final NodeId PEER = NodeId.randomNodeId();
     private static final Epoch E1 = Epoch.epoch(0, 1, 0);
+    private static final Epoch E2 = Epoch.epoch(0, 2, 0);
     private static final int EVENTS = 40;
     private static final int RING = 4;
     private static final int PAYLOAD_BYTES = 256 * 1024;
@@ -78,6 +84,8 @@ class ReplicaWalTierPrefixCatchupTest {
 
     private final ConcurrentHashMap<String, Role> roles = new ConcurrentHashMap<>();
     private final List<ReadForwardResponse> answers = new CopyOnWriteArrayList<>();
+    private final AtomicReference<Runnable> onTierRead = new AtomicReference<>();
+    private SegmentIndex segmentIndex;
     private StorageInstance storage;
     private StreamPartitionManager manager;
     private StreamForwardHandler handler;
@@ -86,6 +94,8 @@ class ReplicaWalTierPrefixCatchupTest {
     void sealAPrefixInAPreviousRun_thenHoldThePartitionPaced() {
         storage = DurableTestStorage.durableStorage("tier-prefix", storageDir);
         var index = new SegmentIndex();
+
+        segmentIndex = index;
         var previous = streamPartitionManager(Long.MAX_VALUE,
                                               segmentSealer(storageSegmentSink(storage, index)),
                                               Option.some(walDir),
@@ -121,7 +131,7 @@ class ReplicaWalTierPrefixCatchupTest {
                                                             64L * 1024 * 1024,
                                                             StreamReadForwardMetrics.NOOP,
                                                             Option.none(),
-                                                            Option.some(tieredStreamReader(index, storage)));
+                                                            Option.some(tieredStreamReader(index, hookedTier(storage))));
     }
 
     @AfterEach
@@ -139,6 +149,89 @@ class ReplicaWalTierPrefixCatchupTest {
         assertThat(answer.events().get(0).data()).as("from the tier").isEqualTo(payload(0));
         assertThat(answer.events().get(EVENTS - 1).data()).as("from the WAL").isEqualTo(payload(EVENTS - 1));
         assertThat(manager.partitionBuffer("held", 0).isEmpty()).as("no ring is created").isTrue();
+    }
+
+    /// A3 (CTO), WAL path: the epoch history is read BEFORE the page. A materialization that recovers the log and extends its
+    /// history after the page began (here: between the WAL scan and the tier read of the sealed prefix) must not relabel the
+    /// page: the answer carries the history the page was vouched by when the read started.
+    @Test
+    void catchupRead_whoseWalHistoryChangesAfterThePageBegan_carriesTheHistoryReadBeforeIt() {
+        onTierRead.set(this::extendTheWalHistory);
+
+        var answer = catchupRead(0L, PAGE);
+
+        assertThat(answer.success()).as("answer %s", answer.errorMessage()).isTrue();
+        assertThat(onTierRead.get()).as("the tier was read, and the hook fired").isNull();
+        assertThat(answer.history()).extracting(ProvenanceEntry::rank).contains(E1).doesNotContain(E2);
+    }
+
+    /// A3 (CTO), ring path: the same for a partition that materialized (the node restarted with a free slot), whose history
+    /// is its open log's.
+    @Test
+    void catchupRead_ofAMaterializedPartition_whoseHistoryChangesAfterThePageBegan_carriesTheHistoryReadBeforeIt() {
+        manager.close();
+        var registry = ReplicaRegistry.replicaRegistry();
+
+        registry.registerReplica("held", 0, PEER);
+        manager = streamPartitionManager(Long.MAX_VALUE,
+                                         EvictionListener.NOOP,
+                                         ReplicationManager.replicationManager(SELF, registry),
+                                         Option.some(walDir),
+                                         segmentIndex::lastSealedOffset);
+        manager.placementRoleSupplier((stream, _) -> roles.getOrDefault(stream, Role.NONE));
+        manager.onStreamConfigPut(configPut(heldConfig()));
+        manager.materializePartition("held", 0).onFailure(cause -> fail(cause.message()));
+        handler = StreamForwardHandler.streamForwardHandler(SELF,
+                                                            manager,
+                                                            AcceptingStreamForwardTransport.accepting((_, message) -> record(message)),
+                                                            64L * 1024 * 1024,
+                                                            StreamReadForwardMetrics.NOOP,
+                                                            Option.none(),
+                                                            Option.some(tieredStreamReader(segmentIndex, hookedTier(storage))));
+        onTierRead.set(this::extendTheMaterializedHistory);
+
+        var answer = catchupRead(0L, PAGE);
+
+        assertThat(answer.success()).as("answer %s", answer.errorMessage()).isTrue();
+        assertThat(onTierRead.get()).as("the tier was read, and the hook fired").isNull();
+        assertThat(manager.epochHistory("held", 0).unwrap()).as("the log's history did change").extracting(ProvenanceEntry::rank).contains(E2);
+        assertThat(answer.history()).extracting(ProvenanceEntry::rank).contains(E1).doesNotContain(E2);
+    }
+
+    /// What a new owner epoch starting past the head does to the open log's history: its own history, plus the new epoch.
+    private void extendTheMaterializedHistory() {
+        var claimed = Stream.concat(manager.epochHistory("held", 0).unwrap().stream(),
+                                    Stream.of(ProvenanceEntry.provenanceEntry(E2, EVENTS)))
+                            .toList();
+
+        manager.installProvenance("held", 0, EVENTS, EVENTS, claimed).onFailure(cause -> fail(cause.message()));
+    }
+
+    private void extendTheWalHistory() {
+        var wal = AppendLog.open(walFile()).unwrap();
+
+        wal.recordEpochStart(ProvenanceEntry.provenanceEntry(E2, 20).key().unwrap(), 20, ProvenanceEntry.ORDER)
+           .onFailure(cause -> fail(cause.message()));
+        wal.close();
+    }
+
+    /// The storage the tier reads through, which runs [#onTierRead] once, at the first call.
+    private StorageInstance hookedTier(StorageInstance real) {
+        InvocationHandler hook = (_, method, args) -> invokeAfterHook(real, method, args);
+
+        return (StorageInstance) Proxy.newProxyInstance(StorageInstance.class.getClassLoader(),
+                                                        new Class<?>[]{StorageInstance.class},
+                                                        hook);
+    }
+
+    private Object invokeAfterHook(StorageInstance real, Method method, Object[] args) throws Throwable {
+        Option.option(onTierRead.getAndSet(null)).onPresent(Runnable::run);
+
+        try {
+            return method.invoke(real, args);
+        } catch (InvocationTargetException e) {
+            throw e.getCause();
+        }
     }
 
     @Test

@@ -74,8 +74,8 @@ class AppendLogVolumeReadOnlyTest {
     }
 
     /// #1759 (CTO D2): the read-only range scan and history read a held-unmaterialized replica serves catch-up from change
-    /// nothing on the volume either, through the instance and through its opener: a torn tail is answered `LogDamaged` and
-    /// stays on disk, a page below it is served, and the history is the sidecar's.
+    /// nothing on the volume either, through the instance and through its opener: a torn tail ends the log (the intact prefix is
+    /// served) and stays on disk, and the history is the sidecar's.
     @Test
     void readLogRangeAndEpochHistory_throughTheInstanceAndItsOpener_leaveTheVolumeByteIdentical() throws Exception {
         prepareVolumeWithTornLog();
@@ -91,8 +91,10 @@ class AppendLogVolumeReadOnlyTest {
                                                                           .containsExactly(0L, 1L);
         assertThat(opener.readRange("orders/0", 1, 2, 0).unwrap().records()).extracting(AppendLog.WalRecord::offset)
                                                                        .containsExactly(1L, 2L);
-        assertThat(storage.readLogRange("orders/0", 0, 10, 0).isFailure()).as("the torn tail fails a page reaching it").isTrue();
-        assertThat(opener.readRange("orders/0", 0, 10, 0).isFailure()).as("through the opener too").isTrue();
+        assertThat(storage.readLogRange("orders/0", 0, 10, 0).unwrap().records()).as("the torn tail ends the log")
+                                                                           .extracting(AppendLog.WalRecord::offset)
+                                                                           .containsExactly(0L, 1L, 2L);
+        assertThat(opener.readRange("orders/0", 0, 10, 0).unwrap().records()).as("through the opener too").hasSize(3);
         assertThat(storage.readLogRange("orders/9", 0, 10, 0).unwrap()).isEqualTo(AppendLog.RangePage.EMPTY);
         var size = Files.size(volume.resolve("logs").resolve("orders/0.wal"));
 

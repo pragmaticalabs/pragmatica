@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -139,6 +140,15 @@ class ReplicaWalCatchupTest {
             assertThat(manager.heldNotMaterializedWatermark("held", 0)).isEqualTo(Option.some(4L));
         }
 
+        /// The requested page size bounds the WAL scan: a page of two is two records, not the whole log.
+        @Test
+        void catchupRead_withAPageOfTwo_servesTwoRecordsOfTheWal() {
+            var answer = catchupRead(0L, 2);
+
+            assertThat(answer.success()).as("answer %s", answer.errorMessage()).isTrue();
+            assertThat(answer.events()).extracting(RawEventDto::offset).containsExactly(0L, 1L);
+        }
+
         @Test
         void catchupRead_fromAnOffset_servesTheRecordsFromThere() {
             var answer = catchupRead(3L, PAGE);
@@ -166,18 +176,57 @@ class ReplicaWalCatchupTest {
                 .isTrue();
         }
 
+        /// A2 (CTO): a torn FINAL frame ends the log, as the held watermark counts it: the intact prefix is served.
         @Test
-        void catchupRead_ofAWalWithATornTail_answersUnavailable() throws Exception {
+        void catchupRead_ofAWalWithATornTail_servesTheIntactPrefix() throws Exception {
             Files.write(walFile(), new byte[]{0, 0, 0, 40, 1, 2}, StandardOpenOption.APPEND);
 
             var answer = catchupRead(0L, PAGE);
 
-            assertThat(answer.success()).isFalse();
-            assertThat(answer.events()).isEmpty();
-            assertThat(StreamError.PartitionHeldNotMaterialized.watermarkOf(new StreamForwardError.ReadForwardFailed(answer.errorMessage()))
-                                  .isPresent())
-                .as("named as the held partition, %s", answer.errorMessage())
-                .isTrue();
+            assertThat(answer.success()).as("answer %s", answer.errorMessage()).isTrue();
+            assertThat(answer.events()).extracting(RawEventDto::offset).containsExactly(0L, 1L, 2L, 3L, 4L);
+        }
+
+        @Test
+        void catchupRead_ofAWalWhoseLastPayloadIsCutShort_servesThePrefixUpToTheHeldWatermark() throws Exception {
+            cutLastFrameShort();
+
+            var answer = catchupRead(0L, PAGE);
+
+            assertThat(answer.success()).as("answer %s", answer.errorMessage()).isTrue();
+            assertThat(answer.events()).extracting(RawEventDto::offset).containsExactly(0L, 1L, 2L, 3L);
+            assertThat(manager.heldNotMaterializedWatermark("held", 0)).as("the page ends at the watermark").isEqualTo(Option.some(3L));
+        }
+
+        /// A2 (CTO), the crash case: a replica whose WAL was torn by a crash and which restarted budget-deferred. The owner
+        /// behind it targets the replica's valid head and activates there.
+        @Test
+        void ownerBehindAReplicaWithATornFinalFrame_catchesUpToTheValidHead() throws Exception {
+            cutLastFrameShort();
+
+            var owner = streamPartitionManager();
+            var registry = ReplicaRegistry.replicaRegistry();
+
+            owner.createStream(config("held", 1)).onFailure(cause -> fail(cause.message()));
+            registry.registerReplica("held", 0, PEER);
+            registry.registerReplica("held", 0, SELF);
+            var validHead = manager.heldNotMaterializedWatermark("held", 0).or(-1L);
+            var backfill = PartitionBackfill.partitionBackfill(registry,
+                                                               owner.alignedRecovery(),
+                                                               (_, request) -> Promise.success(servedByTheReplica(request.fromOffset())),
+                                                               PEER);
+
+            backfill.catchUpOwnerFrom("held", 0, SELF, validHead).await().onFailure(cause -> fail(cause.message()));
+
+            assertThat(validHead).isEqualTo(EVENTS - 2L);
+            assertThat(owner.partitionBuffer("held", 0).map(OffHeapRingBuffer::headOffset)).isEqualTo(Option.some(validHead));
+            owner.close();
+        }
+
+        private void cutLastFrameShort() throws Exception {
+            var bytes = Files.readAllBytes(walFile());
+
+            Files.write(walFile(), Arrays.copyOf(bytes, bytes.length - 2));
         }
 
         /// D1: the page ships the WAL's own history or fails; an unreadable history is never answered as an empty one.
