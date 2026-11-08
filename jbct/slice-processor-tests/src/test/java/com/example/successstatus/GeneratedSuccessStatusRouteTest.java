@@ -149,13 +149,13 @@ class GeneratedSuccessStatusRouteTest {
         assertThat(send("GET", "/api/blog/lookup/unknown", "").statusCode()).isEqualTo(404);
     }
 
-    /// A route that declares neither key generates the source it always did: only the six declaring routes carry
+    /// A route that declares neither key generates the source it always did: only the seven declaring routes carry
     /// `.withSuccess(...)`.
     @Test
     void undeclaredRoutes_generateNoSuccessDeclaration() throws IOException {
         var generated = Files.readString(generatedRoutes());
 
-        assertThat(generated.split("\\.withSuccess\\(", -1)).hasSize(7);
+        assertThat(generated.split("\\.withSuccess\\(", -1)).hasSize(8);
         assertThat(generated).contains(".withSuccess(org.pragmatica.http.routing.SuccessSpec.successSpec(202))");
     }
 
