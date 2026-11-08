@@ -467,4 +467,84 @@ class RollbackNoPromotionTest {
                       .map(DeploymentOutcomeValue.class::cast)
                       .map(DeploymentOutcomeValue::status);
     }
+
+    // Red when: a leader change mid-rollback lets the healthy slice be promoted after the ROLLED_BACK outcome.
+    @Test
+    void leaderChangeMidRollback_noPromotionAfterTerminal() {
+        var h = active();
+        var nodes = nodes(h);
+
+        publish(h, BLUEPRINT);
+        h.policy = FsmHarness.SettlePolicy.HOLD;
+        nodes.getFirst().fails(ORDERS, true);
+        h.drain();
+        assertThat(h.submits(SubmitKind.ROLLBACK)).as("control: the rollback is in flight").hasSize(1);
+        nodes.forEach(node -> node.follows(BILLING));
+        h.drain();
+        h.held.clear();
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        h.deliver(new ClusterInput.Deactivate());
+        h.commitLeader(FsmHarness.SELF, 2L);
+        h.drain();
+        h.activate();
+        quiesce(h, nodes);
+        assertTerminalWithoutPromotion(h);
+    }
+
+    private static void settle(FsmHarness h, List<NodeSim> nodes, List<Artifact> all, int ticks) {
+        for (var round = 0; round < ticks; round++) {
+            for (var node : nodes) {
+                for (var artifact : all) {
+                    node.follows(artifact);
+                }
+            }
+            h.drain();
+            for (var nodeId : List.of(CORE_1, CORE_2, CORE_3)) {
+                for (var artifact : all) {
+                    var key = new SliceObservedKey(nodeId, artifact);
+                    h.store.get(key).filter(SliceObservedValue.class::isInstance).map(SliceObservedValue.class::cast)
+                           .filter(row -> row.state() == SliceObservedState.UNLOADED).onPresent(_ -> h.seedRemove(key));
+                }
+            }
+            h.drain();
+            h.advanceBySeconds(TICK_SECONDS);
+        }
+    }
+
+    // Red when: an unload of a removed target whose write failed or was lost is cleared as pending instead of released to the next reconcile, so only the orphan audit, every tenth tick, derives it again.
+    @Test
+    void orphanUnloadFailed_isDerivedAgainBeforeTheAudit() {
+        orphanUnloadUnwritten(FsmHarness.SettlePolicy.FAIL_AND_HOLD);
+    }
+
+    @Test
+    void orphanUnloadLost_isDerivedAgainBeforeTheAudit() {
+        orphanUnloadUnwritten(FsmHarness.SettlePolicy.LOSE);
+    }
+
+    private static void orphanUnloadUnwritten(FsmHarness.SettlePolicy policy) {
+        var h = active();
+        var nodes = nodes(h);
+        var target = new SliceTargetKey(ORDERS.base());
+
+        h.seed(target, SliceTargetValue.sliceTargetValue(ORDERS.version(), 3));
+        h.drain();
+        settle(h, nodes, List.of(ORDERS), 4);
+        assertActiveOnAllCores(h, ORDERS);
+        h.policy = policy;
+        var before = h.submits(SubmitKind.GOALS).size();
+        h.seedRemove(target);
+        h.drain();
+        assertThat(h.submits(SubmitKind.GOALS).size()).as("control: the unloads were submitted").isGreaterThan(before);
+        h.held.clear();
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        assertThat(goal(h, CORE_1, ORDERS)).as("control: the unload was not written").isEqualTo(Option.some(SliceGoal.ACTIVE));
+        var ticks = 0;
+        while (ticks < 25 && goal(h, CORE_1, ORDERS).equals(Option.some(SliceGoal.ACTIVE))) {
+            h.advanceBySeconds(TICK_SECONDS);
+            h.drain();
+            ticks++;
+        }
+        assertThat(ticks).as("ticks until the unload is written (" + policy + ", goal now " + goal(h, CORE_1, ORDERS) + ")").isLessThanOrEqualTo(2);
+    }
 }

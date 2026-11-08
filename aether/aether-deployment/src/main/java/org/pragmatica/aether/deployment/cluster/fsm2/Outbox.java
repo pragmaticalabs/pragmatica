@@ -680,7 +680,7 @@ public sealed interface Outbox {
     }
 
     private static ClusterModel dropPending(ClusterModel m, TxDraft draft) {
-        draft.pairs().forEach(pair -> Indexer.clearPending(m, pair));
+        draft.pairs().forEach(pair -> releaseUnwritten(m, pair));
 
         return m;
     }
