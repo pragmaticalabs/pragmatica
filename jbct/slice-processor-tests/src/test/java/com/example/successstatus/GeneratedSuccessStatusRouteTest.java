@@ -80,6 +80,25 @@ class GeneratedSuccessStatusRouteTest {
         assertThat(response.body()).isEmpty();
     }
 
+    /// Owner ruling 2026-11-08: the Location is built from fields, each value percent-encoded as one path segment
+    /// while the template's literal parts stay untouched.
+    @Test
+    void locationField_withSlashAndSpace_isPercentEncodedAsOneSegment() {
+        var response = send("POST", "/api/blog/articles", "{\"slug\":\"a/b c\",\"title\":\"Hi\"}");
+
+        assertThat(response.statusCode()).isEqualTo(201);
+        assertThat(response.headers()).containsEntry("Location", "/api/blog/articles/a%2Fb%20c");
+    }
+
+    /// Owner ruling 2026-11-08: a declared 204 on Unit never carries a body.
+    @Test
+    void declared204_onUnit_answersNoContentWithNoBody() {
+        var response = send("POST", "/api/blog/purge/known", "");
+
+        assertThat(response.statusCode()).isEqualTo(204);
+        assertThat(response.body()).isEmpty();
+    }
+
     @Test
     void unit_withNoDeclaration_answers204WithNoBody() {
         var response = send("DELETE", "/api/blog/articles/known", "");

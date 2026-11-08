@@ -521,9 +521,9 @@ public final class RouteConfigLoader {
                                                                                                                                                                    methodOverride)));
     }
 
-    /// The success statuses a route may declare: `204` and `202` answer a `Unit` result with no body; `200`, `201`,
-    /// `202` and `203` answer a value with its body. Anything else (another 2xx, a redirect, an error) is refused here.
-    private static final Set<Long> SUCCESS_STATUSES = Set.of(200L, 201L, 202L, 203L, 204L);
+    /// The success statuses a route may declare: `204` and `202` answer a `Unit` result with no body; `200`, `201`
+    /// and `202` answer a value with its body. Anything else (`203`, `205`, `206`, another 2xx, a redirect, an error) is refused here.
+    private static final Set<Long> SUCCESS_STATUSES = Set.of(200L, 201L, 202L, 204L);
 
     /// `status` (a whole number, one of [#SUCCESS_STATUSES]) and `location` (a non-blank `Location` template).
     private static Result<RouteSuccess> parseSuccess(String key, Map<String, Object> table) {

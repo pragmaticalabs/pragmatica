@@ -631,7 +631,27 @@ class SliceProcessorTest {
                                             "create = { route = \"POST /items\", status = 302 }",
                                             "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
 
-        assertThat(diagnostics).contains("Route 'create' status must be a success status, one of [200, 201, 202, 203, 204] written as a number; got 302");
+        assertThat(diagnostics).contains("Route 'create' status must be a success status, one of [200, 201, 202, 204] written as a number; got 302");
+    }
+
+    /// Owner ruling 2026-11-08: only 200, 201, 202 and 204 are declarable; 203 is refused at build time.
+    @Test
+    void status203_failsTheBuildWithAClearError(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 203 }",
+                                            "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
+
+        assertThat(diagnostics).contains("Route 'create' status must be a success status, one of [200, 201, 202, 204] written as a number; got 203");
+    }
+
+    /// Owner ruling 2026-11-08: only 200, 201, 202 and 204 are declarable; 206 is refused at build time.
+    @Test
+    void status206_failsTheBuildWithAClearError(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 206 }",
+                                            "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
+
+        assertThat(diagnostics).contains("Route 'create' status must be a success status, one of [200, 201, 202, 204] written as a number; got 206");
     }
 
     @Test
@@ -640,7 +660,7 @@ class SliceProcessorTest {
                                             "create = { route = \"POST /items\", status = \"201\" }",
                                             "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
 
-        assertThat(diagnostics).contains("Route 'create' status must be a success status, one of [200, 201, 202, 203, 204] written as a number; got the string \"201\"");
+        assertThat(diagnostics).contains("Route 'create' status must be a success status, one of [200, 201, 202, 204] written as a number; got the string \"201\"");
     }
 
     @Test
@@ -649,7 +669,7 @@ class SliceProcessorTest {
                                             "create = { route = \"POST /items\", status = 201.5 }",
                                             "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
 
-        assertThat(diagnostics).contains("Route 'create' status must be a success status, one of [200, 201, 202, 203, 204] written as a number; got 201.5");
+        assertThat(diagnostics).contains("Route 'create' status must be a success status, one of [200, 201, 202, 204] written as a number; got 201.5");
     }
 
     @Test

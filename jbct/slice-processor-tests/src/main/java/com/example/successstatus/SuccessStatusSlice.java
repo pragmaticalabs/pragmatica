@@ -17,6 +17,7 @@ public interface SuccessStatusSlice {
     Promise<Draft> draft(ArticleRequest request);
     Promise<Unit> enqueue(ArticleRequest request);
     Promise<Unit> remove(SlugRequest request);
+    Promise<Unit> purge(SlugRequest request);
     Promise<Option<Article>> find(SlugRequest request);
     Promise<Article> broken();
     Promise<Article> locate(ArticleRequest request);
@@ -41,6 +42,11 @@ public interface SuccessStatusSlice {
 
             @Override
             public Promise<Unit> enqueue(ArticleRequest request) {
+                return Promise.unitPromise();
+            }
+
+            @Override
+            public Promise<Unit> purge(SlugRequest request) {
                 return Promise.unitPromise();
             }
 
