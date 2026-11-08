@@ -602,15 +602,88 @@ class SliceProcessorTest {
         assertThat(diagnostics).contains("Generated routes: UploadService");
     }
 
+    // ========== [errors] packages: Cause types outside the slice package (#2883) ==========
+
+    private static JavaFileObject causeIn(String pkg, String outer, String... inner) {
+        var members = Arrays.stream(inner)
+                            .map(name -> "    record " + name + "() implements " + outer
+                                         + " { public String message() { return \"" + name + "\"; } }\n")
+                            .collect(Collectors.joining());
+
+        return JavaFileObjects.forSourceString(pkg + "." + outer,
+                                               "package " + pkg + ";\n\n"
+                                               + "public sealed interface " + outer + " extends org.pragmatica.lang.Cause {\n"
+                                               + members + "}\n");
+    }
+
+    private static final String ERRORS_METHOD = "Promise<String> upload(String body);";
+
+    private String errorPackagesToml(String errors) {
+        return "prefix = \"/api\"\n\n[routes]\nupload = \"PUT /files/{id:Long}\"\n\n[errors]\n" + errors + "\n";
+    }
+
+    private String generatedRoutes(Path classes) throws IOException {
+        return Files.readString(classes.resolve(Path.of("upload", "UploadServiceRoutes.java")));
+    }
+
+    @Test
+    void errorsPackages_listedPackage_mapsItsCauseToTheDeclaredStatus(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithToml(classes,
+                                          errorPackagesToml("packages = [\"shared.errors\"]\nHTTP_429 = [\"*QuotaExceeded*\"]"),
+                                          ERRORS_METHOD,
+                                          List.of(causeIn("shared.errors", "QuotaError", "QuotaExceeded")));
+
+        assertThat(diagnostics).doesNotContain("do not exist");
+        assertThat(generatedRoutes(classes)).contains("case QuotaExceeded _ -> HttpError.httpError(HttpStatus.TOO_MANY_REQUESTS, cause);");
+    }
+
+    @Test
+    void errorsPackages_unlistedPackage_isNotDiscovered(@TempDir Path classes) throws IOException {
+        compileWithToml(classes,
+                        errorPackagesToml("HTTP_429 = [\"*QuotaExceeded*\"]"),
+                        ERRORS_METHOD,
+                        List.of(causeIn("shared.errors", "QuotaError", "QuotaExceeded")));
+
+        assertThat(generatedRoutes(classes)).doesNotContain("QuotaExceeded");
+    }
+
+    @Test
+    void errorsPackages_missingPackage_failsTheBuildNamingIt(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithToml(classes,
+                                          errorPackagesToml("packages = [\"shared.errors\", \"shared.typo\"]"),
+                                          ERRORS_METHOD,
+                                          List.of(causeIn("shared.errors", "QuotaError", "QuotaExceeded")));
+
+        assertThat(diagnostics).contains("do not exist: shared.typo");
+        assertThat(diagnostics).doesNotContain("Generated routes: UploadService");
+    }
+
+    @Test
+    void errorsPackages_sameSimpleNameInTwoPackages_isMappedByQualifiedName(@TempDir Path classes) throws IOException {
+        compileWithToml(classes,
+                        errorPackagesToml("packages = [\"shared.one\", \"shared.two\"]\nHTTP_403 = [\"OneError.Denied\"]\nHTTP_409 = [\"TwoError.Denied\"]"),
+                        ERRORS_METHOD,
+                        List.of(causeIn("shared.one", "OneError", "Denied"), causeIn("shared.two", "TwoError", "Denied")));
+
+        var generated = generatedRoutes(classes);
+
+        assertThat(generated).contains("case shared.one.OneError.Denied _ -> HttpError.httpError(HttpStatus.FORBIDDEN, cause);");
+        assertThat(generated).contains("case shared.two.TwoError.Denied _ -> HttpError.httpError(HttpStatus.CONFLICT, cause);");
+    }
+
     private String compileWithRoutes(Path classes, String route, String method) throws IOException {
         return compileWithRoutes(classes, route, method, List.of());
     }
 
     private String compileWithRoutes(Path classes, String route, String method, List<JavaFileObject> extra) throws IOException {
+        return compileWithToml(classes, "prefix = \"/api\"\n\n[routes]\n" + route + "\n", method, extra);
+    }
+
+    private String compileWithToml(Path classes, String toml, String method, List<JavaFileObject> extra) throws IOException {
         var routes = classes.resolve(Path.of("upload", "routes.toml"));
 
         Files.createDirectories(routes.getParent());
-        Files.writeString(routes, "prefix = \"/api\"\n\n[routes]\n" + route + "\n");
+        Files.writeString(routes, toml);
         var source = JavaFileObjects.forSourceString("upload.UploadService",
                                                      """
             package upload;

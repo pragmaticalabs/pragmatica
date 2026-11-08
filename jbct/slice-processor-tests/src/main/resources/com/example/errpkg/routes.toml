@@ -1,0 +1,17 @@
+prefix = "/api/errpkg"
+
+[routes]
+quota = "GET /quota"
+sharedDenied = "GET /shared-denied"
+otherDenied = "GET /other-denied"
+unlisted = "GET /unlisted"
+
+# #2883: Cause types of these two packages are discovered besides the slice's own package.
+# NotAllowed is declared in both; the qualified references keep them apart.
+[errors]
+default = 500
+packages = ["com.example.errpkg.shared", "com.example.errpkg.other"]
+HTTP_429 = ["*QuotaExceeded*"]
+HTTP_403 = ["SharedError.NotAllowed"]
+HTTP_409 = ["OtherError.NotAllowed"]
+HTTP_410 = ["*Gone*"]
