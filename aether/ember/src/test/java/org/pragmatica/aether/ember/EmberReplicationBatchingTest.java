@@ -4,8 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.ember;
 
+import java.lang.reflect.Field;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.stream.StreamError;
+import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.replication.ReplicationManager;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -42,6 +48,35 @@ class EmberReplicationBatchingTest extends ReplicationBatchingFixture {
                                                 .allSatisfy(messages -> assertThat(messages).isLessThanOrEqualTo(3L));
         assertThat(burst.messagesPerReplica()).as("ReplicateEvents messages per replica for %d concurrent single publishes", SINGLE_PUBLISHES)
                                               .allSatisfy(messages -> assertThat(messages).isLessThanOrEqualTo((long) (0.5 * SINGLE_PUBLISHES)));
+    }
+
+    /// #263 condition 1 on a booted node: the production wiring gives the replication manager a finite send budget
+    /// (the stream memory budget's pending-copy cap). Whatever its size, it is below 1 TiB, so with 1 TiB reserved (granted:
+    /// nothing else was held) one more byte is refused. An unbudgeted manager would grant it. Both reservations are
+    /// returned, so the shared cluster is left as it was.
+    @Test
+    @Timeout(600)
+    void productionNode_refusesAReservationPastItsReplicationSendBudget() throws ReflectiveOperationException {
+        boot();
+
+        var replication = replicationManagerOf(ownerNode());
+        var tebibyte = 1L << 40;
+        var first = replication.reserveSend(tebibyte);
+        var second = replication.reserveSend(1);
+
+        first.onSuccess(_ -> replication.releaseSend(tebibyte));
+        second.onSuccess(_ -> replication.releaseSend(1));
+        assertThat(first.isSuccess()).as("nothing held: the first reservation is granted").isTrue();
+        assertThat(second.isFailure()).as("past a finite budget: refused").isTrue();
+        second.onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.REPLICATION_BEHIND));
+    }
+
+    private static ReplicationManager replicationManagerOf(AetherNode node) throws ReflectiveOperationException {
+        Field field = StreamPartitionManager.class.getDeclaredField("replicationManager");
+
+        field.setAccessible(true);
+
+        return (ReplicationManager) field.get(node.streamPartitionManager());
     }
 
     @Override

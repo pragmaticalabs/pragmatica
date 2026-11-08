@@ -158,6 +158,11 @@ abstract class ReplicationBatchingFixture {
                            replicas.stream().map(id -> replicatedEvents.get(id).get() - before.get(id)[1]).toList());
     }
 
+    /// The partition's owner, once [#boot] ran.
+    AetherNode ownerNode() {
+        return owner;
+    }
+
     /// The cluster under measurement; the subclass decides whether its nodes have a WAL.
     abstract EmberCluster threeNodes(int basePort);
 }
