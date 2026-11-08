@@ -91,6 +91,24 @@ class AppHttpServerForwardByReferenceTest {
         assertThat(outcome.catalogDelta()).as("the stored upload is deleted before the answer: %s", outcome).isZero();
     }
 
+    /// A delete that ends in a failure must not swallow the answer: the client is still told 503 nothing was applied.
+    /// Mutation: answering only when the delete succeeded leaves the client without an answer.
+    @Test
+    void upload_whoseForwardNeverLeftA_isStillAnswered503_whenTheDeleteFails() throws Exception {
+        var outcome = ForwardByReferenceScenario.run(2 * MIB, ForwardByReferenceScenario.Fault.PEER_UNREACHABLE_DELETE_FAILS);
+
+        assertThat(outcome.status()).as("%s", outcome).isEqualTo(503);
+        assertThat(outcome.text()).as("%s", outcome).contains("nothing was applied");
+    }
+
+    /// As above for the 413 of a forward no cluster frame can carry.
+    @Test
+    void upload_whoseForwardIsTooLargeToSend_isStillAnswered413_whenTheDeleteFails() throws Exception {
+        var outcome = ForwardByReferenceScenario.run(2 * MIB, ForwardByReferenceScenario.Fault.OVERSIZED_FRAME_DELETE_FAILS);
+
+        assertThat(outcome.status()).as("%s", outcome).isEqualTo(413);
+    }
+
     /// The cluster frame limit refuses the forward before it is sent: nothing left A, so the stored upload is deleted
     /// and the client is told 413. Mutation: removing the `TooLargeToForward` arm of `discardUnsent` leaves the object.
     @Test

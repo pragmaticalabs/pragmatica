@@ -1252,7 +1252,8 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                              local));
     }
 
-    /// A request refused on dispatch reaches no slice, so an upload the ingress stored for it is deleted [G] first.
+    /// A request refused on dispatch reaches no slice, so an upload the ingress stored for it is deleted [G] first; the
+    /// refusal is answered once the delete has finished, whether it succeeded or failed (#2921).
     @Contract
     private void refuseDispatch(HttpRequest request,
                                 ResponseWriter response,
@@ -1260,8 +1261,11 @@ class AppHttpServerAdapter implements AppHttpServer {
                                 String path,
                                 String requestId,
                                 String method) {
-        IngestedRequest.discardUpload(request);
-        handleSecurityFailure(response, cause, path, requestId, method);
+        IngestedRequest.discardedUpload(request).onResultRun(() -> handleSecurityFailure(response,
+                                                                                         cause,
+                                                                                         path,
+                                                                                         requestId,
+                                                                                         method));
     }
 
     private SecurityPolicy resolveEffectivePolicy(String method,
@@ -1539,9 +1543,16 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     /// A stored upload whose route no longer resolves reaches no slice: its objects are deleted [G] before it is answered
-    /// as any request without a route is.
+    /// as any request without a route is, whether the delete succeeded or failed (#2921).
+    @Contract
     private void sendNoRouteFound(ResponseWriter response, HttpRequest request, String method, String requestId) {
-        IngestedRequest.discardUpload(request);
+        IngestedRequest.discardedUpload(request).onResultRun(() -> answerNoRouteFound(response,
+                                                                                      request,
+                                                                                      method,
+                                                                                      requestId));
+    }
+
+    private void answerNoRouteFound(ResponseWriter response, HttpRequest request, String method, String requestId) {
         var routeReady = isRouteReady();
 
         if (!routeReady && httpRoutePublisher.isPresent()) {
@@ -1912,19 +1923,18 @@ class AppHttpServerAdapter implements AppHttpServer {
                                           HttpRequestContext httpCtx,
                                           HttpRequest request) {
         routeInfo.onPresent(info -> recordMetricsFailure(info, startTime, httpCtx.body().length, cause));
-        discardUnreached(request, cause);
-        handleLocalRouteFailure(response, path, requestId, cause);
+        discardUnreached(request, cause).onResultRun(() -> handleLocalRouteFailure(response, path, requestId, cause));
     }
 
     /// A stored upload whose request the node refused before the slice ran (invocation admission, rate limit) reaches no
     /// slice: its objects are deleted [G]. Any other failure may have run the slice, which may have claimed the upload, so
-    /// the objects stay for the unclaimed TTL.
-    @Contract
-    private static void discardUnreached(HttpRequest request, Cause cause) {
-        switch (cause) {
-            case InvocationAdmission.Error _, RateGuardError.LimitExceeded _ -> IngestedRequest.discardUpload(request);
-            default -> {}
-        }
+    /// the objects stay for the unclaimed TTL. The refusal is answered once the delete has finished, whether it succeeded
+    /// or failed (#2921).
+    private static Promise<Unit> discardUnreached(HttpRequest request, Cause cause) {
+        return switch (cause) {
+            case InvocationAdmission.Error _, RateGuardError.LimitExceeded _ -> IngestedRequest.discardedUpload(request);
+            default -> Promise.unitPromise();
+        };
     }
 
     private void handleLocalRouteFailure(ResponseWriter response, String path, String requestId, Cause cause) {
@@ -1992,12 +2002,11 @@ class AppHttpServerAdapter implements AppHttpServer {
                   requestId);
         if (httpForwarder.isEmpty()) {
             log.error("HTTP forwarding not configured [{}]", requestId);
-            IngestedRequest.discardUpload(request);
-            sendProblem(response,
-                        HttpStatus.SERVICE_UNAVAILABLE,
-                        "HTTP forwarding not available",
-                        request.path(),
-                        requestId);
+            IngestedRequest.discardedUpload(request).onResultRun(() -> sendProblem(response,
+                                                                                   HttpStatus.SERVICE_UNAVAILABLE,
+                                                                                   "HTTP forwarding not available",
+                                                                                   request.path(),
+                                                                                   requestId));
 
             return;
         }

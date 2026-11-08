@@ -126,8 +126,12 @@ final class ForwardByReferenceScenario {
         /// As [#PEER_UNREACHABLE], and the storage takes `SLOW_DELETE_MILLIS` to finish each read and delete: the answer must still
         /// not be observable before the stored upload is gone (#2915).
         PEER_UNREACHABLE_SLOW_DELETE,
+        /// As [#PEER_UNREACHABLE_SLOW_DELETE], and each delete ends in a failure: the 503 must still be answered (#2921).
+        PEER_UNREACHABLE_DELETE_FAILS,
         /// The cluster frame limit refuses the forward before it is sent ([ForwardError.TooLargeToForward]): it never left A.
         OVERSIZED_FRAME,
+        /// As [#OVERSIZED_FRAME], with slow deletes that end in a failure: the 413 must still be answered (#2921).
+        OVERSIZED_FRAME_DELETE_FAILS,
         /// Nothing is lost, but two slices on B publish the route; the ingress stores in the namespace of the first of them
         /// in coordinate order.
         TWO_PUBLISHERS
@@ -258,6 +262,8 @@ final class ForwardByReferenceScenario {
             case PEER_UNREACHABLE -> toB.unreachable.set(true);
             case PEER_UNREACHABLE_SLOW_DELETE -> slowDeletesToB(toB, tier);
             case OVERSIZED_FRAME -> toB.oversized.set(true);
+            case PEER_UNREACHABLE_DELETE_FAILS -> failingDeletesToB(toB, tier);
+            case OVERSIZED_FRAME_DELETE_FAILS -> failingDeletesOversized(toB, tier);
             case HOLDER_GONE -> b.setUploadStorage(StorageInstance.storageInstance("content-b",
                                                                                    List.of(LocalDiskTier.localDiskTier(Files.createDirectory(dir.resolve("b")),
                                                                                                                        GIB).unwrap())));
@@ -267,6 +273,17 @@ final class ForwardByReferenceScenario {
     private static void slowDeletesToB(Link toB, DelayedDeleteTier tier) {
         toB.unreachable.set(true);
         tier.delayBy(SLOW_DELETE_MILLIS);
+    }
+
+    private static void failingDeletesToB(Link toB, DelayedDeleteTier tier) {
+        slowDeletesToB(toB, tier);
+        tier.failDeletes();
+    }
+
+    private static void failingDeletesOversized(Link toB, DelayedDeleteTier tier) {
+        toB.oversized.set(true);
+        tier.delayBy(SLOW_DELETE_MILLIS);
+        tier.failDeletes();
     }
 
     private static ContentStore sliceStore(StorageInstance storage) {
