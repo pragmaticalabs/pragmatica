@@ -17,11 +17,14 @@ package org.pragmatica.http.server;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelOutboundHandlerAdapter;
+import io.netty.channel.ChannelPromise;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.DecoderResult;
@@ -39,6 +42,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
@@ -458,6 +462,180 @@ class RequestGateStreamTest {
         assertThat(reading(channel)).as("reading resumes once the sink accepted").isTrue();
         assertThat(response(channel)).as("the rate check did not fire for the held time").isNull();
         assertThat(sink.terminals()).isEmpty();
+        channel.finishAndReleaseAll();
+    }
+
+    private static BodyBounds routeBounds(BodyRateLimit rate) {
+        return BodyBounds.bodyBounds(timeSpan(300).seconds(), rate, timeSpan(0).seconds());
+    }
+
+    /// A route's own minimum rate is the one that applies to its body, not the listener's (which has a longer grace).
+    @Test
+    void routeRate_belowItsMinimum_isAnswered408_beforeTheListenersGraceEnds() {
+        var channel = channel(1_000_000,
+                              Option.some(routeBounds(BodyRateLimit.bodyRateLimit(1000, timeSpan(1).seconds(), timeSpan(1).seconds()))));
+
+        channel.writeInbound(head("/up", "Content-Length", "5000"));
+        channel.writeInbound(new DefaultHttpContent(bytes(10)));
+        sink.succeedNext();
+        channel.runPendingTasks();
+        channel.advanceTimeBy(5, TimeUnit.SECONDS);
+        channel.runScheduledPendingTasks();
+        var answer = response(channel);
+
+        assertThat(answer).as("answered by the route's rate bound").isNotNull();
+        assertThat(answer.status().code()).isEqualTo(408);
+        assertThat(sink.terminals()).containsExactly("abort:TIMED_OUT");
+        answer.release();
+        channel.finishAndReleaseAll();
+    }
+
+    /// The body ended with nothing in flight (an empty one): the sink has the request, reading is off, and the client's
+    /// bounds no longer run against a server that is the one working.
+    @Test
+    void bodyEnded_turnsReadingOff_andStopsTheBodyGuard() {
+        var channel = channel(1_000_000,
+                              Option.some(BodyBounds.bodyBounds(timeSpan(30).seconds(),
+                                                                BodyRateLimit.bodyRateLimit(0, timeSpan(1).seconds(), timeSpan(1).seconds()),
+                                                                timeSpan(0).seconds())));
+
+        channel.writeInbound(head("/up", "Content-Length", "0"));
+        channel.writeInbound(new DefaultLastHttpContent(Unpooled.EMPTY_BUFFER));
+
+        assertThat(sink.terminals()).containsExactly("complete");
+        assertThat(reading(channel)).as("reading stays off until the response is written").isFalse();
+        channel.advanceTimeBy(31, TimeUnit.SECONDS);
+        channel.runScheduledPendingTasks();
+
+        assertThat(response(channel)).as("the idle bound does not run against a body that ended").isNull();
+        assertThat(sink.terminals()).containsExactly("complete");
+        channel.finishAndReleaseAll();
+    }
+
+    /// The sink's answer to a complete request is bounded by the response timeout: a sink that never answers is answered
+    /// 504 in its place.
+    @Test
+    void sinkThatNeverAnswersACompleteRequest_isAnswered504_afterTheResponseTimeout() {
+        var channel = channel();
+
+        ResponseSequence.install(channel, timeSpan(5).seconds());
+        channel.writeInbound(head("/up", "Content-Length", "5"));
+        channel.writeInbound(new DefaultLastHttpContent(bytes(5)));
+        sink.succeedNext();
+        channel.runPendingTasks();
+        assertThat(sink.terminals()).containsExactly("complete");
+        channel.advanceTimeBy(6, TimeUnit.SECONDS);
+        channel.runScheduledPendingTasks();
+        var answer = response(channel);
+
+        assertThat(answer).as("answered in the sink's place").isNotNull();
+        assertThat(answer.status().code()).isEqualTo(504);
+        answer.release();
+        channel.finishAndReleaseAll();
+    }
+
+    /// Same bound on the answer to a failed accept.
+    @Test
+    void sinkThatNeverAnswersAFailedAccept_isAnswered504_afterTheResponseTimeout() {
+        var channel = channel();
+
+        ResponseSequence.install(channel, timeSpan(5).seconds());
+        channel.writeInbound(head("/up", "Content-Length", "5000"));
+        channel.writeInbound(new DefaultHttpContent(bytes(10)));
+        sink.failNext();
+        channel.runPendingTasks();
+        assertThat(sink.terminals()).containsExactly("fail");
+        channel.advanceTimeBy(6, TimeUnit.SECONDS);
+        channel.runScheduledPendingTasks();
+        var answer = response(channel);
+
+        assertThat(answer).as("answered in the sink's place").isNotNull();
+        assertThat(answer.status().code()).isEqualTo(504);
+        answer.release();
+        channel.finishAndReleaseAll();
+    }
+
+    /// An outbound handler in front of the gate that swallows `close`, as a connection whose close is still in progress.
+    private static final class HoldClose extends ChannelOutboundHandlerAdapter {
+        @Override
+        public void close(ChannelHandlerContext ctx, ChannelPromise promise) {
+            promise.setSuccess();
+        }
+    }
+
+    /// A non-keep-alive response was written but the connection is still open (its close takes a while): what arrives in
+    /// between is dropped and released, not passed on as a new request's body.
+    @Test
+    void afterANonKeepAliveResponse_whileTheConnectionIsStillOpen_laterMessagesAreDroppedAndReleased() {
+        var config = HttpServerConfig.httpServerConfig("gate", 0).withClassifier(head -> new Disposition.Stream(1_000_000, Option.none(), sink));
+
+        gate = new RequestGate(config);
+        var channel = new EmbeddedChannel(new HoldClose(), gate, new Recorder());
+        var late = new DefaultLastHttpContent(bytes(3));
+
+        channel.freezeTime();
+        channel.writeInbound(head("/up", "Content-Length", "5", "Connection", "close"));
+        channel.writeInbound(new DefaultLastHttpContent(bytes(5)));
+        sink.succeedNext();
+        channel.runPendingTasks();
+        sink.writer().onPresent(writer -> writer.okText("done"));
+        var answer = response(channel);
+
+        assertThat(answer.status().code()).isEqualTo(200);
+        channel.writeInbound(late);
+
+        assertThat(passedOn).isEmpty();
+        assertThat(late.refCnt()).isZero();
+        answer.release();
+        channel.finishAndReleaseAll();
+    }
+
+    /// A pipelined streamed request whose whole body was held ends the replay: what is held behind it waits for its
+    /// response too, and the replay does not loop over it.
+    @Test
+    void replay_stopsAtAHeldStreamedRequestWhoseBodyEnded_andLeavesWhatFollowsHeld() {
+        var channel = channel();
+
+        channel.writeInbound(head("/up", "Content-Length", "5"));
+        channel.writeInbound(new DefaultLastHttpContent(bytes(5)));
+        sink.succeedNext();
+        channel.runPendingTasks();
+        channel.writeInbound(head("/up", "Content-Length", "5"));
+        channel.writeInbound(new DefaultLastHttpContent(bytes(5)));
+        channel.writeInbound(head("/agg", "Content-Length", "3"));
+
+        assertTimeoutPreemptively(Duration.ofSeconds(10), () -> sink.writer().onPresent(writer -> writer.okText("first")));
+        var first = response(channel);
+
+        assertThat(first.status().code()).isEqualTo(200);
+        assertThat(sink.chunkSizes()).as("the second request's body is being accepted").containsExactly(5, 5);
+        assertThat(passedOn).as("the third request waits behind the second").isEmpty();
+        assertThat(reading(channel)).isFalse();
+        first.release();
+        channel.finishAndReleaseAll();
+    }
+
+    /// A held streamed request whose body is not complete leaves a chunk with the sink: reading stays off until that chunk
+    /// is accepted, not turned on by the replay.
+    @Test
+    void replay_leavesReadingOff_whileTheReplayedStreamHoldsAChunk() {
+        var channel = channel();
+
+        channel.writeInbound(head("/up", "Content-Length", "5"));
+        channel.writeInbound(new DefaultLastHttpContent(bytes(5)));
+        sink.succeedNext();
+        channel.runPendingTasks();
+        channel.writeInbound(head("/up", "Content-Length", "5000"));
+        channel.writeInbound(new DefaultHttpContent(bytes(100)));
+        sink.writer().onPresent(writer -> writer.okText("first"));
+        var first = response(channel);
+
+        assertThat(sink.chunkSizes()).as("the held chunk went to the sink").containsExactly(5, 100);
+        assertThat(reading(channel)).as("a chunk is with the sink: reading stays off").isFalse();
+        sink.succeedNext();
+        channel.runPendingTasks();
+        assertThat(reading(channel)).as("back on once it was accepted").isTrue();
+        first.release();
         channel.finishAndReleaseAll();
     }
 }

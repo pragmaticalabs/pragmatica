@@ -310,4 +310,25 @@ class Http3StreamTest {
         assertThat(sink.violations()).isEmpty();
         ReferenceCountUtil.release(channel.readOutbound());
     }
+
+    /// A route's `max_duration` bounds its body on HTTP/3 too: 408 once the whole upload has taken longer, though bytes keep
+    /// arriving inside the idle bound.
+    @Test
+    void routeMaxDuration_isAnswered408_andAbortsTimedOut() {
+        var channel = channel(1_000_000,
+                              Option.some(BodyBounds.bodyBounds(timeSpan(300).seconds(),
+                                                                BodyRateLimit.bodyRateLimit(0, timeSpan(1).seconds(), timeSpan(1).seconds()),
+                                                                timeSpan(5).seconds())));
+
+        channel.writeInbound(headers("/up", 5000));
+        channel.writeInbound(new DefaultHttp3DataFrame(bytes(10)));
+        sink.succeedNext();
+        channel.runPendingTasks();
+        channel.advanceTimeBy(6, TimeUnit.SECONDS);
+        channel.runScheduledPendingTasks();
+
+        assertThat(status(channel)).isEqualTo("408");
+        assertThat(sink.terminals()).containsExactly("abort:TIMED_OUT");
+        channel.finishAndReleaseAll();
+    }
 }
