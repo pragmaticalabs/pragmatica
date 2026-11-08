@@ -24,6 +24,7 @@ import tools.jackson.databind.BeanProperty;
 import tools.jackson.databind.DeserializationContext;
 import tools.jackson.databind.JavaType;
 import tools.jackson.databind.ValueDeserializer;
+import tools.jackson.databind.deser.CreatorProperty;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
@@ -34,7 +35,7 @@ import static org.pragmatica.lang.Option.option;
 /// value is [Patch#value] of the component's element type.
 ///
 /// Every other position (the whole document, a collection element, a map value, the element of an `Option` or a
-/// `Patch`) has no missing state, so it is refused when the deserializer is contextualized, with [#POSITION] as the
+/// `Patch`, a field or a setter property) has no missing state, so it is refused when the deserializer is contextualized, with [#POSITION] as the
 /// message. The generated codecs refuse the same positions (json-codegen `JsonTypeAnalyzer`), so a route type the
 /// generator leaves to this mapper fails here instead of reading `Absent` as `null`.
 public class PatchDeserializer extends ValueDeserializer<Patch<?>> {
@@ -65,7 +66,8 @@ public class PatchDeserializer extends ValueDeserializer<Patch<?>> {
     /// then its "element" is this `Patch` type itself, which, resolved again without a property, refuses itself.
     @Override
     public ValueDeserializer<?> createContextual(DeserializationContext ctxt, BeanProperty property) {
-        return option(property).map(BeanProperty::getType)
+        return option(property).filter(PatchDeserializer::isCreatorProperty)
+                     .map(BeanProperty::getType)
                      .flatMap(PatchDeserializer::elementType)
                      .filter(PatchDeserializer::isSupportedElement)
                      .<ValueDeserializer<?>> map(type -> contextualized(ctxt, type))
@@ -75,6 +77,12 @@ public class PatchDeserializer extends ValueDeserializer<Patch<?>> {
     // Jackson's failure channel is an exception, which JsonMapper lifts into a Result whose message keeps the reason.
     private static <T> T refused(DeserializationContext ctxt) {
         return ctxt.reportBadDefinition(Patch.class, POSITION);
+    }
+
+    // Jackson asks for the absent value of a creator property only: a field or a setter property would read a missing
+    // member as Java null, so it is refused.
+    private static boolean isCreatorProperty(BeanProperty property) {
+        return property instanceof CreatorProperty;
     }
 
     // Patch is resolved per concrete type like Option, so `T` sits in the generic binding of a SimpleType (#696).

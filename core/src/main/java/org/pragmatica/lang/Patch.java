@@ -45,8 +45,8 @@ import org.pragmatica.lang.Patch.Value;
 /// A record component is the only position a `Patch` may take. A list or set element, a map value, the whole body,
 /// or the element of an `Option` or another `Patch` has no "missing" state, so both paths refuse such a type with a
 /// message naming the position, instead of silently reading `Absent` as `null`: the generated codecs at build time,
-/// Jackson when it first reads the type (on write, a `Patch` nested inside a container value is refused when one is
-/// written).
+/// Jackson when it first reads or writes the type, at any nesting depth. Jackson refuses a `Patch` property that is not
+/// a record component (a public field, a getter or setter) too: only a record component has a "missing" state.
 ///
 /// ## Applying
 ///
@@ -110,11 +110,16 @@ public sealed interface Patch<T> permits Absent, Null, Value {
     /// **[Factory]**
     /// Create the patch of a field that was set to a value.
     ///
-    /// @param value Value to be stored in the created instance.
+    /// A `null` value is normalised to [#nullValue()]: `Value(null)` would be written as `null` and read back as
+    /// [Null], so the three states stay the only ones a body can state. [guess: pending the owner's API ruling on
+    /// normalising versus refusing a `null` value.]
+    ///
+    /// @param value Value to be stored in the created instance; `null` gives [Null].
     ///
     /// @return Created instance
     static <U> Patch<U> value(U value) {
-        return new Value<>(value);
+        return Option.option(value)
+                     .<Patch<U>>fold(Patch::nullValue, Value::new);
     }
 
     record Absent<T>() implements Patch<T> {

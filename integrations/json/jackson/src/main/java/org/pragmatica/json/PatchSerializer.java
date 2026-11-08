@@ -35,7 +35,7 @@ import static org.pragmatica.lang.Option.option;
 /// left-out member, whatever the mapper's null inclusion.
 ///
 /// The value is written by its runtime type, in the stream context of the member, so a value object stays bare as in
-/// any other member. Every position other than a record component is refused when the serializer is
+/// any other member. Every position other than a record component, at any container depth, is refused when the serializer is
 /// contextualized, as [PatchDeserializer] refuses it, and so is an `Absent` that reaches [#serialize] (a property
 /// whose own inclusion overrides the module's): writing it as `null` would turn "leave the field" into "clear it".
 public class PatchSerializer extends ValueSerializer<Patch<?>> {
@@ -64,11 +64,16 @@ public class PatchSerializer extends ValueSerializer<Patch<?>> {
         return provider.reportBadDefinition(Patch.class, reason);
     }
 
-    // The property is the Patch component, or a container or wrapper property that hands itself on to this element;
-    // the latter's element is this Patch itself, refused here. Checked here because the value is written by its
-    // runtime type: a Null or Absent inner Patch would otherwise never reach a serializer that could refuse it. A Patch deeper inside a container value (Patch<List<Patch<X>>>) is
-    // refused only when one is written, by its own contextualization; PatchDeserializer refuses that type outright.
+    // The property must be the Patch component itself: its declared type is a Patch over a type that is neither an
+    // Option nor a Patch. A container, wrapper or Object-typed property hands itself on to the Patch it holds, at any
+    // depth (List<List<Patch>>, Map<K, List<Patch>>, an Object holding a Patch), and its type is not a Patch, so it is
+    // refused here, as PatchDeserializer refuses the type outright. Checked here because the value is written by its
+    // runtime type: a Null or Absent inner Patch would otherwise never reach a serializer that could refuse it.
     private static boolean hasSupportedElement(JavaType type) {
+        return type.getRawClass() == Patch.class && hasPlainElement(type);
+    }
+
+    private static boolean hasPlainElement(JavaType type) {
         return option(type.containedTypeCount() == 1
                       ? type.containedType(0)
                       : type.getContentType()).map(JavaType::getRawClass)
