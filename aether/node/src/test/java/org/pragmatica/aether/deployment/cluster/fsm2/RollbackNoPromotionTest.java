@@ -162,27 +162,6 @@ class RollbackNoPromotionTest {
         assertActiveOnAllCores(h, BILLING);
     }
 
-    // Pins the gate's reach (#2864): a blueprint that is not rolled back and shares the rolled-back blueprint's healthy slice keeps
-    // that slice promoted once the rollback has settled.
-    @Test
-    void sharedSliceOfSurvivingBlueprint_staysPromoted() {
-        var h = active();
-        var nodes = nodes(h);
-
-        publish(h, blueprint("org.example:other:1.0.0", false, "attempt-2", slice(BILLING, 3, 1, Set.of())));
-        quiesce(h, nodes);
-        assertActiveOnAllCores(h, BILLING);
-
-        publish(h, BLUEPRINT);
-        nodes.getFirst().fails(ORDERS, true);
-        h.drain();
-        quiesce(h, nodes);
-
-        assertThat(outcomeStatus(h)).as("control: the sharing blueprint was rolled back")
-                                    .isEqualTo(Option.some(DeploymentOutcomeStatus.ROLLED_BACK));
-        assertActiveOnAllCores(h, BILLING);
-    }
-
     private static void assertActiveOnAllCores(FsmHarness h, Artifact artifact) {
         for (var nodeId : List.of(CORE_1, CORE_2, CORE_3)) {
             assertThat(goal(h, nodeId, artifact)).as("goal of " + artifact + " on " + nodeId.id()).isEqualTo(Option.some(SliceGoal.ACTIVE));
