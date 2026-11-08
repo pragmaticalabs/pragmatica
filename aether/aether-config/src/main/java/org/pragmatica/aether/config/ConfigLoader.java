@@ -64,19 +64,22 @@ public final class ConfigLoader {
 
     /// The node's own load: [#loadDocument] plus the one verdict pre-flight cannot give, that an HS256 JWT mode has its
     /// secret (#2880). A configured mode with a missing secret is refused naming the setting, never a degraded fallback.
-    private static Result<AetherConfig> loadNode(TomlDocument doc, Map<String, String> overrides, Fn1<String, String> env) {
+    private static Result<AetherConfig> loadNode(TomlDocument doc,
+                                                 Map<String, String> overrides,
+                                                 Fn1<String, String> env) {
         return loadDocument(doc, overrides, env, FileOps::exists).flatMap(ConfigLoader::requireJwtSecret);
     }
 
     private static Result<AetherConfig> requireJwtSecret(AetherConfig config) {
         return config.appHttp()
                      .jwtConfig()
-                     .filter(jwt -> jwt.keyMode() == JwtKeyMode.HS256 && jwt.sharedSecret().isEmpty())
+                     .filter(jwt -> jwt.keyMode() == JwtKeyMode.HS256 && jwt.sharedSecret()
+                                                                            .isEmpty())
                      .fold(() -> Result.success(config),
-                           _ -> ConfigError.invalidConfig("[app-http] jwt_algorithm = \"HS256\" needs a shared secret of at least "
-                                                         + JwtSecret.MIN_BYTES + " bytes in " + JWT_SECRET_ENV + " (or the file "
-                                                         + JWT_SECRET_ENV + "_FILE names); none was supplied.")
-                                            .result());
+                           _ -> ConfigError.invalidConfig("[app-http] jwt_algorithm = \"HS256\" needs a shared secret of at least " + JwtSecret.MIN_BYTES
+                                                         + " bytes in " + JWT_SECRET_ENV
+                                                         + " (or the file " + JWT_SECRET_ENV
+                                                         + "_FILE names); none was supplied.").result());
     }
 
     /// THE node load path, shared by every entry point and by cluster bootstrap's pre-flight ([#checkNodeDocument]):
@@ -621,7 +624,10 @@ public final class ConfigLoader {
     /// own load refuses it instead ([#requireJwtSecret]).
     private static Option<JwtConfig> parseJwtConfig(TomlDocument doc, Fn1<String, String> env) {
         return jwtKeyMode(doc).fold(() -> doc.getString("app-http", "jwks_url")
-                                             .map(jwksUrl -> buildJwtConfig(doc, jwksUrl, JwtKeyMode.JWKS, Option.empty())),
+                                             .map(jwksUrl -> buildJwtConfig(doc,
+                                                                            jwksUrl,
+                                                                            JwtKeyMode.JWKS,
+                                                                            Option.empty())),
                                     mode -> Option.some(buildJwtConfig(doc,
                                                                        doc.getString("app-http", "jwks_url").or(""),
                                                                        mode,
@@ -646,9 +652,9 @@ public final class ConfigLoader {
     private static Option<JwtSecret> jwtSecret(Fn1<String, String> env) {
         return ClusterSecretSource.resolve(env, JWT_SECRET_ENV)
                                   .getOrThrow(IllegalArgumentException::new, "invalid [app-http] jwt secret")
-                                  .map(text -> JwtSecret.jwtSecret(text)
-                                                        .getOrThrow(IllegalArgumentException::new,
-                                                                    "invalid [app-http] jwt secret (" + JWT_SECRET_ENV + ")"));
+                                  .map(text -> JwtSecret.jwtSecret(text).getOrThrow(IllegalArgumentException::new,
+                                                                                    "invalid [app-http] jwt secret (" + JWT_SECRET_ENV
+                                                                                   + ")"));
     }
 
     private static JwtConfig buildJwtConfig(TomlDocument doc,

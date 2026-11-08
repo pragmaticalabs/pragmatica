@@ -127,7 +127,8 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
     /// A name in `http.authenticator` beside any other mode would read as "use this one" while the launcher uses
     /// another: refused, never ignored.
     private static Result<Unit> refuseStrayAuthenticator(ConfigurationProvider settings) {
-        return settings.getString("http.authenticator").isPresent() && !"custom".equals(settings.getString("http.security_mode").or(""))
+        return settings.getString("http.authenticator")
+                       .isPresent() && !"custom".equals(settings.getString("http.security_mode").or(""))
                ? new TerraLaunchError("http.authenticator is set but http.security_mode is not custom").result()
                : Result.unitResult();
     }
@@ -153,8 +154,10 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
         return settings.getString("http.authenticator")
                        .filter(name -> !name.isBlank())
                        .toResult(new TerraLaunchError("http.security_mode = custom requires http.authenticator, the name of an installed authenticator"))
-                       .flatMap(name -> discovery.apply().flatMap(installed -> selected(name, installed)))
-                       .flatMap(factory -> factory.authenticator(settings).mapError(LaunchHttp::invalidAuthenticator))
+                       .flatMap(name -> discovery.apply()
+                                                 .flatMap(installed -> selected(name, installed)))
+                       .flatMap(factory -> factory.authenticator(settings)
+                                                  .mapError(LaunchHttp::invalidAuthenticator))
                        .map(LaunchHttp::customSecurity);
     }
 
@@ -180,11 +183,16 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
     private static String installedNames(List<HttpAuthenticatorFactory> installed) {
         return installed.isEmpty()
                ? "none"
-               : installed.stream().map(HttpAuthenticatorFactory::name).collect(Collectors.joining(", "));
+               : installed.stream()
+                          .map(HttpAuthenticatorFactory::name)
+                          .collect(Collectors.joining(", "));
     }
 
     private static String classNames(List<HttpAuthenticatorFactory> factories) {
-        return factories.stream().map(factory -> factory.getClass().getName()).collect(Collectors.joining(" and "));
+        return factories.stream()
+                        .map(factory -> factory.getClass()
+                                               .getName())
+                        .collect(Collectors.joining(" and "));
     }
 
     private static Result<Map<String, ApiKeyEntry>> apiKeys(ConfigurationProvider settings) {
@@ -229,11 +237,11 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
                           settings.getLong("jwt.cache_ttl_seconds").map(value -> value.or(3600L)),
                           settings.getLong("jwt.clock_skew_seconds").map(value -> value.or(30L)))
                      .flatMap((mode, secret, ttl, skew) -> jwksUrl(settings, mode, secret).flatMap(url -> jwtConfig(settings,
-                                                                                                                 url,
-                                                                                                                 mode,
-                                                                                                                 secret,
-                                                                                                                 ttl,
-                                                                                                                 skew)));
+                                                                                                                    url,
+                                                                                                                    mode,
+                                                                                                                    secret,
+                                                                                                                    ttl,
+                                                                                                                    skew)));
     }
 
     private static Result<JwtConfig> jwtConfig(ConfigurationProvider settings,
@@ -259,8 +267,7 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
     private static Result<JwtKeyMode> keyMode(ConfigurationProvider settings) {
         return settings.getString("jwt.algorithm")
                        .fold(() -> Result.success(JwtKeyMode.JWKS),
-                             raw -> JwtKeyMode.jwtKeyMode(raw)
-                                              .toResult(new TerraLaunchError("Invalid [jwt]: algorithm must be HS256 (omit it for JWKS)")));
+                             raw -> JwtKeyMode.jwtKeyMode(raw).toResult(new TerraLaunchError("Invalid [jwt]: algorithm must be HS256 (omit it for JWKS)")));
     }
 
     /// `[jwt] secret`: the HS256 shared secret, an environment or property value (`TERRA_JWT__SECRET`) per
@@ -276,9 +283,7 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
 
     private static Result<String> jwksUrl(ConfigurationProvider settings, JwtKeyMode mode, Option<JwtSecret> secret) {
         return switch (mode) {
-            case JWKS -> settings.getString("jwt.jwks_url")
-                                 .filter(value -> !value.isBlank())
-                                 .toResult(new TerraLaunchError("JWT mode requires jwt.jwks_url"));
+            case JWKS -> settings.getString("jwt.jwks_url").filter(value -> !value.isBlank()).toResult(new TerraLaunchError("JWT mode requires jwt.jwks_url"));
             case HS256 -> secret.isPresent()
                           ? Result.success(settings.getString("jwt.jwks_url").or(""))
                           : new TerraLaunchError("JWT HS256 mode requires jwt.secret").result();

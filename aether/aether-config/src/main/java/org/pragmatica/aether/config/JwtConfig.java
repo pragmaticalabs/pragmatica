@@ -75,28 +75,25 @@ public record JwtConfig(String jwksUrl,
                                               List<String> authSchemes,
                                               JwtKeyMode keyMode,
                                               Option<JwtSecret> sharedSecret) {
-        return AuthSchemes.authSchemes(authSchemes)
-                          .flatMap(schemes -> checkKeySource(jwksUrl, keyMode, sharedSecret).map(_ -> normalized(jwksUrl,
-                                                                                                                 issuer,
-                                                                                                                 audience,
-                                                                                                                 roleClaim,
-                                                                                                                 cacheTtlSeconds,
-                                                                                                                 clockSkewSeconds,
-                                                                                                                 schemes,
-                                                                                                                 keyMode,
-                                                                                                                 sharedSecret)));
+        return AuthSchemes.authSchemes(authSchemes).flatMap(schemes -> checkKeySource(jwksUrl, keyMode, sharedSecret).map(_ -> normalized(jwksUrl,
+                                                                                                                                          issuer,
+                                                                                                                                          audience,
+                                                                                                                                          roleClaim,
+                                                                                                                                          cacheTtlSeconds,
+                                                                                                                                          clockSkewSeconds,
+                                                                                                                                          schemes,
+                                                                                                                                          keyMode,
+                                                                                                                                          sharedSecret)));
     }
 
     private static Result<Unit> checkKeySource(String jwksUrl, JwtKeyMode keyMode, Option<JwtSecret> sharedSecret) {
         return switch (keyMode) {
             case JWKS -> sharedSecret.isPresent()
-                         ? Causes.cause("a JWT shared secret is configured but the JWT mode is JWKS: set jwt_algorithm = \"HS256\" or remove the secret")
-                                 .result()
+                         ? Causes.cause("a JWT shared secret is configured but the JWT mode is JWKS: set jwt_algorithm = \"HS256\" or remove the secret").result()
                          : Result.unitResult();
             case HS256 -> jwksUrl.isBlank()
                           ? Result.unitResult()
-                          : Causes.cause("jwks_url is set but jwt_algorithm is HS256: HS256 mode never reads a JWKS, remove jwks_url")
-                                  .result();
+                          : Causes.cause("jwks_url is set but jwt_algorithm is HS256: HS256 mode never reads a JWKS, remove jwks_url").result();
         };
     }
 

@@ -27,7 +27,6 @@ import static org.pragmatica.lang.Result.success;
 @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"})
 class JwtSecurityValidator implements HttpAuthenticator {
     private static final Logger log = LoggerFactory.getLogger(JwtSecurityValidator.class);
-
     private static final SecurityError NO_JWKS = new SecurityError.KeyNotFound("No JWKS key store is open");
 
     private final JwtConfig config;

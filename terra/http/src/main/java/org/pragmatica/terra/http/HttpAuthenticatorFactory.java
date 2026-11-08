@@ -21,7 +21,6 @@ import org.pragmatica.lang.Result;
 public interface HttpAuthenticatorFactory {
     /// The name `http.authenticator` selects this factory by.
     String name();
-
     /// Build the authenticator from the host settings; its own settings live under the `authenticator.` prefix of
     /// `terra.toml` (for example `authenticator.<name>.issuer`), which the launcher accepts without interpreting.
     ///

@@ -31,8 +31,9 @@ public record JwtSecret(byte[] value) {
 
         return bytes.length >= MIN_BYTES
                ? Result.success(new JwtSecret(bytes))
-               : Causes.cause("HS256 secret is too short: " + bytes.length + " bytes, at least " + MIN_BYTES
-                              + " (256 bits, RFC 7518 section 3.2) are required").result();
+               : Causes.cause("HS256 secret is too short: " + bytes.length
+                             + " bytes, at least " + MIN_BYTES
+                             + " (256 bits, RFC 7518 section 3.2) are required").result();
     }
 
     @Override
