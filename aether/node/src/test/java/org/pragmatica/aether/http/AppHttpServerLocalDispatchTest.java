@@ -26,7 +26,6 @@ import org.pragmatica.aether.worker.metrics.ArrivalCounts;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
-import org.pragmatica.aether.http.handler.HttpRequestHandler;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
@@ -51,7 +50,6 @@ import org.junit.jupiter.api.Test;
 
 import static org.pragmatica.lang.Unit.unit;
 import static org.assertj.core.api.Assertions.assertThat;
-
 
 /// Regression coverage for the local-dispatch fast path: a request matching a locally-hosted
 /// ACTIVE slice must serve locally even while the route-table snapshot is empty and
@@ -266,13 +264,6 @@ class AppHttpServerLocalDispatchTest {
         @Override
         public Promise<Unit> publishRoutes(Artifact artifact,
                                            ClassLoader classLoader,
-                                           SliceInvokerFacade invokerFacade) {
-            return Promise.success(unit());
-        }
-
-        @Override
-        public Promise<Unit> publishRoutes(Artifact artifact,
-                                           ClassLoader classLoader,
                                            Object sliceInstance,
                                            SliceInvokerFacade invokerFacade) {
             return Promise.success(unit());
@@ -286,11 +277,6 @@ class AppHttpServerLocalDispatchTest {
         @Override
         public Promise<Unit> unpublishRoutes(Artifact artifact) {
             return Promise.success(unit());
-        }
-
-        @Override
-        public Option<HttpRequestHandler> getHandler(Artifact artifact) {
-            return Option.none();
         }
 
         @Override

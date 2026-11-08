@@ -47,7 +47,7 @@ roles = ["service"]
 authorization_role = "VIEWER"  # VIEWER, OPERATOR, ADMIN
 ```
 
-For example, override that credential with `TERRA_API_KEYS__CLIENT__KEY`. JWT mode uses `[jwt]` with required `jwks_url`, optional `issuer`, `audience`, `role_claim` (default `role`), `cache_ttl_seconds` (3600), and `clock_skew_seconds` (30). Unknown host keys fail. `none` makes undeclared routes public but does not bypass explicitly protected route policies.
+For example, override that credential with `TERRA_API_KEYS__CLIENT__KEY`. JWT mode uses `[jwt]` with required `jwks_url`, optional `issuer`, `audience`, `role_claim` (default `role`), `cache_ttl_seconds` (3600), `clock_skew_seconds` (30), and `auth_schemes` (default `["Bearer"]`: the `Authorization` schemes accepted in front of the token, matched case-insensitively; an empty or duplicated list fails the launch). Unknown host keys fail. `none` makes undeclared routes public but does not bypass explicitly protected route policies.
 
 `--check` parses the graph/configuration and migration inputs without creating resources or listeners. It cannot establish database connectivity, validate every resource factory's settings, or prove TLS key validity. Those checks happen during startup; a startup error exits nonzero. Health probes are `/__terra/health/live` and `/__terra/health/ready`.
 

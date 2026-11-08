@@ -6,12 +6,14 @@ package org.pragmatica.terra.launcher;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.pragmatica.aether.config.ApiKeyEntry;
+import org.pragmatica.aether.config.AuthSchemes;
 import org.pragmatica.aether.config.JwtConfig;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.http.security.HttpAuthenticator;
@@ -19,6 +21,7 @@ import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.http.routing.RouteMountMode;
 import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.lang.Functions.Fn0;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.net.tcp.TlsConfig;
@@ -45,7 +48,8 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
                              "jwt.audience",
                              "jwt.role_claim",
                              "jwt.cache_ttl_seconds",
-                             "jwt.clock_skew_seconds");
+                             "jwt.clock_skew_seconds",
+                             "jwt.auth_schemes");
 
         for (var key : settings.keys()) {
             if ((key.startsWith("http.") && !httpKeys.contains(key)) || (key.startsWith("jwt.") && !jwtKeys.contains(key)) || (key.startsWith("api_keys.") && !key.matches("api_keys\\.[^.]+\\.(key|roles|authorization_role)"))) {
@@ -148,7 +152,32 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
                                                                       settings.getString("jwt.audience"),
                                                                       settings.getString("jwt.role_claim").or("role"),
                                                                       ttl,
-                                                                      skew));
+                                                                      skew,
+                                                                      authSchemes(settings))
+                                                           .mapError(LaunchHttp::invalidJwt));
+    }
+
+    private static TerraLaunchError invalidJwt(Cause cause) {
+        return new TerraLaunchError("Invalid [jwt]: " + cause.message());
+    }
+
+    /// #2156: `[jwt] auth_schemes`, the `Authorization` schemes JWT mode accepts. Absent, the default `["Bearer"]`; a
+    /// present list is checked by [AuthSchemes#authSchemes], so an empty list or a duplicate refuses the launch.
+    private static List<String> authSchemes(ConfigurationProvider settings) {
+        return settings.getString("jwt.auth_schemes")
+                       .map(LaunchHttp::listEntries)
+                       .or(AuthSchemes.DEFAULT);
+    }
+
+    /// Blank entries are kept so [AuthSchemes] refuses them, as Aether does; only a wholly blank list is empty.
+    private static List<String> listEntries(String raw) {
+        var body = raw.replace("[", "").replace("]", "");
+
+        return body.isBlank()
+               ? List.of()
+               : Arrays.stream(body.split(",", -1))
+                       .map(String::trim)
+                       .toList();
     }
 
     private static Result<Option<TlsConfig>> tls(Path directory, ConfigurationProvider settings) {

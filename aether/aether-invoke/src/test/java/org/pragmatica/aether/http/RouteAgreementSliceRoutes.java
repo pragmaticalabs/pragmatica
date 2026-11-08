@@ -18,12 +18,9 @@ import org.pragmatica.lang.Promise;
 /// #884 fixture: a generated-shape `SliceRouterFactory` whose single route path the test chooses
 /// immediately before each `publishRoutes` call.
 ///
-/// It exists to put the agreement tests on the PATH PRODUCTION USES. `HttpRequestHandlerFactory`
-/// -- what [NestedPrefixRouteFactories] drives -- has no production implementation, and its branch
-/// of `publishRoutes` never populates `sliceRouters`, so `findLocalRouter` returns nothing for
-/// anything published through it and the policy-pick/router-pick agreement cannot be observed
-/// there at all. The 4-arg `publishRoutes` -> `publishViaSliceRouterFactory` branch below is the
-/// one `RouteSourceGenerator` emits for.
+/// It exists to put the agreement tests on the PATH PRODUCTION USES: `publishRoutes` ->
+/// `publishViaSliceRouterFactory`, the branch `RouteSourceGenerator` emits for, which populates
+/// `sliceRouters` so the policy-pick/router-pick agreement can be observed.
 ///
 /// The route path is a static handoff rather than a constructor argument because `ServiceLoader`
 /// owns the instantiation. Set it, publish, and the definition stored in `publishedRoutes` is

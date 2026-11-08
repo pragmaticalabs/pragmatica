@@ -29,7 +29,6 @@ import org.pragmatica.aether.http.forward.ForwardError;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardNotApplied;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.NotAppliedReason;
-import org.pragmatica.aether.http.handler.HttpRequestHandler;
 import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.blueprint.SecurityOverrides;
@@ -189,11 +188,6 @@ class AppHttpServerForwardNotAppliedTest {
         @Override public Option<LocalRouteInfo> findLocalRoute(String method, String path) {return Option.none();}
 
         @Override
-        public Promise<Unit> publishRoutes(Artifact artifact, ClassLoader classLoader, SliceInvokerFacade invokerFacade) {
-            return Promise.success(unit());
-        }
-
-        @Override
         public Promise<Unit> publishRoutes(Artifact artifact,
                                            ClassLoader classLoader,
                                            Object sliceInstance,
@@ -203,7 +197,6 @@ class AppHttpServerForwardNotAppliedTest {
 
         @Override public boolean hasRoutes(ClassLoader classLoader, Object sliceInstance) {return false;}
         @Override public Promise<Unit> unpublishRoutes(Artifact artifact) {return Promise.success(unit());}
-        @Override public Option<HttpRequestHandler> getHandler(Artifact artifact) {return Option.none();}
         @Override public Option<SliceRouter> getSliceRouter(Artifact artifact) {return Option.none();}
         @Override public Unit updateSecurityOverrides(SecurityOverrides overrides) {return unit();}
         @Override public Unit setVersioningMetricsSink(VersioningMetricsSink sink) {return unit();}

@@ -43,7 +43,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// the node actually serves. Post-fix it is resolved at read time.
 ///
 /// These run against the REAL [`HttpRoutePublisherImpl`] with routes published through the real
-/// `publishRoutes(...)` path, via the ServiceLoader-discovered [`StubRouteHandlerFactory`]. Nothing
+/// `publishRoutes(...)` path, via the ServiceLoader-discovered [`StubRouteSliceRoutes`]. Nothing
 /// here reconstructs the override rule: the assertions read what production computes. The
 /// end-to-end HTTP consequence (a valid API key reaching an admin-restricted route) is pinned
 /// separately by `AppHttpServerOverrideEnforcementTest` in `aether/node`, at the outermost
@@ -52,9 +52,8 @@ class HttpRoutePublisherOverrideResolutionTest {
     private static final NodeId SELF = NodeId.nodeId("self-override").unwrap();
     private static final Artifact ARTIFACT = Artifact.artifact("org.example:stub:1.0.0").unwrap();
 
-    /// [`StubRouteHandlerFactory`] advertises exactly this route, declared PUBLIC by the 4-arg
-    /// `httpRouteDefinition` factory. Locking a public route down to `role:admin` is a
-    /// STRENGTHEN_ONLY-legal override and the clearest form of the escalation: an operator closes a
+    /// [`StubRouteSliceRoutes`] advertises exactly this route, declared PUBLIC. Locking a public
+    /// route down to `role:admin` is a STRENGTHEN_ONLY-legal override and the clearest form of the escalation: an operator closes a
     /// public route, and pre-fix the node serving it never learns.
     private static final String ROUTE_METHOD = "GET";
     private static final String ROUTE_PREFIX = "/stub/";
@@ -71,7 +70,7 @@ class HttpRoutePublisherOverrideResolutionTest {
     }
 
     private void publishRoutes() {
-        publisher.publishRoutes(ARTIFACT, getClass().getClassLoader(), stubInvokerFacade())
+        publisher.publishRoutes(ARTIFACT, getClass().getClassLoader(), new StubRouteSlice(), stubInvokerFacade())
                  .await(timeSpan(30).seconds())
                  .onFailure(cause -> Assertions.fail("route publication must succeed: " + cause.message()));
     }

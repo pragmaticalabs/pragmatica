@@ -164,7 +164,11 @@ X-Api-Key: <key>
 
 `JWT` mode verifies bearer tokens against a JWKS endpoint instead of static keys, extracting the
 role claim for RBAC [mechanism: `aether/aether-config/.../config/JwtConfig.java` — `jwksUrl`,
-configurable `roleClaim` (default `"role"`), JWKS cache TTL, clock-skew tolerance].
+configurable `roleClaim` (default `"role"`), JWKS cache TTL, clock-skew tolerance]. The `Authorization` schemes it
+accepts are `[app-http] auth_schemes` (default `["Bearer"]`), matched case-insensitively per RFC 7235; the
+`WWW-Authenticate` challenge names the first entry, and an empty or duplicated list refuses the config load
+[verified: `aether/aether-config/src/test/java/org/pragmatica/aether/config/ConfigLoaderAuthSchemesTest.java`,
+`aether/node/src/test/java/org/pragmatica/aether/http/AppHttpServerSecurityGridTest.java`].
 
 An operator can explicitly set `security_mode = "none"` to disable authentication — an explicit
 setting always overrides the default. This is appropriate only for a single-node local/dev

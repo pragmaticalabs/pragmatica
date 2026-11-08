@@ -81,8 +81,8 @@ class HttpRoutePublisherStaleContractTest {
 
     /// Control: the same public route from a factory carrying the stamp publishes — the stamp, not
     /// the policy, is what the refusal keys on. Asserted on the published CONTENT: the test
-    /// classpath also carries `StubRouteHandlerFactory`, the fallback producer, which would publish
-    /// one entry for the same artifact (`GET /stub/`) if the factory match were never taken.
+    /// classpath also carries other factories (`StubRouteSliceRoutes` publishes `GET /stub/`), so
+    /// the entry must be this factory's route, not merely some route.
     @Test
     void factoryWithTheContract_declaringAPublicRoute_isPublished() {
         publisher.publishRoutes(CURRENT, getClass().getClassLoader(), new CurrentRouteContractSlice(), stubInvokerFacade())
@@ -91,7 +91,7 @@ class HttpRoutePublisherStaleContractTest {
 
         var entries = cluster.publishedRouteEntries();
 
-        assertThat(entries).as("exactly this factory's one route, not the fallback stub's")
+        assertThat(entries).as("exactly this factory's one route, not another factory's")
                            .hasSize(1);
         assertThat(entries.getFirst().pathPrefix()).endsWith("/current/items/");
         assertThat(entries.getFirst().security()).isEqualTo("PUBLIC");
