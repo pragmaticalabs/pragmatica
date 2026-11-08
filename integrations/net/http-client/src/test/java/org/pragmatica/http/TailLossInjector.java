@@ -17,11 +17,8 @@ package org.pragmatica.http;
 
 import java.util.ArrayList;
 import java.util.List;
-<<<<<<< HEAD
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
-=======
->>>>>>> origin/release-1.0.0-rc5
 
 import org.pragmatica.lang.Contract;
 

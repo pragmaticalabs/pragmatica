@@ -65,11 +65,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// read, and Netty then defers sending until that read completes, so the `FIN` happened to leave with the last data;
 /// written outside that window, as here, each write is packetised at once and the `FIN` travelled alone. The same task
 /// arms the injector, writes the request and ends the injector's burst, so the burst is exactly the request's datagrams
-<<<<<<< HEAD
 /// under any load (#2862). The injector releases them once the client has sent four PTO probes (#2866), at the earliest 700 ms later.
-=======
-/// under any load (#2862). The injector releases them 700 ms later, after the PTO probes.
->>>>>>> origin/release-1.0.0-rc5
 class NettyHttpOperationsFinLossTest {
     private static final int BODY_BYTES = 6 * 1024;
     private static final String PAD = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ".repeat(80);
@@ -178,11 +174,7 @@ class NettyHttpOperationsFinLossTest {
 
         Thread.sleep(100);
         udp.eventLoop().submit(() -> writeTail(stream, request)).sync();
-<<<<<<< HEAD
         scheduler.schedule(() -> release(udp, drop), 700, TimeUnit.MILLISECONDS);
-=======
-        scheduler.schedule(() -> injector.release(udp, drop), 700, TimeUnit.MILLISECONDS);
->>>>>>> origin/release-1.0.0-rc5
 
         try {
             return reader.answer.get(10, TimeUnit.SECONDS);
@@ -199,18 +191,9 @@ class NettyHttpOperationsFinLossTest {
         injector.endBurst();
     }
 
-<<<<<<< HEAD
     private void release(Channel udp, boolean drop) {
         injector.awaitProbes(udp, PROBES);
         injector.release(udp, drop);
-=======
-    private static int freeUdpPort() {
-        try (var socket = new DatagramSocket(0)) {
-            return socket.getLocalPort();
-        } catch (IOException e) {
-            throw new AssertionError(e);
-        }
->>>>>>> origin/release-1.0.0-rc5
     }
 
     /// Completes with `status body` once the response stream ends.
