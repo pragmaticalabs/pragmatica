@@ -353,13 +353,21 @@ class Fsm2EquivalenceRoundTest {
 
     private long publish(EmberCluster cluster, String blueprint) {
         var at = System.currentTimeMillis();
-        var response = send(HttpRequest.newBuilder()
+        var response = "";
+
+        // A just-uploaded artifact becomes resolvable asynchronously: retry only the "not found" answer, for at most 30 s.
+        for (var attempt = 0; attempt < 15; attempt++) {
+            response = send(HttpRequest.newBuilder()
                                        .uri(mgmt(cluster, "/api/v1/blueprints"))
                                        .header("Content-Type", "application/toml")
                                        .POST(HttpRequest.BodyPublishers.ofString(blueprint))
                                        .timeout(Duration.ofSeconds(10))
                                        .build());
-
+            if (!response.contains("Artifact not found")) {
+                break;
+            }
+            sleep(2_000L);
+        }
         log("publish -> " + response);
 
         return at;
