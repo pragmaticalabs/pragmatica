@@ -276,7 +276,7 @@ class StreamPartitionManagerEpochStartsTest {
             var file = paths.filter(path -> path.getFileName().toString().equals(PARTITION + ".wal")).findFirst().orElseThrow();
             var log = org.pragmatica.storage.AppendLog.open(file).unwrap();
 
-            log.recordEpochStart(org.pragmatica.storage.AppendLog.EpochKey.epochKey("seven").unwrap(), 3L, (_, _) -> true).unwrap();
+            log.recordEpochStart(org.pragmatica.storage.AppendLog.EpochKey.epochKey("seven").unwrap(), 2L, (_, _) -> true).unwrap();
             log.close();
         }
         try (var reopened = emptyLoggedReplica(STALE_TAIL_STARTS)) {
