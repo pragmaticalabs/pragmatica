@@ -441,6 +441,52 @@ class RequestGateStreamTest {
         channel.finishAndReleaseAll();
     }
 
+    private EmbeddedChannel stalledChannel() {
+        var channel = channel(1_000_000, Option.some(BodyBounds.bodyBounds(timeSpan(30).seconds(),
+                                                                                BodyRateLimit.bodyRateLimit(0, timeSpan(1).seconds(), timeSpan(1).seconds()),
+                                                                                timeSpan(0).seconds())));
+
+        channel.writeInbound(head("/up", "Content-Length", "5000"));
+        channel.writeInbound(new DefaultHttpContent(bytes(10)));
+        channel.advanceTimeBy(31, TimeUnit.SECONDS);
+        channel.runScheduledPendingTasks();
+
+        return channel;
+    }
+
+    /// #2841e (a): an accept that never resolves does not hold the request forever: 503 at the stall bound, and the sink
+    /// is aborted STALLED one further bound later, without its accept ever resolving.
+    @Test
+    void hungAccept_isAbandonedOneBoundAfterTheStall_sinkAbortedAndAnswered503() {
+        var channel = stalledChannel();
+        var answer = response(channel);
+
+        assertThat(answer).as("answered 503 at the stall bound").isNotNull();
+        assertThat(answer.status().code()).isEqualTo(503);
+        assertThat(sink.terminals()).as("not yet: inside the abort deadline").isEmpty();
+        channel.advanceTimeBy(31, TimeUnit.SECONDS);
+        channel.runScheduledPendingTasks();
+        assertThat(sink.terminals()).as("aborted though the accept never resolved").containsExactly("abort:STALLED");
+        answer.release();
+        channel.finishAndReleaseAll();
+    }
+
+    /// #2841e (b): the accept resolving just after the abort deadline neither aborts again nor answers again.
+    @Test
+    void hungAccept_resolvingAfterTheDeadline_doesNotAbortTwiceOrAnswerTwice() {
+        var channel = stalledChannel();
+        var answer = response(channel);
+
+        channel.advanceTimeBy(31, TimeUnit.SECONDS);
+        channel.runScheduledPendingTasks();
+        sink.succeedNext();
+        channel.runPendingTasks();
+        assertThat(sink.terminals()).as("one abort, none from the late resolution").containsExactly("abort:STALLED");
+        assertThat(response(channel)).as("no second response").isNull();
+        answer.release();
+        channel.finishAndReleaseAll();
+    }
+
     /// P3: while the gate holds reading off for a slow sink, the body's rate check does not run: a sink that takes 20 s
     /// (inside the 30 s stall bound) over a 10-byte chunk is not blamed on a client that "sent 10 bytes in 20 s".
     @Test
