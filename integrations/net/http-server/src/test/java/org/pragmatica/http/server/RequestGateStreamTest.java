@@ -505,6 +505,25 @@ class RequestGateStreamTest {
         channel.finishAndReleaseAll();
     }
 
+    /// #2876: a route whose idle bound is zero ("no bound") arms no stall timer, but a hung accept must still not hold the
+    /// request's admission forever: the abort is abandoned-and-given at the deadline's own positive floor.
+    @Test
+    void hungAccept_withAZeroBound_isStillAbandonedAtTheFloor() {
+        var channel = channel(1_000_000, Option.some(BodyBounds.bodyBounds(timeSpan(0).seconds(),
+                                                                                BodyRateLimit.bodyRateLimit(0, timeSpan(1).seconds(), timeSpan(1).seconds()),
+                                                                                timeSpan(0).seconds())));
+
+        channel.writeInbound(head("/up", "Content-Length", "5000"));
+        channel.writeInbound(new DefaultHttpContent(bytes(10)));
+        channel.close();
+        assertThat(sink.terminals()).as("not yet: the accept is outstanding").isEmpty();
+        channel.advanceTimeBy(31, TimeUnit.SECONDS);
+        channel.runScheduledPendingTasks();
+        assertThat(sink.terminals()).as("aborted though the accept never resolved and no bound was set")
+                                    .containsExactly("abort:DISCONNECTED");
+        channel.finishAndReleaseAll();
+    }
+
     /// P3: while the gate holds reading off for a slow sink, the body's rate check does not run: a sink that takes 20 s
     /// (inside the 30 s stall bound) over a 10-byte chunk is not blamed on a client that "sent 10 bytes in 20 s".
     @Test
