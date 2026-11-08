@@ -764,6 +764,21 @@ public final class AppendLog implements AutoCloseable {
     @Contract
     @Override
     public void close() {
+        synchronized (writeLock) {
+            synchronized (syncLock) {
+                closeLocked();
+            }
+        }
+    }
+
+    /// Runs under `writeLock` and `syncLock` (#2855): an in-flight write or group commit finishes before the channel closes, and
+    /// the close-time force publishes `syncedSeq`, so a commit that runs later resolves from it and touches no file. A commit
+    /// the close-time force did not cover is refused by [#forceUpTo] without forcing the closed channel -- which would
+    /// fail-stop the log and write its mark beside a log that is gone.
+    private void closeLocked() {
+        if (closed) {
+            return;
+        }
         closed = true;
         syncFailure.fold(this::closeTimeSync, _ -> unit());
         Result.lift(CLOSE_FAILED,
@@ -774,8 +789,15 @@ public final class AppendLog implements AutoCloseable {
     }
 
     private Unit closeTimeSync() {
+        var target = writtenSeq;
+        var covered = lastOffset;
+        var startedAt = System.nanoTime();
+
         Result.lift(CLOSE_FAILED,
                     () -> channel.force(false))
+              .onSuccess(_ -> publishSync(target,
+                                          covered,
+                                          System.nanoTime() - startedAt))
               .onFailure(cause -> log.warn("AppendLog close-time fsync issue for {}: {}",
                                            file,
                                            cause.message()));
@@ -988,7 +1010,9 @@ public final class AppendLog implements AutoCloseable {
         synchronized (syncLock) {
             return syncedSeq >= mySeq
                    ? unitResult()
-                   : syncFailure.fold(this::forceAndPublish, Cause::result);
+                   : closed
+                     ? WalError.General.WAL_CLOSED.result()
+                     : syncFailure.fold(this::forceAndPublish, Cause::result);
         }
     }
 
