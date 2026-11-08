@@ -20,6 +20,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceDesiredValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
@@ -81,13 +82,92 @@ class RollbackNoPromotionTest {
         assertTerminalWithoutPromotion(h);
     }
 
+    // Red when: the unload of a removed blueprint is dropped at the flush because the instance's row moved in that drain, twice (the
+    // blueprint removal, then the target removal), and only the orphan audit, every tenth tick, derives it again (dev7: observed and
+    // desired rows of the healthy slice left on one node, MON-i live=1 bound=0). The second move is a re-report of the same state.
+    @Test
+    void unloadDroppedByMovedRow_isDerivedAgainBeforeTheAudit() {
+        var h = active();
+        var nodes = nodes(h);
+        var racer = nodes.getLast();
+
+        rollbackHeld(h, nodes);
+        releaseHeld(h, () -> racer.writes(BILLING, SliceObservedState.LOADED));
+        assertThat(h.submits(SubmitKind.BLUEPRINT_REMOVAL)).as("control: the blueprint removal is in flight").hasSize(1);
+        releaseHeld(h, () -> racer.writes(BILLING, SliceObservedState.LOADED));
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        assertThat(goal(h, CORE_3, BILLING)).as("control: both unloads of the racing instance were dropped")
+                                            .isEqualTo(Option.some(SliceGoal.LOADED));
+
+        quiesce(h, nodes, 3);
+        assertTerminalWithoutPromotion(h);
+    }
+
+    // Red when: the unload of a removed blueprint is refused because the instance's row moved before it applied, the moved pair is
+    // released to the next reconcile, and only the orphan audit, every tenth tick, derives it again.
+    @Test
+    void unloadRefusedByMovedRow_isDerivedAgainBeforeTheAudit() {
+        var h = active();
+        var nodes = nodes(h);
+        var racer = nodes.getLast();
+
+        rollbackHeld(h, nodes);
+        releaseHeld(h, () -> {});
+        racer.writes(BILLING, SliceObservedState.LOADED);
+        h.drain();
+        releaseHeld(h, () -> {});
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        assertThat(goal(h, CORE_3, BILLING)).as("control: the unload of the racing instance was refused")
+                                            .isEqualTo(Option.some(SliceGoal.LOADED));
+
+        quiesce(h, nodes, 3);
+        assertTerminalWithoutPromotion(h);
+    }
+
+    /// The healthy slice is LOADING on every node and ORDERS fails fatally on the first; every write from here on is held.
+    private static void rollbackHeld(FsmHarness h, List<NodeSim> nodes) {
+        publish(h, BLUEPRINT);
+        nodes.forEach(node -> node.writes(BILLING, SliceObservedState.LOADING));
+        h.drain();
+        h.policy = FsmHarness.SettlePolicy.HOLD;
+        nodes.getFirst().fails(ORDERS, true);
+        h.drain();
+        assertThat(h.submits(SubmitKind.ROLLBACK)).as("control: the rollback is in flight").hasSize(1);
+    }
+
+    /// The held writes commit, `between` runs after their notifications are queued and before their settlements, then one drain.
+    private static void releaseHeld(FsmHarness h, Runnable between) {
+        var held = List.copyOf(h.held.values());
+        var settlements = held.stream().map(submit -> h.applyHeld(submit.correlationId())).toList();
+
+        between.run();
+
+        for (var i = 0; i < held.size(); i++) {
+            h.settle(held.get(i), settlements.get(i));
+        }
+
+        h.drain();
+    }
+
+    private static Option<SliceGoal> goal(FsmHarness h, NodeId nodeId, Artifact artifact) {
+        return h.store.get(new SliceDesiredKey(nodeId, artifact))
+                      .filter(SliceDesiredValue.class::isInstance)
+                      .map(SliceDesiredValue.class::cast)
+                      .map(SliceDesiredValue::goal);
+    }
+
     private static List<NodeSim> nodes(FsmHarness h) {
         return List.of(node(h, CORE_1, 11), node(h, CORE_2, 12), node(h, CORE_3, 13));
     }
 
     /// The nodes follow their goals, and remove their observed row once it reports UNLOADED, as the node FSM does.
     private static void quiesce(FsmHarness h, List<NodeSim> nodes) {
-        for (var round = 0; round < 20; round++) {
+        quiesce(h, nodes, 20);
+    }
+
+    /// As [#quiesce(FsmHarness, List)], for `ticks` reconcile ticks.
+    private static void quiesce(FsmHarness h, List<NodeSim> nodes, int ticks) {
+        for (var round = 0; round < ticks; round++) {
             for (var node : nodes) {
                 for (var artifact : SLICES) {
                     node.follows(artifact);
