@@ -231,4 +231,27 @@ class ReElectionSuspectTest {
             .isEqualTo(A);
         assertThat(second.viewSequence()).isGreaterThan(first.viewSequence());
     }
+
+
+    /// T5 — the suspect must not survive an exit that is NOT a commit. ReElecting(suspect A) loses quorum,
+    /// regains it, and the AwaitingKvSync grace fall-through enters a fresh ReElecting with no suspect: A (lowest,
+    /// still in topology) is a candidate again.
+    @Test
+    void suspectIsClearedOnNonCommitExit_freshReElectionProposesTheLowestNodeAgain() throws InterruptedException {
+        var h = buildHarness(List.of(A, B, SELF), node -> !node.equals(A), false);
+
+        driveToLed(h, List.of(A, B, SELF), A);
+        assertThat(awaitProposal(0).candidate()).as("first re-election excludes A").isEqualTo(B);
+
+        h.dispatch(new ClusterFsmEvent.QuorumDisappeared());
+        assertThat(h.state()).isInstanceOf(LeaderElectionState.QuorumLost.class);
+        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
+        assertThat(h.state()).isInstanceOf(LeaderElectionState.AwaitingKvSync.class);
+        h.dispatch(new LeaderElectionEvents.KvSyncGraceTimeout());
+        assertThat(h.state()).as("grace fall-through re-elects").isInstanceOf(LeaderElectionState.ReElecting.class);
+
+        assertThat(awaitProposal(1).candidate())
+            .as("a ReElecting entered without a suspect proposes the lowest node A again")
+            .isEqualTo(A);
+    }
 }

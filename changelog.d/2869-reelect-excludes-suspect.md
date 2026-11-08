@@ -13,4 +13,4 @@
   suppression, and adoption. A consensus commit that names the suspect is still adopted, because rejecting a
   committed decision would split views. A node that does not suspect the ex-leader (for example, one entering
   `ReElecting` from `QuorumLost`) can still propose it. [mechanism: the suspect is local to the node that observed
-  the silence; Rabia commits one of the concurrent proposals]
+  the silence; Rabia applies concurrent proposals in its log order, and the `LeaderValue` fence refuses a second write at the same `viewSequence` (`KVStore.java:714`), so one leader per view]

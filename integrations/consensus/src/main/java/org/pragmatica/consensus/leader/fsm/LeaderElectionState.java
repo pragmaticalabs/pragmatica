@@ -1124,8 +1124,11 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         var candidate = pool.getFirst();
         // All nodes propose in parallel during initial election. Rabia phase resolution
         // is leaderless and handles concurrent proposals natively — only one commits per
-        // phase. `candidate` is `pool.getFirst()` after sorting, so every proposer picks
-        // the same NodeId, eliminating split-vote risk. Removing the prior single-proposer
+        // phase. `candidate` is `pool.getFirst()` after sorting, but a ReElecting suspect (#2869)
+        // is local to the node that observed the silence, so proposers can now differ. One leader
+        // per view is guaranteed by Rabia's total log order plus the LeaderValue fence, which
+        // refuses a second write at the same viewSequence (KVStore.java:714, doc :656-658).
+        // Removing the prior single-proposer
         // gate (lex-first only) ensures the cluster does not stall on `node-1` whenever its
         // Rabia engine is the slowest to reach `Idle`/`InPhase` after a cold restart —
         // any peer whose Rabia activates first can drive the proposal forward.
