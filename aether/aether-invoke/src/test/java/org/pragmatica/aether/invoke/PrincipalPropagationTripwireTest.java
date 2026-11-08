@@ -106,8 +106,8 @@ class PrincipalPropagationTripwireTest {
     void remoteInvoke_downstreamSliceSeesNoPrincipal_today() throws Exception {
         var seen = remoteHopSeenByDownstream();
 
-        assertThat(seen.securityContext()).as(LANDED).isEmpty();
-        assertThat(seen.tracePrincipal()).as(LANDED).isEmpty();
+        assertThat(seen.securityContext().toOptional()).as(LANDED).isEmpty();
+        assertThat(seen.tracePrincipal().toOptional()).as(LANDED).isEmpty();
     }
 
     @Disabled("#2157 part b: enable when the receiving node injects the SecurityContext carried on InvokeRequest")
@@ -115,8 +115,8 @@ class PrincipalPropagationTripwireTest {
     void remoteInvoke_downstreamSliceSeesTheCallersPrincipal() throws Exception {
         var seen = remoteHopSeenByDownstream();
 
-        assertThat(seen.securityContext().map(SecurityContext::principal).map(p -> p.value())).contains(ALICE_NAME);
-        assertThat(seen.tracePrincipal()).contains(ALICE_NAME);
+        assertThat(principalOf(seen.securityContext())).contains(ALICE_NAME);
+        assertThat(seen.tracePrincipal().toOptional()).contains(ALICE_NAME);
     }
 
     private Seen remoteHopSeenByDownstream() throws Exception {
@@ -166,10 +166,10 @@ class PrincipalPropagationTripwireTest {
         inAliceScope(() -> invoker.invokeLocal(ARTIFACT, METHOD, "request", new TypeToken<String>() {}));
         var seen = bridge.awaitSeen();
 
-        assertThat(seen.securityContext().map(SecurityContext::principal).map(p -> p.value()))
+        assertThat(principalOf(seen.securityContext()))
             .as("local call: the holder binding is visible today (synchronous chain); if this fails the local hop regressed or propagation was reworked")
             .contains(ALICE_NAME);
-        assertThat(seen.tracePrincipal()).as("local call: trace principal").contains(ALICE_NAME);
+        assertThat(seen.tracePrincipal().toOptional()).as("local call: trace principal").contains(ALICE_NAME);
         assertThat(seen.thread()).as("it ran on the caller's own thread").isEqualTo(Thread.currentThread());
     }
 
@@ -201,7 +201,7 @@ class PrincipalPropagationTripwireTest {
 
         gate.succeed(Unit.unit());
 
-        assertThat(seen.await().unwrap()).as(LANDED).isEmpty();
+        assertThat(seen.await().unwrap().toOptional()).as(LANDED).isEmpty();
     }
 
     @Disabled("#2157 part b: enable when the generated code passes the edge-captured context instead of reading the holder")
@@ -213,7 +213,7 @@ class PrincipalPropagationTripwireTest {
 
         gate.succeed(Unit.unit());
 
-        assertThat(seen.await().unwrap()).contains(ALICE);
+        assertThat(seen.await().unwrap().toOptional()).contains(ALICE);
     }
 
     /// Same hazard while the scope is still on the stack: the continuation runs on whichever thread resolves the
@@ -228,7 +228,7 @@ class PrincipalPropagationTripwireTest {
         var resolver = Thread.ofPlatform().start(() -> gate.succeed(Unit.unit()));
 
         resolver.join();
-        assertThat(seen.get().await().unwrap()).as(LANDED).isEmpty();
+        assertThat(seen.get().await().unwrap().toOptional()).as(LANDED).isEmpty();
     }
 
     @Disabled("#2157 part b: enable when the context is carried across runAsync / registered as a ContextPropagation")
@@ -242,7 +242,7 @@ class PrincipalPropagationTripwireTest {
         var resolver = Thread.ofPlatform().start(() -> gate.succeed(Unit.unit()));
 
         resolver.join();
-        assertThat(seen.get().await().unwrap()).contains(ALICE);
+        assertThat(seen.get().await().unwrap().toOptional()).contains(ALICE);
     }
 
     // ---- helpers --------------------------------------------------------------------------------------------
@@ -251,6 +251,12 @@ class PrincipalPropagationTripwireTest {
     private static void inAliceScope(Runnable action) {
         ScopedValue.where(SecurityContextHolder.scopedValue(), ALICE)
                    .run(() -> InvocationContext.runWithContext("req-2157", ALICE_NAME, SENDER.id(), 0, true, action));
+    }
+
+    private static java.util.Optional<String> principalOf(Option<SecurityContext> context) {
+        return context.map(SecurityContext::principal)
+                      .map(principal -> principal.value())
+                      .toOptional();
     }
 
     private record Seen(Option<SecurityContext> securityContext, Option<String> tracePrincipal, Thread thread) {}
