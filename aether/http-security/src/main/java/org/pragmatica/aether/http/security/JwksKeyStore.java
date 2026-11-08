@@ -92,9 +92,8 @@ class JwksKeyStore implements AutoCloseable {
     private Result<PublicKey> refreshAndRetry(String kid) {
         return fetchJwks().onSuccess(this::applyJwksResponse)
                         .onFailure(this::logFetchFailure)
-                        .flatMap(_ -> Option.option(keyCache.get(kid))
-                                            .toResult(new SecurityError.KeyNotFound("Key not found for kid: " + kid
-                                                                                    + " after JWKS refresh")));
+                        .flatMap(_ -> Option.option(keyCache.get(kid)).toResult(new SecurityError.KeyNotFound("Key not found for kid: " + kid
+                                                                                                             + " after JWKS refresh")));
     }
 
     private void logFetchFailure(Cause cause) {
@@ -102,8 +101,7 @@ class JwksKeyStore implements AutoCloseable {
     }
 
     private void fetchAndCacheKeys() {
-        fetchJwks().onSuccess(this::applyJwksResponse)
-                 .onFailure(this::logFetchFailure);
+        fetchJwks().onSuccess(this::applyJwksResponse).onFailure(this::logFetchFailure);
     }
 
     @SuppressWarnings("unchecked")
