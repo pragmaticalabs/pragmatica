@@ -53,10 +53,15 @@ import static org.pragmatica.lang.Unit.unit;
 ///   abort's clean-up settled [G: release after the hand-off, not after the slice answers].
 ///
 /// The server makes one call at a time, each after the previous `accept` resolved, so the state below is touched by one
-/// step at a time; each step happens after the resolution of the one before.
+/// step at a time; each step happens after the resolution of the one before. One exception: a server that abandoned a
+/// hung `accept` (the abort deadline) aborts the sink while that `accept`'s storage chain is still running, so the
+/// clean-up and the chain's late steps can meet. The state they share (`open`, `committed`, `aborted`) is therefore
+/// guarded by the sink's monitor, and `aborted` (set by the first clean-up) makes a late step undo itself: a writer that
+/// opens after the clean-up is aborted, an object that commits after it is deleted, and the chain stops there.
 public final class IngestSink implements BodySink {
     private static final Logger log = LoggerFactory.getLogger(IngestSink.class);
     private static final Cause NO_OPEN_WRITER = Causes.cause("Multipart file content arrived outside a file part");
+    private static final Cause ABANDONED = Causes.cause("The upload ended before this step completed");
 
     /// Hands a stored upload's request to the normal dispatch path.
     @FunctionalInterface
@@ -92,7 +97,9 @@ public final class IngestSink implements BodySink {
     private final List<FileHandle> files = new ArrayList<>();
     private final List<ObjectId> committed = new ArrayList<>();
     private final Map<String, List<String>> fields = new LinkedHashMap<>();
+    // Guarded by `this`: shared by the clean-up and the storage chain of an abandoned accept.
     private Option<OpenFile> open = Option.none();
+    private boolean aborted;
 
     private IngestSink(ContentStore store, Body body, Runnable permit, Dispatch dispatch, Refuse refuse) {
         this.store = store;
@@ -149,12 +156,12 @@ public final class IngestSink implements BodySink {
     // ---- binary body ----
     /// The body's one object, created on the first chunk (or at completion, for an empty body).
     private Promise<OpenFile> binaryFile(Body.Binary binary) {
-        return open.fold(() -> store.create(binary.spec())
-                                    .map(writer -> opened(writer,
-                                                          new Event.FileStart("",
-                                                                              Option.none(),
-                                                                              binary.spec().contentType()))),
-                         Promise::success);
+        return currentOpen().fold(() -> store.create(binary.spec())
+                                             .flatMap(writer -> opened(writer,
+                                                                       new Event.FileStart("",
+                                                                                           Option.none(),
+                                                                                           binary.spec().contentType()))),
+                                  Promise::success);
     }
 
     private Promise<Unit> finishBody() {
@@ -178,17 +185,25 @@ public final class IngestSink implements BodySink {
 
     private Promise<Unit> handle(Event event, Body.Multipart multipart) {
         return switch (event) {
-            case Event.FileStart start -> store.create(ObjectSpec.objectSpec(start.fileName(),
-                                                                             start.contentType(),
-                                                                             Option.none(),
-                                                                             multipart.expiresAt(),
-                                                                             Map.of())).map(writer -> opened(writer,
-                                                                                                             start)).mapToUnit();
-            case Event.FileData data -> open.async(NO_OPEN_WRITER).flatMap(file -> file.writer()
-                                                                                       .write(data.bytes()));
-            case Event.FileEnd _ -> open.async(NO_OPEN_WRITER).flatMap(this::commitOpen);
+            case Event.FileStart start -> startFile(start, multipart);
+            case Event.FileData data -> currentOpen().async(NO_OPEN_WRITER).flatMap(file -> file.writer()
+                                                                                                .write(data.bytes()));
+            case Event.FileEnd _ -> currentOpen().async(NO_OPEN_WRITER).flatMap(this::commitOpen);
             case Event.Field field -> Promise.success(addField(field));
         };
+    }
+
+    /// Creates the part's writer, unless the upload already ended: then nothing is created.
+    private Promise<Unit> startFile(Event.FileStart start, Body.Multipart multipart) {
+        return isAborted()
+               ? ABANDONED.promise()
+               : store.create(ObjectSpec.objectSpec(start.fileName(),
+                                                    start.contentType(),
+                                                    Option.none(),
+                                                    multipart.expiresAt(),
+                                                    Map.of()))
+                      .flatMap(writer -> opened(writer, start))
+                      .mapToUnit();
     }
 
     private Unit addField(Event.Field field) {
@@ -198,27 +213,77 @@ public final class IngestSink implements BodySink {
     }
 
     // ---- writers ----
-    private OpenFile opened(ObjectWriter writer, Event.FileStart part) {
+    /// The created writer becomes the open one, unless the upload ended while it was being created: then it is aborted
+    /// at once and the chain fails.
+    private Promise<OpenFile> opened(ObjectWriter writer, Event.FileStart part) {
         var file = new OpenFile(writer, part);
+
+        return register(file)
+               ? Promise.success(file)
+               : abandonWriter(writer);
+    }
+
+    private Promise<OpenFile> abandonWriter(ObjectWriter writer) {
+        return writer.abort()
+                     .onFailure(cause -> log.warn("Aborting a late upload writer failed: {}",
+                                                  cause.message()))
+                     .fold(_ -> ABANDONED.promise());
+    }
+
+    private synchronized boolean register(OpenFile file) {
+        if (aborted) {
+            return false;
+        }
 
         open = Option.some(file);
 
-        return file;
+        return true;
+    }
+
+    private synchronized boolean isAborted() {
+        return aborted;
+    }
+
+    private synchronized Option<OpenFile> currentOpen() {
+        return open;
+    }
+
+    private synchronized void closeOpen() {
+        open = Option.none();
     }
 
     /// Commits the open object and records it as one of the request's files. The writer is no longer open whether the
     /// commit succeeded or not: a failed commit gives back what the writer stored.
     private Promise<Unit> commitOpen(OpenFile file) {
-        open = Option.none();
+        closeOpen();
 
         return file.writer()
                    .commit(Option.none())
-                   .map(info -> recordFile(info,
-                                           file.part()));
+                   .flatMap(info -> recordFile(info,
+                                               file.part()));
     }
 
-    private Unit recordFile(ObjectInfo info, Event.FileStart part) {
-        committed.add(info.ref().id());
+    /// Records the committed object as one of the request's files; if the upload ended while it was committing, it is
+    /// deleted instead (no clean-up will see it) and the chain fails.
+    private Promise<Unit> recordFile(ObjectInfo info, Event.FileStart part) {
+        var id = info.ref().id();
+
+        return keep(id)
+               ? Promise.success(addFile(info, part))
+               : deleteOne(id).fold(_ -> ABANDONED.promise());
+    }
+
+    private synchronized boolean keep(ObjectId id) {
+        if (aborted) {
+            return false;
+        }
+
+        committed.add(id);
+
+        return true;
+    }
+
+    private Unit addFile(ObjectInfo info, Event.FileStart part) {
         files.add(FileHandle.fileHandle(part.field(),
                                         part.fileName(),
                                         part.contentType(),
@@ -249,9 +314,7 @@ public final class IngestSink implements BodySink {
     /// A failed step is logged and absorbed (FER: none exists before cluster GC, A4): an object whose delete failed stays
     /// in storage, in the unclaimed-content window the docs name, until A4 reclaims it.
     private Promise<Unit> cleanUp() {
-        var file = open;
-
-        open = Option.none();
+        var file = seal();
 
         return file.fold(Promise::unitPromise,
                          openFile -> openFile.writer()
@@ -261,10 +324,26 @@ public final class IngestSink implements BodySink {
                    .fold(_ -> deleteStored());
     }
 
-    private Promise<Unit> deleteStored() {
+    /// Marks the upload ended and takes the open writer, so no late step can open or keep anything after this.
+    private synchronized Option<OpenFile> seal() {
+        var file = open;
+
+        aborted = true;
+        open = Option.none();
+
+        return file;
+    }
+
+    private synchronized List<ObjectId> takeCommitted() {
         var ids = List.copyOf(committed);
 
         committed.clear();
+
+        return ids;
+    }
+
+    private Promise<Unit> deleteStored() {
+        var ids = takeCommitted();
 
         return Promise.allOf(ids.stream().map(this::deleteOne).toList()).mapToUnit();
     }
