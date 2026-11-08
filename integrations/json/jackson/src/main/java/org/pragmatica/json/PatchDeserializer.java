@@ -110,11 +110,9 @@ public class PatchDeserializer extends ValueDeserializer<Patch<?>> {
                                                                            .getName());
     }
 
-    /// Whether a `Patch` sits anywhere in the type's generic tree (element, key or type argument).
+    /// Whether a `Patch` sits anywhere in the type's generic tree (a type argument, or the component of an array).
     static boolean containsPatch(JavaType type) {
-        return type.getRawClass() == Patch.class || Stream.concat(Stream.of(option(type.getKeyType()),
-                                                                            option(type.getContentType()))
-                                                                        .flatMap(Option::stream),
+        return type.getRawClass() == Patch.class || Stream.concat(option(type.getContentType()).stream(),
                                                                   IntStream.range(0,
                                                                                   type.containedTypeCount())
                                                                            .mapToObj(type::containedType))

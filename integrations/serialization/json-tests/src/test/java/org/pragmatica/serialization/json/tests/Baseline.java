@@ -17,6 +17,7 @@ package org.pragmatica.serialization.json.tests;
 
 import org.pragmatica.json.JsonMapper;
 
+
 /// The Jackson contestant: the mapper slice HTTP routes use in production (`JsonMapper.valueObjectJsonMapper()`,
 /// nested value objects unwrapped through `ValueObjectModule`), with no test-only configuration. Byte equality against
 /// it is what "generated codecs and the production Jackson path write one wire form" means.

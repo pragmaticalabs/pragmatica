@@ -15,9 +15,10 @@
  */
 package org.pragmatica.serialization.json.tests;
 
+import java.util.List;
+
 import org.pragmatica.serialization.json.Json;
 
-import java.util.List;
 
 /// SYNTHETIC payload: none of the examples carries doubles. Exists only to exercise double parsing.
 public interface Telemetry {

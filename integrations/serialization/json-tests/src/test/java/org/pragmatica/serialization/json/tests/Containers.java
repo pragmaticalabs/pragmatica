@@ -15,14 +15,15 @@
  */
 package org.pragmatica.serialization.json.tests;
 
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.json.Json;
 
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
 
 /// Element types for the container combinators, and one-component holders whose generated container code the
 /// combinators must agree with: a holder `X(C v)` encodes as `{"v":<C>}`, so the bytes between `{"v":` and the

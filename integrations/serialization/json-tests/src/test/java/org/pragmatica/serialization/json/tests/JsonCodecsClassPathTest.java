@@ -15,14 +15,6 @@
  */
 package org.pragmatica.serialization.json.tests;
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-import org.pragmatica.serialization.codec.CodecProcessor;
-import org.pragmatica.serialization.json.JsonCodecs;
-import org.pragmatica.serialization.json.JsonTypeCodec;
-import org.pragmatica.serialization.json.tests.other.Receipt;
-import org.pragmatica.serialization.json.tests.other.ReceiptJson;
-
 import javax.tools.DiagnosticCollector;
 import javax.tools.JavaFileObject;
 import javax.tools.StandardLocation;
@@ -39,9 +31,19 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
+import org.pragmatica.serialization.codec.CodecProcessor;
+import org.pragmatica.serialization.json.JsonCodecs;
+import org.pragmatica.serialization.json.JsonTypeCodec;
+import org.pragmatica.serialization.json.tests.other.Receipt;
+import org.pragmatica.serialization.json.tests.other.ReceiptJson;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
 
 /// `JsonCodecs.codecFor` over artifacts compiled separately (each its own `javac` run into its own directory, as two
 /// jars or `src/main` and `src/test` would be) and loaded together by a child class loader, while the thread's
@@ -89,7 +91,9 @@ class JsonCodecsClassPathTest {
     // from the classes, `$` included (q.Dol$lar is Dol_1larJson).
     @Test
     void underscoreTypeAndNestedTypeAcrossDependentArtifacts_eachUseTheirOwnCodec() throws Exception {
-        var first = compile("m1", Map.of("q/A_B.java", record("q", "A_B"), "q/Dol$lar.java", record("q", "Dol$lar")), List.of());
+        var first = compile("m1",
+                            Map.of("q/A_B.java", record("q", "A_B"), "q/Dol$lar.java", record("q", "Dol$lar")),
+                            List.of());
         var second = compile("m2",
                              Map.of("q/A.java",
                                     "package q;\n\npublic interface A {\n    @org.pragmatica.serialization.json.Json\n    record B(int number) {}\n}\n"),
@@ -111,11 +115,13 @@ class JsonCodecsClassPathTest {
     @SuppressWarnings({"unchecked", "rawtypes"})
     private static void assertOwnCodec(ClassLoader loader, String name, Object component, String json) throws Exception {
         var type = loader.loadClass(name);
-        var value = type.getDeclaredConstructors()[0].newInstance(component);
+        var value = type.getDeclaredConstructors() [0].newInstance(component);
         var codec = (JsonTypeCodec) JsonCodecs.codecFor(type).unwrap().unwrap();
 
         assertEquals(json, new String(codec.encode(value), StandardCharsets.UTF_8), name);
-        assertEquals(value, codec.decode(json).unwrap(), name);
+        assertEquals(value,
+                     codec.decode(json).unwrap(),
+                     name);
     }
 
     // A type of the parent loader still resolves through the parent's providers.
@@ -125,8 +131,10 @@ class JsonCodecsClassPathTest {
 
         try (var loader = loader(child)) {
             assertResolves(loader, "kid.K");
-            assertSame(ReceiptJson.CODEC, JsonCodecs.codecFor(Receipt.class).unwrap().unwrap());
-            assertEquals(Thread.currentThread().getContextClassLoader(), JsonCodecsClassPathTest.class.getClassLoader());
+            assertSame(ReceiptJson.CODEC,
+                       JsonCodecs.codecFor(Receipt.class).unwrap().unwrap());
+            assertEquals(Thread.currentThread().getContextClassLoader(),
+                         JsonCodecsClassPathTest.class.getClassLoader());
         }
     }
 
@@ -139,7 +147,9 @@ class JsonCodecsClassPathTest {
     }
 
     private static String record(String packageName, String name) {
-        return "package " + packageName + ";\n\n@org.pragmatica.serialization.json.Json\npublic record " + name + "(String value) {}\n";
+        return "package " + packageName
+             + ";\n\n@org.pragmatica.serialization.json.Json\npublic record " + name
+             + "(String value) {}\n";
     }
 
     private static List<String> services(Path classes) throws IOException {
@@ -166,25 +176,29 @@ class JsonCodecsClassPathTest {
         var classes = Files.createDirectories(root.resolve("classes"));
         var files = sources.entrySet()
                            .stream()
-                           .map(entry -> write(root.resolve("src").resolve(entry.getKey()), entry.getValue()))
+                           .map(entry -> write(root.resolve("src").resolve(entry.getKey()),
+                                               entry.getValue()))
                            .toList();
         var compiler = ToolProvider.getSystemJavaCompiler();
         var collector = new DiagnosticCollector<JavaFileObject>();
 
         try (var fileManager = compiler.getStandardFileManager(collector, null, StandardCharsets.UTF_8)) {
             fileManager.setLocationFromPaths(StandardLocation.CLASS_OUTPUT, List.of(classes));
-            fileManager.setLocationFromPaths(StandardLocation.SOURCE_OUTPUT, List.of(Files.createDirectories(root.resolve("generated"))));
+            fileManager.setLocationFromPaths(StandardLocation.SOURCE_OUTPUT,
+                                             List.of(Files.createDirectories(root.resolve("generated"))));
             fileManager.setLocationFromPaths(StandardLocation.CLASS_PATH,
                                              Stream.concat(testClasspath().stream(), dependencies.stream()).toList());
             var task = compiler.getTask(null,
                                         fileManager,
                                         collector,
-                                        List.of("--release", Integer.toString(Runtime.version().feature())),
+                                        List.of("--release",
+                                                Integer.toString(Runtime.version().feature())),
                                         null,
                                         fileManager.getJavaFileObjectsFromPaths(files));
 
             task.setProcessors(List.of(new CodecProcessor()));
-            assertTrue(task.call(), collector.getDiagnostics().toString());
+            assertTrue(task.call(),
+                       collector.getDiagnostics().toString());
         }
 
         return classes;

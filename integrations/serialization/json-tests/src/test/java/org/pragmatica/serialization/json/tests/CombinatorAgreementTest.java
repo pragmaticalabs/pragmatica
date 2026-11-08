@@ -15,7 +15,13 @@
  */
 package org.pragmatica.serialization.json.tests;
 
-import org.junit.jupiter.api.Test;
+import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
@@ -28,17 +34,13 @@ import org.pragmatica.serialization.json.tests.Containers.Code;
 import org.pragmatica.serialization.json.tests.Containers.Item;
 import org.pragmatica.serialization.json.tests.Containers.Level;
 
-import java.nio.charset.StandardCharsets;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
 
 /// The combinators against the generator's own container code: for every container value the combinator writes the
 /// bytes the generated holder writes for its component, and for every input the combinator accepts exactly what the
@@ -55,7 +57,7 @@ class CombinatorAgreementTest {
     // ---- encode --------------------------------------------------------------------------------
     @Test
     void listOf_writesTheGeneratedListBytes() {
-        for (var value : List.of(List.<Item>of(), List.of(A), List.of(A, B, A))) {
+        for (var value : List.of(List.<Item> of(), List.of(A), List.of(A, B, A))) {
             assertSameBytes(Containers_ItemsJson.encode(new Containers.Items(value)),
                             JsonTypeCodec.listOf(Containers_ItemJson.CODEC).encode(value));
         }
@@ -63,7 +65,7 @@ class CombinatorAgreementTest {
 
     @Test
     void setOf_writesTheGeneratedSetBytes() {
-        for (var value : List.<Set<Item>>of(Set.of(), new LinkedHashSet<>(List.of(B, A)))) {
+        for (var value : List.<Set<Item>> of(Set.of(), new LinkedHashSet<>(List.of(B, A)))) {
             assertSameBytes(Containers_ItemSetJson.encode(new Containers.ItemSet(value)),
                             JsonTypeCodec.setOf(Containers_ItemJson.CODEC).encode(value));
         }
@@ -71,7 +73,7 @@ class CombinatorAgreementTest {
 
     @Test
     void optionOf_writesTheGeneratedOptionBytes() {
-        for (var value : List.of(Option.<Item>none(), Option.some(B))) {
+        for (var value : List.of(Option.<Item> none(), Option.some(B))) {
             assertSameBytes(Containers_MaybeItemJson.encode(new Containers.MaybeItem(value)),
                             JsonTypeCodec.optionOf(Containers_ItemJson.CODEC).encode(value));
         }
@@ -83,7 +85,7 @@ class CombinatorAgreementTest {
 
         map.put("first", A);
         map.put("sécond \"key\"", B);
-        for (var value : List.<Map<String, Item>>of(Map.of(), map)) {
+        for (var value : List.<Map<String, Item>> of(Map.of(), map)) {
             assertSameBytes(Containers_ItemsByNameJson.encode(new Containers.ItemsByName(value)),
                             JsonTypeCodec.mapOf(Containers_ItemJson.CODEC).encode(value));
         }
@@ -103,18 +105,44 @@ class CombinatorAgreementTest {
     // ---- decode --------------------------------------------------------------------------------
     @Test
     void listOf_acceptsAndRefusesWhatTheGeneratedListDoes() {
-        assertAgreement(JsonTypeCodec.listOf(Containers_ItemJson.CODEC), Containers_ItemsJson::decode, Containers.Items::v,
-                        List.of("[]", " [ ] ", "[{\"name\":\"a\"}]", "[{\"name\":\"a\",\"qty\":1},{\"name\":\"b\",\"qty\":null}]",
-                                "[{\"name\":\"a\"},{\"name\":\"a\"}]", "null", "[null]", "[{}]", "[{\"name\":null}]", "[1]",
-                                "[{\"name\":\"a\"},]", "[{\"name\":\"a\"}", "{\"name\":\"a\"}", "[{\"name\":\"a\",\"name\":\"b\"}]",
-                                "[{\"name\":\"\\u0061\",\"extra\":[1,{}]}]", "[{\"name\":\"a\"}] x", ""));
+        assertAgreement(JsonTypeCodec.listOf(Containers_ItemJson.CODEC),
+                        Containers_ItemsJson::decode,
+                        Containers.Items::v,
+                        List.of("[]",
+                                " [ ] ",
+                                "[{\"name\":\"a\"}]",
+                                "[{\"name\":\"a\",\"qty\":1},{\"name\":\"b\",\"qty\":null}]",
+                                "[{\"name\":\"a\"},{\"name\":\"a\"}]",
+                                "null",
+                                "[null]",
+                                "[{}]",
+                                "[{\"name\":null}]",
+                                "[1]",
+                                "[{\"name\":\"a\"},]",
+                                "[{\"name\":\"a\"}",
+                                "{\"name\":\"a\"}",
+                                "[{\"name\":\"a\",\"name\":\"b\"}]",
+                                "[{\"name\":\"\\u0061\",\"extra\":[1,{}]}]",
+                                "[{\"name\":\"a\"}] x",
+                                ""));
     }
 
     @Test
     void setOf_keepsOneOfEachElement_asTheGeneratedSetDoes() {
-        assertAgreement(JsonTypeCodec.setOf(Containers_ItemJson.CODEC), Containers_ItemSetJson::decode, Containers.ItemSet::v,
-                        List.of("[]", "[{\"name\":\"a\"},{\"name\":\"a\"},{\"name\":\"b\"}]", "[null]", "[{}]", "null", "[{\"name\":\"a\"}"));
-        assertEquals(1, JsonTypeCodec.setOf(Containers_ItemJson.CODEC).decode("[{\"name\":\"a\"},{\"name\":\"a\"}]").unwrap().size());
+        assertAgreement(JsonTypeCodec.setOf(Containers_ItemJson.CODEC),
+                        Containers_ItemSetJson::decode,
+                        Containers.ItemSet::v,
+                        List.of("[]",
+                                "[{\"name\":\"a\"},{\"name\":\"a\"},{\"name\":\"b\"}]",
+                                "[null]",
+                                "[{}]",
+                                "null",
+                                "[{\"name\":\"a\"}"));
+        assertEquals(1,
+                     JsonTypeCodec.setOf(Containers_ItemJson.CODEC)
+                                  .decode("[{\"name\":\"a\"},{\"name\":\"a\"}]")
+                                  .unwrap()
+                                  .size());
     }
 
     // Set equality ignores order, so the order is pinned on the iteration itself: document order, a repeat kept
@@ -124,8 +152,10 @@ class CombinatorAgreementTest {
         var json = "[{\"name\":\"c\"},{\"name\":\"a\"},{\"name\":\"b\"},{\"name\":\"a\"},{\"name\":\"d\"}]";
         var expected = List.of("c", "a", "b", "d");
 
-        assertEquals(expected, names(JsonTypeCodec.setOf(Containers_ItemJson.CODEC).decode(json).unwrap()));
-        assertEquals(expected, names(Containers_ItemSetJson.decode("{\"v\":" + json + "}").unwrap().v()));
+        assertEquals(expected,
+                     names(JsonTypeCodec.setOf(Containers_ItemJson.CODEC).decode(json).unwrap()));
+        assertEquals(expected,
+                     names(Containers_ItemSetJson.decode("{\"v\":" + json + "}").unwrap().v()));
     }
 
     private static List<String> names(Set<Containers.Item> items) {
@@ -136,29 +166,42 @@ class CombinatorAgreementTest {
 
     @Test
     void optionOf_mapsNullToEmpty_asTheGeneratedOptionDoes() {
-        assertAgreement(JsonTypeCodec.optionOf(Containers_ItemJson.CODEC), Containers_MaybeItemJson::decode,
+        assertAgreement(JsonTypeCodec.optionOf(Containers_ItemJson.CODEC),
+                        Containers_MaybeItemJson::decode,
                         Containers.MaybeItem::v,
                         List.of("null", " null ", "{\"name\":\"a\"}", "{}", "nul", "[]", "{\"name\":null}"));
-        assertEquals(Option.none(), JsonTypeCodec.optionOf(Containers_ItemJson.CODEC).decode("null").unwrap());
+        assertEquals(Option.none(),
+                     JsonTypeCodec.optionOf(Containers_ItemJson.CODEC).decode("null").unwrap());
     }
 
     @Test
     void mapOf_keepsTheLastOfARepeatedKey_asTheGeneratedMapDoes() {
-        assertAgreement(JsonTypeCodec.mapOf(Containers_ItemJson.CODEC), Containers_ItemsByNameJson::decode,
+        assertAgreement(JsonTypeCodec.mapOf(Containers_ItemJson.CODEC),
+                        Containers_ItemsByNameJson::decode,
                         Containers.ItemsByName::v,
-                        List.of("{}", "{\"x\":{\"name\":\"a\"}}", "{\"x\":{\"name\":\"a\"},\"x\":{\"name\":\"b\"}}", "{\"x\":null}",
-                                "{1:{\"name\":\"a\"}}", "{\"x\":{\"name\":\"a\"}", "{\"x\" {\"name\":\"a\"}}", "null", "[]",
+                        List.of("{}",
+                                "{\"x\":{\"name\":\"a\"}}",
+                                "{\"x\":{\"name\":\"a\"},\"x\":{\"name\":\"b\"}}",
+                                "{\"x\":null}",
+                                "{1:{\"name\":\"a\"}}",
+                                "{\"x\":{\"name\":\"a\"}",
+                                "{\"x\" {\"name\":\"a\"}}",
+                                "null",
+                                "[]",
                                 "{\"\\u00e9\":{\"name\":\"a\"}}"));
-        assertEquals("b", JsonTypeCodec.mapOf(Containers_ItemJson.CODEC)
-                                       .decode("{\"x\":{\"name\":\"a\"},\"x\":{\"name\":\"b\"}}")
-                                       .unwrap()
-                                       .get("x")
-                                       .name());
+        assertEquals("b",
+                     JsonTypeCodec.mapOf(Containers_ItemJson.CODEC)
+                                  .decode("{\"x\":{\"name\":\"a\"},\"x\":{\"name\":\"b\"}}")
+                                  .unwrap()
+                                  .get("x")
+                                  .name());
     }
 
     @Test
     void listOfValueObjects_runsTheFactory_asTheGeneratedListDoes() {
-        assertAgreement(JsonTypeCodec.listOf(Containers_CodeJson.CODEC), Containers_CodesJson::decode, Containers.Codes::v,
+        assertAgreement(JsonTypeCodec.listOf(Containers_CodeJson.CODEC),
+                        Containers_CodesJson::decode,
+                        Containers.Codes::v,
                         List.of("[\"ok\"]", "[\"\"]", "[\"ok\",\" \"]", "[null]", "[1]"));
         assertTrue(JsonTypeCodec.listOf(Containers_CodeJson.CODEC)
                                 .decode("[\"\"]")
@@ -168,9 +211,12 @@ class CombinatorAgreementTest {
 
     @Test
     void setOfEnums_fallsBackToUnknown_asTheGeneratedSetDoes() {
-        assertAgreement(JsonTypeCodec.setOf(Containers_LevelJson.CODEC), Containers_LevelsJson::decode, Containers.Levels::v,
+        assertAgreement(JsonTypeCodec.setOf(Containers_LevelJson.CODEC),
+                        Containers_LevelsJson::decode,
+                        Containers.Levels::v,
                         List.of("[\"LOW\",\"HIGH\",\"LOW\"]", "[\"WEIRD\"]", "[null]", "[\"LOW\""));
-        assertEquals(Set.of(Level.UNKNOWN), JsonTypeCodec.setOf(Containers_LevelJson.CODEC).decode("[\"WEIRD\"]").unwrap());
+        assertEquals(Set.of(Level.UNKNOWN),
+                     JsonTypeCodec.setOf(Containers_LevelJson.CODEC).decode("[\"WEIRD\"]").unwrap());
     }
 
     // The combinators open containers through the same reader calls as generated code, so the same per-container
@@ -181,10 +227,10 @@ class CombinatorAgreementTest {
         var list = JsonTypeCodec.listOf(Containers_NodeJson.CODEC);
         var levels = (JsonReader.MAX_DEPTH - 2) / 2;
 
-        assertTrue(listOfLists.decode("[[" + nodes(levels) + "]]").isSuccess(), "depth " + JsonReader.MAX_DEPTH);
+        assertTrue(listOfLists.decode("[[" + nodes(levels) + "]]").isSuccess(),
+                   "depth " + JsonReader.MAX_DEPTH);
         assertInstanceOf(JsonError.NestingTooDeep.class,
-                         list.decode("[" + nodes(levels + 1) + "]")
-                             .fold(cause -> cause, _ -> null),
+                         list.decode("[" + nodes(levels + 1) + "]").fold(cause -> cause, _ -> null),
                          "depth " + (JsonReader.MAX_DEPTH + 1));
     }
 
@@ -200,18 +246,32 @@ class CombinatorAgreementTest {
         assertEquals("{\"value\":\"x \\\"q\\\"\"}", text(Containers_CodeJson.encode(code)));
         assertEquals(jackson(code), text(Containers_CodeJson.encode(code)));
         assertEquals(jackson(code), text(Containers_CodeJson.CODEC.encode(code)));
-        assertEquals(code, Containers_CodeJson.decode(jackson(code)).unwrap());
-        assertEquals(code, Baseline.MAPPER.readBytes(Containers_CodeJson.encode(code), Code.class).unwrap());
+        assertEquals(code,
+                     Containers_CodeJson.decode(jackson(code)).unwrap());
+        assertEquals(code,
+                     Baseline.MAPPER.readBytes(Containers_CodeJson.encode(code), Code.class).unwrap());
     }
 
     @Test
     void valueObjectDocument_acceptsOnlyTheObjectForm_asTheProductionMapperDoes() {
-        assertJacksonAgreement(Containers_CodeJson.CODEC, new TypeToken<>() {},
-                               List.of("{\"value\":\"x\"}", " { \"value\" : \"x\" } ", "{\"value\":\"x\",\"extra\":[1,{}]}",
-                                       "{\"extra\":null,\"value\":\"x\"}", "{\"value\":\"a\",\"value\":\"b\"}", "\"x\"", "{}",
-                                       "{\"value\":null}", "{\"value\":\"\"}", "{\"value\":\" \"}", "[\"x\"]", "[]",
-                                       "{\"value\":\"x\"", "{\"value\":\"x\"} x"));
-        assertEquals(new Code("b"), Containers_CodeJson.decode("{\"value\":\"a\",\"value\":\"b\"}").unwrap());
+        assertJacksonAgreement(Containers_CodeJson.CODEC,
+                               new TypeToken<>() {},
+                               List.of("{\"value\":\"x\"}",
+                                       " { \"value\" : \"x\" } ",
+                                       "{\"value\":\"x\",\"extra\":[1,{}]}",
+                                       "{\"extra\":null,\"value\":\"x\"}",
+                                       "{\"value\":\"a\",\"value\":\"b\"}",
+                                       "\"x\"",
+                                       "{}",
+                                       "{\"value\":null}",
+                                       "{\"value\":\"\"}",
+                                       "{\"value\":\" \"}",
+                                       "[\"x\"]",
+                                       "[]",
+                                       "{\"value\":\"x\"",
+                                       "{\"value\":\"x\"} x"));
+        assertEquals(new Code("b"),
+                     Containers_CodeJson.decode("{\"value\":\"a\",\"value\":\"b\"}").unwrap());
     }
 
     // The document form decodes through the factory too, so a refused value is the factory's refusal, not a shape error.
@@ -220,8 +280,10 @@ class CombinatorAgreementTest {
         assertTrue(Containers_CodeJson.decode("{\"value\":\" \"}")
                                       .fold(Cause::message, _ -> "")
                                       .contains("Invalid Code: blank"));
-        assertInstanceOf(JsonError.MissingField.class, Containers_CodeJson.decode("{}").fold(cause -> cause, _ -> null));
-        assertInstanceOf(JsonError.Malformed.class, Containers_CodeJson.decode("\"x\"").fold(cause -> cause, _ -> null));
+        assertInstanceOf(JsonError.MissingField.class,
+                         Containers_CodeJson.decode("{}").fold(cause -> cause, _ -> null));
+        assertInstanceOf(JsonError.Malformed.class,
+                         Containers_CodeJson.decode("\"x\"").fold(cause -> cause, _ -> null));
     }
 
     @Test
@@ -232,28 +294,44 @@ class CombinatorAgreementTest {
 
         byName.put("k", new Code("x"));
         byCode.put(new Code("k"), new Code("x"));
-        assertEquals("[\"x\",\"y\"]", text(JsonTypeCodec.listOf(Containers_CodeJson.CODEC).encode(codes)));
-        assertEquals(jackson(codes), text(JsonTypeCodec.listOf(Containers_CodeJson.CODEC).encode(codes)));
-        assertEquals(jackson(new LinkedHashSet<>(codes)), text(JsonTypeCodec.setOf(Containers_CodeJson.CODEC).encode(new LinkedHashSet<>(codes))));
-        assertEquals("{\"k\":\"x\"}", text(JsonTypeCodec.mapOf(Containers_CodeJson.CODEC).encode(byName)));
-        assertEquals(jackson(byName), text(JsonTypeCodec.mapOf(Containers_CodeJson.CODEC).encode(byName)));
-        assertEquals("{\"v\":{\"k\":\"x\"}}", text(Containers_CodesByCodeJson.encode(new Containers.CodesByCode(byCode))));
-        assertEquals("{\"v\":" + jackson(byCode) + "}", text(Containers_CodesByCodeJson.encode(new Containers.CodesByCode(byCode))));
-        assertEquals(jackson(new Containers.Codes(codes)), text(Containers_CodesJson.encode(new Containers.Codes(codes))));
-        assertEquals(jackson(new Containers.CodesByCode(byCode)), text(Containers_CodesByCodeJson.encode(new Containers.CodesByCode(byCode))));
+        assertEquals("[\"x\",\"y\"]",
+                     text(JsonTypeCodec.listOf(Containers_CodeJson.CODEC).encode(codes)));
+        assertEquals(jackson(codes),
+                     text(JsonTypeCodec.listOf(Containers_CodeJson.CODEC).encode(codes)));
+        assertEquals(jackson(new LinkedHashSet<>(codes)),
+                     text(JsonTypeCodec.setOf(Containers_CodeJson.CODEC).encode(new LinkedHashSet<>(codes))));
+        assertEquals("{\"k\":\"x\"}",
+                     text(JsonTypeCodec.mapOf(Containers_CodeJson.CODEC).encode(byName)));
+        assertEquals(jackson(byName),
+                     text(JsonTypeCodec.mapOf(Containers_CodeJson.CODEC).encode(byName)));
+        assertEquals("{\"v\":{\"k\":\"x\"}}",
+                     text(Containers_CodesByCodeJson.encode(new Containers.CodesByCode(byCode))));
+        assertEquals("{\"v\":" + jackson(byCode) + "}",
+                     text(Containers_CodesByCodeJson.encode(new Containers.CodesByCode(byCode))));
+        assertEquals(jackson(new Containers.Codes(codes)),
+                     text(Containers_CodesJson.encode(new Containers.Codes(codes))));
+        assertEquals(jackson(new Containers.CodesByCode(byCode)),
+                     text(Containers_CodesByCodeJson.encode(new Containers.CodesByCode(byCode))));
     }
 
     @Test
     void valueObjectsNested_acceptOnlyTheBareForm_asTheProductionMapperDoes() {
-        assertJacksonAgreement(JsonTypeCodec.listOf(Containers_CodeJson.CODEC), new TypeToken<>() {},
+        assertJacksonAgreement(JsonTypeCodec.listOf(Containers_CodeJson.CODEC),
+                               new TypeToken<>() {},
                                List.of("[]", "[\"x\",\"y\"]", "[{\"value\":\"x\"}]", "[\"\"]", "{\"value\":\"x\"}"));
-        assertJacksonAgreement(JsonTypeCodec.setOf(Containers_CodeJson.CODEC), new TypeToken<>() {},
+        assertJacksonAgreement(JsonTypeCodec.setOf(Containers_CodeJson.CODEC),
+                               new TypeToken<>() {},
                                List.of("[]", "[\"x\",\"y\"]", "[{\"value\":\"x\"}]", "[\"\"]", "{\"value\":\"x\"}"));
-        assertEquals(Set.of(new Code("x")), JsonTypeCodec.setOf(Containers_CodeJson.CODEC).decode("[\"x\"]").unwrap());
-        assertJacksonAgreement(JsonTypeCodec.mapOf(Containers_CodeJson.CODEC), new TypeToken<>() {},
+        assertEquals(Set.of(new Code("x")),
+                     JsonTypeCodec.setOf(Containers_CodeJson.CODEC).decode("[\"x\"]").unwrap());
+        assertJacksonAgreement(JsonTypeCodec.mapOf(Containers_CodeJson.CODEC),
+                               new TypeToken<>() {},
                                List.of("{}", "{\"k\":\"x\"}", "{\"k\":{\"value\":\"x\"}}", "{\"k\":\" \"}"));
-        assertJacksonAgreement(Containers_CodesByCodeJson.CODEC, new TypeToken<>() {},
-                               List.of("{\"v\":{\"k\":\"x\"}}", "{\"v\":{\"k\":{\"value\":\"x\"}}}", "{\"v\":{\" \":\"x\"}}",
+        assertJacksonAgreement(Containers_CodesByCodeJson.CODEC,
+                               new TypeToken<>() {},
+                               List.of("{\"v\":{\"k\":\"x\"}}",
+                                       "{\"v\":{\"k\":{\"value\":\"x\"}}}",
+                                       "{\"v\":{\" \":\"x\"}}",
                                        "{\"v\":{\"k\":\" \"}}"));
     }
 
@@ -262,17 +340,26 @@ class CombinatorAgreementTest {
     void optionOfValueObject_takesTheFormOfWhereItStands() {
         var some = Option.some(new Code("x"));
 
-        assertEquals("{\"value\":\"x\"}", text(JsonTypeCodec.optionOf(Containers_CodeJson.CODEC).encode(some)));
-        assertEquals(jackson(some), text(JsonTypeCodec.optionOf(Containers_CodeJson.CODEC).encode(some)));
+        assertEquals("{\"value\":\"x\"}",
+                     text(JsonTypeCodec.optionOf(Containers_CodeJson.CODEC).encode(some)));
+        assertEquals(jackson(some),
+                     text(JsonTypeCodec.optionOf(Containers_CodeJson.CODEC).encode(some)));
         assertEquals("[\"x\",null]",
-                     text(JsonTypeCodec.listOf(JsonTypeCodec.optionOf(Containers_CodeJson.CODEC)).encode(List.of(some, Option.none()))));
-        assertSameBytes(Containers_MaybeCodeJson.encode(new Containers.MaybeCode(some)), "\"x\"".getBytes(StandardCharsets.UTF_8));
-        assertEquals(jackson(new Containers.MaybeCode(some)), text(Containers_MaybeCodeJson.encode(new Containers.MaybeCode(some))));
-        assertJacksonAgreement(JsonTypeCodec.optionOf(Containers_CodeJson.CODEC), new TypeToken<>() {},
+                     text(JsonTypeCodec.listOf(JsonTypeCodec.optionOf(Containers_CodeJson.CODEC)).encode(List.of(some,
+                                                                                                                 Option.none()))));
+        assertSameBytes(Containers_MaybeCodeJson.encode(new Containers.MaybeCode(some)),
+                        "\"x\"".getBytes(StandardCharsets.UTF_8));
+        assertEquals(jackson(new Containers.MaybeCode(some)),
+                     text(Containers_MaybeCodeJson.encode(new Containers.MaybeCode(some))));
+        assertJacksonAgreement(JsonTypeCodec.optionOf(Containers_CodeJson.CODEC),
+                               new TypeToken<>() {},
                                List.of("{\"value\":\"x\"}", "\"x\""));
         assertAgreement(JsonTypeCodec.listOf(JsonTypeCodec.optionOf(Containers_CodeJson.CODEC)),
                         Containers_CodesJson::decode,
-                        holder -> holder.v().stream().map(Option::some).toList(),
+                        holder -> holder.v()
+                                        .stream()
+                                        .map(Option::some)
+                                        .toList(),
                         List.of("[\"x\"]", "[{\"value\":\"x\"}]"));
         assertFalse(JsonTypeCodec.optionOf(Containers_CodeJson.CODEC).decode("\"x\"").isSuccess());
     }
@@ -284,7 +371,7 @@ class CombinatorAgreementTest {
 
         map.put(new Code("first"), A);
         map.put(new Code("sécond \"key\""), B);
-        for (var value : List.<Map<Code, Item>>of(Map.of(), map)) {
+        for (var value : List.<Map<Code, Item>> of(Map.of(), map)) {
             assertSameBytes(Containers_ItemsByCodeJson.encode(new Containers.ItemsByCode(value)),
                             JsonTypeCodec.mapOf(Containers_CodeJson.KEY, Containers_ItemJson.CODEC).encode(value));
         }
@@ -302,23 +389,34 @@ class CombinatorAgreementTest {
 
     @Test
     void mapOfValueObjectKeys_acceptsAndRefusesWhatTheGeneratedMapDoes() {
-        assertAgreement(JsonTypeCodec.mapOf(Containers_CodeJson.KEY, Containers_ItemJson.CODEC), Containers_ItemsByCodeJson::decode,
+        assertAgreement(JsonTypeCodec.mapOf(Containers_CodeJson.KEY, Containers_ItemJson.CODEC),
+                        Containers_ItemsByCodeJson::decode,
                         Containers.ItemsByCode::v,
-                        List.of("{}", "{\"x\":{\"name\":\"a\"}}", "{\"x\":{\"name\":\"a\"},\"x\":{\"name\":\"b\"}}",
-                                "{\" \":{\"name\":\"a\"}}", "{1:{\"name\":\"a\"}}", "{\"x\":{\"name\":\"a\"}", "null", "[]"));
-        var refused = JsonTypeCodec.mapOf(Containers_CodeJson.KEY, Containers_ItemJson.CODEC)
-                                   .decode("{\" \":{\"name\":\"a\"}}");
+                        List.of("{}",
+                                "{\"x\":{\"name\":\"a\"}}",
+                                "{\"x\":{\"name\":\"a\"},\"x\":{\"name\":\"b\"}}",
+                                "{\" \":{\"name\":\"a\"}}",
+                                "{1:{\"name\":\"a\"}}",
+                                "{\"x\":{\"name\":\"a\"}",
+                                "null",
+                                "[]"));
+        var refused = JsonTypeCodec.mapOf(Containers_CodeJson.KEY, Containers_ItemJson.CODEC).decode("{\" \":{\"name\":\"a\"}}");
 
         assertFalse(refused.isSuccess());
-        refused.onFailure(cause -> assertTrue(cause.message().contains("blank"), cause.message()));
+        refused.onFailure(cause -> assertTrue(cause.message().contains("blank"),
+                                              cause.message()));
     }
 
     @Test
     void mapOfEnumKeys_acceptsAndRefusesWhatTheGeneratedMapDoes() {
-        assertAgreement(JsonTypeCodec.mapOf(Containers_LevelJson.KEY, Containers_ItemJson.CODEC), Containers_ItemsByLevelJson::decode,
+        assertAgreement(JsonTypeCodec.mapOf(Containers_LevelJson.KEY, Containers_ItemJson.CODEC),
+                        Containers_ItemsByLevelJson::decode,
                         Containers.ItemsByLevel::v,
-                        List.of("{}", "{\"HIGH\":{\"name\":\"a\"}}", "{\"MEDIUM\":{\"name\":\"a\"}}",
-                                "{\"LOW\":{\"name\":\"a\"},\"LOW\":{\"name\":\"b\"}}", "{\"LOW\" {}}"));
+                        List.of("{}",
+                                "{\"HIGH\":{\"name\":\"a\"}}",
+                                "{\"MEDIUM\":{\"name\":\"a\"}}",
+                                "{\"LOW\":{\"name\":\"a\"},\"LOW\":{\"name\":\"b\"}}",
+                                "{\"LOW\" {}}"));
     }
 
     @Test
@@ -326,8 +424,10 @@ class CombinatorAgreementTest {
         var map = new LinkedHashMap<Code, Item>();
 
         map.put(new Code("k"), A);
-        assertEquals(jackson(map), text(JsonTypeCodec.mapOf(Containers_CodeJson.KEY, Containers_ItemJson.CODEC).encode(map)));
-        assertJacksonAgreement(JsonTypeCodec.mapOf(Containers_CodeJson.KEY, Containers_ItemJson.CODEC), new TypeToken<>() {},
+        assertEquals(jackson(map),
+                     text(JsonTypeCodec.mapOf(Containers_CodeJson.KEY, Containers_ItemJson.CODEC).encode(map)));
+        assertJacksonAgreement(JsonTypeCodec.mapOf(Containers_CodeJson.KEY, Containers_ItemJson.CODEC),
+                               new TypeToken<>() {},
                                List.of("{\"k\":{\"name\":\"a\",\"qty\":1}}", "{\" \":{\"name\":\"a\"}}"));
     }
 
@@ -336,15 +436,15 @@ class CombinatorAgreementTest {
             var ours = codec.decode(document);
             var theirs = Baseline.MAPPER.readString(document, token);
 
-            assertEquals(theirs.isSuccess(), ours.isSuccess(), () -> "accept/refuse differs for " + document + ": jackson "
-                                                                     + theirs + ", generated " + ours);
+            assertEquals(theirs.isSuccess(),
+                         ours.isSuccess(),
+                         () -> "accept/refuse differs for " + document + ": jackson " + theirs + ", generated " + ours);
             theirs.onSuccess(value -> assertEquals(value, ours.unwrap(), document));
         }
     }
 
     private static String jackson(Object value) {
-        return Baseline.MAPPER.writeAsString(value)
-                              .unwrap();
+        return Baseline.MAPPER.writeAsString(value).unwrap();
     }
 
     private static String text(byte[] json) {
@@ -359,8 +459,11 @@ class CombinatorAgreementTest {
             var ours = combinator.decode(fragment);
             var theirs = generated.apply("{\"v\":" + fragment + "}");
 
-            assertEquals(theirs.isSuccess(), ours.isSuccess(), () -> "accept/refuse differs for " + fragment + ": generated "
-                                                                     + theirs + ", combinator " + ours);
+            assertEquals(theirs.isSuccess(),
+                         ours.isSuccess(),
+                         () -> "accept/refuse differs for " + fragment
+                              + ": generated " + theirs
+                              + ", combinator " + ours);
             theirs.onSuccess(holder -> assertEquals(component.apply(holder), ours.unwrap(), fragment));
         }
     }
