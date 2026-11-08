@@ -13,9 +13,12 @@ import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.nio.channels.FileChannel;
+import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -195,6 +198,27 @@ class ClusterTestPortsTest {
                                                                                           .isInstanceOf(IllegalStateException.class);
             child.kill();
             assertThat(ClusterTestPorts.freeClusterPort(() -> victim)).as("after the child died").isEqualTo(victim);
+        } finally {
+            child.kill();
+        }
+    }
+
+    /// #2902: the reservation a control test relies on is a real cross-JVM lock. It is refused for a port another JVM holds, and for a port it
+    /// took, a second claim on the same lock file overlaps (this JVM holds the lock), so no other allocator could take the port either.
+    @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    void reserve_isRefusedForAPortAnotherJvmHolds_andHoldsTheLockForThePortsItTook() throws Exception {
+        var child = PortHolder.start("new", "5");
+
+        try {
+            var victim = child.ports().getFirst();
+            var mine = occupiableClusterCandidate(false);
+
+            assertThat(ClusterTestPorts.reserve(victim)).as("child's port " + victim + " is locked by another JVM").isFalse();
+            // Opening and closing the lock file here drops this JVM's OS lock on it (POSIX), so `mine` is not used after the check.
+            try (var channel = FileChannel.open(ClusterTestPorts.LOCK_DIR.resolve(mine + ".lock"), StandardOpenOption.WRITE)) {
+                assertThatThrownBy(channel::tryLock).as("the lock on the reserved port " + mine + " is held").isInstanceOf(OverlappingFileLockException.class);
+            }
         } finally {
             child.kill();
         }
