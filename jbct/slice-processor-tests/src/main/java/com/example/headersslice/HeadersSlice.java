@@ -46,7 +46,8 @@ public interface HeadersSlice {
 
             @Override
             public Promise<Echo> byQuery(RequestHeaders headers, ByQuery request) {
-                return Promise.success(Echo.echo(headers, "name=" + request.name().or("absent")));
+                return Promise.success(Echo.echo(headers,
+                                                 "name=" + request.name().or("absent")));
             }
 
             @Override
@@ -56,29 +57,35 @@ public interface HeadersSlice {
 
             @Override
             public Promise<Echo> pathBody(RequestHeaders headers, PathBody request) {
-                return Promise.success(Echo.echo(headers, "path=" + request.id() + ",text=" + request.text()));
+                return Promise.success(Echo.echo(headers,
+                                                 "path=" + request.id() + ",text=" + request.text()));
             }
 
             @Override
             public Promise<Echo> queryBody(RequestHeaders headers, QueryBody request) {
-                return Promise.success(Echo.echo(headers, "tag=" + request.tag().or("absent") + ",text=" + request.text()));
+                return Promise.success(Echo.echo(headers,
+                                                 "tag=" + request.tag().or("absent") + ",text=" + request.text()));
             }
 
             @Override
             public Promise<Echo> pathQuery(RequestHeaders headers, PathQuery request) {
-                return Promise.success(Echo.echo(headers, "path=" + request.id() + ",tag=" + request.tag().or("absent")));
+                return Promise.success(Echo.echo(headers,
+                                                 "path=" + request.id() + ",tag=" + request.tag().or("absent")));
             }
 
             @Override
             public Promise<Echo> pathQueryBody(RequestHeaders headers, PathQueryBody request) {
                 return Promise.success(Echo.echo(headers,
-                                                 "path=" + request.id() + ",tag=" + request.tag().or("absent")
-                                                 + ",text=" + request.text()));
+                                                 "path=" + request.id()
+                                                + ",tag=" + request.tag()
+                                                                   .or("absent")
+                                                + ",text=" + request.text()));
             }
 
             @Override
             public Promise<Echo> upload(RequestHeaders headers, MultipartRequest request) {
-                return Promise.success(Echo.echo(headers, "fields=" + request.fields().size()));
+                return Promise.success(Echo.echo(headers,
+                                                 "fields=" + request.fields().size()));
             }
 
             @Override
@@ -88,7 +95,8 @@ public interface HeadersSlice {
 
             @Override
             public Promise<Echo> secured(Principal principal, RequestHeaders headers, ByBody request) {
-                return Promise.success(Echo.echo(headers, "principal=" + principal.value() + ",text=" + request.text()));
+                return Promise.success(Echo.echo(headers,
+                                                 "principal=" + principal.value() + ",text=" + request.text()));
             }
 
             @Override

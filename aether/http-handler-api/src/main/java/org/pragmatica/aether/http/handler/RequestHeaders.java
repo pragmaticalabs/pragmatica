@@ -48,14 +48,12 @@ public record RequestHeaders(Map<String, List<String>> fields) {
 
     /// The first value of the named header, or none when the request did not carry it (case-insensitive).
     public Option<String> first(String name) {
-        return Option.from(all(name).stream()
-                                    .findFirst());
+        return Option.from(all(name).stream().findFirst());
     }
 
     /// Every value of the named header in arrival order; empty when the request did not carry it (case-insensitive).
     public List<String> all(String name) {
-        return Option.option(fields.get(name.toLowerCase(Locale.ROOT)))
-                     .or(List::of);
+        return Option.option(fields.get(name.toLowerCase(Locale.ROOT))).or(List::of);
     }
 
     private static Map<String, List<String>> normalize(Map<String, List<String>> raw) {
@@ -65,6 +63,7 @@ public record RequestHeaders(Map<String, List<String>> fields) {
                                                              _ -> new ArrayList<>())
                                             .addAll(values));
         merged.replaceAll((_, values) -> List.copyOf(values));
+
         return Map.copyOf(merged);
     }
 }

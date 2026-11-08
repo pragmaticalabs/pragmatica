@@ -144,6 +144,7 @@ public class RouteSourceGenerator {
     /// Qualified name of the carrier a validating factory must return: `Result<Self>` (#605).
     private static final String RESULT_TYPE = "org.pragmatica.lang.Result";
     private static final String HANDLER_TYPE = "org.pragmatica.http.routing.Handler";
+
     private static final String REQUEST_HEADERS_FACTORY = "org.pragmatica.aether.http.handler.RequestHeaders.requestHeaders";
 
     private static final Map<Integer, String> HTTP_STATUS_NAMES = Map.ofEntries(Map.entry(200, "OK"),
@@ -1475,9 +1476,13 @@ public class RouteSourceGenerator {
     /// context of the same request: the argument-binding lambda returns the request-bound handler
     /// `__request -> delegateCall`, which [Route#withRequestContext] (see [#routeStart]) feeds that request, so the
     /// headers are passed straight in, never read from ambient state.
-    private void generateInjectingLambda(PrintWriter out, MethodModel method, String lambdaParams, String delegateCall) {
+    private void generateInjectingLambda(PrintWriter out,
+                                         MethodModel method,
+                                         String lambdaParams,
+                                         String delegateCall) {
         if (!method.hasRequestHeaders()) {
             generateSecurityLambda(out, lambdaParams, delegateCall);
+
             return;
         }
 
@@ -1485,6 +1490,7 @@ public class RouteSourceGenerator {
 
         if (!method.hasSecurityParams()) {
             out.println("                 .to(" + lambdaParams + " " + bound + ")");
+
             return;
         }
 
@@ -1508,7 +1514,11 @@ public class RouteSourceGenerator {
     /// parenthesis ahead of the trailing comma.
     private String routeStart(MethodModel method, String responseType, String httpMethod, String path) {
         return method.hasRequestHeaders()
-               ? "Route.withRequestContext(Route.<" + HANDLER_TYPE + "<" + responseType + ">>" + httpMethod + "(\"" + path + "\")"
+               ? "Route.withRequestContext(Route.<" + HANDLER_TYPE
+                + "<" + responseType
+                + ">>" + httpMethod
+                + "(\"" + path
+                + "\")"
                : "Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")";
     }
 

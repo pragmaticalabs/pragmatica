@@ -12,6 +12,8 @@ import org.pragmatica.aether.http.handler.RequestHeaders;
 /// (path, query or body text) reached it beside the headers.
 public record Echo(String first, List<String> all, String detail) {
     public static Echo echo(RequestHeaders headers, String detail) {
-        return new Echo(headers.first("x-probe").or("none"), headers.all("x-probe"), detail);
+        return new Echo(headers.first("x-probe").or("none"),
+                        headers.all("x-probe"),
+                        detail);
     }
 }
