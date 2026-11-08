@@ -53,6 +53,7 @@ final class TailLossInjector extends ChannelOutboundHandlerAdapter {
     private volatile int burst;
     private volatile int later;
     private volatile String log = "";
+    private volatile long written;
 
     void arm() {
         armed = true;
@@ -78,8 +79,14 @@ final class TailLossInjector extends ChannelOutboundHandlerAdapter {
         return log;
     }
 
+    /// Datagrams written through this handler so far, held or not.
+    long written() {
+        return written;
+    }
+
     @Override
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
+        written++;
         if (armed && msg instanceof DatagramPacket packet && isShortHeader(packet)) {
             held.add(new Held(ctx, packet, promise));
         } else {

@@ -15,11 +15,13 @@
  */
 package org.pragmatica.http.server;
 
+import java.util.concurrent.TimeUnit;
 import java.util.function.BiPredicate;
 
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 
 import io.netty.buffer.Unpooled;
+import io.netty.channel.Channel;
 import io.netty.handler.codec.http3.DefaultHttp3DataFrame;
 import io.netty.handler.codec.http3.DefaultHttp3HeadersFrame;
 import io.netty.handler.codec.http3.Http3;
@@ -158,10 +160,35 @@ class Http3FinLossTest {
             stream.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[16384]))).sync();
         }
 
-        Thread.sleep(100);
+        awaitQuiet(udp);
         stream.eventLoop().submit(() -> writeTail(stream, ending)).sync();
         Thread.sleep(600);
         injector.release(udp, loss.drop);
+    }
+
+    /// Returns once the client has sent nothing for 200 ms, as seen from its event loop: the head is acknowledged and
+    /// the congestion window is open, so the tail's datagrams are produced by the task that writes it, not later when
+    /// an acknowledgement arrives.
+    private void awaitQuiet(Channel udp) throws Exception {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        var seen = writtenOnLoop(udp);
+
+        while (System.nanoTime() < deadline) {
+            Thread.sleep(200);
+            var now = writtenOnLoop(udp);
+
+            if (now == seen) {
+                return;
+            }
+
+            seen = now;
+        }
+
+        throw new AssertionError("the client kept sending for 10 s");
+    }
+
+    private long writtenOnLoop(Channel udp) {
+        return udp.eventLoop().submit(injector::written).syncUninterruptibly().getNow();
     }
 
     private void writeTail(QuicStreamChannel stream, Ending ending) {
