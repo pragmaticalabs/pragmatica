@@ -504,8 +504,18 @@ class Fsm2EquivalenceRoundTest {
 
     // -- cluster reads --------------------------------------------------------------------------------------------
 
+    /// The committed deployment state: the store also holds non-Aether keys (the `LeaderKey`), which no instrument reads.
+    @SuppressWarnings({"unchecked", "rawtypes"})
     private static Map<AetherKey, AetherValue> snapshot(EmberCluster cluster) {
-        return leader(cluster).kvStore().snapshot();
+        var aether = new HashMap<AetherKey, AetherValue>();
+
+        ((Map<Object, Object>) (Map) leader(cluster).kvStore().snapshot()).forEach((key, value) -> {
+            if (key instanceof AetherKey aetherKey && value instanceof AetherValue aetherValue) {
+                aether.put(aetherKey, aetherValue);
+            }
+        });
+
+        return aether;
     }
 
     private static AetherNode leader(EmberCluster cluster) {
