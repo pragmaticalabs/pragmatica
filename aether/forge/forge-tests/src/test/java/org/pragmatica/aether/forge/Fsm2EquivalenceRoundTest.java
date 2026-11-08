@@ -100,7 +100,7 @@ class Fsm2EquivalenceRoundTest {
 
     /// The scenarios of design 9.3 that this harness drives. Node counts leave room to re-place after a loss (one instance per node).
     enum Scenario {
-        E01(3), E02(5), E03(3), E04(4), E05(4), E06(5), E07(4), E08(3), E09(3), E10(4), E11(4);
+        E01(3), E02(5), E03(3), E04(4), E05(4), E06(5), E07(4), E08(5), E09(3), E10(4), E11(4);
 
         final int nodes;
 
@@ -303,23 +303,24 @@ class Fsm2EquivalenceRoundTest {
                 yield System.currentTimeMillis() - at;
             }
             case E08 -> {
-                // A transient load failure (design 9.3 E-08): one instance placed, then the jar is moved out of the local repository the nodes
-                // resolve from, so the scale-up loads fail with ArtifactNotFound (Intermittent, retried); once a FAILED row is committed the jar is
-                // restored and the retry must succeed. The fixture's own control: no FAILED row within the bound fails the arm (no silent pass).
-                publishAndPlace(cluster, echo, 1);
+                // A transient load failure (design 9.3 E-08): 3 instances placed (the blueprint floor, #1495), then the jar is moved out of the local
+                // repository the nodes resolve from, so the 3 -> 5 scale-up loads fail with ArtifactNotFound (Intermittent, retried); once a FAILED
+                // row is committed the jar is restored and the retry must succeed. The fixture's own control: no FAILED row within the bound fails
+                // the arm (no silent pass).
+                publishAndPlace(cluster, echo, 3);
                 var jar = localJar(echo);
                 var aside = jar.resolveSibling(jar.getFileName() + ".f4-aside");
                 var at = System.currentTimeMillis();
 
                 move(jar, aside);
                 try {
-                    expectAccepted(scale(cluster, 3));
+                    expectAccepted(scale(cluster, 5));
                     awaitTrue("a transient load failure (E-08 fixture fired)", Duration.ofSeconds(90), () -> failed(cluster, echo) > 0);
                     log("E08 transient failure observed after %d ms: %s".formatted(System.currentTimeMillis() - at, failedRows(cluster, echo)));
                 } finally {
                     move(aside, jar);
                 }
-                awaitTrue("3 ACTIVE after the retry", WAIT, () -> active(cluster, echo) == 3);
+                awaitTrue("5 ACTIVE after the retry", WAIT, () -> active(cluster, echo) == 5);
                 yield System.currentTimeMillis() - at;
             }
             case E09 -> {
