@@ -3499,6 +3499,104 @@ class PartitionBackfillTest {
             assertThat(descriptorFor(OWNER).confirmedOffset()).isEqualTo(4L);
         }
 
+        @Test
+        void backfill_survivorAckLandsDuringCatchup_survivorConfirmationDoesNotReplaceTheAckedRow() {
+            // #2888: the owner is blind to the survivor (row -1), probes it at 19 and pulls 5..19. A live ack under the
+            // owner epoch lands at 10 WHILE the pull is in flight. The survivor confirmation (ZERO epoch, 19) must not replace
+            // that row with an uncounted ZERO-epoch one (confirmedByNode reads a ZERO-epoch row as -1): the acked row stays.
+            var epoch = Epoch.epoch(1L, 5L, 0L);
+            seedLocal(5);
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.updateWatermark(STREAM, PARTITION, OWNER, 4L);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+            var pull = survivorSource(SURVIVOR, 5L, eventsFrom(5, 15));
+            CatchupTransport ackLandsDuringPull = (target, request) -> {
+                registry.advanceWatermark(STREAM, PARTITION, SURVIVOR, 10L, ReplicationState.CAUGHT_UP, epoch);
+                return pull.requestCatchup(target, request);
+            };
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             ackLandsDuringPull,
+                                             (target, _, _) -> Promise.success(target.equals(SURVIVOR) ? 19L : - 1L),
+                                             localHeadWatermark(),
+                                             OWNER,
+                                             BOUND,
+                                             new AtomicLong(BOUND.millis() + 1)::get,
+                                             () -> MEMBERS);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).isTrue();
+
+            var survivor = descriptorFor(SURVIVOR);
+            assertThat(survivor.epoch()).isEqualTo(epoch);
+            assertThat(survivor.confirmedOffset()).isEqualTo(10L);
+        }
+
+        /// #2888: the survivor confirmation keeps the late-side-effect gate (#1638): a pull that settles AFTER its flight timed
+        /// out, while the NEXT flight holds the slot, records no survivor row. Red under "the confirmation is not gated".
+        @Test
+        void backfill_lateSurvivorPull_afterTheTimeout_recordsNoSurvivorRow() {
+            seedLocal(5);
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.updateWatermark(STREAM, PARTITION, OWNER, 4L);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+            var pending = new CopyOnWriteArrayList<Promise<ReplicationMessage.CatchupResponse>>();
+            var requests = new CopyOnWriteArrayList<ReplicationMessage.CatchupRequest>();
+            var served = survivorSource(SURVIVOR, 5L, eventsFrom(5, 15));
+            CatchupTransport gated = (_, request) -> {
+                var response = Promise.<ReplicationMessage.CatchupResponse>promise();
+
+                pending.add(response);
+                requests.add(request);
+
+                return response;
+            };
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             gated,
+                                             ReplicationTransport.NOOP,
+                                             (target, _, _) -> Promise.success(target.equals(SURVIVOR) ? 19L : - 1L),
+                                             localHeadWatermark(),
+                                             OWNER,
+                                             TimeSpan.timeSpan(1).millis(),
+                                             () -> MEMBERS,
+                                             CommittedStreamOwnerSource.none(),
+                                             ReplicationReceiveHandler.NO_DURABILITY_BARRIER,
+                                             QuarantineView.NONE,
+                                             Option.some(TimeSpan.timeSpan(500).millis()));
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds()).isFailure())
+                    .as("the old flight timed out").isTrue();
+            backfill.backfill(STREAM, PARTITION);
+
+            served.requestCatchup(SURVIVOR, requests.getFirst()).onResult(pending.getFirst()::resolve);
+            Promise.<Long>promise(TimeSpan.timeSpan(200).millis(), () -> org.pragmatica.lang.Result.success(0L)).await();
+
+            assertThat(descriptorFor(SURVIVOR).confirmedOffset()).as("the late run recorded no survivor row").isEqualTo(-1L);
+        }
+
+        @Test
+        void backfill_blindSurvivorPulled_rowIsRaisedToTheSurvivorTail() {
+            // #2888: the monotone rule keeps the survivor confirmation's legitimate effect: a blind (ZERO-epoch) row is raised.
+            seedLocal(5);
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.updateWatermark(STREAM, PARTITION, OWNER, 4L);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             survivorSource(SURVIVOR, 5L, eventsFrom(5, 15)),
+                                             (target, _, _) -> Promise.success(target.equals(SURVIVOR) ? 19L : - 1L),
+                                             localHeadWatermark(),
+                                             OWNER,
+                                             BOUND,
+                                             new AtomicLong(BOUND.millis() + 1)::get,
+                                             () -> MEMBERS);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).isTrue();
+
+            assertThat(descriptorFor(SURVIVOR).confirmedOffset()).isEqualTo(19L);
+            assertThat(descriptorFor(SURVIVOR).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+        }
+
         private PartitionBackfill ownerBackfill(CatchupTransport transport, AtomicLong clock) {
             return partitionBackfill(registry,
                                      recovery,

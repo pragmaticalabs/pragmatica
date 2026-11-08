@@ -249,6 +249,60 @@ public final class ReplicaRegistry {
         watermarkStore.persistWatermark(streamName, partition, nodeId, confirmedOffset);
     }
 
+    /// The owner's live-ack path (#2888): as the six-argument update, but an ack whose offset is LOWER than the row's
+    /// confirmed offset under the SAME epoch is refused, so a reordered or duplicated ack (transport retry, ack resend after
+    /// #2882) cannot move a replica's watermark backwards. An ack from an OLDER epoch than the row's is refused whatever its offset, so a stale
+    /// tenure cannot overwrite a newer one. A NEWER epoch is a new lineage: its first ack replaces the row, lower offset included,
+    /// because a new tenure may legitimately restart the confirmation. An equal offset is applied,
+    /// so a state upgrade at the same offset is not lost. The persisted watermark follows the surviving row.
+    @Contract
+    public void advanceWatermark(String streamName,
+                                 int partition,
+                                 NodeId nodeId,
+                                 long confirmedOffset,
+                                 ReplicationState state,
+                                 Epoch epoch) {
+        var key = partitionKey(streamName, partition);
+        var surviving = option(replicas.get(key)).flatMap(nodeMap -> advanceRow(nodeMap,
+                                                                                nodeId,
+                                                                                confirmedOffset,
+                                                                                state,
+                                                                                epoch));
+
+        watermarkStore.persistWatermark(streamName,
+                                        partition,
+                                        nodeId,
+                                        surviving.map(ReplicaDescriptor::confirmedOffset).or(confirmedOffset));
+    }
+
+    private static Option<ReplicaDescriptor> advanceRow(ConcurrentHashMap<NodeId, ReplicaDescriptor> nodeMap,
+                                                        NodeId nodeId,
+                                                        long confirmedOffset,
+                                                        ReplicationState state,
+                                                        Epoch epoch) {
+        return option(nodeMap.computeIfPresent(nodeId, (_, current) -> monotone(current, confirmedOffset, state, epoch)));
+    }
+
+    private static boolean isStale(ReplicaDescriptor current, long confirmedOffset, Epoch epoch) {
+        var order = epoch.compareTo(current.epoch());
+
+        return order < 0 || order == 0 && current.confirmedOffset() > confirmedOffset;
+    }
+
+    private static ReplicaDescriptor monotone(ReplicaDescriptor current,
+                                              long confirmedOffset,
+                                              ReplicationState state,
+                                              Epoch epoch) {
+        return isStale(current, confirmedOffset, epoch)
+               ? current
+               : replicaDescriptor(current.nodeId(),
+                                   current.streamName(),
+                                   current.partition(),
+                                   confirmedOffset,
+                                   state,
+                                   epoch);
+    }
+
     @Contract
     public void rebuildFromWatermarks(Map<PartitionKey, Map<NodeId, Long>> watermarks) {
         watermarks.forEach(this::rebuildPartitionWatermarks);
