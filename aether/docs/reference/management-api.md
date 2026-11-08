@@ -22,6 +22,7 @@ X-API-Key: your-api-key
 - `401 Unauthorized` — Missing `X-API-Key` header. Response includes `WWW-Authenticate: ApiKey realm="Aether"`.
 - `401 Unauthorized` — Invalid API key provided (#2926). Response includes `WWW-Authenticate: ApiKey realm="Aether", error="invalid_token"`; the body never says why the key was refused.
 - `403 Forbidden` — Authenticated, but the key's role lacks permission. No challenge is sent.
+- `503 Service Unavailable` — JWT mode only: the JWKS key set could not be fetched (a server-side failure, not a bad credential). No `WWW-Authenticate` is sent; retry later.
 
 With no key configured, `security_mode = "api-key"` (the default) is fail-closed: every non-public route is refused until a credential exists, and the cluster bootstrap admin key is the only one accepted (see [SECURITY.md](../../../SECURITY.md#default-security-posture-management-api)). Only an explicit `security_mode = "none"` serves the management plane without authentication, and then it is **fully open**: no validator is consulted on any path (local, forwarded, websocket feeds, artifact push), so any caller that can reach the port can run every operation. Use `none` only on an isolated listener.
 

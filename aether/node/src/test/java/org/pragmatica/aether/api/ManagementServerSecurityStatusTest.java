@@ -57,4 +57,13 @@ class ManagementServerSecurityStatusTest {
             assertThat(ManagementServerImpl.authenticateChallenge(cause)).isEqualTo(BASE);
         }
     }
+
+    /// #2926 (CTO ruling): a key-fetch failure is the server failing -- 503; the 401-only challenge branch is not taken.
+    @Test
+    void jwksFetchFailure_is503_andNeverChallenged() {
+        var cause = new SecurityError.JwksFetchFailed("x");
+
+        assertThat(ManagementServerImpl.resolveSecurityErrorStatus(cause)).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(SecurityError.challengeError(cause)).isEqualTo(org.pragmatica.lang.Option.none());
+    }
 }

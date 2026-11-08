@@ -2405,6 +2405,7 @@ class ManagementServerImpl implements ManagementServer {
             case SecurityError.AccessDenied _ -> HttpStatus.FORBIDDEN;
             case SecurityError.InsufficientRole _ -> HttpStatus.FORBIDDEN;
             case RoleEnforcer.AuthorizationError.AccessDenied _ -> HttpStatus.FORBIDDEN;
+            case SecurityError.JwksFetchFailed _ -> HttpStatus.SERVICE_UNAVAILABLE;
             default -> HttpStatus.UNAUTHORIZED;
         };
     }

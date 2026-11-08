@@ -1724,7 +1724,8 @@ class AppHttpServerAdapter implements AppHttpServer {
     record SecurityStatusMessage(HttpStatus status, String clientMessage) {}
 
     /// #2926: package-visible so the status of every [SecurityError] case can be asserted without the HTTP pipeline.
-    /// 401 for every authentication failure (missing, invalid, expired, wrong issuer/audience, unknown key, bad
+    /// 503 with no challenge when the key fetch itself failed (the server, not the credential, is at fault), 401 for every
+    /// authentication failure (missing, invalid, expired, wrong issuer/audience, unknown key, bad
     /// signature), 403 only for an authenticated caller lacking a role; the client text never says which check failed.
     static SecurityStatusMessage mapSecurityError(Cause cause) {
         return switch (cause) {
@@ -1736,7 +1737,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                                  "Invalid credentials");
             case SecurityError.InsufficientRole _, SecurityError.AccessDenied _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN,
                                                                                                              cause.message());
-            case SecurityError.JwksFetchFailed _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED,
+            case SecurityError.JwksFetchFailed _ -> new SecurityStatusMessage(HttpStatus.SERVICE_UNAVAILABLE,
                                                                               "Authentication temporarily unavailable");
             default -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED, "Authentication failed");
         };

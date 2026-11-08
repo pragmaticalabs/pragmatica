@@ -53,11 +53,13 @@ class AppHttpServerSecurityErrorStatusTest {
         assertThat(AppHttpServerAdapter.mapSecurityError(new SecurityError.AccessDenied("x")).status()).isEqualTo(HttpStatus.FORBIDDEN);
     }
 
+    /// #2926 (CTO ruling): a key-fetch failure is the SERVER failing -- 503, and no challenge to re-authenticate.
     @Test
-    void jwksFetchFailure_isAServerSideFailureAnswered401WithoutAnErrorCode() {
+    void jwksFetchFailure_isAServerSideFailure_503WithoutAChallengeError() {
         var mapped = AppHttpServerAdapter.mapSecurityError(new SecurityError.JwksFetchFailed("x"));
 
-        assertThat(mapped.status()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(mapped.status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(mapped.clientMessage()).doesNotContain("x").contains("temporarily unavailable");
         assertThat(SecurityError.challengeError(new SecurityError.JwksFetchFailed("x")).isEmpty()).isTrue();
     }
 }

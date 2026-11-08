@@ -52,4 +52,9 @@ class SecurityErrorChallengeTest {
         assertThat(HttpAuthenticator.apiKeyValidator(java.util.Set.of("k")).challengeScheme()).isEqualTo(Option.some("ApiKey"));
         assertThat(HttpAuthenticator.denyUnlessPublicValidator().challengeScheme()).isEqualTo(Option.none());
     }
+
+    @Test
+    void jwksFetchFailure_isServiceUnavailable_theOnlyServerSideCase() {
+        assertThat(new SecurityError.JwksFetchFailed("x").httpStatus()).isEqualTo(org.pragmatica.http.HttpStatus.SERVICE_UNAVAILABLE);
+    }
 }

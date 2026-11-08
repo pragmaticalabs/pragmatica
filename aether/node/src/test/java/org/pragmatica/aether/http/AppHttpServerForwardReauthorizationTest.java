@@ -200,6 +200,95 @@ class AppHttpServerForwardReauthorizationTest {
         assertThat(router.handleCount()).isZero();
     }
 
+    /// #2926: a refusal on the FORWARD path is the same response as the direct refusal of the same request -- status,
+    /// presence and exact text of `WWW-Authenticate` (including `error=`). One real listener answers the request
+    /// directly; the same host object relays the same request as a forward. Every row's expected status and challenge
+    /// is also pinned literally, so two identically wrong paths cannot pass.
+    @Test
+    void forwardedRefusal_isTheDirectRefusal_status_andChallenge() throws Exception {
+        var invalidKey = Map.of("X-API-Key", "not-a-valid-key");
+        var validKey = Map.of("X-API-Key", VALID_API_KEY);
+        var malformedJwt = Map.of("Authorization", "Bearer not-a-jwt");
+        var unverifiableJwt = Map.of("Authorization", "Bearer " + jwtWithKid("k1"));
+
+        assertParity("401 invalid_token", apiKeyConfig(), invalidKey, 401, "ApiKey realm=\"Aether\", error=\"invalid_token\"");
+        assertParity("401 missing", apiKeyConfig(), Map.of(), 401, "ApiKey realm=\"Aether\"");
+        assertParity("403 role", apiKeyConfig(), validKey, 403, null);
+        assertParity("401 jwt invalid_token", jwtConfig(), malformedJwt, 401, "Bearer realm=\"Aether\", error=\"invalid_token\"");
+        assertParity("503 jwks", jwtConfig(), unverifiableJwt, 503, null);
+    }
+
+    private void assertParity(String label, AppHttpConfig config, Map<String, String> credential, int status, String challenge)
+        throws Exception {
+        network = new RecordingClusterNetwork();
+        serializer = new CapturingSerializer();
+        router = new CountingRouter();
+
+        var forwarded = HttpRequestContext.httpRequestContext("/api/admin/secret",
+                                                              "GET",
+                                                              Map.of(),
+                                                              credential.entrySet()
+                                                                        .stream()
+                                                                        .collect(java.util.stream.Collectors.toMap(Map.Entry::getKey,
+                                                                                                                   entry -> List.of(entry.getValue()))),
+                                                              "req-fwd");
+        var policy = SecurityPolicy.roleRequired("admin");
+        var host = hostServing(config, new StubRoutePublisher("GET", "/api/admin/", SELF_NODE, router, policy, policy), forwarded);
+
+        TlsProbe.requireStarted(host.start().await(), "app listener");
+
+        try {
+            var direct = directRefusal(TlsProbe.requireBoundPort(host.boundPort(), "app listener"), credential);
+
+            host.onHttpForwardRequest(forwardRequest("corr-parity"));
+
+            var relayed = relayedResponse();
+
+            assertThat(direct.statusCode()).as(label + " direct status").isEqualTo(status);
+            assertThat(relayed.statusCode()).as(label + " forwarded status").isEqualTo(status);
+            assertThat(direct.headers().firstValue("WWW-Authenticate").orElse(null)).as(label + " direct challenge").isEqualTo(challenge);
+            assertThat(relayed.headers().get("WWW-Authenticate")).as(label + " forwarded challenge").isEqualTo(challenge);
+            assertThat(router.handleCount()).as(label + " never dispatched").isZero();
+        } finally {
+            host.stop().await();
+        }
+    }
+
+    private static java.net.http.HttpResponse<String> directRefusal(int port, Map<String, String> credential) throws Exception {
+        var builder = java.net.http.HttpRequest.newBuilder()
+                                               .uri(java.net.URI.create("http://localhost:" + port + "/api/admin/secret"))
+                                               .GET();
+
+        credential.forEach(builder::header);
+
+        try (var client = java.net.http.HttpClient.newHttpClient()) {
+            return client.send(builder.build(), java.net.http.HttpResponse.BodyHandlers.ofString());
+        }
+    }
+
+    private static AppHttpConfig apiKeyConfig() {
+        return AppHttpConfig.appHttpConfig(0, Set.of(VALID_API_KEY));
+    }
+
+    /// The JWKS endpoint is unreachable: a structurally valid token with a `kid` the node cannot resolve is a key-fetch
+    /// failure, not a bad credential.
+    private static AppHttpConfig jwtConfig() {
+        var jwt = JwtConfig.jwtConfig("http://127.0.0.1:1/.well-known/jwks.json").unwrap();
+
+        return AppHttpConfig.appHttpConfig(true, 0, Map.of(), AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE, SecurityMode.JWT,
+                                           Option.some(jwt), HttpProtocol.H1)
+                            .unwrap();
+    }
+
+    private static String jwtWithKid(String kid) {
+        var encoder = java.util.Base64.getUrlEncoder().withoutPadding();
+        var header = "{\"alg\":\"RS256\",\"typ\":\"JWT\",\"kid\":\"" + kid + "\"}";
+
+        return encoder.encodeToString(header.getBytes(java.nio.charset.StandardCharsets.UTF_8)) + "."
+               + encoder.encodeToString("{\"exp\":4102444800}".getBytes(java.nio.charset.StandardCharsets.UTF_8)) + "."
+               + encoder.encodeToString(new byte[] {1, 2, 3});
+    }
+
     /// v1670 R2-N4: the route a forwarded request is re-authorized against and the router that serves it come from
     /// ONE resolution. The stub's separate `findLocalRoute` answers a stale PUBLIC parent -- what a second lookup could
     /// read after an undeploy between the two -- while its single `resolveLocal` names the admin child and its router.

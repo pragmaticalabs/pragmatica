@@ -237,6 +237,22 @@ class TerraHttpServerTest {
         } finally { close(host); }
     }
 
+    /// #2926 (CTO ruling): an unreachable JWKS is the server failing -- 503 and no challenge, not 500 and not 401.
+    @Test void serve_jwtWithUnreachableJwks_is503_withoutAChallenge() throws Exception {
+        var jwt = org.pragmatica.aether.config.JwtConfig.jwtConfig("http://127.0.0.1:1/keys").unwrap();
+        var route = Route.<String>get("/jwt").withoutParameters().to(_ -> Promise.success("ok")).withSecurity(SecurityPolicy.roleRequired("admin")).asText();
+        var host = start(List.of(route), HttpAuthenticator.jwtValidator(jwt), new AtomicInteger());
+        var encoder = java.util.Base64.getUrlEncoder().withoutPadding();
+        var utf8 = java.nio.charset.StandardCharsets.UTF_8;
+        var token = encoder.encodeToString("{\"alg\":\"RS256\",\"kid\":\"k1\"}".getBytes(utf8)) + "."
+            + encoder.encodeToString("{\"exp\":4102444800}".getBytes(utf8)) + "." + encoder.encodeToString(new byte[] {1, 2, 3});
+        try (var client = HttpClient.newHttpClient()) {
+            var response = get(client, host, "/jwt", "Authorization", "Bearer " + token);
+            assertThat(response.statusCode()).isEqualTo(503);
+            assertThat(response.headers().firstValue("WWW-Authenticate")).isEmpty();
+        } finally { close(host); }
+    }
+
     @Test void serve_jwtWithLiveJwks_verifiesSignatureClaimsAndRole() throws Exception {
         var generator = java.security.KeyPairGenerator.getInstance("RSA");
         generator.initialize(2048);

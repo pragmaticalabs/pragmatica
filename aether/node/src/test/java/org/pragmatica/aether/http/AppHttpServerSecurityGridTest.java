@@ -274,6 +274,24 @@ class AppHttpServerSecurityGridTest {
         assertThat(response.headers().firstValue("WWW-Authenticate")).contains("Token realm=\"Aether\", error=\"invalid_token\"");
     }
 
+    /// #2926 (CTO ruling): the JWKS endpoint is unreachable, so a well-formed token's key cannot be resolved. That is the
+    /// SERVER failing -- 503 with no `WWW-Authenticate` -- not the credential: a 401 challenge would send a refreshing
+    /// client into a refresh loop against the outage.
+    @Test
+    void jwtMode_unreachableJwks_isRefusedWith503_andNoChallenge() throws Exception {
+        startServer(Setup.JWT_WITH_CONFIG, SecurityPolicy.roleRequired("admin"));
+
+        var encoder = java.util.Base64.getUrlEncoder().withoutPadding();
+        var token = encoder.encodeToString("{\"alg\":\"RS256\",\"kid\":\"k1\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8))
+                    + "." + encoder.encodeToString("{\"exp\":4102444800}".getBytes(java.nio.charset.StandardCharsets.UTF_8))
+                    + "." + encoder.encodeToString(new byte[] {1, 2, 3});
+        var response = get("/local/thing", Option.some("Bearer " + token));
+
+        assertThat(response.statusCode()).isEqualTo(503);
+        assertThat(response.headers().firstValue("WWW-Authenticate")).isEmpty();
+        assertThat(response.body()).doesNotContain(SERVED);
+    }
+
     /// #2926 (guess G1): a header in a scheme this node does not accept presents no usable credential -- 401, no `error`.
     @Test
     void jwtMode_unacceptedScheme_isRefusedWith401AndNoErrorCode() throws Exception {

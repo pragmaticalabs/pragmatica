@@ -81,6 +81,7 @@ public sealed interface SecurityError extends Cause, HttpStatusAware {
 
     record KeyNotFound(String message) implements SecurityError {}
 
+    /// #2926 (CTO ruling): a key-fetch failure is the SERVER failing, not the credential -- 503, never a challenge.
     record JwksFetchFailed(String message) implements SecurityError {
         @Override
         public Option<String> challengeError() {
@@ -89,7 +90,7 @@ public sealed interface SecurityError extends Cause, HttpStatusAware {
 
         @Override
         public HttpStatus httpStatus() {
-            return HttpStatus.INTERNAL_SERVER_ERROR;
+            return HttpStatus.SERVICE_UNAVAILABLE;
         }
     }
 

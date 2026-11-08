@@ -12,8 +12,14 @@
   |---|---|---|
   | `MissingCredentials` (no/unaccepted-scheme header, no policy/validator) | 401 | none |
   | `InvalidCredentials`, `TokenExpired`, `SignatureInvalid`, `IssuerMismatch`, `AudienceMismatch`, `KeyNotFound` | 401 | `invalid_token` |
-  | `JwksFetchFailed` | 401 (Aether), 500 (Terra, unchanged) | none |
+  | `JwksFetchFailed` (the key set could not be fetched) | 503 on every surface (Aether app direct + forwarded, management API, Terra) | **no challenge** |
   | `AccessDenied`, `InsufficientRole` | 403 | no challenge |
+- **A JWKS (key) fetch failure is the server failing: `503`, never a challenge.** It used to answer `401` (Aether, with a
+  `Bearer` challenge) or `500` (Terra), and an unknown `kid` whose refresh FAILED was reported as `KeyNotFound` (`401
+  invalid_token`) because the fetch error was swallowed. A `401` challenge tells a conforming client to re-authenticate, so
+  token-refreshing clients looped against a key-server outage. Now a failed refresh surfaces as `JwksFetchFailed` -> `503`
+  ("Authentication temporarily unavailable"), same on all surfaces; a healthy JWKS that lacks the `kid` stays `401
+  invalid_token`.
 - **Not changed:** a malformed `Authorization` header is answered `401 invalid_token`, not `400 invalid_request`
   (RFC 6750 §3.1 allows either; no `SecurityError` distinguishes header-syntax defects, and `401` lets a refreshing
   client recover). Log levels are unchanged.
@@ -21,4 +27,5 @@
   `AppHttpServerSecurityGridTest.java`, `AppHttpServerForwardReauthorizationTest.java`,
   `aether/node/src/test/java/org/pragmatica/aether/api/ManagementServerSecurityStatusTest.java`,
   `aether/http-security/src/test/java/org/pragmatica/aether/http/security/SecurityErrorChallengeTest.java`,
+  `aether/http-security/src/test/java/org/pragmatica/aether/http/security/JwksKeyStoreFetchFailureTest.java`,
   `terra/http/src/test/java/org/pragmatica/terra/http/TerraHttpServerTest.java`]

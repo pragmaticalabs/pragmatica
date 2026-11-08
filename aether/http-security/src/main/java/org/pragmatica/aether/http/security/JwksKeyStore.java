@@ -22,6 +22,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.json.JsonMapper;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -85,18 +86,24 @@ class JwksKeyStore implements AutoCloseable {
         }
     }
 
+    /// #2926 (CTO ruling): an unknown `kid` triggers one refresh. If that fetch FAILED, the key set could not be read --
+    /// the server's failure, reported as [SecurityError.JwksFetchFailed] (503, no challenge) rather than as an unknown
+    /// key (401 invalid_token), which would tell a refreshing client its valid token is bad.
     private Result<PublicKey> refreshAndRetry(String kid) {
-        fetchAndCacheKeys();
+        return fetchJwks().onSuccess(this::applyJwksResponse)
+                        .onFailure(this::logFetchFailure)
+                        .flatMap(_ -> Option.option(keyCache.get(kid))
+                                            .toResult(new SecurityError.KeyNotFound("Key not found for kid: " + kid
+                                                                                    + " after JWKS refresh")));
+    }
 
-        return Option.option(keyCache.get(kid)).toResult(new SecurityError.KeyNotFound("Key not found for kid: " + kid
-                                                                                      + " after JWKS refresh"));
+    private void logFetchFailure(Cause cause) {
+        log.warn("Failed to fetch JWKS from {}: {}", jwksUrl, cause.message());
     }
 
     private void fetchAndCacheKeys() {
         fetchJwks().onSuccess(this::applyJwksResponse)
-                 .onFailure(cause -> log.warn("Failed to fetch JWKS from {}: {}",
-                                              jwksUrl,
-                                              cause.message()));
+                 .onFailure(this::logFetchFailure);
     }
 
     @SuppressWarnings("unchecked")
