@@ -67,6 +67,7 @@ class PrincipalPropagationTripwireTest {
     private static final Artifact ARTIFACT = Artifact.artifact("org.example:downstream:1.0.0").unwrap();
     private static final MethodName METHOD = MethodName.methodName("handle").unwrap();
     private static final SecurityContext ALICE = SecurityContext.securityContext("alice", Set.of(Role.SERVICE)).unwrap();
+    private static final String ALICE_KEY = "alice";
     private static final String ALICE_NAME = ALICE.principal().value();
     private static final long TIMEOUT_MS = 2_000L;
     private static final long CLEANUP_INTERVAL_MS = 60_000L;
@@ -143,7 +144,7 @@ class PrincipalPropagationTripwireTest {
         assertThat(values).as(LANDED + ": a SecurityContext value is on the wire").noneMatch(SecurityContext.class::isInstance);
         assertThat(values.stream().filter(value -> !(value instanceof byte[])).map(String::valueOf))
             .as(LANDED + ": the caller's identity is on the wire under another form")
-            .noneMatch(text -> text.contains(ALICE_NAME));
+            .noneMatch(text -> text.toLowerCase().contains(ALICE_KEY));
     }
 
     @Disabled("#2157 part b: enable when the sender puts the caller's SecurityContext on InvokeRequest")
