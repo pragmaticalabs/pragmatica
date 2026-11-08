@@ -6,6 +6,8 @@ package org.pragmatica.aether.http.upload;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Duration;
@@ -31,12 +33,17 @@ import org.pragmatica.http.routing.UploadSpec;
 import org.pragmatica.http.server.BodySink;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.storage.ByteRange;
 import org.pragmatica.storage.ContentStore;
 import org.pragmatica.storage.MemoryTier;
+import org.pragmatica.storage.ObjectId;
 import org.pragmatica.storage.ObjectRef;
 import org.pragmatica.storage.ObjectSpec;
+import org.pragmatica.storage.ObjectWriter;
 import org.pragmatica.storage.StorageInstance;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -314,6 +321,193 @@ class IngestSinkTest {
 
         IngestedRequest.discardUpload(dispatched.get());
         await(() -> catalog(store).isEmpty(), "the discarded upload's objects are deleted");
+    }
+
+    // ---- observing the store the sink writes to ----
+    /// What a [#spy] records and controls: writer aborts and object deletes seen, a gate every delete waits on, and whether
+    /// commits fail.
+    private static final class Spy {
+        final AtomicInteger aborts = new AtomicInteger();
+        final AtomicInteger deletes = new AtomicInteger();
+        final Promise<Unit> deleteGate = Promise.promise();
+        final boolean failCommit;
+
+        Spy(boolean failCommit) {
+            this.failCommit = failCommit;
+        }
+    }
+
+    private static Object invoke(Object target, java.lang.reflect.Method method, Object[] args) throws Throwable {
+        try {
+            return method.invoke(target, args);
+        } catch (InvocationTargetException e) {
+            throw e.getCause();
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static ContentStore spy(ContentStore real, Spy spy) {
+        return (ContentStore) Proxy.newProxyInstance(ContentStore.class.getClassLoader(),
+                                                     new Class<?>[]{ContentStore.class},
+                                                     (_, method, args) -> switch (method.getName()) {
+                                                         case "create" -> ((Promise<ObjectWriter>) invoke(real, method, args))
+                                                             .map(writer -> spyWriter(writer, spy));
+                                                         case "delete" -> {
+                                                             spy.deletes.incrementAndGet();
+                                                             yield spy.deleteGate.flatMap(_ -> real.delete((ObjectId) args[0]));
+                                                         }
+                                                         default -> invoke(real, method, args);
+                                                     });
+    }
+
+    private static ObjectWriter spyWriter(ObjectWriter real, Spy spy) {
+        return (ObjectWriter) Proxy.newProxyInstance(ObjectWriter.class.getClassLoader(),
+                                                     new Class<?>[]{ObjectWriter.class},
+                                                     (_, method, args) -> switch (method.getName()) {
+                                                         case "abort" -> {
+                                                             spy.aborts.incrementAndGet();
+                                                             yield invoke(real, method, args);
+                                                         }
+                                                         case "commit" -> spy.failCommit
+                                                                          ? Causes.cause("commit failed").promise()
+                                                                          : invoke(real, method, args);
+                                                         default -> invoke(real, method, args);
+                                                     });
+    }
+
+    /// A multipart body of one committed file and a second, still open one: ends inside the second file's content.
+    private static byte[] firstFileCommittedSecondOpen() {
+        var valid = multipartBody(random(MIB, 8), random(6 * MIB, 9));
+
+        return java.util.Arrays.copyOf(valid, valid.length - 3 * MIB);
+    }
+
+    @Test
+    void abort_midFile_callsAbortOnTheOpenWriter_exactlyOnce() throws Exception {
+        var spy = new Spy(false);
+        var store = spy(store(storage(64L * MIB)), spy);
+        var sink = sink(store, multipart(UploadSpec.uploadSpec(true, 0, 0)));
+
+        assertThat(push(sink, firstFileCommittedSecondOpen(), 400_000)).isEmpty();
+        spy.deleteGate.succeed(Unit.unit());
+        sink.abort(BodySink.Ended.DISCONNECTED);
+        await(() -> permits.get() == 1, "the clean-up settled and the permit was returned");
+
+        assertThat(spy.aborts.get()).as("the open (second) file's writer was aborted, the committed first was not").isEqualTo(1);
+    }
+
+    @Test
+    void fail_returnsThePermitOnlyAfterTheCleanUpSettled() throws Exception {
+        var spy = new Spy(false);
+        var sink = sink(spy(store(storage(64L * MIB)), spy), multipart(UploadSpec.uploadSpec(true, 0, 0)));
+
+        assertThat(push(sink, firstFileCommittedSecondOpen(), 400_000)).isEmpty();
+        sink.fail(BodySink.Ended.TOO_LARGE, writer());
+        await(() -> spy.deletes.get() == 1, "the committed file's delete started");
+        Thread.sleep(200);
+
+        assertThat(permits.get()).as("the delete has not settled: the permit is still held").isZero();
+        spy.deleteGate.succeed(Unit.unit());
+        await(() -> permits.get() == 1, "the clean-up settled and the permit was returned");
+    }
+
+    @Test
+    void abort_returnsThePermitOnlyAfterTheCleanUpSettled() throws Exception {
+        var spy = new Spy(false);
+        var sink = sink(spy(store(storage(64L * MIB)), spy), multipart(UploadSpec.uploadSpec(true, 0, 0)));
+
+        assertThat(push(sink, firstFileCommittedSecondOpen(), 400_000)).isEmpty();
+        sink.abort(BodySink.Ended.DISCONNECTED);
+        await(() -> spy.deletes.get() == 1, "the committed file's delete started");
+        Thread.sleep(200);
+
+        assertThat(permits.get()).as("the delete has not settled: the permit is still held").isZero();
+        spy.deleteGate.succeed(Unit.unit());
+        await(() -> permits.get() == 1, "the clean-up settled and the permit was returned");
+    }
+
+    @Test
+    void failThenAbort_deletesEachCommittedObjectOnce() throws Exception {
+        var spy = new Spy(false);
+        var sink = sink(spy(store(storage(64L * MIB)), spy), multipart(UploadSpec.uploadSpec(true, 0, 0)));
+
+        assertThat(push(sink, firstFileCommittedSecondOpen(), 400_000)).isEmpty();
+        spy.deleteGate.succeed(Unit.unit());
+        sink.fail(BodySink.Ended.TOO_LARGE, writer());
+        await(() -> permits.get() == 1, "the refusal's clean-up settled");
+        sink.abort(BodySink.Ended.DISCONNECTED);
+        Thread.sleep(300);
+
+        assertThat(spy.deletes.get()).as("the second clean-up finds nothing left to delete").isEqualTo(1);
+    }
+
+    @Test
+    void complete_whenTheCommitFails_answers503_andDoesNotAbortTheWriterThatAlreadyFailedCommitting() throws Exception {
+        var spy = new Spy(true);
+        var sink = sink(spy(store(storage(64L * MIB)), spy), binary());
+
+        assertThat(push(sink, random(MIB, 12), 400_000)).isEmpty();
+        sink.complete(head("application/octet-stream"), writer());
+        await(() -> permits.get() == 1, "the clean-up settled and the permit was returned");
+
+        assertThat(refused.get().status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(spy.aborts.get()).as("a failed commit gave back what the writer stored; it is no longer open").isZero();
+    }
+
+    private static byte[] typedFileBody(String typeA, String fileA) {
+        return ("--" + BOUNDARY + "\r\nContent-Disposition: form-data; name=\"tag\"\r\n\r\nx\r\n--" + BOUNDARY
+                + "\r\nContent-Disposition: form-data; name=\"tag\"\r\n\r\ny\r\n--" + BOUNDARY
+                + "\r\nContent-Disposition: form-data; name=\"p\"; filename=\"" + fileA + "\"\r\nContent-Type: " + typeA
+                + "\r\n\r\nPNGDATA\r\n--" + BOUNDARY + "--\r\n").getBytes(StandardCharsets.ISO_8859_1);
+    }
+
+    @Test
+    void complete_multipartFile_isStoredWithItsDeclaredContentTypeAndFileName() throws Exception {
+        var store = store(storage(64L * MIB));
+        var sink = sink(store, multipart(UploadSpec.uploadSpec(true, 0, 0)));
+
+        assertThat(push(sink, typedFileBody("image/png", "photo.png"), 1000)).isEmpty();
+        sink.complete(head("multipart/form-data; boundary=" + BOUNDARY), writer());
+        await(() -> dispatched.get() != null, "the request is dispatched");
+
+        var handle = handleOf(dispatched.get());
+        var stored = store.stat(refOf(handle, 0).id()).await(WAIT).unwrap().unwrap().meta();
+
+        assertThat(stored.contentType()).isEqualTo("image/png");
+        assertThat(stored.displayName().toOptional()).contains("photo.png");
+        assertThat(handle.files().getFirst().declaredType()).isEqualTo("image/png");
+        assertThat(handle.files().getFirst().fileName().toOptional()).contains("photo.png");
+    }
+
+    @Test
+    void complete_repeatedFieldName_keepsEveryValueInOrder() throws Exception {
+        var sink = sink(store(storage(64L * MIB)), multipart(UploadSpec.uploadSpec(true, 0, 0)));
+
+        assertThat(push(sink, typedFileBody("image/png", "photo.png"), 1000)).isEmpty();
+        sink.complete(head("multipart/form-data; boundary=" + BOUNDARY), writer());
+        await(() -> dispatched.get() != null, "the request is dispatched");
+
+        assertThat(handleOf(dispatched.get()).fields()).containsEntry("tag", List.of("x", "y"));
+    }
+
+    @Test
+    void complete_binaryBody_isStoredAndHandedOverWithItsDeclaredContentType() throws Exception {
+        var store = store(storage(64L * MIB));
+        var sink = sink(store, new IngestSink.Body.Binary(ObjectSpec.objectSpec("image/png")));
+
+        assertThat(push(sink, random(1000, 13), 400)).isEmpty();
+        sink.complete(head("image/png"), writer());
+        await(() -> dispatched.get() != null, "the request is dispatched");
+
+        var handle = handleOf(dispatched.get());
+        var ref = refOf(handle, 0);
+
+        assertThat(handle.files().getFirst().declaredType()).isEqualTo("image/png");
+        assertThat(store.stat(ref.id()).await(WAIT).unwrap().unwrap().meta().contentType()).isEqualTo("image/png");
+        assertThat(ref.namespace()).as("the handle names the namespace the object lives in").isEqualTo("com.example.svc");
+        assertThat(ref.size()).isEqualTo(1000);
+        assertThat(handle.files().getFirst().object()).as("the wire handle is the reference's text form")
+                                                      .isEqualTo(UploadObjects.objectHandle(ref));
     }
 
     private static byte[] multipartBody(byte[] first, byte[] second) {
