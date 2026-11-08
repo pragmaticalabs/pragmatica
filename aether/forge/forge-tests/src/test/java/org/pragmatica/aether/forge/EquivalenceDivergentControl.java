@@ -36,7 +36,8 @@ import org.pragmatica.lang.Option;
 ///   status -> FAILED); with no outcome, a SUCCEEDED outcome appears.
 /// - O2: placement stops at target - 1 (one ACTIVE row of the first placed artifact removed); with no placed target, a target of 1 with no row.
 /// - O3: C17b leaves one departed node's `TopicPublisher` row.
-/// - O5: placement delayed by max(60 s, 2 x LEGACY); O6: one `lost` submission.
+/// - O5: placement delayed by max(60 s, 2 x LEGACY); in a scenario that places nothing (E-09), a placement that completes; O6: one `lost`
+///   submission.
 /// - Monitor (i)-(iv): each planted in a tail of samples appended after the arm's last sample, long enough to exceed every bound.
 final class EquivalenceDivergentControl {
     static final List<String> FAMILIES = List.of("O1", "O2", "O3", "O5", "O6", "MON-i", "MON-ii", "MON-iii", "MON-iv");
@@ -57,7 +58,7 @@ final class EquivalenceDivergentControl {
                        fsm2.liveNodes(),
                        planted(fsm2.samples(), monitor),
                        fsm2.o4Batches(),
-                       fsm2.o5PlacementMs() < 0 ? -1 : fsm2.o5PlacementMs() + Math.max(60_000L, 2 * Math.max(0L, legacy.o5PlacementMs())),
+                       fsm2.o5PlacementMs() < 0 ? 1L : fsm2.o5PlacementMs() + Math.max(60_000L, 2 * Math.max(0L, legacy.o5PlacementMs())),
                        lostOne(fsm2.o6()));
     }
 

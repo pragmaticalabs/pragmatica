@@ -168,7 +168,7 @@ class Fsm2EquivalenceRoundTest {
             var recorder = new Recorder(cluster);
 
             recorder.start();
-            var publishAt = scenario(scenario, cluster, recorder);
+            var placementMs = scenario(scenario, cluster);
             var quiescent = awaitQuiescence(cluster);
 
             recorder.stop();
@@ -188,7 +188,7 @@ class Fsm2EquivalenceRoundTest {
                               live,
                               recorder.samples(),
                               quiescent ? o4 : -1,
-                              recorder.placementMs(publishAt),
+                              placementMs,
                               o6(cluster));
 
             log("arm %s end %s load=%s".formatted(engine, Instant.now(), loadAverage()));
@@ -201,28 +201,29 @@ class Fsm2EquivalenceRoundTest {
 
     // -- scenarios (design 9.3) ------------------------------------------------------------------------------------
 
-    /// Runs the scenario; returns the publish instant (epoch ms) from which O5 measures placement.
-    private long scenario(Scenario scenario, EmberCluster cluster, Recorder recorder) {
+    /// Runs the scenario; returns O5, the time from the publish to the first instant (polled every 250 ms, the same for both arms) at which the
+    /// published artifact's ACTIVE count reached its target, or -1 when the scenario places nothing (E-09).
+    private long scenario(Scenario scenario, EmberCluster cluster) {
         var echo = Artifact.artifact(TestArtifacts.ECHO_SLICE).unwrap();
 
         return switch (scenario) {
             case E01 -> publishAndPlace(cluster, echo, 3);
             case E02 -> {
-                var at = publishAndPlace(cluster, echo, 3);
+                var placement = publishAndPlace(cluster, echo, 3);
 
                 // Design 9.3 says 3 -> 5 -> 2; the blueprint floor (#1495) refuses 2, so the step down goes to the floor, 3.
                 expectAccepted(scale(cluster, 5));
                 awaitTrue("5 ACTIVE", WAIT, () -> active(cluster, echo) == 5);
                 expectAccepted(scale(cluster, 3));
                 awaitTrue("3 ACTIVE", WAIT, () -> active(cluster, echo) == 3);
-                yield at;
+                yield placement;
             }
             case E03 -> {
-                var at = publishAndPlace(cluster, echo, 3);
+                var placement = publishAndPlace(cluster, echo, 3);
 
                 send(HttpRequest.newBuilder().uri(mgmt(cluster, "/api/v1/blueprints/" + BLUEPRINT_ID)).DELETE().timeout(Duration.ofSeconds(10)).build());
                 awaitTrue("the target is removed", WAIT, () -> new EquivalenceKv(snapshot(cluster)).targets().isEmpty());
-                yield at;
+                yield placement;
             }
             case E04 -> {
                 var leader = cluster.currentLeader().unwrap();
@@ -231,15 +232,15 @@ class Fsm2EquivalenceRoundTest {
                 cluster.killNode(leader, false).await(TimeSpan.timeSpan(60).seconds());
                 awaitTrue("a new leader", WAIT, () -> cluster.currentLeader().filter(id -> !id.equals(leader)).isPresent());
                 awaitTrue("3 ACTIVE after the leader kill", WAIT, () -> active(cluster, echo) == 3);
-                yield at;
+                yield System.currentTimeMillis() - at;
             }
             case E05, E07 -> {
-                var at = publishAndPlace(cluster, echo, 3);
+                var placement = publishAndPlace(cluster, echo, 3);
                 var victim = hostOfAnInstance(cluster, echo);
 
                 cluster.killNode(victim, scenario == Scenario.E07).await(TimeSpan.timeSpan(60).seconds());
                 awaitTrue("3 ACTIVE after losing " + victim, WAIT, () -> active(cluster, echo) == 3);
-                yield at;
+                yield placement;
             }
             case E09 -> {
                 // A fatal failure under ALL_OR_NOTHING: a second slice that cannot be resolved; the verdict is whatever the durable record says.
@@ -254,17 +255,18 @@ class Fsm2EquivalenceRoundTest {
                                                                                               .values()
                                                                                               .stream()
                                                                                               .anyMatch(outcome -> outcome.status() != AetherValue.DeploymentOutcomeStatus.IN_PROGRESS));
-                yield at;
+                yield -1L;
             }
         };
     }
 
+    /// Publishes and waits for placement; returns O5 in ms.
     private long publishAndPlace(EmberCluster cluster, Artifact artifact, int instances) {
         var at = publish(cluster, blueprint(artifact, instances));
 
         awaitTrue(instances + " ACTIVE", WAIT, () -> active(cluster, artifact) == instances);
 
-        return at;
+        return System.currentTimeMillis() - at;
     }
 
     private static String blueprint(Artifact artifact, int instances) {
@@ -391,25 +393,6 @@ class Fsm2EquivalenceRoundTest {
             var gappedNodes = gaps.stream().map(gap -> gap.substring(0, gap.indexOf(':'))).distinct().count();
 
             return nodes > 0 && gappedNodes >= nodes ? -1 : familySlots.size();
-        }
-
-        /// O5: the first sample at which every target's ACTIVE count reached the target, measured from the publish.
-        long placementMs(long publishAtEpochMs) {
-            var publishAt = publishAtEpochMs - startMs;
-
-            return samples.stream()
-                          .filter(sample -> sample.atMs() >= publishAt)
-                          .filter(sample -> placed(sample.kv()))
-                          .mapToLong(sample -> sample.atMs() - publishAt)
-                          .findFirst()
-                          .orElse(-1L);
-        }
-
-        private static boolean placed(EquivalenceKv kv) {
-            var targets = kv.targets();
-            var active = kv.active();
-
-            return !targets.isEmpty() && targets.entrySet().stream().allMatch(entry -> active.getOrDefault(entry.getKey(), 0L) == entry.getValue().targetInstances());
         }
     }
 

@@ -58,6 +58,7 @@ final class EquivalenceOracle {
     private static final long NOW_MONO = 5_000_000_000L;
     private static final int DRAIN_GUARD = 20_000;
     static final String ALLOW_LIST = "/fsm2/oracle-allowlist.txt";
+    private static final Artifact UNDER_PLACED = Artifact.artifact("org.f4.control:oracle-under-placed:1.0.0").unwrap();
     private static final Artifact STRAY = Artifact.artifact("org.f4.control:oracle-stray:1.0.0").unwrap();
 
     private EquivalenceOracle() {}
@@ -168,26 +169,29 @@ final class EquivalenceOracle {
                                                   NOW_WALL);
     }
 
-    /// D-8 (e), first control: one projected instance removed; red unless a Submit puts a desired key.
+    /// D-8 (e), first control: one projected instance removed; red unless a Submit puts a desired key for it. A quiescent point with no instance
+    /// (after an undeploy) has nothing to remove, so the under-placement is planted instead: an unowned target of one instance for a control
+    /// artifact, which must draw a goal Submit for that artifact.
     private static boolean underPlacementFires(Map<AetherKey, AetherValue> projection, LeaderValue leader, Set<NodeId> liveCores) {
-        return projection.keySet()
-                         .stream()
-                         .filter(AetherKey.SliceDesiredKey.class::isInstance)
-                         .map(AetherKey.SliceDesiredKey.class::cast)
-                         .min(Comparator.comparing(Object::toString))
-                         .map(victim -> {
-                             var underPlaced = new HashMap<>(projection);
+        var victim = projection.keySet()
+                               .stream()
+                               .filter(AetherKey.SliceDesiredKey.class::isInstance)
+                               .map(AetherKey.SliceDesiredKey.class::cast)
+                               .min(Comparator.comparing(Object::toString));
+        var underPlaced = new HashMap<>(projection);
+        var artifact = victim.map(AetherKey.SliceDesiredKey::artifact).orElse(UNDER_PLACED);
 
-                             underPlaced.remove(victim);
-                             underPlaced.remove(AetherKey.SliceObservedKey.sliceObservedKey(victim.nodeId(), victim.artifact()));
+        victim.ifPresentOrElse(key -> {
+                                   underPlaced.remove(key);
+                                   underPlaced.remove(AetherKey.SliceObservedKey.sliceObservedKey(key.nodeId(), key.artifact()));
+                               },
+                               () -> underPlaced.put(AetherKey.SliceTargetKey.sliceTargetKey(UNDER_PLACED.base()),
+                                                     AetherValue.SliceTargetValue.sliceTargetValue(UNDER_PLACED.version(), 1)));
 
-                             return run(underPlaced, leader, liveCores).stream()
-                                                                       .anyMatch(submit -> submit.mutatedKeys()
-                                                                                                 .stream()
-                                                                                                 .anyMatch(key -> key.startsWith("SliceDesiredKey")
-                                                                                                                  && key.contains(victim.artifact().asString())));
-                         })
-                         .orElse(false);
+        return run(underPlaced, leader, liveCores).stream()
+                                                  .anyMatch(submit -> submit.mutatedKeys()
+                                                                            .stream()
+                                                                            .anyMatch(key -> key.startsWith("SliceDesiredKey") && key.contains(artifact.asString())));
     }
 
     /// D-8 (e), second control: one stray observed ACTIVE row with no desired key (an artifact no target names) on the first live core; red unless

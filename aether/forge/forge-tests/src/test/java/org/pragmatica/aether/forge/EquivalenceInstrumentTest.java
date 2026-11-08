@@ -147,6 +147,17 @@ class EquivalenceInstrumentTest {
             assertThat(EquivalenceComparison.residue(new Arm("fsm2", new EquivalenceKv(kv), Set.copyOf(CORES), List.of(), 1, 1L, Map.of()))).hasSize(1);
         }
 
+        /// A scenario that places nothing (E-09: both arms -1) still gets an O5 control that fires.
+        @Test
+        void o5Control_firesWhenNeitherArmPlaces() {
+            var legacy = new Arm("legacy", new EquivalenceKv(legacyKv(0)), Set.copyOf(CORES), List.of(), 1, -1L, Map.of());
+            var fsm2 = new Arm("fsm2", new EquivalenceKv(fsm2Kv(0)), Set.copyOf(CORES), List.of(), 1, -1L, Map.of());
+            var control = EquivalenceDivergentControl.of(fsm2, legacy, MONITOR);
+
+            assertThat(EquivalenceDivergentControl.silentFamilies(EquivalenceComparison.compare(legacy, fsm2, MONITOR),
+                                                                  EquivalenceComparison.compare(legacy, control, MONITOR))).doesNotContain("O5");
+        }
+
         @Test
         void o4AndO5Gates_holdAtTheirBounds_andTripPastThem() {
             var legacy = arm("legacy", false);
@@ -210,6 +221,15 @@ class EquivalenceInstrumentTest {
             var verdict = EquivalenceOracle.check(new EquivalenceKv(legacyKv(2)), leader, Set.copyOf(CORES));
 
             assertThat(verdict.disagreements()).as(verdict.describe()).isNotEmpty();
+        }
+
+        /// After an undeploy the quiescent point holds no instance: the under-placement control is planted, and both controls still fire.
+        @Test
+        void emptyQuiescentPoint_stillFiresBothControls() {
+            var verdict = EquivalenceOracle.check(new EquivalenceKv(Map.of()), leader, Set.copyOf(CORES));
+
+            assertThat(verdict.controlsFired()).as(verdict.describe()).isTrue();
+            assertThat(verdict.disagreements()).as(verdict.describe()).isEmpty();
         }
 
         @Test
