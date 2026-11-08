@@ -19,9 +19,7 @@ public interface SuccessStatusSlice {
     Promise<Unit> remove(SlugRequest request);
     Promise<Option<Article>> find(SlugRequest request);
     Promise<Article> broken();
-
     Promise<Article> locate(ArticleRequest request);
-
     Promise<Option<Article>> lookup(SlugRequest request);
 
     static SuccessStatusSlice successStatusSlice() {
