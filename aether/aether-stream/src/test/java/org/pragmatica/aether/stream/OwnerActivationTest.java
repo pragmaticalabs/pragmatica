@@ -836,9 +836,10 @@ class OwnerActivationTest {
         assertThat(alarms).singleElement().isInstanceOf(OwnerActivation.ActivationBlock.HoldersUnreachable.class);
 
         record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 6L)));
-        LockSupport.parkNanos(2_000_000L);
 
-        assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).as("epoch start refused").isFalse();
+        // Dense rounds, not one call: a pause over the 50 ms alarm bound between the last round and a single call is an unobserved gap
+        // (#2084 R2), which restarts the silence clock, so that call would wait instead of escaping (#2850). Rounds 25 ms apart cannot.
+        assertThat(roundsUntil(gate, () -> !resolvedBlocks.isEmpty())).as("epoch start refused").isFalse();
         assertThat(resolvedBlocks).containsExactly(alarms.getFirst());
         assertThat(escapes).isEmpty();
     }
