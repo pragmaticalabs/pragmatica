@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart;
+import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
 import org.pragmatica.lang.Option;
 
@@ -34,6 +35,9 @@ class StreamPartitionManagerEpochStartsTest {
     private static final Epoch E1 = Epoch.epoch(1L, 1L, 1L);
     private static final Epoch E2 = Epoch.epoch(1L, 1L, 2L);
     private static final Epoch E3 = Epoch.epoch(1L, 1L, 3L);
+    private static final Epoch E4 = Epoch.epoch(1L, 1L, 4L);
+
+    private static final List<EpochStart> STALE_TAIL_STARTS = List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L));
 
     private final AtomicReference<Epoch> committed = new AtomicReference<>(E3);
     private final AtomicReference<List<EpochStart>> starts = new AtomicReference<>(List.of(new EpochStart(E2, 11L), new EpochStart(E3, 21L)));
@@ -139,9 +143,9 @@ class StreamPartitionManagerEpochStartsTest {
         assertThat(manager.replicaVerified(STREAM, PARTITION)).as("head 2 is below the committed start 8").isTrue();
     }
 
-    /// The lineage of a copy with a log is the newest epoch its own log records: a copy that recorded E2 only, with E2's successor
-    /// starting at 10 and its head at 4, holds nothing E3 re-assigned (without the log's epoch it would count as older than every
-    /// kept start and be doubted from the oldest, 0).
+    /// A copy with a log is judged by the epochs its own log records: a copy that recorded E2 only, with E2's successor starting
+    /// at 10 and its head at 4, holds nothing E3 re-assigned (without the log's epoch it would count as older than every kept
+    /// start and be doubted from the oldest, 0).
     @Test
     void copyWithALog_isJudgedFromTheEpochItsLogRecorded() {
         try (var logged = loggedReplica(List.of(new EpochStart(E2, 0L), new EpochStart(E3, 10L)), E2, 5)) {
@@ -155,6 +159,114 @@ class StreamPartitionManagerEpochStartsTest {
         try (var logged = loggedReplica(List.of(new EpochStart(E3, 0L)), E3, 5)) {
             assertThat(logged.unverifiedFrom(STREAM, PARTITION)).isEqualTo(Option.none());
         }
+    }
+
+    /// v2858a A1 (p1): every epoch the copy's history records is judged, not the newest. Committed E1 at 0 and E3 at 11; the copy
+    /// holds E1's 0..12 (E3 re-assigned 11 on) and then, contiguously, E3's live record at 13 (it missed E3's 11..12 batch). Its
+    /// newest recorded epoch is the current one, yet its 11..12 are of the replaced lineage: doubted from 11.
+    @Test
+    void staleTailUnderACurrentEpochAppend_isDoubtedFromTheReassignedStart() {
+        try (var logged = emptyLoggedReplica(STALE_TAIL_STARTS)) {
+            record(logged, 0, 13, E1);
+            record(logged, 13, 14, E3);
+
+            assertThat(logged.unverifiedFrom(STREAM, PARTITION)).isEqualTo(Option.some(11L));
+            assertThat(logged.replicaVerified(STREAM, PARTITION)).isFalse();
+            assertThat(logged.readServing(STREAM, PARTITION, 11L, 2).isFailure()).as("E1's replaced 11..12 are not served").isTrue();
+        }
+    }
+
+    /// v2858a A1 (p1r): the doubt of the same copy survives a restart, which drops every in-memory verdict, because it comes from
+    /// the copy's own history.
+    @Test
+    void staleTailUnderACurrentEpochAppend_isStillDoubtedAfterARestart() {
+        try (var logged = emptyLoggedReplica(STALE_TAIL_STARTS)) {
+            record(logged, 0, 13, E1);
+
+            assertThat(logged.unverifiedFrom(STREAM, PARTITION)).as("first life, before the E3 append").isEqualTo(Option.some(11L));
+
+            record(logged, 13, 14, E3);
+
+            assertThat(logged.unverifiedFrom(STREAM, PARTITION)).as("first life, after the E3 append").isEqualTo(Option.some(11L));
+        }
+        try (var reopened = emptyLoggedReplica(STALE_TAIL_STARTS)) {
+            assertThat(reopened.unverifiedFrom(STREAM, PARTITION)).as("after the restart").isEqualTo(Option.some(11L));
+            assertThat(reopened.readServing(STREAM, PARTITION, 11L, 2).isFailure()).as("E1's replaced 11..12 are not served").isTrue();
+        }
+    }
+
+    /// v2858a A2 (p2): a later epoch may start below an earlier one; the copy is doubted from the LOWEST start after its lineage.
+    /// E3 starts at 9, below E2's 11: an E1 copy holding 0..10 holds E1's 9..10, which E3 re-assigned.
+    @Test
+    void laterEpochStartingBelowAnEarlierStart_doubtsFromTheLowest() {
+        try (var logged = emptyLoggedReplica(List.of(new EpochStart(E1, 0L), new EpochStart(E2, 11L), new EpochStart(E3, 9L)))) {
+            record(logged, 0, 11, E1);
+
+            assertThat(logged.unverifiedFrom(STREAM, PARTITION)).isEqualTo(Option.some(9L));
+        }
+    }
+
+    /// A judge that read an OLDER current epoch keeps a later epoch's verdict, as `markVerifiedForEpoch` does: the copy verified
+    /// for E3 is not re-judged at E2 (where nothing after its lineage is committed, so it would be doubted from 0).
+    @Test
+    void staleEpochJudge_keepsTheNewerVerification() {
+        append(25);
+        manager.markVerifiedForEpoch(STREAM, PARTITION, E3);
+        committed.set(E2);
+
+        assertThat(manager.unverifiedFrom(STREAM, PARTITION)).as("the E3 verification stands under a stale E2 view").isEqualTo(Option.none());
+        assertThat(manager.replicaVerified(STREAM, PARTITION)).isTrue();
+    }
+
+    /// A copy verified for E3 whose committed epoch moved on to E4 before E4's start was committed: no start after its lineage is
+    /// known, so it is doubted from 0 until that start is.
+    @Test
+    void verifiedLineage_withNoCommittedStartAfterIt_isDoubtedFromZero() {
+        append(16);
+        manager.markVerifiedForEpoch(STREAM, PARTITION, E3);
+        committed.set(E4);
+
+        assertThat(manager.unverifiedFrom(STREAM, PARTITION)).isEqualTo(Option.some(0L));
+    }
+
+    /// The doubted range ends at the head: a copy whose ONLY record at or above the re-assigned start is its head is doubted.
+    @Test
+    void copyHoldingOnlyTheFirstReassignedOffset_isDoubtedFromIt() {
+        try (var logged = emptyLoggedReplica(STALE_TAIL_STARTS)) {
+            record(logged, 0, 12, E1);
+
+            assertThat(logged.unverifiedFrom(STREAM, PARTITION)).isEqualTo(Option.some(11L));
+        }
+    }
+
+    /// Entries a catch-up installed above the head before its records are applied hold no record yet, so they doubt nothing:
+    /// E2's range ends at the head + 1 (not at E3's entry), and E3's holds none (its epoch has no committed start after it,
+    /// which would otherwise doubt from 0). The copy's E1 records 0..4 lie below E2's start 5.
+    @Test
+    void entriesInstalledAboveTheHead_doubtNothing() {
+        committed.set(E4);
+        try (var logged = emptyLoggedReplica(List.of(new EpochStart(E1, 0L), new EpochStart(E2, 5L), new EpochStart(E3, 6L)))) {
+            record(logged, 0, 5, E1);
+            logged.installProvenance(STREAM, PARTITION, 5L, 9L, List.of(owned(E1, 0L), owned(E2, 5L), owned(E3, 8L))).unwrap();
+
+            assertThat(logged.epochHistory(STREAM, PARTITION).unwrap()).as("the pending install").hasSize(3);
+            assertThat(logged.unverifiedFrom(STREAM, PARTITION)).isEqualTo(Option.none());
+        }
+    }
+
+    private static ProvenanceEntry owned(Epoch epoch, long start) {
+        return ProvenanceEntry.provenanceEntry(epoch, Option.none(), start);
+    }
+
+    private StreamPartitionManager emptyLoggedReplica(List<EpochStart> committedStarts) {
+        return loggedReplica(committedStarts, E1, 0);
+    }
+
+    private static void record(StreamPartitionManager logged, int from, int toExclusive, Epoch epoch) {
+        for (var i = from; i < toExclusive; i++) {
+            logged.appendRecovered(STREAM, PARTITION, i, ("r-" + i).getBytes(UTF_8), 1000L + i, epoch).unwrap();
+        }
+        logged.syncReplicated(STREAM, PARTITION).await();
     }
 
     private StreamPartitionManager loggedReplica(List<EpochStart> committedStarts, Epoch recorded, int count) {

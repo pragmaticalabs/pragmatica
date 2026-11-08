@@ -20,7 +20,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 /// record of which offsets each epoch assigned.
 ///
 /// Two readers in [StreamPartitionManager]: the doubted prefix of a non-owner copy (I-24, `unverifiedFrom`), and the
-/// provenance a catch-up is attributed to when its source vouches an empty history (I-25, `installProvenance`).
+/// provenance a catch-up is attributed to when the committed owner vouches an empty history (I-25, `applyOwnerAttributed`).
 ///
 /// [#NONE] answers an empty list: no history is known, so a copy is doubted from 0 and an empty slice stays empty, the
 /// behaviour of a manager that is not wired to the cluster.

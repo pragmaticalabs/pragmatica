@@ -290,8 +290,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     private volatile CommittedEpochStarts committedEpochStarts = CommittedEpochStarts.NONE;
 
     /// A copy's verdict on an epoch ([PartitionState.Standing#epochTrust]). `lineage` is the newest committed epoch whose lineage
-    /// this copy is known to follow (#1971): `epoch` itself once verified; for a doubted copy, the lineage it was judged from
-    /// (none when not known), which a later judgment starts from again.
+    /// this copy is known to follow (#1971): `epoch` itself once verified; for a doubted copy, the lineage an earlier verification
+    /// named (none when nothing verified it), which a later judgment starts from again. A copy no verification names is judged
+    /// by every epoch its own history records ([#recordedDoubtStart]), never by a lineage remembered from an earlier judgment.
     record EpochTrust(Epoch epoch, boolean verified, Option<Epoch> lineage) {
         static EpochTrust verifiedFor(Epoch epoch) {
             return new EpochTrust(epoch, true, some(epoch));
@@ -1052,9 +1053,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     /// The offset from which this node must neither serve nor acknowledge, or none when it may: it is not the owner, there is a
-    /// committed epoch, and this copy holds records at or above the start of the earliest committed epoch after its own lineage
-    /// that it has not compared with that epoch's owner (I-24, #1971). Below that start every record is of the lineage the copy
-    /// followed, which no later epoch re-assigned, so nothing there is held back. The placement owner is never doubted here;
+    /// committed epoch, and this copy holds records of an epoch its own history records at or above the lowest start of a
+    /// committed epoch after it, that it has not compared with that epoch's owner (I-24, #1971; [#doubtStart]). Below that
+    /// offset every record is of a lineage no later epoch re-assigned, so nothing there is held back. The placement owner is never doubted here;
     /// the ack gate is ([#replicaVerified]).
     public Option<Long> unverifiedFrom(String streamName, int partition) {
         return placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER
@@ -1083,19 +1084,20 @@ public final class StreamPartitionManager implements AutoCloseable {
                : some(doubtStart(streamName, partition, epoch, trust.lineage()));
     }
 
-    /// A verification for `epoch` is kept for that epoch. Anything else is judged again, from the lineage the copy is known to
-    /// follow: the one its last verdict names, else the newest epoch its own log records ([#lastRecordedEpoch]). A doubt is
-    /// re-judged at every call, so it lifts once the start it waits for is committed (a failover's new owner commits its start
-    /// after the leader committed its epoch) or a cut lowered the head below it; a head at or above the start stays doubted
-    /// until a backfill compare verifies it ([#markVerifiedForEpoch]).
+    /// A verification for `epoch` is kept for that epoch, and a verdict on a LATER epoch is kept whatever it says: a judge that
+    /// read an older current epoch never replaces it, as [#markVerifiedForEpoch] never does. Anything else is judged again,
+    /// from the lineage an earlier verification names, else from every epoch the copy's own history records
+    /// ([#recordedDoubtStart]). A doubt is re-judged at every call, so it lifts once the start it waits for is committed (a
+    /// failover's new owner commits its start after the leader committed its epoch) or a cut lowered the head below it; a
+    /// head at or above the start stays doubted until a backfill compare verifies it ([#markVerifiedForEpoch]).
     private EpochTrust judged(String streamName, int partition, Epoch epoch, Option<EpochTrust> known) {
-        return known.filter(trust -> trust.verified() && trust.epoch()
-                                                              .equals(epoch))
+        return known.filter(trust -> trust.epoch()
+                                          .isStrictlyAfter(epoch) || trust.verified() && trust.epoch()
+                                                                                              .equals(epoch))
                     .or(() -> judgedFrom(streamName,
                                          partition,
                                          epoch,
-                                         known.flatMap(EpochTrust::lineage)
-                                              .orElse(() -> lastRecordedEpoch(streamName, partition))));
+                                         known.flatMap(EpochTrust::lineage)));
     }
 
     /// A copy whose head is below the doubt start holds nothing a later epoch re-assigned: it follows `epoch`'s lineage now.
@@ -1107,18 +1109,90 @@ public final class StreamPartitionManager implements AutoCloseable {
                : new EpochTrust(epoch, false, lineage);
     }
 
-    /// I-24 (#1971): the start of the earliest committed epoch after `lineage`, from the committed starts
-    /// ([EpochValidation#reassignedFrom], the rule a consumer of that epoch resumes by), never the start of the current epoch: a
-    /// copy away across two epoch changes holds the old lineage up to its head, and the current epoch's start can lie above
-    /// records the epoch between them replaced. A lineage that IS the current epoch is doubted nowhere ([Long#MAX_VALUE]); an
-    /// unknown one is older than every kept start (the oldest kept start); no committed start after it, or no committed history
-    /// at all, doubts from 0.
+    /// I-24 (#1971): where this copy is doubted from, never the start of the current epoch: a copy away across two epoch changes
+    /// holds the old lineage up to its head, and the current epoch's start can lie above records the epoch between them
+    /// replaced. A copy a compare verified for `lineage` holds that lineage up to its head: it is doubted from the lowest
+    /// committed start after it ([EpochValidation#reassignedFrom], the rule a consumer of that epoch resumes by), nowhere
+    /// ([Long#MAX_VALUE]) when `lineage` IS the current epoch, and from 0 when no start after it is committed. Any other copy
+    /// is judged by its own history ([#recordedDoubtStart]).
     private long doubtStart(String streamName, int partition, Epoch epoch, Option<Epoch> lineage) {
-        return lineage.filter(epoch::equals)
-                      .map(_ -> Long.MAX_VALUE)
-                      .or(() -> EpochValidation.reassignedFrom(committedEpochStarts.startsOf(streamName, partition),
-                                                               lineage.or(Epoch.ZERO))
-                                               .or(0L));
+        return lineage.map(verified -> verifiedDoubtStart(streamName, partition, epoch, verified))
+                      .or(() -> recordedDoubtStart(streamName, partition, epoch));
+    }
+
+    private long verifiedDoubtStart(String streamName, int partition, Epoch epoch, Epoch verified) {
+        return verified.equals(epoch)
+               ? Long.MAX_VALUE
+               : EpochValidation.reassignedFrom(committedEpochStarts.startsOf(streamName, partition),
+                                                verified)
+                                .or(0L);
+    }
+
+    /// I-24 (#1971, v2858a A1): a copy no compare verified is judged by EVERY epoch its own history records, never by the newest
+    /// one alone: a copy that holds an old epoch's records which a later epoch re-assigned, and then appended a record of the
+    /// current epoch contiguously (it missed the batch that re-assigned them), records the current epoch last, yet the records
+    /// below are still of the replaced lineage. Each recorded range `(e_k, [s_k, end_k))` that holds records is doubted from
+    /// `max(s_k, reassignedFrom(starts, e_k))` when that lies inside it; a range of the current epoch is doubted nowhere; a
+    /// range with no committed start after its epoch is doubted from 0. The copy is doubted from the lowest of these. An empty
+    /// history (a copy without a log, or a log that records none) is one range of an epoch older than every kept start, from 0.
+    /// A synthetic entry is judged by its rank, the last real epoch before it, as the log orders it. Recovery: design-out -- a
+    /// history this codec did not write is not guessed at: the copy is doubted from 0.
+    private long recordedDoubtStart(String streamName, int partition, Epoch epoch) {
+        var head = resolvePartitionBuffer(streamName, partition).map(OffHeapRingBuffer::headOffset).or(-1L);
+        var starts = committedEpochStarts.startsOf(streamName, partition);
+
+        return epochHistory(streamName, partition).map(StreamPartitionManager::recordedRanges)
+                           .map(ranges -> lowestDoubt(ranges, head, epoch, starts))
+                           .or(0L);
+    }
+
+    /// One range of a copy's own history: records from `from` on were recorded under `epoch` ([#recordedDoubtStart]).
+    record RecordedRange(Epoch epoch, long from) {}
+
+    private static List<RecordedRange> recordedRanges(List<ProvenanceEntry> history) {
+        return history.isEmpty()
+               ? List.of(new RecordedRange(Epoch.ZERO, 0L))
+               : history.stream()
+                        .map(entry -> new RecordedRange(entry.rank(),
+                                                        entry.startOffset()))
+                        .toList();
+    }
+
+    private static long lowestDoubt(List<RecordedRange> ranges, long head, Epoch epoch, List<EpochStart> starts) {
+        return IntStream.range(0,
+                               ranges.size())
+                        .mapToLong(i -> rangeDoubt(ranges.get(i),
+                                                   rangeEnd(ranges, i, head),
+                                                   epoch,
+                                                   starts))
+                        .min()
+                        .orElse(Long.MAX_VALUE);
+    }
+
+    /// The offset past the last record of range `i`: the next range's start, or the head + 1, whichever is lower.
+    private static long rangeEnd(List<RecordedRange> ranges, int i, long head) {
+        return i == ranges.size() - 1
+               ? head + 1
+               : Math.min(ranges.get(i + 1).from(),
+                          head + 1);
+    }
+
+    private static long rangeDoubt(RecordedRange range, long end, Epoch epoch, List<EpochStart> starts) {
+        return range.from() >= end || range.epoch()
+                                           .equals(epoch)
+               ? Long.MAX_VALUE
+               : insideRange(EpochValidation.reassignedFrom(starts,
+                                                            range.epoch())
+                                            .map(reassigned -> Math.max(range.from(),
+                                                                        reassigned))
+                                            .or(0L),
+                             end);
+    }
+
+    private static long insideRange(long doubt, long end) {
+        return doubt < end
+               ? doubt
+               : Long.MAX_VALUE;
     }
 
     /// Whether this node may acknowledge to the owner what it holds. #2753: only a verification for the
@@ -4982,6 +5056,22 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                  apply.apply()));
     }
 
+    /// [#applyAttributed] for a page the committed owner answered ([AlignedRecovery#applyOwnerAttributed]): an empty slice is
+    /// replaced by the committed epochs' provenance first ([#vouchedOrCommitted]).
+    public Result<Long> applyOwnerAttributed(String streamName,
+                                             int partition,
+                                             long fromOffset,
+                                             long toOffset,
+                                             List<ProvenanceEntry> slice,
+                                             AlignedRecovery.PageApply apply) {
+        return applyAttributed(streamName,
+                               partition,
+                               fromOffset,
+                               toOffset,
+                               vouchedOrCommitted(streamName, partition, toOffset, slice),
+                               apply);
+    }
+
     /// [#applyAttributed] for records from a place that carries no provenance ([#installUnattributed]).
     public Result<Long> applyUnattributed(String streamName,
                                           int partition,
@@ -5034,20 +5124,19 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                              partition,
                                                                                              fromOffset,
                                                                                              toOffset,
-                                                                                             vouchedOrCommitted(streamName,
-                                                                                                                partition,
-                                                                                                                toOffset,
-                                                                                                                slice)))
+                                                                                             slice))
                             .or(() -> success(emptyInstall(streamName, partition)));
     }
 
-    /// I-25 (#1938): a source that keeps no log (a log-less owner under the non-durable opt-in, Forge) vouches an EMPTY history
-    /// for the records it serves. Installed as it is, the copy would hold records with no history, the next re-verify would
-    /// compare it unequal with every source at offset 0 (`HISTORY_MISSING`), quarantine it and refuse its repair for good. So
-    /// an empty slice is replaced by the committed epochs' provenance up to `toOffset` ([#committedProvenance]), on BOTH sides
-    /// of the N13 compare: the copy installs it, and every later page from the same source is compared against it. A
-    /// non-empty slice is the source's own history and is used as it is. Nothing committed (no record, or a factory that is
-    /// not wired to the cluster) leaves the slice empty, as before.
+    /// I-25 (#1938): a committed owner that keeps no log (a log-less owner under the non-durable opt-in, Forge) vouches an EMPTY
+    /// history for the records it serves. Installed as it is, the copy would hold records with no history, the next re-verify
+    /// would compare it unequal with every source at offset 0 (`HISTORY_MISSING`), quarantine it and refuse its repair for good.
+    /// So an empty slice is replaced by the committed epochs' provenance up to `toOffset` ([#committedProvenance]), on BOTH
+    /// sides of the N13 compare: the copy installs it, and every later page from the same source is compared against it. Only
+    /// for an answer of the committed owner ([#applyOwnerAttributed], v2858a R1): another source's records may be of an older
+    /// lineage, and the committed epochs would label them as the committed owner's. A non-empty slice is the source's own
+    /// history and is used as it is. Nothing committed (no record, or a factory that is not wired to the cluster) leaves the
+    /// slice empty, as before.
     private List<ProvenanceEntry> vouchedOrCommitted(String streamName,
                                                      int partition,
                                                      long toOffset,
@@ -5257,6 +5346,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                      ownerEpochSource.currentOwnerEpoch(streamName,
                                                                                                                                                         partition)),
                                                this::applyAttributed,
+                                               this::applyOwnerAttributed,
                                                this::applyUnattributed);
     }
 

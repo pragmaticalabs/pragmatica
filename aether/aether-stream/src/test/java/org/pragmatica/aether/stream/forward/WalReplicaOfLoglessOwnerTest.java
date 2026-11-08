@@ -44,11 +44,13 @@ import static org.pragmatica.aether.stream.replication.ReplicationManager.replic
 /// I-25 (#1938, PR-6a, NT-142): a WAL replica fed by an owner that keeps no log (the non-durable opt-in) is not left with records
 /// and no history. The owner vouches an empty history; the replica attributes the catch-up to the committed epochs, so a second
 /// backfill compares equal and ends caught up, and a live append lands. The wire is in-process, as in `CatchUpProvenanceTest`.
+/// Only the committed owner's answer is attributed so (v2858a R1): an empty history from any other source stays empty.
 class WalReplicaOfLoglessOwnerTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
     private static final NodeId OWNER = NodeId.randomNodeId();
     private static final NodeId NEW_PEER = NodeId.randomNodeId();
+    private static final NodeId ELSEWHERE = NodeId.randomNodeId();
     private static final Epoch E1 = Epoch.epoch(0, 1, 0);
     private static final Epoch E2 = Epoch.epoch(0, 2, 0);
 
@@ -90,9 +92,9 @@ class WalReplicaOfLoglessOwnerTest {
     void twoBackfills_endCaughtUp() {
         publish(E1, 3);
         publish(E2, 1);
-        backfill();
+        backfill(committedOwner(OWNER));
         publish(E2, 2);
-        backfill();
+        backfill(committedOwner(OWNER));
 
         assertThat(replica.nextExpectedOffset(STREAM, PARTITION)).isEqualTo(6L);
         assertThat(replica.epochHistory(STREAM, PARTITION).unwrap()).as("the committed epochs' provenance, not an empty history")
@@ -100,7 +102,24 @@ class WalReplicaOfLoglessOwnerTest {
         assertThat(replica.quarantinedAt(STREAM, PARTITION)).isEqualTo(Option.none());
     }
 
-    private void backfill() {
+    /// v2858a R1: the source answering vouched-empty is NOT the committed owner (the record names another node), so its records
+    /// may be of an older lineage and the committed epochs do not label them: the history stays empty.
+    @Test
+    void sourceThatIsNotTheCommittedOwner_answeringVouchedEmpty_isNotAttributed() {
+        publish(E1, 3);
+        publish(E2, 1);
+        backfill(committedOwner(ELSEWHERE));
+
+        assertThat(replica.nextExpectedOffset(STREAM, PARTITION)).as("the page itself is applied").isEqualTo(4L);
+        assertThat(replica.epochHistory(STREAM, PARTITION).unwrap()).as("no committed-epoch provenance for a non-owner's answer")
+                                                                    .isEmpty();
+    }
+
+    private static CommittedStreamOwnerSource committedOwner(NodeId node) {
+        return (_, _) -> Option.some(new CommittedStreamOwnerSource.CommittedOwner(node, E2));
+    }
+
+    private void backfill(CommittedStreamOwnerSource committedOwnerSource) {
         partitionBackfill(registry,
                           replica.alignedRecovery(),
                           forwardCatchupTransport(client, 100),
@@ -110,7 +129,7 @@ class WalReplicaOfLoglessOwnerTest {
                           NEW_PEER,
                           TimeSpan.timeSpan(0).millis(),
                           () -> List.of(OWNER),
-                          CommittedStreamOwnerSource.none()).backfill(STREAM, PARTITION)
+                          committedOwnerSource).backfill(STREAM, PARTITION)
                                                             .await()
                                                             .onFailure(cause -> fail("backfill failed: " + cause.message()));
     }

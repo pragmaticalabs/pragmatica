@@ -62,6 +62,15 @@ class EpochValidationTest {
     }
 
     /// A consumer from a lineage NEWER than the owner serves: the read reached a stale owner and must be re-routed.
+    /// v2858a A2: a later epoch that starts BELOW an earlier one re-assigned from its own start, so the consumer resumes from the
+    /// lowest start after its epoch, not the first one listed: E3 at 9 lies below E2 at 11, and an E1 consumer at 10 read E1's 9.
+    @Test
+    void laterEpochStartingBelowAnEarlierStart_resumesAtTheLowest() {
+        var diverged = divergence(E3, List.of(start(E1, 0), start(E2, 11), start(E3, 9)), E1, 10L);
+
+        assertThat(diverged.resumeAt()).isEqualTo(9L);
+    }
+
     @Test
     void newerEpochThanTheOwners_isAStaleReader() {
         var result = EpochValidation.admit(STREAM, 0, E1, List.of(start(E1, 0)), E2, 5L);
