@@ -69,11 +69,9 @@ public sealed interface CatchupRead {
     /// read existed: a damaged WAL answers unavailable, never a partial range. The page is shipped with the WAL's own
     /// owner-epoch history ([StreamForwardHandler]), never an empty or substituted one.
     private static Promise<List<OffHeapRingBuffer.RawEvent>> readHeld(Span request, Cause notLocal) {
-        return localRead(request,
-                         request.fromOffset(),
-                         request.maxEvents(),
-                         notLocal).fold(cause -> heldRefused(request, cause),
-                                        Promise::success);
+        return localRead(request, request.fromOffset(), request.maxEvents(), notLocal).fold(cause -> heldRefused(request,
+                                                                                                                 cause),
+                                                                                            Promise::success);
     }
 
     private static Promise<List<OffHeapRingBuffer.RawEvent>> heldRefused(Span request, Cause cause) {
@@ -84,7 +82,10 @@ public sealed interface CatchupRead {
 
     /// This node's own copy of `[from, from + max)`: the ring, or for a held partition the WAL, every refusal of which
     /// other than `CursorExpired` is answered `notLocal` ([#readHeld]).
-    private static Result<List<OffHeapRingBuffer.RawEvent>> localRead(Span request, long from, int max, Cause notLocal) {
+    private static Result<List<OffHeapRingBuffer.RawEvent>> localRead(Span request,
+                                                                      long from,
+                                                                      int max,
+                                                                      Cause notLocal) {
         return request.held()
                ? request.manager()
                         .readHeldDurable(request.streamName(),
@@ -180,14 +181,11 @@ public sealed interface CatchupRead {
 
         var next = sealed.getLast().offset() + 1;
 
-        return localRead(request,
-                         next,
-                         remaining,
-                         StreamError.General.PARTITION_NOT_LOCAL)
-                      .map(ring -> List.copyOf(Stream.concat(sealed.stream(),
-                                                             ring.stream()).toList()))
-                      .fold(cause -> ringTailRefused(request, next, cause),
-                            Promise::success);
+        return localRead(request, next, remaining, StreamError.General.PARTITION_NOT_LOCAL).map(ring -> List.copyOf(Stream.concat(sealed.stream(),
+                                                                                                                                  ring.stream())
+                                                                                                                          .toList()))
+                        .fold(cause -> ringTailRefused(request, next, cause),
+                              Promise::success);
     }
 
     private static Promise<List<OffHeapRingBuffer.RawEvent>> ringTailRefused(Span request, long next, Cause cause) {

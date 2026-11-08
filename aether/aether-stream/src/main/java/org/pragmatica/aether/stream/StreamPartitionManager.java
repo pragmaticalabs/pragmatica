@@ -5105,10 +5105,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                        long toOffset,
                                        List<ProvenanceEntry> slice) {
         var starts = committedEpochStarts.startsOf(streamName, partition);
-        var ranges = slice.stream()
-                          .map(entry -> new RecordedRange(entry.rank(),
-                                                          entry.startOffset()))
-                          .toList();
+        var ranges = slice.stream().map(entry -> new RecordedRange(entry.rank(), entry.startOffset())).toList();
 
         return Option.from(IntStream.range(0,
                                            ranges.size())
@@ -5615,9 +5612,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private static Result<List<ProvenanceEntry>> provenanceOf(List<AppendLog.EpochStart> history) {
-        return Result.allOf(history.stream()
-                                   .map(ProvenanceEntry::provenanceEntry)
-                                   .toList());
+        return Result.allOf(history.stream().map(ProvenanceEntry::provenanceEntry).toList());
     }
 
     private Result<List<OffHeapRingBuffer.RawEvent>> heldPage(AppendLog.Opener opener,
@@ -5630,7 +5625,10 @@ public final class StreamPartitionManager implements AutoCloseable {
                           .or(0L);
 
         return pageFrom(opener, logName, fromOffset, maxEvents, start).onSuccess(page -> rememberHint(ref, page))
-                       .flatMap(page -> contiguousFrom(ref, logName, fromOffset, page.records()));
+                       .flatMap(page -> contiguousFrom(ref,
+                                                       logName,
+                                                       fromOffset,
+                                                       page.records()));
     }
 
     /// A page read from a hint that fails, or does not begin at `fromOffset`, is read again from the start of the file: a hint
@@ -5650,20 +5648,17 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private static boolean startsAt(AppendLog.RangePage page, long fromOffset) {
-        return !page.records()
-                    .isEmpty() && page.records()
-                                      .getFirst()
-                                      .offset() == fromOffset;
+        return ! page.records()
+                     .isEmpty() && page.records()
+                                       .getFirst()
+                                       .offset() == fromOffset;
     }
 
     @Contract
     private void rememberHint(PartitionRef ref, AppendLog.RangePage page) {
-        if (!page.records()
-                 .isEmpty()) {
+        if (!page.records().isEmpty()) {
             heldScanHints.put(ref,
-                              new ScanHint(page.records()
-                                               .getLast()
-                                               .offset() + 1,
+                              new ScanHint(page.records().getLast().offset() + 1,
                                            page.endPosition()));
         }
     }
@@ -5676,24 +5671,22 @@ public final class StreamPartitionManager implements AutoCloseable {
             return belowSealedFloor(ref, fromOffset);
         }
 
-        if (records.getFirst()
-                   .offset() > fromOffset) {
+        if (records.getFirst().offset() > fromOffset) {
             return new StreamError.CursorExpired(fromOffset,
-                                                 records.getFirst()
-                                                        .offset()).result();
+                                                 records.getFirst().offset()).result();
         }
 
         return firstHole(records, fromOffset).<Result<List<OffHeapRingBuffer.RawEvent>>> map(i -> new StreamError.WalReplayMismatch(ref.streamName(),
-                                                                                                                                  ref.partition(),
-                                                                                                                                  Path.of(logName),
-                                                                                                                                  fromOffset + i,
-                                                                                                                                  records.get(i)
-                                                                                                                                         .offset()).result())
-                                                 .or(() -> success(records.stream()
-                                                                          .map(record -> OffHeapRingBuffer.RawEvent.rawEvent(record.offset(),
-                                                                                                                             record.payload(),
-                                                                                                                             record.timestampMillis()))
-                                                                          .toList()));
+                                                                                                                                    ref.partition(),
+                                                                                                                                    Path.of(logName),
+                                                                                                                                    fromOffset + i,
+                                                                                                                                    records.get(i)
+                                                                                                                                           .offset()).result())
+                        .or(() -> success(records.stream()
+                                                 .map(record -> OffHeapRingBuffer.RawEvent.rawEvent(record.offset(),
+                                                                                                    record.payload(),
+                                                                                                    record.timestampMillis()))
+                                                 .toList()));
     }
 
     private static Option<Integer> firstHole(List<WalRecord> records, long fromOffset) {

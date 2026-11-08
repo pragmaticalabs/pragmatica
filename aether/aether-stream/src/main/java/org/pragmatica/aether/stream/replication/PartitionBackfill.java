@@ -1823,24 +1823,22 @@ public final class PartitionBackfill {
                                 .or(response);
     }
 
-    private static ReplicationMessage.CatchupResponse clippedBefore(ReplicationMessage.CatchupResponse response, long bound) {
+    private static ReplicationMessage.CatchupResponse clippedBefore(ReplicationMessage.CatchupResponse response,
+                                                                    long bound) {
         var kept = (int) Math.clamp(bound - response.fromOffset(),
                                     0L,
-                                    response.payloads()
-                                            .size());
+                                    response.payloads().size());
 
         return ReplicationMessage.CatchupResponse.catchupResponse(response.governorId(),
                                                                   response.streamName(),
                                                                   response.partition(),
                                                                   response.fromOffset(),
                                                                   response.fromOffset() + kept - 1,
-                                                                  response.payloads()
-                                                                          .subList(0, kept),
+                                                                  response.payloads().subList(0, kept),
                                                                   response.timestamps()
                                                                           .subList(0,
                                                                                    Math.min(kept,
-                                                                                            response.timestamps()
-                                                                                                    .size())),
+                                                                                            response.timestamps().size())),
                                                                   response.history());
     }
 

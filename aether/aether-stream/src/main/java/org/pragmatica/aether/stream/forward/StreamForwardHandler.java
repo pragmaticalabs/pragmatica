@@ -448,9 +448,9 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     private ReadForwardResponse withCatchupHistory(ReadForward request, ReadForwardResponse answer) {
         return isReplicaCatchup(request)
                ? catchupHistory(request).fold(cause -> ReadForwardResponse.failureResponse(selfNodeId,
-                                                                                    request.correlationId(),
-                                                                                    HttpError.clientMessage(cause)),
-                                       answer::withHistory)
+                                                                                           request.correlationId(),
+                                                                                           HttpError.clientMessage(cause)),
+                                              answer::withHistory)
                : answer;
     }
 

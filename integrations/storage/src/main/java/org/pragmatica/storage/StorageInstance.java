@@ -1128,7 +1128,10 @@ final class DefaultStorageInstance implements StorageInstance {
     }
 
     @Override
-    public Result<AppendLog.RangePage> readLogRange(String logName, long fromOffset, int maxRecords, long startPosition) {
+    public Result<AppendLog.RangePage> readLogRange(String logName,
+                                                    long fromOffset,
+                                                    int maxRecords,
+                                                    long startPosition) {
         return logRoot.toResult(StorageError.LogsUnsupported.logsUnsupported(name))
                       .flatMap(root -> logFile(root, logName))
                       .flatMap(file -> AppendLog.readRange(file, fromOffset, maxRecords, startPosition));

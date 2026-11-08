@@ -588,10 +588,10 @@ public final class AppendLog implements AutoCloseable {
              Long.MIN_VALUE,
              record -> {
                  if (open[0] && record.offset() <= keepThrough) {
-                 holder[0] = new ScanResult(buf.position(), record.offset());
-             } else {
-                 open[0] = false;
-             }
+                     holder[0] = new ScanResult(buf.position(), record.offset());
+                 } else {
+                     open[0] = false;
+                 }
              });
 
         return holder[0];
@@ -1873,8 +1873,8 @@ public final class AppendLog implements AutoCloseable {
             @Override
             public String message() {
                 return "WAL %s cannot be read past byte %d of %d: the frame there is torn or damaged".formatted(file,
-                                                                                                             position,
-                                                                                                             fileBytes);
+                                                                                                                position,
+                                                                                                                fileBytes);
             }
         }
 
