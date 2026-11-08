@@ -8,18 +8,25 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Pattern;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
+import org.pragmatica.aether.http.forward.HttpForwardMessage.Pipeline;
+import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.NodeCodecs;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
@@ -30,6 +37,8 @@ import org.pragmatica.consensus.net.quic.QuicClusterNetwork;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.serialization.FrameworkCodecs;
+import org.pragmatica.serialization.SliceCodec;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
@@ -72,6 +81,12 @@ class EmberFirstPublishRefusedCatchupTest {
     private static final String NAME = "refusedcatchup0";
     private static final String VERSION = "1.0.0";
     private static final String ENGINE_KEY = NAMESPACE + ":" + NAME + ":" + VERSION;
+    private static final SliceCodec CODEC = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
+    private static final Pattern REQUEST_ID = Pattern.compile("\"requestId\":\"([^\"]+)\"");
+
+    /// Every management forward reply any node sent, by request id: what the governor answered, whether or not the
+    /// transport then wrote it (the outbound filter runs before the lane's writability check).
+    private final Map<String, HttpForwardResponse> managementReplies = new ConcurrentHashMap<>();
 
     @TempDir
     Path dataDir;
@@ -92,7 +107,7 @@ class EmberFirstPublishRefusedCatchupTest {
         awaitLeader();
         var refusedBy = ConcurrentHashMap.<String>newKeySet();
 
-        cluster.allNodes().forEach(node -> refuseFirstCatchupRead(node, refusedBy));
+        cluster.allNodes().forEach(node -> refuseFirstCatchupRead(node, refusedBy, managementReplies));
 
         assertThat(post(leaderPort(), "/api/v1/streams/" + NAMESPACE + "/" + NAME + "/" + VERSION, "{\"partitions\":1}"))
             .as("create %s", NAME)
@@ -116,22 +131,80 @@ class EmberFirstPublishRefusedCatchupTest {
         assertThat(refusedBy.stream().filter(node -> !node.equals(owner)).toList())
             .as("the fault fired on a replica: its first catch-up read was refused")
             .isNotEmpty();
-        assertThat(response).as("the first publish is acknowledged, not 503 outcome unknown").startsWith("2");
+        assertThat(governorVerdict(response)).as("the first publish is acknowledged, not 503 outcome unknown").startsWith("2");
+        assertThat(isOutcomeUnknown(response) || managementReplies.values().stream().map(EmberFirstPublishRefusedCatchupTest::decoded).anyMatch(response::equals))
+            .as("positive control: the reply observer captured and decoded the governor's reply the client received (%s)", response)
+            .isTrue();
 
         for (var i = 1; i < 5; i++) {
-            assertThat(publishRetryingRefusal(governor, "first-" + i)).as("publish first-%d", i).startsWith("2");
+            assertThat(governorVerdict(publishRetryingRefusal(governor, "first-" + i))).as("publish first-%d", i).startsWith("2");
         }
     }
 
-    /// Refuses `node`'s FIRST catch-up read of the test stream, once, on whichever target it is sent to.
-    private static void refuseFirstCatchupRead(AetherNode node, Set<String> refusedBy) {
+    /// #2847: the publish's verdict as the governor gave it. Until #2583 P2 (reply re-send), the governor's management
+    /// forward reply rides the FORWARD lane's fast-fail and its send outcome is ignored
+    /// (`ManagementServer#sendManagementForwardPayload`), so a reply refused in a backpressure episode on the governor's
+    /// lane to the entry is dropped. The entry then rightly answers 503 "outcome unknown" (it cannot tell), for a publish
+    /// the governor acknowledged: CI run 42415039453 refused the reply in a 19 ms episode, 128 ms into the publish. What this
+    /// test pins is the governor's answer, so on that 503 the verdict is the reply the governor sent for the same request
+    /// id. A governor that never answered (the #2574 failure: the owner's ISR wait outlives the hop) or answered anything
+    /// but 2xx still fails the assertion.
+    private String governorVerdict(String response) {
+        if (!isOutcomeUnknown(response)) {
+            return response;
+        }
+
+        var requestId = REQUEST_ID.matcher(response);
+        var reply = requestId.find()
+                    ? Option.option(managementReplies.get(requestId.group(1)))
+                    : Option.<HttpForwardResponse>none();
+
+        return reply.map(EmberFirstPublishRefusedCatchupTest::decoded)
+                    .map(verdict -> {
+                             System.out.printf("REPLY-LEG-LOST client=%s governor=%s%n",
+                                               response.lines().findFirst().orElse(""),
+                                               verdict.lines().findFirst().orElse(""));
+
+                             return verdict;
+                         })
+                    .or(response);
+    }
+
+    private static boolean isOutcomeUnknown(String response) {
+        return response.startsWith("503") && response.contains("outcome unknown");
+    }
+
+    /// A reply in the client's `status body` shape; a forward-level failure reply carries no HTTP status and reads `-2`.
+    private static String decoded(HttpForwardResponse reply) {
+        if (!reply.success()) {
+            return "-2 " + new String(reply.payload(), StandardCharsets.UTF_8);
+        }
+
+        HttpResponseData data = CODEC.decode(reply.payload());
+
+        return data.statusCode() + " " + new String(data.body(), StandardCharsets.UTF_8);
+    }
+
+    /// Refuses `node`'s FIRST catch-up read of the test stream, once, on whichever target it is sent to, and records every
+    /// management forward reply `node` sends (never refused).
+    private static void refuseFirstCatchupRead(AetherNode node, Set<String> refusedBy, Map<String, HttpForwardResponse> replies) {
         var fired = new AtomicBoolean();
         var self = node.self().id();
 
         ((QuicClusterNetwork) StreamTripwireSupport.component(node, "clusterNode", RabiaNode.class)
-                                                   .network()).setOutboundRefusalFilter((_, message) -> isTestCatchupRead(message)
+                                                   .network()).setOutboundRefusalFilter((_, message) -> recordManagementReply(message, replies)
+                                                                       && isTestCatchupRead(message)
                                                                        && fired.compareAndSet(false, true)
                                                                        && refusedBy.add(self));
+    }
+
+    /// Always true, so it never decides a refusal.
+    private static boolean recordManagementReply(Object message, Map<String, HttpForwardResponse> replies) {
+        if (message instanceof HttpForwardResponse reply && reply.pipeline() == Pipeline.MANAGEMENT) {
+            replies.put(reply.requestId(), reply);
+        }
+
+        return true;
     }
 
     private static boolean isTestCatchupRead(Object message) {
