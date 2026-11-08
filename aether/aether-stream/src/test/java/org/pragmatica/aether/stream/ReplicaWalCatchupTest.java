@@ -187,12 +187,6 @@ class ReplicaWalCatchupTest {
 
             return answers.getLast();
         }
-
-        private List<ProvenanceEntry> sidecarHistory() {
-            return AppendLog.readEpochHistory(walFile())
-                            .flatMap(history -> Result.allOf(history.stream().map(ProvenanceEntry::provenanceEntry).toList()))
-                            .unwrap();
-        }
     }
 
     /// [StreamPartitionManager#readHeldDurable] over an opener that records where each page scan starts.
@@ -284,8 +278,8 @@ class ReplicaWalCatchupTest {
 
         @Test
         void heldEpochHistory_isTheSidecarsHistory_andAnUnreadableOneIsAFailure() throws Exception {
-            assertThat(manager.heldEpochHistory("held", 0).map(Result::unwrap))
-                .isEqualTo(Option.some(List.of(ProvenanceEntry.provenanceEntry(E1, 0))));
+            assertThat(manager.heldEpochHistory("held", 0).map(Result::unwrap)).isEqualTo(Option.some(sidecarHistory()));
+            assertThat(sidecarHistory()).extracting(ProvenanceEntry::rank).contains(E1);
 
             Files.write(sidecar(), new byte[]{1, 2, 3, 4, 5, 6, 7});
 
@@ -341,8 +335,10 @@ class ReplicaWalCatchupTest {
     /// Replace `held`'s WAL with records at `offsets`, each carrying a longer payload than the original's, so a position
     /// remembered in the original lands elsewhere.
     private void rewriteWal(long... offsets) throws Exception {
-        Files.delete(walFile());
-        var wal = AppendLog.open(walFile()).unwrap();
+        var file = walFile();
+
+        Files.delete(file);
+        var wal = AppendLog.open(file).unwrap();
 
         for (var offset : offsets) {
             wal.append(offset, longPayload(offset), 2000L + offset).await().onFailure(cause -> fail(cause.message()));
@@ -362,6 +358,12 @@ class ReplicaWalCatchupTest {
         } catch (Exception e) {
             return fail(e);
         }
+    }
+
+    private List<ProvenanceEntry> sidecarHistory() {
+        return AppendLog.readEpochHistory(walFile())
+                        .flatMap(history -> Result.allOf(history.stream().map(ProvenanceEntry::provenanceEntry).toList()))
+                        .unwrap();
     }
 
     private Path sidecar() {
