@@ -517,11 +517,14 @@ public final class AppendLog implements AutoCloseable {
     }
 
     /// Takes `writeLock` then `syncLock`, the order [#compact] uses; the in-lock `syncFailure` check closes the race
-    /// with a fail-stop recorded after the entry check, as there.
+    /// with a fail-stop recorded after the entry check, as there. The in-lock `closed` check (#2859) closes the race with a
+    /// [#close] that completed between the entry check and these locks: the channel is gone, and a cut would fail-stop the log.
     private Result<Unit> cutSuffix(long keepThrough) {
         synchronized (writeLock) {
             synchronized (syncLock) {
-                return syncFailure.fold(() -> cutSuffixLocked(keepThrough), Cause::result);
+                return closed
+                       ? WalError.General.WAL_CLOSED.result()
+                       : syncFailure.fold(() -> cutSuffixLocked(keepThrough), Cause::result);
             }
         }
     }
@@ -694,10 +697,14 @@ public final class AppendLog implements AutoCloseable {
                : raiseAckedMarker(offset);
     }
 
+    /// The in-lock `closed` check (#2859) pairs with [#close] taking `markerLock`: a raise either finished before the log
+    /// closed or is refused, so no marker file is rewritten after close.
     private Result<Unit> raiseAckedMarker(long offset) {
         synchronized (markerLock) {
-            return acked.advance(new AckedMark(attributedEpoch(offset), offset),
-                                 Math.max(lastOffset, sealedFloor.getAsLong()));
+            return closed
+                   ? WalError.General.WAL_CLOSED.result()
+                   : acked.advance(new AckedMark(attributedEpoch(offset), offset),
+                                   Math.max(lastOffset, sealedFloor.getAsLong()));
         }
     }
 
@@ -716,7 +723,9 @@ public final class AppendLog implements AutoCloseable {
     public Result<Unit> clampAckedMarker(long knownHead) {
         synchronized (writeLock) {
             synchronized (markerLock) {
-                return lowerAckedMarker(Math.max(knownHead, lastOffset));
+                return closed
+                       ? WalError.General.WAL_CLOSED.result()
+                       : lowerAckedMarker(Math.max(knownHead, lastOffset));
             }
         }
     }
@@ -766,12 +775,14 @@ public final class AppendLog implements AutoCloseable {
     public void close() {
         synchronized (writeLock) {
             synchronized (syncLock) {
-                closeLocked();
+                synchronized (markerLock) {
+                    closeLocked();
+                }
             }
         }
     }
 
-    /// Runs under `writeLock` and `syncLock` (#2855): an in-flight write or group commit finishes before the channel closes, and
+    /// Runs under `writeLock`, `syncLock` and `markerLock` (#2855, #2859): an in-flight write or group commit finishes before the channel closes, and
     /// the close-time force publishes `syncedSeq`, so a commit that runs later resolves from it and touches no file. A commit
     /// the close-time force did not cover is refused by [#forceUpTo] without forcing the closed channel -- which would
     /// fail-stop the log and write its mark beside a log that is gone.
@@ -1197,7 +1208,9 @@ public final class AppendLog implements AutoCloseable {
     private Result<Unit> compact() {
         synchronized (writeLock) {
             synchronized (syncLock) {
-                return syncFailure.fold(() -> rewriteSurvivors(truncatedUpto), Cause::result);
+                return closed
+                       ? WalError.General.WAL_CLOSED.result()
+                       : syncFailure.fold(() -> rewriteSurvivors(truncatedUpto), Cause::result);
             }
         }
     }
