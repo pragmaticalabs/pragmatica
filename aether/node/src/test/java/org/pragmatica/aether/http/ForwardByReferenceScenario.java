@@ -45,6 +45,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
+import org.pragmatica.consensus.net.OutboundMessageLimit;
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.http.routing.SliceVersionRegistry;
@@ -52,6 +53,7 @@ import org.pragmatica.http.routing.UploadSpec;
 import org.pragmatica.http.routing.VersioningMetricsSink;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.Server;
@@ -110,6 +112,8 @@ final class ForwardByReferenceScenario {
         HOLDER_GONE,
         /// The transport refuses A's write to B: the forward never leaves A.
         PEER_UNREACHABLE,
+        /// The cluster frame limit refuses the forward before it is sent ([ForwardError.TooLargeToForward]): it never left A.
+        OVERSIZED_FRAME,
         /// Nothing is lost, but two slices on B publish the route; the ingress stores in the namespace of the first of them
         /// in coordinate order.
         TWO_PUBLISHERS
@@ -216,6 +220,7 @@ final class ForwardByReferenceScenario {
             case NONE, TWO_PUBLISHERS -> {}
             case DELETE_MID_FORWARD -> toB.beforeDelivery.set(() -> deleteEverything(storage));
             case PEER_UNREACHABLE -> toB.unreachable.set(true);
+            case OVERSIZED_FRAME -> toB.oversized.set(true);
             case HOLDER_GONE -> b.setUploadStorage(StorageInstance.storageInstance("content-b",
                                                                                    List.of(LocalDiskTier.localDiskTier(Files.createDirectory(dir.resolve("b")),
                                                                                                                        GIB).unwrap())));
@@ -402,6 +407,7 @@ final class ForwardByReferenceScenario {
         final AtomicLong maxRequestBytes = new AtomicLong();
         final AtomicLong requests = new AtomicLong();
         final java.util.concurrent.atomic.AtomicBoolean unreachable = new java.util.concurrent.atomic.AtomicBoolean();
+        final java.util.concurrent.atomic.AtomicBoolean oversized = new java.util.concurrent.atomic.AtomicBoolean();
         final AtomicReference<Runnable> beforeDelivery = new AtomicReference<>(() -> {});
 
         Link(NodeId target) {
@@ -411,6 +417,13 @@ final class ForwardByReferenceScenario {
         void reset() {
             maxRequestBytes.set(0);
             requests.set(0);
+        }
+
+        @Override
+        public Result<Unit> validateOutboundMessage(ProtocolMessage message) {
+            return oversized.get()
+                   ? OutboundMessageLimit.TooLarge.FACTORY.apply(OutboundMessageLimit.MAX_TRANSFER_BYTES + 1).result()
+                   : Result.unitResult();
         }
 
         @Override
