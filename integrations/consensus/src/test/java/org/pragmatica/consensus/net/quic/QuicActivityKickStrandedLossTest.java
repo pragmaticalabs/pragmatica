@@ -23,10 +23,12 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
@@ -59,6 +61,10 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// dialer, A is the only packet in flight and quiche's timer is the loss timer for A. In one loop task
 /// [QuicheStall#induceLateTimer] makes netty's timer elapsed, waits until quiche's is due, and calls
 /// `connectionSend()`. The positive control is read in the same run: quiche's timer must read -1 afterwards.
+/// #2904: the loss window is only ~1/8 RTT. ACK processing later than that (a loaded host) makes quiche declare A lost
+/// inside the ACK itself, or leaves other traffic in flight: no stall. Reaching the stall is a PRECONDITION of both
+/// tests, so [#strand] rebuilds the scenario on a fresh connection (up to STALL_ATTEMPTS) until the stall state is read;
+/// the induction itself runs on the event loop in the task that first sees the loss timer armed.
 /// A never arrives on its own; with the activity kick it arrives within a few hundred ms.
 ///
 /// The kick window is opened AFTER the stall is induced: a kick packet in flight during the induction
@@ -77,6 +83,9 @@ class QuicActivityKickStrandedLossTest {
     private static final int DATA_PACKET_MIN_BYTES = 300;
     /// Observed loss timer after B's ACK: 48-81 ms. The PTO is ~1 s and counts down through any larger bound.
     private static final long LOSS_TIMER_MAX_NANOS = TimeUnit.MILLISECONDS.toNanos(150);
+    /// #2904: attempts at reaching the stall state before the positive control is allowed to fail.
+    private static final int STALL_ATTEMPTS = 6;
+    private static final QuicheStall.Reading MISSED = new QuicheStall.Reading(0, -2, true, "watcher never saw the loss timer", -1, 0);
 
     private final SliceCodec codec = LaneProbe.codec();
     private final List<Object> receivedByAcceptor = new CopyOnWriteArrayList<>();
@@ -107,7 +116,7 @@ class QuicActivityKickStrandedLossTest {
 
         awaitTrue(() -> received("A" + PAD), RECOVERY_BOUND, "the kick re-queued and delivered the stranded data A");
         assertThat(reading.nettyTimerArmedAfter()).as("positive control: netty had no timer after the induced stall").isFalse();
-        assertThat(reading.quicheTimerAfter()).as("positive control: the stall state was reached in this run").isEqualTo(-1);
+        assertThat(reading.quicheTimerAfter()).as("positive control: the stall state was reached in this run " + reading).isEqualTo(-1);
     }
 
     /// TRIPWIRE, enabled on purpose. It asserts today's netty behaviour: without a write nothing ever
@@ -120,15 +129,42 @@ class QuicActivityKickStrandedLossTest {
 
         LockSupport.parkNanos(TimeUnit.SECONDS.toNanos(5));
 
-        assertThat(reading.quicheTimerAfter()).as("positive control: the stall state was reached in this run").isEqualTo(-1);
+        assertThat(reading.quicheTimerAfter()).as("positive control: the stall state was reached in this run " + reading).isEqualTo(-1);
         assertThat(received("A" + PAD)).as("netty now re-sends stranded data by itself - delete this tripwire and the activity kick")
                                  .isFalse();
     }
 
     /// Returns the reading taken right after the induced stall; A has been dropped, B delivered and acked.
+    /// Retries the whole scenario on a fresh connection while the stall state was not reached (#2904).
     private QuicheStall.Reading strand() {
+        var reading = strandOnce();
+
+        for (var attempt = 1; attempt < STALL_ATTEMPTS && !stallReached(reading); attempt++) {
+            System.err.println("#2904 stall not reached, attempt " + attempt + ": " + reading);
+            discardScenario();
+            reading = strandOnce();
+        }
+        return reading;
+    }
+
+    private static boolean stallReached(QuicheStall.Reading reading) {
+        return reading.quicheTimerAfter() == -1 && !reading.nettyTimerArmedAfter();
+    }
+
+    private void discardScenario() {
+        tearDown();
+        client = null;
+        server = null;
+        relay = null;
+        receivedByAcceptor.clear();
+        acceptorSide.set(null);
+    }
+
+    private QuicheStall.Reading strandOnce() {
         connect();
         var stream = dialerSide.stream(LANE).unwrap();
+        // Armed before A is written: induction happens on the event loop at the first sight of the loss timer (#2904).
+        var induced = watchAndInduce();
 
         relay.dropNextDialerPacket();
         stream.writeAndFlush(Unpooled.wrappedBuffer(codec.encode(LaneProbe.laneProbe(DIALER, LANE, "A" + PAD))));
@@ -138,20 +174,11 @@ class QuicActivityKickStrandedLossTest {
         assertThat(relay.droppedByDialer.get()).as("exactly A was dropped").isEqualTo(1);
 
         // B's ACK reaching the dialer arms quiche's loss timer for A (tens of ms away; the PTO is ~1 s).
-        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-        var timer = -1L;
+        var reading = awaitReading(induced);
 
-        while (System.nanoTime() < deadline) {
-            timer = timer();
-            if (timer > 0 && timer < LOSS_TIMER_MAX_NANOS) {
-                break;
-            }
-            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+        if (reading == MISSED) {
+            return reading;
         }
-        assertThat(timer).as("quiche armed the loss timer for A once B was acked").isBetween(1L, LOSS_TIMER_MAX_NANOS);
-
-        var reading = induce();
-
         assertThat(reading.quicheTimerBefore()).as("quiche's timer was due when connectionSend ran").isLessThanOrEqualTo(0);
         assertThat(received("A" + PAD)).as("A is not delivered by anything else").isFalse();
 
@@ -162,17 +189,19 @@ class QuicActivityKickStrandedLossTest {
         return receivedByAcceptor.stream().anyMatch(m -> m instanceof LaneProbe p && p.marker().equals(marker));
     }
 
-    private long timer() {
-        try {
-            return QuicheStall.quicheTimerNanos(dialerSide.connection());
-        } catch (Exception e) {
-            return fail("timer read failed: " + e);
-        }
+    private CompletableFuture<QuicheStall.Reading> watchAndInduce() {
+        return QuicheStall.induceWhenLossTimerArmed(dialerSide.connection(), LOSS_TIMER_MAX_NANOS,
+                                                    () -> relay.sentByDialerSinceArm.get() >= 2);
     }
 
-    private QuicheStall.Reading induce() {
+    /// A watcher that never fired means the loss timer was never seen armed (the ACK was processed too late and
+    /// loss was declared inside it): reported as a missed stall so that [#strand] retries.
+    private static QuicheStall.Reading awaitReading(CompletableFuture<QuicheStall.Reading> induced) {
         try {
-            return QuicheStall.induceLateTimer(dialerSide.connection());
+            return induced.get(10, TimeUnit.SECONDS);
+        } catch (TimeoutException e) {
+            induced.cancel(false);
+            return MISSED;
         } catch (Exception e) {
             return fail("stall induction failed: " + e);
         }
