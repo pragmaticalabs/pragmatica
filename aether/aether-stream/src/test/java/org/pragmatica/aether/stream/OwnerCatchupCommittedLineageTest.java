@@ -87,6 +87,60 @@ class OwnerCatchupCommittedLineageTest {
     /// second ranks by committed-lineage end, reads R2 and activates at 15. At the previous head R1 is picked again on every redrive.
     @Test
     void redrive_ofAnOwnerBehindADisownedTail_secondRound_readsTheReplicaHoldingTheCommittedLineage_andActivates() {
+        var fixture = disownedTailFixture();
+        var first = fixture.backfill().backfill("s", 0).await();
+
+        assertThat(first.isFailure()).as("short of R2's lineage: not activated").isTrue();
+        assertThat(head()).as("R1 installed through its lineage end").isEqualTo(10L);
+
+        var second = fixture.backfill().backfill("s", 0).await();
+
+        assertThat(second.isSuccess()).as("second redrive activates: %s", second).isTrue();
+        assertThat(head()).isEqualTo(15L);
+        assertThat(fixture.served()).as("R1 once, then the replica holding the lineage").containsExactly(SOURCE, OTHER);
+    }
+
+    /// The redrive predicate ranks by the same lineage end: once the owner holds R2's lineage, R1's raw tail (20) past it is no
+    /// longer "a survivor ahead", so the partition leaves the redrive candidates instead of being read again on every tick.
+    @Test
+    void redrive_afterActivationAtTheCommittedLineage_doesNotListThePartitionAgain_forADisownedRawTail() {
+        var fixture = disownedTailFixture();
+
+        fixture.backfill().backfill("s", 0).await();
+        fixture.backfill().backfill("s", 0).await().onFailure(cause -> fail(cause.message()));
+
+        assertThat(fixture.backfill().redriveCandidates()).as("no survivor is ahead of the committed lineage").isEmpty();
+    }
+
+    /// A cap learned for a replica holds only while its tail is the one observed: new data past it (the tail grew to 25) is read
+    /// again, not ranked by the old lineage end.
+    @Test
+    void redrive_ofAReplicaWhoseTailGrewPastTheObservedOne_readsItAgain() {
+        var fixture = disownedTailFixture();
+
+        fixture.backfill().backfill("s", 0).await();
+        fixture.registry().updateWatermark("s", 0, SOURCE, 25L, ReplicationState.CAUGHT_UP);
+        fixture.backfill().backfill("s", 0).await();
+
+        assertThat(fixture.served()).as("R1 again, not R2").containsExactly(SOURCE, SOURCE);
+    }
+
+    /// The promotion gate's own path ([PartitionBackfill#catchUpOwnerFrom]) targets the probed source's lineage end alone: another
+    /// replica in the registry (R2 at 15) does not hold the activation short, since the gate would probe the same source again.
+    @Test
+    void catchUpOwnerFrom_withAnotherReplicaAheadOfTheLineageEnd_activatesAtTheSourcesLineageEnd() {
+        var fixture = disownedTailFixture();
+
+        var outcome = fixture.backfill().catchUpOwnerFrom("s", 0, SOURCE, 20L).await();
+
+        assertThat(outcome.isSuccess()).as("gate path: %s", outcome).isTrue();
+        assertThat(head()).isEqualTo(10L);
+    }
+
+    private record DisownedTail(ReplicaRegistry registry, PartitionBackfill backfill, List<NodeId> served) {}
+
+    /// R1 (SOURCE) holds a deposed epoch's tail: raw 20, the committed lineage (E3 @ 11) ends at 10. R2 (OTHER) holds the lineage to 15.
+    private DisownedTail disownedTailFixture() {
         owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
 
         var registry = ReplicaRegistry.replicaRegistry();
@@ -108,16 +162,8 @@ class OwnerCatchupCommittedLineageTest {
                                                            TimeSpan.timeSpan(Long.MAX_VALUE).nanos(),
                                                            () -> List.of(SELF),
                                                            CommittedStreamOwnerSource.none());
-        var first = backfill.backfill("s", 0).await();
 
-        assertThat(first.isFailure()).as("short of R2's lineage: not activated").isTrue();
-        assertThat(head()).as("R1 installed through its lineage end").isEqualTo(10L);
-
-        var second = backfill.backfill("s", 0).await();
-
-        assertThat(second.isSuccess()).as("second redrive activates: %s", second).isTrue();
-        assertThat(head()).isEqualTo(15L);
-        assertThat(served).as("R1 once, then the replica holding the lineage").containsExactly(SOURCE, OTHER);
+        return new DisownedTail(registry, backfill, served);
     }
 
     private Promise<CatchupResponse> servedBy(NodeId node, CatchupRequest request, List<NodeId> served) {
