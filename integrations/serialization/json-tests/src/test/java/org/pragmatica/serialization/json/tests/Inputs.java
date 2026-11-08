@@ -15,8 +15,6 @@
  */
 package org.pragmatica.serialization.json.tests;
 
-import java.util.ArrayList;
-
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.cfg.JsonNodeFeature;
@@ -24,6 +22,7 @@ import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.JsonNodeFactory;
 import tools.jackson.databind.node.ObjectNode;
 
+import java.util.ArrayList;
 
 /// Input variants a producer we do not control may send, derived from Jackson's compact output.
 /// Shared by the conformance tests and the benchmarks.
@@ -37,11 +36,13 @@ public interface Inputs {
     /// object's keys reversed), `unknown` (unknown keys before and after each object's fields),
     /// `sparse` (null-valued fields omitted, as NON_NULL producers do).
     static byte[] variant(String name, Object value) {
-        var compact = Baseline.objectMapper().writeValueAsBytes(value);
-
+        var compact = Baseline.objectMapper()
+                              .writeValueAsBytes(value);
         return switch (name) {
             case "compact" -> compact;
-            case "pretty" -> Baseline.objectMapper().writerWithDefaultPrettyPrinter().writeValueAsBytes(value);
+            case "pretty" -> Baseline.objectMapper()
+                                     .writerWithDefaultPrettyPrinter()
+                                     .writeValueAsBytes(value);
             case "reordered" -> TREE.writeValueAsBytes(reversed(TREE.readTree(compact)));
             case "unknown" -> TREE.writeValueAsBytes(withNoise(TREE.readTree(compact)));
             case "sparse" -> TREE.writeValueAsBytes(withoutNulls(TREE.readTree(compact)));
@@ -53,23 +54,16 @@ public interface Inputs {
         if (node.isObject()) {
             var names = new ArrayList<>(node.propertyNames());
             var result = JsonNodeFactory.instance.objectNode();
-
             for (int i = names.size() - 1; i >= 0; i--) {
-                result.set(names.get(i),
-                           reversed(node.get(names.get(i))));
+                result.set(names.get(i), reversed(node.get(names.get(i))));
             }
-
             return result;
         }
-
         if (node.isArray()) {
             var result = JsonNodeFactory.instance.arrayNode();
-
             node.forEach(element -> result.add(reversed(element)));
-
             return result;
         }
-
         return node;
     }
 
@@ -78,53 +72,40 @@ public interface Inputs {
         if (node.isObject() && !isMap(node)) {
             ObjectNode result = JsonNodeFactory.instance.objectNode();
             var noise = JsonNodeFactory.instance.objectNode();
-
             noise.putArray("a").add(1.5e-3).add("}],\"").add(true).addNull();
             result.set("zzUnknownFirst", noise);
-            node.propertyNames().forEach(name -> result.set(name, withNoise(node.get(name))));
+            node.propertyNames()
+                .forEach(name -> result.set(name, withNoise(node.get(name))));
             result.put("zzUnknownLast", -12);
-
             return result;
         }
-
         return mapChildren(node, Inputs::withNoise);
     }
 
     static JsonNode withoutNulls(JsonNode node) {
         if (node.isObject()) {
             var result = JsonNodeFactory.instance.objectNode();
-
             node.propertyNames()
                 .stream()
-                .filter(name -> !node.get(name)
-                                     .isNull())
-                .forEach(name -> result.set(name,
-                                            withoutNulls(node.get(name))));
-
+                .filter(name -> !node.get(name).isNull())
+                .forEach(name -> result.set(name, withoutNulls(node.get(name))));
             return result;
         }
-
         return mapChildren(node, Inputs::withoutNulls);
     }
 
     private static JsonNode mapChildren(JsonNode node, java.util.function.UnaryOperator<JsonNode> transform) {
         if (node.isObject()) {
             var result = JsonNodeFactory.instance.objectNode();
-
-            node.propertyNames().forEach(name -> result.set(name,
-                                                            transform.apply(node.get(name))));
-
+            node.propertyNames()
+                .forEach(name -> result.set(name, transform.apply(node.get(name))));
             return result;
         }
-
         if (node.isArray()) {
             var result = JsonNodeFactory.instance.arrayNode();
-
             node.forEach(element -> result.add(transform.apply(element)));
-
             return result;
         }
-
         return node;
     }
 

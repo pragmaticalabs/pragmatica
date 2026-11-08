@@ -15,8 +15,7 @@
  */
 package org.pragmatica.serialization.json.tests;
 
-import java.util.ServiceLoader;
-
+import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.json.JsonCodecs;
@@ -24,12 +23,11 @@ import org.pragmatica.serialization.json.spi.JsonCodecProvider;
 import org.pragmatica.serialization.json.tests.other.Receipt;
 import org.pragmatica.serialization.json.tests.other.ReceiptJson;
 
-import org.junit.jupiter.api.Test;
+import java.util.ServiceLoader;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-
 
 /// `JsonCodecs.codecFor` over the providers the processor generated for this module's `@Json` types (each entry point
 /// is its type's provider), found through the one services file.
@@ -38,43 +36,28 @@ class JsonCodecsTest {
     void servicesFile_namesTheEntryPointOfEachAnnotatedType_only() {
         var providers = ServiceLoader.load(JsonCodecProvider.class)
                                      .stream()
-                                     .map(provider -> provider.type()
-                                                              .getName())
+                                     .map(provider -> provider.type().getName())
                                      .toList();
 
-        assertTrue(providers.contains(Ticketing_BuyRequestJson.class.getName()),
-                   providers.toString());
-        assertTrue(providers.contains(ReceiptJson.class.getName()),
-                   providers.toString());
-        assertTrue(providers.contains(SameFlatNameTest_BothJson.class.getName()),
-                   providers.toString());
-        assertTrue(providers.stream().noneMatch(name -> name.contains("JsonCodecs")),
-                   providers.toString());
-        assertTrue(providers.stream().noneMatch(name -> name.endsWith("StrictDecodingTest_InnerJson")),
-                   providers.toString());
-        assertEquals(providers.size(),
-                     providers.stream().distinct().count(),
-                     providers.toString());
+        assertTrue(providers.contains(Ticketing_BuyRequestJson.class.getName()), providers.toString());
+        assertTrue(providers.contains(ReceiptJson.class.getName()), providers.toString());
+        assertTrue(providers.contains(SameFlatNameTest_BothJson.class.getName()), providers.toString());
+        assertTrue(providers.stream().noneMatch(name -> name.contains("JsonCodecs")), providers.toString());
+        assertTrue(providers.stream().noneMatch(name -> name.endsWith("StrictDecodingTest_InnerJson")), providers.toString());
+        assertEquals(providers.size(), providers.stream().distinct().count(), providers.toString());
     }
 
     @Test
     void codecFor_findsAnnotatedTypesOfBothPackages_asTheirEntryPointCodec() {
-        assertSame(Ticketing_BuyRequestJson.CODEC,
-                   JsonCodecs.codecFor(Ticketing.BuyRequest.class).unwrap().unwrap());
-        assertSame(ReceiptJson.CODEC,
-                   JsonCodecs.codecFor(Receipt.class).unwrap().unwrap());
+        assertSame(Ticketing_BuyRequestJson.CODEC, JsonCodecs.codecFor(Ticketing.BuyRequest.class).unwrap().unwrap());
+        assertSame(ReceiptJson.CODEC, JsonCodecs.codecFor(Receipt.class).unwrap().unwrap());
         assertEquals(new Receipt("r-1", 250),
-                     JsonCodecs.codecFor(Receipt.class)
-                               .unwrap()
-                               .unwrap()
-                               .decode("{\"id\":\"r-1\",\"amountMinor\":250}")
-                               .unwrap());
+                     JsonCodecs.codecFor(Receipt.class).unwrap().unwrap().decode("{\"id\":\"r-1\",\"amountMinor\":250}").unwrap());
     }
 
     @Test
     void codecFor_isEmpty_forATypeWithoutGeneratedCodec() {
-        assertEquals(Result.success(Option.none()),
-                     JsonCodecs.codecFor(String.class));
+        assertEquals(Result.success(Option.none()), JsonCodecs.codecFor(String.class));
     }
 
     // Documented decision: only @Json types have a provider. Inner and ProductId have codec code inside their roots'
@@ -82,9 +65,7 @@ class JsonCodecsTest {
     @Test
     void codecFor_isEmpty_forATypeReachableOnlyAsANestedComponent() {
         assertTrue(StrictDecodingTest_AllRequiredJson.CODECS.containsKey(StrictDecodingTest.Inner.class));
-        assertEquals(Result.success(Option.none()),
-                     JsonCodecs.codecFor(StrictDecodingTest.Inner.class));
-        assertEquals(Result.success(Option.none()),
-                     JsonCodecs.codecFor(Ecommerce.ProductId.class));
+        assertEquals(Result.success(Option.none()), JsonCodecs.codecFor(StrictDecodingTest.Inner.class));
+        assertEquals(Result.success(Option.none()), JsonCodecs.codecFor(Ecommerce.ProductId.class));
     }
 }

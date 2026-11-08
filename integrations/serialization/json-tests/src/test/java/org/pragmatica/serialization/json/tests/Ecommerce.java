@@ -15,17 +15,17 @@
  */
 package org.pragmatica.serialization.json.tests;
 
+import org.pragmatica.serialization.json.Json;
+
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
+
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Currency;
 import java.util.List;
 import java.util.Map;
-
-import org.pragmatica.serialization.json.Json;
-import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.utils.Causes;
-
 
 /// Shapes copied from `pragmatica/examples/ecommerce` (place-order, pricing, payment, fulfillment, shared).
 ///
@@ -74,11 +74,7 @@ public interface Ecommerce {
 
     record RawAddress(String street, String city, String state, String postalCode, String country) {}
 
-    record RawPaymentMethod(String cardNumber,
-                            String expiryMonth,
-                            String expiryYear,
-                            String cvv,
-                            String cardholderName) {}
+    record RawPaymentMethod(String cardNumber, String expiryMonth, String expiryYear, String cvv, String cardholderName) {}
 
     enum ShippingOption {
         STANDARD,

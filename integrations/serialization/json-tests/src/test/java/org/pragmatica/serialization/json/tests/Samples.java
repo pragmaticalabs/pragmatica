@@ -15,6 +15,8 @@
  */
 package org.pragmatica.serialization.json.tests;
 
+import org.pragmatica.lang.Option;
+
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -23,14 +25,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.stream.IntStream;
 
-import org.pragmatica.lang.Option;
-
 import static org.pragmatica.serialization.json.tests.Catalog.ItemListV2;
 import static org.pragmatica.serialization.json.tests.Catalog.ItemV2;
 import static org.pragmatica.serialization.json.tests.Ecommerce.*;
 import static org.pragmatica.serialization.json.tests.Ticketing.BuyRequest;
 import static org.pragmatica.serialization.json.tests.Ticketing.BuyResponse;
-
 
 /// Deterministic sample payloads shared by tests and benchmarks. Sizes follow the sources:
 /// catalog seeds 6 items; ecommerce k6 load tests send 1-4 line items.
@@ -58,26 +57,13 @@ public interface Samples {
     }
 
     static ItemListV2 catalog(int size) {
-        var names = List.of("Mechanical Keyboard",
-                            "Café Crème Grinder",
-                            "12\" Vinyl Record",
-                            "USB-C Hub 7-in-1",
-                            "Noise Cancelling Headphones",
-                            "Ergonomic Mouse");
-        var tags = List.of(List.of("electronics", "peripherals"),
-                           List.of("kitchen", "coffee"),
-                           List.of("music", "analog"),
-                           List.of("electronics", "accessories"),
-                           List.of("audio", "travel"),
-                           List.of("peripherals", "office"));
+        var names = List.of("Mechanical Keyboard", "Café Crème Grinder", "12\" Vinyl Record", "USB-C Hub 7-in-1",
+                            "Noise Cancelling Headphones", "Ergonomic Mouse");
+        var tags = List.of(List.of("electronics", "peripherals"), List.of("kitchen", "coffee"), List.of("music", "analog"),
+                           List.of("electronics", "accessories"), List.of("audio", "travel"), List.of("peripherals", "office"));
         var items = IntStream.range(0, size)
-                             .mapToObj(i -> new ItemV2(1000 + i,
-                                                       names.get(i % 6),
-                                                       1999 + 1250L * i,
-                                                       "USD",
-                                                       tags.get(i % 6)))
+                             .mapToObj(i -> new ItemV2(1000 + i, names.get(i % 6), 1999 + 1250L * i, "USD", tags.get(i % 6)))
                              .toList();
-
         return new ItemListV2(items);
     }
 
@@ -96,59 +82,32 @@ public interface Samples {
         var orderId = new OrderId("ord-2026-10-17-58f1c3");
         var items = List.of(lineItem("PROD-ABC123", 2), lineItem("PROD-XYZ789", 1), lineItem("PROD-DEF456", 4));
         var linePrices = new LinkedHashMap<ProductId, LinePrice>();
-
         linePrices.put(new ProductId("PROD-ABC123"), linePrice("PROD-ABC123", "29.99", 2));
         linePrices.put(new ProductId("PROD-XYZ789"), linePrice("PROD-XYZ789", "149.00", 1));
         linePrices.put(new ProductId("PROD-DEF456"), linePrice("PROD-DEF456", "4.25", 4));
-        var pricing = new PriceBreakdown(linePrices,
-                                         usd("225.98"),
-                                         usd("22.60"),
-                                         usd("18.08"),
-                                         usd("9.99"),
-                                         usd("231.45"));
-        var payment = new PaymentResult("txn-9c2e7a41b3",
-                                        orderId,
-                                        usd("231.45"),
-                                        "VISA",
-                                        "************1111",
-                                        Instant.parse("2026-10-17T09:41:27.512Z"),
-                                        PaymentStatus.AUTHORIZED);
-        var shipment = new Shipment("shp-4d8e2f",
-                                    orderId,
-                                    "1Z999AA10123456784",
-                                    ShippingOption.EXPRESS,
+        var pricing = new PriceBreakdown(linePrices, usd("225.98"), usd("22.60"), usd("18.08"), usd("9.99"), usd("231.45"));
+        var payment = new PaymentResult("txn-9c2e7a41b3", orderId, usd("231.45"), "VISA", "************1111",
+                                        Instant.parse("2026-10-17T09:41:27.512Z"), PaymentStatus.AUTHORIZED);
+        var shipment = new Shipment("shp-4d8e2f", orderId, "1Z999AA10123456784", ShippingOption.EXPRESS,
                                     new Address("1600 Amphitheatre Parkway", "Mountain View", "CA", "94043", "US"),
-                                    ShipmentStatus.LABEL_CREATED,
-                                    Instant.parse("2026-10-19T17:00:00Z"),
+                                    ShipmentStatus.LABEL_CREATED, Instant.parse("2026-10-19T17:00:00Z"),
                                     Instant.parse("2026-10-17T09:41:27.618Z"));
-
-        return new OrderConfirmation(orderId,
-                                     new CustomerId("cust-7f3a91"),
-                                     new ArrayList<>(items),
-                                     pricing,
-                                     payment,
-                                     shipment,
-                                     OrderStatus.CONFIRMED,
-                                     Instant.parse("2026-10-17T09:41:27.640Z"));
+        return new OrderConfirmation(orderId, new CustomerId("cust-7f3a91"), new ArrayList<>(items), pricing, payment, shipment,
+                                     OrderStatus.CONFIRMED, Instant.parse("2026-10-17T09:41:27.640Z"));
     }
 
     static RefundRequest refundRequest() {
-        return new RefundRequest("txn-9c2e7a41b3",
-                                 Option.none(),
-                                 "Item arrived damaged; customer returned it within 30 days");
+        return new RefundRequest("txn-9c2e7a41b3", Option.none(), "Item arrived damaged; customer returned it within 30 days");
     }
 
     /// SYNTHETIC: no example carries doubles. Full-precision values, as Double.toString writes them.
     static Telemetry.Series telemetry() {
         var random = new java.util.Random(17);
         var samples = IntStream.range(0, 50)
-                               .mapToObj(i -> new Telemetry.Sample("http.server.latency",
-                                                                   1_760_694_087_000L + 1000L * i,
-                                                                   random.nextDouble() * 250,
-                                                                   random.nextDouble() * 40,
+                               .mapToObj(i -> new Telemetry.Sample("http.server.latency", 1_760_694_087_000L + 1000L * i,
+                                                                   random.nextDouble() * 250, random.nextDouble() * 40,
                                                                    random.nextGaussian() * 1e-3 + 0.731))
                                .toList();
-
         return new Telemetry.Series("node-7", samples);
     }
 
@@ -158,12 +117,8 @@ public interface Samples {
 
     private static LinePrice linePrice(String product, String unit, int quantity) {
         var unitPrice = new BigDecimal(unit);
-
-        return new LinePrice(new ProductId(product),
-                             usd(unit),
-                             quantity,
-                             new Money(unitPrice.multiply(BigDecimal.valueOf(quantity)),
-                                       USD));
+        return new LinePrice(new ProductId(product), usd(unit), quantity,
+                             new Money(unitPrice.multiply(BigDecimal.valueOf(quantity)), USD));
     }
 
     private static Money usd(String amount) {

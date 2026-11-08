@@ -17,7 +17,6 @@ package org.pragmatica.serialization.json.tests.other;
 
 import org.pragmatica.serialization.json.Json;
 
-
 /// A second package of the lookup test: its own provider, listed in the same services file.
 @Json
 public record Receipt(String id, long amountMinor) {}

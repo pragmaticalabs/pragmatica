@@ -15,11 +15,12 @@
  */
 package org.pragmatica.serialization.json.tests;
 
-import java.nio.charset.StandardCharsets;
-import java.util.List;
-import java.util.Map;
-import java.util.stream.Stream;
-
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -32,16 +33,13 @@ import org.pragmatica.serialization.json.JsonOptions.NullInclusion;
 import org.pragmatica.serialization.json.JsonTypeCodec;
 import org.pragmatica.serialization.json.tests.ValueObjectFixtures.Count;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.annotation.JsonProperty;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.MethodSource;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-
 
 /// #2884: a `Patch` record component reads and writes the same way through the generated codec and the Jackson
 /// mapper: a missing member is `Absent` and is left out on write, `null` is `Null` and is written as `null`, a value is
@@ -50,7 +48,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class PatchParityTest {
     private static final JsonMapper VALUE_OBJECTS = JsonMapper.valueObjectJsonMapper();
     private static final JsonMapper DEFAULT = JsonMapper.defaultJsonMapper();
-
     private static final JsonOptions EXCLUDE = new JsonOptions(NullInclusion.EXCLUDE,
                                                                false,
                                                                false,
@@ -58,13 +55,11 @@ class PatchParityTest {
                                                                Integer.MAX_VALUE,
                                                                Integer.MAX_VALUE,
                                                                Integer.MAX_VALUE);
-
     private static final JsonMapper VALUE_OBJECTS_EXCLUDE = JsonMapper.jsonMapper()
                                                                       .withPragmaticaTypes()
                                                                       .withValueObjects()
                                                                       .withOptions(EXCLUDE)
                                                                       .build();
-
     private static final String POSITION = "a Patch is supported only as a record component, over a type that is neither an Option nor a Patch";
 
     record Plain(long a) {}
@@ -90,21 +85,18 @@ class PatchParityTest {
                                                         Patch.absent(),
                                                         Patch.absent(),
                                                         "x");
-
     private static final Update ALL_NULL = new Update(Patch.nullValue(),
                                                       Patch.nullValue(),
                                                       Patch.nullValue(),
                                                       Patch.nullValue(),
                                                       Patch.nullValue(),
                                                       "x");
-
     private static final Update ALL_VALUES = new Update(Patch.value("n"),
                                                         Patch.value(3),
                                                         Patch.value(new Count(5)),
                                                         Patch.value(List.of("a", "b")),
                                                         Patch.value(new Plain(1)),
                                                         "x");
-
     private static final Update MIXED = new Update(Patch.value("n"),
                                                    Patch.nullValue(),
                                                    Patch.absent(),
@@ -125,8 +117,7 @@ class PatchParityTest {
         var generated = PatchParityTest_UpdateJson.decode(bytes(json)).unwrap();
 
         assertEquals(expected, generated);
-        assertEquals(generated,
-                     VALUE_OBJECTS.readBytes(bytes(json), Update.class).unwrap());
+        assertEquals(generated, VALUE_OBJECTS.readBytes(bytes(json), Update.class).unwrap());
     }
 
     // The members in another order (and Absent ones interleaved) read the same: presence, not position, decides.
@@ -134,28 +125,23 @@ class PatchParityTest {
     void decode_membersInAnyOrder_sameInBothPaths() {
         var json = bytes("{\"id\":\"x\",\"tags\":[],\"age\":null,\"name\":\"n\"}");
 
-        assertEquals(MIXED,
-                     PatchParityTest_UpdateJson.decode(json).unwrap());
-        assertEquals(MIXED,
-                     VALUE_OBJECTS.readBytes(json, Update.class).unwrap());
+        assertEquals(MIXED, PatchParityTest_UpdateJson.decode(json).unwrap());
+        assertEquals(MIXED, VALUE_OBJECTS.readBytes(json, Update.class).unwrap());
     }
 
     @ParameterizedTest
     @MethodSource("states")
     void encode_eachState_sameBytesInBothPaths(String json, Update value) {
         assertEquals(json, utf8(PatchParityTest_UpdateJson.encode(value)));
-        assertEquals(json,
-                     VALUE_OBJECTS.writeAsString(value).unwrap());
+        assertEquals(json, VALUE_OBJECTS.writeAsString(value).unwrap());
     }
 
     // The null-inclusion option governs empty Options only: Absent is left out and Null is written either way.
     @ParameterizedTest
     @MethodSource("states")
     void encode_underExcludeOption_sameBytesAsUnderInclude(String json, Update value) {
-        assertEquals(json,
-                     utf8(codec().withOptions(EXCLUDE).encode(value)));
-        assertEquals(json,
-                     VALUE_OBJECTS_EXCLUDE.writeAsString(value).unwrap());
+        assertEquals(json, utf8(codec().withOptions(EXCLUDE).encode(value)));
+        assertEquals(json, VALUE_OBJECTS_EXCLUDE.writeAsString(value).unwrap());
     }
 
     @ParameterizedTest
@@ -164,14 +150,10 @@ class PatchParityTest {
         var generated = PatchParityTest_UpdateJson.encode(value);
         var jackson = VALUE_OBJECTS.writeAsBytes(value).unwrap();
 
-        assertEquals(value,
-                     PatchParityTest_UpdateJson.decode(generated).unwrap());
-        assertEquals(value,
-                     VALUE_OBJECTS.readBytes(jackson, Update.class).unwrap());
-        assertEquals(value,
-                     VALUE_OBJECTS.readBytes(generated, Update.class).unwrap());
-        assertEquals(value,
-                     PatchParityTest_UpdateJson.decode(jackson).unwrap());
+        assertEquals(value, PatchParityTest_UpdateJson.decode(generated).unwrap());
+        assertEquals(value, VALUE_OBJECTS.readBytes(jackson, Update.class).unwrap());
+        assertEquals(value, VALUE_OBJECTS.readBytes(generated, Update.class).unwrap());
+        assertEquals(value, PatchParityTest_UpdateJson.decode(jackson).unwrap());
     }
 
     // The plain default mapper (no value-object module) agrees too, for a record without value objects.
@@ -180,11 +162,9 @@ class PatchParityTest {
         for (var json : List.of("{}", "{\"name\":null,\"address\":null}", "{\"name\":\"n\",\"address\":{\"a\":2}}")) {
             var generated = PatchParityTest_PlainUpdateJson.decode(bytes(json)).unwrap();
 
-            assertEquals(generated,
-                         DEFAULT.readBytes(bytes(json), PlainUpdate.class).unwrap());
+            assertEquals(generated, DEFAULT.readBytes(bytes(json), PlainUpdate.class).unwrap());
             assertEquals(json, utf8(PatchParityTest_PlainUpdateJson.encode(generated)));
-            assertEquals(json,
-                         DEFAULT.writeAsString(generated).unwrap());
+            assertEquals(json, DEFAULT.writeAsString(generated).unwrap());
         }
     }
 
@@ -195,15 +175,14 @@ class PatchParityTest {
     }
 
     // ---- Option is unchanged (regression pin) ------------------------------------------------------
+
     @Test
     void option_missingAndNull_bothEmpty_inBothPaths() {
         var expected = new OptionUpdate(Option.none(), "x");
 
         for (var json : List.of("{\"id\":\"x\"}", "{\"name\":null,\"id\":\"x\"}")) {
-            assertEquals(expected,
-                         PatchParityTest_OptionUpdateJson.decode(bytes(json)).unwrap());
-            assertEquals(expected,
-                         VALUE_OBJECTS.readBytes(bytes(json), OptionUpdate.class).unwrap());
+            assertEquals(expected, PatchParityTest_OptionUpdateJson.decode(bytes(json)).unwrap());
+            assertEquals(expected, VALUE_OBJECTS.readBytes(bytes(json), OptionUpdate.class).unwrap());
         }
     }
 
@@ -214,15 +193,13 @@ class PatchParityTest {
         var excluded = "{\"id\":\"x\"}";
 
         assertEquals(included, utf8(PatchParityTest_OptionUpdateJson.encode(empty)));
-        assertEquals(included,
-                     VALUE_OBJECTS.writeAsString(empty).unwrap());
-        assertEquals(excluded,
-                     utf8(PatchParityTest_OptionUpdateJson.codec(EXCLUDE).encode(empty)));
-        assertEquals(excluded,
-                     VALUE_OBJECTS_EXCLUDE.writeAsString(empty).unwrap());
+        assertEquals(included, VALUE_OBJECTS.writeAsString(empty).unwrap());
+        assertEquals(excluded, utf8(PatchParityTest_OptionUpdateJson.codec(EXCLUDE).encode(empty)));
+        assertEquals(excluded, VALUE_OBJECTS_EXCLUDE.writeAsString(empty).unwrap());
     }
 
     // ---- unsupported positions (Jackson; the generator's refusals are pinned in CodecProcessorTest) ---
+
     record ListOfPatch(List<Patch<String>> x) {}
 
     record MapOfPatch(Map<String, Patch<String>> x) {}
@@ -260,10 +237,8 @@ class PatchParityTest {
     static Stream<Object> deepWrites() {
         return Stream.of(new ListOfListOfPatch(List.of(List.of(Patch.value("a")))),
                          new ListOfListOfPatch(List.of(List.of(Patch.nullValue()))),
-                         new MapOfListOfPatch(Map.of("k",
-                                                     List.of(Patch.value("a")))),
-                         new MapOfListOfPatch(Map.of("k",
-                                                     List.of(Patch.nullValue()))),
+                         new MapOfListOfPatch(Map.of("k", List.of(Patch.value("a")))),
+                         new MapOfListOfPatch(Map.of("k", List.of(Patch.nullValue()))),
                          new ObjectMember(List.of(Patch.nullValue())),
                          new ObjectMember(List.of(Patch.value("a"))),
                          new ObjectMember(Patch.nullValue()),
@@ -326,6 +301,7 @@ class PatchParityTest {
     }
 
     // ---- the refusal names the property (N1) and covers the write of a non-component (N2) ---
+
     public static class GetterPatch {
         public Patch<String> getS() {
             return Patch.nullValue();
@@ -343,8 +319,7 @@ class PatchParityTest {
     void jackson_patchOutsideACreator_refusalNamesThePropertyAndItsOwner(Class<?> type) {
         var message = failureMessage(VALUE_OBJECTS.readBytes(bytes("{}"), type));
 
-        assertTrue(message.contains(POSITION + ": property 's' of " + type.getName()),
-                   message);
+        assertTrue(message.contains(POSITION + ": property 's' of " + type.getName()), message);
     }
 
     static Stream<Object> nonComponentWrites() {
@@ -358,8 +333,7 @@ class PatchParityTest {
         var message = failureMessage(VALUE_OBJECTS.writeAsString(value));
 
         assertTrue(message.contains(POSITION + ": property '"), message);
-        assertTrue(message.contains("' of " + value.getClass().getName()),
-                   message);
+        assertTrue(message.contains("' of " + value.getClass().getName()), message);
         assertRefused(DEFAULT.writeAsString(value));
     }
 
@@ -413,8 +387,7 @@ class PatchParityTest {
         var failure = VALUE_OBJECTS.writeAsString(new AlwaysIncluded(Patch.absent()));
 
         assertTrue(failureMessage(failure).contains("an Absent Patch must be left out"), failureMessage(failure));
-        assertEquals("{\"x\":null}",
-                     VALUE_OBJECTS.writeAsString(new AlwaysIncluded(Patch.nullValue())).unwrap());
+        assertEquals("{\"x\":null}", VALUE_OBJECTS.writeAsString(new AlwaysIncluded(Patch.nullValue())).unwrap());
     }
 
     private static void assertRefused(Result<?> result) {

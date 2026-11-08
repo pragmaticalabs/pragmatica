@@ -15,10 +15,9 @@
  */
 package org.pragmatica.serialization.json.tests;
 
-import java.util.List;
-
 import org.pragmatica.serialization.json.Json;
 
+import java.util.List;
 
 /// Shapes copied from `pragmatica/examples/catalog/.../Catalog.java:44-48`.
 public interface Catalog {

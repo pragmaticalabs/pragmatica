@@ -15,14 +15,12 @@
  */
 package org.pragmatica.serialization.json.tests;
 
-import java.math.BigDecimal;
-import java.util.List;
-
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.json.Json;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-
+import java.math.BigDecimal;
+import java.util.List;
 
 /// One fixture set for both value-object rules: the generator's (`JsonType.RecordDefinition#isValueObject`) and
 /// Jackson's (`ValueObjectModule#valueObjectFactory`). Each record is a root of its own `@Json` holder, so the

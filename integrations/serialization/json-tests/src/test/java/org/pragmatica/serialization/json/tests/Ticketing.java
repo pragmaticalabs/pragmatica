@@ -17,7 +17,6 @@ package org.pragmatica.serialization.json.tests;
 
 import org.pragmatica.serialization.json.Json;
 
-
 /// Shapes copied from ticketing `booking/purchase/buyticket/BuyTicket.java:66-68`.
 public interface Ticketing {
     @Json

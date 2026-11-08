@@ -15,6 +15,15 @@
  */
 package org.pragmatica.serialization.json.tests;
 
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.pragmatica.json.ValueObjectModule;
+import org.pragmatica.serialization.codec.CodecProcessor;
+import org.pragmatica.serialization.json.JsonTypeCodec;
+
 import javax.tools.Diagnostic;
 import javax.tools.DiagnosticCollector;
 import javax.tools.JavaFileObject;
@@ -30,20 +39,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
-import org.pragmatica.json.ValueObjectModule;
-import org.pragmatica.serialization.codec.CodecProcessor;
-import org.pragmatica.serialization.json.JsonTypeCodec;
-
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.MethodSource;
-import org.junit.jupiter.params.provider.ValueSource;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-
 
 /// The generator and the production Jackson mapper apply one value-object rule (owner rulings: value objects are
 /// unwrapped when nested, and a value object document is the object of its component; one wire form). For every
@@ -64,9 +62,7 @@ class ValueObjectRuleAgreementTest {
                          new Fixture("Amount", new ValueObjectFixtures.Amount(new BigDecimal("12.50")), true),
                          new Fixture("Local", new ValueObjectFixtures.Local("x"), true),
                          new Fixture("TwoParts", new ValueObjectFixtures.TwoParts("a", "b"), false),
-                         new Fixture("Tags",
-                                     new ValueObjectFixtures.Tags(List.of("a", "b")),
-                                     false),
+                         new Fixture("Tags", new ValueObjectFixtures.Tags(List.of("a", "b")), false),
                          new Fixture("WrongName", new ValueObjectFixtures.WrongName("x"), false),
                          new Fixture("WrongReturn", new ValueObjectFixtures.WrongReturn("x"), false),
                          new Fixture("WrongParams", new ValueObjectFixtures.WrongParams("x"), false),
@@ -77,8 +73,8 @@ class ValueObjectRuleAgreementTest {
     @MethodSource("fixtures")
     void generatorAndJackson_giveTheSameValueObjectVerdict(Fixture fixture) throws Exception {
         var generator = generatedCodecInterface(fixture).getDeclaredMethods();
-        var generatorSaysValueObject = Arrays.stream(generator).anyMatch(method -> method.getName()
-                                                                                         .equals("parse"));
+        var generatorSaysValueObject = Arrays.stream(generator)
+                                             .anyMatch(method -> method.getName().equals("parse"));
 
         assertEquals(fixture.valueObject(), generatorSaysValueObject, "generator verdict");
         assertEquals(fixture.valueObject(),
@@ -94,11 +90,8 @@ class ValueObjectRuleAgreementTest {
         var jackson = Baseline.MAPPER.writeAsBytes(fixture.sample()).unwrap();
 
         assertEquals(new String(jackson, StandardCharsets.UTF_8), new String(generated, StandardCharsets.UTF_8));
-        assertEquals(fixture.sample(),
-                     codec.decode(jackson).unwrap());
-        assertEquals(fixture.sample(),
-                     Baseline.MAPPER.readBytes(generated,
-                                               fixture.sample().getClass()).unwrap());
+        assertEquals(fixture.sample(), codec.decode(jackson).unwrap());
+        assertEquals(fixture.sample(), Baseline.MAPPER.readBytes(generated, fixture.sample().getClass()).unwrap());
     }
 
     @Test
@@ -131,26 +124,22 @@ class ValueObjectRuleAgreementTest {
         var errors = compileErrors(tempDir, source);
 
         assertTrue(errors.contains("Jackson annotation @com.fasterxml.jackson.annotation.JsonIgnoreProperties on "
-                                  + "org.pragmatica.serialization.json.tests.ValueObjectFixtures.Annotated"),
-                   errors);
-        assertFalse(ValueObjectModule.valueObjectFactory(Class.forName(ValueObjectFixtures.class.getName() + "$" + name)).isPresent());
+                                   + "org.pragmatica.serialization.json.tests.ValueObjectFixtures.Annotated"), errors);
+        assertFalse(ValueObjectModule.valueObjectFactory(Class.forName(ValueObjectFixtures.class.getName() + "$" + name))
+                                     .isPresent());
     }
 
     @SuppressWarnings("unchecked")
     private static JsonTypeCodec<Object> codec(Fixture fixture) throws Exception {
-        var holder = Class.forName(ValueObjectFixtures.class.getPackageName()
-                                  + ".ValueObjectFixtures_" + fixture.name()
-                                  + "Json");
+        var holder = Class.forName(ValueObjectFixtures.class.getPackageName() + ".ValueObjectFixtures_" + fixture.name() + "Json");
         var codecs = (Map<Class<?>, JsonTypeCodec<?>>) holder.getField("CODECS").get(null);
 
         return (JsonTypeCodec<Object>) codecs.get(fixture.sample().getClass());
     }
 
     private static Class<?> generatedCodecInterface(Fixture fixture) throws Exception {
-        return Class.forName(ValueObjectFixtures.class.getPackageName()
-                            + ".ValueObjectFixtures_" + fixture.name()
-                            + "Json$ValueObjectFixtures_" + fixture.name()
-                            + "JsonCodec");
+        return Class.forName(ValueObjectFixtures.class.getPackageName() + ".ValueObjectFixtures_" + fixture.name()
+                             + "Json$ValueObjectFixtures_" + fixture.name() + "JsonCodec");
     }
 
     private static String compileErrors(Path tempDir, Path source) throws Exception {
@@ -158,16 +147,10 @@ class ValueObjectRuleAgreementTest {
         var collector = new DiagnosticCollector<JavaFileObject>();
 
         try (var fileManager = compiler.getStandardFileManager(collector, null, StandardCharsets.UTF_8)) {
-            fileManager.setLocationFromPaths(StandardLocation.CLASS_OUTPUT,
-                                             List.of(Files.createDirectories(tempDir.resolve("classes"))));
-            fileManager.setLocationFromPaths(StandardLocation.SOURCE_OUTPUT,
-                                             List.of(Files.createDirectories(tempDir.resolve("generated"))));
+            fileManager.setLocationFromPaths(StandardLocation.CLASS_OUTPUT, List.of(Files.createDirectories(tempDir.resolve("classes"))));
+            fileManager.setLocationFromPaths(StandardLocation.SOURCE_OUTPUT, List.of(Files.createDirectories(tempDir.resolve("generated"))));
             fileManager.setLocationFromPaths(StandardLocation.CLASS_PATH, testClasspath());
-            var task = compiler.getTask(null,
-                                        fileManager,
-                                        collector,
-                                        List.of("-proc:full"),
-                                        null,
+            var task = compiler.getTask(null, fileManager, collector, List.of("-proc:full"), null,
                                         fileManager.getJavaFileObjectsFromPaths(List.of(source)));
 
             task.setProcessors(List.of(new CodecProcessor()));
@@ -178,8 +161,7 @@ class ValueObjectRuleAgreementTest {
                         .stream()
                         .filter(diagnostic -> diagnostic.getKind() == Diagnostic.Kind.ERROR)
                         .map(diagnostic -> diagnostic.getMessage(null))
-                        .reduce("",
-                                (left, right) -> left + right + "\n");
+                        .reduce("", (left, right) -> left + right + "\n");
     }
 
     private static List<Path> testClasspath() {
