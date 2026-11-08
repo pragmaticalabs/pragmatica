@@ -41,28 +41,44 @@ public sealed interface Absence {
         UNJUDGEABLE
     }
 
-    /// The class of a node (R-2.15, "common to every class"): the directive's role, else membership.
+    /// The class of a node (R-2.15, "common to every class"): the directive's role, else a configured seed core, else membership.
     enum NodeClass {
         CORE,
         ASSIGNED_WORKER,
         UNASSIGNED_WORKER
     }
 
-    static NodeClass classOf(ClusterModel m, NodeId node) {
+    /// A configured seed core (`Settings.seedCores`) is CORE even with no directive and outside every live view (#2868): seed cores never
+    /// receive a directive, and the live views drop a node when it departs, so they cannot class a departed seed core.
+    static NodeClass classOf(ClusterModel m, Ctx ctx, NodeId node) {
         var directive = m.directives.get(node);
 
         if (directive.map(Rows::isCommunityWorker).or(false)) {
             return NodeClass.ASSIGNED_WORKER;
         }
 
-        var core = directive.map(value -> ActivationDirectiveValue.CORE.equals(value.role())).or(false) || m.seams.countedCores()
-                                                                                                                  .contains(node) || m.seams.coreView()
-                                                                                                                                            .map(view -> view.contains(node))
-                                                                                                                                            .or(false);
+        var core = directive.map(Absence::isCoreDirective).or(false) || isSeedCore(ctx, node) || isLiveCore(m, node);
 
         return core
                ? NodeClass.CORE
                : NodeClass.UNASSIGNED_WORKER;
+    }
+
+    private static boolean isCoreDirective(ActivationDirectiveValue directive) {
+        return ActivationDirectiveValue.CORE.equals(directive.role());
+    }
+
+    private static boolean isSeedCore(Ctx ctx, NodeId node) {
+        return ctx.settings()
+                  .seedCores()
+                  .contains(node);
+    }
+
+    private static boolean isLiveCore(ClusterModel m, NodeId node) {
+        return m.seams.countedCores()
+                      .contains(node) || m.seams.coreView()
+                                                .map(view -> view.contains(node))
+                                                .or(false);
     }
 
     static String labelOf(NodeClass nodeClass) {
@@ -79,7 +95,7 @@ public sealed interface Absence {
 
     // -- evaluation ------------------------------------------------------------------------------------------------
     static Verdict verdict(ClusterModel m, Ctx ctx, NodeId node) {
-        return switch (classOf(m, node)) {
+        return switch (classOf(m, ctx, node)) {
             case CORE -> coreVerdict(m, node);
             case ASSIGNED_WORKER -> assignedVerdict(m, ctx, node);
             case UNASSIGNED_WORKER -> unassignedVerdict(m, node);
@@ -224,7 +240,7 @@ public sealed interface Absence {
     /// `worker-absence-judgeable`, same subject. The subject is a fixed class label, which never leaves the FSM's model, so this recovery has
     /// no subject-gone arm; a class whose nodes all leave stays open until a node of it is judged again.
     private static ClusterModel judgeable(ClusterModel m, Ctx ctx, NodeId node) {
-        var label = labelOf(classOf(m, node));
+        var label = labelOf(classOf(m, ctx, node));
 
         if (m.unjudgeableWarned.contains(label)) {
             m.unjudgeableWarned = m.unjudgeableWarned.remove(label);
@@ -238,7 +254,7 @@ public sealed interface Absence {
 
     /// `worker-absence-unjudgeable`: once per episode per class (C10), until a node of the class is judged again.
     private static ClusterModel unjudgeable(ClusterModel m, Ctx ctx, NodeId node) {
-        var label = labelOf(classOf(m, node));
+        var label = labelOf(classOf(m, ctx, node));
 
         clear(m, node);
         if (!m.unjudgeableWarned.contains(label)) {
@@ -272,10 +288,10 @@ public sealed interface Absence {
     }
 
     /// For metrics: absent node counts by class label.
-    static Map<String, Long> absentCounts(ClusterModel m) {
+    static Map<String, Long> absentCounts(ClusterModel m, Ctx ctx) {
         return m.absentSince.keys()
                             .stream()
-                            .collect(Collectors.groupingBy(node -> labelOf(classOf(m, node)),
+                            .collect(Collectors.groupingBy(node -> labelOf(classOf(m, ctx, node)),
                                                            Collectors.counting()));
     }
 

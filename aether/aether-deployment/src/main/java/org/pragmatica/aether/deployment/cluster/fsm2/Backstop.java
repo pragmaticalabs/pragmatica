@@ -46,7 +46,7 @@ public sealed interface Backstop {
             return false;
         }
 
-        var nodeClass = Absence.classOf(m, node);
+        var nodeClass = Absence.classOf(m, ctx, node);
 
         return ctx.monoNs() - since.or(0L) > boundOf(ctx, nodeClass)
                && !(nodeClass == NodeClass.ASSIGNED_WORKER && breakerHolds(m, Absence.communityOf(m, node)));
@@ -142,12 +142,12 @@ public sealed interface Backstop {
         var since = m.absentSince.get(node);
 
         return since.map(at -> ctx.monoNs() - at > boundOf(ctx,
-                                                           Absence.classOf(m, node)))
+                                                           Absence.classOf(m, ctx, node)))
                     .or(false);
     }
 
     private static ClusterModel record(ClusterModel m, Ctx ctx, NodeId node) {
-        var nodeClass = Absence.classOf(m, node);
+        var nodeClass = Absence.classOf(m, ctx, node);
         var since = m.absentSince.get(node).or(ctx.monoNs());
         var announced = nodeClass == NodeClass.ASSIGNED_WORKER
                         ? ", announcement age " + Absence.announcementAgeNs(m,

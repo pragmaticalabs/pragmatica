@@ -229,6 +229,7 @@ class SettingsSourcedTest {
                                .withDivergence(divergence)
                                .withSubmissionExpiry(99_000L)
                                .withProcess(process)
+                               .withSeedCores(Set.of(CORE_2))
                                .withJitter(_ -> 0.25d);
 
         assertThat(settings.timing()).isEqualTo(timing);
@@ -240,6 +241,7 @@ class SettingsSourcedTest {
         assertThat(settings.jitter().applyAsDouble("x")).isEqualTo(0.25d);
         assertThat(settings.atomicity()).isEqualTo(DeploymentAtomicity.BEST_EFFORT);
         assertThat(settings.seedNodes()).containsExactly(CORE_1);
+        assertThat(settings.seedCores()).containsExactly(CORE_2);
         assertThat(settings.bounds()).isEqualTo(bounds());
     }
 
@@ -310,6 +312,7 @@ class SettingsSourcedTest {
                                                      s -> s.withDivergence(divergence),
                                                      s -> s.withSubmissionExpiry(99_000L),
                                                      s -> s.withProcess(process),
+                                                     s -> s.withSeedCores(Set.of(CORE_2)),
                                                      s -> s.withJitter(_ -> 0.25d));
 
         for (var last = 0; last < all.size(); last++) {
@@ -329,6 +332,7 @@ class SettingsSourcedTest {
             assertThat(settings.submissionExpiry()).as("expiry, last=" + last).isEqualTo(99_000L);
             assertThat(settings.process()).as("process, last=" + last).isEqualTo(process);
             assertThat(settings.jitter().applyAsDouble("x")).as("jitter, last=" + last).isEqualTo(0.25d);
+            assertThat(settings.seedCores()).as("seed cores, last=" + last).containsExactly(CORE_2);
         }
     }
 

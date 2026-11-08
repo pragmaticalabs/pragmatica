@@ -15,11 +15,13 @@ import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.cluster.node.ForwardingClusterNode;
 import org.pragmatica.consensus.rabia.ProtocolConfig;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.swim.SwimConfig;
 
@@ -34,6 +36,10 @@ class Fsm2DerivationsTest {
     private static final ProcessIncarnation PROCESS = new ProcessIncarnation(1L, 7L);
 
     private static AetherNodeConfig configuredWith(TimeSpan applyTimeout) {
+        return configuredWith(applyTimeout, List.of());
+    }
+
+    private static AetherNodeConfig configuredWith(TimeSpan applyTimeout, List<NodeInfo> coreNodes) {
         var defaults = ProtocolConfig.defaultConfig();
         var protocol = new ProtocolConfig(defaults.cleanupInterval(),
                                           defaults.syncRetryInterval(),
@@ -45,7 +51,7 @@ class Fsm2DerivationsTest {
 
         return AetherNodeConfig.builder()
                                .self(SELF)
-                               .coreNodes(List.of())
+                               .coreNodes(coreNodes)
                                .managementPort(AetherNodeConfig.MANAGEMENT_DISABLED)
                                .sliceConfig(SliceConfig.sliceConfig())
                                .artifactRepo(DHTConfig.FULL)
@@ -91,6 +97,22 @@ class Fsm2DerivationsTest {
         assertThat(settings.submissionExpiry()).as("applyTimeout + 5 s").isEqualTo(50_000L);
         assertThat(settings.process()).isEqualTo(PROCESS);
         assertThat(settings.self()).isEqualTo(SELF);
+    }
+
+    // #2868: Red when: the cluster FSM's seed cores are not the configured core nodes (`Set.of()` passed again), so a departed directive-less seed
+    // core is classed a worker in production while the unit tests, which set the field directly, stay green; or the seed cores leak into
+    // `seedNodes`, which changes J5.
+    @Test
+    void theClusterFsmSeedCores_areTheConfiguredCoreNodes_andSeedNodesStayEmpty() {
+        var cores = List.of(core("core-1", 8091), core("core-2", 8092), core("core-3", 8093));
+        var settings = Fsm2System.clusterSettings(configuredWith(TimeSpan.timeSpan(30).seconds(), cores), PROCESS, SwimConfig.DEFAULT, TimeSpan.timeSpan(15).seconds());
+
+        assertThat(settings.seedCores()).containsExactlyInAnyOrderElementsOf(cores.stream().map(NodeInfo::id).toList());
+        assertThat(settings.seedNodes()).as("J5 (Directory.assignCore) unchanged").isEmpty();
+    }
+
+    private static NodeInfo core(String id, int port) {
+        return NodeInfo.nodeInfo(NodeId.nodeId(id).unwrap(), NodeAddress.nodeAddress("localhost", port).unwrap());
     }
 
     @Test
