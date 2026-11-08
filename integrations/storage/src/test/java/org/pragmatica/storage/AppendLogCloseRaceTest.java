@@ -20,7 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
 /// #2859: a mutator that passed its `closed` check and then waited on a lock while [AppendLog#close] completed must be
-/// refused, not run against the closed log (a cut or compaction would fail-stop it and write `<log>.failstopped`; a marker
+/// refused, not run against the closed log (a write, cut or compaction would fail-stop it and write `<log>.failstopped`; an epoch-history change would rewrite `<log>.epochs`; a marker
 /// raise or clamp would rewrite `<log>.acked`).
 ///
 /// Deterministic, no sleeps-as-sync: the test thread holds the lock the mutator needs, waits (deadline-bounded) until the
@@ -29,6 +29,8 @@ import static org.junit.jupiter.api.Assertions.fail;
 @Timeout(60)
 class AppendLogCloseRaceTest {
     private static final String WAL_CLOSED_MESSAGE = AppendLog.WalError.General.WAL_CLOSED.message();
+
+    private static final AppendLog.EpochOrder ORDER = (later, earlier) -> true;
 
     @TempDir
     Path dir;
@@ -67,6 +69,63 @@ class AppendLogCloseRaceTest {
         var wal = logWithRecords("raise.wal", 3, 16);
 
         var race = closeWhileBlockedOn(wal, "markerLock", () -> wal.recordAckedMarker(2L));
+
+        assertRefusedClosedAndNothingMutated(wal, race);
+    }
+
+    @Test
+    void write_passingTheEntryCheckThenLosingToClose_isRefusedClosed_withoutFailStop() throws Exception {
+        var wal = logWithRecords("write.wal", 3, 16);
+
+        var race = closeWhileBlockedOn(wal, "writeLock", () -> wal.write(3L, new byte[16], 1L).mapToUnit());
+
+        assertRefusedClosedAndNothingMutated(wal, race);
+    }
+
+    @Test
+    void writeAttributed_passingTheEntryCheckThenLosingToClose_isRefusedClosed_withoutFailStopOrEpochFile() throws Exception {
+        var wal = logWithRecords("write-attr.wal", 3, 16);
+        var key = AppendLog.EpochKey.epochKey("e1").unwrap();
+
+        var race = closeWhileBlockedOn(wal, "writeLock", () -> wal.write(3L, new byte[16], 1L, key, ORDER).mapToUnit());
+
+        assertRefusedClosedAndNothingMutated(wal, race);
+    }
+
+    @Test
+    void recordEpochStart_losingToClose_isRefusedClosed_andRewritesNoSidecar() throws Exception {
+        var wal = logWithRecords("epoch-record.wal", 3, 16);
+        var key = AppendLog.EpochKey.epochKey("e1").unwrap();
+
+        var race = closeWhileBlockedOn(wal, "writeLock", () -> wal.recordEpochStart(key, 3L, ORDER));
+
+        assertRefusedClosedAndNothingMutated(wal, race);
+    }
+
+    @Test
+    void truncateEpochsAbove_losingToClose_isRefusedClosed_andRewritesNoSidecar() throws Exception {
+        var wal = logWithEpochStartAbove("epoch-above.wal");
+
+        var race = closeWhileBlockedOn(wal, "writeLock", () -> wal.truncateEpochsAbove(0L));
+
+        assertRefusedClosedAndNothingMutated(wal, race);
+    }
+
+    @Test
+    void truncateEpochsAboveHead_losingToClose_isRefusedClosed_andRewritesNoSidecar() throws Exception {
+        var wal = logWithEpochStartAbove("epoch-above-head.wal");
+
+        var race = closeWhileBlockedOn(wal, "writeLock", () -> wal.truncateEpochsAboveHead(0L));
+
+        assertRefusedClosedAndNothingMutated(wal, race);
+    }
+
+    @Test
+    void dropEpochStartsAboveHead_losingToClose_isRefusedClosed_andRewritesNoSidecar() throws Exception {
+        var wal = logWithEpochStartAbove("epoch-drop.wal");
+        var entries = wal.epochHistory();
+
+        var race = closeWhileBlockedOn(wal, "writeLock", () -> wal.dropEpochStartsAboveHead(0L, entries));
 
         assertRefusedClosedAndNothingMutated(wal, race);
     }
@@ -116,6 +175,14 @@ class AppendLogCloseRaceTest {
 
         thread.join();
         return new Race(result.get(), atClose);
+    }
+
+    /// Three records (offsets 0..2) and an epoch entry starting at 10, above the head.
+    private AppendLog logWithEpochStartAbove(String name) {
+        var wal = logWithRecords(name, 3, 16);
+
+        wal.recordEpochStart(AppendLog.EpochKey.epochKey("e1").unwrap(), 10L, ORDER).unwrap();
+        return wal;
     }
 
     private AppendLog logWithRecords(String name, int count, int payloadBytes) {
