@@ -248,4 +248,52 @@ class PgAsyncSqlConnectorConnectionReleaseTest {
                  .await(timeSpan(10).seconds())
                  .unwrap();
     }
+
+    private static final String OTHER_BACKENDS = "SELECT count(*) AS n FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()";
+
+    /// Evaluating the arguments after the connection was borrowed can throw before any promise exists; the connection
+    /// must still go back.
+    @Test
+    void batch_throwingBeforeTheStatementRuns_returnsTheConnection() {
+        var results = runAll(() -> connector.batch(null, List.<Object[]>of(new Object[]{1})));
+
+        assertThat(results).hasSize(OPERATIONS).allSatisfy(result -> assertThat(result.isFailure()).as("outcome: %s", result).isTrue());
+        assertPoolStillServes();
+    }
+
+    /// The backend dies inside the callback, so the rollback fails: the caller must still see the callback's cause.
+    @Test
+    void transactional_failingRollback_doesNotReplaceTheCallbacksCause() {
+        var result = connector.<Integer>transactional(tx -> tx.queryOne("SELECT pg_backend_pid() AS n", COUNT)
+                                                              .flatMap(this::terminateBackend)
+                                                              .flatMap(_ -> tx.queryOne("SELECT 1 AS n", COUNT))
+                                                              .fold(_ -> BODY_FAILED.<Integer>promise()))
+                              .await(timeSpan(10).seconds());
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).isEqualTo(BODY_FAILED.message()));
+        assertPoolStillServes();
+    }
+
+    private Promise<Integer> terminateBackend(int pid) {
+        return connector.pinned(Duration.ZERO,
+                                session -> session.queryOne("SELECT pg_terminate_backend(" + pid + ")::int AS n", COUNT),
+                                _ -> Promise.unitPromise());
+    }
+
+    /// The pool is closed by `stop()` and would keep a released connection open for good: a later `unlisten` must close it.
+    @Test
+    void subscribe_unlistenAfterStop_succeeds_andLeavesNoBackendBehind() throws InterruptedException {
+        var listening = connector.subscribe("release_channel", _ -> {}).await(timeSpan(5).seconds()).unwrap();
+
+        connector.stop().await(timeSpan(5).seconds());
+
+        assertThat(listening.unlisten().await(timeSpan(5).seconds()).isSuccess()).isTrue();
+        Thread.sleep(1000);
+
+        var others = connector.pinned(Duration.ZERO, session -> session.queryOne(OTHER_BACKENDS, COUNT), _ -> Promise.unitPromise())
+                              .await(timeSpan(10).seconds());
+
+        assertThat(others.unwrap()).as("backends left open after stop and unlisten").isZero();
+    }
 }

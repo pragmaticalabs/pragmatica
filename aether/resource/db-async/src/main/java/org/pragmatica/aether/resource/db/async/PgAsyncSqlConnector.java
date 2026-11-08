@@ -15,6 +15,7 @@ import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.PinnedSessionBound;
 import org.pragmatica.aether.resource.db.RowMapper;
 import org.pragmatica.aether.resource.db.SqlConnector;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -28,15 +29,21 @@ import org.pragmatica.postgres.net.Connection;
 import org.pragmatica.postgres.net.Listening;
 import org.pragmatica.postgres.net.Transaction;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Unit.unit;
 
 
 final class PgAsyncSqlConnector implements AsyncSqlConnector {
+    private static final Logger log = LoggerFactory.getLogger(PgAsyncSqlConnector.class);
+
     private final DatabaseConnectorConfig config;
     private final Connectible connectible;
     private final Connectible dedicated;
+    private final AtomicBoolean stopped = new AtomicBoolean(false);
 
     private PgAsyncSqlConnector(DatabaseConnectorConfig config, Connectible connectible, Connectible dedicated) {
         this.config = config;
@@ -110,7 +117,7 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
     @Override
     public Promise<Listening> subscribe(String channel, Consumer<String> onNotification) {
         return connectible.getConnection()
-                          .flatMap(conn -> subscribeOwning(conn, channel, onNotification));
+                          .flatMap(conn -> subscribeOwning(conn, stopped, channel, onNotification));
     }
 
     @Override
@@ -132,6 +139,8 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
 
     @Override
     public Promise<Unit> stop() {
+        stopped.set(true);
+
         return connectible.close();
     }
 
@@ -176,7 +185,7 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
                                                             sql,
                                                             paramsList,
                                                             new int[paramsList.size()],
-                                                            0));
+                                                            0).fold(result -> rollbackOnFailure(tx, result)));
     }
 
     private static Promise<int[]> executeBatchInTransaction(Transaction tx,
@@ -192,8 +201,7 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
         return tx.completeQuery(sql,
                                 paramsList.get(index))
                  .map(rs -> recordAffectedRows(counts, index, rs))
-                 .flatMap(_ -> executeBatchInTransaction(tx, sql, paramsList, counts, index + 1))
-                 .fold(result -> rollbackOnFailure(tx, result));
+                 .flatMap(_ -> executeBatchInTransaction(tx, sql, paramsList, counts, index + 1));
     }
 
     private static int recordAffectedRows(int[] counts, int index, PgResultSet rs) {
@@ -203,9 +211,24 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
     }
 
     private static <T> Promise<T> rollbackOnFailure(Transaction tx, Result<T> result) {
-        return result.fold(cause -> tx.rollback()
-                                      .flatMap(_ -> cause.promise()),
-                           Promise::success);
+        return result.fold(cause -> rollbackKeeping(tx, cause), Promise::success);
+    }
+
+    /// The caller sees the failure that made the work roll back; a failing rollback (typically a dead backend, which has
+    /// already discarded the transaction) is logged and never replaces it.
+    private static <T> Promise<T> rollbackKeeping(Transaction tx, Cause cause) {
+        return tx.rollback()
+                 .fold(rollback -> keepCause(rollback, cause));
+    }
+
+    private static <T> Promise<T> keepCause(Result<Unit> rollback, Cause cause) {
+        return rollback.fold(failure -> loggedCause(failure, cause), _ -> cause.promise());
+    }
+
+    private static <T> Promise<T> loggedCause(Cause rollbackFailure, Cause cause) {
+        log.warn("Rollback failed ({}); keeping the original failure: {}", rollbackFailure.message(), cause.message());
+
+        return cause.promise();
     }
 
     private static <T> Promise<T> runTransaction(Connection conn,
@@ -256,22 +279,30 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
     }
 
     private static <T> Promise<T> runAndRelease(Connection conn, Fn1<Promise<T>, Connection> body) {
-        return body.apply(conn)
-                   .fold(result -> closeAndResolve(conn, result));
+        return invokeBody(conn, body).fold(result -> closeAndResolve(conn, result));
+    }
+
+    /// A body that throws before it returns its promise (for instance on a malformed argument evaluated after the
+    /// connection was borrowed) still reaches the release.
+    private static <T> Promise<T> invokeBody(Connection conn, Fn1<Promise<T>, Connection> body) {
+        return Promise.lift(DatabaseConnectorError::databaseFailure,
+                            () -> body.apply(conn))
+                      .flatMap(promise -> promise);
     }
 
     /// A subscription pins its pooled connection for as long as it listens (LISTEN is session state), so the connection
-    /// goes back when the subscription ends: on a failed subscribe at once, otherwise on the first `unlisten` (a repeated
+    /// goes back when the subscription ends: on a failed subscribe at once, otherwise on the first `unlisten` (after `stop()` the connection is closed instead, because the closed pool would keep it) (a repeated
     /// `unlisten` is a no-op success, so the pool never receives the same connection twice). A failed `unlisten` DISCARDS
     /// the connection (closes its socket, which ends its LISTEN registrations, then hands the dead connection to the pool,
     /// which drops it and frees the slot): a connection that may still be listening must not be handed to another
-    /// borrower, and a dead one must not hold a slot. Limit: a subscription dropped without `unlisten`, or a `stop()` with a
-    /// live subscription, still holds its connection (`PgConnectionPool.close` only shuts down idle connections).
+    /// borrower, and a dead one must not hold a slot. Limit: a subscription dropped without `unlisten` still holds its
+    /// connection, also across `stop()` (`PgConnectionPool.close` only shuts down idle connections).
     private static Promise<Listening> subscribeOwning(Connection conn,
+                                                      AtomicBoolean stopped,
                                                       String channel,
                                                       Consumer<String> onNotification) {
         return conn.subscribe(channel, onNotification)
-                   .map(listening -> releasingOnUnlisten(conn, listening))
+                   .map(listening -> releasingOnUnlisten(conn, stopped, listening))
                    .fold(result -> releaseOnFailure(conn, result));
     }
 
@@ -279,23 +310,35 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
         return result.fold(_ -> closeAndResolve(conn, result), Promise::success);
     }
 
-    private static Listening releasingOnUnlisten(Connection conn, Listening listening) {
+    private static Listening releasingOnUnlisten(Connection conn, AtomicBoolean stopped, Listening listening) {
         var released = new AtomicBoolean(false);
 
-        return () -> unlistenOnce(released, conn, listening);
+        return () -> unlistenOnce(released, stopped, conn, listening);
     }
 
-    private static Promise<Unit> unlistenOnce(AtomicBoolean released, Connection conn, Listening listening) {
+    private static Promise<Unit> unlistenOnce(AtomicBoolean released,
+                                              AtomicBoolean stopped,
+                                              Connection conn,
+                                              Listening listening) {
         if (!released.compareAndSet(false, true)) {
             return Promise.unitPromise();
         }
 
         return listening.unlisten()
-                        .fold(result -> releaseAfterUnlisten(conn, result));
+                        .fold(result -> releaseAfterUnlisten(conn, stopped, result));
     }
 
-    private static Promise<Unit> releaseAfterUnlisten(Connection conn, Result<Unit> result) {
-        return result.fold(_ -> discardKeeping(conn, result), _ -> closeAndResolve(conn, result));
+    private static Promise<Unit> releaseAfterUnlisten(Connection conn, AtomicBoolean stopped, Result<Unit> result) {
+        return result.fold(_ -> discardKeeping(conn, result), _ -> releaseOrDiscard(conn, stopped, result));
+    }
+
+    /// After `stop()` the pool is closed and would keep a released connection open forever, so the socket is closed.
+    private static Promise<Unit> releaseOrDiscard(Connection conn, AtomicBoolean stopped, Result<Unit> result) {
+        if (stopped.get()) {
+            return discardKeeping(conn, result);
+        }
+
+        return closeAndResolve(conn, result);
     }
 
     private static Promise<Unit> discardKeeping(Connection conn, Result<Unit> result) {
@@ -324,8 +367,7 @@ final class PgAsyncSqlConnector implements AsyncSqlConnector {
     }
 
     private static <T> Promise<T> resolveTransaction(Transaction tx, Result<T> result) {
-        return result.fold(cause -> tx.rollback()
-                                      .flatMap(_ -> cause.promise()),
+        return result.fold(cause -> rollbackKeeping(tx, cause),
                            value -> tx.commit()
                                       .map(_ -> value));
     }
