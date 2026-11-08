@@ -73,6 +73,15 @@ class OwnerAckWatermarkMonotoneTest {
         assertThat(registry.replicasFor(STREAM, PARTITION).getFirst().epoch()).isEqualTo(EPOCH_2);
     }
 
+    @Test
+    void ack_fromAnOlderEpoch_leavesTheNewerEpochRow() {
+        replication.handleAck(replicateAck(PEER, STREAM, PARTITION, 4L, EPOCH_2));
+        replication.handleAck(replicateAck(PEER, STREAM, PARTITION, 10L, EPOCH_1));
+
+        assertThat(watermark()).isEqualTo(4L);
+        assertThat(registry.replicasFor(STREAM, PARTITION).getFirst().epoch()).isEqualTo(EPOCH_2);
+    }
+
     private long watermark() {
         return registry.replicasFor(STREAM, PARTITION).getFirst().confirmedOffset();
     }
