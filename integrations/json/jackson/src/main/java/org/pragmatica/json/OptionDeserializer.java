@@ -70,6 +70,15 @@ public class OptionDeserializer extends ValueDeserializer<Option<?>> {
                      .filter(type -> type.getRawClass() == Option.class)
                      .flatMap(OptionDeserializer::elementType)
                      .<ValueDeserializer<?>> map(type -> createContextualDeserializer(ctxt, property, type))
+                     .or(() -> typeResolved(ctxt, property));
+    }
+
+    // An Option resolved by its type alone (an element of a container or of another wrapper) carries its element
+    // type already: a Patch in it is refused now, not when a value of it shows up.
+    private ValueDeserializer<?> typeResolved(DeserializationContext ctxt, BeanProperty property) {
+        return option(valueType).filter(PatchDeserializer::containsPatch)
+                     .<ValueDeserializer<?>> map(_ -> PatchDeserializer.refused(ctxt,
+                                                                                PatchDeserializer.reason(option(property))))
                      .or(this);
     }
 

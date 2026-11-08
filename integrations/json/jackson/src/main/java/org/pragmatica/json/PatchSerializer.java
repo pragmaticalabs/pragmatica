@@ -16,6 +16,7 @@
  */
 package org.pragmatica.json;
 
+import java.util.List;
 import java.util.stream.Stream;
 
 import org.pragmatica.lang.Contract;
@@ -23,11 +24,16 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Patch;
 
 import tools.jackson.core.JsonGenerator;
+import tools.jackson.databind.BeanDescription;
 import tools.jackson.databind.BeanProperty;
 import tools.jackson.databind.JavaType;
+import tools.jackson.databind.SerializationConfig;
 import tools.jackson.databind.SerializationContext;
 import tools.jackson.databind.ValueSerializer;
+import tools.jackson.databind.exc.InvalidDefinitionException;
 import tools.jackson.databind.jsontype.TypeSerializer;
+import tools.jackson.databind.ser.BeanPropertyWriter;
+import tools.jackson.databind.ser.ValueSerializerModifier;
 
 import static org.pragmatica.lang.Option.option;
 
@@ -98,6 +104,33 @@ public class PatchSerializer extends ValueSerializer<Patch<?>> {
                       : type.getContentType()).map(JavaType::getRawClass)
                      .filter(raw -> raw == Option.class || raw == Patch.class)
                      .isEmpty();
+    }
+
+    /// Refuses, when a bean serializer is built for a type (before any value is written), a property that holds a
+    /// `Patch` anywhere in its declared type but is not a `Patch` record component: the runtime-typed
+    /// [#createContextual] check alone would see it only once a non-null value is written.
+    static final class Guard extends ValueSerializerModifier {
+        @Override
+        public List<BeanPropertyWriter> changeProperties(SerializationConfig config,
+                                                         BeanDescription.Supplier description,
+                                                         List<BeanPropertyWriter> properties) {
+            return properties.stream()
+                             .filter(Guard::isMisplaced)
+                             .findFirst()
+                             .map(writer -> Guard.<List<BeanPropertyWriter>> misplaced(description, writer))
+                             .orElse(properties);
+        }
+
+        private static boolean isMisplaced(BeanPropertyWriter writer) {
+            return PatchDeserializer.containsPatch(writer.getType()) && !isPatchRecordComponent(writer);
+        }
+
+        // Jackson's failure channel is an exception, which JsonMapper lifts into a Result whose message keeps the reason.
+        private static <T> T misplaced(BeanDescription.Supplier description, BeanPropertyWriter writer) {
+            throw InvalidDefinitionException.from((JsonGenerator) null,
+                                                  PatchDeserializer.reason(option(writer)),
+                                                  description.getType());
+        }
     }
 
     @Contract

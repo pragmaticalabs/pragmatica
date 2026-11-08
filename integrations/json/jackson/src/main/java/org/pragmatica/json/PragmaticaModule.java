@@ -67,6 +67,7 @@ public class PragmaticaModule extends SimpleModule {
     public void setupModule(SetupContext context) {
         super.setupModule(context);
         context.addDeserializers(new OptionDeserializers());
+        context.addSerializerModifier(new PatchSerializer.Guard());
         context.configOverride(Patch.class).setIncludeAsProperty(ABSENT_LEFT_OUT);
     }
 
