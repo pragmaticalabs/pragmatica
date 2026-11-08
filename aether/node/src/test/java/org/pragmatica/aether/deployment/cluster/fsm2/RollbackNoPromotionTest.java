@@ -203,7 +203,10 @@ class RollbackNoPromotionTest {
         rollbackHeld(h, nodes);
         h.policy = FsmHarness.SettlePolicy.APPLY;
         publish(h, blueprint("org.example:other:1.0.0", false, "attempt-2", slice(INVENTORY, 3, 1, Set.of())));
-        quiesce(h, nodes, 3);
+        for (var round = 0; round < 4; round++) {
+            nodes.forEach(node -> node.follows(INVENTORY));
+            h.drain();
+        }
 
         assertThat(h.held).as("control: the rollback is still in flight").isNotEmpty();
         assertActiveOnAllCores(h, INVENTORY);
