@@ -5,14 +5,16 @@ package com.example.errpkg;
 
 import java.util.Map;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.io.TimeSpan;
 
+import org.junit.jupiter.api.Test;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+
 
 /// #2883 end to end: the generated routes are invoked, and each failing slice method answers the status the
 /// `[errors] packages` list gave its Cause, wherever that Cause is declared.
@@ -39,7 +41,12 @@ class GeneratedErrorPackagesRouteTest {
     }
 
     private int statusOf(String path) {
-        return router.handle(HttpRequestContext.httpRequestContext(path, "GET", Map.of(), Map.of(), new byte[0], "req_err"))
+        return router.handle(HttpRequestContext.httpRequestContext(path,
+                                                                   "GET",
+                                                                   Map.of(),
+                                                                   Map.of(),
+                                                                   new byte[0],
+                                                                   "req_err"))
                      .await(AWAIT)
                      .fold(cause -> fail("router failed: " + cause.message()),
                            response -> response.statusCode());

@@ -3,12 +3,12 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package com.example.errpkg;
 
+import org.pragmatica.aether.slice.annotation.Slice;
+import org.pragmatica.lang.Promise;
+
 import com.example.errpkg.other.OtherError;
 import com.example.errpkg.shared.SharedError;
 import com.example.errpkg.unlisted.UnlistedError;
-
-import org.pragmatica.aether.slice.annotation.Slice;
-import org.pragmatica.lang.Promise;
 
 
 /// Every method fails with a Cause declared outside this package (#2883).
