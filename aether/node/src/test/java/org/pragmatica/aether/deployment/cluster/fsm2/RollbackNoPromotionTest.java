@@ -36,7 +36,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class RollbackNoPromotionTest {
     private static final String APP = "org.example:app:1.0.0";
     private static final long TICK_SECONDS = Timing.DEFAULT.tick() / 1_000L;
-    private static final List<Artifact> SLICES = List.of(ORDERS, BILLING);
+    private static final Artifact INVENTORY = artifact("org.example:inventory:1.0.0");
+    private static final List<Artifact> SLICES = List.of(ORDERS, BILLING, INVENTORY);
 
     private static final AppBlueprintValue BLUEPRINT = blueprint(APP,
                                                                  false,
@@ -122,6 +123,70 @@ class RollbackNoPromotionTest {
 
         quiesce(h, nodes, 3);
         assertTerminalWithoutPromotion(h);
+    }
+
+    // Pins the gate's reach (#2864): a blueprint that does not declare the rolled-back artifacts, deployed while the rollback is in
+    // flight, still promotes. Red when: the gate drops goal ACTIVE for every artifact while any rollback is pending.
+    @Test
+    void unrelatedBlueprintDuringRollback_stillPromotes() {
+        var h = active();
+        var nodes = nodes(h);
+
+        rollbackHeld(h, nodes);
+        publish(h, blueprint("org.example:other:1.0.0", false, "attempt-2", slice(INVENTORY, 3, 1, Set.of())));
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        List.copyOf(h.held.values()).forEach(submit -> h.settle(submit, h.applyHeld(submit.correlationId())));
+        h.drain();
+
+        quiesce(h, nodes);
+        assertActiveOnAllCores(h, INVENTORY);
+    }
+
+    // Pins the gate's end (#2864): once the rollback has settled and its targets are removed, a fresh deployment of the rolled-back
+    // artifact promotes. Red when: the gate outlives the rollback (the in-flight draft or the owner test never clears).
+    @Test
+    void freshDeploymentAfterRollback_promotes() {
+        var h = active();
+        var nodes = nodes(h);
+
+        publish(h, BLUEPRINT);
+        nodes.forEach(node -> node.follows(BILLING));
+        nodes.getFirst().fails(ORDERS, true);
+        h.drain();
+        quiesce(h, nodes);
+        assertTerminalWithoutPromotion(h);
+
+        publish(h, blueprint("org.example:app:1.0.1", false, "attempt-3", slice(BILLING, 3, 1, Set.of())));
+        quiesce(h, nodes);
+
+        assertActiveOnAllCores(h, BILLING);
+    }
+
+    // Pins the gate's reach (#2864): a blueprint that is not rolled back and shares the rolled-back blueprint's healthy slice keeps
+    // that slice promoted once the rollback has settled.
+    @Test
+    void sharedSliceOfSurvivingBlueprint_staysPromoted() {
+        var h = active();
+        var nodes = nodes(h);
+
+        publish(h, blueprint("org.example:other:1.0.0", false, "attempt-2", slice(BILLING, 3, 1, Set.of())));
+        quiesce(h, nodes);
+        assertActiveOnAllCores(h, BILLING);
+
+        publish(h, BLUEPRINT);
+        nodes.getFirst().fails(ORDERS, true);
+        h.drain();
+        quiesce(h, nodes);
+
+        assertThat(outcomeStatus(h)).as("control: the sharing blueprint was rolled back")
+                                    .isEqualTo(Option.some(DeploymentOutcomeStatus.ROLLED_BACK));
+        assertActiveOnAllCores(h, BILLING);
+    }
+
+    private static void assertActiveOnAllCores(FsmHarness h, Artifact artifact) {
+        for (var nodeId : List.of(CORE_1, CORE_2, CORE_3)) {
+            assertThat(goal(h, nodeId, artifact)).as("goal of " + artifact + " on " + nodeId.id()).isEqualTo(Option.some(SliceGoal.ACTIVE));
+        }
     }
 
     /// The healthy slice is LOADING on every node and ORDERS fails fatally on the first; every write from here on is held.
