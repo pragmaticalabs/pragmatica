@@ -446,19 +446,22 @@ public sealed interface Outbox {
         return Indexer.clearPending(m, pair);
     }
 
-    /// A goal intent stands while its observed guard is current; a goal ACTIVE also only while no rollback of a blueprint that
-    /// declares the artifact is queued or in flight (#2864): once the rollback is decided, nothing of the blueprint is promoted,
-    /// whichever of the activation and the rollback was derived first in the drain.
+    /// A goal intent stands while its observed guard is current; a goal ACTIVE also only while nothing retires the artifact's blueprint
+    /// (#2864): no rollback of a blueprint that declares the artifact is queued or in flight, and the target's owning blueprint is not
+    /// gone. Once the rollback is decided nothing of the blueprint is promoted, whichever of the activation and the rollback was derived
+    /// first, and also between the rollback's commit and the commit of the removal of its targets.
     private static boolean stands(ClusterModel m, Map.Entry<SlicePair, GoalIntent> entry) {
         return stillCurrent(m,
                             entry.getKey(),
-                            entry.getValue().guard()) && !promotesRollingBack(m, entry);
+                            entry.getValue().guard()) && !promotesRetired(m, entry);
     }
 
-    private static boolean promotesRollingBack(ClusterModel m, Map.Entry<SlicePair, GoalIntent> entry) {
+    private static boolean promotesRetired(ClusterModel m, Map.Entry<SlicePair, GoalIntent> entry) {
+        var artifact = entry.getKey().artifact();
+
         return entry.getValue()
-                    .goal() == SliceGoal.ACTIVE && Outcomes.rollingBack(m,
-                                                                        entry.getKey().artifact());
+                    .goal() == SliceGoal.ACTIVE && (Outcomes.rollingBack(m, artifact) || Blueprints.ownerRemoved(m,
+                                                                                                                 artifact));
     }
 
     /// A decision stands only while the observed value it was derived from is still the one in the mirror.
