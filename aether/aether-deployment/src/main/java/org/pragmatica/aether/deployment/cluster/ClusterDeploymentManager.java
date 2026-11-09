@@ -418,6 +418,44 @@ public interface ClusterDeploymentManager {
         return new ClusterDeploymentManagerAdapter(ctx);
     }
 
+    /// #2937: as the factory above, with the local membership's DEAD set (legacy engine: the activation synthesises the
+    /// removal of every id in it, draft 8.1a residue guard).
+    static ClusterDeploymentManager clusterDeploymentManager(NodeId self,
+                                                             ClusterNode<KVCommand<AetherKey>> cluster,
+                                                             KVStore<AetherKey, AetherValue> kvStore,
+                                                             MessageRouter router,
+                                                             List<NodeId> initialTopology,
+                                                             TopologyManager topologyManager,
+                                                             DeploymentAtomicity atomicity,
+                                                             int coreMax,
+                                                             TimeSpan reconcileInterval,
+                                                             SchemaOrchestratorService schemaOrchestrator,
+                                                             Supplier<Set<NodeId>> coreCountedMembersSupplier,
+                                                             Supplier<Set<NodeId>> readyNodesSupplier,
+                                                             Supplier<Set<NodeId>> drainingNodesSupplier,
+                                                             Function<NodeId, Option<String>> memberSourceSupplier,
+                                                             CommunitySizing communitySizing,
+                                                             Supplier<Map<NodeId, MemberDescriptor>> deadMembersSupplier) {
+        var manager = clusterDeploymentManager(self,
+                                               cluster,
+                                               kvStore,
+                                               router,
+                                               initialTopology,
+                                               topologyManager,
+                                               atomicity,
+                                               coreMax,
+                                               reconcileInterval,
+                                               schemaOrchestrator,
+                                               coreCountedMembersSupplier,
+                                               readyNodesSupplier,
+                                               drainingNodesSupplier,
+                                               memberSourceSupplier,
+                                               communitySizing);
+
+        manager.setDeadMembersSupplier(deadMembersSupplier);
+        return manager;
+    }
+
     private static ClusterDeploymentContext buildContext(NodeId self,
                                                          ClusterNode<KVCommand<AetherKey>> cluster,
                                                          KVStore<AetherKey, AetherValue> kvStore,

@@ -2651,6 +2651,10 @@ public interface AetherNode extends ManageableNode {
         Function<NodeId, Option<String>> cdmMemberSourceSupplier = nodeId -> Option.option(membershipFsmRef.get())
                                                                                    .flatMap(fsm -> fsm.memberDescriptor(nodeId))
                                                                                    .map(MemberDescriptor::source);
+        // #2937: local membership's DEAD set, through the same shared membershipFsmRef; empty until the FSM is installed.
+        Supplier<Map<NodeId, MemberDescriptor>> cdmDeadMembersSupplier = () -> Option.option(membershipFsmRef.get())
+                                                                                      .map(MembershipFsm::deadMembers)
+                                                                                      .or(Map.of());
         var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(config.self(),
                                                                                          clusterNode,
                                                                                          kvStore,
@@ -2668,7 +2672,8 @@ public interface AetherNode extends ManageableNode {
                                                                                          stableCdmDrainingNodesSupplier,
                                                                                          cdmMemberSourceSupplier,
                                                                                          config.deploymentDefaults()
-                                                                                               .communitySizing());
+                                                                                               .communitySizing(),
+                                                                                         cdmDeadMembersSupplier);
         var loadBalancerManager = config.environment()
                                         .flatMap(EnvironmentIntegration::loadBalancer)
                                         .map(provider -> LoadBalancerManager.loadBalancerManager(config.self(),
