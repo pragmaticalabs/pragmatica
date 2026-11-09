@@ -20,22 +20,30 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.http.adapter.SliceRouter;
+import org.pragmatica.aether.http.handler.HandlerCodecs;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.RequestHeaders;
 import org.pragmatica.aether.http.handler.security.AuthorizationRole;
 import org.pragmatica.aether.http.handler.security.Principal;
 import org.pragmatica.aether.http.handler.security.Role;
+import org.pragmatica.aether.http.handler.security.SecurityCodecs;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.aether.http.handler.security.SecurityContextHolder;
 import org.pragmatica.aether.slice.CallerIdentity;
 import org.pragmatica.aether.slice.CallerRequest;
+import org.pragmatica.aether.slice.DefaultSliceBridge;
+import org.pragmatica.aether.slice.JsonCodecSettings;
 import org.pragmatica.aether.slice.MethodHandle;
 import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.ResourceProviderFacade;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceCreationContext;
@@ -48,6 +56,9 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.type.TypeToken;
+import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.serialization.FrameworkCodecs;
+import org.pragmatica.serialization.SliceCodec;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -55,8 +66,9 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// #2157 part b, against the GENERATED factories and router: the caller's [SecurityContext], exactly as the edge
 /// validated it, reaches a slice method's explicit `SecurityContext`/`Principal` parameter at the edge, one hop and
 /// two hops away. Between slices it travels beside the payload, the way the invoker carries it on the invoke message
-/// ([Wire] reproduces that path: what the sender puts on the message, and how the receiving bridge hands it on). An
-/// unauthenticated caller travels as "no identity"; nothing is read from ambient state.
+/// ([Wire] reproduces that path through the real codecs: the sender slice's codec encodes the payload, the caller crosses
+/// as encoded bytes, and the callee's real [DefaultSliceBridge] decodes both). An unauthenticated caller travels as "no
+/// identity"; nothing is read from ambient state.
 class GeneratedCallerPropagationTest {
     private static final TimeSpan AWAIT = TimeSpan.timeSpan(10).seconds();
     private static final SecurityContext ALICE = SecurityContext.securityContext(Principal.principal("user:alice").unwrap(),
@@ -66,19 +78,56 @@ class GeneratedCallerPropagationTest {
     private static final SecurityContext MALLORY = SecurityContext.securityContext("mallory", Set.of(Role.ADMIN)).unwrap();
     private static final String NOTE_JSON = "{\"text\":\"t\"}";
 
+    private static final RequestHeaders PROBE_HEADERS = RequestHeaders.requestHeaders(Map.of("X-Probe", List.of("p")));
+    /// The codec every slice codec layers over in a node, reduced to what these slices' payloads and the caller need:
+    /// the framework types, `RequestHeaders`, and the security types.
+    private static final SliceCodec PARENT = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(),
+                                                                   Stream.concat(HandlerCodecs.CODECS.stream(),
+                                                                                 SecurityCodecs.CODECS.stream())
+                                                                         .toList());
+
     private final Wire wire = new Wire();
     private SliceRouter router;
     private MidSlice mid;
 
     @BeforeEach
     void setUp() {
-        var context = SliceCreationContext.sliceCreationContext(wire, unused(ResourceProviderFacade.class));
+        var midCodec = new AtomicReference<SliceCodec>();
+        var edgeCodec = new AtomicReference<SliceCodec>();
 
-        wire.host(LeafSliceFactory.leafSliceSlice(context).await().unwrap());
-        wire.host(MidSliceFactory.midSliceSlice(context).await().unwrap());
-        mid = MidSliceFactory.midSlice(context).await().unwrap();
-        router = new EdgeSliceRoutes().create(EdgeSliceFactory.edgeSlice(context).await().unwrap(),
+        wire.host("com.example:caller-leaf:1.0.0", LeafSliceFactory.leafSliceSlice(context(wire.sentBy(() -> PARENT))).await().unwrap());
+        midCodec.set(wire.host("com.example:caller-mid:1.0.0",
+                               MidSliceFactory.midSliceSlice(context(wire.sentBy(midCodec::get))).await().unwrap()));
+        edgeCodec.set(EdgeSliceFactory.edgeSliceSlice(SliceCreationContext.sliceCreationContext(wire.sentBy(edgeCodec::get),
+                                                                                                 JSON_SETTINGS_ONLY))
+                                      .await()
+                                      .unwrap()
+                                      .codec(PARENT));
+        mid = MidSliceFactory.midSlice(context(wire.sentBy(midCodec::get))).await().unwrap();
+        router = new EdgeSliceRoutes().create(EdgeSliceFactory.edgeSlice(context(wire.sentBy(edgeCodec::get))).await().unwrap(),
                                               JsonMapper.defaultJsonMapper());
+    }
+
+    /// The edge slice (it has routes) asks its resources for its JSON codec settings; nothing else is provided.
+    private static final ResourceProviderFacade JSON_SETTINGS_ONLY = new ResourceProviderFacade() {
+        @Override
+        public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+            return Promise.success(resourceType.cast(JsonCodecSettings.defaults()));
+        }
+
+        @Override
+        public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
+            return provide(resourceType, configSection);
+        }
+
+        @Override
+        public Promise<Unit> releaseAll(String sliceId) {
+            return Promise.unitPromise();
+        }
+    };
+
+    private static SliceCreationContext context(SliceInvokerFacade invoker) {
+        return SliceCreationContext.sliceCreationContext(invoker, unused(ResourceProviderFacade.class));
     }
 
     // ---- edge ---------------------------------------------------------------------------------------------------
@@ -131,6 +180,28 @@ class GeneratedCallerPropagationTest {
         assertThat(wire.payloads()).containsExactly(new Note("t>mid"));
     }
 
+    /// #2157 A6-1: two payload parameters beside the context. The caller's proxy record is encoded by the caller's codec
+    /// under the tag of the callee's wire record, so the callee decodes its own record from the caller's bytes.
+    @Test
+    void oneHop_headersAndANoteBesideTheContext_crossTheCodecAsTheCalleesWireRecord() {
+        var seen = await(mid.relayWithHeaders(ALICE, PROBE_HEADERS, new Note("h")));
+
+        assertThat(seen).isEqualTo(new Seen("user:alice", List.of("auditor"), "h>leaf:probe=p"));
+        assertThat(wire.onTheWire()).containsExactly(Option.some(ALICE));
+        assertThat(wire.payloads()).singleElement().isInstanceOf(LeafSliceFactory.WithHeadersWireRequest.class);
+    }
+
+    /// The same encoding serves a two-parameter call that carries no caller: a `Principal` beside a business record stays
+    /// in the payload, which the callee decodes as its own request record.
+    @Test
+    void oneHop_principalBesideANote_withoutAContext_crossesTheCodecAsTheCalleesRequestRecord() {
+        var seen = await(mid.relayPrincipalOnly(ALICE.principal(), new Note("p")));
+
+        assertThat(seen).isEqualTo(new Seen("user:alice", List.of(), "p>mid>leaf"));
+        assertThat(wire.onTheWire()).containsExactly(Option.none());
+        assertThat(wire.payloads()).singleElement().isInstanceOf(LeafSliceFactory.PrincipalOnlyRequest.class);
+    }
+
     @Test
     void oneHop_unauthenticatedCaller_travelsAsNoIdentity_andArrivesAnonymous() {
         assertThat(await(mid.relay(SecurityContext.securityContext(), new Note("t"))).principal()).isEqualTo("anonymous");
@@ -180,8 +251,7 @@ class GeneratedCallerPropagationTest {
 
     @Test
     void receiver_payloadWithHeaders_isTheWireRecordWithoutTheSecurityParameters() {
-        var payload = new LeafSliceFactory.WithHeadersWireRequest(RequestHeaders.requestHeaders(Map.of("X-Probe", List.of("p"))),
-                                                                  new Note("h"));
+        var payload = new LeafSliceFactory.WithHeadersWireRequest(PROBE_HEADERS, new Note("h"));
 
         assertThat(applyLeaf("withHeaders", CallerRequest.callerRequest(payload, Option.some(ALICE))))
             .isEqualTo(new Seen("user:alice", List.of("auditor"), "h>leaf:probe=p"));
@@ -207,7 +277,10 @@ class GeneratedCallerPropagationTest {
             .as("a one-parameter payload needs no proxy record")
             .doesNotContain("record leaf_WhoAmIRequest")
             .doesNotContain("record leaf_BothRequest")
-            .contains("withHeadersHandle.invoke(CallerRequest.callerRequest(new leaf_WithHeadersRequest(");
+            .contains("withHeadersHandle.invoke(CallerRequest.callerRequest(new leaf_WithHeadersRequest(")
+            .as("the caller encodes its payload records under the callee's record tags")
+            .contains("SliceCodec.deterministicTag(\"com.example.callerleaf.LeafSliceFactory.WithHeadersWireRequest\")")
+            .contains("SliceCodec.deterministicTag(\"com.example.callerleaf.LeafSliceFactory.PrincipalOnlyRequest\")");
         assertThat(generated("callerleaf", "LeafSliceFactory.java"))
             .contains("public record WithHeadersWireRequest(RequestHeaders headers, Note note) {}")
             .contains("SliceCodec.deterministicTag(\"com.example.callerleaf.LeafSliceFactory.WithHeadersWireRequest\")");
@@ -277,22 +350,32 @@ class GeneratedCallerPropagationTest {
         }
     }
 
-    /// The inter-slice path, as the runtime runs it: the sender's invoker (`SliceInvoker.wireCaller`/`payloadOf`) puts
-    /// the caller on the invoke message as `SecurityContext.fromCallerIdentity` of the [CallerRequest]'s caller and
-    /// encodes its request;
-    /// the receiving bridge hands a method declaring [CallerRequest] the payload wrapped with that caller, and any
-    /// other method the bare payload. Methods are resolved by name across the hosted slices.
-    private static final class Wire implements SliceInvokerFacade {
-        private final Map<String, SliceMethod<?, ?>> methods = new ConcurrentHashMap<>();
+    /// The inter-slice path between nodes, as the runtime runs it, with the real codecs on both ends. The sender's
+    /// invoker (`SliceInvoker.wireCaller`/`payloadOf`) puts `SecurityContext.fromCallerIdentity` of the
+    /// [CallerRequest]'s caller on the invoke message and encodes the request with the sending slice's codec; here the
+    /// caller crosses as bytes of its own codec (the one `InvokeRequest.caller` is written with). The receiving node hands
+    /// the bytes and the caller to the callee's [DefaultSliceBridge], which decodes the payload with the callee's codec
+    /// and wraps it with the caller for a method declaring [CallerRequest]; the response returns as bytes the sender
+    /// decodes. Methods are resolved by name across the hosted slices.
+    private static final class Wire {
+        private final Map<String, Hosted> methods = new ConcurrentHashMap<>();
         private final List<Option<SecurityContext>> onTheWire = new CopyOnWriteArrayList<>();
         private final List<Object> payloads = new CopyOnWriteArrayList<>();
 
-        void host(Slice slice) {
-            slice.methods().forEach(method -> methods.put(method.name().name(), method));
+        private record Hosted(SliceMethod<?, ?> method, DefaultSliceBridge bridge, SliceCodec codec) {}
+
+        /// Hosts `slice` behind its own bridge and codec; returns the codec.
+        SliceCodec host(String artifact, Slice slice) {
+            var codec = slice.codec(PARENT);
+            var bridge = DefaultSliceBridge.defaultSliceBridge(Artifact.artifact(artifact).unwrap(), slice, codec);
+
+            slice.methods().forEach(method -> methods.put(method.name().name(), new Hosted(method, bridge, codec)));
+
+            return codec;
         }
 
         SliceMethod<?, ?> method(String name) {
-            return methods.get(name);
+            return methods.get(name).method();
         }
 
         List<Option<SecurityContext>> onTheWire() {
@@ -303,20 +386,29 @@ class GeneratedCallerPropagationTest {
             return payloads;
         }
 
-        @Override
-        public <R, T> Result<MethodHandle<R, T>> methodHandle(String sliceArtifact,
-                                                             String methodName,
-                                                             TypeToken<T> requestType,
-                                                             TypeToken<R> responseType) {
-            return Result.success(new MethodHandle<>() {
+        /// The invoker of a slice whose requests are encoded with `senderCodec`.
+        SliceInvokerFacade sentBy(Supplier<SliceCodec> senderCodec) {
+            return new SliceInvokerFacade() {
+                @Override
+                public <R, T> Result<MethodHandle<R, T>> methodHandle(String sliceArtifact,
+                                                                     String methodName,
+                                                                     TypeToken<T> requestType,
+                                                                     TypeToken<R> responseType) {
+                    return Result.success(handle(senderCodec, sliceArtifact, methodName));
+                }
+            };
+        }
+
+        private <R, T> MethodHandle<R, T> handle(Supplier<SliceCodec> senderCodec, String sliceArtifact, String methodName) {
+            return new MethodHandle<>() {
                 @Override
                 public Promise<R> invoke(T request) {
-                    return deliver(methodName, request);
+                    return deliver(senderCodec.get(), methodName, request);
                 }
 
                 @Override
                 public Promise<Unit> fireAndForget(T request) {
-                    return deliver(methodName, request).mapToUnit();
+                    return deliver(senderCodec.get(), methodName, request).mapToUnit();
                 }
 
                 @Override
@@ -328,25 +420,33 @@ class GeneratedCallerPropagationTest {
                 public MethodName methodName() {
                     return MethodName.methodName(methodName).unwrap();
                 }
-            });
+            };
         }
 
-        @SuppressWarnings("unchecked")
-        private <R> Promise<R> deliver(String methodName, Object request) {
+        private <R> Promise<R> deliver(SliceCodec senderCodec, String methodName, Object request) {
+            var target = methods.get(methodName);
+
+            return Promise.lift(Causes::fromThrowable, () -> send(senderCodec, target, request))
+                          .flatMap(sent -> target.bridge().invokeAsCaller(methodName, sent.payload(), sent.caller()))
+                          .flatMap(response -> Promise.lift(Causes::fromThrowable, () -> senderCodec.<R>decode(response)));
+        }
+
+        private record Sent(byte[] payload, Option<CallerIdentity> caller) {}
+
+        private Sent send(SliceCodec senderCodec, Hosted target, Object request) {
             var caller = request instanceof CallerRequest callerRequest
                          ? SecurityContext.fromCallerIdentity(callerRequest.caller())
                          : Option.<SecurityContext>none();
             var payload = request instanceof CallerRequest callerRequest
                           ? callerRequest.request()
                           : request;
-            var target = (SliceMethod<R, Object>) methods.get(methodName);
+            var payloadBytes = senderCodec.encode(payload);
+            Option<SecurityContext> received = PARENT.decode(PARENT.encode(caller));
 
-            onTheWire.add(caller);
-            payloads.add(payload);
+            onTheWire.add(received);
+            payloads.add(target.codec().decode(payloadBytes));
 
-            return CallerRequest.class.equals(target.parameterType().rawType())
-                   ? target.apply(CallerRequest.callerRequest(payload, caller.map(CallerIdentity.class::cast)))
-                   : target.apply(payload);
+            return new Sent(payloadBytes, received.map(CallerIdentity.class::cast));
         }
     }
 }

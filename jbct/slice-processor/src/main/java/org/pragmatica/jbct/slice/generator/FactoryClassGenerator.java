@@ -210,6 +210,7 @@ public class FactoryClassGenerator {
         bodyOut.println();
         // Request records for multi-param methods (public inner records of factory class)
         generateRequestRecords(bodyOut, model, importTracker);
+        generateProxyRequestRecords(bodyOut, proxyMethodsCache, importTracker);
         // create() method
         generateCreateMethod(bodyOut, model, allDeps, proxyMethodsCache, importTracker, publisherBindings);
         bodyOut.println();
@@ -274,6 +275,28 @@ public class FactoryClassGenerator {
                                .collect(Collectors.joining(", "));
 
         out.println("    public record " + wireRequestRecordName(method) + "(" + components + ") {}");
+    }
+
+    /// The records a dependency proxy encodes a multi-parameter payload as. They are factory-level, not local to the
+    /// proxy, because the slice's codec must name them: each is registered under the tag of the record the callee's
+    /// factory decodes that payload as ([ProxyMethodInfo#receiverRecordName]), with the same components in the same
+    /// order, so the bytes the caller writes are the bytes the callee reads (#2157 A6-1).
+    private void generateProxyRequestRecords(PrintWriter out,
+                                             Map<String, List<ProxyMethodInfo>> proxyMethodsCache,
+                                             ImportTracker importTracker) {
+        for (var methods : proxyMethodsCache.values()) {
+            for (var method : methods) {
+                if (method.hasPayloadRecord()) {
+                    var reqComponents = method.wireParams()
+                                              .stream()
+                                              .map(p -> importTracker.use(p.type()) + " " + p.name())
+                                              .collect(Collectors.joining(", "));
+
+                    out.println("    record " + method.requestRecordName() + "(" + reqComponents + ") {}");
+                    out.println();
+                }
+            }
+        }
     }
 
     private void generateRequestRecord(PrintWriter out, MethodModel method, ImportTracker importTracker) {
@@ -1079,14 +1102,25 @@ public class FactoryClassGenerator {
             return importTracker.use(handle.method.params.getFirst().type());
         }
 
-        return handle.dep.parameterName() + "_" + capitalize(handle.method.name) + "Request";
+        return handle.method.requestRecordName();
     }
 
     private record ProxyParamInfo(String name, String type) {}
 
-    private record ProxyMethodInfo(String name, String responseType, List<ProxyParamInfo> params) {
+    /// `requestRecordName` names the factory-level record a multi-parameter payload is encoded as; `receiverRecordName`
+    /// is the fully-qualified name of the record the callee's factory decodes it as, whose tag that record's codec
+    /// writes.
+    private record ProxyMethodInfo(String name,
+                                   String responseType,
+                                   List<ProxyParamInfo> params,
+                                   String requestRecordName,
+                                   String receiverRecordName) {
         /// #2157: the callee takes a `SecurityContext`, so the call carries its caller's identity beside the payload.
         boolean takesCaller() {
+            return takesCaller(params);
+        }
+
+        static boolean takesCaller(List<ProxyParamInfo> params) {
             return params.stream()
                          .anyMatch(p -> p.type()
                                          .equals(MethodModel.SECURITY_CONTEXT_TYPE));
@@ -1099,6 +1133,11 @@ public class FactoryClassGenerator {
                            .filter(p -> !isSecurityType(p.type()))
                            .toList()
                    : params;
+        }
+
+        /// The payload is a record: two or more parameters remain on the wire.
+        boolean hasPayloadRecord() {
+            return wireParams().size() > 1;
         }
 
         private static boolean isSecurityType(String type) {
@@ -1187,7 +1226,8 @@ public class FactoryClassGenerator {
                     continue;
                 }
 
-                extractPromiseTypeArg(resolved.getReturnType()).map(responseType -> toProxyMethodInfo(method,
+                extractPromiseTypeArg(resolved.getReturnType()).map(responseType -> toProxyMethodInfo(dep,
+                                                                                                      method,
                                                                                                       resolved,
                                                                                                       responseType))
                                      .onPresent(methods::add)
@@ -1244,7 +1284,10 @@ public class FactoryClassGenerator {
         return types.isSameType(types.erasure(type), objectType);
     }
 
-    private ProxyMethodInfo toProxyMethodInfo(ExecutableElement method, ExecutableType resolved, String responseType) {
+    private ProxyMethodInfo toProxyMethodInfo(DependencyModel dep,
+                                              ExecutableElement method,
+                                              ExecutableType resolved,
+                                              String responseType) {
         var names = method.getParameters();
         var resolvedTypes = resolved.getParameterTypes();
         var params = new ArrayList<ProxyParamInfo>(names.size());
@@ -1254,9 +1297,22 @@ public class FactoryClassGenerator {
                                           resolvedTypes.get(i).toString()));
         }
 
-        return new ProxyMethodInfo(method.getSimpleName().toString(),
+        var name = method.getSimpleName()
+                         .toString();
+
+        return new ProxyMethodInfo(name,
                                    responseType,
-                                   List.copyOf(params));
+                                   List.copyOf(params),
+                                   dep.parameterName() + "_" + capitalize(name) + "Request",
+                                   receiverRecordName(dep, name, ProxyMethodInfo.takesCaller(params)));
+    }
+
+    /// The record the callee's factory (`<interface>Factory`, as for every slice) decodes a multi-parameter payload as:
+    /// its wire record for a caller-taking method (#2157), its request record otherwise.
+    private String receiverRecordName(DependencyModel dep, String methodName, boolean takesCaller) {
+        return dep.interfaceQualifiedName() + "Factory." + capitalize(methodName) + (takesCaller
+                                                                                     ? "WireRequest"
+                                                                                     : "Request");
     }
 
     private void generateLocalProxyRecord(PrintWriter out,
@@ -1266,20 +1322,8 @@ public class FactoryClassGenerator {
         var recordName = dep.localRecordName();
         var interfaceName = dep.interfaceLocalName();
         var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
-        // Generate request records for multi-param proxy methods BEFORE the proxy record
-        for (var method : methods) {
-            if (method.wireParams().size() > 1) {
-                var proxyRequestRecordName = dep.parameterName() + "_" + capitalize(method.name) + "Request";
-                var reqComponents = method.wireParams()
-                                          .stream()
-                                          .map(p -> importTracker.use(p.type()) + " " + p.name())
-                                          .collect(Collectors.joining(", "));
-
-                out.println("        record " + proxyRequestRecordName + "(" + reqComponents + ") {}");
-                out.println();
-            }
-        }
-        // Generate record with MethodHandle components
+        // Generate record with MethodHandle components (multi-param payload records are factory-level, see
+        // generateProxyRequestRecords)
         var components = new ArrayList<String>();
 
         for (var m : methods) {
@@ -1298,9 +1342,7 @@ public class FactoryClassGenerator {
                               + "> " + m.name
                               + "Handle");
             } else {
-                var proxyRequestRecordName = dep.parameterName() + "_" + capitalize(m.name) + "Request";
-
-                components.add("MethodHandle<" + respType + ", " + proxyRequestRecordName + "> " + m.name + "Handle");
+                components.add("MethodHandle<" + respType + ", " + m.requestRecordName() + "> " + m.name + "Handle");
             }
         }
 
@@ -1310,22 +1352,19 @@ public class FactoryClassGenerator {
                    + " {");
         // Generate method implementations
         for (var method : methods) {
-            generateProxyMethod(out, method, dep, importTracker);
+            generateProxyMethod(out, method, importTracker);
         }
 
         out.println("        }");
     }
 
-    private void generateProxyMethod(PrintWriter out,
-                                     ProxyMethodInfo method,
-                                     DependencyModel dep,
-                                     ImportTracker importTracker) {
+    private void generateProxyMethod(PrintWriter out, ProxyMethodInfo method, ImportTracker importTracker) {
         var respType = importTracker.use(method.responseType);
 
         out.println();
         out.println("            @Override");
         if (method.takesCaller()) {
-            generateCallerProxyMethod(out, method, dep, importTracker, respType);
+            generateCallerProxyMethod(out, method, importTracker, respType);
         } else if (method.hasNoParams()) {
             out.println("            public Promise<" + respType + "> " + method.name + "() {");
             out.println("                return " + method.name + "Handle.invoke(Unit.unit());");
@@ -1342,14 +1381,13 @@ public class FactoryClassGenerator {
             var paramList = method.params.stream()
                                          .map(p -> importTracker.use(p.type()) + " " + p.name())
                                          .collect(Collectors.joining(", "));
-            var proxyRequestRecordName = dep.parameterName() + "_" + capitalize(method.name) + "Request";
             var argList = method.params.stream()
                                        .map(p -> callArgument(p, importTracker))
                                        .collect(Collectors.joining(", "));
 
             out.println("            public Promise<" + respType + "> " + method.name + "(" + paramList + ") {");
             out.println("                return " + method.name
-                       + "Handle.invoke(new " + proxyRequestRecordName
+                       + "Handle.invoke(new " + method.requestRecordName()
                        + "(" + argList
                        + "));");
         }
@@ -1362,7 +1400,6 @@ public class FactoryClassGenerator {
     /// argument exactly as the caller holds it (none when it is unauthenticated or absent).
     private void generateCallerProxyMethod(PrintWriter out,
                                            ProxyMethodInfo method,
-                                           DependencyModel dep,
                                            ImportTracker importTracker,
                                            String respType) {
         var paramList = method.params.stream()
@@ -1380,12 +1417,12 @@ public class FactoryClassGenerator {
         out.println("            public Promise<" + respType + "> " + method.name + "(" + paramList + ") {");
         out.println("                return " + method.name
                    + "Handle.invoke(" + importTracker.use(CALLER_REQUEST_TYPE)
-                   + ".callerRequest(" + callerPayload(method, dep, importTracker)
+                   + ".callerRequest(" + callerPayload(method, importTracker)
                    + ", " + identity
                    + "));");
     }
 
-    private String callerPayload(ProxyMethodInfo method, DependencyModel dep, ImportTracker importTracker) {
+    private String callerPayload(ProxyMethodInfo method, ImportTracker importTracker) {
         var wire = method.wireParams();
 
         if (wire.isEmpty()) {
@@ -1398,7 +1435,7 @@ public class FactoryClassGenerator {
 
         var argList = wire.stream().map(p -> callArgument(p, importTracker)).collect(Collectors.joining(", "));
 
-        return "new " + dep.parameterName() + "_" + capitalize(method.name) + "Request(" + argList + ")";
+        return "new " + method.requestRecordName() + "(" + argList + ")";
     }
 
     /// The argument expression of an inter-slice call. A `RequestHeaders` argument that the caller passes as null is
@@ -2516,22 +2553,38 @@ public class FactoryClassGenerator {
         return sb.toString();
     }
 
-    /// Holds info needed to generate a TypeCodec entry for a single serializable type.
+    /// Holds info needed to generate a TypeCodec entry for a single serializable type. `tagName` is the name its wire
+    /// tag derives from: the type's own name, except for a dependency proxy's payload record, which takes the tag of the
+    /// record the callee decodes it as.
     private record CodecTypeEntry(String qualifiedName,
                                   String simpleName,
                                   CodecTypeKind kind,
                                   List<ComponentInfo> components,
-                                  boolean hasUnknownSentinel) {
+                                  boolean hasUnknownSentinel,
+                                  String tagName) {
         static CodecTypeEntry record(String qualifiedName, String simpleName, List<ComponentInfo> components) {
-            return new CodecTypeEntry(qualifiedName, simpleName, CodecTypeKind.RECORD, components, false);
+            return new CodecTypeEntry(qualifiedName, simpleName, CodecTypeKind.RECORD, components, false, qualifiedName);
+        }
+
+        /// A record encoded under another record's tag (#2157 A6-1): the bytes it writes are read as that record.
+        static CodecTypeEntry recordTaggedAs(String qualifiedName,
+                                             String simpleName,
+                                             List<ComponentInfo> components,
+                                             String tagName) {
+            return new CodecTypeEntry(qualifiedName, simpleName, CodecTypeKind.RECORD, components, false, tagName);
         }
 
         static CodecTypeEntry enumType(String qualifiedName, String simpleName, boolean hasUnknownSentinel) {
-            return new CodecTypeEntry(qualifiedName, simpleName, CodecTypeKind.ENUM, List.of(), hasUnknownSentinel);
+            return new CodecTypeEntry(qualifiedName,
+                                      simpleName,
+                                      CodecTypeKind.ENUM,
+                                      List.of(),
+                                      hasUnknownSentinel,
+                                      qualifiedName);
         }
 
         static CodecTypeEntry opaque(String qualifiedName, String simpleName) {
-            return new CodecTypeEntry(qualifiedName, simpleName, CodecTypeKind.OPAQUE, List.of(), false);
+            return new CodecTypeEntry(qualifiedName, simpleName, CodecTypeKind.OPAQUE, List.of(), false, qualifiedName);
         }
     }
 
@@ -2595,7 +2648,7 @@ public class FactoryClassGenerator {
         var byTag = new LinkedHashMap<Integer, String>();
 
         for (var entry : codecEntries) {
-            var name = entry.qualifiedName();
+            var name = entry.tagName();
             var existing = byTag.putIfAbsent(CodecTagSpace.hashedTag(name), name);
 
             if (existing != null && !existing.equals(name)) {
@@ -2663,11 +2716,11 @@ public class FactoryClassGenerator {
         // Fully-qualify the type reference (see generateTypeCodecEntry): a simple name here would be
         // shadowed by the host slice's inherited nested Request/Response member types (JLS 6.5.5.2).
         var name = entry.qualifiedName();
-        var fqn = entry.qualifiedName();
+        var tagName = entry.tagName();
         var components = entry.components();
 
         out.println("                    new SliceCodec.TypeCodec<" + name + ">(" + name + ".class,");
-        out.println("                        SliceCodec.deterministicTag(\"" + escapeJavaString(fqn) + "\"),");
+        out.println("                        SliceCodec.deterministicTag(\"" + escapeJavaString(tagName) + "\"),");
         // Writer lambda
         out.print("                        (codec, buf, val) -> {");
         if (components.size() == 1) {
@@ -2720,7 +2773,7 @@ public class FactoryClassGenerator {
 
         collectPublisherMessageCodecEntries(model, importTracker, seen, entries);
         collectStreamEventCodecEntries(model, importTracker, seen, entries);
-        collectDependencyProxyCodecEntries(proxyMethodsCache, importTracker, seen, entries);
+        collectDependencyProxyCodecEntries(model, proxyMethodsCache, importTracker, seen, entries);
         // Last: a type already reachable from a method signature keeps the entry that walk produced.
         collectResourceTypeArgumentCodecEntries(model, importTracker, seen, entries, requiredTypes);
 
@@ -2891,7 +2944,8 @@ public class FactoryClassGenerator {
         }
     }
 
-    private void collectDependencyProxyCodecEntries(Map<String, List<ProxyMethodInfo>> proxyMethodsCache,
+    private void collectDependencyProxyCodecEntries(SliceModel model,
+                                                    Map<String, List<ProxyMethodInfo>> proxyMethodsCache,
                                                     ImportTracker importTracker,
                                                     Set<String> seen,
                                                     List<CodecTypeEntry> entries) {
@@ -2901,8 +2955,32 @@ public class FactoryClassGenerator {
                 for (var param : method.params()) {
                     addCodecEntryByName(param.type(), importTracker, seen, entries);
                 }
+
+                addProxyPayloadRecordCodecEntry(model, method, importTracker, seen, entries);
             }
         }
+    }
+
+    /// #2157 A6-1: a multi-parameter payload leaves this slice as its factory-level proxy record, so this slice's codec
+    /// must encode it, under the callee's tag for the record it decodes the payload as. Without the entry the call fails
+    /// with `No codec registered` before it is sent.
+    private void addProxyPayloadRecordCodecEntry(SliceModel model,
+                                                 ProxyMethodInfo method,
+                                                 ImportTracker importTracker,
+                                                 Set<String> seen,
+                                                 List<CodecTypeEntry> entries) {
+        var fqn = model.packageName() + "." + model.simpleName() + "Factory." + method.requestRecordName();
+
+        if (!method.hasPayloadRecord() || !seen.add(fqn)) {
+            return;
+        }
+
+        var components = method.wireParams()
+                               .stream()
+                               .map(p -> new ComponentInfo(p.name(), importTracker.use(p.type())))
+                               .toList();
+
+        entries.add(CodecTypeEntry.recordTaggedAs(fqn, method.requestRecordName(), components, method.receiverRecordName()));
     }
 
     /// Add a codec entry from a TypeMirror — can inspect the actual TypeElement for record/enum info.
