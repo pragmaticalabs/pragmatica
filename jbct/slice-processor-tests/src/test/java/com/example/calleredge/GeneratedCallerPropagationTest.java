@@ -204,6 +204,9 @@ class GeneratedCallerPropagationTest {
     void generatedSources_payloadRecordsExcludeTheSecurityParameters() throws Exception {
         assertThat(generated("callermid", "MidSliceFactory.java"))
             .contains("record leaf_WithHeadersRequest(RequestHeaders headers, Note note) {}")
+            .as("a one-parameter payload needs no proxy record")
+            .doesNotContain("record leaf_WhoAmIRequest")
+            .doesNotContain("record leaf_BothRequest")
             .contains("withHeadersHandle.invoke(CallerRequest.callerRequest(new leaf_WithHeadersRequest(");
         assertThat(generated("callerleaf", "LeafSliceFactory.java"))
             .contains("public record WithHeadersWireRequest(RequestHeaders headers, Note note) {}")
