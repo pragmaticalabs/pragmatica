@@ -4,6 +4,10 @@
   in the E11 r6 run). A refutation proves the node is alive, not that it can write to the quorum.
 - A core now reports its own quorum loss (`QuorumLossDetector`: armed and below threshold or consensus-PASSIVE) on its
   SWIM self-ALIVE as the gossiped `quorum=lost` label, bumping its incarnation on every change so receivers order it.
+  The signal means "a VOTING member that cannot write to the quorum": a node passive BY ROLE (a #1790 demotion, or an
+  observer applying decisions) reports the distinct `quorum=observer`, which peers never read as loss, so a demoted
+  observer stays forwardable on reachability alone. A plain PASSIVE keeps the last role; an ACTIVE edge makes the node a
+  voter again, so a re-promoted node that later cannot write reports `quorum=lost` as before.
   Survivors hold such a node in DEPARTING on a refuted drain and keep it out of the forward filter
   (`MembershipFsm.forwardableMembers`, used by the AccessibilityFilter and the worker endpoint directory). A DEAD
   identity is not reopened by a newer incarnation while the node still reports quorum loss.

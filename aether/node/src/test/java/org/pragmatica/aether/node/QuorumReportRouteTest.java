@@ -49,7 +49,6 @@ class QuorumReportRouteTest {
         AetherNode.routeQuorumDisappearedToDrain(ClusterStateNotification.demotion(), detectorRef);
 
         assertThat(reports).as("a #1790 demotion is passive by role, never quorum loss").containsExactly(HELD, OBSERVER);
-        assertThat(reports.getLast().excludes()).isFalse();
     }
 
     @Test
@@ -57,7 +56,6 @@ class QuorumReportRouteTest {
         AetherNode.routeQuorumDisappearedToDrain(ClusterStateNotification.passive(), detectorRef);
 
         assertThat(reports).as("control: a voter's plain PASSIVE is quorum loss").containsExactly(HELD, LOST);
-        assertThat(reports.getLast().excludes()).isTrue();
     }
 
     @Test

@@ -41,9 +41,4 @@ public enum QuorumReport {
     public Option<String> wireValue() {
         return wireValue;
     }
-
-    /// Whether this report excludes the reporting node from its peers' forward set: only a voter's quorum loss does.
-    public boolean excludes() {
-        return this == LOST;
-    }
 }
