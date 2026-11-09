@@ -82,6 +82,15 @@ public sealed interface ResourceProvisioningError extends Cause {
         }
     }
 
+    /// The node's provider has closed its shared pools (node shutdown, #2973): a shared resource is no longer handed out.
+    enum ProviderClosed implements ResourceProvisioningError {
+        INSTANCE;
+        @Override
+        public String message() {
+            return "The node's resource provider is closed - shared resources are no longer provisioned";
+        }
+    }
+
     enum ConfigServiceNotAvailable implements ResourceProvisioningError {
         INSTANCE;
         @Override

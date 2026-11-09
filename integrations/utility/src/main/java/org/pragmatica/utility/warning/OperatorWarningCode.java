@@ -1042,6 +1042,18 @@ public enum OperatorWarningCode {
     /// log from their source of truth. Closed in-drain by [#DHT_DEPARTURE_SOLE_COPY_DELIVERED]; after a halt it stays open (no
     /// operator closer in this release).
     DHT_DEPARTURE_SOLE_COPY_AT_RISK("dht-departure-sole-copy-at-risk", "dht", WarningLevel.CRITICAL),
+    /// A node's datasource pools ask more of a PostgreSQL server than it allows (#2973): the sum of this node's pool warm-ups
+    /// ("at warm-up") or of their maximums ("under load") exceeds the server's non-superuser connection limit. Raised after
+    /// a pool opens, from the node's demand guard; it never refuses the pool. Subject is the server, `<addr>:<port>`, so the
+    /// aggregator throttles per server. No clear event: the guard reacts to a pool open, it does not track recovery.
+    /// Recovery action: size `max_connections` per node per datasource for the node's peak concurrent work, keep pools
+    /// shared (`pool_scope = "node"`), or raise the server limit.
+    DATASOURCE_DEMAND_EXCEEDS_SERVER_LIMIT("datasource-demand-exceeds-server-limit", "datasource", WarningLevel.WARNING),
+    /// A PostgreSQL server refused the demand guard's probe with SQLSTATE 53300 (too many clients) right after a pool opened
+    /// (#2973): the server is full now. CRITICAL and a separate code, so the per-code throttle never hides it behind an
+    /// earlier demand warning for the same server. Subject is the server, `<addr>:<port>`; the message names the last limit
+    /// the server answered, or says it is unknown. Recovery action: as for [#DATASOURCE_DEMAND_EXCEEDS_SERVER_LIMIT].
+    DATASOURCE_SERVER_REFUSED_CONNECTION("datasource-server-refused-connection", "datasource", WarningLevel.CRITICAL),
     /// The recovery of [#DHT_DEPARTURE_SOLE_COPY_AT_RISK], same subject (#2034): every sole-copy key was acknowledged by a target in its
     /// post-departure responsible set before the node halted. INFO, published by the draining node itself, only after its published
     /// at-risk event (#752 mechanism).

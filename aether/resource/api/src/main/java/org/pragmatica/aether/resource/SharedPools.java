@@ -1,0 +1,305 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
+package org.pragmatica.aether.resource;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import org.pragmatica.aether.resource.SpiResourceProvider.Provisioned;
+import org.pragmatica.lang.Functions.Fn0;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+
+import static org.pragmatica.lang.Option.option;
+
+/// The node's shared pools (#2973): one entry per share key, holding the pool and its holders in ONE value.
+///
+/// **Every transition is one `ConcurrentHashMap.compute` on the key**, so per key they are totally ordered, and no
+/// second structure sits beside the map (the #900 SF-2 shape). Inside `compute` the code only allocates unresolved
+/// promises and copies an immutable holder map: it runs no factory code, neither `provision` nor `view`, so a factory or
+/// a view that re-enters the provider cannot hit `Recursive update`.
+///
+/// - **acquire** adds the slice as a holder (a keyed set: the same slice acquiring twice counts once and receives the
+///   same view). The thread that inserts the entry provisions the pool after `compute` returns; the thread that adds a
+///   holder resolves that holder's view slot.
+/// - **release** removes one holder. The mapping function captures the entry it removes when no holder remains, and only
+///   a captured entry is closed: a `null` from `compute` also means "the key was absent", so it is never read as "I am
+///   the closer". Each pool is therefore closed exactly once, by the release that removed its last holder.
+/// - **closeAll** (node stop) sets `closed` first, so every later acquire refuses inside `compute`, then drains the map
+///   with the same capture.
+///
+/// Guarantee and limit: a slice that holds a pool never has it closed by another slice's release. When an acquire races
+/// the last holder's release and the release runs first, the old pool closes and the acquire opens a new one; the two
+/// overlap briefly on the server.
+final class SharedPools {
+    private static final System.Logger LOG = System.getLogger(SharedPools.class.getName());
+
+    /// The pool (resolved by the provisioning holder) and each holder's view slot. `holders` is immutable and replaced
+    /// on every transition. `Provisioned` holds the underlying pool, never a view, so the close reaches the pool.
+    record SharedEntry(Promise<Provisioned<?>> pool, Map<String, Promise<?>> holders, String label) {
+        SharedEntry with(String scope, Promise<?> slot) {
+            var next = new HashMap<>(holders);
+
+            next.put(scope, slot);
+
+            return new SharedEntry(pool, Map.copyOf(next), label);
+        }
+
+        /// The entry without `scope`, or `null` when no holder would remain (`compute` removes the key then).
+        SharedEntry without(String scope) {
+            var next = new HashMap<>(holders);
+
+            next.remove(scope);
+
+            return next.isEmpty()
+                   ? null
+                   : new SharedEntry(pool, Map.copyOf(next), label);
+        }
+    }
+
+    /// What one `acquire` transition decided, written only by its own mapping function.
+    private static final class Admission {
+        private boolean refused;
+        private boolean created;
+        private boolean newHolder;
+        private SharedEntry entry;
+        private Promise<?> slot;
+    }
+
+    /// What one release transition captured, written only by its own mapping function.
+    private static final class Departure {
+        private SharedEntry removed;
+        private int remaining;
+        private boolean wasHolder;
+    }
+
+    private final Map<Object, SharedEntry> entries = new ConcurrentHashMap<>();
+    private final AtomicBoolean closed = new AtomicBoolean();
+    private final Fn1<Promise<Unit>, Provisioned<?>> closer;
+
+    private SharedPools(Fn1<Promise<Unit>, Provisioned<?>> closer) {
+        this.closer = closer;
+    }
+
+    /// `closer` is the provider's one close funnel, shared with the per-slice path.
+    static SharedPools sharedPools(Fn1<Promise<Unit>, Provisioned<?>> closer) {
+        return new SharedPools(closer);
+    }
+
+    /// Adds `scope` as a holder of the pool under `key` and yields that holder's view. `provision` runs only when this
+    /// call inserted the entry, after `compute` returned.
+    @SuppressWarnings("unchecked")
+    <T> Promise<T> acquire(Object key,
+                           String scope,
+                           NodeShareable<T, ?> shareable,
+                           Fn0<Promise<Provisioned<?>>> provision,
+                           String label) {
+        var admission = new Admission();
+
+        entries.compute(key, (_, current) -> admit(current, scope, label, admission));
+
+        if (admission.refused) {
+            return ResourceProvisioningError.ProviderClosed.INSTANCE.promise();
+        }
+
+        var pool = admission.entry.pool();
+        var slot = (Promise<T>) admission.slot;
+        // The eviction is a DEPENDENT transform registered ahead of this holder's slot, so a caller observing the
+        // failure finds the entry already gone and a retry provisions afresh (the SF-1 rule, as on the per-slice path).
+        // Attached after `compute` returned: an already-failed pool applies it synchronously, and a `compute` inside a
+        // `compute` throws `Recursive update`.
+        var evicting = pool.withFailure(_ -> evictFailed(key, pool));
+        var attached = admission.newHolder
+                       ? evicting.withResult(result -> fillSlot(slot, result, shareable, key, scope))
+                       : evicting;
+
+        logAdmission(admission, label, scope);
+
+        if (admission.created) {
+            provision.apply()
+                     .onSuccess(_ -> LOG.log(System.Logger.Level.INFO, "opened shared pool {0} for {1}", label, scope))
+                     .onResult(pool::resolve);
+        }
+
+        return attached.flatMap(_ -> slot);
+    }
+
+    private SharedEntry admit(SharedEntry current, String scope, String label, Admission admission) {
+        if (closed.get()) {
+            admission.refused = true;
+
+            return current;
+        }
+
+        if (current == null) {
+            var slot = Promise.promise();
+
+            admission.created = true;
+            admission.newHolder = true;
+            admission.slot = slot;
+            admission.entry = new SharedEntry(Promise.promise(), Map.of(scope, slot), label);
+
+            return admission.entry;
+        }
+
+        if (current.holders()
+                   .containsKey(scope)) {
+            admission.slot = current.holders()
+                                    .get(scope);
+            admission.entry = current;
+
+            return current;
+        }
+
+        var slot = Promise.promise();
+
+        admission.newHolder = true;
+        admission.slot = slot;
+        admission.entry = current.with(scope, slot);
+
+        return admission.entry;
+    }
+
+    /// Resolves the slot of the holder this thread added: the view on success, the pool's failure otherwise. It runs as
+    /// a dependent of the pool, which is after `compute` returned, so outside the bin lock.
+    @SuppressWarnings("unchecked")
+    private <T> Promise<T> fillSlot(Promise<T> slot,
+                                    Result<Provisioned<?>> result,
+                                    NodeShareable<T, ?> shareable,
+                                    Object key,
+                                    String scope) {
+        return slot.resolve(result.map(provisioned -> shareable.view((T) provisioned.resource(),
+                                                                     () -> release(key, scope))));
+    }
+
+    /// A failed pool was never opened, so it has nothing to close. Its holders all receive the failure, and the next
+    /// acquire opens a fresh pool. Conditional on identity, so it can never evict a newer entry.
+    private Unit evictFailed(Object key, Promise<Provisioned<?>> failed) {
+        entries.compute(key, (_, current) -> current != null && current.pool() == failed
+                                             ? null
+                                             : current);
+
+        return Unit.unit();
+    }
+
+    /// Removes `scope` as a holder of `key`; closes the pool when this removed the last holder. Idempotent: a scope that
+    /// is not a holder, or a key that is absent, changes nothing and closes nothing.
+    Promise<Unit> release(Object key, String scope) {
+        var departure = new Departure();
+
+        entries.compute(key, (_, current) -> depart(current, scope, departure));
+
+        return closeIfCaptured(departure, scope);
+    }
+
+    private static SharedEntry depart(SharedEntry current, String scope, Departure departure) {
+        if (current == null || !current.holders()
+                                       .containsKey(scope)) {
+            return current;
+        }
+
+        var next = current.without(scope);
+
+        departure.wasHolder = true;
+        departure.remaining = current.holders()
+                                     .size() - 1;
+
+        if (next == null) {
+            departure.removed = current;
+        }
+
+        return next;
+    }
+
+    private Promise<Unit> closeIfCaptured(Departure departure, String scope) {
+        return option(departure.removed).map(this::close)
+                                        .or(() -> logDeparture(departure, scope));
+    }
+
+    private Promise<Unit> logDeparture(Departure departure, String scope) {
+        if (departure.wasHolder) {
+            LOG.log(System.Logger.Level.INFO, "{0} left shared pool (holders={1})", scope, departure.remaining);
+        }
+
+        return Promise.unitPromise();
+    }
+
+    /// The shared-pool caller of the provider's one close funnel.
+    private Promise<Unit> close(SharedEntry entry) {
+        return entry.pool()
+                    .flatMap(closer)
+                    .onSuccess(_ -> LOG.log(System.Logger.Level.INFO, "closed shared pool {0}", entry.label()));
+    }
+
+    /// Releases `scope` from every pool it holds.
+    List<Promise<Unit>> releaseScope(String scope) {
+        var releases = new ArrayList<Promise<Unit>>();
+
+        for (var entry : List.copyOf(entries.entrySet())) {
+            if (entry.getValue()
+                     .holders()
+                     .containsKey(scope)) {
+                releases.add(release(entry.getKey(), scope));
+            }
+        }
+
+        return releases;
+    }
+
+    /// Node stop: refuse every later acquire, then drain. Only `compute`s already in flight can still insert once the
+    /// flag is visible, and the loop catches them. Each pool closes exactly once: the drain uses the same capture as a
+    /// release, never a plain `remove(key)`.
+    List<Promise<Unit>> closeAll() {
+        closed.set(true);
+
+        var closes = new ArrayList<Promise<Unit>>();
+
+        while (!entries.isEmpty()) {
+            for (var key : List.copyOf(entries.keySet())) {
+                var departure = new Departure();
+
+                entries.compute(key, (_, current) -> drain(current, departure));
+                option(departure.removed).onPresent(removed -> closes.add(close(removed)));
+            }
+        }
+
+        return closes;
+    }
+
+    private static SharedEntry drain(SharedEntry current, Departure departure) {
+        departure.removed = current;
+
+        return null;
+    }
+
+    /// The holders of `key`, for tests and logs; empty when the key is absent.
+    Option<Integer> holderCount(Object key) {
+        return option(entries.get(key)).map(entry -> entry.holders()
+                                                          .size());
+    }
+
+    int size() {
+        return entries.size();
+    }
+
+    private static Unit logAdmission(Admission admission, String label, String scope) {
+        if (admission.newHolder && !admission.created) {
+            LOG.log(System.Logger.Level.INFO,
+                    "{0} joined shared pool {1} (holders={2})",
+                    scope,
+                    label,
+                    admission.entry.holders()
+                                   .size());
+        }
+
+        return Unit.unit();
+    }
+}

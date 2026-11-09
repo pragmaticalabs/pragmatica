@@ -7,6 +7,11 @@ import java.time.Duration;
 import java.util.List;
 
 import org.pragmatica.aether.resource.ResourceFactory;
+import org.pragmatica.aether.resource.db.PgSqlConnectorView;
+import org.pragmatica.lang.Functions.Fn0;
+import org.pragmatica.aether.resource.db.SharedPoolSupport;
+import org.pragmatica.aether.resource.db.DbShareKey;
+import org.pragmatica.aether.resource.NodeShareable;
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
 import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
@@ -18,7 +23,9 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.postgres.net.netty.NettyConnectibleBuilder;
 
 
-public final class PgSqlConnectorFactory implements ResourceFactory<PgSqlConnector, DatabaseConnectorConfig> {
+/// A [NodeShareable] factory (#2973): slices on one node whose datasource resolves to the same connection settings share
+/// one pool, and each receives its own view of it.
+public final class PgSqlConnectorFactory implements ResourceFactory<PgSqlConnector, DatabaseConnectorConfig>, NodeShareable<PgSqlConnector, DatabaseConnectorConfig> {
     @Override
     public Class<PgSqlConnector> resourceType() {
         return PgSqlConnector.class;
@@ -38,6 +45,28 @@ public final class PgSqlConnectorFactory implements ResourceFactory<PgSqlConnect
     @Override
     public Promise<PgSqlConnector> provision(DatabaseConnectorConfig config) {
         return Promise.lift(DatabaseConnectorError::databaseFailure, () -> assemble(config)).flatMap(assembled -> assembled.warmed(config.poolConfig()));
+    }
+
+    /// #2973: the effective endpoint, credentials, pool settings, properties and application name of the ASYNC transport (the application name the connector sends, derived or explicit).
+    @Override
+    public Option<Object> shareKey(DatabaseConnectorConfig config) {
+        return DbShareKey.dbShareKey(getClass(), PgSqlConnector.class, config, DatabaseConnectorConfig.Transport.ASYNC, Option.some(PgPoolSettings.applicationName(config)));
+    }
+
+    @Override
+    public PgSqlConnector view(PgSqlConnector pool, Fn0<Promise<Unit>> release) {
+        return PgSqlConnectorView.pgSqlConnectorView(pool, release);
+    }
+
+    /// The warm-up is the transport's real one: pg-async warms `min(min_connections, max_connections)` sessions at provisioning.
+    @Override
+    public PoolDemand demand(DatabaseConnectorConfig config) {
+        return SharedPoolSupport.poolDemand(config, DatabaseConnectorConfig.Transport.ASYNC, PgPoolSettings.warmCount(config.poolConfig()));
+    }
+
+    @Override
+    public Option<Promise<ServerProbe>> probe(PgSqlConnector pool) {
+        return SharedPoolSupport.probe(pool);
     }
 
     private static PgPoolSettings.Assembled<PgSqlConnector> assemble(DatabaseConnectorConfig config) {

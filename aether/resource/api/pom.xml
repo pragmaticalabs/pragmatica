@@ -31,6 +31,10 @@
             <artifactId>config-service</artifactId>
         </dependency>
         <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>utility</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>slice-api</artifactId>
         </dependency>

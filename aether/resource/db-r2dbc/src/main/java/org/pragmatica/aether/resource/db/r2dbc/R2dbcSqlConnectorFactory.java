@@ -4,6 +4,13 @@
 package org.pragmatica.aether.resource.db.r2dbc;
 
 import org.pragmatica.aether.resource.ResourceFactory;
+import org.pragmatica.aether.resource.db.SqlConnectorView;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Functions.Fn0;
+import org.pragmatica.aether.resource.db.SharedPoolSupport;
+import org.pragmatica.aether.resource.db.DbShareKey;
+import org.pragmatica.aether.resource.NodeShareable;
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.SqlConnector;
@@ -15,7 +22,9 @@ import io.r2dbc.spi.ConnectionFactories;
 import io.r2dbc.spi.ConnectionFactoryOptions;
 
 
-public final class R2dbcSqlConnectorFactory implements ResourceFactory<SqlConnector, DatabaseConnectorConfig> {
+/// A [NodeShareable] factory (#2973): slices on one node whose datasource resolves to the same connection settings share
+/// one pool, and each receives its own view of it.
+public final class R2dbcSqlConnectorFactory implements ResourceFactory<SqlConnector, DatabaseConnectorConfig>, NodeShareable<SqlConnector, DatabaseConnectorConfig> {
     @Override
     public Class<SqlConnector> resourceType() {
         return SqlConnector.class;
@@ -39,7 +48,32 @@ public final class R2dbcSqlConnectorFactory implements ResourceFactory<SqlConnec
 
     @Override
     public Promise<SqlConnector> provision(DatabaseConnectorConfig config) {
-        return Promise.lift(DatabaseConnectorError::databaseFailure, () -> connector(config));
+        // D2.8 (#2973): the driver is found through this factory's class loader, never a slice's, because the pool may be
+        // shared by every slice on the node.
+        return Promise.lift(DatabaseConnectorError::databaseFailure,
+                            () -> SharedPoolSupport.underClassLoaderOf(getClass(), () -> connector(config)));
+    }
+
+    /// #2973: the effective endpoint, credentials, pool settings, properties and application name of the R2DBC transport (this connector sends no application name; the configured value is keyed all the same).
+    @Override
+    public Option<Object> shareKey(DatabaseConnectorConfig config) {
+        return DbShareKey.dbShareKey(getClass(), SqlConnector.class, config, DatabaseConnectorConfig.Transport.R2DBC);
+    }
+
+    @Override
+    public SqlConnector view(SqlConnector pool, Fn0<Promise<Unit>> release) {
+        return SqlConnectorView.sqlConnectorView(pool, release);
+    }
+
+    /// The warm-up is the transport's real one: the pool opens `min_connections` at provisioning.
+    @Override
+    public PoolDemand demand(DatabaseConnectorConfig config) {
+        return SharedPoolSupport.poolDemand(config, DatabaseConnectorConfig.Transport.R2DBC, config.poolConfig().minConnections());
+    }
+
+    @Override
+    public Option<Promise<ServerProbe>> probe(SqlConnector pool) {
+        return SharedPoolSupport.probe(pool);
     }
 
     /// Package-visible so the URL and credentials the pool is built with are checkable without connecting (#784): the
