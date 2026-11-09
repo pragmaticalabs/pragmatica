@@ -1,0 +1,15 @@
+prefix = "/api/pathbody"
+
+[routes]
+addComment = "POST /articles/{slug}/comments"
+updateArticle = "PUT /articles/{slug}"
+renameArticle = "PUT /renamed/{slug}"
+mergedFirst = "PUT /merged-first/{id}"
+mergedFirstPlain = "POST /merged-first"
+plainFirstPlain = "POST /plain-first"
+plainFirst = "PUT /plain-first/{id}"
+nested = "PUT /nested/{id}"
+envelope = "POST /envelope"
+
+[errors]
+default = 500
