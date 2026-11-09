@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.membership.fsm;
 
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
@@ -41,10 +42,13 @@ public final class MembershipContext {
     /// Compared by EQUALITY only (owner ruling, session 28): a different token for a known identity is
     /// a new process, and a dead identity never returns — recovery is a fresh NodeId.
     private final AtomicLong bootToken = new AtomicLong(0);
+    /// #2936: the member's own live report that it cannot write to the quorum.
+    private final BooleanSupplier quorumLossReported;
 
-    MembershipContext(Fsm<MembershipState, MembershipEvent> fsm, NodeId member) {
+    MembershipContext(Fsm<MembershipState, MembershipEvent> fsm, NodeId member, BooleanSupplier quorumLossReported) {
         this.fsm = fsm;
         this.member = member;
+        this.quorumLossReported = quorumLossReported;
         this.observed = new MembershipState.Observed(this);
         this.memberState = new MembershipState.Member(this);
         this.suspect = new MembershipState.Suspect(this);
@@ -57,6 +61,11 @@ public final class MembershipContext {
 
     public NodeId member() {
         return member;
+    }
+
+    /// Whether the member currently reports it cannot write to the quorum (#2936); read at transition time.
+    public boolean reportsQuorumLoss() {
+        return quorumLossReported.getAsBoolean();
     }
 
     /// Record a SWIM incarnation, advancing the high-water mark monotonically. Stale (lower)

@@ -11,6 +11,8 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.TimeSource;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.aether.deployment.membership.ntt.QuorumLossDetector.ConsensusRole;
+import org.pragmatica.swim.QuorumReport;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -28,6 +30,9 @@ import java.util.function.Supplier;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.deployment.membership.MembershipConfig.membershipConfig;
 import static org.pragmatica.aether.deployment.membership.ntt.QuorumLossDetector.quorumLossDetector;
+import static org.pragmatica.swim.QuorumReport.HELD;
+import static org.pragmatica.swim.QuorumReport.LOST;
+import static org.pragmatica.swim.QuorumReport.OBSERVER;
 
 
 /// Unit tests for [`QuorumLossDetector`] — mechanism in isolation, no SWIM/config wiring.
@@ -1104,6 +1109,152 @@ class QuorumLossDetectorTest {
     /// AFTER a check's entry latch and BEFORE `emitIntent`, so it is the observable that distinguishes
     /// "bailed at the entry" from "ran the whole check and was stopped at the last gate". Without it
     /// the entry latches are invisible to a test, because `emitIntent`'s latch masks their absence.
+    /// #2936 — the node's own quorum REPORT (what it gossips so peers keep a quorumless voter out of their forward set
+    /// and hold its refuted drain): edge-published, undebounced, armed-gated, the OR of the count path and the
+    /// consensus presence path, replayed to a late listener — and, per the PR #2940 ruling, `OBSERVER` (never `LOST`)
+    /// while the node is passive BY ROLE.
+    @Nested
+    class SelfReport {
+        private final List<QuorumReport> reports = new CopyOnWriteArrayList<>();
+
+        @Test
+        void coldBoot_belowThreshold_reportsNothing() {
+            detector.setQuorumReportListener(reports::add);
+            members(2);
+            coreCount(5);
+
+            assertThat(detector.isBelowThreshold()).isTrue();
+            assertThat(reports).as("a never-armed node does not report quorum loss").containsExactly(HELD);
+        }
+
+        @Test
+        void armedThenBelow_reportsLostAtOnce_andRecoveryClearsIt() {
+            detector.setQuorumReportListener(reports::add);
+            members(5);
+            coreCount(5);
+            members(2);
+
+            assertThat(reports).as("reported on the edge, not after the split window").containsExactly(HELD, LOST);
+
+            members(5);
+            members(5);
+
+            assertThat(reports).as("cleared once on recovery; an unchanged state publishes nothing")
+                               .containsExactly(HELD, LOST, HELD);
+        }
+
+        @Test
+        void presenceLost_reportsLost_andPresenceBackClearsIt() {
+            detector.setQuorumReportListener(reports::add);
+            members(5);
+            coreCount(5);
+            detector.onQuorumPresence(false);
+            detector.onQuorumPresence(true);
+
+            assertThat(reports).containsExactly(HELD, LOST, HELD);
+        }
+
+        @Test
+        void bothSourcesLost_clearingOneKeepsTheReport() {
+            detector.setQuorumReportListener(reports::add);
+            members(5);
+            coreCount(5);
+            members(2);
+            detector.onQuorumPresence(false);
+            detector.onQuorumPresence(true);
+
+            assertThat(reports).as("still below threshold: the report holds").containsExactly(HELD, LOST);
+
+            members(5);
+
+            assertThat(reports).containsExactly(HELD, LOST, HELD);
+        }
+
+        @Test
+        void lateListener_receivesTheCurrentReport() {
+            members(5);
+            coreCount(5);
+            members(2);
+            detector.setQuorumReportListener(reports::add);
+
+            assertThat(reports).containsExactly(LOST);
+        }
+
+        @Test
+        void voterPassive_unchangedRole_reportsLost() {
+            detector.setQuorumReportListener(reports::add);
+            members(5);
+            coreCount(5);
+            detector.onConsensusEdge(false, ConsensusRole.UNCHANGED);
+
+            assertThat(reports).as("control: a voter's plain PASSIVE is quorum loss").containsExactly(HELD, LOST);
+        }
+
+        @Test
+        void demotion_reportsObserver_neverLost() {
+            detector.setQuorumReportListener(reports::add);
+            members(5);
+            coreCount(5);
+            detector.onConsensusEdge(false, ConsensusRole.OBSERVER);
+
+            assertThat(reports).as("a #1790 demotion is passive by role, not quorum loss")
+                               .containsExactly(HELD, OBSERVER);
+        }
+
+        @Test
+        void observer_plainPassiveOrBelowThreshold_staysObserver() {
+            detector.setQuorumReportListener(reports::add);
+            members(5);
+            coreCount(5);
+            detector.onConsensusEdge(false, ConsensusRole.OBSERVER);
+            detector.onConsensusEdge(false, ConsensusRole.UNCHANGED);
+            members(2);
+
+            assertThat(reports).as("the role decides while it holds, whatever presence or count say")
+                               .containsExactly(HELD, OBSERVER);
+        }
+
+        @Test
+        void rePromotion_neverPassesThroughLost_andALaterGenuineLossReportsLost() {
+            detector.setQuorumReportListener(reports::add);
+            members(5);
+            coreCount(5);
+            detector.onConsensusEdge(false, ConsensusRole.OBSERVER);
+            detector.onConsensusEdge(true, ConsensusRole.VOTER);
+
+            assertThat(reports).as("role and presence change under one monitor: no LOST flash on re-promotion")
+                               .containsExactly(HELD, OBSERVER, HELD);
+
+            detector.onConsensusEdge(false, ConsensusRole.UNCHANGED);
+
+            assertThat(reports).as("a re-promoted voter that cannot write is excluded as before")
+                               .containsExactly(HELD, OBSERVER, HELD, LOST);
+        }
+
+        @Test
+        void lostVoter_thenDemoted_reportsObserver() {
+            detector.setQuorumReportListener(reports::add);
+            members(5);
+            coreCount(5);
+            detector.onConsensusEdge(false, ConsensusRole.UNCHANGED);
+            detector.onConsensusEdge(false, ConsensusRole.OBSERVER);
+
+            assertThat(reports).as("a role edge publishes even when presence was already lost")
+                               .containsExactly(HELD, LOST, OBSERVER);
+        }
+
+        @Test
+        void observerResumed_reportsObserver() {
+            detector.setQuorumReportListener(reports::add);
+            members(5);
+            coreCount(5);
+            detector.onObserverResumed();
+
+            assertThat(reports).as("a configured observer applying decisions is passive by role")
+                               .containsExactly(HELD, OBSERVER);
+        }
+    }
+
     private static final class CountingCoConfirmation implements Supplier<QuorumCoConfirmation> {
         private final AtomicInteger samples = new AtomicInteger();
 
