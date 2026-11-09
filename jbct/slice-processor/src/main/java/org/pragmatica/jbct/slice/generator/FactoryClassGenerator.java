@@ -1297,8 +1297,7 @@ public class FactoryClassGenerator {
                                           resolvedTypes.get(i).toString()));
         }
 
-        var name = method.getSimpleName()
-                         .toString();
+        var name = method.getSimpleName().toString();
 
         return new ProxyMethodInfo(name,
                                    responseType,
@@ -1310,9 +1309,10 @@ public class FactoryClassGenerator {
     /// The record the callee's factory (`<interface>Factory`, as for every slice) decodes a multi-parameter payload as:
     /// its wire record for a caller-taking method (#2157), its request record otherwise.
     private String receiverRecordName(DependencyModel dep, String methodName, boolean takesCaller) {
-        return dep.interfaceQualifiedName() + "Factory." + capitalize(methodName) + (takesCaller
-                                                                                     ? "WireRequest"
-                                                                                     : "Request");
+        return dep.interfaceQualifiedName()
+             + "Factory." + capitalize(methodName) + (takesCaller
+                                                      ? "WireRequest"
+                                                      : "Request");
     }
 
     private void generateLocalProxyRecord(PrintWriter out,
@@ -2977,10 +2977,14 @@ public class FactoryClassGenerator {
 
         var components = method.wireParams()
                                .stream()
-                               .map(p -> new ComponentInfo(p.name(), importTracker.use(p.type())))
+                               .map(p -> new ComponentInfo(p.name(),
+                                                           importTracker.use(p.type())))
                                .toList();
 
-        entries.add(CodecTypeEntry.recordTaggedAs(fqn, method.requestRecordName(), components, method.receiverRecordName()));
+        entries.add(CodecTypeEntry.recordTaggedAs(fqn,
+                                                  method.requestRecordName(),
+                                                  components,
+                                                  method.receiverRecordName()));
     }
 
     /// Add a codec entry from a TypeMirror — can inspect the actual TypeElement for record/enum info.
