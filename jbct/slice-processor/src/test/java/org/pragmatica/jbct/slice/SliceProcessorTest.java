@@ -2422,6 +2422,36 @@ class SliceProcessorTest {
         assertCompilation(compilation).hadErrorContaining("test.Collider71027 and external.SearchServiceFactory.SearchRequest both derive tag 101652");
     }
 
+    /// The collision check also covers the names of enum and opaque (interface) types, by their fully-qualified
+    /// name: `test.Collider71027` as an enum or as an interface derives tag 101652 too.
+    @Test
+    void multiParamDependencyProxy_tagCollisionIsCheckedOnAnEnumsQualifiedName() {
+        var collider = JavaFileObjects.forSourceString("test.Collider71027",
+                                                       """
+            package test;
+            public enum Collider71027 { A, B }
+            """);
+        var sources = aggregatorSources("Promise<String> aggregate(Collider71027 query);");
+        sources.add(collider);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).hadErrorContaining("both derive tag 101652");
+    }
+
+    @Test
+    void multiParamDependencyProxy_tagCollisionIsCheckedOnAnInterfaceTypesQualifiedName() {
+        var collider = JavaFileObjects.forSourceString("test.Collider71027",
+                                                       """
+            package test;
+            public interface Collider71027 { String describe(); }
+            """);
+        var sources = aggregatorSources("Promise<String> aggregate(Collider71027 query);");
+        sources.add(collider);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).hadErrorContaining("both derive tag 101652");
+    }
+
     private List<JavaFileObject> aggregatorSources(String method) {
         var searchService = JavaFileObjects.forSourceString("external.SearchService",
                                                              """
