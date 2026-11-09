@@ -100,7 +100,6 @@ final class SharedPools {
 
     /// Adds `scope` as a holder of the pool under `key` and yields that holder's view. `provision` runs only when this
     /// call inserted the entry, after `compute` returned.
-    @SuppressWarnings("unchecked")
     <T> Promise<T> acquire(Object key,
                            String scope,
                            NodeShareable<T, ?> shareable,
@@ -113,7 +112,20 @@ final class SharedPools {
             return ResourceProvisioningError.ProviderClosed.INSTANCE.promise();
         }
 
-        drainIfClosedMeanwhile(key);
+        return closed.get()
+               ? refuseAfterAdmission(key, admission)
+               : admitted(key, scope, shareable, provision, label, admission);
+    }
+
+    /// The acquire path after a transition that no node stop overtook: wires the eviction and the holder's slot, and
+    /// provisions when this call created the entry.
+    @SuppressWarnings("unchecked")
+    private <T> Promise<T> admitted(Object key,
+                                    String scope,
+                                    NodeShareable<T, ?> shareable,
+                                    Fn0<Promise<Provisioned<?>>> provision,
+                                    String label,
+                                    Admission admission) {
         var pool = admission.entry.pool();
         var slot = (Promise<T>) admission.slot;
         // The eviction is a DEPENDENT transform registered ahead of this holder's slot, so a caller observing the
@@ -136,6 +148,25 @@ final class SharedPools {
         }
 
         return attached.flatMap(_ -> slot);
+    }
+
+    /// Store-then-load against `closeAll`'s flag: either the drain sees this acquirer's insert, or this acquirer sees
+    /// the flag and drains its own key through the same capture. An acquire that saw the flag AFTER its own admission
+    /// fails with `ProviderClosed`, never a view: when this call created the entry, its pool is resolved with
+    /// `ProviderClosed` instead of being provisioned, so the drain's close completes on a failed pool, and holders that
+    /// joined the entry meanwhile fail with the same cause.
+    private <T> Promise<T> refuseAfterAdmission(Object key, Admission admission) {
+        var late = new Departure();
+        var refusal = ResourceProvisioningError.ProviderClosed.INSTANCE;
+
+        if (admission.created) {
+            admission.entry.pool().resolve(refusal.<Provisioned<?>> result());
+        }
+
+        entries.compute(key, (_, current) -> drain(current, late));
+        option(late.removed).onPresent(this::close);
+
+        return refusal.promise();
     }
 
     /// The `compute` mapping function: refuses after node stop (keeping whatever is there, absent included), inserts
@@ -236,17 +267,6 @@ final class SharedPools {
                                                     .get(scope) == slot)
                      .fold(() -> current,
                            entry -> leave(entry, scope, departure));
-    }
-
-    /// Store-then-load against `closeAll`'s flag: either the drain sees this acquirer's insert, or this acquirer sees
-    /// the flag and drains its own key through the same capture.
-    private void drainIfClosedMeanwhile(Object key) {
-        if (closed.get()) {
-            var late = new Departure();
-
-            entries.compute(key, (_, current) -> drain(current, late));
-            option(late.removed).onPresent(this::close);
-        }
     }
 
     /// The `compute` mapping function of a release: an absent key or a scope that is not a holder is left as it is.
