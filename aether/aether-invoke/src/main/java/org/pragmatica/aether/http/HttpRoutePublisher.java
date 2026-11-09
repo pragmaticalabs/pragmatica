@@ -610,7 +610,8 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                            route.version(),
                            route.pathParamCount(),
                            route.spacerSlots(),
-                           route.uploadSpec());
+                           route.uploadSpec(),
+                           route.successSpec());
     }
 
     /// #1573 B1: runs the route and records its outcome ([ExecutionOutcome] has the classification).

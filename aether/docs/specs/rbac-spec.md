@@ -370,7 +370,7 @@ private void handleSecurityFailure(ResponseWriter response,
     var cause = validationResult.cause();
     var status = switch (cause) {
         case SecurityError.MissingCredentials _ -> HttpStatus.UNAUTHORIZED;
-        case SecurityError.InvalidCredentials _ -> HttpStatus.FORBIDDEN;
+        case SecurityError.InvalidCredentials _ -> HttpStatus.UNAUTHORIZED; // #2926: unauthenticated, not forbidden
         default -> HttpStatus.UNAUTHORIZED;
     };
     log.warn("Security validation failed [{}]: {} {}", requestId, status, cause.message());
@@ -756,7 +756,7 @@ When the CLI receives a 401/403 response from a secured endpoint:
 Error: Authentication required. Use --api-key or set AETHER_API_KEY environment variable.
 ```
 
-When the CLI receives a 403 with an invalid key:
+When the CLI receives a 401 with an invalid key (a 403 now means a valid key lacking the role):
 
 ```
 Error: Invalid API key. Check your --api-key value or AETHER_API_KEY environment variable.
@@ -1014,13 +1014,13 @@ All security error responses use RFC 9457 Problem Detail format (already used by
 }
 ```
 
-**403 Forbidden (invalid credentials):**
+**401 Unauthorized (invalid credentials, #2926)** -- with `WWW-Authenticate: ApiKey realm="Aether", error="invalid_token"`:
 ```json
 {
   "type": "about:blank",
-  "title": "Forbidden",
-  "status": 403,
-  "detail": "Invalid API key",
+  "title": "Unauthorized",
+  "status": 401,
+  "detail": "Invalid credentials",
   "instance": "/api/v1/blueprints",
   "requestId": "3fGhIjKlMnOp..."
 }
@@ -1031,7 +1031,8 @@ All security error responses use RFC 9457 Problem Detail format (already used by
 | SecurityError | HTTP Status | Response Header |
 |---------------|-------------|-----------------|
 | `MissingCredentials` | 401 Unauthorized | `WWW-Authenticate: ApiKey realm="Aether"` |
-| `InvalidCredentials` | 403 Forbidden | (none) |
+| `InvalidCredentials`, `TokenExpired`, `SignatureInvalid`, `IssuerMismatch`, `AudienceMismatch`, `KeyNotFound` | 401 Unauthorized | `WWW-Authenticate: ApiKey realm="Aether", error="invalid_token"` (#2926; RFC 6750 section 3.1) |
+| `AccessDenied`, `InsufficientRole` | 403 Forbidden | (none) |
 
 **REQ-130:** The 401 response includes a `WWW-Authenticate` header indicating the expected authentication scheme.
 
@@ -1053,7 +1054,7 @@ All security error responses use RFC 9457 Problem Detail format (already used by
 | T-001 | Request to public route without API key succeeds with anonymous SecurityContext |
 | T-002 | Request to ApiKeyRequired route without API key returns 401 |
 | T-003 | Request to ApiKeyRequired route with valid API key succeeds with authenticated SecurityContext |
-| T-004 | Request to ApiKeyRequired route with invalid API key returns 403 |
+| T-004 | Request to ApiKeyRequired route with invalid API key returns 401 with `error="invalid_token"` (#2926) |
 | T-005 | Health endpoint always returns 200 regardless of security config |
 | T-006 | Security disabled (no API keys) allows all requests through noOpValidator |
 | T-007 | SecurityContext propagates through to SliceRouter.handle() |

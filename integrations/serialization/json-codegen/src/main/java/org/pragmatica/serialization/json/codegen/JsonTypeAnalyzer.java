@@ -45,6 +45,12 @@ import org.pragmatica.serialization.json.NamingStrategy;
 /// leave that root to their fallback codec instead of failing the build.
 final class JsonTypeAnalyzer {
     private static final String OPTION = "org.pragmatica.lang.Option";
+    private static final String PATCH = "org.pragmatica.lang.Patch";
+
+    // A Patch has a "missing" state only as an object member; anywhere else Absent could not be told from null.
+    // The Jackson side refuses the same positions (org.pragmatica.json.PatchDeserializer, PatchSerializer).
+    private static final String PATCH_POSITION = "a Patch is supported only as a record component, over a type that is neither an Option nor a Patch";
+
     private static final String RESULT = "org.pragmatica.lang.Result";
     private static final String JSON_NAME = "org.pragmatica.serialization.json.JsonName";
     // Generated readers track seen and required fields as bits of one long: field i is `1L << i`, so bits
@@ -91,7 +97,8 @@ final class JsonTypeAnalyzer {
         var knownRecords = Set.copyOf(records.keySet());
         var knownEnums = Set.copyOf(enums.keySet());
 
-        return analyze(type).onEmpty(() -> rollback(knownRecords, knownEnums));
+        return analyze(type).flatMap(this::nested)
+                      .onEmpty(() -> rollback(knownRecords, knownEnums));
     }
 
     private void rollback(Set<String> knownRecords, Set<String> knownEnums) {
@@ -157,11 +164,12 @@ final class JsonTypeAnalyzer {
             case "java.util.UUID" -> scalar(JsonType.ScalarKind.UUID);
             case "java.time.LocalDate" -> scalar(JsonType.ScalarKind.LOCAL_DATE);
             case "java.util.Currency" -> scalar(JsonType.ScalarKind.CURRENCY);
-            case OPTION -> single(args, name).flatMap(this::analyze).map(JsonType.OptionalOf::new);
-            case "java.util.List" -> single(args, name).flatMap(this::analyze).map(element1 -> new JsonType.ListOf(element1,
-                                                                                                                   false));
-            case "java.util.Set" -> single(args, name).flatMap(this::analyze).map(element1 -> new JsonType.ListOf(element1,
-                                                                                                                  true));
+            case OPTION -> single(args, name).flatMap(this::analyze).flatMap(this::nested).map(JsonType.OptionalOf::new);
+            case PATCH -> single(args, name).flatMap(this::analyze).flatMap(this::nested).flatMap(this::patchElement).map(JsonType.PatchOf::new);
+            case "java.util.List" -> single(args, name).flatMap(this::analyze).flatMap(this::nested).map(element1 -> new JsonType.ListOf(element1,
+                                                                                                                                         false));
+            case "java.util.Set" -> single(args, name).flatMap(this::analyze).flatMap(this::nested).map(element1 -> new JsonType.ListOf(element1,
+                                                                                                                                        true));
             case "java.util.Map" -> analyzeMap(args);
             default -> analyzeUserType(element);
         };
@@ -175,7 +183,7 @@ final class JsonTypeAnalyzer {
         var keyType = args.get(0);
 
         return Option.all(analyze(keyType),
-                          analyze(args.get(1)))
+                          analyze(args.get(1)).flatMap(this::nested))
                      .flatMap((key, value) -> mapOf(key, value, keyType));
     }
 
@@ -183,6 +191,19 @@ final class JsonTypeAnalyzer {
         return isKeyType(key)
                ? Option.some(new JsonType.MapOf(key, value))
                : fail("java.util.Map", "map key must be a String, an enum or a value object over a String: " + keyType);
+    }
+
+    // A type in a position other than a record component: the root, an element, a map value, a wrapper's value.
+    private Option<JsonType> nested(JsonType type) {
+        return type instanceof JsonType.PatchOf
+               ? fail(PATCH, PATCH_POSITION)
+               : Option.some(type);
+    }
+
+    private Option<JsonType> patchElement(JsonType type) {
+        return type instanceof JsonType.OptionalOf
+               ? fail(PATCH, PATCH_POSITION)
+               : Option.some(type);
     }
 
     private boolean isKeyType(JsonType key) {

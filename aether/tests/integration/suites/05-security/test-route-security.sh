@@ -28,7 +28,7 @@ test_status_invalid_key() {
     local status
     status=$(curl -s -o /dev/null -w "%{http_code}" \
         -H "X-API-Key: invalid-key-12345" "$(_resolve_live_endpoint)/api/v1/nodes/status")
-    assert_eq "$status" "403" "Invalid API key returns 403"
+    assert_eq "$status" "401" "Invalid API key returns 401 (#2926)"
 }
 
 test_viewer_can_read() {

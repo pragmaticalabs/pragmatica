@@ -236,6 +236,73 @@ class AppHttpServerSecurityGridTest {
         assertThat(response.headers().firstValue("WWW-Authenticate")).contains("Bearer realm=\"Aether\"");
     }
 
+    /// #2926: a malformed bearer token is unauthenticated -- 401 with the RFC 6750 `invalid_token` code, never 403.
+    @Test
+    void jwtMode_malformedBearerToken_isRefusedWith401InvalidToken() throws Exception {
+        startServer(Setup.JWT_WITH_CONFIG, SecurityPolicy.roleRequired("admin"));
+
+        var response = get("/local/thing", Option.some("Bearer not-a-jwt"));
+
+        assertThat(response.statusCode()).isEqualTo(401);
+        assertThat(response.body()).doesNotContain(SERVED);
+        assertThat(response.headers().firstValue("WWW-Authenticate")).contains("Bearer realm=\"Aether\", error=\"invalid_token\"");
+    }
+
+    /// #2926: `Authorization: Bearer ` -- the HTTP stack trims the trailing space, so the node sees a scheme with no
+    /// token: a missing credential (401, no `error`), not 403. (An empty `X-API-Key` is the invalid-token case below.)
+    @Test
+    void jwtMode_bearerWithNoToken_isRefusedWith401() throws Exception {
+        startServer(Setup.JWT_WITH_CONFIG, SecurityPolicy.roleRequired("admin"));
+
+        var response = get("/local/thing", Option.some("Bearer "));
+
+        assertThat(response.statusCode()).isEqualTo(401);
+        assertThat(response.headers().firstValue("WWW-Authenticate")).contains("Bearer realm=\"Aether\"");
+    }
+
+    /// #2926: the error code follows the first configured scheme.
+    @Test
+    void jwtMode_invalidToken_challengeNamesTheFirstConfiguredSchemeAndTheErrorCode() throws Exception {
+        var jwt = JwtConfig.jwtConfig(UNREACHABLE_JWKS, Option.empty(), Option.empty(), "role", 3600, 30, List.of("Token", "Bearer"))
+                           .unwrap();
+
+        startServer(Setup.appHttp(SecurityMode.JWT, Option.some(jwt)), SecurityPolicy.roleRequired("admin"));
+
+        var response = get("/local/thing", Option.some("Token not-a-jwt"));
+
+        assertThat(response.statusCode()).isEqualTo(401);
+        assertThat(response.headers().firstValue("WWW-Authenticate")).contains("Token realm=\"Aether\", error=\"invalid_token\"");
+    }
+
+    /// #2926 (CTO ruling): the JWKS endpoint is unreachable, so a well-formed token's key cannot be resolved. That is the
+    /// SERVER failing -- 503 with no `WWW-Authenticate` -- not the credential: a 401 challenge would send a refreshing
+    /// client into a refresh loop against the outage.
+    @Test
+    void jwtMode_unreachableJwks_isRefusedWith503_andNoChallenge() throws Exception {
+        startServer(Setup.JWT_WITH_CONFIG, SecurityPolicy.roleRequired("admin"));
+
+        var encoder = java.util.Base64.getUrlEncoder().withoutPadding();
+        var token = encoder.encodeToString("{\"alg\":\"RS256\",\"kid\":\"k1\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8))
+                    + "." + encoder.encodeToString("{\"exp\":4102444800}".getBytes(java.nio.charset.StandardCharsets.UTF_8))
+                    + "." + encoder.encodeToString(new byte[] {1, 2, 3});
+        var response = get("/local/thing", Option.some("Bearer " + token));
+
+        assertThat(response.statusCode()).isEqualTo(503);
+        assertThat(response.headers().firstValue("WWW-Authenticate")).isEmpty();
+        assertThat(response.body()).doesNotContain(SERVED);
+    }
+
+    /// #2926 (guess G1): a header in a scheme this node does not accept presents no usable credential -- 401, no `error`.
+    @Test
+    void jwtMode_unacceptedScheme_isRefusedWith401AndNoErrorCode() throws Exception {
+        startServer(Setup.JWT_WITH_CONFIG, SecurityPolicy.roleRequired("admin"));
+
+        var response = get("/local/thing", Option.some("Basic dXNlcjpwYXNz"));
+
+        assertThat(response.statusCode()).isEqualTo(401);
+        assertThat(response.headers().firstValue("WWW-Authenticate")).contains("Bearer realm=\"Aether\"");
+    }
+
     /// No credential can satisfy the no-config validator either: a bearer token presented to a node
     /// that has nothing to verify it against is refused, not waved through.
     @Test

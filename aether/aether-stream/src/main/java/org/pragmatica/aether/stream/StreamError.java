@@ -48,7 +48,12 @@ public sealed interface StreamError extends Cause {
         /// Refused before the append takes an offset; clears as retention reclaims space. Recovery: raise
         /// `[streaming] segment_disk_max_bytes` or add disk, or shorten retention.
         SEGMENT_TIER_FULL("Durable segment tier nearly full on this node: new publishes are refused until retention "
-                         + "reclaims space, so the WAL disk cannot fill with records that cannot be sealed");
+                         + "reclaims space, so the WAL disk cannot fill with records that cannot be sealed"),
+        /// #263: the owner's replication send budget is spent: the payload bytes held for replicas whose sends have not
+        /// returned reached the budget ([org.pragmatica.aether.stream.replication.ReplicationBatcher]). Refused before
+        /// the append takes an offset; clears as the replication sends return.
+        REPLICATION_BEHIND("Replication send budget reached: events not yet sent to replicas hold the budget; publishes are "
+                          + "refused until replication catches up");
         private final String message;
         General(String message) {
             this.message = message;
@@ -64,7 +69,7 @@ public sealed interface StreamError extends Cause {
         /// sealer spills to WAL-backed ranges instead and never raises it.
         @Override
         public boolean transientCapacity() {
-            return this == STREAM_MEMORY_EXCEEDED || this == SEALING_BEHIND || this == SEGMENT_TIER_FULL;
+            return this == STREAM_MEMORY_EXCEEDED || this == SEALING_BEHIND || this == SEGMENT_TIER_FULL || this == REPLICATION_BEHIND;
         }
     }
 

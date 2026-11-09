@@ -7,6 +7,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+import org.pragmatica.lang.Option;
+
 
 /// Pure compile-time totality + dead-mapping check for a slice's error->HTTP configuration (#385).
 ///
@@ -46,7 +48,9 @@ public sealed interface ErrorMappingValidator {
         /// A glob pattern matches no Cause type in the slice.
         DEAD_PATTERN,
         /// An exact type reference or explicit mapping resolves to no Cause type in the slice.
-        DEAD_REFERENCE
+        DEAD_REFERENCE,
+        /// An `[errors.explicit]` simple-name key matches more than one Cause type (fails the build).
+        AMBIGUOUS_EXPLICIT
     }
 
     /// A single mapping problem with a Messager-ready message.
@@ -72,6 +76,53 @@ public sealed interface ErrorMappingValidator {
         return List.copyOf(issues);
     }
 
+    /// An `[errors.explicit]` simple-name key that matches Cause types with more than one distinct
+    /// qualified name is ambiguous: one declared status would silently apply to unrelated errors.
+    /// The caller fails the build; the author disambiguates with the fully-qualified name.
+    ///
+    /// @return one [IssueKind#AMBIGUOUS_EXPLICIT] issue per ambiguous key, sorted by key; empty when none
+    static List<Issue> ambiguousExplicitMappings(List<CauseDescriptor> causes,
+                                                 ErrorPatternConfig config,
+                                                 String routesTomlPath) {
+        return config.explicitMappings()
+                     .entrySet()
+                     .stream()
+                     .sorted(Map.Entry.comparingByKey())
+                     .map(entry -> ambiguityIssue(entry.getKey(),
+                                                  entry.getValue(),
+                                                  causes,
+                                                  routesTomlPath))
+                     .flatMap(Option::stream)
+                     .toList();
+    }
+
+    private static Option<Issue> ambiguityIssue(String key,
+                                                int status,
+                                                List<CauseDescriptor> causes,
+                                                String routesTomlPath) {
+        var matches = causes.stream()
+                            .filter(cause -> cause.simpleName()
+                                                  .equals(key))
+                            .map(CauseDescriptor::qualifiedName)
+                            .distinct()
+                            .sorted()
+                            .toList();
+
+        return matches.size() > 1
+               ? Option.some(new Issue(IssueKind.AMBIGUOUS_EXPLICIT,
+                                       ambiguousMessage(key, status, matches, routesTomlPath)))
+               : Option.none();
+    }
+
+    private static String ambiguousMessage(String key, int status, List<String> matches, String routesTomlPath) {
+        return "Ambiguous explicit error mapping '" + key
+             + "' (HTTP " + status
+             + "): it matches " + matches.size()
+             + " Cause types: " + String.join(", ", matches)
+             + ". Use the fully-qualified name as the key under [errors.explicit] in " + routesTomlPath
+             + ".";
+    }
+
     private static void collectUnmappedCauses(List<CauseDescriptor> causes,
                                               ErrorPatternConfig config,
                                               String routesTomlPath,
@@ -85,8 +136,9 @@ public sealed interface ErrorMappingValidator {
     }
 
     private static boolean isMapped(CauseDescriptor cause, ErrorPatternConfig config) {
-        return config.explicitMappings()
-                     .containsKey(cause.simpleName()) || matchesAnyPattern(cause, config);
+        return config.explicitStatus(cause.simpleName(),
+                                     cause.qualifiedName())
+                     .isPresent() || matchesAnyPattern(cause, config);
     }
 
     private static boolean matchesAnyPattern(CauseDescriptor cause, ErrorPatternConfig config) {
@@ -159,15 +211,15 @@ public sealed interface ErrorMappingValidator {
                                                    List<CauseDescriptor> causes,
                                                    String routesTomlPath,
                                                    List<Issue> issues) {
-        if (!anyCauseHasSimpleName(entry.getKey(), causes)) {
+        if (!anyCauseHasName(entry.getKey(), causes)) {
             issues.add(new Issue(IssueKind.DEAD_REFERENCE,
                                  deadExplicitMessage(entry.getKey(), entry.getValue(), routesTomlPath)));
         }
     }
 
-    private static boolean anyCauseHasSimpleName(String simpleName, List<CauseDescriptor> causes) {
+    private static boolean anyCauseHasName(String name, List<CauseDescriptor> causes) {
         for (var cause : causes) {
-            if (cause.simpleName().equals(simpleName)) {
+            if (cause.simpleName().equals(name) || cause.qualifiedName().equals(name)) {
                 return true;
             }
         }

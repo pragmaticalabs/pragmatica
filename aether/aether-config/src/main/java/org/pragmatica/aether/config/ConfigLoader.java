@@ -279,6 +279,14 @@ public final class ConfigLoader {
                                                 "streaming",
                                                 "seal_pending_cap_bytes",
                                                 defaults.sealPendingCapBytes());
+        var replicationBatchMaxEvents = parseInt(doc,
+                                                 "streaming",
+                                                 "replication_batch_max_events",
+                                                 defaults.replicationBatchMaxEvents());
+        var replicationBatchMaxDelay = parseTimeSpan(doc,
+                                                     "streaming",
+                                                     "replication_batch_max_delay",
+                                                     defaults.replicationBatchMaxDelay());
 
         builder.streaming(StreamingConfig.streamingConfig(publishTimeout,
                                                           readTimeout,
@@ -291,7 +299,8 @@ public final class ConfigLoader {
                                          .withIsrLagMax(isrLagMax)
                                          .withPromotionEscapeAfter(promotionEscapeAfter)
                                          .withSealRun(sealRunBytes, sealRunEvents, sealRunAge, sealMergeBytes)
-                                         .withMemoryBudget(maxMemoryBytes, sealPendingCapBytes));
+                                         .withMemoryBudget(maxMemoryBytes, sealPendingCapBytes)
+                                         .withReplicationBatch(replicationBatchMaxEvents, replicationBatchMaxDelay));
     }
 
     /// #2201 C-03 (spec 4.4 items 1 and 3, D-12): a written `[streaming] max_memory_bytes` or `seal_pending_cap_bytes` must be

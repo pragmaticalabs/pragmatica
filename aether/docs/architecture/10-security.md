@@ -181,6 +181,11 @@ pre-flight cannot see the node's environment, so the secret check happens at the
 `aether/http-security/src/test/java/org/pragmatica/aether/http/security/JwtHs256ValidatorTest.java`].
 In every JWT mode `nbf` and `iat` are enforced beyond `clock_skew_seconds`, and an explicit empty or blank `alg` is refused.
 
+A refused credential (malformed, empty, bad signature, expired, wrong issuer/audience, unknown key) answers `401` with
+`WWW-Authenticate: <scheme> realm="Aether", error="invalid_token"` (RFC 6750 §3.1); an absent credential answers `401`
+with the challenge and no `error`; `403` is reserved for an authenticated caller lacking a role and carries no challenge
+(#2926) [verified: `aether/node/src/test/java/org/pragmatica/aether/http/AppHttpServerSecurityGridTest.java`].
+
 An operator can explicitly set `security_mode = "none"` to disable authentication — an explicit
 setting always overrides the default. This is appropriate only for a single-node local/dev
 instance, never for a network-reachable deployment.

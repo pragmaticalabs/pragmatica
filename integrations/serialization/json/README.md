@@ -219,7 +219,7 @@ JsonMapper jackson = JsonMapper.jsonMapper().withPragmaticaTypes().withValueObje
 
 | Field | Default | Effect | Jackson mapping |
 |---|---|---|---|
-| `nullInclusion` | `INCLUDE` | `EXCLUDE` leaves out an empty `Option` component; list elements, map values and a top-level `Option` stay `null` | as-property inclusion override `NON_EMPTY` for `Option` |
+| `nullInclusion` | `INCLUDE` | `EXCLUDE` leaves out an empty `Option` component; list elements, map values and a top-level `Option` stay `null`. A `Patch` component ignores it | as-property inclusion override `NON_EMPTY` for `Option` |
 | `failOnUnknown` | `false` | refuse an undeclared member instead of skipping it | `FAIL_ON_UNKNOWN_PROPERTIES` |
 | `failOnDuplicate` | `false` | refuse a repeated key (records, maps, skipped objects) instead of keeping the last value | `STRICT_DUPLICATE_DETECTION` |
 | `maxDepth` | 1000 | nesting limit, per container | `maxNestingDepth` |
@@ -328,10 +328,27 @@ A region is read where it lies, so the `position` of a `JsonError` from a region
 | record | object with one member per component, in declaration order |
 | value object | nested: its bare component; as the whole document: the object of its component (see below) |
 | `Option<T>` | the value, or `null` for empty (left out under `nullInclusion` `EXCLUDE`); an absent member reads as empty |
+| `Patch<T>` | record components only (#2884): a missing member is `Absent` and is left out on write; `null` is `Null` and is always written; a value is `Value` (see below) |
 | `List<T>`, `Set<T>` | array |
 | `Map<K, V>` | object; `K` is a `String`, an enum, or a value object over a `String` |
 
-Types nest freely (`List<Option<Item>>`, `Map<String, List<Item>>`, recursive records).
+Types nest freely (`List<Option<Item>>`, `Map<String, List<Item>>`, recursive records), except `Patch`.
+
+**Partial updates.** `Option` cannot tell a member left out from an explicit `null`: both read as empty. A component
+declared `org.pragmatica.lang.Patch<T>` can: `{}` gives `Absent` (keep the field), `{"note":null}` gives `Null` (clear
+it), `{"note":"x"}` gives `Value("x")`; `patch.applyTo(current)` applies it to a nullable field held as an `Option`. The
+Jackson mapper reads and writes it the same way (`PatchParityTest`). Only a record component has a "missing" state, so
+a `Patch` anywhere else (a list or set element, a map value, inside an `Option` or another `Patch`, the whole document)
+is refused: `@Json` fails the build with "a Patch is supported only as a record component, over a type that is neither
+an Option nor a Patch", and a slice route takes the Jackson fallback, which refuses it with the same reason.
+
+```java
+@Json
+public record ProfileUpdate(Patch<String> nickname, Patch<Integer> age) {}
+
+ProfileUpdateJson.decode("{\"nickname\":null}");    // ProfileUpdate[nickname=Null(), age=Absent()]
+ProfileUpdateJson.encode(update);                     // {"nickname":null}: Absent is left out
+```
 
 **Value objects.** A record with exactly one component of a scalar type and a JBCT factory (`static Result<T> t(...)`
 over that component, named after the type) travels as its bare component wherever it is nested: as a record component,
@@ -351,9 +368,9 @@ SignupJson.encode(signup);                                // {"email":"a@b.c"}
 
 ## Strictness
 
-- Every non-`Option` component is required; a missing one fails with `MissingField`. A repeated key keeps its last
+- Every component but an `Option` or a `Patch` is required; a missing one fails with `MissingField`. A repeated key keeps its last
   value unless `failOnDuplicate` is set.
-- `null` is accepted only for an `Option`; anywhere else (a field, a list element, a map value) it fails with
+- `null` is accepted only for an `Option` or a `Patch`; anywhere else (a field, a list element, a map value) it fails with
   `UnexpectedNull` or `Malformed`.
 - Unknown members are skipped (their values are still validated as JSON), unless `failOnUnknown` is set.
 - Objects and arrays may nest at most 1000 deep by default (`JsonReader.MAX_DEPTH`, `maxDepth`), counted per

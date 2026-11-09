@@ -20,7 +20,9 @@ X-API-Key: your-api-key
 
 **Error responses:**
 - `401 Unauthorized` — Missing `X-API-Key` header. Response includes `WWW-Authenticate: ApiKey realm="Aether"`.
-- `403 Forbidden` — Invalid API key provided.
+- `401 Unauthorized` — Invalid API key provided (#2926). Response includes `WWW-Authenticate: ApiKey realm="Aether", error="invalid_token"`; the body never says why the key was refused.
+- `403 Forbidden` — Authenticated, but the key's role lacks permission. No challenge is sent.
+- `503 Service Unavailable` — JWT mode only: the JWKS key set could not be fetched (a server-side failure, not a bad credential). No `WWW-Authenticate` is sent; retry later.
 
 With no key configured, `security_mode = "api-key"` (the default) is fail-closed: every non-public route is refused until a credential exists, and the cluster bootstrap admin key is the only one accepted (see [SECURITY.md](../../../SECURITY.md#default-security-posture-management-api)). Only an explicit `security_mode = "none"` serves the management plane without authentication, and then it is **fully open**: no validator is consulted on any path (local, forwarded, websocket feeds, artifact push), so any caller that can reach the port can run every operation. Use `none` only on an isolated listener.
 
@@ -124,7 +126,7 @@ When an authenticated user lacks the required role for an endpoint, the server r
 }
 ```
 
-This is distinct from the authentication 403 (invalid API key). The authorization 403 indicates the key is valid but the assigned role lacks permission.
+This is distinct from the authentication failure (an invalid API key answers 401 since #2926). The authorization 403 indicates the key is valid but the assigned role lacks permission.
 
 ---
 
@@ -6480,8 +6482,8 @@ All errors return JSON with an `error` field:
 
 Common HTTP status codes:
 - `400 Bad Request` -- Invalid request format or missing required fields
-- `401 Unauthorized` -- Missing API key (when authentication is configured)
-- `403 Forbidden` -- Invalid API key
+- `401 Unauthorized` -- Missing or invalid API key (when authentication is configured); carries `WWW-Authenticate`, with `error="invalid_token"` for an invalid key
+- `403 Forbidden` -- Valid API key whose role lacks permission
 - `404 Not Found` -- Resource not found
 - `500 Internal Server Error` -- Server error
 

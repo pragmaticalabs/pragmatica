@@ -935,6 +935,42 @@ class ConfigLoaderTest {
         }
     }
 
+    /// #263: `replication_batch_max_events` / `replication_batch_max_delay` parse, default to the batcher's 100 events / 1 ms
+    /// when unset, and a batch that can never fill or a window that is not positive is refused naming the key.
+    @Test
+    void loadFromString_replicationBatchKeys_parsed_unsetDefaults_andANonPositiveValueIsRefused() {
+        var header = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            """;
+
+        ConfigLoader.loadFromString(header + """
+                                             replication_batch_max_events = 250
+                                             replication_batch_max_delay = "3ms"
+                                             """)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.streaming().replicationBatchMaxEvents()).isEqualTo(250);
+                assertThat(config.streaming().replicationBatchMaxDelay().millis()).isEqualTo(3L);
+            });
+        ConfigLoader.loadFromString(header + "reshuffle_concurrency = 2\n")
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.streaming().replicationBatchMaxEvents()).isEqualTo(100);
+                assertThat(config.streaming().replicationBatchMaxDelay().millis()).isEqualTo(1L);
+            });
+        for (var bad : List.of("replication_batch_max_events = 0", "replication_batch_max_delay = \"0ms\"")) {
+            var key = bad.substring(0, bad.indexOf(' '));
+
+            ConfigLoader.loadFromString(header + bad + "\n")
+                .onSuccess(_ -> Assertions.fail(bad + " must be refused"))
+                .onFailure(cause -> assertThat(cause.message()).as(bad).contains(key));
+        }
+    }
+
     /// NT-22 (spec 4.4 items 2 and 3): the derived budget is one eighth of physical memory clamped to [128 MiB, 1 GiB] (a guess),
     /// and the derived pending cap is the smaller of the budget and 256 MiB (a guess), so raising the off-heap budget does not
     /// raise the sealer's heap exposure past 256 MiB. A configured cap is kept whatever the budget.

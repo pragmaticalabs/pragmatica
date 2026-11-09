@@ -6,6 +6,7 @@ package org.pragmatica.aether.http.security;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 
 
 public sealed interface SecurityError extends Cause, HttpStatusAware {
@@ -17,16 +18,53 @@ public sealed interface SecurityError extends Cause, HttpStatusAware {
         return HttpStatus.UNAUTHORIZED;
     }
 
+    /// RFC 6750 section 3.1 error code of the `WWW-Authenticate` challenge that accompanies a 401. A presented
+    /// credential that cannot be accepted (malformed, bad signature, expired, wrong issuer/audience, unknown key,
+    /// empty) is `invalid_token`; the code never says which check failed. A request that presented no credential
+    /// carries no code (section 3: "the request lacks any authentication information"), a server-side failure is not
+    /// the token's fault, and a 403 carries no challenge at all.
+    default Option<String> challengeError() {
+        return Option.some("invalid_token");
+    }
+
+    /// The challenge error code of any refusal [Cause]; nothing for a cause that is not a [SecurityError].
+    static Option<String> challengeError(Cause cause) {
+        return cause instanceof SecurityError error
+               ? error.challengeError()
+               : Option.none();
+    }
+
+    /// The `WWW-Authenticate` value for a 401: `<scheme> realm="<realm>"`, plus `error="<code>"` when a credential was
+    /// presented and refused (see [#challengeError()]).
+    static String challenge(String scheme, String realm, Cause cause) {
+        return scheme + " realm=\"" + realm + "\"" + errorParameter(cause);
+    }
+
+    private static String errorParameter(Cause cause) {
+        return challengeError(cause).map(code -> ", error=\"" + code + "\"")
+                             .or("");
+    }
+
     SecurityError MISSING_API_KEY = new MissingCredentials("X-API-Key header required");
     SecurityError INVALID_API_KEY = new InvalidCredentials("Invalid API key");
     SecurityError MISSING_BEARER_TOKEN = new MissingCredentials("Authorization Bearer token required");
     SecurityError MALFORMED_TOKEN = new InvalidCredentials("Malformed JWT token");
 
-    record MissingCredentials(String message) implements SecurityError {}
+    record MissingCredentials(String message) implements SecurityError {
+        @Override
+        public Option<String> challengeError() {
+            return Option.none();
+        }
+    }
 
     record InvalidCredentials(String message) implements SecurityError {}
 
     record AccessDenied(String message) implements SecurityError {
+        @Override
+        public Option<String> challengeError() {
+            return Option.none();
+        }
+
         @Override
         public HttpStatus httpStatus() {
             return HttpStatus.FORBIDDEN;
@@ -45,10 +83,16 @@ public sealed interface SecurityError extends Cause, HttpStatusAware {
 
     record KeyNotFound(String message) implements SecurityError {}
 
+    /// #2926 (CTO ruling): a key-fetch failure is the SERVER failing, not the credential -- 503, never a challenge.
     record JwksFetchFailed(String message) implements SecurityError {
         @Override
+        public Option<String> challengeError() {
+            return Option.none();
+        }
+
+        @Override
         public HttpStatus httpStatus() {
-            return HttpStatus.INTERNAL_SERVER_ERROR;
+            return HttpStatus.SERVICE_UNAVAILABLE;
         }
     }
 
@@ -75,6 +119,11 @@ public sealed interface SecurityError extends Cause, HttpStatusAware {
     SecurityError UNENFORCEABLE_POLICY = new MissingCredentials("Route policy requires a credential type this node's security_mode does not serve");
 
     record InsufficientRole(String message) implements SecurityError {
+        @Override
+        public Option<String> challengeError() {
+            return Option.none();
+        }
+
         @Override
         public HttpStatus httpStatus() {
             return HttpStatus.FORBIDDEN;

@@ -20,6 +20,8 @@ import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.aether.http.handler.security.SecurityContextHolder;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.http.security.HttpAuthenticator;
+import org.pragmatica.aether.http.security.SecurityError;
+import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
@@ -28,6 +30,7 @@ import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RequestContext;
 import org.pragmatica.http.routing.security.Access;
 import org.pragmatica.json.JsonMapper;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -180,7 +183,8 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
                            route.security(),
                            route.version(),
                            route.pathParamCount(),
-                           route.spacerSlots());
+                           route.spacerSlots())
+                    .withSuccess(route.successSpec());
     }
 
     private static Promise<SecurityContext> authenticate(Route<?> route,
@@ -195,13 +199,26 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
         return Promise.lift(Causes::fromThrowable,
                             () -> authenticator.validate(request, policy))
                       .flatMap(Result::async)
-                      .mapError(cause -> cause instanceof HttpStatusAware status
-                                         ? status.httpStatus()
-                                                 .with(cause)
-                                         : HttpStatus.INTERNAL_SERVER_ERROR.with(cause))
+                      .mapError(cause -> refusal(cause, authenticator))
                       .flatMap(security -> policy.canAccess(security) == Access.ALLOW
                                            ? Promise.success(security)
                                            : HttpStatus.FORBIDDEN.with("Route policy denied access").promise());
+    }
+
+    /// #2926: a 401 carries the RFC 6750 section 3.1 challenge of the authenticator's scheme; any other status is
+    /// answered as before (403 for a role, 500 for a server-side failure).
+    private static HttpError refusal(Cause cause, HttpAuthenticator authenticator) {
+        var status = cause instanceof HttpStatusAware aware
+                     ? aware.httpStatus()
+                     : HttpStatus.INTERNAL_SERVER_ERROR;
+
+        return status == HttpStatus.UNAUTHORIZED
+               ? TerraAuthenticationRefusal.refusal(cause,
+                                                    authenticator.challengeScheme()
+                                                                 .map(scheme -> SecurityError.challenge(scheme,
+                                                                                                        "Terra",
+                                                                                                        cause)))
+               : status.with(cause);
     }
 
     // The rebuilt context keeps the router's codec (the generated one where the slice has it), so a request body is

@@ -84,7 +84,8 @@ aether status
 
 The CLI will display user-friendly error messages for authentication and authorization failures:
 - `Authentication required` (401) — API key not provided
-- `Access denied` (403) — Invalid API key or insufficient role for the requested operation
+- `Authentication required` (401) also covers an invalid API key (#2926)
+- `Access denied` (403) — Insufficient role for the requested operation
 
 ### Authorization Roles
 

@@ -90,7 +90,9 @@ public sealed interface JsonError extends Cause {
             // #772: Jackson's getPathReference() returns "" (not null) for a root-level/pathless
             // mismatch — e.g. a missing request body — so Option.option's null-only filter left a
             // blank path present and message() rendered a dangling "... at " suffix.
-            return new TypeMismatch(expectedType, actualValue, Option.option(path).filter(p -> !p.isBlank()));
+            return new TypeMismatch(expectedType,
+                                    actualValue,
+                                    Option.option(path).filter(p -> !p.isBlank()));
         }
 
         @Override
@@ -128,7 +130,7 @@ public sealed interface JsonError extends Cause {
                                                                          extractValue(e),
                                                                          e.getPathReference());
             case InvalidDefinitionException e -> TypeMismatch.typeMismatch(Option.option(e.getType()).map(t -> t.getTypeName()).or("unknown"),
-                                                                           "invalid definition",
+                                                                           "invalid definition: " + e.getOriginalMessage(),
                                                                            e.getPathReference());
             // JSON parsing errors (malformed JSON)
             case StreamReadException e -> InvalidJson.invalidJson(e.getMessage(), extractLocation(e));
