@@ -6,6 +6,8 @@ package org.pragmatica.aether.stream;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.LongStream;
@@ -61,6 +63,7 @@ class OwnerCatchupCommittedLineageTest {
 
     private StreamPartitionManager owner;
     private final AtomicInteger failReads = new AtomicInteger();
+    private final Set<NodeId> unanswered = ConcurrentHashMap.newKeySet();
 
     @BeforeEach
     void startTheActivatingOwner() {
@@ -386,6 +389,24 @@ class OwnerCatchupCommittedLineageTest {
         assertThat(fixture.served()).containsExactly(SOURCE, OTHER);
     }
 
+    /// Fallback reads only sources a probe saw ahead of the owner: the top-ranked source is unreadable, the third replica did not answer
+    /// the probe (its tail is unknown, not a source), so the round ends after the one read and nothing activates.
+    @Test
+    void probePath_aReplicaThatDidNotAnswerTheProbe_isNeverReadAsAFallbackSource() {
+        var fixture = fixture(true,
+                              List.of(new Replica(SOURCE, 15L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))),
+                                      new Replica(OTHER, 15L, List.of(ProvenanceEntry.provenanceEntry(E1, 0)))));
+
+        unanswered.add(OTHER);
+        failReads.set(1);
+
+        var result = fixture.backfill().backfill("s", 0).await();
+
+        assertThat(result.isFailure()).as("the only answering source is unreadable: %s", result).isTrue();
+        assertThat(fixture.served()).containsExactly(SOURCE);
+        assertThat(head()).isEqualTo(-1L);
+    }
+
     private static List<Replica> equalReplicas() {
         return List.of(new Replica(SOURCE, 15L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))),
                        new Replica(OTHER, 15L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))));
@@ -412,7 +433,9 @@ class OwnerCatchupCommittedLineageTest {
                                                            recovery,
                                                            (node, request) -> serve(replicaOf(replicas, node), request, served),
                                                            ReplicationTransport.NOOP,
-                                                           (peer, _, _) -> Promise.success(replicaOf(replicas, peer).tail()),
+                                                           (peer, _, _) -> unanswered.contains(peer)
+                                                                          ? BackfillError.General.NO_SOURCE_REPLICA.<Long>promise()
+                                                                          : Promise.success(replicaOf(replicas, peer).tail()),
                                                            (_, _) -> head(),
                                                            SELF,
                                                            TimeSpan.timeSpan(Long.MAX_VALUE).nanos(),
