@@ -36,7 +36,7 @@ class DbShareKeyTest {
         return DbShareKey.dbShareKey(DbShareKeyTest.class, SqlConnector.class, config, transport);
     }
 
-    /// Binds `[db]` from a TOML source, the file-backed layer production reads and the one `@StrictKeys` checks.
+    /// Binds `[db]` from a TOML source, the file-backed layer production reads.
     private static Result<DatabaseConnectorConfig> bound(String extraLines) {
         var source = TomlConfigSource.tomlConfigSource("[db]\nname = \"db\"\nasync_url = \"" + ASYNC + "\"\n" + extraLines)
                                      .unwrap();
@@ -147,12 +147,13 @@ class DbShareKeyTest {
             assertThat(bound("").unwrap().poolScope()).isEqualTo(Option.none());
         }
 
+        /// D4.2 = (c): no `@StrictKeys` on the datasource record (forge.toml's `[database]` carries Ember keys), so the
+        /// binder itself ignores unknown keys; the three `pool_scope` misspellings are refused one layer up, see
+        /// `PoolScopeRefusalTest`.
         @Test
-        void misspelledOrMisplacedKeys_areRefused() { // T6b
-            assertThat(bound("pool-scope = \"slice\"\n").isFailure()).as("pool-scope").isTrue();
-            assertThat(bound("poolScope = \"slice\"\n").isFailure()).as("poolScope").isTrue();
-            assertThat(bound("[db.pool_config]\npool_scope = \"slice\"\n").isFailure()).as("pool_config.pool_scope").isTrue();
-            assertThat(bound("unknown_key = \"x\"\n").isFailure()).as("unknown key").isTrue();
+        void unknownKeys_areIgnoredByTheBinder_theRefusalLivesInTheProviderLoader() { // T6b
+            assertThat(bound("pool-scope = \"slice\"\n").isSuccess()).as("pool-scope").isTrue();
+            assertThat(bound("enabled = false\n").isSuccess()).as("Ember key").isTrue();
         }
 
         @Test

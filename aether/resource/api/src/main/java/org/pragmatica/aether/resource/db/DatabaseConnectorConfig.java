@@ -9,7 +9,6 @@ import java.util.Properties;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.pragmatica.config.StrictKeys;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -22,9 +21,8 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.utils.Causes.cause;
 
 
-/// A datasource section. `@StrictKeys` (#2973): a key the record does not declare (a misspelled `pool-scope`, say) fails
-/// the bind instead of being ignored, so a typo can never silently keep a pool shared.
-@StrictKeys
+/// A datasource section. Not `@StrictKeys` (#2973, D4.2): forge.toml's `[database]` carries Ember's own keys into the
+/// same composite. The misspellings of `pool_scope` are refused by [MisplacedPoolScope] instead.
 public record DatabaseConnectorConfig(Option<String> name,
                                       Option<DatabaseType> type,
                                       Option<String> host,

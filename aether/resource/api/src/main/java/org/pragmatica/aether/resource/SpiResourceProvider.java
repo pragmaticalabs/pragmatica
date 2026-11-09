@@ -18,6 +18,8 @@ import java.util.function.Function;
 
 import org.pragmatica.aether.resource.json.JsonSectionConfig;
 import org.pragmatica.config.ConfigError;
+import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
+import org.pragmatica.aether.resource.db.MisplacedPoolScope;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.ProviderBasedConfigService;
@@ -781,7 +783,16 @@ public final class SpiResourceProvider implements ResourceProvider {
     private static Fn2<Result<?>, String, Class<?>> loaderFromComposite(ConfigurationProvider composite) {
         var svc = ProviderBasedConfigService.providerBasedConfigService(composite);
 
-        return (section, configClass) -> svc.config(section, configClass);
+        return (section, configClass) -> refuseMisplacedPoolScope(composite, section, configClass)
+                                         .flatMap(_ -> svc.config(section, configClass));
+    }
+
+    private static Result<Unit> refuseMisplacedPoolScope(ConfigurationProvider composite,
+                                                         String section,
+                                                         Class<?> configClass) {
+        return DatabaseConnectorConfig.class.equals(configClass)
+               ? MisplacedPoolScope.refuseMisplacedPoolScope(composite, section)
+               : Result.unitResult();
     }
 
     /// Identity of a cached resource. `scope` is the provisioning slice's id, or
