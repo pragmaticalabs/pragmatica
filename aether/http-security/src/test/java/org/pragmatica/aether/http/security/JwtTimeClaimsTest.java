@@ -51,6 +51,33 @@ class JwtTimeClaimsTest {
         assertThat(hsAccepts(",\"iat\":" + (now() + 120))).isFalse();
     }
 
+    private static final long SKEW = 30;
+
+    /// Whether a token whose `claim` sits `offset` seconds from now is accepted. The boundary is exact to the second, so
+    /// the answer counts only when the clock did not tick between building the token and validating it.
+    private static boolean acceptsAtOffset(String claim, long offset) {
+        while (true) {
+            var before = now();
+            var accepted = hsAccepts(",\"" + claim + "\":" + (before + offset));
+
+            if (now() == before) {
+                return accepted;
+            }
+        }
+    }
+
+    @Test
+    void hs256_nbfAtExactlyTheSkewBoundary_isAccepted_oneSecondBeyondIsRefused() {
+        assertThat(acceptsAtOffset("nbf", SKEW)).isTrue();
+        assertThat(acceptsAtOffset("nbf", SKEW + 1)).isFalse();
+    }
+
+    @Test
+    void hs256_iatAtExactlyTheSkewBoundary_isAccepted_oneSecondBeyondIsRefused() {
+        assertThat(acceptsAtOffset("iat", SKEW)).isTrue();
+        assertThat(acceptsAtOffset("iat", SKEW + 1)).isFalse();
+    }
+
     @Test
     void hs256_nonNumericTimeClaims_areRefusedNotThrown() {
         assertThat(refusal(hsValidator(), hs256Token(HS256, payload(",\"nbf\":\"soon\"")))).isInstanceOf(SecurityError.InvalidCredentials.class);
