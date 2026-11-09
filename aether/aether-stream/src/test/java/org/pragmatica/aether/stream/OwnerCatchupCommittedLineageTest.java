@@ -200,6 +200,20 @@ class OwnerCatchupCommittedLineageTest {
         assertThat(fixture.served()).containsExactly(SOURCE, OTHER);
     }
 
+    /// P10 with no other replica probed: the target is the only replica's lineage end, so the owner activates at 10 on the first
+    /// run instead of waiting on its disowned raw tail (20).
+    @Test
+    void probePath_ofTheOnlyReplica_holdingADisownedTail_activatesAtItsLineageEnd() {
+        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
+
+        var fixture = fixture(true, List.of(new Replica(SOURCE, 20L, List.of(ProvenanceEntry.provenanceEntry(E1, 0)))));
+        var first = fixture.backfill().backfill("s", 0).await();
+
+        assertThat(first.isSuccess()).as("first run: %s", first).isTrue();
+        assertThat(head()).isEqualTo(10L);
+        assertThat(fixture.served()).containsExactly(SOURCE);
+    }
+
     /// P14, the registry path with two learned caps: raw tails 30 / 25 / 18, committed-lineage ends 10 / 13 / 18 (E3 @ 11, E4 @ 14).
     /// Each redrive reads the replica with the highest lineage end still unknown, is held to the best other end, and the third
     /// activates at 18; no survivor is then ahead.
