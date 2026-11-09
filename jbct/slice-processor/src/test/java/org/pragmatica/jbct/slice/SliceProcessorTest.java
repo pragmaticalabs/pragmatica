@@ -856,21 +856,24 @@ class SliceProcessorTest {
     /// record whole, is named at build time: route, record, component and why.
     @Test
     void mergedRoute_whoseComponentStaysRequiredBecauseOfAnotherRoute_warns(@TempDir Path classes) throws IOException {
-        var diagnostics = compileWithRoutes(classes,
-                                            "merged = \"PUT /notes/{id}\"\nplain = \"POST /notes\"",
+        var diagnostics = compileWarnings(classes,
+                                            "merged = \"PUT /notes/{id}?tag\"\nplain = \"POST /notes\"",
                                             "Promise<String> merged(Note note);\n    Promise<String> plain(Note note);",
-                                            List.of(record("Note", "String id, String text")));
+                                            List.of(record("Note", "String id, org.pragmatica.lang.Option<String> tag, String text")));
 
         assertThat(diagnostics).contains("Route 'merged' (PUT /notes/{id}): component 'id' of upload.Note");
         assertThat(diagnostics).contains("stays required in the JSON body");
         assertThat(diagnostics).contains("another route of the slice decodes the record without binding that component");
         assertThat(diagnostics).doesNotContain("Route 'plain'");
+        // Only a bound, required component is named: not the body's own `text`, not the optional bound `tag`.
+        assertThat(diagnostics).doesNotContain("component 'text'");
+        assertThat(diagnostics).doesNotContain("component 'tag'");
     }
 
     @Test
     void mergedRoute_whoseComponentStaysRequiredBecauseOfNesting_warnsWithTheNestingReason(@TempDir Path classes)
     throws IOException {
-        var diagnostics = compileWithRoutes(classes,
+        var diagnostics = compileWarnings(classes,
                                             "merged = \"PUT /notes/{id}\"\nwrapped = \"POST /wrapped\"",
                                             "Promise<String> merged(Note note);\n    Promise<String> wrapped(Wrap wrap);",
                                             List.of(record("Note", "String id, String text"), record("Wrap", "Note note")));
@@ -882,7 +885,7 @@ class SliceProcessorTest {
     /// A response record that nests the request record is such a type too.
     @Test
     void mergedRoute_whoseRecordIsNestedInAResponse_warns(@TempDir Path classes) throws IOException {
-        var diagnostics = compileWithRoutes(classes,
+        var diagnostics = compileWarnings(classes,
                                             "merged = \"PUT /notes/{id}\"",
                                             "Promise<Wrap> merged(Note note);",
                                             List.of(record("Note", "String id, String text"), record("Wrap", "Note note")));
@@ -891,16 +894,18 @@ class SliceProcessorTest {
         assertThat(diagnostics).contains("also a component of another type the slice decodes or answers");
     }
 
-    /// Positive control for the three above: the same record on a merged route alone is relaxed, and draws no warning.
+    /// Negative control for the three above: the same record on a merged route alone is relaxed, and draws no warning.
     @Test
     void mergedRoute_whoseComponentIsRelaxed_doesNotWarn(@TempDir Path classes) throws IOException {
-        var diagnostics = compileWithRoutes(classes,
-                                            "merged = \"PUT /notes/{id}\"",
-                                            "Promise<String> merged(Note note);",
-                                            List.of(record("Note", "String id, String text")));
+        var routes = "prefix = \"/api\"\n\n[routes]\nmerged = \"PUT /notes/{id}\"\n";
+        var diagnostics = compileDiagnostics(classes,
+                                             routes,
+                                             "Promise<String> merged(Note note);",
+                                             List.of(record("Note", "String id, String text")));
 
-        assertThat(diagnostics).contains("Generated routes: UploadService");
-        assertThat(diagnostics).doesNotContain("stays required in the JSON body");
+        assertThat(joinMessages(diagnostics.stream())).contains("Generated routes: UploadService");
+        assertThat(joinMessages(diagnostics.stream().filter(SliceProcessorTest::isWarning)))
+            .doesNotContain("stays required in the JSON body");
     }
 
     private static JavaFileObject record(String name, String components) {
@@ -916,7 +921,7 @@ class SliceProcessorTest {
         return compileWithToml(classes, "prefix = \"/api\"\n\n[routes]\n" + route + "\n", method, extra);
     }
 
-    private String compileWithToml(Path classes, String toml, String method, List<JavaFileObject> extra) throws IOException {
+    private List<javax.tools.Diagnostic<? extends JavaFileObject>> compileDiagnostics(Path classes, String toml, String method, List<JavaFileObject> extra) throws IOException {
         var routes = classes.resolve(Path.of("upload", "routes.toml"));
 
         Files.createDirectories(routes.getParent());
@@ -958,10 +963,28 @@ class SliceProcessorTest {
             task.call();
         }
 
-        return collector.getDiagnostics()
-                        .stream()
-                        .map(diagnostic -> diagnostic.getMessage(null))
-                        .collect(Collectors.joining("\n"));
+        return List.copyOf(collector.getDiagnostics());
+    }
+
+    private String compileWithToml(Path classes, String toml, String method, List<JavaFileObject> extra) throws IOException {
+        return joinMessages(compileDiagnostics(classes, toml, method, extra).stream());
+    }
+
+    /// Only what the processor reported as a WARNING: a NOTE or an ERROR carrying the same words does not count.
+    private String compileWarnings(Path classes, String route, String method, List<JavaFileObject> extra)
+    throws IOException {
+        return joinMessages(compileDiagnostics(classes, "prefix = \"/api\"\n\n[routes]\n" + route + "\n", method, extra)
+                                .stream()
+                                .filter(SliceProcessorTest::isWarning));
+    }
+
+    private static boolean isWarning(javax.tools.Diagnostic<? extends JavaFileObject> diagnostic) {
+        return diagnostic.getKind() == javax.tools.Diagnostic.Kind.WARNING;
+    }
+
+    private static String joinMessages(java.util.stream.Stream<javax.tools.Diagnostic<? extends JavaFileObject>> diagnostics) {
+        return diagnostics.map(diagnostic -> diagnostic.getMessage(null))
+                          .collect(Collectors.joining("\n"));
     }
 
     /// Loads a generated slice manifest through [java.util.Properties] rather than asserting on raw
