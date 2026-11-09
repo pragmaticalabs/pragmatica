@@ -287,23 +287,16 @@ class EmberCheckpointReclaimTest {
 
     @Test
     @Order(9)
-    @Timeout(900)
+    @Timeout(1800)
     void probeDisableRightAfterElection() {
-        for (int round = 0; round < 8; round++) {
+        for (int round = 0; round < 25; round++) {
             startAFreshCluster();
-            cluster = EmberTestPorts.startedCluster(PORTS, this::threeNodes, START_BOUND);
-            awaitCondition("a leader is elected", LEADER_BUDGET_MS, () -> cluster.currentLeader().isPresent());
-            var leaderId = cluster.currentLeader().or("none");
-            var leaderNode = cluster.allNodes().stream().filter(node -> node.self().id().equals(leaderId)).findFirst().orElseThrow();
-            var t0 = System.currentTimeMillis();
-
-            for (int attempt = 0; attempt < 200; attempt++) {
-                var outcome = leaderNode.clusterTopologyManager()
-                                        .map(ctm -> ctm.setAutoHealEnabled(false, "probe").await(SAVE_BOUND).fold(Cause::message, _ -> "disabled"))
-                                        .or("no ctm");
-                System.out.printf("PROBE2939 round %d attempt %d +%d ms: %s%n", round, attempt, System.currentTimeMillis() - t0, outcome);
-                try { Thread.sleep(2); } catch (InterruptedException e) { return; }
-            }
+            var leaderId = cluster().currentLeader().or("none");
+            var leaderNode = cluster().allNodes().stream().filter(node -> node.self().id().equals(leaderId)).findFirst().orElseThrow();
+            var outcome = leaderNode.clusterTopologyManager()
+                                    .map(ctm -> ctm.setAutoHealEnabled(false, "probe").await(SAVE_BOUND).fold(Cause::message, _ -> "disabled"))
+                                    .or("no ctm");
+            System.out.printf("PROBE2939 round %d at %d: %s%n", round, System.currentTimeMillis(), outcome);
         }
     }
 
