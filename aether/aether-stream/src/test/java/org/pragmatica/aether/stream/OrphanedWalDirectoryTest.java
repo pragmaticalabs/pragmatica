@@ -236,6 +236,23 @@ class OrphanedWalDirectoryTest {
         assertThat(warnings.getFirst().subject()).isEqualTo(STREAM + "@" + ORPHANED_LIFE);
     }
 
+    /// #2952: binding the sink takes the deferred reports, so binding it again raises none of them a second time.
+    @Test
+    void aDeferredOrphan_isRaisedOnce_whenTheSinkIsBoundTwice() throws IOException {
+        walDirectory(STREAM + "@" + ORPHANED_LIFE);
+        var node = managerWithoutSink();
+
+        node.onStreamConfigPut(committed(config().withIncarnation(ADOPTED_LIFE)));
+        quiesce();
+        node.operatorWarnings(sink());
+        awaitWarnings(1);
+        node.operatorWarnings(sink());
+        quiesce();
+        node.close();
+
+        assertThat(warnings).extracting(OperatorWarning::subject).containsExactly(STREAM + "@" + ORPHANED_LIFE);
+    }
+
     /// #2952: the WAL-root walk runs off the thread applying the committed config (the KV dispatcher), so a slow walk holds no
     /// KV apply: both Puts return while the walk is still blocked, and the orphan is raised once it completes.
     @Test
