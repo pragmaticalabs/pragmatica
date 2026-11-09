@@ -167,6 +167,9 @@ public final class ManagementStatus {
                                                                      Listing.listing(ROUTES
                                                                                     + "ClusterConfigRoutes$UpgradeError$AlreadyAtVersion",
                                                                                      CONFLICT),
+                                                                     Listing.listing("org.pragmatica.aether.deployment.cluster.HierarchyStateWriter$Refusal",
+                                                                                     CONFLICT,
+                                                                                     "CONFLICT"),
                                                                      Listing.listing(API
                                                                                     + "AlertForwarder$AlertForwarderError$WebhookError",
                                                                                      HttpStatus.BAD_GATEWAY))

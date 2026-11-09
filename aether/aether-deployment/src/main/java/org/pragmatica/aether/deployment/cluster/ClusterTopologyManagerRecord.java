@@ -424,6 +424,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     static final int DESIRED_COUNT_CAS_ATTEMPTS = 3;
+    /// Attempts a leader-side management write makes against a transient fence CONFLICT before it surfaces (#2944).
+    static final int FENCE_CONFLICT_ATTEMPTS = 5;
+    /// The pause before retry N is N times this many milliseconds.
+    static final long FENCE_CONFLICT_BACKOFF_STEP_MILLIS = 50L;
 
     /// Each retry re-reads desired intent and commits against that exact value and leader.
     static Promise<Unit> applyDesiredCount(Supplier<Option<ClusterConfigValue>> reader,
@@ -453,12 +457,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                  Option.some(current),
                                                  updated)
                                             .fold(result -> result.fold(cause -> cause == HierarchyStateWriter.Refusal.CONFLICT && attemptsLeft > 1
-                                                                                 ? applyDesiredCount(reader,
-                                                                                                     writer,
-                                                                                                     sourceName,
-                                                                                                     role,
-                                                                                                     count,
-                                                                                                     attemptsLeft - 1)
+                                                                                 ? afterFenceBackoff(DESIRED_COUNT_CAS_ATTEMPTS - attemptsLeft + 1).flatMap(_ -> applyDesiredCount(reader,
+                                                                                                                                                                                   writer,
+                                                                                                                                                                                   sourceName,
+                                                                                                                                                                                   role,
+                                                                                                                                                                                   count,
+                                                                                                                                                                                   attemptsLeft - 1))
                                                                                  : cause.promise(),
                                                                         _ -> Promise.unitPromise()));
                            });
@@ -921,6 +925,13 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// configuration and carries no witness.
     @Override
     public Promise<Boolean> setAutoHealEnabled(boolean enabled, String reason) {
+        return commitAutoHeal(enabled, reason, 1);
+    }
+
+    /// A [HierarchyStateWriter.Refusal#CONFLICT] writes nothing and is transient (the node's applied view lagged the committed state), so it is
+    /// retried here, [#FENCE_CONFLICT_ATTEMPTS] attempts in all with a growing pause, each attempt re-reading the record and the configuration,
+    /// so a caller normally never sees it (#2944). When the bound is exhausted the CONFLICT reaches the management API, which answers 409.
+    private Promise<Boolean> commitAutoHeal(boolean enabled, String reason, int attempt) {
         var previous = autoHealStateReader.get();
         var config = clusterConfigReader.get();
         var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(AetherKey.AutoHealStateKey.SINGLETON,
@@ -930,8 +941,18 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return hierarchyWriter.get()
                               .commit(List.of(mutation),
                                       autoHealGuards(enabled, config))
-                              .map(_ -> previous.map(AutoHealStateValue::enabled)
-                                                .or(true));
+                              .fold(result -> result.fold(cause -> cause == HierarchyStateWriter.Refusal.CONFLICT && attempt < FENCE_CONFLICT_ATTEMPTS
+                                                                   ? afterFenceBackoff(attempt).flatMap(_ -> commitAutoHeal(enabled,
+                                                                                                                            reason,
+                                                                                                                            attempt + 1))
+                                                                   : cause.promise(),
+                                                          _ -> Promise.success(previous.map(AutoHealStateValue::enabled)
+                                                                                       .or(true))));
+    }
+
+    private static Promise<Unit> afterFenceBackoff(int attempt) {
+        return Promise.promise(TimeSpan.timeSpan(FENCE_CONFLICT_BACKOFF_STEP_MILLIS * attempt).millis(),
+                               Result::unitResult);
     }
 
     private static List<KVCommand.ReadWitness<AetherKey>> autoHealGuards(boolean enabled,

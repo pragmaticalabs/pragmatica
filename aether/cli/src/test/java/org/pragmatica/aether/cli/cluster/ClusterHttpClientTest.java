@@ -7,7 +7,14 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import com.sun.net.httpserver.HttpServer;
+import org.pragmatica.aether.management.route.ManagementRoute;
+
+import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.net.http.HttpRequest;
 import java.time.Duration;
 
@@ -19,6 +26,78 @@ class ClusterHttpClientTest {
     @AfterEach
     void resetTimeout() {
         ClusterHttpClient.setRequestTimeout(ClusterHttpClient.DEFAULT_REQUEST_TIMEOUT);
+    }
+
+    /// #2944: a 409 carrying the transient-conflict hint is retried a bounded number of times; any other 409 or status is not.
+    @Nested
+    class TransientConflictTests {
+        private static final String HINT_BODY = "{\"status\":409,\"detail\":\"Hierarchy state changed before conditional commit; nothing was written, retry the request\"}";
+        private static final String REAL_CONFLICT_BODY = "{\"status\":409,\"detail\":\"slice minAvailable floor\"}";
+
+        private HttpServer server;
+        private final AtomicInteger calls = new AtomicInteger();
+
+        @AfterEach
+        void stop() {
+            if (server != null) {
+                server.stop(0);
+            }
+            ClusterHttpClient.setEndpointOverride(null);
+        }
+
+        private void serve(int conflictsBeforeSuccess, int conflictStatus, String conflictBody) throws IOException {
+            server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            server.createContext("/", exchange -> {
+                var conflicting = calls.incrementAndGet() <= conflictsBeforeSuccess;
+                var bytes = (conflicting ? conflictBody : "{\"ok\":true}").getBytes(StandardCharsets.UTF_8);
+
+                exchange.sendResponseHeaders(conflicting ? conflictStatus : 200, bytes.length);
+                exchange.getResponseBody().write(bytes);
+                exchange.close();
+            });
+            server.start();
+            ClusterHttpClient.setEndpointOverride("http://127.0.0.1:" + server.getAddress().getPort());
+        }
+
+        @Test
+        void post_retriesTransientConflict_untilItSettles() throws IOException {
+            serve(2, 409, HINT_BODY);
+
+            var result = ClusterHttpClient.post(ManagementRoute.CLUSTER_AUTO_HEAL_DISABLE, "{}");
+
+            assertTrue(result.isSuccess(), "the settled retry is returned as success");
+            assertEquals(3, calls.get());
+        }
+
+        @Test
+        void post_givesUpAfterTheBound_andReturnsTheConflict() throws IOException {
+            serve(Integer.MAX_VALUE, 409, HINT_BODY);
+
+            var result = ClusterHttpClient.post(ManagementRoute.CLUSTER_AUTO_HEAL_DISABLE, "{}");
+
+            assertTrue(result.isFailure());
+            assertEquals(ClusterHttpClient.CONFLICT_RETRY_ATTEMPTS, calls.get());
+        }
+
+        @Test
+        void post_doesNotRetryAConflictWithoutTheHint() throws IOException {
+            serve(Integer.MAX_VALUE, 409, REAL_CONFLICT_BODY);
+
+            var result = ClusterHttpClient.post(ManagementRoute.CLUSTER_AUTO_HEAL_DISABLE, "{}");
+
+            assertTrue(result.isFailure());
+            assertEquals(1, calls.get());
+        }
+
+        @Test
+        void post_doesNotRetryAServerError() throws IOException {
+            serve(Integer.MAX_VALUE, 500, HINT_BODY);
+
+            var result = ClusterHttpClient.post(ManagementRoute.CLUSTER_AUTO_HEAL_DISABLE, "{}");
+
+            assertTrue(result.isFailure());
+            assertEquals(1, calls.get());
+        }
     }
 
     @Nested

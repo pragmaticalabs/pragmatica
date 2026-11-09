@@ -7,6 +7,7 @@ package org.pragmatica.aether.api.routes;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.pragmatica.aether.deployment.cluster.HierarchyStateWriter;
 import org.pragmatica.http.ContentType;
 import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
@@ -49,5 +50,28 @@ class ProblemResponsesChainTest {
         }, failure, "/x", "req-1");
 
         assertThat(body.get()).contains("top").doesNotContain(SENTINEL);
+    }
+
+    /// #2944: a fence CONFLICT that outlasted the leader-side retry reaches the wire as 409 with the retry hint, not as 500.
+    @Test
+    void writeProblem_ofFenceConflictRefusal_answers409WithRetryHint() {
+        var status = new AtomicReference<HttpStatus>();
+        var body = new AtomicReference<String>();
+
+        ProblemResponses.writeProblem(new ResponseWriter() {
+            @Override
+            public void write(HttpStatus responseStatus, byte[] bytes, ContentType contentType) {
+                status.set(responseStatus);
+                body.set(new String(bytes, StandardCharsets.UTF_8));
+            }
+
+            @Override
+            public ResponseWriter header(String name, String value) {
+                return this;
+            }
+        }, HierarchyStateWriter.Refusal.CONFLICT, "/api/cluster/topology/auto-heal/disable", "req-2");
+
+        assertThat(status.get()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(body.get()).contains("retry the request");
     }
 }

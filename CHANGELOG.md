@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc5] - Unreleased
 
+### Fixed (2026-11-09 - #2944: a transient fence conflict on a management write answered 500)
+- **A management write refused by the leader's conditional-commit fence as a transient CONFLICT (`Hierarchy state changed before conditional commit`, nothing written) answered HTTP 500, and the CLI did not retry.** Typical trigger: `aether cluster topology auto-heal disable` right after cluster start, while the config seed is still settling.
+- The leader-side toggle (`setAutoHealEnabled`) now retries the CONFLICT itself, 5 attempts in all with a 50 ms x attempt pause, re-reading the record and the cluster configuration each attempt; `setDesiredCount` keeps its 3 re-reading attempts and gains the same pause. Only these two management mutations reach the fence from a management route; the other fenced writers (placement, termination marks, capacity ledger, community placement) are internal reconcile passes with their own retry cycle.
+- When the bound is exhausted the management API answers **409 Conflict** (`Refusal.CONFLICT` is listed in `ManagementStatus`) with the detail `...nothing was written, retry the request`; any other refusal (for example INACTIVE) is unchanged and is not retried. The CLI POST retries a 409 carrying that hint up to 4 requests in all (250 ms x attempt pause); other 409s (a slice-floor breach, an already-applied state) are returned at once.
+
 ## [1.0.0-rc4] - 2026-10-17
 
 ### Fixed (2026-10-17 — disruption-budget suite mistook the slice-floor 409 for the quorum budget)
