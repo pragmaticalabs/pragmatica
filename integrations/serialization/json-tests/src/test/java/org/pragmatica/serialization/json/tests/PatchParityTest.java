@@ -370,6 +370,7 @@ class PatchParityTest {
         assertRefused(VALUE_OBJECTS.readBytes(bytes("{}"), type));
         assertRefused(VALUE_OBJECTS.readBytes(bytes("{\"x\":null}"), type));
         assertRefused(DEFAULT.readBytes(bytes("{}"), type));
+        assertTrue(failureMessage(VALUE_OBJECTS.readBytes(bytes("{}"), type)).contains("property 'x' of " + type.getName()));
     }
 
     @Test
