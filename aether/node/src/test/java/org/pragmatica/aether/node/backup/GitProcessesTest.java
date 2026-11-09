@@ -8,11 +8,14 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.reflect.Proxy;
+import java.time.Instant;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
+
+import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -94,6 +97,95 @@ class GitProcessesTest {
         assertThat(stillInterrupted).as("the interrupt flag survives the wait").isTrue();
     }
 
+    /// The caller's interrupt flag does not blind the kill: a set flag made the freeze helper's wait and the death wait throw at once, so a tree that
+    /// was dying was reported alive (v-2979 F2: 19 of 20 rounds). The flag is still set when the kill returns.
+    @Test
+    @Timeout(value = 120, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void kill_underASetInterrupt_reportsTheTruth_andKeepsTheFlag() throws Exception {
+        for (var round = 0; round < 20; round++) {
+            var root = new ProcessBuilder("sh", "-c", "sleep 31.2979 & sleep 31.2979 & wait").start();
+            var children = awaitChildren(root, 2);
+
+            Thread.currentThread().interrupt();
+            var dead = GitProcesses.kill(List.of(root), 5_000);
+            var stillInterrupted = Thread.interrupted();
+
+            assertThat(dead).as("round " + round + ": the tree is dead, and kill says so under a set interrupt").isTrue();
+            assertThat(stillInterrupted).as("round " + round + ": the interrupt flag is restored").isTrue();
+            assertThat(children).noneMatch(ProcessHandle::isAlive);
+        }
+    }
+
+    /// A freeze helper that hangs neither stretches the kill past its bound nor survives it: the wait is the smaller of five seconds and what is left
+    /// of the bound, then the helper is killed (v-2979 F4).
+    @Test
+    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void kill_boundsAndEndsAFreezeHelperThatHangs() throws Exception {
+        var root = new ProcessBuilder("sleep", "30.4979").start();
+        var started = System.nanoTime();
+
+        var dead = GitProcesses.kill(List.of(root), 1_000, List.of("sh", "-c", "exec sleep 60.4979", "sh"));
+        var elapsedMs = (System.nanoTime() - started) / 1_000_000;
+        Thread.sleep(300);
+
+        assertThat(dead).as("the tree is killed although the freeze did not happen").isTrue();
+        assertThat(elapsedMs).as("the hanging helper did not hold the kill past its 1 s bound").isLessThan(3_000L);
+        assertThat(processesWith("60.4979")).as("the hanging helper was killed").isZero();
+        assertThat(processesWith("30.4979")).as("control: the tree member is dead").isZero();
+    }
+
+    /// A pid that now belongs to another process is not stopped: its start time differs from the one read (v-2979, PID reuse).
+    @Test
+    void sameStart_isTrueOnlyForTheStartTimeThatWasRead() {
+        var read = Option.some(Instant.parse("2026-11-09T10:00:00Z"));
+
+        assertThat(GitProcesses.sameStart(read, handleStartedAt(read))).isTrue();
+        assertThat(GitProcesses.sameStart(read, handleStartedAt(Option.some(Instant.parse("2026-11-09T10:00:07Z"))))).isFalse();
+        assertThat(GitProcesses.sameStart(read, handleStartedAt(Option.none()))).isFalse();
+    }
+
+    /// A process whose tree outlived its bound is not forgotten: it stays in flight, so the stop's close hands it over again.
+    @Test
+    void killOrKeep_keepsATreeThatIsNotDead_inFlightForTheStop() {
+        var processes = new GitProcesses();
+        var stubborn = undying();
+
+        processes.track(stubborn);
+
+        assertThat(processes.killOrKeep(stubborn, 300)).isFalse();
+        processes.finished(stubborn);
+        assertThat(processes.close()).as("the surviving tree is handed to the stop").containsExactly(stubborn);
+    }
+
+    @Test
+    void killOrKeep_releasesATreeThatIsDead() throws IOException {
+        var processes = new GitProcesses();
+        var root = processes.start(new ProcessBuilder("sleep", "30.4979")).unwrap();
+
+        assertThat(processes.killOrKeep(root, 10_000)).isTrue();
+        processes.finished(root);
+
+        assertThat(processes.close()).isEmpty();
+    }
+
+    private static long processesWith(String marker) {
+        return ProcessHandle.allProcesses()
+                            .filter(handle -> handle.info().commandLine().map(line -> line.contains(marker)).orElse(false))
+                            .count();
+    }
+
+    private static ProcessHandle handleStartedAt(Option<Instant> startedAt) {
+        return (ProcessHandle) Proxy.newProxyInstance(GitProcessesTest.class.getClassLoader(),
+                                                      new Class<?>[]{ProcessHandle.class},
+                                                      (proxy, method, args) -> "info".equals(method.getName()) ? infoStartedAt(startedAt) : null);
+    }
+
+    private static ProcessHandle.Info infoStartedAt(Option<Instant> startedAt) {
+        return (ProcessHandle.Info) Proxy.newProxyInstance(GitProcessesTest.class.getClassLoader(),
+                                                           new Class<?>[]{ProcessHandle.Info.class},
+                                                           (proxy, method, args) -> "startInstant".equals(method.getName()) ? startedAt.toOptional() : null);
+    }
+
     /// A process that no kill ends: its handle never exits and always reads alive. Its pid is beyond any kernel's range, so the freeze's `kill -STOP` reaches
     /// nothing.
     static Process undying() {
@@ -109,6 +201,7 @@ class GitProcessesTest {
                                                           case "onExit" -> new CompletableFuture<ProcessHandle>();
                                                           case "descendants" -> descendants.get();
                                                           case "children" -> Stream.empty();
+                                                          case "info" -> infoStartedAt(Option.none());
                                                           case "hashCode" -> System.identityHashCode(proxy);
                                                           case "equals" -> proxy == args[0];
                                                           case "toString" -> "undying";

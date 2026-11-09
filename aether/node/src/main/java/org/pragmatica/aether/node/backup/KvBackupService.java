@@ -266,11 +266,12 @@ public final class KvBackupService {
     }
 
     /// Stop flushing and release the worker. A node that stopped must not keep writing backups: when this returns, no git of the backup is running
-    /// and none can start (#2924). The repository is closed to git FIRST (a spawn is refused from then on, and one already started is handed back), then
-    /// the worker is released, then the git trees in flight are frozen and killed, within the repository's own command bound. A tree that is not
-    /// dead by then is reported: logged at WARN and raised as [Code#BACKUP_STOP_FLUSH_FAILED] (a push may still land after the stop), never passed
-    /// off as a clean stop. Guarantee earned: no backup git starts after the close; a push that was already in flight is dead at the return
-    /// unless the report says otherwise. Recovery: the next flush of this backup closes the warning.
+    /// and none can start (#2924). The service is marked stopped FIRST (a git refused by the closed repository is then never read as a failing
+    /// repository), then the repository is closed to git (a spawn is refused from then on, and one already started is handed back), then the worker is
+    /// released, then the git trees in flight are frozen and killed, within the repository's own command bound. A tree that is not dead by then is
+    /// reported: logged at WARN and raised as [Code#BACKUP_STOP_FLUSH_FAILED] (a push may still land after the stop), never passed off as a clean stop.
+    /// Guarantee earned: no backup git starts after the close; a push that was already in flight is dead at the return unless the report says
+    /// otherwise. Recovery: the next flush of this backup closes the warning.
     @Contract
     public void stop() {
         stopWithin(repository.timeout().millis());
@@ -278,10 +279,10 @@ public final class KvBackupService {
 
     @Contract
     void stopWithin(long boundMillis) {
-        var inFlight = repository.halt();
-
         stopped.set(true);
         leader.set(false);
+        var inFlight = repository.halt();
+
         onStop.run();
         if (!repository.reap(inFlight, boundMillis)) {
             reportLiveGit(boundMillis);

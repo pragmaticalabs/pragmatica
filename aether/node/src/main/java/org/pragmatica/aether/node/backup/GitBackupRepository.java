@@ -392,10 +392,16 @@ public record GitBackupRepository(Path dir,
         return new GitResult(process.exitValue(), outputOf(output));
     }
 
+    /// The command outlived its bound: kill git and everything it started, before the process leaves the in-flight set. A tree that is not dead within
+    /// the bound stays in flight, so the stop kills it, and the result says so. Guarantee earned: a git that timed out is never forgotten while a
+    /// process of its tree still runs.
     private GitResult timedOut(Process process) {
-        process.destroyForcibly();
+        var dead = processes.killOrKeep(process, timeout.millis());
 
-        return new GitResult(-1, "timed out after " + timeout);
+        return new GitResult(-1,
+                             "timed out after " + timeout + (dead
+                                                             ? ""
+                                                             : "; its process tree was still running at the bound and is left to the stop"));
     }
 
     private String outputOf(FutureTask<String> output) {
