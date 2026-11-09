@@ -1717,18 +1717,50 @@ public final class PartitionBackfill {
     private Promise<Long> promoteOwner(String streamName, int partition, List<ReplicaDescriptor> replicas) {
         var localWatermark = selfWatermark.localWatermark(streamName, partition);
 
-        return aheadSurvivor(replicas, localWatermark).fold(() -> probeThenPromoteOwner(streamName,
-                                                                                        partition,
-                                                                                        replicas,
-                                                                                        localWatermark),
-                                                            survivor -> {
-                                                                clearOversized(streamName, partition);
+        var ahead = aheadSurvivors(replicas, localWatermark);
 
-                                                                return catchupOwnerFromSurvivor(streamName,
-                                                                                                partition,
-                                                                                                survivor,
-                                                                                                localWatermark);
-                                                            });
+        if (ahead.isEmpty()) {
+            return probeThenPromoteOwner(streamName, partition, replicas, localWatermark);
+        }
+
+        clearOversized(streamName, partition);
+
+        return inRankOrder(ahead.stream()
+                                .<Supplier<Promise<Long>>>map(survivor -> () -> catchupOwnerFromSurvivor(streamName,
+                                                                                                         partition,
+                                                                                                         survivor,
+                                                                                                         localWatermark))
+                                .toList());
+    }
+
+    /// I-27 (#1759, CTO ruling 2026-11-09, FER): the catch-up of the top-ranked source failed (unreadable, damaged, unreachable), so the
+    /// owner falls back to the NEXT-ranked source by committed-lineage end, each tried once per round. Every attempt keeps its own target
+    /// rule (its lineage end, raised to the best other end), so a fallback never activates the owner below a replica that holds more of
+    /// the committed lineage. A source that WAS read but whose run stayed short of the target ([BackfillError.General#INCOMPLETE_BACKFILL])
+    /// is the target rule holding the owner back, not an unreadable source: no fallback. The guarantee: a round activates only through a
+    /// source whose read succeeded and reached the target; when every source fails the last failure propagates, self stays SYNCING and the
+    /// redrive retries (a failed source is read again only in a later round, after the others were tried). Mechanism: a lazy chain over the
+    /// ranked attempts, each started only after the previous one failed.
+    private static Promise<Long> inRankOrder(List<Supplier<Promise<Long>>> attempts) {
+        return attempts.stream()
+                       .reduce(NO_SOURCE_REPLICA.<Long>promise(),
+                               PartitionBackfill::unlessShort,
+                               (first, _) -> first);
+    }
+
+    private static Promise<Long> unlessShort(Promise<Long> previous, Supplier<Promise<Long>> next) {
+        var settled = Promise.<Long>promise();
+
+        previous.onResult(result -> settleAfter(result, next, settled));
+
+        return settled;
+    }
+
+    private static Promise<Long> settleAfter(Result<Long> result, Supplier<Promise<Long>> next, Promise<Long> settled) {
+        return result.fold(cause -> cause == INCOMPLETE_BACKFILL
+                                    ? settled.resolve(result)
+                                    : next.get().onResult(settled::resolve),
+                           _ -> settled.resolve(result));
     }
 
     /// #1555 owner promotion gate: pull `(local watermark + 1) .. sourceTail` of `(streamName, partition)` from
@@ -1751,10 +1783,17 @@ public final class PartitionBackfill {
     /// single best-effort pick) is what makes the target the true watermark, since any one survivor may hold
     /// a different acked subset.
     private Option<ReplicaDescriptor> aheadSurvivor(List<ReplicaDescriptor> replicas, long localWatermark) {
-        return Option.from(replicas.stream()
-                                   .filter(descriptor -> !descriptor.nodeId()
-                                                                    .equals(self))
-                                   .max(Comparator.comparingLong(this::lineageEnd))).filter(survivor -> lineageEnd(survivor) > localWatermark);
+        return Option.from(aheadSurvivors(replicas, localWatermark).stream().findFirst());
+    }
+
+    /// Every surviving NON-SELF replica strictly ahead of `localWatermark`, ranked by committed-lineage end, highest first (ties keep
+    /// registry order); the head is {@link #aheadSurvivor}.
+    private List<ReplicaDescriptor> aheadSurvivors(List<ReplicaDescriptor> replicas, long localWatermark) {
+        return replicas.stream()
+                       .filter(descriptor -> !descriptor.nodeId().equals(self))
+                       .filter(survivor -> lineageEnd(survivor) > localWatermark)
+                       .sorted(Comparator.comparingLong((ReplicaDescriptor descriptor) -> lineageEnd(descriptor)).reversed())
+                       .toList();
     }
 
     /// I-27 (#1759, CTO A1): the offset up to which `replica` is a source for the owner: its `confirmedOffset`, capped at the
@@ -1863,7 +1902,7 @@ public final class PartitionBackfill {
     /// I-27 (#1759, CTO A1, P10): the activating owner targets the source's committed-lineage end, never its raw tail. When the page
     /// was clipped the end is remembered for the source ([#lineageEnd]) and the target is raised to `othersEnd` — the best
     /// committed-lineage end among the OTHER survivors (registry-ranked or probed; `-1` on the promotion gate's own path), so the run
-    /// stays short of a replica that holds more of the lineage and the next redrive reads that replica instead of this source again.
+    /// (clipped, or a fallback source ranked below an unreadable one) stays short of a replica that holds more of the lineage and the next redrive reads that replica instead of this source again.
     private Promise<Long> applyWithinLineage(String streamName,
                                              int partition,
                                              NodeId survivorNode,
@@ -1873,7 +1912,7 @@ public final class PartitionBackfill {
         var bound = lineageBound(response);
         var end = bound.map(b -> Math.min(survivorTail, b - 1))
                        .onPresent(e -> rememberLineageEnd(streamName, partition, survivorNode, survivorTail, e));
-        var target = end.map(e -> Math.max(e, othersEnd.getAsLong())).or(survivorTail);
+        var target = Math.max(end.or(survivorTail), othersEnd.getAsLong());
 
         return applyAndPromote(streamName,
                                partition,
@@ -2009,16 +2048,19 @@ public final class PartitionBackfill {
         var bestEnd = ends.stream().mapToLong(Long::longValue).max().orElse(-1L);
 
         if (bestEnd > localWatermark) {
-            var best = ends.indexOf(bestEnd);
-
             clearOversized(streamName, partition);
 
-            return catchupOwnerFromSurvivor(streamName,
-                                            partition,
-                                            peers.get(best),
-                                            results.get(best).or(-1L),
-                                            localWatermark,
-                                            () -> othersMax(ends, best));
+            return inRankOrder(IntStream.range(0, ends.size())
+                                        .boxed()
+                                        .filter(i -> ends.get(i) > localWatermark)
+                                        .sorted(Comparator.comparingLong((Integer i) -> ends.get(i)).reversed())
+                                        .<Supplier<Promise<Long>>>map(i -> () -> catchupOwnerFromSurvivor(streamName,
+                                                                                                         partition,
+                                                                                                         peers.get(i),
+                                                                                                         results.get(i).or(-1L),
+                                                                                                         localWatermark,
+                                                                                                         () -> othersMax(ends, i)))
+                                        .toList());
         }
 
         var oversizedAt = oversizedIndex(results);

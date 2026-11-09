@@ -60,6 +60,7 @@ class OwnerCatchupCommittedLineageTest {
     Path walDir;
 
     private StreamPartitionManager owner;
+    private final AtomicInteger failReads = new AtomicInteger();
 
     @BeforeEach
     void startTheActivatingOwner() {
@@ -274,6 +275,122 @@ class OwnerCatchupCommittedLineageTest {
         assertThat(fixture.backfill().redriveCandidates()).isEmpty();
     }
 
+    /// P10 (verifier M4), three probed replicas on the production probe path: R1 raw 30 (lineage end 12 under E4 @ 13), R2 raw 25 holding the
+    /// lineage through 25, R3 raw 10. R1 is read first and the target is raised to the BEST other probed end (R2's 25), not the lowest (R3's 10):
+    /// the owner stays short at 12 and the next redrive reads R2.
+    @Test
+    void probePath_threeReplicas_holdsTheOwnerToTheBestOtherProbedEnd_notTheLowest() {
+        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E4, 13L)));
+
+        var fixture = fixture(true,
+                              List.of(new Replica(SOURCE, 30L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))),
+                                      new Replica(OTHER, 25L, List.of(ProvenanceEntry.provenanceEntry(E1, 0),
+                                                                      ProvenanceEntry.provenanceEntry(E4, 13))),
+                                      new Replica(THIRD, 10L, List.of(ProvenanceEntry.provenanceEntry(E1, 0)))));
+        var first = fixture.backfill().backfill("s", 0).await();
+
+        assertThat(first.isFailure()).as("short of R2's probed 25, not activated at R1's 12: %s", first).isTrue();
+        assertThat(head()).isEqualTo(12L);
+
+        var second = fixture.backfill().backfill("s", 0).await();
+
+        assertThat(second.isSuccess()).as("second redrive reads R2: %s", second).isTrue();
+        assertThat(head()).isEqualTo(25L);
+        assertThat(fixture.served()).containsExactly(SOURCE, OTHER);
+    }
+
+    /// P10 (verifier M8), the registry path ranks the OTHER survivors by committed-lineage end, never their raw tail: R2 (raw 30, lineage
+    /// end 12 under E4 @ 13) is read first and held to R1's 25; R1's page is then clipped at 12 too, and R2's learned end 12 is the best
+    /// other end, so the owner activates at 12 instead of waiting on R2's raw 30.
+    @Test
+    void registryPath_aSourceClipped_whileAnotherReplicaHoldsALearnedCap_activatesAtTheLearnedEnd_notTheOthersRawTail() {
+        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E4, 13L)));
+
+        var fixture = fixture(false,
+                              List.of(new Replica(SOURCE, 25L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))),
+                                      new Replica(OTHER, 30L, List.of(ProvenanceEntry.provenanceEntry(E1, 0)))));
+
+        assertThat(fixture.backfill().backfill("s", 0).await().isFailure()).as("held short of R1's 25").isTrue();
+        assertThat(head()).isEqualTo(12L);
+
+        var second = fixture.backfill().backfill("s", 0).await();
+
+        assertThat(second.isSuccess()).as("R2's learned end 12 is the best other end: %s", second).isTrue();
+        assertThat(head()).isEqualTo(12L);
+        assertThat(fixture.served()).containsExactly(OTHER, SOURCE);
+    }
+
+    /// Fallback (CTO ruling 2026-11-09), probe path: two replicas hold the same committed end 15; the first read fails (unreadable). The owner
+    /// falls back to the other replica in the same round and reaches 15 from it.
+    @Test
+    void probePath_whenTheTopRankedSourceCannotBeRead_theOwnerReachesTheTargetFromTheNextRanked() {
+        var fixture = fixture(true, equalReplicas());
+
+        failReads.set(1);
+
+        var result = fixture.backfill().backfill("s", 0).await();
+
+        assertThat(result.isSuccess()).as("second source reached the target: %s", result).isTrue();
+        assertThat(head()).isEqualTo(15L);
+        assertThat(fixture.served()).as("each source tried once, in one round").hasSize(2).doesNotHaveDuplicates();
+    }
+
+    /// Fallback, registry path: same as the probe path, with the replicas' rows carrying the tails.
+    @Test
+    void registryPath_whenTheTopRankedSourceCannotBeRead_theOwnerReachesTheTargetFromTheNextRanked() {
+        var fixture = fixture(false, equalReplicas());
+
+        failReads.set(1);
+
+        var result = fixture.backfill().backfill("s", 0).await();
+
+        assertThat(result.isSuccess()).as("second source reached the target: %s", result).isTrue();
+        assertThat(head()).isEqualTo(15L);
+        assertThat(fixture.served()).hasSize(2).doesNotHaveDuplicates();
+    }
+
+    /// Fallback bound: every source unreadable, each is tried once in the round and nothing activates; the owner stays behind
+    /// (SYNCING) and the next redrive, with the sources readable again, reaches 15.
+    @Test
+    void probePath_whenEverySourceCannotBeRead_eachIsTriedOnce_noActivation_andTheNextRoundRecovers() {
+        var fixture = fixture(true, equalReplicas());
+
+        failReads.set(2);
+
+        var first = fixture.backfill().backfill("s", 0).await();
+
+        assertThat(first.isFailure()).as("no source readable: %s", first).isTrue();
+        assertThat(head()).as("nothing installed").isEqualTo(-1L);
+        assertThat(fixture.served()).hasSize(2).doesNotHaveDuplicates();
+
+        var second = fixture.backfill().backfill("s", 0).await();
+
+        assertThat(second.isSuccess()).as("next round: %s", second).isTrue();
+        assertThat(head()).isEqualTo(15L);
+    }
+
+    /// Fallback never goes below the target rule: the unreadable top source holds MORE than the readable one (raw 20 against 15), so the
+    /// readable one is read and installed but the owner is not activated short of the unreadable source's possible end.
+    @Test
+    void probePath_theNextRankedHoldingLessThanTheUnreadableSource_isReadButDoesNotActivate() {
+        var fixture = fixture(true,
+                              List.of(new Replica(SOURCE, 20L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))),
+                                      new Replica(OTHER, 15L, List.of(ProvenanceEntry.provenanceEntry(E1, 0)))));
+
+        failReads.set(1);
+
+        var result = fixture.backfill().backfill("s", 0).await();
+
+        assertThat(result.isFailure()).as("short of the unreadable source's 20: %s", result).isTrue();
+        assertThat(head()).as("the readable replica's records are installed").isEqualTo(15L);
+        assertThat(fixture.served()).containsExactly(SOURCE, OTHER);
+    }
+
+    private static List<Replica> equalReplicas() {
+        return List.of(new Replica(SOURCE, 15L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))),
+                       new Replica(OTHER, 15L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))));
+    }
+
     private record Replica(NodeId node, long tail, List<ProvenanceEntry> history) {}
 
     private record Replicas(ReplicaRegistry registry, PartitionBackfill backfill, List<NodeId> served) {}
@@ -317,8 +434,12 @@ class OwnerCatchupCommittedLineageTest {
         return replicas.stream().filter(replica -> replica.node().equals(node)).findFirst().orElseThrow();
     }
 
-    private static Promise<CatchupResponse> serve(Replica replica, CatchupRequest request, List<NodeId> served) {
+    private Promise<CatchupResponse> serve(Replica replica, CatchupRequest request, List<NodeId> served) {
         served.add(replica.node());
+
+        if (failReads.getAndDecrement() > 0) {
+            return BackfillError.General.NO_SOURCE_REPLICA.promise();
+        }
 
         return Promise.success(served(request.fromOffset(), replica.tail(), replica.node(), replica.history()));
     }
