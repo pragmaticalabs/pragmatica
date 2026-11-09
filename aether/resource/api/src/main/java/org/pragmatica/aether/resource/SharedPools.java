@@ -345,13 +345,19 @@ final class SharedPools {
         closed.set(true);
         var closes = new LinkedHashSet<Promise<Unit>>();
 
-        for (var keys = List.copyOf(entries.keySet()); !keys.isEmpty(); keys = List.copyOf(entries.keySet())) {
+        for (var keys = presentKeys(); !keys.isEmpty(); keys = presentKeys()) {
             drainKeys(keys, closes);
         }
 
         closes.addAll(pendingCloses);
 
         return new ArrayList<>(closes);
+    }
+
+    /// The keys found by walking the table. Not `List.copyOf`: that asks the key view `isEmpty()`, which is the map's
+    /// count again, and returns an empty list on the very read this drain must not trust.
+    private List<Object> presentKeys() {
+        return new ArrayList<>(entries.keySet());
     }
 
     private void drainKeys(List<Object> keys, Set<Promise<Unit>> closes) {
