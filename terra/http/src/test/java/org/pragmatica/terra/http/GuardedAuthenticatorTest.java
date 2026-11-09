@@ -77,8 +77,15 @@ class GuardedAuthenticatorTest {
             @Override public Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy) { return null; }
         };
 
-        assertThat(new GuardedAuthenticator("p", throwing).close().await(timeSpan(5).seconds()).isFailure()).isTrue();
-        assertThat(new GuardedAuthenticator("p", nulling).close().await(timeSpan(5).seconds()).isFailure()).isTrue();
+        assertClosesAsGenericFailure(throwing);
+        assertClosesAsGenericFailure(nulling);
+    }
+
+    private static void assertClosesAsGenericFailure(HttpAuthenticator authenticator) {
+        new GuardedAuthenticator("p", authenticator).close()
+                                                    .await(timeSpan(5).seconds())
+                                                    .onSuccess(_ -> fail("close must fail"))
+                                                    .onFailure(cause -> assertThat(cause).isSameAs(GuardedAuthenticator.UNAVAILABLE));
     }
 
     @Test
