@@ -68,7 +68,6 @@ public final class OutputNullability {
                                                          "stddev",
                                                          "variance");
 
-
     private static final Set<String> SUBTOTAL_KEYWORDS = Set.of("RollupKW", "CubeKW", "GroupingSetsKW");
 
     /// A relation visible to the output expressions. `table` is empty for a derived table, a CTE, a function or a
