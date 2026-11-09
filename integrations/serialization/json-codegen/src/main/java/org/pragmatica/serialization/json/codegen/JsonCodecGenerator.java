@@ -190,7 +190,8 @@ public final class JsonCodecGenerator {
             case JsonType.OptionalOf optional -> reaches(optional.element(), record);
             case JsonType.PatchOf patch -> reaches(patch.element(), record);
             case JsonType.ListOf list -> reaches(list.element(), record);
-            case JsonType.MapOf map -> reaches(map.key(), record) || reaches(map.value(), record);
+            // A key record is a value object, whose one component a route cannot bind without binding the whole body.
+            case JsonType.MapOf map -> reaches(map.value(), record);
             case JsonType.Scalar _, JsonType.EnumRef _ -> false;
         };
     }
