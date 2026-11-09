@@ -47,4 +47,22 @@ class BackupPreflightTest {
             assertThat(cause.message()).contains("[backup]").contains("timed out");
         });
     }
+
+    /// An interrupt that lands while the probe waits is not swallowed: the caller still sees it (#2924, same class as the git adapter's output read).
+    @Test
+    void anInterruptDuringTheProbe_staysVisibleToTheCaller() throws Exception {
+        var visible = new java.util.concurrent.atomic.AtomicBoolean();
+        var worker = new Thread(() -> {
+            BackupPreflight.requireGit(List.of("sleep", "30"), TimeSpan.timeSpan(20).seconds());
+            visible.set(Thread.currentThread().isInterrupted());
+        });
+
+        worker.start();
+        Thread.sleep(300);
+        worker.interrupt();
+        worker.join(15_000);
+
+        assertThat(worker.isAlive()).isFalse();
+        assertThat(visible.get()).isTrue();
+    }
 }

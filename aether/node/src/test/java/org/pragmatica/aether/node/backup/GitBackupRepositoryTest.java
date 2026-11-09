@@ -259,6 +259,46 @@ class GitBackupRepositoryTest {
         assertThat(git(Path.of(remote), "rev-list", "--count", "backup").strip()).isEqualTo("2");
     }
 
+    /// The stop's interrupt can land while the output of a git that already exited is read (a background child of a hook keeps the pipe open): the
+    /// interrupt must still be visible to the caller afterwards, or the worker carries on with the rest of its pass (#2924: a push after the stop).
+    @Test
+    @Timeout(60)
+    void anInterruptWhileReadingTheOutput_staysVisibleToTheCaller() throws Exception {
+        var repository = repository("local", Option.none());
+
+        repository.prepare().onFailure(cause -> Assertions.fail(cause.message()));
+        var hook = repository.dir().resolve(".git").resolve("hooks").resolve("pre-commit");
+
+        Files.writeString(hook, "#!/bin/sh\n(sleep 8 &)\nexit 0\n");
+        Files.setPosixFilePermissions(hook, PosixFilePermissions.fromString("rwxr-xr-x"));
+        var visible = new java.util.concurrent.atomic.AtomicBoolean();
+        var worker = new Thread(() -> {
+            repository.commitFile("a.txt", "a", "m");
+            visible.set(Thread.currentThread().isInterrupted());
+        });
+
+        worker.start();
+        awaitReadingOutput(worker);
+        worker.interrupt();
+        worker.join(30_000);
+
+        assertThat(worker.isAlive()).as("the worker came back").isFalse();
+        assertThat(visible.get()).as("the interrupt is still visible after the call").isTrue();
+    }
+
+    /// Git has exited and the caller waits for the output pipe: the parked frame is the output future's.
+    private static void awaitReadingOutput(Thread worker) throws InterruptedException {
+        for (var attempt = 0; attempt < 600; attempt++) {
+            if (java.util.Arrays.stream(worker.getStackTrace()).anyMatch(frame -> frame.getClassName().equals("java.util.concurrent.FutureTask"))) {
+                return;
+            }
+
+            Thread.sleep(25);
+        }
+
+        throw new AssertionError("the worker never reached the output read");
+    }
+
     private GitBackupRepository repository(String name, Option<String> remote) {
         return GitBackupRepository.gitBackupRepository(temp.resolve(name), remote, "backup", TIMEOUT);
     }
