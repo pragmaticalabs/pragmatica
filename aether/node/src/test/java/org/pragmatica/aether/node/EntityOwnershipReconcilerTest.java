@@ -1071,8 +1071,7 @@ class EntityOwnershipReconcilerTest {
         private final EntityOwnershipReconciler reconciler;
 
         IsrCluster() {
-            store.process(store.createBatch(List.<KVCommand<AetherKey>>of(new KVCommand.Put<AetherKey, AetherValue>(LeaderKey.INSTANCE,
-                                                                                                                  new LeaderValue(N1, 1L)))));
+            seedLeader();
             this.reconciler = EntityOwnershipReconciler.entityOwnershipReconciler(store,
                                                                                   N1,
                                                                                   members::get,
@@ -1085,6 +1084,13 @@ class EntityOwnershipReconcilerTest {
                                                                                   TimeSpan.timeSpan(5).seconds(),
                                                                                   System::nanoTime,
                                                                                   OperatorWarningSink.logOnly());
+        }
+
+        /// The committed leader record the ISR writer's guarded transactions are authorized by; the leader key is not an
+        /// [AetherKey], hence the raw batch, as in `IsrOwnershipWriterTest`.
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        private void seedLeader() {
+            store.process(store.createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(N1, 1L)))));
         }
 
         private StreamPartitionOwnershipWriter writer(StreamPartitionOwnershipWriter.HrwOwner hrwOwner,
