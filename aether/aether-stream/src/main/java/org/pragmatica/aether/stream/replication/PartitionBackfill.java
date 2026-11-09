@@ -1744,15 +1744,15 @@ public final class PartitionBackfill {
         return rankedCatchup(streamName,
                              partition,
                              ahead.stream()
-                                .<Supplier<Promise<Long>>> map(survivor -> () -> demoteStalled(streamName,
-                                                                                               partition,
-                                                                                               survivor.nodeId(),
-                                                                                               localWatermark,
-                                                                                               () -> catchupOwnerFromSurvivor(streamName,
-                                                                                                                              partition,
-                                                                                                                              survivor,
-                                                                                                                              localWatermark)))
-                                .toList());
+                                  .<Supplier<Promise<Long>>> map(survivor -> () -> demoteStalled(streamName,
+                                                                                                 partition,
+                                                                                                 survivor.nodeId(),
+                                                                                                 localWatermark,
+                                                                                                 () -> catchupOwnerFromSurvivor(streamName,
+                                                                                                                                partition,
+                                                                                                                                survivor,
+                                                                                                                                localWatermark)))
+                                  .toList());
     }
 
     /// I-27 (#1759, CTO ruling 2026-11-09, FER): the catch-up of the top-ranked source failed (unreadable, damaged, unreachable), so the
@@ -2171,22 +2171,22 @@ public final class PartitionBackfill {
                                  partition,
                                  IntStream.range(0,
                                                  ends.size())
-                                        .boxed()
-                                        .filter(i -> ends.get(i) > localWatermark)
-                                        .sorted(Comparator.comparingLong((Integer i) -> ends.get(i)).reversed())
-                                        .<Supplier<Promise<Long>>> map(i -> () -> demoteStalled(streamName,
-                                                                                                partition,
-                                                                                                peers.get(i),
-                                                                                                localWatermark,
-                                                                                                () -> catchupOwnerFromSurvivor(streamName,
-                                                                                                                               partition,
-                                                                                                                               peers.get(i),
-                                                                                                                               results.get(i)
-                                                                                                                                      .or(-1L),
-                                                                                                                               localWatermark,
-                                                                                                                               () -> othersMax(ends,
-                                                                                                                                               i))))
-                                        .toList());
+                                          .boxed()
+                                          .filter(i -> ends.get(i) > localWatermark)
+                                          .sorted(Comparator.comparingLong((Integer i) -> ends.get(i)).reversed())
+                                          .<Supplier<Promise<Long>>> map(i -> () -> demoteStalled(streamName,
+                                                                                                  partition,
+                                                                                                  peers.get(i),
+                                                                                                  localWatermark,
+                                                                                                  () -> catchupOwnerFromSurvivor(streamName,
+                                                                                                                                 partition,
+                                                                                                                                 peers.get(i),
+                                                                                                                                 results.get(i)
+                                                                                                                                        .or(-1L),
+                                                                                                                                 localWatermark,
+                                                                                                                                 () -> othersMax(ends,
+                                                                                                                                                 i))))
+                                          .toList());
         }
 
         var oversizedAt = oversizedIndex(results);
