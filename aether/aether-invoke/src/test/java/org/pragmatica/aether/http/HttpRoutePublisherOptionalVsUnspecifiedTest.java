@@ -67,6 +67,19 @@ class HttpRoutePublisherOptionalVsUnspecifiedTest {
         }
     }
 
+    @Test
+    void optionalDeclaration_outranksAPublicSibling_inEitherOrder() {
+        for (var slice : List.<Object>of(new OptionalVsUnspecifiedSliceRoutes.OptionalThenPublicSlice(),
+                                         new OptionalVsUnspecifiedSliceRoutes.PublicThenOptionalSlice())) {
+            var publisher = publish(slice);
+
+            assertThat(publisher.findLocalRoute("GET", "/things/5")
+                                .map(HttpRoutePublisher.LocalRouteInfo::security)
+                                .or(SecurityPolicy.unspecified())).as("%s", slice.getClass().getSimpleName())
+                                                                  .isEqualTo(SecurityPolicy.optional());
+        }
+    }
+
     private static HttpRoutePublisher publish(Object slice) {
         var publisher = HttpRoutePublisher.httpRoutePublisher(SELF, new SilentCluster());
 

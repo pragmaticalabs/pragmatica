@@ -49,7 +49,20 @@ public final class OptionalVsUnspecifiedSliceRoutes {
                     .asJson();
     }
 
+    static Route<?> publicThing() {
+        return Route.<String>get("/things/")
+                    .withPath(aLong())
+                    .to(id -> Promise.success("public-" + id))
+                    .named("publicThing")
+                    .withSecurity(SecurityPolicy.publicRoute())
+                    .asJson();
+    }
+
     public static final class OptionalFirstSlice {}
+
+    public static final class OptionalThenPublicSlice {}
+
+    public static final class PublicThenOptionalSlice {}
 
     public static final class OptionalThenAuthenticatedSlice {}
 
@@ -162,6 +175,60 @@ public final class OptionalVsUnspecifiedSliceRoutes {
         @Override
         public Stream<Route<?>> routes() {
             return Stream.of(authenticatedThing(), optionalThing());
+        }
+    }
+
+    public static final class OptionalThenPublic implements RouteSource, SliceRouterFactory<OptionalThenPublicSlice> {
+        @Override
+        public Class<OptionalThenPublicSlice> sliceType() {
+            return OptionalThenPublicSlice.class;
+        }
+
+        @Override
+        public int routeSecurityContract() {
+            return SliceRouterFactory.ROUTE_SECURITY_CONTRACT;
+        }
+
+        @Override
+        public SliceRouter create(OptionalThenPublicSlice slice) {
+            return create(slice, JsonMapper.defaultJsonMapper());
+        }
+
+        @Override
+        public SliceRouter create(OptionalThenPublicSlice slice, JsonMapper jsonMapper) {
+            return SliceRouter.sliceRouter(this, ErrorMapper.defaultMapper(), jsonMapper);
+        }
+
+        @Override
+        public Stream<Route<?>> routes() {
+            return Stream.of(optionalThing(), publicThing());
+        }
+    }
+
+    public static final class PublicThenOptional implements RouteSource, SliceRouterFactory<PublicThenOptionalSlice> {
+        @Override
+        public Class<PublicThenOptionalSlice> sliceType() {
+            return PublicThenOptionalSlice.class;
+        }
+
+        @Override
+        public int routeSecurityContract() {
+            return SliceRouterFactory.ROUTE_SECURITY_CONTRACT;
+        }
+
+        @Override
+        public SliceRouter create(PublicThenOptionalSlice slice) {
+            return create(slice, JsonMapper.defaultJsonMapper());
+        }
+
+        @Override
+        public SliceRouter create(PublicThenOptionalSlice slice, JsonMapper jsonMapper) {
+            return SliceRouter.sliceRouter(this, ErrorMapper.defaultMapper(), jsonMapper);
+        }
+
+        @Override
+        public Stream<Route<?>> routes() {
+            return Stream.of(publicThing(), optionalThing());
         }
     }
 }

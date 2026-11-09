@@ -20,3 +20,5 @@ org.pragmatica.aether.http.OptionalVsUnspecifiedSliceRoutes$OptionalFirst
 org.pragmatica.aether.http.OptionalVsUnspecifiedSliceRoutes$InheritedFirst
 org.pragmatica.aether.http.OptionalVsUnspecifiedSliceRoutes$OptionalThenAuthenticated
 org.pragmatica.aether.http.OptionalVsUnspecifiedSliceRoutes$AuthenticatedThenOptional
+org.pragmatica.aether.http.OptionalVsUnspecifiedSliceRoutes$OptionalThenPublic
+org.pragmatica.aether.http.OptionalVsUnspecifiedSliceRoutes$PublicThenOptional
