@@ -209,6 +209,27 @@ class SharedPoolLifecycleTest {
             assertThat(retried.isSuccess()).isTrue();
             assertThat(attempts.get()).isEqualTo(2);
         }
+
+        /// T9, the ordering itself: the caller's own continuation observes the failed entry already evicted. The
+        /// eviction is a dependent registered ahead of the holder's slot, so this holds on every round; as an
+        /// event it would race the continuation.
+        @Test
+        void failedProvision_isAlreadyEvicted_whenTheCallersContinuationRuns() {
+            for (var round = 0; round < 200; round++) {
+                var factory = new FakeShareableFactory();
+                var provider = providerOf(sameValues(), factory);
+                var seen = new AtomicInteger(-1);
+
+                factory.provisioner = _ -> Causes.cause("fails")
+                                                 .promise();
+                provider.provide(FakeConnector.class, DB, SharedPoolFixtures.slice("slice-a"))
+                        .withFailure(_ -> seen.set(provider.sharedPoolCount()))
+                        .await(TIMEOUT);
+
+                assertThat(seen.get()).as("round %d: shared entries visible to the continuation", round)
+                                      .isZero();
+            }
+        }
     }
 
     @Nested

@@ -156,6 +156,11 @@ public final class SpiResourceProvider implements ResourceProvider {
         return Unit.unit();
     }
 
+    /// The shared pools currently in the map, for tests.
+    int sharedPoolCount() {
+        return sharedPools.size();
+    }
+
     /// The marked factories demoted at registration, for tests.
     List<Class<?>> demotedFactories() {
         return demoted;
@@ -251,8 +256,9 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// Per-slice instances are NOT a behaviour change — the context overload was uncached, and
     /// generated code provisions once per slice inside its static create path, so each slice
     /// already got its own. What is new is that the instance is now memoized within the slice and
-    /// released when that slice unloads. Genuinely shared pools, if ever wanted, are a deliberate
-    /// design change with their own ticket — not something to acquire from a cache key.
+    /// released when that slice unloads. Genuinely shared pools are a deliberate design change with
+    /// their own ticket, #2973, and they do not come from this cache key: they take the bound path
+    /// below, keyed by what the pool connects with, never by a section or a slice.
     ///
     /// WHAT A RACE WITH `releaseAll` OF THE SAME SCOPE GUARANTEES, and by what mechanism: the
     /// entry is inserted and removed through `ConcurrentHashMap`'s per-key atomics only, so the
@@ -459,9 +465,10 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// alone. That single-remover property is the whole of what "atomic" means here; there is no
     /// second structure to keep in step (see `promiseCache`).
     ///
-    /// NOTE on "last consumer": with a scoped key each entry has exactly one consumer identity, so
-    /// release is per-scope, not cross-slice refcounting. No test here claims cross-slice
-    /// refcounting, because nothing in the current model exercises it.
+    /// NOTE on "last consumer": with a scoped key each `promiseCache` entry has exactly one consumer
+    /// identity, so its release is per-scope. Node-shared pools (#2973) are the one cross-slice case:
+    /// `releaseAll` removes this scope as a holder of each shared pool it holds, and only the release
+    /// that removes the last holder closes the pool (see [SharedPools]).
     @Override
     public Promise<Unit> releaseAll(String sliceId) {
         // The shared unattributed scope is released by nobody here. Relying instead on "no real
