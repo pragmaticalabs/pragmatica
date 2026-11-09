@@ -10,7 +10,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
@@ -28,7 +30,9 @@ import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.aether.stream.replication.AlignedRecovery;
 import org.pragmatica.aether.stream.replication.BackfillError;
 import org.pragmatica.aether.stream.replication.PartitionBackfill;
+import org.pragmatica.aether.stream.replication.QuarantineView;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
+import org.pragmatica.aether.stream.replication.ReplicationReceiveHandler;
 import org.pragmatica.aether.stream.replication.ReplicationState;
 import org.pragmatica.aether.stream.replication.ReplicationTransport;
 import org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupRequest;
@@ -69,6 +73,7 @@ class OwnerCatchupCommittedLineageTest {
     private StreamPartitionManager owner;
     private final AtomicInteger failReads = new AtomicInteger();
     private final Set<NodeId> unanswered = ConcurrentHashMap.newKeySet();
+    private final Set<NodeId> oversized = ConcurrentHashMap.newKeySet();
     private final Map<NodeId, Long> pageCaps = new ConcurrentHashMap<>();
 
     @BeforeEach
@@ -738,6 +743,105 @@ class OwnerCatchupCommittedLineageTest {
         assertThat(alarm.resolved()).containsExactlyElementsOf(alarm.raised());
     }
 
+    /// #2960: the state ends when the stalled survivor leaves the registry: no source is left ahead, none is blind, the owner self-promotes
+    /// and is authoritative, so the warning is resolved. At the previous head the CRITICAL stayed open for an activated owner.
+    @Test
+    void probePath_theStalledSurvivorLeavingTheRegistry_activatesTheOwner_andResolvesTheWarning() {
+        assertSurvivorLeavingActivatesAndResolves(fixture(true, singleReplica()));
+    }
+
+    @Test
+    void registryPath_theStalledSurvivorLeavingTheRegistry_activatesTheOwner_andResolvesTheWarning() {
+        assertSurvivorLeavingActivatesAndResolves(fixture(false, singleReplica()));
+    }
+
+    private void assertSurvivorLeavingActivatesAndResolves(Replicas fixture) {
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+        assertThat(alarm.raised()).hasSize(1);
+
+        fixture.registry().unregisterReplica("s", 0, SOURCE);
+
+        var round = settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(round.isSuccess()).as("the owner self-promotes with no survivor left: %s", round).isTrue();
+        assertThat(alarm.resolved()).containsExactlyElementsOf(alarm.raised());
+    }
+
+    /// #2960: the state ends when the partition is quarantined: the owner is held SYNCING with no pull, so no catch-up is stalled any more.
+    @Test
+    void registryPath_aQuarantineAfterAllStalled_resolvesTheWarning() {
+        var quarantine = new FlagQuarantine();
+        var fixture = fixture(false, singleReplica(), owner.alignedRecovery(), quarantine);
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+        assertThat(alarm.raised()).hasSize(1);
+
+        quarantine.on();
+        settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(alarm.resolved()).containsExactlyElementsOf(alarm.raised());
+    }
+
+    /// #2960: the state ends when the probe finds a peer cut before its first event instead (the oversized-peer block replaces it): the
+    /// stalled warning is resolved, the oversized one is raised.
+    @Test
+    void probePath_anOversizedPeerAfterAllStalled_resolvesTheStalledWarning() {
+        var fixture = fixture(true, singleReplica());
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+        assertThat(alarm.raised()).hasSize(1);
+
+        oversized.add(SOURCE);
+        settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(alarm.resolved()).containsExactlyElementsOf(alarm.raised());
+        assertThat(alarm.raised()).as("the oversized block took its place").hasSize(2);
+    }
+
+    /// #2960: the state ends when the promotion gate's own catch-up reaches the target and activates the owner (it does not pass through the
+    /// redrive's bookkeeping): the warning is resolved.
+    @Test
+    void registryPath_theGatesCatchUpActivatingAfterAllStalled_resolvesTheWarning() {
+        var fixture = fixture(false, singleReplica());
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+        assertThat(alarm.raised()).hasSize(1);
+        pageCaps.remove(SOURCE);
+
+        var activated = settled(fixture.backfill().catchUpOwnerFrom("s", 0, SOURCE, 15L));
+
+        assertThat(activated.isSuccess()).as("the gate's catch-up reaches 15: %s", activated).isTrue();
+        assertThat(alarm.resolved()).containsExactlyElementsOf(alarm.raised());
+    }
+
+    /// Quarantines the partition once switched on.
+    private static final class FlagQuarantine implements QuarantineView {
+        private final AtomicBoolean on = new AtomicBoolean();
+
+        void on() {
+            on.set(true);
+        }
+
+        @Override
+        public Option<Long> quarantinedAt(String streamName, int partition) {
+            return on.get() ? Option.some(5L) : Option.none();
+        }
+
+        @Override
+        public <T> Option<T> unlessQuarantined(String streamName, int partition, Supplier<T> promotion) {
+            return on.get() ? Option.none() : Option.some(promotion.get());
+        }
+    }
+
     /// #2960: `demoteStalled` settles its promise even when the code that runs on the attempt's result throws (here the alarm's `resolved`,
     /// reached through the stall bookkeeping): the round fails, it does not hang.
     @Test
@@ -822,6 +926,10 @@ class OwnerCatchupCommittedLineageTest {
     }
 
     private Replicas fixture(boolean blind, List<Replica> replicas, AlignedRecovery recovery) {
+        return fixture(blind, replicas, recovery, QuarantineView.NONE);
+    }
+
+    private Replicas fixture(boolean blind, List<Replica> replicas, AlignedRecovery recovery, QuarantineView quarantine) {
         var registry = ReplicaRegistry.replicaRegistry();
         var served = new CopyOnWriteArrayList<NodeId>();
 
@@ -832,16 +940,26 @@ class OwnerCatchupCommittedLineageTest {
                                                            recovery,
                                                            (node, request) -> serve(replicaOf(replicas, node), request, served),
                                                            ReplicationTransport.NOOP,
-                                                           (peer, _, _) -> unanswered.contains(peer)
-                                                                          ? BackfillError.General.NO_SOURCE_REPLICA.<Long>promise()
-                                                                          : Promise.success(replicaOf(replicas, peer).tail()),
+                                                           (peer, _, _) -> probed(replicas, peer),
                                                            (_, _) -> head(),
                                                            SELF,
                                                            TimeSpan.timeSpan(Long.MAX_VALUE).nanos(),
                                                            () -> List.of(SELF),
-                                                           CommittedStreamOwnerSource.none());
+                                                           CommittedStreamOwnerSource.none(),
+                                                           ReplicationReceiveHandler.NO_DURABILITY_BARRIER,
+                                                           quarantine);
 
         return new Replicas(registry, backfill, served);
+    }
+
+    private Promise<Long> probed(List<Replica> replicas, NodeId peer) {
+        if (oversized.contains(peer)) {
+            return new OwnerPeerReads.EventExceedsReadCap(7L).promise();
+        }
+
+        return unanswered.contains(peer)
+               ? BackfillError.General.NO_SOURCE_REPLICA.<Long>promise()
+               : Promise.success(replicaOf(replicas, peer).tail());
     }
 
     private static void register(ReplicaRegistry registry, Replica replica, boolean blind) {
