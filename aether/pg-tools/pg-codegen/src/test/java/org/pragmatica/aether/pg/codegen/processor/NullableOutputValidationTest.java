@@ -173,7 +173,7 @@ class NullableOutputValidationTest {
             FactoryGenerator.MethodInfo analyzeMethod(ExecutableElement execElement,
                                                       org.pragmatica.lang.Option<org.pragmatica.aether.pg.schema.model.Schema> schemaOpt,
                                                       TypeElement interfaceElement) {
-                throw new IllegalStateException("label has no lexeme at rule ColLabel");
+                throw new UnsupportedOperationException("label has no lexeme at rule ColLabel");
             }
         };
         var source = repo("ForcedFailureRepo", "record Row(long id) {}", "SELECT id FROM orders", "Promise<List<Row>> run()");

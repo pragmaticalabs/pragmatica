@@ -68,20 +68,6 @@ public final class OutputNullability {
                                                          "stddev",
                                                          "variance");
 
-    private static final Set<String> TRANSPARENT_RULES = Set.of("Expr",
-                                                                "OrExpr",
-                                                                "AndExpr",
-                                                                "NotExpr",
-                                                                "CompareExpr",
-                                                                "IsExpr",
-                                                                "AddExpr",
-                                                                "MulExpr",
-                                                                "ExponentExpr",
-                                                                "ConcatExpr",
-                                                                "ArrayExpr",
-                                                                "PostfixExpr",
-                                                                "PrimaryExpr",
-                                                                "ExprOrDefault");
 
     private static final Set<String> SUBTOTAL_KEYWORDS = Set.of("RollupKW", "CubeKW", "GroupingSetsKW");
 
@@ -434,12 +420,6 @@ public final class OutputNullability {
 
     /// A rule that adds nothing to its single operand keeps the operand's verdict; `( expr )` is the same.
     private static Nullability transparentOrUnproven(CstNavigator node, Scope scope) {
-        var children = node.children();
-
-        if (TRANSPARENT_RULES.contains(node.rule()) && children.size() == 1) {
-            return operand(node.firstChild(), scope);
-        }
-
         if (node.rule().equals("PrimaryExpr") && isParenthesised(node)) {
             return operand(node.child("Expr"), scope);
         }
