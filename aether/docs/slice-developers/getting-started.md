@@ -1028,6 +1028,24 @@ Routes can be:
 - **String** (uses default security): `shorten = "POST /"`
 - **Array** (explicit security): `resolve = ["GET /{shortCode}", "public"]`
 
+Security levels: `public`, `optional`, `authenticated`, `role:<name>`.
+
+**`optional` -- authenticate if a credential is presented** (#2946; the name is a guess pending review). Use it for a
+route that serves everyone but personalises for a signed-in caller (a feed with a `following` flag):
+
+| Request | Outcome |
+|---|---|
+| no credential (`Authorization` / `X-API-Key` absent, or an `Authorization` scheme this server does not accept) | served anonymously: the slice's `SecurityContext` parameter is the empty context (`isAuthenticated() == false`) |
+| a credential that fails validation (malformed, expired, bad signature, wrong `alg`, wrong issuer/audience, unknown key) | `401` with `WWW-Authenticate: <first auth_schemes entry> realm="Aether", error="invalid_token"` -- never downgraded to anonymous |
+| a valid credential | served; the slice's `Principal` / `SecurityContext` parameters carry the validated identity |
+
+`public` is unchanged: it never reads a credential, so a bad token on a `public` route is ignored. `authenticated`
+and `role:<name>` are unchanged: a missing credential is still `401`. Under `security_mode = "none"` (and `jwt`
+without a `jwks_url`) there is nothing to validate a credential against, so an `optional` route is served anonymously
+and any credential is ignored. A security override to `optional` is subject to `strengthen_only` like `public`: it
+cannot be applied to an undeclared route, and `public` cannot replace `optional`. A JWT 503 (key-set fetch failure)
+is still a 503 on an `optional` route.
+
 The `[security]` section is optional. A route with no `[security]` section at all does **not**
 default to `public` (#763) -- it inherits the app HTTP server's global `security_mode` (see
 "Securing Your Endpoints" below), the same as an authenticated route with no per-route override.
