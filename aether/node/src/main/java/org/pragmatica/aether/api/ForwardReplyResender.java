@@ -5,15 +5,14 @@
 package org.pragmatica.aether.api;
 
 import java.util.function.BiConsumer;
-import java.util.function.BiFunction;
 import java.util.function.LongSupplier;
 
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
 import org.pragmatica.aether.stream.forward.RefusalBackoff;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.Contract;
-import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 
@@ -70,28 +69,22 @@ final class ForwardReplyResender {
         return new ForwardReplyResender(scheduler, nanoClock, holds);
     }
 
-    /// Sends `reply` to `target` through `transport`; `budget` is the requester's remaining wait, which bounds every re-send.
+    /// Sends `reply` to `target` through `network`; `budget` is the requester's remaining wait, which bounds every re-send.
     @Contract
-    void send(BiFunction<NodeId, HttpForwardResponse, Promise<WriteOutcome>> transport,
-              NodeId target,
-              HttpForwardResponse reply,
-              TimeSpan budget) {
-        write(transport,
+    void deliver(ClusterNetwork network, NodeId target, HttpForwardResponse reply, TimeSpan budget) {
+        write(network,
               target,
               reply,
               nanoClock.getAsLong() + budget.nanos());
     }
 
     @Contract
-    private void write(BiFunction<NodeId, HttpForwardResponse, Promise<WriteOutcome>> transport,
-                       NodeId target,
-                       HttpForwardResponse reply,
-                       long deadlineNanos) {
-        transport.apply(target, reply).onSuccess(outcome -> settle(transport, target, reply, outcome, deadlineNanos));
+    private void write(ClusterNetwork network, NodeId target, HttpForwardResponse reply, long deadlineNanos) {
+        network.send(target, reply).onSuccess(outcome -> settle(network, target, reply, outcome, deadlineNanos));
     }
 
     @Contract
-    private void settle(BiFunction<NodeId, HttpForwardResponse, Promise<WriteOutcome>> transport,
+    private void settle(ClusterNetwork network,
                         NodeId target,
                         HttpForwardResponse reply,
                         WriteOutcome outcome,
@@ -99,7 +92,7 @@ final class ForwardReplyResender {
         switch (outcome) {
             case WriteOutcome.Sent _ -> holds.sent(target);
             case WriteOutcome.EncodeFailed _ -> giveUp(target, reply, outcome, "cannot be encoded");
-            case WriteOutcome.BackpressureRefused _, WriteOutcome.NoPeerState _, WriteOutcome.ConnectionDead _ -> holdThenResend(transport,
+            case WriteOutcome.BackpressureRefused _, WriteOutcome.NoPeerState _, WriteOutcome.ConnectionDead _ -> holdThenResend(network,
                                                                                                                                  target,
                                                                                                                                  reply,
                                                                                                                                  outcome,
@@ -108,7 +101,7 @@ final class ForwardReplyResender {
     }
 
     @Contract
-    private void holdThenResend(BiFunction<NodeId, HttpForwardResponse, Promise<WriteOutcome>> transport,
+    private void holdThenResend(ClusterNetwork network,
                                 NodeId target,
                                 HttpForwardResponse reply,
                                 WriteOutcome outcome,
@@ -124,7 +117,7 @@ final class ForwardReplyResender {
             return;
         }
 
-        scheduler.accept(() -> write(transport, target, reply, deadlineNanos), hold);
+        scheduler.accept(() -> write(network, target, reply, deadlineNanos), hold);
     }
 
     @Contract

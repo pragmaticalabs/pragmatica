@@ -6,6 +6,7 @@ package org.pragmatica.aether.api;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.DoubleSupplier;
 
@@ -14,12 +15,19 @@ import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse
 import org.pragmatica.aether.http.forward.HttpForwardMessage.Pipeline;
 import org.pragmatica.aether.stream.forward.RefusalBackoff;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.net.tcp.Server;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
+import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #2569 / #2583 P2 (know 89e17399a9 shape): a management reply the transport proves it did not write is re-sent after a hold
@@ -40,7 +48,7 @@ class ForwardReplyResenderTest {
     void send_writtenFirstTime_isNeverResent() {
         script.add(sent());
 
-        resender(() -> 0.5).send(this::transport, ENTRY, REPLY, timeSpan(10).seconds());
+        resender(() -> 0.5).deliver(network, ENTRY, REPLY, timeSpan(10).seconds());
 
         assertThat(writes).hasSize(1);
         assertThat(holds).isEmpty();
@@ -51,7 +59,7 @@ class ForwardReplyResenderTest {
         script.add(refused());
         script.add(sent());
 
-        resender(() -> 0.5).send(this::transport, ENTRY, REPLY, timeSpan(10).seconds());
+        resender(() -> 0.5).deliver(network, ENTRY, REPLY, timeSpan(10).seconds());
         runScheduled();
 
         assertThat(holds).extracting(TimeSpan::millis).containsExactly(250L);
@@ -66,7 +74,7 @@ class ForwardReplyResenderTest {
         }
         script.add(sent());
 
-        resender(() -> 0.5).send(this::transport, ENTRY, REPLY, timeSpan(1).hours());
+        resender(() -> 0.5).deliver(network, ENTRY, REPLY, timeSpan(1).hours());
         runScheduled();
 
         assertThat(holds).extracting(TimeSpan::millis).containsExactly(250L, 500L, 1000L, 2000L, 4000L, 4000L, 4000L, 4000L, 4000L);
@@ -82,7 +90,7 @@ class ForwardReplyResenderTest {
         var next = new int[]{0};
         DoubleSupplier random = () -> draws[next[0]++];
 
-        resender(random).send(this::transport, ENTRY, REPLY, timeSpan(1).hours());
+        resender(random).deliver(network, ENTRY, REPLY, timeSpan(1).hours());
         runScheduled();
 
         assertThat(holds.get(0).millis()).as("first hold, low draw: 250 ms - 20%").isEqualTo(200L);
@@ -96,11 +104,11 @@ class ForwardReplyResenderTest {
         script.add(sent());
         var resender = resender(() -> 0.5);
 
-        resender.send(this::transport, ENTRY, REPLY, timeSpan(1).hours());
+        resender.deliver(network, ENTRY, REPLY, timeSpan(1).hours());
         runScheduled();
         script.add(refused());
         script.add(sent());
-        resender.send(this::transport, ENTRY, reply("req-2"), timeSpan(1).hours());
+        resender.deliver(network, ENTRY, reply("req-2"), timeSpan(1).hours());
         runScheduled();
 
         assertThat(holds).extracting(TimeSpan::millis).as("250, 500, then Sent resets, then 250 again").containsExactly(250L, 500L, 250L);
@@ -111,10 +119,11 @@ class ForwardReplyResenderTest {
         script.add(refused());
         script.add(refused());
         script.add(sent());
+        script.add(sent());
         var resender = resender(() -> 0.5);
 
-        resender.send(this::transport, ENTRY, REPLY, timeSpan(1).hours());
-        resender.send(this::transport, OTHER, reply("req-2"), timeSpan(1).hours());
+        resender.deliver(network, ENTRY, REPLY, timeSpan(1).hours());
+        resender.deliver(network, OTHER, reply("req-2"), timeSpan(1).hours());
         runScheduled();
 
         assertThat(holds).extracting(TimeSpan::millis).as("another peer's backoff is not advanced").startsWith(250L, 250L);
@@ -126,7 +135,7 @@ class ForwardReplyResenderTest {
             script.add(refused());
         }
 
-        resender(() -> 0.5).send(this::transport, ENTRY, REPLY, timeSpan(2).seconds());
+        resender(() -> 0.5).deliver(network, ENTRY, REPLY, timeSpan(2).seconds());
         runScheduled();
 
         assertThat(holds).extracting(TimeSpan::millis).as("250 + 500 + 1000 = 1750 ms spent; the next 2000 ms hold exceeds the 250 ms left").containsExactly(250L, 500L, 1000L);
@@ -139,7 +148,7 @@ class ForwardReplyResenderTest {
     void send_budgetShorterThanTheFirstHold_isNeverResent() {
         script.add(refused());
 
-        resender(() -> 0.5).send(this::transport, ENTRY, REPLY, timeSpan(100).millis());
+        resender(() -> 0.5).deliver(network, ENTRY, REPLY, timeSpan(100).millis());
 
         assertThat(holds).isEmpty();
         assertThat(writes).hasSize(1);
@@ -149,7 +158,7 @@ class ForwardReplyResenderTest {
     void send_encodeFailed_isNeverResent() {
         script.add(new WriteOutcome.EncodeFailed(ENTRY, "HttpForwardResponse"));
 
-        resender(() -> 0.5).send(this::transport, ENTRY, REPLY, timeSpan(10).seconds());
+        resender(() -> 0.5).deliver(network, ENTRY, REPLY, timeSpan(10).seconds());
 
         assertThat(holds).isEmpty();
         assertThat(writes).hasSize(1);
@@ -161,7 +170,7 @@ class ForwardReplyResenderTest {
         script.add(new WriteOutcome.ConnectionDead(ENTRY));
         script.add(sent());
 
-        resender(() -> 0.5).send(this::transport, ENTRY, REPLY, timeSpan(10).seconds());
+        resender(() -> 0.5).deliver(network, ENTRY, REPLY, timeSpan(10).seconds());
         runScheduled();
 
         assertThat(writes).hasSize(3);
@@ -179,11 +188,32 @@ class ForwardReplyResenderTest {
                                                          RefusalBackoff.refusalBackoff(random));
     }
 
-    private Promise<WriteOutcome> transport(NodeId target, HttpForwardResponse reply) {
-        writes.add(reply);
+    /// Records every reply and answers each send with the next scripted outcome.
+    private final ClusterNetwork network = new ClusterNetwork() {
+        @Override
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
+            writes.add((HttpForwardResponse) message);
 
-        return Promise.success(script.removeFirst());
-    }
+            return Promise.success(script.removeFirst());
+        }
+
+        @Override
+        public <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            throw new AssertionError("a reply goes through the plain send");
+        }
+
+        @Override public <M extends ProtocolMessage> Unit broadcast(M message) {return unit();}
+        @Override public void connect(NetworkServiceMessage.ConnectNode connectNode) {}
+        @Override public void disconnect(NetworkServiceMessage.DisconnectNode disconnectNode) {}
+        @Override public void listNodes(NetworkServiceMessage.ListConnectedNodes listConnectedNodes) {}
+        @Override public void handleSend(NetworkServiceMessage.Send send) {}
+        @Override public void handleBroadcast(NetworkServiceMessage.Broadcast broadcast) {}
+        @Override public Promise<Unit> start() {return Promise.unitPromise();}
+        @Override public Promise<Unit> stop() {return Promise.unitPromise();}
+        @Override public int connectedNodeCount() {return 0;}
+        @Override public Set<NodeId> connectedPeers() {return Set.of();}
+        @Override public Option<Server> server() {return Option.none();}
+    };
 
     private void runScheduled() {
         while (!pending.isEmpty()) {

@@ -2069,10 +2069,10 @@ class ManagementServerImpl implements ManagementServer {
     private void sendManagementForwardReply(ClusterNetwork network,
                                             HttpForwardRequest request,
                                             HttpForwardResponse reply) {
-        replyResender.send(network::send,
-                           request.sender(),
-                           reply,
-                           Deadline.fromWireMillis(request.remainingMillis()).bounded(UNBUDGETED_REPLY_WINDOW));
+        replyResender.deliver(network,
+                              request.sender(),
+                              reply,
+                              Deadline.fromWireMillis(request.remainingMillis()).bounded(UNBUDGETED_REPLY_WINDOW));
     }
 
     @SuppressWarnings("JBCT-PAT-01")
