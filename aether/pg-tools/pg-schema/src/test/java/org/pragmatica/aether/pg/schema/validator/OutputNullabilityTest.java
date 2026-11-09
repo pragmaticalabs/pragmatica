@@ -252,4 +252,52 @@ class OutputNullabilityTest {
         assertThat(verdict("WITH RECURSIVE t(id) AS (SELECT 1 UNION ALL SELECT id + 1 FROM t) SELECT id AS x FROM t", "x"))
             .isInstanceOf(Nullability.MayBeNull.class);
     }
+
+    @Test
+    void cteWithColumnList_isUnresolved() {
+        var result = outputs("WITH c(a) AS (SELECT id FROM t) SELECT * FROM c");
+
+        assertThat(result).hasSize(1);
+        assertThat(result.getFirst().name().isEmpty()).isTrue();
+        assertThat(result.getFirst().nullability().isNonNull()).isFalse();
+    }
+
+    @Test
+    void selfReferencingCte_shadowingATable_isNotTrusted() {
+        assertThat(verdict("WITH RECURSIVE t AS (SELECT id FROM t) SELECT id AS x FROM t", "x"))
+            .isInstanceOf(Nullability.MayBeNull.class);
+    }
+
+    @Test
+    void cteSeesEarlierCtes_andNestedQueriesSeeOuterCtes() {
+        assertThat(verdict("WITH a AS (SELECT id AS x FROM t), b AS (SELECT x FROM a) SELECT x AS y FROM b", "y"))
+            .isEqualTo(Nullability.NON_NULL);
+        assertThat(verdict("WITH c AS (SELECT id AS x FROM t) SELECT y FROM (SELECT x AS y FROM c) d", "y"))
+            .isEqualTo(Nullability.NON_NULL);
+    }
+
+    @Test
+    void valuesWithDefaultOrRaggedRows_areUnproven() {
+        assertThat(outputs("VALUES (1), (DEFAULT)").getFirst().nullability().isNonNull()).isFalse();
+        assertThat(outputs("VALUES (1, 2), (3)").get(1).nullability().isNonNull()).isFalse();
+        assertThat(outputs("VALUES (1, 2), (3)").getFirst().nullability().isNonNull()).isTrue();
+    }
+
+    @Test
+    void starWithUnmatchedQualifier_isOneUnnamedUnprovenOutput() {
+        var result = outputs("SELECT x.* FROM t");
+
+        assertThat(result).hasSize(1);
+        assertThat(result.getFirst().name().isEmpty()).isTrue();
+        assertThat(result.getFirst().nullability().isNonNull()).isFalse();
+    }
+
+    @Test
+    void derivedColumn_missingOrDuplicated_orOnTheNullableSide_isUnproven() {
+        assertThat(verdict("SELECT d.zzz AS y FROM (SELECT id FROM t) d", "y")).isInstanceOf(Nullability.MayBeNull.class);
+        assertThat(verdict("SELECT d.x AS y FROM (SELECT id AS x, note AS x FROM t) d", "y")).isInstanceOf(Nullability.MayBeNull.class);
+        assertThat(verdict("SELECT d.id AS y FROM t LEFT JOIN (SELECT id FROM u) d ON d.id = t.id", "y"))
+            .isInstanceOf(Nullability.MayBeNull.class);
+        assertThat(verdict("SELECT d.id AS y FROM t JOIN (SELECT id FROM u) d ON d.id = t.id", "y")).isEqualTo(Nullability.NON_NULL);
+    }
 }

@@ -148,11 +148,12 @@ class NullableOutputValidationTest {
     void duplicateOutputName_mappedToRecordField_failsTheBuild(String fieldType) throws Exception {
         var result = compile(repo("DuplicateRepo",
                                   "record Row(" + fieldType + " name) {}",
-                                  "SELECT o.status AS name, u.name FROM orders o JOIN users u ON u.id = o.user_id",
+                                  "SELECT CAST(o.correlation_id AS text) AS name, u.name FROM orders o JOIN users u ON u.id = o.user_id",
                                   "Promise<List<Row>> run()"));
 
         assertThat(result.success()).isFalse();
-        assertThat(result.diagnostics()).contains("Method 'run'").contains("output name 'name' appears 2 times").contains("field 'name'");
+        assertThat(result.diagnostics()).contains("Method 'run'").contains("output name 'name' appears 2 times").contains("field 'name'")
+                                        .doesNotContain(MAY_BE_NULL);
     }
 
     @Test
