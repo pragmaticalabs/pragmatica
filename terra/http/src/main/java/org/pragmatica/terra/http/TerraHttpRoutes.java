@@ -56,6 +56,7 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
                                                    JsonMapper mapper) {
         var routes = new ArrayList<Route<?>>();
         var owners = new IdentityHashMap<Route<?>, SliceRouter>();
+        var sliceNames = new IdentityHashMap<Route<?>, String>();
         var types = new java.util.HashSet<Class<?>>();
 
         for (var factory : factories) {
@@ -78,11 +79,13 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
 
             routes.addAll(value.routes());
             value.routes().forEach(route -> owners.put(route, value.router()));
+            value.routes().forEach(route -> sliceNames.put(route,
+                                                           factory.sliceType().getName()));
         }
 
-        return checkRoutes(routes, owners).map(_ -> routingIndex(routes,
-                                                                 owners,
-                                                                 config.mountMode().isHeaderMode()));
+        return checkRoutes(routes, sliceNames).map(_ -> routingIndex(routes,
+                                                                     owners,
+                                                                     config.mountMode().isHeaderMode()));
     }
 
     // Header-mode ownership must not apply a shape from another version before the slice's
@@ -109,17 +112,28 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
                                    indexOwners);
     }
 
+    /// #2947: ownership is keyed by the full route shape, the same facets the shared shape matcher dispatches by:
+    /// method, static base, trailing-segment arity, spacers and their slots. Path variables are wildcards (their
+    /// names are not part of the shape), so `{a}` and `{b}` at one position are the same shape. Sibling shapes under
+    /// one base may belong to different slices; only one shape owned by two slices is ambiguous and refused.
+    /// Precedence when several shapes admit a request: arity must equal the request's trailing segments, then a
+    /// shape whose spacers (literal segments) all match beats a spacer-free (all-variable) one -- as in Aether.
     private static Result<org.pragmatica.lang.Unit> checkRoutes(List<Route<?>> routes,
-                                                                Map<Route<?>, SliceRouter> owners) {
+                                                                Map<Route<?>, String> sliceNames) {
         var identities = new java.util.HashSet<String>();
-        var bases = new HashMap<String, SliceRouter>();
+        var shapeOwners = new HashMap<String, String>();
 
         for (var route : routes) {
             var base = route.method() + " " + route.path();
-            var previous = bases.putIfAbsent(base, owners.get(route));
+            var shape = base + " " + route.pathParamCount() + " " + route.spacers() + " " + route.spacerSlots();
+            var slice = sliceNames.get(route);
+            var previous = shapeOwners.putIfAbsent(shape, slice);
 
-            if (previous != null && previous != owners.get(route)) {
-                return new TerraHttpError.InvalidRoutes("Multiple slices own route base: " + base).result();
+            if (previous != null && !previous.equals(slice)) {
+                return new TerraHttpError.InvalidRoutes("Multiple slices own route shape: " + shape
+                                                       + " (" + previous
+                                                       + ", " + slice
+                                                       + ")").result();
             }
 
             var identity = base
