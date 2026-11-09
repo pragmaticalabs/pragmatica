@@ -100,7 +100,7 @@ final class SharedPoolFixtures {
             closes.incrementAndGet();
             factory.closed.add(this);
 
-            return Promise.unitPromise();
+            return factory.deferredClose.or(Promise.unitPromise());
         }
 
         int closeCount() {
@@ -158,6 +158,8 @@ final class SharedPoolFixtures {
         final AtomicInteger closedWhileHeld = new AtomicInteger();
         volatile Function<FakePool, Option<Promise<ServerProbe>>> prober = _ -> Option.none();
         volatile Function<FakeConfig, Promise<FakeConnector>> provisioner = _ -> Promise.success(newPool());
+        /// When present, every pool close returns this promise (unresolved = a close that has not finished).
+        volatile Option<Promise<Unit>> deferredClose = Option.none();
         volatile Function<FakePool, FakeConnector> viewHook = pool -> pool;
 
         FakePool newPool() {
@@ -239,6 +241,24 @@ final class SharedPoolFixtures {
 
     /// A marker that declares the forbidden context overload: it must be demoted (D3.3).
     static final class ContextReadingFactory extends FakeShareableFactory {
+        @Override
+        public Promise<FakeConnector> provision(FakeConfig config, ProvisioningContext context) {
+            return provision(config);
+        }
+    }
+
+    /// A marker that declares `sectionBinder()` (D3.3: demoted).
+    static final class SectionBinderFactory extends FakeShareableFactory {
+        @Override
+        public Option<SectionBinder<FakeConfig>> sectionBinder() {
+            return Option.none();
+        }
+    }
+
+    /// A marker whose SUPERCLASS declares the context overload and which declares nothing itself (D3.3: demoted).
+    static final class InheritingContextFactory extends ContextReadingBase {}
+
+    static class ContextReadingBase extends FakeShareableFactory {
         @Override
         public Promise<FakeConnector> provision(FakeConfig config, ProvisioningContext context) {
             return provision(config);

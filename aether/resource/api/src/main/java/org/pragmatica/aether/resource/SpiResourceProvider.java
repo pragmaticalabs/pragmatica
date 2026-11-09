@@ -437,7 +437,11 @@ public final class SpiResourceProvider implements ResourceProvider {
         var cached = promiseCache.computeIfAbsent(key, _ -> placeholder);
 
         if (cached == placeholder) {
-            provisionBound(factory, config, resourceType, configSection, context).onResult(placeholder::resolve);
+            // Contained: a factory that throws synchronously fails the placeholder (evicted below) instead of
+            // leaving it unresolved, which would hang this slice's own retry.
+            Promise.unitPromise()
+                   .flatMap(_ -> provisionBound(factory, config, resourceType, configSection, context))
+                   .onResult(placeholder::resolve);
         }
 
         return (Promise<T>) cached.withFailure(_ -> promiseCache.remove(key, cached))

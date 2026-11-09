@@ -138,6 +138,7 @@ final class SharedPools {
             return ResourceProvisioningError.ProviderClosed.INSTANCE.promise();
         }
 
+        drainIfClosedMeanwhile(key);
         var pool = admission.entry.pool();
         var slot = (Promise<T>) admission.slot;
         // The eviction is a DEPENDENT transform registered ahead of this holder's slot, so a caller observing the
@@ -151,9 +152,12 @@ final class SharedPools {
 
         logAdmission(admission, label, scope);
         if (admission.created) {
-            provision.apply()
-                     .onSuccess(_ -> LOG.log(System.Logger.Level.INFO, "opened shared pool {0} for {1}", label, scope))
-                     .onResult(pool::resolve);
+            // Contained: a factory that throws synchronously fails the pool (and is evicted) instead of leaving the
+            // placeholder unresolved, which would wedge the key and every release waiting on it.
+            Promise.unitPromise()
+                   .flatMap(_ -> provision.apply())
+                   .onSuccess(_ -> LOG.log(System.Logger.Level.INFO, "opened shared pool {0} for {1}", label, scope))
+                   .onResult(pool::resolve);
         }
 
         return attached.flatMap(_ -> slot);
@@ -297,7 +301,7 @@ final class SharedPools {
                                     Object key,
                                     String scope) {
         return slot.resolve(result.map(provisioned -> shareable.view((T) provisioned.resource(),
-                                                                     () -> release(key, scope))));
+                                                                     () -> releaseSlot(key, scope, slot))));
     }
 
     /// A failed pool was never opened, so it has nothing to close. Its holders all receive the failure, and the next
@@ -341,6 +345,38 @@ final class SharedPools {
         entries.compute(key, (_, current) -> depart(current, scope, departure));
 
         return closeIfCaptured(departure, scope);
+    }
+
+    /// Release bound to the holding a view was issued for: a no-op when `scope` now holds a different slot (the view
+    /// outlived its holding and the scope re-acquired) or no longer holds the key at all.
+    Promise<Unit> releaseSlot(Object key, String scope, Promise<?> slot) {
+        var departure = new Departure();
+
+        entries.compute(key, (_, current) -> departIfHolding(current, scope, slot, departure));
+
+        return closeIfCaptured(departure, scope);
+    }
+
+    @NullReturn
+    private static SharedEntry departIfHolding(SharedEntry current,
+                                               String scope,
+                                               Promise<?> slot,
+                                               Departure departure) {
+        return option(current).filter(entry -> entry.holders()
+                                                    .get(scope) == slot)
+                     .fold(() -> current,
+                           entry -> leave(entry, scope, departure));
+    }
+
+    /// Store-then-load against `closeAll`'s flag: either the drain sees this acquirer's insert, or this acquirer sees
+    /// the flag and drains its own key through the same capture.
+    private void drainIfClosedMeanwhile(Object key) {
+        if (closed.get()) {
+            var late = new Departure();
+
+            entries.compute(key, (_, current) -> drain(current, late));
+            option(late.removed).onPresent(this::close);
+        }
     }
 
     /// The `compute` mapping function of a release: an absent key or a scope that is not a holder is left as it is.

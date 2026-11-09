@@ -17,6 +17,7 @@ import static org.pragmatica.lang.Option.some;
 ///   datasource are separate pools.
 /// - `endpoint`: the transport's effective endpoint (the effective JDBC or R2DBC URL; effective host, port and database
 ///   for pg-async), so an absent port and an explicit default port meet.
+/// - `type`: the effective database type, which sets the jOOQ SQL dialect and the guard's PostgreSQL gate.
 /// - `username` and `password`: the transport's effective credentials, after secret resolution. A rotated or dynamic
 ///   secret therefore gives each resolution its own pool.
 /// - `poolConfig`: every pool number; durations compare by value (`30s` equals `30000ms`).
@@ -29,6 +30,7 @@ public record DbShareKey(Class<?> factoryClass,
                          Class<?> resourceType,
                          DatabaseConnectorConfig.Transport transport,
                          String endpoint,
+                         DatabaseType type,
                          Option<String> username,
                          Option<String> password,
                          PoolConfig poolConfig,
@@ -56,6 +58,7 @@ public record DbShareKey(Class<?> factoryClass,
                                                      resourceType,
                                                      transport,
                                                      endpoint(config, transport),
+                                                     config.effectiveType(transport),
                                                      config.effectiveUsername(transport),
                                                      config.effectivePassword(transport),
                                                      config.poolConfig(),

@@ -1045,15 +1045,32 @@ public enum OperatorWarningCode {
     /// A node's datasource pools ask more of a PostgreSQL server than it allows (#2973): the sum of this node's pool warm-ups
     /// ("at warm-up") or of their maximums ("under load") exceeds the server's non-superuser connection limit. Raised after
     /// a pool opens, from the node's demand guard; it never refuses the pool. Subject is the server, `<addr>:<port>`, so the
-    /// aggregator throttles per server. No clear event: the guard reacts to a pool open, it does not track recovery.
+    /// aggregator throttles per server. Closed by [#DATASOURCE_DEMAND_WITHIN_SERVER_LIMIT], published when a later probe answer
+    /// or a pool close finds the server's sums back within its last answered limit; a server that is never probed or
+    /// closed against again keeps the warning open until the node restarts.
     /// Recovery action: size `max_connections` per node per datasource for the node's peak concurrent work, keep pools
     /// shared (`pool_scope = "node"`), or raise the server limit.
     DATASOURCE_DEMAND_EXCEEDS_SERVER_LIMIT("datasource-demand-exceeds-server-limit", "datasource", WarningLevel.WARNING),
     /// A PostgreSQL server refused the demand guard's probe with SQLSTATE 53300 (too many clients) right after a pool opened
     /// (#2973): the server is full now. CRITICAL and a separate code, so the per-code throttle never hides it behind an
     /// earlier demand warning for the same server. Subject is the server, `<addr>:<port>`; the message names the last limit
-    /// the server answered, or says it is unknown. Recovery action: as for [#DATASOURCE_DEMAND_EXCEEDS_SERVER_LIMIT].
+    /// the server answered, or says it is unknown. Closed by [#DATASOURCE_SERVER_ACCEPTING_CONNECTIONS], published when a later probe of that server is answered.
+    /// Recovery action: as for [#DATASOURCE_DEMAND_EXCEEDS_SERVER_LIMIT].
     DATASOURCE_SERVER_REFUSED_CONNECTION("datasource-server-refused-connection", "datasource", WarningLevel.CRITICAL),
+    /// The recovery of [#DATASOURCE_DEMAND_EXCEEDS_SERVER_LIMIT], same subject, the server (#2973): the node's pool sums on that
+    /// server are back within the limit it last answered. INFO, published only after a published demand warning for the subject
+    /// (#752 mechanism), by the node's demand guard on a probe answer or a pool close.
+    DATASOURCE_DEMAND_WITHIN_SERVER_LIMIT("datasource-demand-within-server-limit",
+                                          "datasource",
+                                          WarningLevel.INFO,
+                                          DATASOURCE_DEMAND_EXCEEDS_SERVER_LIMIT),
+    /// The recovery of [#DATASOURCE_SERVER_REFUSED_CONNECTION], same subject, the server (#2973): a later demand probe of that
+    /// server was answered, so it accepts connections again. INFO, published only after a published refusal for the subject
+    /// (#752 mechanism).
+    DATASOURCE_SERVER_ACCEPTING_CONNECTIONS("datasource-server-accepting-connections",
+                                            "datasource",
+                                            WarningLevel.INFO,
+                                            DATASOURCE_SERVER_REFUSED_CONNECTION),
     /// The recovery of [#DHT_DEPARTURE_SOLE_COPY_AT_RISK], same subject (#2034): every sole-copy key was acknowledged by a target in its
     /// post-departure responsible set before the node halted. INFO, published by the draining node itself, only after its published
     /// at-risk event (#752 mechanism).

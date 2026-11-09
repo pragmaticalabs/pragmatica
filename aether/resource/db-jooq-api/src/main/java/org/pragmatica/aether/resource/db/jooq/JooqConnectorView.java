@@ -25,8 +25,11 @@ import org.jooq.ResultQuery;
 /// `stop()` and `close()` are both declared here, never inherited: the first call releases THIS holder only (the pool
 /// closes when its last holder releases it), and every later call succeeds without doing anything. Neither ever reaches
 /// the pool's own `stop()`. After the release every operation fails with [DatabaseConnectorError.HandleReleased] and
-/// never reaches the pool. `config()`, `databaseType()` and `dsl()` keep answering: they describe the pool and touch no
-/// connection (`dsl()` is detached from the pool).
+/// never reaches the pool. `config()`, `databaseType()` and `dsl()` are synchronous accessors and keep answering after
+/// the release (G1: a synchronous accessor returns, it does not fail). `dsl()` is the one that is NOT detached from the
+/// pool: it returns the pool's own `DSLContext`, and for the JDBC transport that context is bound to the shared
+/// `DataSource`, so a statement executed through it after the release still reaches the pool. A holder that has
+/// released its view must not use a `DSLContext` it kept.
 public final class JooqConnectorView implements JooqConnector {
     private final JooqConnector pool;
     private final Fn0<Promise<Unit>> release;

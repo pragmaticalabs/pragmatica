@@ -18,6 +18,11 @@ import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.aether.resource.NodeShareable.PoolDemand;
+import org.pragmatica.aether.resource.NodeShareable.ServerId;
+import org.pragmatica.utility.warning.WarningLevel;
 import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
@@ -87,7 +92,8 @@ class PoolDemandGuardTest {
         openSlices(provider, 19);
 
         assertThat(settled()).last()
-                             .satisfies(warning -> assertThat(warning.message()).contains("at warm-up", "608", "100"));
+                             .satisfies(warning -> assertThat(warning.message()).contains("allows at warm-up:", "608", "100")
+                                                                              .doesNotContain("allows under load:"));
     }
 
     @Test
@@ -97,7 +103,8 @@ class PoolDemandGuardTest {
         openSlices(provider, 19);
 
         assertThat(settled()).last()
-                             .satisfies(warning -> assertThat(warning.message()).contains("under load", "76", "608", "100"));
+                             .satisfies(warning -> assertThat(warning.message()).contains("allows under load:", "76", "608", "100")
+                                                                              .doesNotContain("allows at warm-up:"));
     }
 
     @Test
@@ -225,5 +232,175 @@ class PoolDemandGuardTest {
                             .containsOnly(OperatorWarningCode.DATASOURCE_DEMAND_EXCEEDS_SERVER_LIMIT);
         assertThat(warnings).extracting(OperatorWarning::subject)
                             .containsOnly("127.0.0.1:5432");
+    }
+
+    @Test
+    void demandExactlyAtTheLimit_atWarmUp_raisesNothing_andOneMoreWarns() throws Exception { // g02
+        var provider = provider(perSlice(5, 5), new FakeShareableFactory(), _ -> answers(100));
+
+        openSlices(provider, 20);
+
+        assertThat(settled()).as("20 x 5 == 100 available: not over").isEmpty();
+
+        acquire(provider, DB, "slice-21");
+
+        assertThat(settled()).last()
+                             .satisfies(warning -> assertThat(warning.message()).contains("allows at warm-up:", "105"));
+    }
+
+    @Test
+    void demandExactlyAtTheLimit_underLoad_raisesNothing_andOneMoreWarns() throws Exception { // g04
+        var provider = provider(perSlice(1, 5), new FakeShareableFactory(), _ -> answers(100));
+
+        openSlices(provider, 20);
+
+        assertThat(settled()).as("20 x 5 == 100 available: not over").isEmpty();
+
+        acquire(provider, DB, "slice-21");
+
+        assertThat(settled()).last()
+                             .satisfies(warning -> assertThat(warning.message()).contains("allows under load:", "105"));
+    }
+
+    @Test
+    void poolsOnTwoServers_areNotSummed() throws Exception { // g13
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var configs = Map.of(DB,
+                             FakeConfig.perSlice("pg://h1/db").withDemand(60, 60).withServer("h1", 5432),
+                             "database.two",
+                             FakeConfig.perSlice("pg://h2/db").withDemand(60, 60).withServer("h2", 5432));
+        var provider = provider(configs,
+                                new FakeShareableFactory(),
+                                _ -> Promise.success(ServerProbe.serverProbe(100,
+                                                                             Option.some("10.0.0." + calls.incrementAndGet()),
+                                                                             5432)));
+
+        acquire(provider, DB, "slice-a");
+        acquire(provider, "database.two", "slice-b");
+
+        assertThat(settled()).as("60 on each of two servers, 120 only if summed across them").isEmpty();
+    }
+
+    @Test
+    void probeRefusedWithAnotherSqlState_staysSilent() throws Exception { // g05
+        var provider = provider(perSlice(1, 4),
+                                new FakeShareableFactory(),
+                                _ -> DatabaseConnectorError.connectionFailed("password authentication failed",
+                                                                             Option.none(),
+                                                                             Option.some("28P01"))
+                                                           .promise());
+
+        openSlices(provider, 1);
+
+        assertThat(settled()).isEmpty();
+    }
+
+    /// A pool whose probe never answers, with a 200 ms probe bound.
+    private static final class ShortProbeFactory extends FakeShareableFactory {
+        @Override
+        public PoolDemand demand(FakeConfig config) {
+            return PoolDemand.poolDemand(config.warm(),
+                                         config.max(),
+                                         ServerId.serverId("POSTGRESQL", config.host(), config.port()),
+                                         TimeSpan.timeSpan(200).millis(),
+                                         "short");
+        }
+    }
+
+    @Test
+    void probeThatNeverAnswers_isBoundedByTheProbeTimeout_andRaisesNothing() throws Exception { // g12
+        var provider = provider(perSlice(1, 4), new ShortProbeFactory(), _ -> Promise.<ServerProbe> promise());
+        var pool = acquire(provider, DB, "slice-a");
+        var deadline = System.nanoTime() + 3_000_000_000L;
+
+        while (!probes.getFirst().isResolved() && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+
+        assertThat(probes.getFirst().isResolved()).as("the probe bound fired").isTrue();
+        assertThat(raised).isEmpty();
+        assertThat(pool.ping().await(TIMEOUT).isSuccess()).isTrue();
+    }
+
+    @Test
+    void demandBackWithinTheLimit_afterPoolsClose_raisesTheInfoRecovery() throws Exception { // E
+        var provider = provider(perSlice(60, 60), new FakeShareableFactory(), _ -> answers(100));
+
+        openSlices(provider, 2);
+        assertThat(settled()).extracting(OperatorWarning::code)
+                             .containsOnly(OperatorWarningCode.DATASOURCE_DEMAND_EXCEEDS_SERVER_LIMIT);
+
+        release(provider, "slice-0");
+
+        var all = settled();
+
+        assertThat(all).last().satisfies(warning -> {
+            assertThat(warning.code()).isEqualTo(OperatorWarningCode.DATASOURCE_DEMAND_WITHIN_SERVER_LIMIT);
+            assertThat(warning.code().level()).isEqualTo(WarningLevel.INFO);
+            assertThat(warning.code().subsystem()).isEqualTo("datasource");
+            assertThat(warning.subject()).isEqualTo("127.0.0.1:5432");
+            assertThat(warning.message()).contains("60", "100");
+        });
+        assertThat(all.stream().filter(w -> w.code() == OperatorWarningCode.DATASOURCE_DEMAND_WITHIN_SERVER_LIMIT)).hasSize(1);
+
+        release(provider, "slice-1");
+
+        assertThat(settled()).as("a recovery is published once per warning").hasSize(all.size());
+    }
+
+    @Test
+    void demandBackWithinTheLimit_afterALaterProbeAnswersAHigherLimit_raisesTheInfoRecovery() throws Exception { // E
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var provider = provider(perSlice(40, 40),
+                                new FakeShareableFactory(),
+                                _ -> calls.incrementAndGet() < 3
+                                     ? answers(50)
+                                     : answers(1000));
+
+        openSlices(provider, 3);
+
+        assertThat(settled()).extracting(OperatorWarning::code)
+                             .contains(OperatorWarningCode.DATASOURCE_DEMAND_EXCEEDS_SERVER_LIMIT)
+                             .endsWith(OperatorWarningCode.DATASOURCE_DEMAND_WITHIN_SERVER_LIMIT);
+    }
+
+    @Test
+    void neverOverTheLimit_closingPools_raisesNoRecovery() throws Exception { // E control
+        var provider = provider(perSlice(5, 5), new FakeShareableFactory(), _ -> answers(100));
+
+        openSlices(provider, 3);
+        release(provider, "slice-0");
+
+        assertThat(settled()).isEmpty();
+    }
+
+    @Test
+    void refusalFollowedByAnAnsweredProbe_raisesTheInfoRecovery_underTheRefusalSubject() throws Exception { // E
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var provider = provider(perSlice(1, 4),
+                                new FakeShareableFactory(),
+                                _ -> calls.incrementAndGet() == 1
+                                     ? serverFull()
+                                     : answers(100));
+
+        openSlices(provider, 2);
+
+        var all = settled();
+
+        assertThat(all).extracting(OperatorWarning::code)
+                       .containsExactly(OperatorWarningCode.DATASOURCE_SERVER_REFUSED_CONNECTION,
+                                        OperatorWarningCode.DATASOURCE_SERVER_ACCEPTING_CONNECTIONS);
+        assertThat(all.get(1).code().level()).isEqualTo(WarningLevel.INFO);
+        assertThat(all.get(1).code().subsystem()).isEqualTo("datasource");
+        assertThat(all.get(1).subject()).as("the recovery closes the refusal's own subject").isEqualTo(all.get(0).subject());
+    }
+
+    @Test
+    void answeredProbe_withoutAnEarlierRefusal_raisesNoRecovery() throws Exception { // E control
+        var provider = provider(perSlice(1, 4), new FakeShareableFactory(), _ -> answers(100));
+
+        openSlices(provider, 2);
+
+        assertThat(settled()).isEmpty();
     }
 }
