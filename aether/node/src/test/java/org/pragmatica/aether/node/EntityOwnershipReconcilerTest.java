@@ -33,9 +33,12 @@ import org.pragmatica.aether.stream.replication.StreamPartitionOwnershipWriter;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.messaging.MessageRouter;
@@ -988,6 +991,170 @@ class EntityOwnershipReconcilerTest {
             return IntStream.range(0, PARTITIONS)
                             .mapToObj(partition -> ownerOf(store, cluster.members.get(), partition))
                             .toList();
+        }
+    }
+
+    /// #2981: an entity arc's planned ownership move goes only to a live ISR member, and an owner that no longer hosts the
+    /// slice counts as not live for that arc, so it fails over to a live ISR member instead of being stranded. Driven
+    /// through the real reconciler and the real ISR writer over a seeded store; only the arc's committed record is seeded.
+    /// Named residual: no ISR member hosts the slice, so the arc stays with its owner (or is refused) until one does.
+    @Nested
+    class HostedLiveness {
+        private static final int ARC_PARTITION = 0;
+
+        /// (b) HRW prefers D, which hosts but is not in the ISR [X, Y]; X still hosts. The arc stays on X. Armed: the
+        /// same arc with D in the ISR does move to D, so the stay is the ISR guard and not a dead fixture.
+        @Test
+        void tick_hrwPrefersAHostOutsideTheIsr_whileTheOwnerHosts_keepsTheOwner() {
+            var preferred = HRW_OVER_HOSTS.apply(ARC_PARTITION);
+            var owner = firstHostOtherThan(preferred);
+            var other = HOSTS.stream().filter(host -> !host.equals(preferred) && !host.equals(owner)).findFirst().orElseThrow();
+
+            var armed = new IsrCluster();
+            armed.seedOwned(ARC_PARTITION, owner, List.of(owner, other, preferred));
+            armed.reconcile();
+            assertThat(armed.committedOwner(ARC_PARTITION)).as("arming: with the preferred host in the ISR the planned move happens").isEqualTo(preferred);
+
+            var cluster = new IsrCluster();
+            cluster.seedOwned(ARC_PARTITION, owner, List.of(owner, other));
+            cluster.reconcile();
+
+            assertThat(cluster.committedOwner(ARC_PARTITION)).as("no planned move to a host outside the live ISR (#2981)").isEqualTo(owner);
+        }
+
+        /// (a) The owner X stays a live member but stops hosting the slice (registration retracted). Of the remaining hosts,
+        /// HRW prefers D and the ISR holds the other one, Z. The arc moves to Z, the live ISR member that hosts. Without the
+        /// hosting filter X still counts as live, the planned move to D is refused (D is not in the ISR) and the arc stays on
+        /// X, which cannot serve it.
+        @Test
+        void tick_ownerStopsHosting_theArcMovesToALiveIsrMemberThatHosts() {
+            var cluster = new IsrCluster();
+            var owner = firstHostOtherThan(HRW_OVER_HOSTS.apply(ARC_PARTITION));
+
+            cluster.unregister(owner);
+
+            var preferred = cluster.hrwOverRemainingHosts(ARC_PARTITION);
+            var inIsr = HOSTS.stream().filter(host -> !host.equals(owner) && !host.equals(preferred)).findFirst().orElseThrow();
+
+            cluster.seedOwned(ARC_PARTITION, owner, List.of(owner, inIsr));
+            assertThat(cluster.members.get()).as("arming: the owner is still a live member").contains(owner);
+            cluster.reconcile();
+
+            assertThat(cluster.committedOwner(ARC_PARTITION)).as("an owner that no longer hosts fails over to a live ISR member that hosts").isEqualTo(inIsr);
+        }
+
+        /// The narrowing is fail-open exactly where the reconciler leaves a record standing: no live registered host, an
+        /// unregistered keyspace and a non-entity name keep the live members unchanged.
+        @Test
+        void liveHosting_noLiveHost_unregisteredKeyspace_orNonEntityArc_leavesLiveUnchanged() {
+            var committed = EntityOwnershipReconciler.scanRegistrations(storeRegisteredOn(HOSTS));
+
+            assertThat(EntityOwnershipReconciler.liveHosting(committed, ARC, List.of(N4, N5))).as("no registered host is live").isEqualTo(List.of(N4, N5));
+            assertThat(EntityOwnershipReconciler.liveHosting(Map.of(), ARC, MEMBERS)).as("no registration scanned yet").isEqualTo(MEMBERS);
+            assertThat(EntityOwnershipReconciler.liveHosting(committed, KEYSPACE, MEMBERS)).as("a bare name is not an entity arc").isEqualTo(MEMBERS);
+            assertThat(EntityOwnershipReconciler.liveHosting(committed, ARC, MEMBERS)).as("control: a hosted arc is narrowed to the hosts").isEqualTo(HOSTS);
+        }
+
+        private static final Function<Integer, NodeId> HRW_OVER_HOSTS = partition -> ownerOf(storeRegisteredOn(HOSTS), MEMBERS, partition);
+
+        private static NodeId firstHostOtherThan(NodeId node) {
+            return HOSTS.stream().filter(host -> !host.equals(node)).findFirst().orElseThrow();
+        }
+    }
+
+    /// A reconciler over a seeded store with the REAL ISR writer, wired as the node wires the entity writer: the live view
+    /// is narrowed to the keyspace's hosts. The gate is off, so every pass decides over the current set.
+    private static final class IsrCluster {
+        private static final Epoch GENERATION = Epoch.epoch(1L, 1L, 0L);
+        final KVStore<AetherKey, AetherValue> store = storeRegisteredOn(HOSTS);
+        final AtomicReference<List<NodeId>> members = new AtomicReference<>(MEMBERS);
+        private final EntityOwnershipReconciler reconciler;
+
+        IsrCluster() {
+            store.process(store.createBatch(List.<KVCommand<AetherKey>>of(new KVCommand.Put<AetherKey, AetherValue>(LeaderKey.INSTANCE,
+                                                                                                                  new LeaderValue(N1, 1L)))));
+            this.reconciler = EntityOwnershipReconciler.entityOwnershipReconciler(store,
+                                                                                  N1,
+                                                                                  members::get,
+                                                                                  () -> false,
+                                                                                  (hrwOwner, hosting) -> writer(hrwOwner, hosting),
+                                                                                  this::apply,
+                                                                                  Runnable::run,
+                                                                                  0,
+                                                                                  EntityOwnershipReconciler.FIRST_MINT_CEILING_TICKS,
+                                                                                  TimeSpan.timeSpan(5).seconds(),
+                                                                                  System::nanoTime,
+                                                                                  OperatorWarningSink.logOnly());
+        }
+
+        private StreamPartitionOwnershipWriter writer(StreamPartitionOwnershipWriter.HrwOwner hrwOwner,
+                                                      EntityOwnershipReconciler.ArcHosting hosting) {
+            return StreamPartitionOwnershipWriter.streamPartitionOwnershipWriter(() -> true,
+                                                                                 () -> GENERATION,
+                                                                                 HlcClock.hlcClock(N1),
+                                                                                 (stream, partition) -> committed(stream, partition),
+                                                                                 hrwOwner,
+                                                                                 EntityOwnershipReconciler.hostingOnly(baseInputs(), hosting),
+                                                                                 StreamPartitionOwnershipWriter.ownCommittedLeader(() -> store.getTyped(LeaderKey.INSTANCE,
+                                                                                                                                                       LeaderValue.class),
+                                                                                                                                  N1,
+                                                                                                                                  () -> true));
+        }
+
+        private StreamPartitionOwnershipWriter.IsrInputs baseInputs() {
+            return new StreamPartitionOwnershipWriter.IsrInputs() {
+                @Override
+                public List<NodeId> liveMembers() {
+                    return members.get();
+                }
+
+                @Override
+                public List<NodeId> initialIsr(String stream, int partition, NodeId owner) {
+                    return List.of(owner);
+                }
+            };
+        }
+
+        private Option<StreamPartitionOwnershipValue> committed(String stream, int partition) {
+            return store.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream, partition),
+                                  StreamPartitionOwnershipValue.class);
+        }
+
+        private Promise<List<Object>> apply(List<KVCommand<AetherKey>> commands) {
+            store.process(store.createBatch(commands));
+
+            return Promise.success(List.of());
+        }
+
+        /// Commits an ownership record for the arc directly, so the scenario starts from a known owner and ISR.
+        void seedOwned(int partition, NodeId owner, List<NodeId> isr) {
+            var record = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner,
+                                                                                     GENERATION.withCounter(1L),
+                                                                                     1L,
+                                                                                     HlcTimestamp.ZERO,
+                                                                                     isr,
+                                                                                     1L);
+
+            store.process(store.createBatch(List.<KVCommand<AetherKey>>of(new KVCommand.Put<AetherKey, AetherValue>(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(ARC,
+                                                                                                                                                                         partition),
+                                                                                                                    record))));
+        }
+
+        void unregister(NodeId node) {
+            store.process(store.createBatch(List.<KVCommand<AetherKey>>of(new KVCommand.Remove<>(registrationKey(KEYSPACE, node)))));
+        }
+
+        void reconcile() {
+            reconciler.tick();
+        }
+
+        NodeId hrwOverRemainingHosts(int partition) {
+            return ownerOf(store, members.get(), partition);
+        }
+
+        NodeId committedOwner(int partition) {
+            return committed(ARC, partition).map(StreamPartitionOwnershipValue::owner)
+                                            .fold(() -> fail("no ownership record for partition " + partition), owner -> owner);
         }
     }
 

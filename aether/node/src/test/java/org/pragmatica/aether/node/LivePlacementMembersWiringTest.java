@@ -87,9 +87,12 @@ class LivePlacementMembersWiringTest {
     @Test
     void isrOwnershipWriters_areAuthorizedOnlyByThisNodesOwnCommittedLeader() {
         var code = assemblyCode();
-        var own = "streamIsrInputs(clusterEventsControllerRef),StreamPartitionOwnershipWriter.ownCommittedLeader(()->kvStore.getTyped(LeaderKey.INSTANCE,LeaderValue.class),config.self(),isLeaderSupplier)";
+        var own = "StreamPartitionOwnershipWriter.ownCommittedLeader(()->kvStore.getTyped(LeaderKey.INSTANCE,LeaderValue.class),config.self(),isLeaderSupplier)";
 
-        assertThat(code.split(Pattern.quote(own), -1)).as("the stream and the entity writer").hasSize(3);
+        assertThat(code.split(Pattern.quote("streamIsrInputs(clusterEventsControllerRef)," + own), -1)).as("the stream writer").hasSize(2);
+        assertThat(code.split(Pattern.quote("EntityOwnershipReconciler.hostingOnly(streamIsrInputs(clusterEventsControllerRef),arcHosting)," + own), -1))
+            .as("the entity writer, whose live view is narrowed to the slice's hosts (#2981)")
+            .hasSize(2);
         assertThat(code).doesNotContain("streamIsrInputs(clusterEventsControllerRef),()->kvStore.getTyped(LeaderKey.INSTANCE,LeaderValue.class)");
     }
 

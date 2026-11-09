@@ -188,6 +188,14 @@ public interface StreamPartitionOwnershipWriter {
     interface IsrInputs {
         /// The live placement members, as the leader sees them.
         List<NodeId> liveMembers();
+
+        /// The members live FOR `(stream, partition)`: the ones that may own it. The default is every live member; an arc
+        /// whose owner must also host something (an entity arc: the keyspace's slice) narrows it, so an owner that no longer
+        /// hosts counts as not live for that arc and fails over (#2981).
+        default List<NodeId> liveMembers(String stream, int partition) {
+            return liveMembers();
+        }
+
         /// The placement of `(stream, partition)` led by `owner`, the owner first.
         List<NodeId> initialIsr(String stream, int partition, NodeId owner);
     }
@@ -325,7 +333,7 @@ record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
                                                       committed,
                                                       owner,
                                                       committedEpoch,
-                                                      isrInputs.liveMembers()).map(value -> guarded(leader,
+                                                      isrInputs.liveMembers(stream, partition)).map(value -> guarded(leader,
                                                                                                     stream,
                                                                                                     partition,
                                                                                                     committed,
@@ -410,7 +418,9 @@ record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
     /// Liveness cost: a desired owner outside the ISR waits until the owner's `IsrMonitor` admits it; that committed ISR
     /// change re-runs the reconcile (a committed ownership record is one of its triggers). A desired owner the partition's
     /// placement never lists (entity arcs, whose desired owner is HRW over the keyspace's hosts) is never admitted, and the
-    /// partition stays with its live owner.
+    /// partition stays with its live owner for as long as that owner counts as live. The entity writer's live view is
+    /// narrowed to the hosts ([IsrInputs#liveMembers(String, int)]), so an owner that no longer hosts counts as not live and
+    /// the arc fails over to a live ISR member that hosts it.
     private static boolean plannedMoveAllowed(StreamPartitionOwnershipValue current,
                                               NodeId desired,
                                               List<NodeId> liveIsr) {
