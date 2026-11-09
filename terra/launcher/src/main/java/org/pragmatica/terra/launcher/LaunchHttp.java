@@ -9,12 +9,16 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.config.AuthSchemes;
 import org.pragmatica.aether.config.JwtConfig;
+import org.pragmatica.aether.config.JwtKeyMode;
+import org.pragmatica.aether.config.JwtSecret;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.http.security.HttpAuthenticator;
 import org.pragmatica.config.ConfigurationProvider;
@@ -24,7 +28,11 @@ import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.terra.http.GuardedAuthenticator;
+import org.pragmatica.terra.http.HttpAuthenticatorFactory;
 import org.pragmatica.terra.http.TerraHttpConfig;
 
 
@@ -32,7 +40,23 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
     private record Security(SecurityPolicy policy, Fn0<HttpAuthenticator> authenticator) {}
 
     static Result<LaunchHttp> launchHttp(Path directory, ConfigurationProvider settings) {
-        return settingsKeys(settings).flatMap(valid -> parsedHttp(directory, valid));
+        return launchHttp(directory, settings, LaunchHttp::installedAuthenticators);
+    }
+
+    /// With the authenticator factories supplied (#2880), so a test can stand for any number of installed providers.
+    /// `discovery` is consulted only when `http.security_mode` is `custom`.
+    static Result<LaunchHttp> launchHttp(Path directory,
+                                         ConfigurationProvider settings,
+                                         Fn0<Result<List<HttpAuthenticatorFactory>>> discovery) {
+        return settingsKeys(settings).flatMap(valid -> parsedHttp(directory, valid, discovery));
+    }
+
+    private static Result<List<HttpAuthenticatorFactory>> installedAuthenticators() {
+        return Result.lift(Causes::fromThrowable,
+                           () -> ServiceLoader.load(HttpAuthenticatorFactory.class)
+                                              .stream()
+                                              .map(ServiceLoader.Provider::get)
+                                              .toList());
     }
 
     private static Result<ConfigurationProvider> settingsKeys(ConfigurationProvider settings) {
@@ -41,6 +65,7 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
                               "http.version_mode",
                               "http.version_header",
                               "http.security_mode",
+                              "http.authenticator",
                               "http.tls_certificate",
                               "http.tls_key");
         var jwtKeys = Set.of("jwt.jwks_url",
@@ -49,7 +74,9 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
                              "jwt.role_claim",
                              "jwt.cache_ttl_seconds",
                              "jwt.clock_skew_seconds",
-                             "jwt.auth_schemes");
+                             "jwt.auth_schemes",
+                             "jwt.algorithm",
+                             "jwt.secret");
 
         for (var key : settings.keys()) {
             if ((key.startsWith("http.") && !httpKeys.contains(key)) || (key.startsWith("jwt.") && !jwtKeys.contains(key)) || (key.startsWith("api_keys.") && !key.matches("api_keys\\.[^.]+\\.(key|roles|authorization_role)"))) {
@@ -60,11 +87,13 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
         return Result.success(settings);
     }
 
-    private static Result<LaunchHttp> parsedHttp(Path directory, ConfigurationProvider settings) {
+    private static Result<LaunchHttp> parsedHttp(Path directory,
+                                                 ConfigurationProvider settings,
+                                                 Fn0<Result<List<HttpAuthenticatorFactory>>> discovery) {
         return Result.all(settings.getInt("http.port").map(value -> value.or(8080)),
                           settings.getInt("http.max_content_length").map(value -> value.or(10 * 1024 * 1024)),
                           mountMode(settings),
-                          security(settings),
+                          security(settings, discovery),
                           tls(directory, settings))
                      .flatMap((port, maxSize, mode, security, tls) -> config(port, maxSize, mode, security, tls));
     }
@@ -92,17 +121,126 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
         };
     }
 
-    private static Result<Security> security(ConfigurationProvider settings) {
+    private static Result<Security> security(ConfigurationProvider settings,
+                                             Fn0<Result<List<HttpAuthenticatorFactory>>> discovery) {
+        return refuseStrayAuthenticator(settings).flatMap(_ -> modeSecurity(settings, discovery));
+    }
+
+    /// A name in `http.authenticator` beside any other mode would read as "use this one" while the launcher uses
+    /// another: refused, never ignored.
+    private static Result<Unit> refuseStrayAuthenticator(ConfigurationProvider settings) {
+        return settings.getString("http.authenticator")
+                       .isPresent() && !"custom".equals(settings.getString("http.security_mode").or(""))
+               ? new TerraLaunchError("http.authenticator is set but http.security_mode is not custom").result()
+               : Result.unitResult();
+    }
+
+    private static Result<Security> modeSecurity(ConfigurationProvider settings,
+                                                 Fn0<Result<List<HttpAuthenticatorFactory>>> discovery) {
         return switch (settings.getString("http.security_mode")
                                .or("api-key")) {
+            case "custom" -> custom(settings, discovery);
             case "none" -> Result.success(new Security(SecurityPolicy.publicRoute(),
                                                        HttpAuthenticator::denyUnlessPublicValidator));
             case "api-key" -> apiKeys(settings).map(keys -> new Security(SecurityPolicy.apiKeyRequired(),
                                                                          () -> HttpAuthenticator.apiKeyValidator(keys)));
             case "jwt" -> jwt(settings).map(jwt -> new Security(SecurityPolicy.bearerTokenRequired(),
                                                                 () -> HttpAuthenticator.jwtValidator(jwt)));
-            default -> new TerraLaunchError("http.security_mode must be none, api-key, or jwt").result();
+            default -> new TerraLaunchError("http.security_mode must be none, api-key, jwt, or custom").result();
         };
+    }
+
+    /// #2880: `http.security_mode = "custom"` selects, by `http.authenticator`, one installed [HttpAuthenticatorFactory].
+    /// Provider code is untrusted to behave: a factory whose `name()` or `authenticator(...)` throws, or returns nothing,
+    /// refuses the launch naming the provider class, and the authenticator it builds is wrapped so that a failure per
+    /// request is a generic 500 ([GuardedAuthenticator]).
+    private static Result<Security> custom(ConfigurationProvider settings,
+                                           Fn0<Result<List<HttpAuthenticatorFactory>>> discovery) {
+        return settings.getString("http.authenticator")
+                       .filter(name -> !name.isBlank())
+                       .toResult(new TerraLaunchError("http.security_mode = custom requires http.authenticator, the name of an installed authenticator"))
+                       .flatMap(name -> discovery.apply()
+                                                 .flatMap(LaunchHttp::named)
+                                                 .flatMap(installed -> selected(name, installed)))
+                       .flatMap(provider -> built(provider, settings))
+                       .map(LaunchHttp::customSecurity);
+    }
+
+    /// An installed factory with the name it answered, read once under a guard.
+    private record Provider(String name, HttpAuthenticatorFactory factory) {}
+
+    private static Result<List<Provider>> named(List<HttpAuthenticatorFactory> installed) {
+        return Result.allOf(installed.stream().map(LaunchHttp::named).toList());
+    }
+
+    private static Result<Provider> named(HttpAuthenticatorFactory factory) {
+        return Result.lift(failure -> providerDefect(factory, "name()", failure),
+                           () -> new Provider(Objects.requireNonNull(factory.name(), "no name"),
+                                              factory));
+    }
+
+    private static Result<GuardedAuthenticator> built(Provider provider, ConfigurationProvider settings) {
+        return Result.lift(failure -> providerDefect(provider.factory(),
+                                                     "authenticator(...)",
+                                                     failure),
+                           () -> Objects.requireNonNull(provider.factory().authenticator(settings),
+                                                        "no result"))
+                     .flatMap(result -> result.mapError(LaunchHttp::invalidAuthenticator))
+                     .flatMap(authenticator -> Option.option(authenticator).toResult(providerDefect(provider.factory(),
+                                                                                                    "authenticator(...)",
+                                                                                                    "returned no authenticator")))
+                     .map(authenticator -> new GuardedAuthenticator(provider.factory().getClass().getName(),
+                                                                    authenticator));
+    }
+
+    /// Names the provider class and the failing call, and the exception TYPE only (or a stated reason): a provider's own message may carry
+    /// its settings, and the launch refusal is printed.
+    private static TerraLaunchError providerDefect(HttpAuthenticatorFactory factory, String call, Throwable failure) {
+        return providerDefect(factory,
+                              call,
+                              failure.getClass().getSimpleName());
+    }
+
+    private static TerraLaunchError providerDefect(HttpAuthenticatorFactory factory, String call, String reason) {
+        return new TerraLaunchError("Authenticator provider " + factory.getClass()
+                                                                       .getName()
+                                   + " failed in " + call
+                                   + ": " + reason);
+    }
+
+    private static Security customSecurity(HttpAuthenticator authenticator) {
+        return new Security(SecurityPolicy.authenticated(), () -> authenticator);
+    }
+
+    private static TerraLaunchError invalidAuthenticator(Cause cause) {
+        return new TerraLaunchError("Invalid authenticator: " + cause.message());
+    }
+
+    /// Zero factories of the name refuse the launch naming the installed ones; two refuse it naming both classes.
+    private static Result<Provider> selected(String name, List<Provider> installed) {
+        var matching = installed.stream().filter(provider -> name.equals(provider.name())).toList();
+
+        return switch (matching.size()) {
+            case 0 -> new TerraLaunchError("No authenticator named '" + name + "' is installed (installed: " + installedNames(installed) + ")").result();
+            case 1 -> Result.success(matching.getFirst());
+            default -> new TerraLaunchError("Authenticator name '" + name + "' is provided by more than one factory: " + classNames(matching)).result();
+        };
+    }
+
+    private static String installedNames(List<Provider> installed) {
+        return installed.isEmpty()
+               ? "none"
+               : installed.stream()
+                          .map(Provider::name)
+                          .collect(Collectors.joining(", "));
+    }
+
+    private static String classNames(List<Provider> providers) {
+        return providers.stream()
+                        .map(provider -> provider.factory()
+                                                 .getClass()
+                                                 .getName())
+                        .collect(Collectors.joining(" and "));
     }
 
     private static Result<Map<String, ApiKeyEntry>> apiKeys(ConfigurationProvider settings) {
@@ -142,19 +280,62 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
     }
 
     private static Result<JwtConfig> jwt(ConfigurationProvider settings) {
-        return Result.all(settings.getString("jwt.jwks_url")
-                                  .filter(value -> !value.isBlank())
-                                  .toResult(new TerraLaunchError("JWT mode requires jwt.jwks_url")),
+        return Result.all(keyMode(settings),
+                          secret(settings),
                           settings.getLong("jwt.cache_ttl_seconds").map(value -> value.or(3600L)),
                           settings.getLong("jwt.clock_skew_seconds").map(value -> value.or(30L)))
-                     .flatMap((url, ttl, skew) -> JwtConfig.jwtConfig(url,
-                                                                      settings.getString("jwt.issuer"),
-                                                                      settings.getString("jwt.audience"),
-                                                                      settings.getString("jwt.role_claim").or("role"),
-                                                                      ttl,
-                                                                      skew,
-                                                                      authSchemes(settings))
-                                                           .mapError(LaunchHttp::invalidJwt));
+                     .flatMap((mode, secret, ttl, skew) -> jwksUrl(settings, mode, secret).flatMap(url -> jwtConfig(settings,
+                                                                                                                    url,
+                                                                                                                    mode,
+                                                                                                                    secret,
+                                                                                                                    ttl,
+                                                                                                                    skew)));
+    }
+
+    private static Result<JwtConfig> jwtConfig(ConfigurationProvider settings,
+                                               String url,
+                                               JwtKeyMode mode,
+                                               Option<JwtSecret> secret,
+                                               long ttl,
+                                               long skew) {
+        return JwtConfig.jwtConfig(url,
+                                   settings.getString("jwt.issuer"),
+                                   settings.getString("jwt.audience"),
+                                   settings.getString("jwt.role_claim").or("role"),
+                                   ttl,
+                                   skew,
+                                   authSchemes(settings),
+                                   mode,
+                                   secret)
+                        .mapError(LaunchHttp::invalidJwt);
+    }
+
+    /// #2880: `[jwt] algorithm = "HS256"` selects the shared-secret mode; absent, the mode is JWKS. Any other value
+    /// refuses the launch. The mode is the configuration's, never a token's.
+    private static Result<JwtKeyMode> keyMode(ConfigurationProvider settings) {
+        return settings.getString("jwt.algorithm")
+                       .fold(() -> Result.success(JwtKeyMode.JWKS),
+                             raw -> JwtKeyMode.jwtKeyMode(raw).toResult(new TerraLaunchError("Invalid [jwt]: algorithm must be HS256 (omit it for JWKS)")));
+    }
+
+    /// `[jwt] secret`: the HS256 shared secret, an environment or property value (`TERRA_JWT__SECRET`) per
+    /// `terra/SPEC.md`, because Terra has no secrets provider. Blank (empty or whitespace-only) and short secrets are
+    /// refused by [JwtSecret], which uses the text exactly as given (no trimming); the value is never part of any message.
+    private static Result<Option<JwtSecret>> secret(ConfigurationProvider settings) {
+        return settings.getString("jwt.secret")
+                       .fold(() -> Result.success(Option.<JwtSecret> none()),
+                             text -> JwtSecret.jwtSecret(text)
+                                              .map(Option::some)
+                                              .mapError(LaunchHttp::invalidJwt));
+    }
+
+    private static Result<String> jwksUrl(ConfigurationProvider settings, JwtKeyMode mode, Option<JwtSecret> secret) {
+        return switch (mode) {
+            case JWKS -> settings.getString("jwt.jwks_url").filter(value -> !value.isBlank()).toResult(new TerraLaunchError("JWT mode requires jwt.jwks_url"));
+            case HS256 -> secret.isPresent()
+                          ? Result.success(settings.getString("jwt.jwks_url").or(""))
+                          : new TerraLaunchError("JWT HS256 mode requires jwt.secret").result();
+        };
     }
 
     private static TerraLaunchError invalidJwt(Cause cause) {

@@ -119,7 +119,15 @@ public final class ConfigValidator {
 
         return appHttp.jwtConfig()
                       .fold(() -> Option.some(ConfigError.securityMisconfigured(JWT_WITHOUT_JWKS_REASON)),
-                            jwt -> unusableJwksUrl(jwt.jwksUrl()));
+                            ConfigValidator::unusableJwtKeySource);
+    }
+
+    /// #2880: HS256 mode has no JWKS to check; its secret was checked when the config was built (length) and by the
+    /// node start-up (presence), because pre-flight cannot see the environment that supplies it.
+    private static Option<ConfigError> unusableJwtKeySource(JwtConfig jwt) {
+        return jwt.keyMode() == JwtKeyMode.HS256
+               ? Option.empty()
+               : unusableJwksUrl(jwt.jwksUrl());
     }
 
     private static Option<ConfigError> unusableJwksUrl(String jwksUrl) {

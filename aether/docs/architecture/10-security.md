@@ -170,6 +170,17 @@ accepts are `[app-http] auth_schemes` (default `["Bearer"]`), matched case-insen
 [verified: `aether/aether-config/src/test/java/org/pragmatica/aether/config/ConfigLoaderAuthSchemesTest.java`,
 `aether/node/src/test/java/org/pragmatica/aether/http/AppHttpServerSecurityGridTest.java`].
 
+`JWT` mode verifies against a shared secret instead when `[app-http] jwt_algorithm = "HS256"` (#2880). The configured
+mode picks the algorithm, never the token header: an HS256-configured node refuses a token whose header says anything
+but `HS256` (RS256, `none`, ...), and a JWKS-configured node refuses an `HS256` token, so a public key cannot be
+replayed as an HMAC key. The secret comes from `AETHER_JWT_SECRET` (or the file `AETHER_JWT_SECRET_FILE` names), never
+from the TOML; it must be at least 32 bytes (UTF-8). A missing, blank (empty or whitespace-only; the text is never trimmed) or shorter secret, or a `jwks_url` beside HS256,
+refuses the node's config load naming the setting; it is never replaced by a deny-all fallback. Cluster-bootstrap
+pre-flight cannot see the node's environment, so the secret check happens at the node's own load
+[verified: `aether/aether-config/src/test/java/org/pragmatica/aether/config/ConfigLoaderHs256Test.java`,
+`aether/http-security/src/test/java/org/pragmatica/aether/http/security/JwtHs256ValidatorTest.java`].
+In every JWT mode `nbf` and `iat` are enforced beyond `clock_skew_seconds`, and an explicit empty or blank `alg` is refused.
+
 A refused credential (malformed, empty, bad signature, expired, wrong issuer/audience, unknown key) answers `401` with
 `WWW-Authenticate: <scheme> realm="Aether", error="invalid_token"` (RFC 6750 §3.1); an absent credential answers `401`
 with the challenge and no `error`; `403` is reserved for an authenticated caller lacking a role and carries no challenge
