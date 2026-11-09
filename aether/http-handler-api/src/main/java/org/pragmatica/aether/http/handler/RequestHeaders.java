@@ -8,6 +8,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 import org.pragmatica.http.Headers;
 import org.pragmatica.lang.Option;
@@ -20,12 +21,24 @@ import org.pragmatica.serialization.Codec;
 /// `SecurityContext`, is handed the headers of the request that reached its route. Names are case-insensitive
 /// (RFC 9110 §5.1) and a name may carry several values, kept in arrival order. The value is immutable.
 ///
+/// A header value is one value as the transport delivered it: a comma-joined line such as `accept: a, b` is kept
+/// as the single value `a, b` and is never split. [#all] returns the values of repeated header lines, one entry per
+/// line, in arrival order.
+///
+/// [#toString] keeps the names and replaces the values of credential-bearing headers (`Authorization`,
+/// `Proxy-Authorization`, `Cookie`, `Set-Cookie`) with `<redacted>`, so a logged or interpolated instance does not
+/// leak them.
+///
 /// **Edge only.** The headers are captured where the HTTP request arrives and handed to the generated route handler
 /// directly. Nothing carries them across a slice-to-slice call: a method that declares the parameter and is invoked
 /// by another slice receives whatever `RequestHeaders` its caller passes, exactly as it would for any other
 /// argument.
 @Codec
 public record RequestHeaders(Map<String, List<String>> fields) {
+    private static final Set<String> SENSITIVE = Set.of("authorization", "proxy-authorization", "cookie", "set-cookie");
+
+    private static final List<String> REDACTED = List.of("<redacted>");
+
     public RequestHeaders {
         fields = normalize(fields);
     }
@@ -54,6 +67,22 @@ public record RequestHeaders(Map<String, List<String>> fields) {
     /// Every value of the named header in arrival order; empty when the request did not carry it (case-insensitive).
     public List<String> all(String name) {
         return Option.option(fields.get(name.toLowerCase(Locale.ROOT))).or(List::of);
+    }
+
+    @Override
+    public String toString() {
+        return "RequestHeaders[fields=" + redacted() + "]";
+    }
+
+    private Map<String, List<String>> redacted() {
+        var shown = new LinkedHashMap<String, List<String>>();
+
+        fields.forEach((name, values) -> shown.put(name,
+                                                   SENSITIVE.contains(name)
+                                                   ? REDACTED
+                                                   : values));
+
+        return shown;
     }
 
     private static Map<String, List<String>> normalize(Map<String, List<String>> raw) {

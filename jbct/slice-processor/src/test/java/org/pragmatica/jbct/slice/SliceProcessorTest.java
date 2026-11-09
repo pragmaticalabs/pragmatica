@@ -5848,7 +5848,9 @@ class SliceProcessorTest {
             """
             package org.pragmatica.aether.http.handler;
 
-            public record RequestHeaders(java.util.Map<String, java.util.List<String>> fields) {}
+            public record RequestHeaders(java.util.Map<String, java.util.List<String>> fields) {
+                public static RequestHeaders empty() { return new RequestHeaders(java.util.Map.of()); }
+            }
             """);
 
     private Compilation compileProfileService(String method) {
@@ -5917,6 +5919,58 @@ class SliceProcessorTest {
         var factory = compilation.generatedSourceFile("test.ProfileServiceFactory").get().getCharContent(false).toString();
 
         assertThat(factory).contains("record GetProfileRequest(RequestHeaders headers, String userId)");
+    }
+
+    /// A caller that passes a null `RequestHeaders` to an inter-slice call sends empty headers (#2879): the generated
+    /// proxy normalizes the argument, as for the multi-param and the single-param shape.
+    @Test
+    void null_request_headers_on_an_inter_slice_call_are_sent_as_empty_headers() throws IOException {
+        var compilation = compileCallerOfHeadersService("Promise<String> getProfile(RequestHeaders headers, String userId);");
+
+        assertCompilation(compilation).succeeded();
+        var factory = compilation.generatedSourceFile("test.CallerServiceFactory").get().getCharContent(false).toString();
+
+        assertThat(factory).contains("(headers == null ? RequestHeaders.empty() : headers)");
+        assertThat(factory).contains("userId))");
+    }
+
+    @Test
+    void null_request_headers_as_the_only_argument_of_an_inter_slice_call_are_sent_as_empty_headers() throws IOException {
+        var compilation = compileCallerOfHeadersService("Promise<String> whoAmI(RequestHeaders headers);");
+
+        assertCompilation(compilation).succeeded();
+        var factory = compilation.generatedSourceFile("test.CallerServiceFactory").get().getCharContent(false).toString();
+
+        assertThat(factory).contains("Handle.invoke((headers == null ? RequestHeaders.empty() : headers))");
+    }
+
+    private Compilation compileCallerOfHeadersService(String method) {
+        var dependency = JavaFileObjects.forSourceString("external.HeadersService",
+                                                         """
+            package external;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.aether.http.handler.RequestHeaders;
+            public interface HeadersService {
+                %s
+            }
+            """.formatted(method));
+        var caller = JavaFileObjects.forSourceString("test.CallerService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.HeadersService;
+            @Slice
+            public interface CallerService {
+                Promise<String> call(String id);
+                static CallerService callerService(HeadersService headers) { return null; }
+            }
+            """);
+        var sources = commonSources();
+        sources.add(REQUEST_HEADERS);
+        sources.add(dependency);
+        sources.add(caller);
+        return javac().withProcessors(new SliceProcessor()).compile(sources);
     }
 
     // ========== Promise.all() dependency-count batching (issues #395 / arity-15 ceiling) ==========

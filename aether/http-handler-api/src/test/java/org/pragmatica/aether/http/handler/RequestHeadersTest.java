@@ -113,4 +113,37 @@ class RequestHeadersTest {
     void empty_carriesNoFieldAtAll() {
         assertThat(RequestHeaders.empty().fields()).isEmpty();
     }
+
+    @Test
+    void toString_redactsTheValuesOfCredentialHeaders_andKeepsTheirNames() {
+        var raw = new LinkedHashMap<String, List<String>>();
+
+        raw.put("Authorization", List.of("Bearer s3cr3t-token"));
+        raw.put("PROXY-AUTHORIZATION", List.of("Basic proxy-s3cr3t"));
+        raw.put("cookie", List.of("session=cookie-s3cr3t", "other=cookie-s3cr3t-2"));
+        raw.put("Set-Cookie", List.of("id=setcookie-s3cr3t; HttpOnly"));
+        raw.put("X-Trace-Id", List.of("trace-123"));
+
+        var text = RequestHeaders.requestHeaders(raw).toString();
+
+        assertThat(text).doesNotContain("s3cr3t").doesNotContain("Bearer").doesNotContain("HttpOnly");
+        assertThat(text).contains("authorization", "proxy-authorization", "cookie", "set-cookie", "<redacted>");
+        assertThat(text).contains("x-trace-id", "trace-123");
+    }
+
+    @Test
+    void toString_doesNotChangeTheValuesTheHeadersAnswer() {
+        var headers = RequestHeaders.requestHeaders(Map.of("Authorization", List.of("Bearer s3cr3t")));
+
+        assertThat(headers.toString()).doesNotContain("s3cr3t");
+        assertThat(headers.first("authorization")).isEqualTo(Option.some("Bearer s3cr3t"));
+    }
+
+    @Test
+    void aCommaJoinedValue_isOneValue_andRepeatedLinesAreSeparateValuesInOrder() {
+        var headers = RequestHeaders.requestHeaders(Map.of("Accept", List.of("a/1, b/2", "c/3")));
+
+        assertThat(headers.all("accept")).containsExactly("a/1, b/2", "c/3");
+        assertThat(headers.first("accept")).isEqualTo(Option.some("a/1, b/2"));
+    }
 }

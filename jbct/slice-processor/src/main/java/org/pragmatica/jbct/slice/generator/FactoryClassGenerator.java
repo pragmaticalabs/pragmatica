@@ -1278,14 +1278,16 @@ public class FactoryClassGenerator {
                        + " " + method.params.getFirst().name()
                        + ") {");
             out.println("                return " + method.name
-                       + "Handle.invoke(" + method.params.getFirst().name()
+                       + "Handle.invoke(" + callArgument(method.params.getFirst(), importTracker)
                        + ");");
         } else {
             var paramList = method.params.stream()
                                          .map(p -> importTracker.use(p.type()) + " " + p.name())
                                          .collect(Collectors.joining(", "));
             var proxyRequestRecordName = dep.parameterName() + "_" + capitalize(method.name) + "Request";
-            var argList = method.params.stream().map(ProxyParamInfo::name).collect(Collectors.joining(", "));
+            var argList = method.params.stream()
+                                       .map(p -> callArgument(p, importTracker))
+                                       .collect(Collectors.joining(", "));
 
             out.println("            public Promise<" + respType + "> " + method.name + "(" + paramList + ") {");
             out.println("                return " + method.name
@@ -1295,6 +1297,21 @@ public class FactoryClassGenerator {
         }
 
         out.println("            }");
+    }
+
+    /// The argument expression of an inter-slice call. A `RequestHeaders` argument that the caller passes as null is
+    /// sent as empty headers instead of failing in the wire layer: absent headers and no headers are the same fact
+    /// (#2879). Every other argument is passed through unchanged.
+    private static String callArgument(ProxyParamInfo param, ImportTracker importTracker) {
+        return param.type()
+                    .equals(MethodModel.REQUEST_HEADERS_TYPE)
+               ? nullAsEmptyHeaders(param.name(),
+                                    importTracker.use(param.type()))
+               : param.name();
+    }
+
+    private static String nullAsEmptyHeaders(String name, String headersType) {
+        return "(" + name + " == null ? " + headersType + ".empty() : " + name + ")";
     }
 
     private void generateCreateSliceMethod(PrintWriter out,

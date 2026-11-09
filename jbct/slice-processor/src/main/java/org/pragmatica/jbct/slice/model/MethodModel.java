@@ -56,7 +56,7 @@ public record MethodModel(String name,
     private static final String RATE_GUARD_TYPE = "org.pragmatica.aether.slice.RateGuard";
     private static final String PRINCIPAL_TYPE = "org.pragmatica.aether.http.handler.security.Principal";
     private static final String SECURITY_CONTEXT_TYPE = "org.pragmatica.aether.http.handler.security.SecurityContext";
-    private static final String REQUEST_HEADERS_TYPE = "org.pragmatica.aether.http.handler.RequestHeaders";
+    public static final String REQUEST_HEADERS_TYPE = "org.pragmatica.aether.http.handler.RequestHeaders";
 
     public MethodModel {
         interceptors = List.copyOf(interceptors);
