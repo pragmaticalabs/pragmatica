@@ -467,7 +467,7 @@ The `start-postgres.sh` script creates the required database automatically. If y
 By default (`pool_scope = "node"`) a node keeps **one pool per node per datasource per connector type**: slices on
 the node whose datasource section resolves to the same connection settings share it, whatever the section is called.
 - **What "the same settings" means:** the transport's effective endpoint (URL, or host, port and database), user,
-  resolved password, every `pool_config` value, `properties` and the application name the connector sends. An absent
+  resolved password, the database type, every `pool_config` value, `properties` and the application name the connector sends. An absent
   default and the same default written out (port `5432`, say) count as the same. A datasource `name` does not. Any
   difference gives a separate pool; a rotated or dynamic secret gives each resolution its own pool.
 - **Per connector type:** `SqlConnector`, `PgSqlConnector` and jOOQ over one datasource are separate pools.
@@ -475,8 +475,10 @@ the node whose datasource section resolves to the same connection settings share
   tables, session advisory locks outside `pinned`) must restore it, or use `pool_scope = "slice"`. One slice's long
   transactions or leaked connections can starve the others on that datasource.
 - **Handles:** each slice receives its own handle on the shared pool. Its `stop()`/`close()` releases only that slice's
-  handle, and later calls on it fail with `HandleReleased`; the pool closes when the last slice using it releases it
-  (or the slice unloads). A provisioned connector is a handle, so casting it to a concrete connector class fails.
+  handle, and later async calls on it fail with `HandleReleased`; the pool closes when the last slice using it releases it
+  (or the slice unloads). A provisioned connector is a handle, so casting it to a concrete connector class fails. The
+  jOOQ handle's `dsl()` is a synchronous accessor: it is not guarded and keeps returning the pool's `DSLContext` (for
+  JDBC, bound to the shared `DataSource`), so do not use a `DSLContext` you kept after `stop()`.
 - **Bundled connectors:** a slice that bundles its own DB connector module or driver keeps a private pool. Drivers for
   shared pools come from the node classpath.
 - **Attribution:** pool sessions and `pg_stat_activity` attribute connections to the node and datasource
@@ -488,7 +490,10 @@ the node whose datasource section resolves to the same connection settings share
   warm-ups or of `max_connections` exceeds it, or the server refuses the check with SQLSTATE `53300`, the node logs a
   WARN and raises the operator warning `datasource-demand-exceeds-server-limit` or
   `datasource-server-refused-connection` (subject `<addr>:<port>`). It never refuses a pool. Only this node's pools
-  are counted; the server's limit is shared with every other node and client. Recovery action: size
+  are counted; the server's limit is shared with every other node and client. Each warning has an INFO recovery for the
+  same subject: `datasource-demand-within-server-limit` once a later probe answer or a pool close finds the sums back
+  within the limit, and `datasource-server-accepting-connections` once a later probe of that server is answered
+  [verified: `PoolDemandGuardTest`]. Recovery action: size
   `max_connections` per node per datasource for the node's peak concurrent work, keep pools shared, or raise the
   server limit (compare against a connection pooler's limits if one sits in front).
 

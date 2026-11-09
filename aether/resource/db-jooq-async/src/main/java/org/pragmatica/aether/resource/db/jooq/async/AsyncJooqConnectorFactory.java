@@ -46,7 +46,10 @@ public final class AsyncJooqConnectorFactory implements ResourceFactory<JooqConn
 
     @Override
     public Promise<JooqConnector> provision(DatabaseConnectorConfig config) {
-        return Promise.lift(DatabaseConnectorError::databaseFailure, () -> connector(config));
+        // D2.8 (#2973): the driver and the pool's event-loop threads are created under this factory's class loader, never a
+        // slice's, because the pool may be shared by every slice on the node and outlive the slice that opened it.
+        return Promise.lift(DatabaseConnectorError::databaseFailure,
+                            () -> SharedPoolSupport.underClassLoaderOf(getClass(), () -> connector(config)));
     }
 
     /// #2973: the effective endpoint, credentials, pool settings, properties and application name of the ASYNC transport (this connector sends no application name; the configured value is keyed all the same).

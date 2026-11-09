@@ -86,15 +86,18 @@ class DbShareKeyTest {
         @Test
         void everyInputTheTransportReads_changesTheKey() { // T3c
             var reference = base().build().unwrap();
-            var variants = Map.of("async endpoint", base().withAsyncUrl("postgresql://other:5432/db").build().unwrap(),
-                                  "jdbc endpoint", base().withJdbcUrl("jdbc:postgresql://h:5433/db").build().unwrap(),
-                                  "r2dbc endpoint", base().withR2dbcUrl("r2dbc:postgresql://h:5432/other").build().unwrap(),
-                                  "user", base().withUsername("v").build().unwrap(),
-                                  "password", base().withPassword("q").build().unwrap(),
-                                  "pool max", base().withPoolConfig(new PoolConfig(4, 21, PoolConfig.DEFAULT.connectionTimeout(), PoolConfig.DEFAULT.idleTimeout(), PoolConfig.DEFAULT.maxLifetime(), Option.none(), PoolConfig.DEFAULT.leakDetectionTimeout(), 0)).build().unwrap(),
-                                  "properties", base().withProperties(Map.of("ssl", "true")).build().unwrap(),
-                                  "application name", base().withApplicationName("app").build().unwrap());
-            var transportOf = Map.of("async endpoint", Transport.ASYNC, "jdbc endpoint", Transport.JDBC, "r2dbc endpoint", Transport.R2DBC);
+            var variants = Map.ofEntries(Map.entry("async endpoint", base().withAsyncUrl("postgresql://other:5432/db").build().unwrap()),
+                                  Map.entry("async database", base().withAsyncUrl("postgresql://h:5432/other").build().unwrap()),
+                                  Map.entry("async port", base().withAsyncUrl("postgresql://h:5433/db").build().unwrap()),
+                                  Map.entry("type", base().withType(DatabaseType.MARIADB).build().unwrap()),
+                                  Map.entry("jdbc endpoint", base().withJdbcUrl("jdbc:postgresql://h:5433/db").build().unwrap()),
+                                  Map.entry("r2dbc endpoint", base().withR2dbcUrl("r2dbc:postgresql://h:5432/other").build().unwrap()),
+                                  Map.entry("user", base().withUsername("v").build().unwrap()),
+                                  Map.entry("password", base().withPassword("q").build().unwrap()),
+                                  Map.entry("pool max", base().withPoolConfig(new PoolConfig(4, 21, PoolConfig.DEFAULT.connectionTimeout(), PoolConfig.DEFAULT.idleTimeout(), PoolConfig.DEFAULT.maxLifetime(), Option.none(), PoolConfig.DEFAULT.leakDetectionTimeout(), 0)).build().unwrap()),
+                                  Map.entry("properties", base().withProperties(Map.of("ssl", "true")).build().unwrap()),
+                                  Map.entry("application name", base().withApplicationName("app").build().unwrap()));
+            var transportOf = Map.of("async endpoint", Transport.ASYNC, "async database", Transport.ASYNC, "async port", Transport.ASYNC, "jdbc endpoint", Transport.JDBC, "r2dbc endpoint", Transport.R2DBC);
 
             variants.forEach((input, variant) -> {
                 var transports = transportOf.containsKey(input)
@@ -134,6 +137,19 @@ class DbShareKeyTest {
 
             assertThat(key(config, Transport.ASYNC).isEmpty()).isTrue();
             assertThat(key(base().build().unwrap(), Transport.JDBC).toString()).doesNotContain("p@", "jdbc:", "\"p\"", "h:5432");
+        }
+
+        @Test
+        void theKeyNeverPrintsADistinctivePassword_orUser() {
+            var config = base().withUsername("distinctive-user-Zq7").withPassword("S3cr3t-pw-Xv9").build().unwrap();
+
+            transports().forEach(transport -> assertThat(key(config, transport).unwrap().toString())
+                                                   .as("over %s", transport)
+                                                   .doesNotContain("S3cr3t-pw-Xv9", "distinctive-user-Zq7"));
+        }
+
+        private java.util.List<Transport> transports() {
+            return java.util.List.of(Transport.values());
         }
     }
 

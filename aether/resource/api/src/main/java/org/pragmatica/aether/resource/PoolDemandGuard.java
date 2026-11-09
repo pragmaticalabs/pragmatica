@@ -5,8 +5,10 @@ package org.pragmatica.aether.resource;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.resource.NodeShareable.PoolDemand;
 import org.pragmatica.aether.resource.NodeShareable.ServerId;
@@ -42,11 +44,24 @@ import static org.pragmatica.lang.Option.option;
 ///
 /// Emission: [OperatorWarnings#raise], so a condition reaches the cluster event log as well as the node log. The subject
 /// is the server, never the pool or the slice, so the aggregator throttles the event per (code, server); the log line is
-/// written on every pool open while the condition holds. There is no clear event: the guard reacts to an edge (a pool
-/// open), not to a standing condition it tracks to recovery.
+/// written on every pool open while the condition holds.
+///
+/// Recovery: the guard tracks which servers it has warned about (`overLimit`, `refusing`) and publishes the INFO
+/// recovery for the same subject when the condition no longer holds. [OperatorWarningCode#DATASOURCE_DEMAND_WITHIN_SERVER_LIMIT]
+/// follows a demand warning when a later probe answer, or a pool close against the last answered limit, finds the
+/// server's sums back within it. [OperatorWarningCode#DATASOURCE_SERVER_ACCEPTING_CONNECTIONS] follows a refusal when a
+/// later probe of that server is answered. A warning for a server that never gets another probe or close stays open
+/// until the node restarts: no event exists to clear it.
 final class PoolDemandGuard {
     private static final Logger LOG = LoggerFactory.getLogger(PoolDemandGuard.class);
     private static final String SERVER_FULL_SQLSTATE = "53300";
+
+    private static final String WITHIN_TEMPLATE = "Datasource pool demand on PostgreSQL {} is within what the server allows"
+                                                + " again: this node's pools open {} connections at warm-up and up to {}"
+                                                + " under load, the server allows {} non-superuser connections.";
+
+    private static final String ACCEPTING_TEMPLATE = "PostgreSQL {} answered the demand probe again after refusing a"
+                                                   + " connection (53300); the server allows {} non-superuser connections.";
 
     private static final String TEMPLATE = "Datasource pool demand exceeds what PostgreSQL {} allows {}: this node's pools"
                                          + " open {} connections at warm-up and up to {} under load across {} pools {};"
@@ -66,6 +81,8 @@ final class PoolDemandGuard {
     private final Map<Object, Registered> pools = new ConcurrentHashMap<>();
     private final Map<ServerId, ServerId> aliases = new ConcurrentHashMap<>();
     private final Map<ServerId, Integer> lastAvailable = new ConcurrentHashMap<>();
+    private final Set<ServerId> overLimit = ConcurrentHashMap.newKeySet();
+    private final Set<ServerId> refusing = ConcurrentHashMap.newKeySet();
     private final Supplier<OperatorWarningSink> sink;
 
     private PoolDemandGuard(Supplier<OperatorWarningSink> sink) {
@@ -88,11 +105,58 @@ final class PoolDemandGuard {
                                               demand.configured()));
     }
 
-    /// The close funnel's deregistration; a pool that never registered (a failed open) has nothing to remove.
+    /// The close funnel's deregistration; a pool that never registered (a failed open) has nothing to remove. The
+    /// close lowers the server's sums, so it is also a chance to clear a standing demand warning.
     Unit closed(Object poolId) {
-        pools.remove(poolId);
+        return option(pools.remove(poolId)).map(this::clearAfterClose)
+                     .or(Unit.unit());
+    }
+
+    private Unit clearAfterClose(Registered registered) {
+        var server = serverOf(registered);
+
+        return option(lastAvailable.get(server)).map(available -> clearIfWithin(server, available))
+                     .or(Unit.unit());
+    }
+
+    private Unit clearIfWithin(ServerId server, int available) {
+        var demand = demandOn(server);
+
+        return demand.max() <= available
+               ? recoverDemand(server, demand, available)
+               : Unit.unit();
+    }
+
+    private Unit recoverDemand(ServerId server, Demand demand, int available) {
+        return overLimit.remove(server)
+               ? OperatorWarnings.raise(LOG,
+                                        sink.get(),
+                                        OperatorWarningCode.DATASOURCE_DEMAND_WITHIN_SERVER_LIMIT,
+                                        server.subject(),
+                                        WITHIN_TEMPLATE,
+                                        server.subject(),
+                                        demand.warm(),
+                                        demand.max(),
+                                        available)
+               : Unit.unit();
+    }
+
+    /// A probe answer proves the server accepts connections: it closes a standing refusal, for the id the refusal was
+    /// raised under (the configured one before any answer, the answered one after).
+    private Unit acceptedAgain(ServerId configured, ServerId answered, int available) {
+        Stream.of(answered, configured).distinct().filter(refusing::remove).forEach(id -> raiseAccepting(id, available));
 
         return Unit.unit();
+    }
+
+    private Unit raiseAccepting(ServerId server, int available) {
+        return OperatorWarnings.raise(LOG,
+                                      sink.get(),
+                                      OperatorWarningCode.DATASOURCE_SERVER_ACCEPTING_CONNECTIONS,
+                                      server.subject(),
+                                      ACCEPTING_TEMPLATE,
+                                      server.subject(),
+                                      available);
     }
 
     private static Unit skipped(String label) {
@@ -117,6 +181,7 @@ final class PoolDemandGuard {
 
         aliases.put(configured, server);
         lastAvailable.put(server, answer.available());
+        acceptedAgain(configured, server, answer.available());
 
         return evaluate(server, answer.available());
     }
@@ -125,22 +190,24 @@ final class PoolDemandGuard {
         var demand = demandOn(server);
 
         if (demand.warm() > available) {
-            return raise(OperatorWarningCode.DATASOURCE_DEMAND_EXCEEDS_SERVER_LIMIT,
-                         server,
-                         "at warm-up",
-                         demand,
-                         Integer.toString(available));
+            return raiseExceeding(server, "at warm-up", demand, available);
         }
 
         if (demand.max() > available) {
-            return raise(OperatorWarningCode.DATASOURCE_DEMAND_EXCEEDS_SERVER_LIMIT,
-                         server,
-                         "under load",
-                         demand,
-                         Integer.toString(available));
+            return raiseExceeding(server, "under load", demand, available);
         }
 
-        return Unit.unit();
+        return recoverDemand(server, demand, available);
+    }
+
+    private Unit raiseExceeding(ServerId server, String when, Demand demand, int available) {
+        overLimit.add(server);
+
+        return raise(OperatorWarningCode.DATASOURCE_DEMAND_EXCEEDS_SERVER_LIMIT,
+                     server,
+                     when,
+                     demand,
+                     Integer.toString(available));
     }
 
     /// A probe that failed with SQLSTATE 53300 means the server is refusing connections now. Any other failure is not a
@@ -154,6 +221,8 @@ final class PoolDemandGuard {
     private Unit raiseRefused(ServerId configured) {
         var server = option(aliases.get(configured)).or(configured);
         var limit = option(lastAvailable.get(server)).map(Object::toString).or("unknown");
+
+        refusing.add(server);
 
         return raise(OperatorWarningCode.DATASOURCE_SERVER_REFUSED_CONNECTION,
                      server,
