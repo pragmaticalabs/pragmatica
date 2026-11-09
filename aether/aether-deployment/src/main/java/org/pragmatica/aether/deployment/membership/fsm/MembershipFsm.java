@@ -1237,8 +1237,8 @@ public final class MembershipFsm {
         var predicate = quorumLossReported;
 
         return reachableMembers(candidates).stream()
-                                           .filter(predicate.negate())
-                                           .toList();
+                               .filter(predicate.negate())
+                               .toList();
     }
 
     // --- Per-member transition drivers (presence sampler promotion + co-confirmation eviction) ---
@@ -1430,7 +1430,6 @@ public final class MembershipFsm {
     }
 
     private volatile boolean onePlaneWorkerEviction = true;
-
     /// #2936 — the member's own report that it cannot write to the quorum (its SWIM-gossiped quorum-loss label).
     /// Default: nobody reports (a host without SWIM, the legacy factories, tests that do not set it).
     private volatile Predicate<NodeId> quorumLossReported = _ -> false;

@@ -310,9 +310,9 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                                   NodeInfo.LABEL_SOURCE,
                                                                   NodeInfo.LABEL_ZONE,
                                                                   LABEL_QUORUM);
+
     /// Serialises [#reportSelfQuorumLoss]: the label swap and its incarnation bump are one step.
     private final Object selfQuorumReportLock = new Object();
-
     /// Boot-token registry (owner ruling, session 28: terminal removal) — shared with the QUIC
     /// transport via [#setBootTokens] so both layers hold ONE view of which process owns a NodeId.
     /// Outlives membership residency on purpose: a partitioned-but-live process that returns with the
@@ -2464,7 +2464,9 @@ public final class SwimProtocol implements SwimMessageHandler {
         var quicPort = swimAddr.getPort() - config.swimPortOffset();
         var host = Option.option(swimAddr.getAddress()).map(InetAddress::getHostAddress).or(swimAddr.getHostString());
 
-        return NodeInfo.nodeInfo(member.nodeId(), new NodeAddress(host, quicPort), withQuorumReport(member.labels(), Map.of()));
+        return NodeInfo.nodeInfo(member.nodeId(),
+                                 new NodeAddress(host, quicPort),
+                                 withQuorumReport(member.labels(), Map.of()));
     }
 
     /// Send ANNOUNCE to all seeds every 500ms until this node is acknowledged by a peer or 60 attempts are exhausted.
@@ -3101,9 +3103,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// new incarnation (direct, not edge-deduped: the SWIM health is unchanged) so the report change reaches it.
     @Contract
     private void reemitHealthyOnQuorumReportChange(SwimMember existing, SwimMember resident, SwimMember updated) {
-        if (existing.state() == MemberState.ALIVE && updated.state() == MemberState.ALIVE
-            && reportsQuorumLoss(resident.labels()) != reportsQuorumLoss(updated.labels())
-            && inMembershipScope(updated.nodeId())) {
+        if (existing.state() == MemberState.ALIVE && updated.state() == MemberState.ALIVE && reportsQuorumLoss(resident.labels()) != reportsQuorumLoss(updated.labels()) && inMembershipScope(updated.nodeId())) {
             deliverObservation(new SwimObservation.HealthyObserved(updated.nodeId(), updated.incarnation()));
         }
     }

@@ -42,7 +42,6 @@ public final class MembershipContext {
     /// Compared by EQUALITY only (owner ruling, session 28): a different token for a known identity is
     /// a new process, and a dead identity never returns — recovery is a fresh NodeId.
     private final AtomicLong bootToken = new AtomicLong(0);
-
     /// #2936: the member's own live report that it cannot write to the quorum.
     private final BooleanSupplier quorumLossReported;
 

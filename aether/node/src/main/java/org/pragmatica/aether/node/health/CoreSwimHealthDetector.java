@@ -95,7 +95,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     /// #2936: whether `peer` reports, over SWIM, that it cannot write to its quorum. `false` before SWIM starts.
     public boolean reportsQuorumLoss(NodeId peer) {
         return protocol().map(protocol -> protocol.reportsQuorumLoss(peer))
-                         .or(false);
+                       .or(false);
     }
 
     public Unit setMembershipEligibility(Predicate<NodeId> eligibility) {
