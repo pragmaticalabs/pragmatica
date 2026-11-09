@@ -3,15 +3,16 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.db;
 
+import java.util.List;
+import java.util.Set;
+
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
-import java.util.List;
-import java.util.Set;
-
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.utils.Causes.cause;
+
 
 /// Refuses the three spellings of `pool_scope` that bind to nothing (#2973, D4.2 = option c): `pool-scope`,
 /// `poolScope` in the datasource section, and `pool_scope` under `pool_config`. `@StrictKeys` cannot be used on
@@ -35,8 +36,9 @@ public final class MisplacedPoolScope {
 
         return misplaced.isEmpty()
                ? success(Unit.unit())
-               : cause("Datasource section [" + section + "] sets " + misplaced + ", which is not a key: `pool_scope` "
-                       + "belongs in the datasource section itself (not in pool_config) and is spelled with an underscore")
-                     .result();
+               : cause("Datasource section [" + section
+                      + "] sets " + misplaced
+                      + ", which is not a key: `pool_scope` "
+                      + "belongs in the datasource section itself (not in pool_config) and is spelled with an underscore").result();
     }
 }

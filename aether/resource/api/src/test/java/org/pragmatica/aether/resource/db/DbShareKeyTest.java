@@ -156,6 +156,13 @@ class DbShareKeyTest {
             assertThat(bound("enabled = false\n").isSuccess()).as("Ember key").isTrue();
         }
 
+        /// G2: `PoolConfig` keeps `@StrictKeys` (nothing in forge.toml writes under `[database.pool_config]`), so a
+        /// misspelled pool key is refused by the binder rather than silently defaulting.
+        @Test
+        void unknownPoolConfigKey_isRefusedByTheBinder() {
+            assertThat(bound("[db.pool_config]\nmax_conections = 5\n").isFailure()).isTrue();
+        }
+
         @Test
         void unknownValue_failsAndNeverDefaults() { // T10
             assertThat(bound("pool_scope = \"per-slice\"\n").isFailure()).isTrue();

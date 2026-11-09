@@ -783,8 +783,8 @@ public final class SpiResourceProvider implements ResourceProvider {
     private static Fn2<Result<?>, String, Class<?>> loaderFromComposite(ConfigurationProvider composite) {
         var svc = ProviderBasedConfigService.providerBasedConfigService(composite);
 
-        return (section, configClass) -> refuseMisplacedPoolScope(composite, section, configClass)
-                                         .flatMap(_ -> svc.config(section, configClass));
+        return (section, configClass) -> refuseMisplacedPoolScope(composite, section, configClass).flatMap(_ -> svc.config(section,
+                                                                                                                           configClass));
     }
 
     private static Result<Unit> refuseMisplacedPoolScope(ConfigurationProvider composite,
