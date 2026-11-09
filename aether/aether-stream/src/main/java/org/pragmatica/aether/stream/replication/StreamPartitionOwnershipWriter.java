@@ -334,10 +334,10 @@ record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
                                                       owner,
                                                       committedEpoch,
                                                       isrInputs.liveMembers(stream, partition)).map(value -> guarded(leader,
-                                                                                                    stream,
-                                                                                                    partition,
-                                                                                                    committed,
-                                                                                                    value)));
+                                                                                                                     stream,
+                                                                                                                     partition,
+                                                                                                                     committed,
+                                                                                                                     value)));
     }
 
     @Override
