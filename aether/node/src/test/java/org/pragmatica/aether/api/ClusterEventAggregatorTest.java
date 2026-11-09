@@ -3001,6 +3001,8 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.KV_DISPATCH_LAGGING,
                 OperatorWarningCode.KV_DISPATCH_SLOW_HANDLER,
                 OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_AT_RISK,
+                OperatorWarningCode.DATASOURCE_DEMAND_EXCEEDS_SERVER_LIMIT,
+                OperatorWarningCode.DATASOURCE_SERVER_REFUSED_CONNECTION,
                 // the 12 FSM2 openers the D.6 recoveries close (#2761)
                 OperatorWarningCode.DEPARTURE_INFERRED,
                 OperatorWarningCode.DEPARTURE_INFERRED_SUPPRESSED,
