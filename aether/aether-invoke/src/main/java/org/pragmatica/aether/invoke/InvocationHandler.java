@@ -337,8 +337,7 @@ class InvocationHandlerImpl implements InvocationHandler {
         metricsCollector.onPresent(mc -> mc.recordStart(request.targetSlice(), request.method()));
         bridge.invokeWithReply(request.method().name(),
                                request.payload(),
-                               request.caller()
-                                      .map(CallerIdentity.class::cast),
+                               request.caller().map(CallerIdentity.class::cast),
                                Deadline.current().bounded(invocationTimeout),
                                result -> result.apply(cause -> handleInvocationFailure(request,
                                                                                        cause,

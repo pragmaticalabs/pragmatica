@@ -26,6 +26,7 @@ import org.pragmatica.aether.endpoint.EndpointRegistry.Endpoint;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
+import org.pragmatica.aether.slice.CallerIdentity;
 import org.pragmatica.aether.slice.CallerRequest;
 import org.pragmatica.aether.slice.MethodHandle;
 import org.pragmatica.aether.slice.MethodName;
@@ -60,6 +61,7 @@ import org.pragmatica.utility.IdGenerator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
@@ -574,7 +576,7 @@ class SliceInvokerImpl implements SliceInvoker {
     /// scheduled fire from a leader that does not host the slice encodes exactly what a hosting
     /// sender would have. Any other request type still needs a bridge that knows it.
     private Promise<byte[]> encodeFireAndForgetRequest(Artifact slice, Object request) {
-        var payload = CallerRequest.payloadOf(request);
+        var payload = payloadOf(request);
 
         if (payload instanceof Unit) {
             return Promise.lift(Causes::fromThrowable, () -> serializer.encode(payload));
@@ -587,7 +589,21 @@ class SliceInvokerImpl implements SliceInvoker {
     /// #2157: the caller identity a request carries goes on the wire only as the authenticated [SecurityContext] the
     /// edge validated; anything else (no identity, an anonymous one) travels as empty.
     private static Option<SecurityContext> wireCaller(Object request) {
-        return SecurityContext.fromCallerIdentity(CallerRequest.callerOf(request));
+        return SecurityContext.fromCallerIdentity(callerOf(request));
+    }
+
+    /// #2157: the object encoded as the payload: the business request of a [CallerRequest], any other request itself.
+    private static Object payloadOf(Object request) {
+        return request instanceof CallerRequest callerRequest
+               ? callerRequest.request()
+               : request;
+    }
+
+    /// #2157: the caller identity a request carries: empty for anything but a [CallerRequest].
+    private static Option<CallerIdentity> callerOf(Object request) {
+        return request instanceof CallerRequest callerRequest
+               ? callerRequest.caller()
+               : none();
     }
 
     private Promise<Unit> sendFireAndForgetPayload(Endpoint endpoint,
@@ -783,7 +799,7 @@ class SliceInvokerImpl implements SliceInvoker {
                                                MethodName method,
                                                Object request,
                                                Deadline deadline) {
-        var payloadObject = CallerRequest.payloadOf(request);
+        var payloadObject = payloadOf(request);
 
         return findSenderBridge(slice, payloadObject).<Promise<R>> fold(() -> SENDER_BRIDGE_NOT_FOUND.promise(),
                                                                         senderBridge -> senderBridge.encode(payloadObject)
@@ -792,10 +808,10 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                                                                                              method,
                                                                                                                                              payload,
                                                                                                                                              wireCaller(request),
-                                                                                                                                       senderBridge,
-                                                                                                                                       deadline,
-                                                                                                                                       timeoutMs,
-                                                                                                                                       Option.none())));
+                                                                                                                                             senderBridge,
+                                                                                                                                             deadline,
+                                                                                                                                             timeoutMs,
+                                                                                                                                             Option.none())));
     }
 
     @SuppressWarnings("unchecked")
@@ -952,13 +968,13 @@ class SliceInvokerImpl implements SliceInvoker {
         // case keeps working. The wire is tag-based (deterministicTag over the FQCN), so the target
         // resolves the bytes through its own codec regardless of which codec wrote them, and the
         // response is decoded back into the caller's own types the same way.
-        var payload = CallerRequest.payloadOf(request);
+        var payload = payloadOf(request);
         var senderBridge = findSenderBridge(slice, payload).or(targetBridge);
 
         return senderBridge.encode(payload)
                            .flatMap(inputBytes -> targetBridge.invokeAsCaller(method.name(),
                                                                               inputBytes,
-                                                                              CallerRequest.callerOf(request)))
+                                                                              callerOf(request)))
                            .flatMap(responseBytes -> senderBridge.decode(responseBytes))
                            .map(result -> (R) result);
     }
@@ -1209,7 +1225,7 @@ class SliceInvokerImpl implements SliceInvoker {
         var resolver = Option.option(affinityResolvers.get(affinityLookupKey(slice, method)));
         var excluded = excludedNodes(slice, method, refusedNodes);
         // #275: affinity to an inaccessible node yields to the filtered plain selection below.
-        var affinityEndpoint = resolver.flatMap(r -> r.resolveAffinityNode(CallerRequest.payloadOf(request)))
+        var affinityEndpoint = resolver.flatMap(r -> r.resolveAffinityNode(payloadOf(request)))
                                        .filter(node -> !excluded.contains(node))
                                        .flatMap(node -> endpointRegistry.selectEndpointByAffinity(slice, method, node))
                                        .filter(endpoint -> !excluded.contains(endpoint.nodeId()));

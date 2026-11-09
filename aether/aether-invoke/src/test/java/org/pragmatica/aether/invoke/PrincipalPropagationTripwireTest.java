@@ -166,6 +166,34 @@ class PrincipalPropagationTripwireTest {
         assertThat(seen.tracePrincipal().toOptional()).as("a forged caller must not become the trace principal").isEmpty();
     }
 
+    /// The fire-and-forget path carries the caller the same way, and encodes only the business payload.
+    @Test
+    void remoteFireAndForget_carriesTheCaller() {
+        startRemoteInvoker();
+        inAliceScope(() -> invoker.invoke(ARTIFACT, METHOD, callerRequest(ALICE)));
+
+        assertThat(network.awaitRequest().caller()).isEqualTo(Option.some(ALICE));
+    }
+
+    /// Affinity is resolved from the business request, never from its [CallerRequest] wrapper.
+    @Test
+    void remoteInvoke_affinityResolverSeesTheBusinessRequest() {
+        var resolved = new AtomicReference<Object>();
+
+        startRemoteInvoker();
+        invoker.registerAffinityResolver(ARTIFACT, METHOD, request -> recordResolved(resolved, request));
+        invoker.invoke(ARTIFACT, METHOD, callerRequest(ALICE), new TypeToken<String>() {});
+        network.awaitRequest();
+
+        assertThat(resolved.get()).isEqualTo("request");
+    }
+
+    private static Option<NodeId> recordResolved(AtomicReference<Object> resolved, Object request) {
+        resolved.set(request);
+
+        return Option.none();
+    }
+
     /// The ambient state at the receiver stays empty by design under the ruling (no holder or ScopedValue carrier). A
     /// non-empty value here means a second, unruled carrier appeared. No twin.
     @Test
@@ -189,6 +217,13 @@ class PrincipalPropagationTripwireTest {
 
     /// The sender is on [#SENDER]; its only endpoint for the method is on [#RECEIVER], so the call goes over the wire.
     private InvokeRequest senderRequestFromAliceScope(Object call) {
+        startRemoteInvoker();
+        inAliceScope(() -> invoker.invoke(ARTIFACT, METHOD, call, new TypeToken<String>() {}));
+
+        return network.awaitRequest();
+    }
+
+    private void startRemoteInvoker() {
         var handler = InvocationHandler.invocationHandler(SENDER, network);
 
         handler.registerSlice(ARTIFACT, new RecordingBridge());
@@ -205,9 +240,6 @@ class PrincipalPropagationTripwireTest {
                                             CLEANUP_INTERVAL_MS,
                                             0,
                                             new StubDeploymentManager());
-        inAliceScope(() -> invoker.invoke(ARTIFACT, METHOD, call, new TypeToken<String>() {}));
-
-        return network.awaitRequest();
     }
 
     // ---- LOCAL call -----------------------------------------------------------------------------------------

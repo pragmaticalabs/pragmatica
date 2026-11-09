@@ -14,6 +14,8 @@ import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 import org.pragmatica.serialization.CodecFor;
 
+import static org.pragmatica.lang.Option.none;
+
 
 @Codec
 @CodecFor(MethodName.class)
@@ -82,7 +84,7 @@ public sealed interface InvocationMessage extends ProtocolMessage {
                                      depth,
                                      hops,
                                      sampled,
-                                     Option.none());
+                                     none());
         }
 
         public static InvokeRequest invokeRequest(NodeId sender,
@@ -102,7 +104,7 @@ public sealed interface InvocationMessage extends ProtocolMessage {
                                      0,
                                      0,
                                      false,
-                                     Option.none());
+                                     none());
         }
     }
 

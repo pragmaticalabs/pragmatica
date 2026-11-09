@@ -198,6 +198,18 @@ class GeneratedCallerPropagationTest {
                                                                   .contains("SecurityContext.callerIdentity(context)");
     }
 
+    /// Two payload parameters remain beside the context: the sender's proxy record and the receiver's wire record hold
+    /// exactly those (never the security parameters), and the receiver registers a codec for its wire record.
+    @Test
+    void generatedSources_payloadRecordsExcludeTheSecurityParameters() throws Exception {
+        assertThat(generated("callermid", "MidSliceFactory.java"))
+            .contains("record leaf_WithHeadersRequest(RequestHeaders headers, Note note) {}")
+            .contains("withHeadersHandle.invoke(CallerRequest.callerRequest(new leaf_WithHeadersRequest(");
+        assertThat(generated("callerleaf", "LeafSliceFactory.java"))
+            .contains("public record WithHeadersWireRequest(RequestHeaders headers, Note note) {}")
+            .contains("SliceCodec.deterministicTag(\"com.example.callerleaf.LeafSliceFactory.WithHeadersWireRequest\")");
+    }
+
     // ---- harness ------------------------------------------------------------------------------------------------
 
     private Seen seenAt(String method, String path, byte[] body, SecurityContext security) {
@@ -262,8 +274,9 @@ class GeneratedCallerPropagationTest {
         }
     }
 
-    /// The inter-slice path, as the runtime runs it: the sender's invoker puts the caller on the invoke message as
-    /// `SecurityContext.fromCallerIdentity(CallerRequest.callerOf(request))` and encodes `CallerRequest.payloadOf`;
+    /// The inter-slice path, as the runtime runs it: the sender's invoker (`SliceInvoker.wireCaller`/`payloadOf`) puts
+    /// the caller on the invoke message as `SecurityContext.fromCallerIdentity` of the [CallerRequest]'s caller and
+    /// encodes its request;
     /// the receiving bridge hands a method declaring [CallerRequest] the payload wrapped with that caller, and any
     /// other method the bare payload. Methods are resolved by name across the hosted slices.
     private static final class Wire implements SliceInvokerFacade {
@@ -317,8 +330,12 @@ class GeneratedCallerPropagationTest {
 
         @SuppressWarnings("unchecked")
         private <R> Promise<R> deliver(String methodName, Object request) {
-            var caller = SecurityContext.fromCallerIdentity(CallerRequest.callerOf(request));
-            var payload = CallerRequest.payloadOf(request);
+            var caller = request instanceof CallerRequest callerRequest
+                         ? SecurityContext.fromCallerIdentity(callerRequest.caller())
+                         : Option.<SecurityContext>none();
+            var payload = request instanceof CallerRequest callerRequest
+                          ? callerRequest.request()
+                          : request;
             var target = (SliceMethod<R, Object>) methods.get(methodName);
 
             onTheWire.add(caller);

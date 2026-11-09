@@ -7,6 +7,7 @@ import com.example.callerleaf.LeafSlice;
 import com.example.callerleaf.Note;
 import com.example.callerleaf.Seen;
 
+import org.pragmatica.aether.http.handler.RequestHeaders;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Promise;
@@ -18,6 +19,7 @@ public interface MidSlice {
     Promise<Seen> relay(SecurityContext context, Note note);
     Promise<Seen> relayContextOnly(SecurityContext context);
     Promise<Seen> relayBoth(SecurityContext context, Note note);
+    Promise<Seen> relayWithHeaders(SecurityContext context, RequestHeaders headers, Note note);
 
     static MidSlice midSlice(LeafSlice leaf) {
         return new MidSlice() {
@@ -34,6 +36,11 @@ public interface MidSlice {
             @Override
             public Promise<Seen> relayBoth(SecurityContext context, Note note) {
                 return leaf.both(context.principal(), context, new Note(note.text() + ">mid"));
+            }
+
+            @Override
+            public Promise<Seen> relayWithHeaders(SecurityContext context, RequestHeaders headers, Note note) {
+                return leaf.withHeaders(context, headers, note);
             }
         };
     }

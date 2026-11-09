@@ -5,6 +5,7 @@ package org.pragmatica.aether.slice;
 
 import org.pragmatica.lang.Option;
 
+
 /// An inter-slice request together with its caller's identity (#2157). In-process only, like
 /// [org.pragmatica.aether.slice.topic.ContextualEvent]: it is never encoded. On the sending side a generated proxy hands
 /// it to its method handle; the invoker encodes [#request] as the payload and carries [#caller] beside it (on the wire,
@@ -16,19 +17,5 @@ import org.pragmatica.lang.Option;
 public record CallerRequest(Object request, Option<CallerIdentity> caller) {
     public static CallerRequest callerRequest(Object request, Option<CallerIdentity> caller) {
         return new CallerRequest(request, caller);
-    }
-
-    /// The object to encode as the payload: the business request of a [CallerRequest], any other request itself.
-    public static Object payloadOf(Object request) {
-        return request instanceof CallerRequest callerRequest
-               ? callerRequest.request()
-               : request;
-    }
-
-    /// The caller identity a request carries: empty for anything but a [CallerRequest].
-    public static Option<CallerIdentity> callerOf(Object request) {
-        return request instanceof CallerRequest callerRequest
-               ? callerRequest.caller()
-               : Option.none();
     }
 }

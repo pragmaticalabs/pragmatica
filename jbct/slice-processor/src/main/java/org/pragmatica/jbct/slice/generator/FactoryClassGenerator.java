@@ -1829,11 +1829,11 @@ public class FactoryClassGenerator {
     /// its principal for a `Principal`, and the payload (or its record component) for every other parameter.
     private String callerArgument(MethodModel method, MethodParameterInfo param, ImportTracker importTracker) {
         if (MethodModel.isSecurityContextParam(param)) {
-            return importTracker.use(MethodModel.SECURITY_CONTEXT_TYPE) + ".forCaller(__caller.caller())";
+            return importTracker.use(MethodModel.SECURITY_CONTEXT_TYPE) + ".securityContext(__caller.caller())";
         }
 
         if (MethodModel.isPrincipalParam(param)) {
-            return importTracker.use(MethodModel.SECURITY_CONTEXT_TYPE) + ".forCaller(__caller.caller()).principal()";
+            return importTracker.use(MethodModel.SECURITY_CONTEXT_TYPE) + ".securityContext(__caller.caller()).principal()";
         }
 
         return hasWireRequestRecord(method)

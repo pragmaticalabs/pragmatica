@@ -7,6 +7,7 @@ import org.pragmatica.aether.http.adapter.impl.SliceRequestContext;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.http.routing.RequestContext;
 
+
 /// The security context of a routed request (#2157), read from the request itself: a generated route hands it to a
 /// slice method's `Principal`/`SecurityContext` parameter directly, never through ambient state, so an asynchronous step
 /// between the edge and the handler cannot lose it.

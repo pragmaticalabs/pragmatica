@@ -1886,11 +1886,11 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                              routeKey,
                                                              requestId))
                      .onPresent(router -> invokeLocalRouter(request,
-                                                                     response,
-                                                                     securityContext,
-                                                                     router,
-                                                                     routeKey,
-                                                                     requestId));
+                                                            response,
+                                                            securityContext,
+                                                            router,
+                                                            routeKey,
+                                                            requestId));
     }
 
     private void handleMissingLocalRouter(ResponseWriter response,

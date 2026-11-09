@@ -32,18 +32,18 @@ class SecurityContextCallerTest {
     }
 
     @Test
-    void forCaller_ofAnAuthenticatedIdentity_isTheContextUnchanged() {
-        assertThat(SecurityContext.forCaller(Option.<CallerIdentity>some(ALICE))).isSameAs(ALICE);
+    void securityContextOfCaller_anAuthenticatedIdentity_isTheContextUnchanged() {
+        assertThat(SecurityContext.securityContext(Option.<CallerIdentity>some(ALICE))).isSameAs(ALICE);
     }
 
     @Test
-    void forCaller_ofNoForeignOrAnonymousIdentity_isTheAnonymousContext() {
+    void securityContextOfCaller_noForeignOrAnonymousIdentity_isTheAnonymousContext() {
         CallerIdentity foreign = new CallerIdentity() {};
         var anonymousAdmin = SecurityContext.securityContext(Principal.ANONYMOUS, Set.of(Role.ADMIN), Map.of(), AuthorizationRole.ADMIN);
 
-        assertThat(SecurityContext.forCaller(Option.none())).isEqualTo(SecurityContext.securityContext());
-        assertThat(SecurityContext.forCaller(Option.some(foreign))).isEqualTo(SecurityContext.securityContext());
-        assertThat(SecurityContext.forCaller(Option.<CallerIdentity>some(anonymousAdmin))).isEqualTo(SecurityContext.securityContext());
+        assertThat(SecurityContext.securityContext(Option.none())).isEqualTo(SecurityContext.securityContext());
+        assertThat(SecurityContext.securityContext(Option.some(foreign))).isEqualTo(SecurityContext.securityContext());
+        assertThat(SecurityContext.securityContext(Option.<CallerIdentity>some(anonymousAdmin))).isEqualTo(SecurityContext.securityContext());
     }
 
     @Test

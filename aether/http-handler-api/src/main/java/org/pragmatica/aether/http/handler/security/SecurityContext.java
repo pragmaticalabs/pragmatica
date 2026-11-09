@@ -15,6 +15,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.Codec;
 
 import static org.pragmatica.aether.http.handler.security.Principal.PrincipalType;
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
 
@@ -82,8 +83,7 @@ public record SecurityContext(Principal principal,
     /// validated it when it is authenticated; none for an unauthenticated (anonymous) or absent context, so "no
     /// identity" travels as empty, never as a stand-in principal or a default role.
     public static Option<CallerIdentity> callerIdentity(SecurityContext context) {
-        return Option.option(context)
-                     .filter(SecurityContext::isAuthenticated)
+        return option(context).filter(SecurityContext::isAuthenticated)
                      .map(CallerIdentity.class::cast);
     }
 
@@ -97,7 +97,7 @@ public record SecurityContext(Principal principal,
 
     /// The context a receiving slice method is given for a caller identity (#2157): the caller's authenticated context,
     /// or the anonymous context when the caller had no identity, exactly as the edge answers an unauthenticated request.
-    public static SecurityContext forCaller(Option<CallerIdentity> caller) {
+    public static SecurityContext securityContext(Option<CallerIdentity> caller) {
         return fromCallerIdentity(caller).or(ANONYMOUS_CONTEXT);
     }
 
@@ -129,10 +129,9 @@ public record SecurityContext(Principal principal,
     @Override
     public String toString() {
         return "SecurityContext[principal=" + principal.value()
-               + ", roles=" + new TreeSet<>(roles.stream()
-                                                 .map(Role::value)
-                                                 .toList())
-               + ", claims=" + new TreeSet<>(claims.keySet())
-               + ", authorizationRole=" + authorizationRole + "]";
+             + ", roles=" + new TreeSet<>(roles.stream().map(Role::value).toList())
+             + ", claims=" + new TreeSet<>(claims.keySet())
+             + ", authorizationRole=" + authorizationRole
+             + "]";
     }
 }

@@ -20,6 +20,7 @@ import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.SliceCodec;
 
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
@@ -70,7 +71,7 @@ public record DefaultSliceBridge(Artifact artifact,
 
     @Override
     public Promise<byte[]> invoke(String methodName, byte[] input) {
-        return invokeAsCaller(methodName, input, Option.none());
+        return invokeAsCaller(methodName, input, none());
     }
 
     /// #2157: a method whose slice method takes a `SecurityContext` declares [CallerRequest] as its parameter and
@@ -99,10 +100,13 @@ public record DefaultSliceBridge(Artifact artifact,
                     .getClassLoader();
     }
 
-    private Promise<byte[]> invokeWithSerialization(InternalMethod method, byte[] input, Option<CallerIdentity> caller) {
+    private Promise<byte[]> invokeWithSerialization(InternalMethod method,
+                                                    byte[] input,
+                                                    Option<CallerIdentity> caller) {
         return this.<Object> deserializeInput(input)
                    .map(payload -> callerArgumentFor(method, payload, caller))
-                   .flatMap(parameter -> invokeAndSerialize(method.method(), parameter));
+                   .flatMap(parameter -> invokeAndSerialize(method.method(),
+                                                            parameter));
     }
 
     private static Object callerArgumentFor(InternalMethod method, Object payload, Option<CallerIdentity> caller) {
