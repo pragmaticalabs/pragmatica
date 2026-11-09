@@ -130,7 +130,7 @@ public interface SecurityOverrideApplier {
     /// be judged.
     ///
     /// `public` is the one override that weakens the route under every global mode, because it is
-    /// the floor. It is refused. Every other override is applied, where the previous revision refused
+    /// the floor. It is refused, and so is `optional` (#2946), which serves an anonymous request just the same. Every other override is applied, where the previous revision refused
     /// them all.
     ///
     /// ## Reach of this rule on the HOSTING node -- CHANGED by #887, read the dates
@@ -168,7 +168,7 @@ public interface SecurityOverrideApplier {
     private static HttpRouteDefinition applyToUndeclaredRoute(HttpRouteDefinition route,
                                                               SecurityPolicy newPolicy,
                                                               Announce announce) {
-        if (newPolicy instanceof SecurityPolicy.Public) {
+        if (newPolicy instanceof SecurityPolicy.Public || newPolicy instanceof SecurityPolicy.OptionalAuth) {
             if (announce == Announce.LOG) {
                 LOG.warn("Security override rejected (STRENGTHEN_ONLY): {} {} has no declared policy; "
                         + "refusing override to {}, which weakens the route under every global security mode",

@@ -54,8 +54,8 @@ public record MethodModel(String name,
     private static final String CONFIGURATION_SECTION_TYPE = "org.pragmatica.aether.slice.annotation.ConfigurationSection";
 
     private static final String RATE_GUARD_TYPE = "org.pragmatica.aether.slice.RateGuard";
-    private static final String PRINCIPAL_TYPE = "org.pragmatica.aether.http.handler.security.Principal";
-    private static final String SECURITY_CONTEXT_TYPE = "org.pragmatica.aether.http.handler.security.SecurityContext";
+    public static final String PRINCIPAL_TYPE = "org.pragmatica.aether.http.handler.security.Principal";
+    public static final String SECURITY_CONTEXT_TYPE = "org.pragmatica.aether.http.handler.security.SecurityContext";
     public static final String REQUEST_HEADERS_TYPE = "org.pragmatica.aether.http.handler.RequestHeaders";
 
     public MethodModel {
@@ -201,6 +201,24 @@ public record MethodModel(String name,
     public boolean hasInjectedParams() {
         return parameters.stream()
                          .anyMatch(MethodModel::isInjectedParam);
+    }
+
+    /// #2157: a method taking a `SecurityContext` is called on its caller's behalf. Across slices its security
+    /// parameters are not part of the payload: the caller's identity travels beside it on the invoke message, and the
+    /// generated method hands it to these parameters. A method taking only a `Principal` keeps it in the payload.
+    public boolean takesCaller() {
+        return parameters.stream()
+                         .anyMatch(MethodModel::isSecurityContextParam);
+    }
+
+    /// The parameters an inter-slice call encodes as its payload: every parameter but the security ones of a method
+    /// that [#takesCaller], every parameter otherwise.
+    public List<MethodParameterInfo> wireParameters() {
+        return takesCaller()
+               ? parameters.stream()
+                           .filter(p -> !isSecurityParam(p))
+                           .toList()
+               : parameters;
     }
 
     /// Get only the business parameters (excluding every injected parameter).

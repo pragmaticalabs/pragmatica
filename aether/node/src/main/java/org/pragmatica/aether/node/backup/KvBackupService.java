@@ -846,6 +846,11 @@ public final class KvBackupService {
             return success(Outcome.PUSH_FAILED);
         }
 
+        if (stopped.get()) {
+            // a stopped node writes nothing more: the commit stays queued locally, whatever the worker's interrupt did or did not reach
+            return success(Outcome.PUSH_FAILED);
+        }
+
         return repository.push()
                          .fold(cause -> afterPushFailure(cause, pushAttempts),
                                _ -> success(pushed()));

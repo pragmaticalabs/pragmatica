@@ -113,6 +113,40 @@ class HttpRouteRegistrySecurityRefreshTest {
         assertThat(security(registry)).isEqualTo("UNSPECIFIED");
     }
 
+    /// #2946: `OPTIONAL` serves anonymous exactly as `PUBLIC` does, so it too must not outrank `UNSPECIFIED` (the
+    /// ingress resolves that to the configured default before enforcing) -- a stricter node's route is never weakened
+    /// by an `OPTIONAL` declaration elsewhere, in both merge orders; and `OPTIONAL` still outranks `PUBLIC`.
+    @Test
+    void optionalDoesNotOutrankUnspecified_inEitherMergeOrder() {
+        var forward = HttpRouteRegistry.httpRouteRegistry();
+        var backward = HttpRouteRegistry.httpRouteRegistry();
+
+        forward.onNodeRoutesPut(put(NODE_A, "UNSPECIFIED"));
+        forward.onNodeRoutesPut(put(NODE_B, "OPTIONAL"));
+        backward.onNodeRoutesPut(put(NODE_B, "OPTIONAL"));
+        backward.onNodeRoutesPut(put(NODE_A, "UNSPECIFIED"));
+
+        assertThat(security(forward)).isEqualTo("UNSPECIFIED");
+        assertThat(security(backward)).isEqualTo("UNSPECIFIED");
+    }
+
+    @Test
+    void optionalOutranksPublic_butNothingStricter_inEitherMergeOrder() {
+        for (var other : List.of("PUBLIC", "AUTHENTICATED", "API_KEY", "ROLE:admin")) {
+            var forward = HttpRouteRegistry.httpRouteRegistry();
+            var backward = HttpRouteRegistry.httpRouteRegistry();
+            var expected = other.equals("PUBLIC") ? "OPTIONAL" : other;
+
+            forward.onNodeRoutesPut(put(NODE_A, other));
+            forward.onNodeRoutesPut(put(NODE_B, "OPTIONAL"));
+            backward.onNodeRoutesPut(put(NODE_B, "OPTIONAL"));
+            backward.onNodeRoutesPut(put(NODE_A, other));
+
+            assertThat(security(forward)).as("forward with %s", other).isEqualTo(expected);
+            assertThat(security(backward)).as("backward with %s", other).isEqualTo(expected);
+        }
+    }
+
     /// The declared policy rides along, so an ingress can re-apply its own committed overrides to it.
     @Test
     void declaredPolicy_isCarriedSeparatelyFromTheEnforcedOne() {

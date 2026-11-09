@@ -1028,6 +1028,24 @@ Routes can be:
 - **String** (uses default security): `shorten = "POST /"`
 - **Array** (explicit security): `resolve = ["GET /{shortCode}", "public"]`
 
+Security levels: `public`, `optional`, `authenticated`, `role:<name>`.
+
+**`optional` -- authenticate if a credential is presented** (#2946; the name is a guess pending review). Use it for a
+route that serves everyone but personalises for a signed-in caller (a feed with a `following` flag):
+
+| Request | Outcome |
+|---|---|
+| no credential (`Authorization` / `X-API-Key` header absent) | served anonymously: the slice's `SecurityContext` parameter is the empty context (`isAuthenticated() == false`) |
+| a credential header that is present but fails validation (bare `Bearer`, empty value, unknown scheme, empty `X-API-Key`, malformed, expired, bad signature, wrong `alg`, wrong issuer/audience, unknown key) | `401` with `WWW-Authenticate: <first auth_schemes entry> realm="Aether", error="invalid_token"` -- never downgraded to anonymous |
+| a valid credential | served; the slice's `Principal` / `SecurityContext` parameters carry the validated identity |
+
+`public` is unchanged: it never reads a credential, so a bad token on a `public` route is ignored. `authenticated`
+and `role:<name>` are unchanged: a missing credential is still `401`. Under `security_mode = "none"` (and `jwt`
+without a `jwks_url`) there is nothing to validate a credential against, so an `optional` route is served anonymously
+and any credential is ignored. A security override to `optional` is subject to `strengthen_only` like `public`: it
+cannot be applied to an undeclared route, and `public` cannot replace `optional`. A JWT 503 (key-set fetch failure)
+is still a 503 on an `optional` route.
+
 The `[security]` section is optional. A route with no `[security]` section at all does **not**
 default to `public` (#763) -- it inherits the app HTTP server's global `security_mode` (see
 "Securing Your Endpoints" below), the same as an authenticated route with no per-route override.
@@ -1118,6 +1136,26 @@ private Promise<ShortUrl> traced(RequestHeaders headers, ResolveRequest request)
   `RequestHeaders`, that caller supplies the `RequestHeaders` argument like any other, and nothing is added on its
   behalf. A slice that must pass the headers on does so explicitly. A `null` `RequestHeaders` argument on such a
   call is sent as empty headers by the generated proxy rather than failing.
+
+### The caller across slice-to-slice calls
+
+A `SecurityContext` parameter is the caller's identity on every hop, not only at the edge:
+
+- **At the edge** the generated route passes the context the edge validated for this request (and, for a `Principal`
+  parameter, its principal) straight into the method. It is taken from the request, never from ambient state, so a
+  body decode or any other asynchronous step before the handler cannot lose it. An unauthenticated request gets the
+  anonymous context.
+- **Across a slice-to-slice call** to a method that declares `SecurityContext`, the caller passes its context as the
+  argument, as with any parameter. The generated proxy does not put it in the payload: it travels beside the payload, on
+  the invoke message, exactly as the edge validated it (principal, roles, claims). The receiving method gets it in its
+  `SecurityContext` parameter, and a `Principal` parameter beside it gets its principal. An unauthenticated or absent
+  context travels as "no identity" and arrives as the anonymous context, never as a stand-in principal or a default
+  role.
+- **Identity, never authorization.** The receiving node's route security never reads a propagated context; it only
+  ever authorizes the HTTP requests it serves itself. Treat the context as who is calling, for slice logic and audit.
+- A method that declares a `Principal` and no `SecurityContext` receives its `Principal` as an ordinary argument on a
+  slice-to-slice call: the caller holds only a principal there, so there is no validated context to carry.
+- `SecurityContext.toString()` prints claim names but not claim values, so logging a context does not leak a token.
 
 ## Securing Your Endpoints
 

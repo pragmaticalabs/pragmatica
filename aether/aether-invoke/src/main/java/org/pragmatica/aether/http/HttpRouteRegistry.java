@@ -287,8 +287,9 @@ public interface HttpRouteRegistry {
         }
 
         /// Strongest by [SecurityPolicy#strength], with one adjustment: `UNSPECIFIED` (strength -1, "inherit the
-        /// global mode") ranks just ABOVE `PUBLIC`, never below it -- the global mode is at least public, so an
-        /// explicit `PUBLIC` must not outrank a node that inherits a stricter global policy. An empty set is
+        /// global mode") ranks just ABOVE `PUBLIC` and `OPTIONAL`, never below them -- the ingress resolves it to the
+        /// configured default (at least public, in effect at least optional) BEFORE it enforces, so an explicit
+        /// `PUBLIC` or `OPTIONAL` must not outrank a node that inherits a stricter global policy (#2946). An empty set is
         /// `UNSPECIFIED`.
         ///
         /// A TOTAL order (v1670 F4): equal strengths (`API_KEY` and `BEARER_TOKEN`, `ROLE:a` and `ROLE:b`) are broken
@@ -302,8 +303,9 @@ public interface HttpRouteRegistry {
         private static int rank(String policy) {
             return switch (SecurityPolicy.fromString(policy)) {
                 case SecurityPolicy.Public _ -> 0;
-                case SecurityPolicy.Unspecified _ -> 1;
-                case SecurityPolicy other -> other.strength() + 2;
+                case SecurityPolicy.OptionalAuth _ -> 1;
+                case SecurityPolicy.Unspecified _ -> 2;
+                case SecurityPolicy other -> other.strength() + 3;
             };
         }
 

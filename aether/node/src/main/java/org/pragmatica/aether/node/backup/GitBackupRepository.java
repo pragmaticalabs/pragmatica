@@ -387,7 +387,20 @@ public record GitBackupRepository(Path dir,
     }
 
     private String outputOf(FutureTask<String> output) {
-        return Result.lift(() -> output.get(timeout.millis(), TimeUnit.MILLISECONDS)).or("");
+        return Result.lift(GitBackupRepository::keepInterrupt,
+                           () -> output.get(timeout.millis(),
+                                            TimeUnit.MILLISECONDS))
+                     .or("");
+    }
+
+    /// The stop's interrupt can land while the output is read, after git exited: it must stay visible to the caller, or the worker goes on with the
+    /// rest of its pass as if nothing had stopped it (#2924: a push after the stop returned).
+    private static BackupRepositoryError keepInterrupt(Throwable cause) {
+        if (cause instanceof InterruptedException) {
+            Thread.currentThread().interrupt();
+        }
+
+        return unavailable(cause);
     }
 
     /// The ssh git runs, never allowed to prompt: the operator's own `GIT_SSH_COMMAND` (a key, a port) is

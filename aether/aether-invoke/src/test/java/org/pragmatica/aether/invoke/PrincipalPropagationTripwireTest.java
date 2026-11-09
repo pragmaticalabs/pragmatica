@@ -15,7 +15,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
@@ -23,6 +22,8 @@ import org.pragmatica.aether.http.handler.security.Role;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.aether.http.handler.security.SecurityContextHolder;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
+import org.pragmatica.aether.slice.CallerIdentity;
+import org.pragmatica.aether.slice.CallerRequest;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
@@ -38,29 +39,29 @@ import org.pragmatica.lang.type.TypeToken;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// #2157 part a (P9a): the caller's principal is NOT propagated across an inter-slice invoke, and nothing tested it.
+/// #2157: the caller's identity across an inter-slice invoke.
 ///
-/// Ruling for the landing (#2157 part b): the full SecurityContext is carried on [InvokeRequest] and reaches the slice as an
-/// explicit parameter, not through SecurityContextHolder or a ScopedValue. Three kinds of test:
-/// - ENABLED tripwire + `@Disabled` twin (WIRE shape, REMOTE value on the wire): the tripwire asserts today's behaviour and
-///   fails with "#2157: propagation landed; flip this tripwire to the real assertion"; flipping means deleting it and
-///   enabling the twin.
-/// - Permanent pins (no twin, own failure messages): ambient state at the receiver, the local hop, plain continuations.
+/// Part a (P9a) landed enabled tripwires on the context-free behaviour with `@Disabled` twins; part b (P9b) flipped them:
+/// the caller's SecurityContext, exactly as the edge validated it, is carried on [InvokeRequest] (`caller`) and reaches
+/// the receiving slice through [SliceBridge#invokeAsCaller] as an explicit parameter, never through
+/// SecurityContextHolder or a ScopedValue. The sender takes it from the explicit argument (a [CallerRequest] the
+/// generated proxy builds), never from ambient state. Three kinds of test:
+/// - Landed assertions (the former twins): the WIRE shape, the REMOTE value on the wire, delivery at the receiver.
+/// - Permanent pins (own failure messages): ambient state at the receiver stays empty even when an identity arrives;
+///   a context-free call puts no identity on the wire even from inside an edge scope; the local hop; plain
+///   continuations.
 /// - ENABLED hazard tripwires (no twin, own message): an executor hop does not carry the holder; red only if an unruled
 ///   second carrier appears.
 ///
 /// What is observed, per hop:
-/// - WIRE: the exact component list of [InvokeRequest].
+/// - WIRE: the component list of [InvokeRequest].
 /// - REMOTE: the sender runs inside an edge-style scope (a bound [SecurityContextHolder] and an [InvocationContext]
-///   carrying a principal string, which is what `AppHttpServer.dispatchScoped` binds). The values on the [InvokeRequest] it
-///   hands the transport are inspected; the request is also delivered to a second node's [InvocationHandler], where the
-///   slice records its ambient state (permanent pin). How the receiving slice gets the explicit parameter is part b's
-///   design and is not pinned here.
+///   carrying a principal string, which is what `AppHttpServer.dispatchScoped` binds). The [InvokeRequest] it hands the
+///   transport is inspected, then delivered to a second node's [InvocationHandler].
 /// - LOCAL: the same sender scope, the target slice registered on the sender itself.
 /// - ASYNC: a [SecurityContextHolder] binding read after a plain continuation (permanent pins) and after a
 ///   [ContextPropagation] executor-hop restore (hazard tripwires).
 class PrincipalPropagationTripwireTest {
-    private static final String LANDED = "#2157: propagation landed; flip this tripwire to the real assertion";
     private static final String HOLDER_CHANGED = "#2157: the ambient SecurityContextHolder now survives an executor hop; the ruled carrier is the explicit parameter, so revisit the async-hazard notes";
     private static final NodeId SENDER = new NodeId("sender-node");
     private static final NodeId RECEIVER = new NodeId("receiver-node");
@@ -75,6 +76,7 @@ class PrincipalPropagationTripwireTest {
 
     private final RecordingNetwork network = new RecordingNetwork();
     private SliceInvoker invoker;
+    private RecordingBridge senderBridge;
 
     @AfterEach
     void tearDown() {
@@ -85,35 +87,27 @@ class PrincipalPropagationTripwireTest {
 
     // ---- WIRE -----------------------------------------------------------------------------------------------
 
-    private static final List<String> TODAY_COMPONENTS = List.of("sender:NodeId",
-                                                                 "correlationId:String",
-                                                                 "requestId:String",
-                                                                 "targetSlice:Artifact",
-                                                                 "method:MethodName",
-                                                                 "payload:byte[]",
-                                                                 "expectResponse:boolean",
-                                                                 "depth:int",
-                                                                 "hops:int",
-                                                                 "sampled:boolean");
-
-    /// The exact component list, so ANY new component goes red, whatever its name or declared type (a SecurityContext
-    /// carried as `caller`, `Object ctx`, or a renamed wrapper included).
-    @Test
-    void invokeRequest_hasTheKnownContextFreeShape_today() {
-        assertThat(componentSignatures()).as(LANDED + ": InvokeRequest changed shape").containsExactlyElementsOf(TODAY_COMPONENTS);
-    }
-
-    @Disabled("#2157 part b: enable when InvokeRequest declares a SecurityContext component (adjust if the carrier type differs)")
     @Test
     void invokeRequest_declaresASecurityContextComponent() {
-        assertThat(Arrays.stream(InvokeRequest.class.getRecordComponents()).map(RecordComponent::getType))
-            .as("InvokeRequest must carry the caller's SecurityContext")
-            .contains(SecurityContext.class);
+        assertThat(componentSignatures()).as("InvokeRequest must carry the caller's SecurityContext")
+                                         .contains("caller:" + Option.class.getName() + "<" + SecurityContext.class.getName() + ">");
+    }
+
+    /// A request built by a factory that takes no caller (every invoke that is not made on a caller's behalf) carries no
+    /// identity, never a stand-in one.
+    @Test
+    void invokeRequest_factoriesWithoutACaller_carryNoIdentity() {
+        var payload = new byte[]{1};
+        var tenArg = InvokeRequest.invokeRequest(SENDER, "c", "r", ARTIFACT, METHOD, payload, true, 1, 0, false);
+        var sevenArg = InvokeRequest.invokeRequest(SENDER, "c", "r", ARTIFACT, METHOD, payload, true);
+
+        assertThat(tenArg.caller().isEmpty()).as("10-arg factory").isTrue();
+        assertThat(sevenArg.caller().isEmpty()).as("7-arg factory").isTrue();
     }
 
     private static List<String> componentSignatures() {
         return Arrays.stream(InvokeRequest.class.getRecordComponents())
-                     .map(component -> component.getName() + ":" + component.getType().getSimpleName())
+                     .map(component -> component.getName() + ":" + component.getGenericType().getTypeName())
                      .toList();
     }
 
@@ -138,33 +132,105 @@ class PrincipalPropagationTripwireTest {
     // request the sender hands the transport (the carrier); the receiving side's ambient state is a permanent pin.
 
     @Test
-    void remoteInvoke_requestOnTheWireCarriesNoCallerContext_today() {
-        var values = componentValues(senderRequestFromAliceScope());
+    void remoteInvoke_requestOnTheWireCarriesTheCallersContext() {
+        assertThat(senderRequestFromAliceScope(callerRequest(ALICE)).caller()).isEqualTo(Option.some(ALICE));
+        assertThat(senderBridge.encoded()).as("only the business request is encoded as the payload").containsExactly("request");
+    }
 
-        assertThat(values).as(LANDED + ": a SecurityContext value is on the wire").noneMatch(SecurityContext.class::isInstance);
+    /// The sender never reads ambient state: a call made without an explicit caller, from inside a fully bound edge
+    /// scope, puts no identity on the wire in any form. No twin.
+    @Test
+    void remoteInvoke_contextFreeCall_putsNoIdentityOnTheWire_permanentPin() {
+        var request = senderRequestFromAliceScope("request");
+        var values = componentValues(request);
+
+        assertThat(request.caller()).as("a context-free call carries no caller").isEqualTo(Option.none());
+        assertThat(values).as("a SecurityContext value is on the wire").noneMatch(SecurityContext.class::isInstance);
         assertThat(values.stream().filter(value -> !(value instanceof byte[])).map(String::valueOf))
-            .as(LANDED + ": the caller's identity is on the wire under another form")
+            .as("the caller's identity is on the wire under another form")
             .noneMatch(text -> text.toLowerCase().contains(ALICE_KEY));
     }
 
-    @Disabled("#2157 part b: enable when the sender puts the caller's SecurityContext on InvokeRequest")
+    /// "No identity" travels as empty, never as a stand-in principal or a default role.
     @Test
-    void remoteInvoke_requestOnTheWireCarriesTheCallersContext() {
-        assertThat(componentValues(senderRequestFromAliceScope())).contains(ALICE);
+    void remoteInvoke_unauthenticatedCaller_putsNoIdentityOnTheWire() {
+        assertThat(senderRequestFromAliceScope(callerRequest(SecurityContext.securityContext())).caller()).isEqualTo(Option.none());
+    }
+
+    /// The receiving node hands the caller to the slice through the explicit-parameter path, unchanged.
+    @Test
+    void remoteInvoke_receiverDeliversTheCallerToTheSlice() throws Exception {
+        assertThat(remoteHopSeenByDownstream(callerRequest(ALICE)).caller()).isEqualTo(Option.some(ALICE));
+    }
+
+    /// A forged context (ADMIN roles under a principal of the sender's choosing) is identity data only: the receiver
+    /// passes it to the slice as such and binds nothing that any authorization reads. No route check runs on this path.
+    @Test
+    void remoteInvoke_forgedCaller_reachesOnlyTheExplicitParameter() throws Exception {
+        var forged = SecurityContext.securityContext("mallory", Set.of(Role.ADMIN)).unwrap();
+        var receiverBridge = new RecordingBridge();
+        var receiver = InvocationHandler.invocationHandler(RECEIVER, new RecordingNetwork());
+
+        receiver.registerSlice(ARTIFACT, receiverBridge);
+        receiver.onInvokeRequest(InvokeRequest.invokeRequest(SENDER, "c-forged", "r-forged", ARTIFACT, METHOD, new byte[0], false, 1, 1, false, Option.some(forged)));
+        var seen = receiverBridge.awaitSeen();
+
+        assertThat(seen.caller()).isEqualTo(Option.some(forged));
+        assertThat(seen.securityContext().toOptional()).as("a forged caller must not become the ambient authorization context").isEmpty();
+        assertThat(seen.tracePrincipal().toOptional()).as("a forged caller must not become the trace principal").isEmpty();
+    }
+
+    /// The fire-and-forget path carries the caller the same way, and encodes only the business payload.
+    @Test
+    void remoteFireAndForget_carriesTheCaller() {
+        startRemoteInvoker();
+        inAliceScope(() -> invoker.invoke(ARTIFACT, METHOD, callerRequest(ALICE)));
+
+        assertThat(network.awaitRequest().caller()).isEqualTo(Option.some(ALICE));
+        assertThat(senderBridge.encoded()).as("only the business request is encoded as the payload").containsExactly("request");
+    }
+
+    /// The awaiting-completion path (#1723) carries the caller the same way.
+    @Test
+    void remoteAwaitingCompletion_carriesTheCaller() {
+        startRemoteInvoker();
+        invoker.invokeAwaitingCompletion(ARTIFACT, METHOD, callerRequest(ALICE));
+
+        assertThat(network.awaitRequest().caller()).isEqualTo(Option.some(ALICE));
+        assertThat(senderBridge.encoded()).as("only the business request is encoded as the payload").containsExactly("request");
+    }
+
+    /// Affinity is resolved from the business request, never from its [CallerRequest] wrapper.
+    @Test
+    void remoteInvoke_affinityResolverSeesTheBusinessRequest() {
+        var resolved = new AtomicReference<Object>();
+
+        startRemoteInvoker();
+        invoker.registerAffinityResolver(ARTIFACT, METHOD, request -> recordResolved(resolved, request));
+        invoker.invoke(ARTIFACT, METHOD, callerRequest(ALICE), new TypeToken<String>() {});
+        network.awaitRequest();
+
+        assertThat(resolved.get()).isEqualTo("request");
+    }
+
+    private static Option<NodeId> recordResolved(AtomicReference<Object> resolved, Object request) {
+        resolved.set(request);
+
+        return Option.none();
     }
 
     /// The ambient state at the receiver stays empty by design under the ruling (no holder or ScopedValue carrier). A
     /// non-empty value here means a second, unruled carrier appeared. No twin.
     @Test
     void remoteInvoke_ambientContextDoesNotReachDownstream_permanentPin() throws Exception {
-        var seen = remoteHopSeenByDownstream();
+        var seen = remoteHopSeenByDownstream(callerRequest(ALICE));
 
         assertThat(seen.securityContext().toOptional()).as("ambient holder at the receiver: an unruled carrier appeared").isEmpty();
         assertThat(seen.tracePrincipal().toOptional()).as("ambient trace principal at the receiver: an unruled carrier appeared").isEmpty();
     }
 
-    private Seen remoteHopSeenByDownstream() throws Exception {
-        var request = senderRequestFromAliceScope();
+    private Seen remoteHopSeenByDownstream(Object call) throws Exception {
+        var request = senderRequestFromAliceScope(call);
         var receiverBridge = new RecordingBridge();
         var receiver = InvocationHandler.invocationHandler(RECEIVER, new RecordingNetwork());
 
@@ -175,10 +241,18 @@ class PrincipalPropagationTripwireTest {
     }
 
     /// The sender is on [#SENDER]; its only endpoint for the method is on [#RECEIVER], so the call goes over the wire.
-    private InvokeRequest senderRequestFromAliceScope() {
+    private InvokeRequest senderRequestFromAliceScope(Object call) {
+        startRemoteInvoker();
+        inAliceScope(() -> invoker.invoke(ARTIFACT, METHOD, call, new TypeToken<String>() {}));
+
+        return network.awaitRequest();
+    }
+
+    private void startRemoteInvoker() {
         var handler = InvocationHandler.invocationHandler(SENDER, network);
 
-        handler.registerSlice(ARTIFACT, new RecordingBridge());
+        senderBridge = new RecordingBridge();
+        handler.registerSlice(ARTIFACT, senderBridge);
         var registry = EndpointRegistry.endpointRegistry();
 
         registry.registerEndpoint(new EndpointKey(ARTIFACT, METHOD, 0), EndpointValue.endpointValue(RECEIVER));
@@ -192,9 +266,6 @@ class PrincipalPropagationTripwireTest {
                                             CLEANUP_INTERVAL_MS,
                                             0,
                                             new StubDeploymentManager());
-        inAliceScope(() -> invoker.invoke(ARTIFACT, METHOD, "request", new TypeToken<String>() {}));
-
-        return network.awaitRequest();
     }
 
     // ---- LOCAL call -----------------------------------------------------------------------------------------
@@ -215,6 +286,21 @@ class PrincipalPropagationTripwireTest {
             .contains(ALICE_NAME);
         assertThat(seen.tracePrincipal().toOptional()).as("local call: trace principal").contains(ALICE_NAME);
         assertThat(seen.thread()).as("it ran on the caller's own thread").isEqualTo(Thread.currentThread());
+    }
+
+    @Test
+    void localInvoke_theCallerReachesTheSliceThroughTheExplicitParameterPath() throws Exception {
+        var bridge = new RecordingBridge();
+
+        startLocalInvoker(bridge);
+        inAliceScope(() -> invoker.invokeLocal(ARTIFACT, METHOD, callerRequest(ALICE), new TypeToken<String>() {}));
+
+        assertThat(bridge.awaitSeen().caller()).isEqualTo(Option.some(ALICE));
+        assertThat(bridge.encoded()).as("only the business request is encoded as the payload").containsExactly("request");
+    }
+
+    private static CallerRequest callerRequest(SecurityContext caller) {
+        return CallerRequest.callerRequest("request", SecurityContext.callerIdentity(caller));
     }
 
     private void startLocalInvoker(RecordingBridge bridge) {
@@ -359,11 +445,19 @@ class PrincipalPropagationTripwireTest {
                       .toOptional();
     }
 
-    private record Seen(Option<SecurityContext> securityContext, Option<String> tracePrincipal, Thread thread) {}
+    private record Seen(Option<SecurityContext> securityContext,
+                        Option<String> tracePrincipal,
+                        Thread thread,
+                        Option<CallerIdentity> caller) {}
 
     private static final class RecordingBridge implements SliceBridge {
         private final AtomicReference<Seen> seen = new AtomicReference<>();
         private final CountDownLatch invoked = new CountDownLatch(1);
+        private final List<Object> encoded = new CopyOnWriteArrayList<>();
+
+        List<Object> encoded() {
+            return encoded;
+        }
 
         Seen awaitSeen() throws InterruptedException {
             assertThat(invoked.await(WAIT_SECONDS, TimeUnit.SECONDS)).as("the downstream slice was invoked").isTrue();
@@ -373,7 +467,12 @@ class PrincipalPropagationTripwireTest {
 
         @Override
         public Promise<byte[]> invoke(String methodName, byte[] input) {
-            seen.set(new Seen(SecurityContextHolder.currentContext(), InvocationContext.currentPrincipal(), Thread.currentThread()));
+            return invokeAsCaller(methodName, input, Option.none());
+        }
+
+        @Override
+        public Promise<byte[]> invokeAsCaller(String methodName, byte[] input, Option<CallerIdentity> caller) {
+            seen.set(new Seen(SecurityContextHolder.currentContext(), InvocationContext.currentPrincipal(), Thread.currentThread(), caller));
             invoked.countDown();
 
             return Promise.success(new byte[0]);
@@ -381,6 +480,8 @@ class PrincipalPropagationTripwireTest {
 
         @Override
         public Promise<byte[]> encode(Object input) {
+            encoded.add(input);
+
             return Promise.success(new byte[0]);
         }
 

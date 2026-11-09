@@ -332,8 +332,13 @@ public interface SystemTags {
         // per this file's Rules section.
         pin(table, 640, "org.pragmatica.aether.dht.DHTNotification.Put");
         pin(table, 641, "org.pragmatica.aether.dht.DHTNotification.Removed");
-        pin(table, 642, "org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest");
+        // #2157: tag 642 was InvokeRequest's, before it gained `caller`. It stays the tag of that old shape (decode-only, see
+        // LegacyInvokeRequest): an invocation a node of the previous build sends during a rolling upgrade decodes as a request
+        // with no caller, instead of failing on the shorter body. The current shape took 644.
+        pin(table, 642, "org.pragmatica.aether.invoke.LegacyInvokeRequest");
         pin(table, 643, "org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse");
+        // #2157: InvokeRequest with `caller`; 644 is free on every origin branch and open PR head (scanned 2026-11-09).
+        pin(table, 644, "org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest");
         // slice core types  [base 704]
         pin(table, 704, "org.pragmatica.aether.slice.ConsistencyMode");
         pin(table, 705, "org.pragmatica.aether.slice.ExecutionMode");

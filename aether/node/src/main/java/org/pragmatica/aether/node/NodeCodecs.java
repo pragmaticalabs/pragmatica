@@ -72,6 +72,8 @@ public sealed interface NodeCodecs {
         all.addAll(org.pragmatica.aether.slice.generation.GenerationCodecsSlice.CODECS);
         all.addAll(org.pragmatica.aether.slice.blueprint.BlueprintCodecsSlice.CODECS);
         all.addAll(org.pragmatica.aether.invoke.InvokeCodecsInvoke.CODECS);
+        // #2157: tag 642 keeps decoding the shape InvokeRequest had before `caller`; the current shape is 644.
+        all.add(org.pragmatica.aether.invoke.LegacyInvokeRequest.CODEC);
         all.addAll(org.pragmatica.aether.http.forward.ForwardCodecsInvoke.CODECS);
         // #596 owner-forwarding wire pair. The generated registry existed but was never aggregated
         // here — the #492 defect class ("generated codecs lived only in the orphaned registry"),

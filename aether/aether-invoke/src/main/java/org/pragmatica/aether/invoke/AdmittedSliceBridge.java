@@ -11,6 +11,7 @@ import java.util.function.Supplier;
 
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.ExecutionOutcome;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.Settlement;
+import org.pragmatica.aether.slice.CallerIdentity;
 import org.pragmatica.aether.slice.ObservabilityStrategyCell;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.aether.slice.SliceDefect;
@@ -84,6 +85,15 @@ record AdmittedSliceBridge(SliceBridge delegate,
                                                               delegate.invoke(methodName, input))));
     }
 
+    /// #2157: a same-node slice-to-slice call made on a caller's behalf; admitted and counted as [#invoke] is.
+    @Override
+    public Promise<byte[]> invokeAsCaller(String methodName, byte[] input, Option<CallerIdentity> caller) {
+        return counted(methodName,
+                       () -> admission.get()
+                                      .execute(() -> recorded(methodName,
+                                                              delegate.invokeAsCaller(methodName, input, caller))));
+    }
+
     @Override
     public Promise<byte[]> invokeWithContext(String methodName, byte[] input, MessageContext context) {
         return counted(methodName,
@@ -127,7 +137,13 @@ record AdmittedSliceBridge(SliceBridge delegate,
 
     /// QUIC response deadlines bound the reply, not the application execution. Both execution
     /// settlement and reply enqueue must finish before drain can release this single admission.
-    Unit invokeWithReply(String method, byte[] input, TimeSpan timeout, Consumer<Result<byte[]>> completion) {
+    /// #2157: `caller` is the identity the invoke message carried; the target method receives it as its explicit
+    /// parameter through [SliceBridge#invokeAsCaller].
+    Unit invokeWithReply(String method,
+                         byte[] input,
+                         Option<CallerIdentity> caller,
+                         TimeSpan timeout,
+                         Consumer<Result<byte[]>> completion) {
         var gate = admission.get();
 
         if (!gate.tryEnter()) {
@@ -138,7 +154,9 @@ record AdmittedSliceBridge(SliceBridge delegate,
 
         var remaining = new AtomicInteger(2);
         var execution = recorded(method,
-                                 ObservabilityCells.around(delegate, method, () -> delegate.invoke(method, input)));
+                                 ObservabilityCells.around(delegate,
+                                                           method,
+                                                           () -> delegate.invokeAsCaller(method, input, caller)));
 
         execution.onResultRun(() -> releaseAfterBoth(remaining, gate));
         execution.map(bytes -> bytes)

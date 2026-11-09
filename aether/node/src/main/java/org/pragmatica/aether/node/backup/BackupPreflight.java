@@ -92,6 +92,10 @@ public sealed interface BackupPreflight {
     }
 
     private static Cause unavailable(Throwable cause) {
+        if (cause instanceof InterruptedException) {
+            Thread.currentThread().interrupt();
+        }
+
         return GitUnavailable.FACTORY.apply(Causes.fromThrowable(cause).message());
     }
 

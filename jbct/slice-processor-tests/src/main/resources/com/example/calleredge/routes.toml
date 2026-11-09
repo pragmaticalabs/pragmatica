@@ -1,0 +1,9 @@
+prefix = "/api/caller"
+
+[routes]
+enter = "POST /enter"
+local = "POST /local"
+whoami = "GET /whoami"
+
+[errors]
+default = 500

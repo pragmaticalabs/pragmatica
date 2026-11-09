@@ -27,6 +27,14 @@ public interface SliceBridge {
         return BridgeError.DECODE_NOT_SUPPORTED.promise();
     }
 
+    /// Invoke `methodName` on behalf of a caller whose identity is `caller` (#2157). A bridge that knows its methods
+    /// hands a method declaring [CallerRequest] the decoded payload wrapped with `caller`, and any other method the bare
+    /// payload. This default has no caller-taking method to deliver the identity to, so it invokes as [#invoke] does:
+    /// the identity is not authorization, and dropping it grants nothing.
+    default Promise<byte[]> invokeAsCaller(String methodName, byte[] input, Option<CallerIdentity> caller) {
+        return invoke(methodName, input);
+    }
+
     /// Invoke `methodName` with a durable-topic event and its delivery [MessageContext] (#1295). The
     /// bridge decodes `eventBytes` and chooses the argument from the method's OWN declared parameter
     /// type: a context-carrying subscriber (its generated adapter declares [ContextualEvent]) receives

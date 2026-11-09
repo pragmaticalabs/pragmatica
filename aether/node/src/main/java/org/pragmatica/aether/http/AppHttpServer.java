@@ -1342,7 +1342,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private static boolean requiresAuthentication(SecurityPolicy policy) {
-        return ! (policy instanceof SecurityPolicy.Public());
+        return ! (policy instanceof SecurityPolicy.Public || policy instanceof SecurityPolicy.OptionalAuth);
     }
 
     private static Result<SecurityContext> enforceRoleIfRequired(SecurityContext context, SecurityPolicy policy) {
@@ -1437,6 +1437,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                                       () -> dispatchWithinPartLimits(request,
                                                                                                                      response,
                                                                                                                      routeTable,
+                                                                                                                     securityContext,
                                                                                                                      method,
                                                                                                                      normalizedPath,
                                                                                                                      path,
@@ -1451,6 +1452,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     private void dispatchWithinPartLimits(HttpRequest request,
                                           ResponseWriter response,
                                           RouteTable routeTable,
+                                          SecurityContext securityContext,
                                           String method,
                                           String normalizedPath,
                                           String path,
@@ -1461,6 +1463,7 @@ class AppHttpServerAdapter implements AppHttpServer {
         partLimitBreach(request, spec).onEmpty(() -> dispatchToRoute(request,
                                                                      response,
                                                                      routeTable,
+                                                                     securityContext,
                                                                      method,
                                                                      normalizedPath,
                                                                      requestId,
@@ -1484,6 +1487,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     private void dispatchToRoute(HttpRequest request,
                                  ResponseWriter response,
                                  RouteTable routeTable,
+                                 SecurityContext securityContext,
                                  String method,
                                  String normalizedPath,
                                  String requestId,
@@ -1495,7 +1499,14 @@ class AppHttpServerAdapter implements AppHttpServer {
         // instance is still serving. Only requests needing REMOTE forwarding consult the snapshot
         // and the route-ready barrier.
         if (local.isPresent()) {
-            dispatchLocalRoute(request, response, routeTable, method, normalizedPath, local.unwrap(), requestId);
+            dispatchLocalRoute(request,
+                               response,
+                               routeTable,
+                               securityContext,
+                               method,
+                               normalizedPath,
+                               local.unwrap(),
+                               requestId);
 
             return;
         }
@@ -1514,6 +1525,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     private void dispatchLocalRoute(HttpRequest request,
                                     ResponseWriter response,
                                     RouteTable routeTable,
+                                    SecurityContext securityContext,
                                     String method,
                                     String normalizedPath,
                                     LocalResolution local,
@@ -1534,7 +1546,7 @@ class AppHttpServerAdapter implements AppHttpServer {
             }
         }
 
-        handleLocalRoute(request, response, localRouteKey, local.router(), requestId);
+        handleLocalRoute(request, response, securityContext, localRouteKey, local.router(), requestId);
     }
 
     private void dispatchRemoteRoute(HttpRequest request,
@@ -1864,6 +1876,7 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     private void handleLocalRoute(HttpRequest request,
                                   ResponseWriter response,
+                                  SecurityContext securityContext,
                                   HttpNodeRouteKey routeKey,
                                   Option<SliceRouter> servingRouter,
                                   String requestId) {
@@ -1872,7 +1885,12 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                              request.path(),
                                                              routeKey,
                                                              requestId))
-                     .onPresent(router -> invokeLocalRouter(request, response, router, routeKey, requestId));
+                     .onPresent(router -> invokeLocalRouter(request,
+                                                            response,
+                                                            securityContext,
+                                                            router,
+                                                            routeKey,
+                                                            requestId));
     }
 
     private void handleMissingLocalRouter(ResponseWriter response,
@@ -1883,12 +1901,15 @@ class AppHttpServerAdapter implements AppHttpServer {
         sendProblem(response, HttpStatus.INTERNAL_SERVER_ERROR, "Local router not found", path, requestId);
     }
 
+    /// #2157: the router is handed the request WITH the context this host validated, so a generated route passes the
+    /// caller to the slice method's `Principal`/`SecurityContext` parameter from the request, not from ambient state.
     private void invokeLocalRouter(HttpRequest request,
                                    ResponseWriter response,
+                                   SecurityContext securityContext,
                                    SliceRouter router,
                                    HttpNodeRouteKey routeKey,
                                    String requestId) {
-        var httpCtx = toHttpRequestContext(request, requestId);
+        var httpCtx = toHttpRequestContext(request, requestId).withSecurity(securityContext);
         var routeInfo = resolveRouteInfo(routeKey.httpMethod(), routeKey.pathPrefix());
         var startTime = System.nanoTime();
 
@@ -2202,7 +2223,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                request.sender().id(),
                                                                0,
                                                                true,
-                                                               () -> serveForwarded(httpCtx,
+                                                               () -> serveForwarded(httpCtx.withSecurity(securityContext),
                                                                                     request,
                                                                                     network,
                                                                                     ser,

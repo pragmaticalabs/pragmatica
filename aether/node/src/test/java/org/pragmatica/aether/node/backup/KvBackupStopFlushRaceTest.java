@@ -165,6 +165,59 @@ class KvBackupStopFlushRaceTest {
         assertThat(elapsedMs).isBetween(2_900L, 8_000L);
     }
 
+    /// A stop that reaches a worker mid-pass, with nothing to interrupt it (the interrupt can be lost or late), still ends the writing: the pass in
+    /// flight, held in its commit while the stop is requested, pushes nothing once released (#2924: a push 391 ms after `stopFlushed` returned).
+    @Test
+    void aPassInFlightAtTheStop_pushesNothing_evenWhenTheWorkerIsNotInterrupted() throws Exception {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var harness = uninterrupted(remote, System::currentTimeMillis);
+        var node = temp.resolve("node");
+        var held = temp.resolve("commit.held");
+        var release = temp.resolve("commit.release");
+        var stamps = temp.resolve("push.stamps");
+
+        write(node.resolve(".git").resolve("hooks").resolve("pre-commit"),
+              "#!/bin/sh\ntouch '" + held + "'\nwhile [ ! -f '" + release + "' ]; do sleep 0.05; done\nexit 0\n");
+        harness.service().stopFlushed(TimeSpan.timeSpan(120).seconds());
+        awaitFile(held);
+        harness.service().stop();
+        Files.createFile(release);
+        var ended = harness.done().await(20, TimeUnit.SECONDS);
+
+        harness.executor().shutdownNow();
+        assertThat(ended).as("control: the pass ended").isTrue();
+        assertThat(Files.exists(stamps) ? Files.readString(stamps) : "").as("no push started after the stop").isEmpty();
+    }
+
+    private static void awaitFile(Path file) throws InterruptedException {
+        for (var attempt = 0; attempt < 400 && !Files.exists(file); attempt++) {
+            Thread.sleep(50);
+        }
+
+        assertThat(file).as("control: the pass was in flight at the stop").exists();
+    }
+
+    /// What the stop leaves behind when it interrupts a push in flight: git updates the remote ref atomically, so the remote is its old head or a
+    /// fast-forward of it, never half-written (`git fsck` clean, the seeded head intact), and the node's own commit stays queued locally, ahead of the
+    /// remote, for the next start to push. Here the push is held before any transfer, so the remote is still the seeded head.
+    @Test
+    void aPushInterruptedByTheStop_leavesTheRemoteIntact_andTheCommitQueuedLocally() throws Exception {
+        var remote = bareRemote(temp.resolve("remote.git"));
+
+        seedHead(remote);
+        var seededHead = git(Path.of(remote), "rev-parse", "backup").strip();
+        var node = node(remote, "node", 3);
+
+        node.repository().prepare().onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
+        write(node.repository().dir().resolve(".git").resolve("hooks").resolve("pre-push"), "#!/bin/sh\nsleep 20\nexit 0\n");
+        await(node.service().stopFlushed(TimeSpan.timeSpan(2).seconds()));
+        Thread.sleep(500);
+
+        assertThat(git(Path.of(remote), "fsck", "--no-progress")).doesNotContain("error", "fatal");
+        assertThat(git(Path.of(remote), "rev-parse", "backup").strip()).as("the remote head did not move").isEqualTo(seededHead);
+        assertThat(git(node.repository().dir(), "rev-list", "--count", seededHead + "..backup").strip()).as("the node's commit is queued locally").isEqualTo("1");
+    }
+
     /// The stop alone ends the loop too, whatever the deadline says: `stop()` is what the caller's timeout does.
     @Test
     void reDecide_endsAtTheStop_whenTheDeadlineIsStillFar() throws Exception {
