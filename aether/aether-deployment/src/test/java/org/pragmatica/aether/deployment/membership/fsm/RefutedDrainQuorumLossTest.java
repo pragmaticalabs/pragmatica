@@ -121,6 +121,9 @@ class RefutedDrainQuorumLossTest {
                                            .containsEntry(SUSPECT, "Dead");
 
         reporting.remove(SUSPECT);
+        survivor.onSwimHealthy(SUSPECT, 2L);
+        assertThat(survivor.memberStates()).as("the held refutation's incarnation was recorded: a relay of it is stale")
+                                           .containsEntry(SUSPECT, "Dead");
         survivor.onSwimHealthy(SUSPECT, 4L);
 
         assertThat(survivor.memberStates()).as("the clearing bump reopens the identity and re-admits it")
