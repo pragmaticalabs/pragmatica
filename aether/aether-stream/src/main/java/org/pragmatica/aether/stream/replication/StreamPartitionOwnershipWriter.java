@@ -411,8 +411,10 @@ record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
     /// change re-runs the reconcile (a committed ownership record is one of its triggers). A desired owner the partition's
     /// placement never lists (entity arcs, whose desired owner is HRW over the keyspace's hosts) is never admitted, and the
     /// partition stays with its live owner.
-    private static boolean plannedMoveAllowed(StreamPartitionOwnershipValue current, NodeId desired, List<NodeId> liveIsr) {
-        return !desired.equals(current.owner()) && liveIsr.contains(desired);
+    private static boolean plannedMoveAllowed(StreamPartitionOwnershipValue current,
+                                              NodeId desired,
+                                              List<NodeId> liveIsr) {
+        return ! desired.equals(current.owner()) && liveIsr.contains(desired);
     }
 
     /// No live ISR member and the owner dead: elect nobody (unclean failover is off) and COMMIT that verdict once, so
