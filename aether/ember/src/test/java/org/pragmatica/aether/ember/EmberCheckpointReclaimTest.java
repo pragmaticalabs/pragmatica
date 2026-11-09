@@ -285,21 +285,6 @@ class EmberCheckpointReclaimTest {
         assertThat(nodes).as("control: the block the pointer names is readable through every node").allSatisfy(node -> assertThat(readable(node, pointed(nodeB, 1))).isTrue());
     }
 
-    @Test
-    @Order(9)
-    @Timeout(1800)
-    void probeDisableRightAfterElection() {
-        for (int round = 0; round < 25; round++) {
-            startAFreshCluster();
-            var leaderId = cluster().currentLeader().or("none");
-            var leaderNode = cluster().allNodes().stream().filter(node -> node.self().id().equals(leaderId)).findFirst().orElseThrow();
-            var outcome = leaderNode.clusterTopologyManager()
-                                    .map(ctm -> ctm.setAutoHealEnabled(false, "probe").await(SAVE_BOUND).fold(Cause::message, _ -> "disabled"))
-                                    .or("no ctm");
-            System.out.printf("PROBE2939 round %d at %d: %s%n", round, System.currentTimeMillis(), outcome);
-        }
-    }
-
     /// Arm b declares a replica Dead (the survivors then provision a replacement), which the arms before it would leave behind: it starts
     /// on a cluster of its own, as its v-2516 probe did. Run 1 on the shared cluster saw the replica declared Dead in 6 s and never a member
     /// again.
@@ -312,14 +297,14 @@ class EmberCheckpointReclaimTest {
     /// With auto-heal on, the leader provisions a replacement core once the Dead replica's absence outlasts its deficit debounce, and then
     /// scales the returned replica away as the excess, so it is never a member again (CI ember-shard-2 at 3f6814b5d3, and run 1 on the
     /// shared cluster: a race between that debounce and the return). Arm b is about the DHT tombstone, not auto-heal: its cluster runs
-    /// with auto-heal off, through the consensus-backed switch, and every node must read it off before the cut.
+    /// with auto-heal off, through the consensus-backed switch, and every node must read it off before the cut. The toggle is retried while the leader refuses it as CONFLICT, as the cluster's configuration seed is still settling (#2939).
     private static void disableAutoHeal(List<AetherNode> nodes, String leader) {
         var leaderNode = nodes.stream().filter(node -> node.self().id().equals(leader)).findFirst().orElseThrow();
 
         assertThat(leaderNode.clusterTopologyManager()
-                             .map(ctm -> ctm.setAutoHealEnabled(false, "NT-63 arm b").await(SAVE_BOUND).fold(Cause::message, _ -> "disabled"))
+                             .map(ctm -> AutoHealToggle.disable(() -> ctm.setAutoHealEnabled(false, "NT-63 arm b"), SAVE_BOUND, REPLICATION_BUDGET_MS))
                              .or("no cluster topology manager")).as("auto-heal is disabled for arm b's cluster")
-                                                                .isEqualTo("disabled");
+                                                                .isEqualTo(AutoHealToggle.DISABLED);
         awaitCondition("every node reads auto-heal disabled", REPLICATION_BUDGET_MS, () -> nodes.stream().allMatch(EmberCheckpointReclaimTest::autoHealDisabled));
     }
 
