@@ -452,7 +452,9 @@ public final class EmberCluster {
     /// `security_mode = "jwt"` verifies tokens exactly as it does on a production node. Without it the nodes would run JWT
     /// mode with no verifier and refuse every non-public route.
     @Contract
-    public void withAppHttpSecurity(SecurityMode securityMode, Map<String, ApiKeyEntry> apiKeys, Option<JwtConfig> jwtConfig) {
+    public void withAppHttpSecurity(SecurityMode securityMode,
+                                    Map<String, ApiKeyEntry> apiKeys,
+                                    Option<JwtConfig> jwtConfig) {
         appHttpSecurityMode.set(securityMode);
         appHttpApiKeys.set(Map.copyOf(apiKeys));
         appHttpJwtConfig.set(jwtConfig);

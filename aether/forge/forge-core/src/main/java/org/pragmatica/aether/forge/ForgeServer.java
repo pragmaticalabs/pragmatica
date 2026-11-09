@@ -376,8 +376,8 @@ public final class ForgeServer {
     /// #2983 — what makes a sibling `[app-http]` a request for security: a declared API key, or `security_mode = "jwt"`. The
     /// JWT mode is never a loader default, so naming it is the credential declaration; the api-key default is, hence the key test.
     private static boolean declaresCredentials(AppHttpConfig config) {
-        return !config.apiKeys()
-                      .isEmpty() || config.securityMode() == SecurityMode.JWT;
+        return ! config.apiKeys()
+                       .isEmpty() || config.securityMode() == SecurityMode.JWT;
     }
 
     /// #962 — `forge run` honours `[management] security_mode` from the sibling `aether.toml`, independently of the
