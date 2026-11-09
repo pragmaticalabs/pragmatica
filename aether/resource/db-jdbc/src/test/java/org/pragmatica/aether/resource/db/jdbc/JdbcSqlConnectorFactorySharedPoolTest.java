@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.db.jdbc;
 
+import java.io.IOException;
 import java.lang.reflect.Proxy;
 import java.util.Set;
 import java.util.UUID;
@@ -10,6 +11,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.resource.ResourceFactory;
+import org.pragmatica.aether.resource.db.DatabaseConnector;
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
 import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.aether.resource.db.PoolConfig;
@@ -74,13 +77,68 @@ class JdbcSqlConnectorFactorySharedPoolTest {
         return Promise.unitPromise();
     }
 
+    /// Defines the classes of the factory's own package afresh, so the factory's class loader is not the loader the
+    /// node's other threads (the Promise executor among them) already run under. Without that the loader switch is
+    /// unobservable: the factory's loader and the default context loader are one and the same.
+    private static final class OwnerLoader extends ClassLoader {
+        private static final String OWN_PACKAGE = JdbcSqlConnectorFactory.class.getPackageName() + ".";
+
+        private OwnerLoader() {
+            super("factory-owner", JdbcSqlConnectorFactory.class.getClassLoader());
+        }
+
+        @Override
+        protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+            synchronized (getClassLoadingLock(name)) {
+                return isOwnPackage(name)
+                       ? ownClass(name)
+                       : super.loadClass(name, resolve);
+            }
+        }
+
+        private static boolean isOwnPackage(String name) {
+            return name.startsWith(OWN_PACKAGE) && name.indexOf('.', OWN_PACKAGE.length()) < 0;
+        }
+
+        private Class<?> ownClass(String name) throws ClassNotFoundException {
+            var loaded = findLoadedClass(name);
+
+            return loaded != null
+                   ? loaded
+                   : define(name);
+        }
+
+        private Class<?> define(String name) throws ClassNotFoundException {
+            try (var in = getParent().getResourceAsStream(name.replace('.', '/') + ".class")) {
+                if (in == null) {
+                    throw new ClassNotFoundException(name);
+                }
+
+                var bytes = in.readAllBytes();
+
+                return defineClass(name, bytes, 0, bytes.length);
+            } catch (IOException e) {
+                throw new ClassNotFoundException(name, e);
+            }
+        }
+
+        @SuppressWarnings("unchecked")
+        private ResourceFactory<? extends DatabaseConnector, DatabaseConnectorConfig> newFactory() throws Exception {
+            return (ResourceFactory<? extends DatabaseConnector, DatabaseConnectorConfig>) loadClass(JdbcSqlConnectorFactory.class.getName())
+                .getDeclaredConstructor()
+                .newInstance();
+        }
+    }
+
     @Test
-    void provision_createsThePoolUnderTheFactorysLoader_notTheCallers() {
+    void provision_createsThePoolUnderTheFactorysLoader_notTheCallers() throws Exception {
+        var owner = new OwnerLoader();
+        var factory = owner.newFactory();
         var caller = new ClassLoader("caller-slice", null) {};
         var thread = Thread.currentThread();
         var previous = thread.getContextClassLoader();
         var before = Set.copyOf(Thread.getAllStackTraces().keySet());
-        Promise<SqlConnector> provisioning;
+        Promise<? extends DatabaseConnector> provisioning;
 
         thread.setContextClassLoader(caller);
         try {
@@ -93,11 +151,13 @@ class JdbcSqlConnectorFactorySharedPoolTest {
         var created = Thread.getAllStackTraces().keySet().stream().filter(t -> !before.contains(t)).toList();
 
         try {
+            // Each pool owns its threads (a per-pool housekeeper or event-loop group), so a fresh pool always starts some,
+            // whatever ran before it in this JVM.
             assertThat(created).as("control: provisioning started threads this check can see").isNotEmpty();
             assertThat(created).as("a thread created by provisioning keeps the caller's loader")
                                .noneMatch(t -> t.getContextClassLoader() == caller);
             assertThat(created).as("the factory's loader is the one in force")
-                               .anyMatch(t -> t.getContextClassLoader() == factory.getClass().getClassLoader());
+                               .anyMatch(t -> t.getContextClassLoader() == owner);
         } finally {
             pool.stop().await(TIMEOUT);
         }
