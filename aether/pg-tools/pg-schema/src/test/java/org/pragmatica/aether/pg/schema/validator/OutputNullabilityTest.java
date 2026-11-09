@@ -490,4 +490,10 @@ class OutputNullabilityTest {
         assertThat(verdict(sql, "x")).isInstanceOfSatisfying(Nullability.NonNull.class,
                                                               proven -> assertThat(proven.proof()).contains(proof));
     }
+
+    @Test
+    void valuesColumn_namesItsProofRule() {
+        assertThat(verdict("VALUES (1), (2)", "column1")).isInstanceOfSatisfying(Nullability.NonNull.class,
+                                                                                  proven -> assertThat(proven.proof()).contains("every VALUES row is proven non-null"));
+    }
 }
