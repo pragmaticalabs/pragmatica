@@ -300,4 +300,10 @@ class OutputNullabilityTest {
             .isInstanceOf(Nullability.MayBeNull.class);
         assertThat(verdict("SELECT d.id AS y FROM t JOIN (SELECT id FROM u) d ON d.id = t.id", "y")).isEqualTo(Nullability.NON_NULL);
     }
+
+    @Test
+    void nullableSide_doesNotReplaceTheColumnsOwnReason() {
+        assertThat(verdict("SELECT d.x AS y FROM t LEFT JOIN (SELECT max(t_id) AS x FROM u GROUP BY id) d ON true", "y"))
+            .isInstanceOfSatisfying(Nullability.MayBeNull.class, n -> assertThat(n.reason()).contains("max() yields NULL"));
+    }
 }

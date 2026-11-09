@@ -79,7 +79,20 @@ class NullableOutputValidationTest {
             .contains("Method 'run'")
             .contains(reason)
             .contains("COALESCE")
-            .contains("Option<T>");
+            .contains("Option<T>")
+            .doesNotContain("could not be analysed");
+    }
+
+    /// A field that no output is named after is checked only against the UNNAMED outputs: a named, nullable output
+    /// that the field does not read must not be blamed on it.
+    @Test
+    void unmatchedField_isNotBlamedOnANamedNullableOutput() throws Exception {
+        var result = compile(repo("NamedNotReadRepo",
+                                  "record Row(String foo) {}",
+                                  "SELECT correlation_id FROM orders",
+                                  "Promise<List<Row>> run()"));
+
+        assertThat(result.diagnostics()).doesNotContain(MAY_BE_NULL).doesNotContain("could not be analysed");
     }
 
     static Stream<Arguments> provenForms() {
