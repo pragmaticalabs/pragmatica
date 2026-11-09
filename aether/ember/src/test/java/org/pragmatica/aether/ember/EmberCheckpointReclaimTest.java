@@ -297,15 +297,12 @@ class EmberCheckpointReclaimTest {
             var leaderNode = cluster.allNodes().stream().filter(node -> node.self().id().equals(leaderId)).findFirst().orElseThrow();
             var t0 = System.currentTimeMillis();
 
-            for (int attempt = 0; attempt < 40; attempt++) {
+            for (int attempt = 0; attempt < 200; attempt++) {
                 var outcome = leaderNode.clusterTopologyManager()
                                         .map(ctm -> ctm.setAutoHealEnabled(false, "probe").await(SAVE_BOUND).fold(Cause::message, _ -> "disabled"))
                                         .or("no ctm");
                 System.out.printf("PROBE2939 round %d attempt %d +%d ms: %s%n", round, attempt, System.currentTimeMillis() - t0, outcome);
-                if (outcome.equals("disabled")) {
-                    break;
-                }
-                try { Thread.sleep(20); } catch (InterruptedException e) { return; }
+                try { Thread.sleep(2); } catch (InterruptedException e) { return; }
             }
         }
     }
