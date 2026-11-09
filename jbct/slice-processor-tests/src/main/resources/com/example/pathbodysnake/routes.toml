@@ -1,0 +1,10 @@
+prefix = "/api/pathbodysnake"
+
+[routes]
+rename = "PUT /articles/{articleSlug}"
+
+[errors]
+default = 500
+
+[json]
+naming = "snake_case"

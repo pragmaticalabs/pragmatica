@@ -27,8 +27,13 @@ import javax.tools.JavaFileObject;
 import java.io.PrintWriter;
 import java.io.Writer;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.stream.Collectors;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -62,6 +67,12 @@ public final class JsonCodecGenerator {
     private final JsonTypeAnalyzer analyzer;
     private final List<TypeMirror> roots = new ArrayList<>();
     private final List<JsonType.ListOf> containerRoots = new ArrayList<>();
+
+    private static final String NESTED_REASON = "the record is also a component of another type the slice decodes or answers, and a codec shared with response decoding must not drop required fields";
+
+    private static final String OTHER_USE_REASON = "another route of the slice decodes the record without binding that component from the path or query";
+
+    private final Map<String, Set<String>> requestBound = new HashMap<>();
     private final String packageName;
 
     /// `packageName` is where the holder will be written; it decides which types and factories are reachable. Names
@@ -96,10 +107,23 @@ public final class JsonCodecGenerator {
     /// not. A `List` or `Set` body root also gets a codec of its own in the holder (see [#source]). Only a body
     /// gets one: an encode sees the runtime value, never the declared type, so a response root's would be dead code.
     public Option<String> addBodyRoot(TypeMirror type) {
-        return addRoot(type, true);
+        return addRoot(type, true, Set.of());
+    }
+
+    /// Adds a record body root whose components named in `requestBound` are filled from the request's path or query
+    /// (#2957), never from the body: its codec does not require them and skips a body member of the same name
+    /// unread, so the request value wins. The relaxation holds only while every use agrees: the names are
+    /// intersected over all body uses of the record (a plain body use binds none), and dropped when any record or
+    /// container root reaches the record as a nested value, whose decode must stay strict.
+    public Option<String> addBodyRoot(TypeMirror type, Set<String> requestBound) {
+        return addRoot(type, true, requestBound);
     }
 
     private Option<String> addRoot(TypeMirror type, boolean body) {
+        return addRoot(type, body, Set.of());
+    }
+
+    private Option<String> addRoot(TypeMirror type, boolean body, Set<String> bound) {
         var analyzed = analyzer.analyzeRoot(type);
 
         if (analyzed.isPresent()) {
@@ -108,6 +132,7 @@ public final class JsonCodecGenerator {
                     .filter(JsonType.ListOf.class::isInstance)
                     .map(JsonType.ListOf.class::cast)
                     .onPresent(containerRoots::add);
+            analyzed.filter(_ -> body).onPresent(root -> bindRequest(root, bound));
 
             return none();
         }
@@ -130,7 +155,99 @@ public final class JsonCodecGenerator {
     /// component of that type.
     /// `generatedFor` names the source the holder is generated for (a slice), in its marker.
     public String source(String holderName, String generatedBy, String generatedFor) {
-        return new JsonCodecEmitter(analyzer).emit(packageName, holderName, generatedBy, generatedFor, containerRoots);
+        return new JsonCodecEmitter(analyzer, requestBoundComponents()).emit(packageName,
+                                                                             holderName,
+                                                                             generatedBy,
+                                                                             generatedFor,
+                                                                             containerRoots);
+    }
+
+    /// The components of the record body root `type` that its route binds from the request (`bound`) but whose codec
+    /// still requires them in the body, each with the reason: the relaxation fell off because another use of the
+    /// record needs them (#2957). Asked after every root is added; empty for a relaxed record and for a type that
+    /// is not a record.
+    public Map<String, String> stillRequired(TypeMirror type, Set<String> bound) {
+        return analyzer.analyzeRoot(type)
+                       .filter(JsonType.RecordRef.class::isInstance)
+                       .map(JsonType.RecordRef.class::cast)
+                       .map(ref -> blockedComponents(qualifiedName(ref.element()),
+                                                     bound))
+                       .or(Map.of());
+    }
+
+    private Map<String, String> blockedComponents(String record, Set<String> bound) {
+        var blocked = new TreeMap<String, String>();
+        var relaxed = requestBoundComponents().getOrDefault(record, Set.of());
+        var reason = reachedAsNested(record)
+                     ? NESTED_REASON
+                     : OTHER_USE_REASON;
+
+        for (var component : analyzer.records().get(record).components()) {
+            if (bound.contains(component.name()) && !JsonCodecEmitter.isOptionalMember(component.type()) && !relaxed.contains(component.name())) {
+                blocked.put(component.name(), reason);
+            }
+        }
+
+        return blocked;
+    }
+
+    // A record body root remembers the components its route binds from the request, intersected with earlier uses.
+    private void bindRequest(JsonType root, Set<String> bound) {
+        if (root instanceof JsonType.RecordRef ref) {
+            requestBound.merge(qualifiedName(ref.element()), Set.copyOf(bound), JsonCodecGenerator::common);
+        }
+    }
+
+    // The request-bound components per record, for the records no decode reaches as a nested value.
+    private Map<String, Set<String>> requestBoundComponents() {
+        return requestBound.entrySet()
+                           .stream()
+                           .filter(this::relaxable)
+                           .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+    }
+
+    private boolean relaxable(Map.Entry<String, Set<String>> entry) {
+        return ! reachedAsNested(entry.getKey());
+    }
+
+    private boolean reachedAsNested(String record) {
+        return reachedByComponent(record) || containerRoots.stream()
+                                                           .anyMatch(root -> reaches(root, record));
+    }
+
+    private boolean reachedByComponent(String record) {
+        return analyzer.records()
+                       .values()
+                       .stream()
+                       .flatMap(definition -> definition.components()
+                                                        .stream())
+                       .anyMatch(component -> reaches(component.type(),
+                                                      record));
+    }
+
+    private static boolean reaches(JsonType type, String record) {
+        return switch (type) {
+            case JsonType.RecordRef ref -> qualifiedName(ref.element()).equals(record);
+            case JsonType.OptionalOf optional -> reaches(optional.element(), record);
+            case JsonType.PatchOf patch -> reaches(patch.element(), record);
+            case JsonType.ListOf list -> reaches(list.element(), record);
+            // A key record is a value object, whose one component a route cannot bind without binding the whole body.
+            case JsonType.MapOf map -> reaches(map.value(), record);
+            case JsonType.Scalar _, JsonType.EnumRef _ -> false;
+        };
+    }
+
+    private static Set<String> common(Set<String> left, Set<String> right) {
+        var both = new HashSet<>(left);
+
+        both.retainAll(right);
+
+        return Set.copyOf(both);
+    }
+
+    private static String qualifiedName(TypeElement element) {
+        return element.getQualifiedName()
+                      .toString();
     }
 
     /// The entry point of `root` (the only root added), named `holderName`.
