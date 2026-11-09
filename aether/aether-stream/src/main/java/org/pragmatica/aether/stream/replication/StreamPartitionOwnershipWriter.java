@@ -150,8 +150,10 @@ public interface StreamPartitionOwnershipWriter {
     ///   - **first record** — the ISR is the partition's placement for the owner ([IsrInputs#initialIsr]): a fresh
     ///     partition holds nothing, so every placed replica is trivially in sync;
     ///   - **owner unchanged** — members that left the live set are dropped from the ISR (never the owner);
-    ///   - **planned move** (the committed owner is still live) — the new owner leads, the live ISR stays; the new
-    ///     owner's activation catches up from the live holders before it serves;
+    ///   - **planned move** (the committed owner is still live) — only to a desired owner in the live ISR (#2981); the
+    ///     new owner leads, the live ISR stays, and its activation catches up from the live holders before it serves.
+    ///     A desired owner outside the live ISR moves nothing: the owner keeps the partition (members that left the live
+    ///     set are still dropped);
     ///   - **failover** (the committed owner is not live) — the new owner is chosen ONLY from the live ISR, the
     ///     desired owner if it is a member, else the HRW-first member. With no live ISR member nothing is written:
     ///     the partition stays unavailable rather than lose an acknowledged write (unclean failover is off).
@@ -386,9 +388,9 @@ record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
         var fenced = fencedAfter(current, live);
 
         if (live.contains(current.owner())) {
-            return desired.equals(current.owner())
-                   ? shrunk(current, liveIsr, fenced)
-                   : Option.some(moved(current, desired, committedEpoch, liveIsr, fenced));
+            return plannedMoveAllowed(current, desired, liveIsr)
+                   ? Option.some(moved(current, desired, committedEpoch, liveIsr, fenced))
+                   : shrunk(current, liveIsr, fenced);
         }
 
         return failoverOwner(stream, partition, liveIsr, desired).map(owner -> moved(current,
@@ -397,6 +399,20 @@ record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
                                                                                      liveIsr,
                                                                                      fenced))
                             .orElse(() -> refused(current));
+    }
+
+    /// #2981: a planned move (the committed owner still live) goes only to a desired owner that is a member of the LIVE
+    /// ISR, as failover elects; otherwise the owner keeps the partition. The owner being deposed acknowledges on the ISR of
+    /// its own applied record until the move reaches it, and an acknowledgement waits for every member of that ISR. A target
+    /// inside it must therefore confirm every record the deposed owner acknowledges: before it applies the move it holds the
+    /// record, and after it the older owner epoch is refused. A target outside it confirms nothing the deposed owner
+    /// acknowledges, so it could activate (its catch-up probe is a snapshot) without a record acknowledged just after.
+    /// Liveness cost: a desired owner outside the ISR waits until the owner's `IsrMonitor` admits it; that committed ISR
+    /// change re-runs the reconcile (a committed ownership record is one of its triggers). A desired owner the partition's
+    /// placement never lists (entity arcs, whose desired owner is HRW over the keyspace's hosts) is never admitted, and the
+    /// partition stays with its live owner.
+    private static boolean plannedMoveAllowed(StreamPartitionOwnershipValue current, NodeId desired, List<NodeId> liveIsr) {
+        return !desired.equals(current.owner()) && liveIsr.contains(desired);
     }
 
     /// No live ISR member and the owner dead: elect nobody (unclean failover is off) and COMMIT that verdict once, so

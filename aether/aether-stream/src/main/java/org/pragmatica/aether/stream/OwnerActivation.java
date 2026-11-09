@@ -133,8 +133,18 @@ import org.slf4j.LoggerFactory;
 /// never activated, so an ex-owner that heals back re-runs the whole gate before it serves again.
 ///
 /// Residual (accepted, #1555 decision c): an append admitted on the previous owner in the instant before the
-/// ownership flip reaches it is not seen by this catch-up. At `confirmation_factor` 1 the acknowledgement is
-/// owner-local by definition, so this is part of that documented loss window; `confirmation_factor` >= 2 closes it.
+/// ownership flip reaches it is not seen by this catch-up, whose probe is a snapshot. At `confirmation_factor` 1 the
+/// acknowledgement is owner-local by definition, so this is part of that documented loss window. At
+/// `confirmation_factor` >= 2 such an append is acknowledged only if the new owner holds it, and only because the new
+/// owner is a member of the ISR the previous owner acknowledges on: the acknowledgement waits for every member of that
+/// ISR (its maximal form, `IsrMonitor`), and a member that has applied the newer record refuses the older owner epoch.
+/// That membership is an ELECTION rule, not a property of the confirmation factor: failover elects from the live ISR,
+/// and a planned move goes only to a live ISR member (#2981). Without that rule `confirmation_factor` >= 2 did not
+/// close it: a planned move to a node outside the ISR, under apply skew, lost an acknowledged record (#2981, TLA+
+/// model `Streams.tla`, invariant `AckedNeverLost`). Still open (#2981 direction 2): nothing fences the previous owner
+/// itself, so the guarantee holds only while every path that commits an owner elects inside the previous owner's ISR.
+/// [mechanism: the election rule above with all-member acknowledgement; model-checked on three nodes, not reproduced at
+/// runtime]
 public final class OwnerActivation {
     private static final Logger log = LoggerFactory.getLogger(OwnerActivation.class);
 
