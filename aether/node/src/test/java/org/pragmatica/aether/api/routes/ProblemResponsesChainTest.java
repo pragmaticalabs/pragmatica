@@ -98,4 +98,28 @@ class ProblemResponsesChainTest {
         assertThat(status.get()).isEqualTo(HttpStatus.CONFLICT);
         assertThat(body.get()).contains("retry the request");
     }
+
+    /// #2964: an A/B lifecycle write commits the test's state before the fence write, so its refusal is a 409 whose body does NOT say
+    /// "retry the request" (the phrase the CLI retries a 409 on), while the single-transaction writers' refusal still does.
+    @Test
+    void writeProblem_ofAbTestFenceRefusal_answers409WithoutTheRetryHint() {
+        var status = new AtomicReference<HttpStatus>();
+        var body = new AtomicReference<String>();
+
+        ProblemResponses.writeProblem(new ResponseWriter() {
+            @Override
+            public void write(HttpStatus responseStatus, byte[] bytes, ContentType contentType) {
+                status.set(responseStatus);
+                body.set(new String(bytes, StandardCharsets.UTF_8));
+            }
+
+            @Override
+            public ResponseWriter header(String name, String value) {
+                return this;
+            }
+        }, new SliceTargetFenceError.ContendedAfterStateChange("ab-test-conclude t1", 6, "CONCLUDING"), "/api/ab-test/t1/conclude", "req-4");
+
+        assertThat(status.get()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(body.get()).contains("CONCLUDING").doesNotContain("retry the request");
+    }
 }

@@ -73,10 +73,17 @@ class ClusterHttpClientTest {
         void post_givesUpAfterTheBound_andReturnsTheConflict() throws IOException {
             serve(Integer.MAX_VALUE, 409, HINT_BODY);
 
+            var startedAt = System.nanoTime();
             var result = ClusterHttpClient.post(ManagementRoute.CLUSTER_AUTO_HEAL_DISABLE, "{}");
+            var elapsedMs = (System.nanoTime() - startedAt) / 1_000_000;
 
             assertTrue(result.isFailure());
-            assertEquals(ClusterHttpClient.CONFLICT_RETRY_ATTEMPTS, calls.get());
+            // The bound is the number the changelog states: 4 requests in all, not the constant compared with itself.
+            assertEquals(4, calls.get());
+            assertEquals(4, ClusterHttpClient.CONFLICT_RETRY_ATTEMPTS);
+            assertEquals(250L, ClusterHttpClient.CONFLICT_RETRY_PAUSE_MS);
+            // Pauses of 250 ms x attempt before retries 1..3: 250 + 500 + 750 ms at least (lower bound only, a timing upper bound would flake).
+            assertTrue(elapsedMs >= 1500, "pauses grow with the attempt, elapsed ms: " + elapsedMs);
         }
 
         @Test

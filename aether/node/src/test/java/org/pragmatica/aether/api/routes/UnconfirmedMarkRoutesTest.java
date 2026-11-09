@@ -148,6 +148,17 @@ class UnconfirmedMarkRoutesTest {
         assertThat(ManagementRoute.NODE_UNCONFIRMED_CLEAR.assemble(List.of("core-old")).unwrap()).endsWith("/nodes/unconfirmed/clear/core-old");
     }
 
+    /// #2944: the absence of the phrase "retry the request" in a clear's refusal is what keeps the CLI from re-posting a clear (it retries a 409
+    /// only on that phrase), so a re-posted clear can never meet a later incarnation's mark. Pinned for the exact-delete refusal and its sibling.
+    @Test
+    void conflictedAndChangedRefusals_carryNoRetryHint_neitherInProcessNorOnTheWire() {
+        for (var refusal : new UnconfirmedClearRefusal[] {new UnconfirmedClearRefusal.Conflicted(new NodeId("core-old")),
+                                                          new UnconfirmedClearRefusal.Changed(new NodeId("core-old"))}) {
+            assertThat(refusal.message()).doesNotContain("retry the request");
+            assertThat(UnconfirmedMarkRoutes.asManagementError(refusal).message()).doesNotContain("retry the request");
+        }
+    }
+
     private static HttpStatus statusOf(Cause refusal) {
         return ((HttpStatusAware) UnconfirmedMarkRoutes.asManagementError(refusal)).httpStatus();
     }
