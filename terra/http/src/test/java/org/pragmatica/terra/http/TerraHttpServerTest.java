@@ -22,6 +22,7 @@ import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.http.adapter.ErrorMapper;
+import org.pragmatica.aether.http.adapter.RequestSecurity;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.adapter.SliceRouterFactory;
 import org.pragmatica.aether.http.handler.RequestHeaders;
@@ -437,6 +438,45 @@ class TerraHttpServerTest {
 
             assertThat(response.body()).as("body-decoded lambda: the holder is still bound today; if this fails the decode became async (the hazard is real for body routes)").contains(":reader");
         } finally { close(host); }
+    }
+
+    /// #2157 part b: a generated route takes the caller's context from the REQUEST (`RequestSecurity.securityOf`),
+    /// so it sees the caller after the binding ended (a continuation resolved later) and after an executor hop, where
+    /// the holder is empty (pins above). A public route with no credential gets the anonymous context.
+    @Test void serve_requestSecurity_survivesAsyncSteps_whereTheHolderDoesNot() throws Exception {
+        var gate = new AtomicReference<Promise<Unit>>();
+        var later = Route.withRequestContext(Route.<Handler<String>>get("/s/later").withoutParameters()
+            .to(_ -> Promise.success(request -> laterPrincipal(gate, request)))
+            .withSecurity(SecurityPolicy.unspecified()).asText());
+        var hop = Route.withRequestContext(Route.<Handler<String>>get("/s/hop").withoutParameters()
+            .to(_ -> Promise.success(request -> Promise.<String>promise().async(promise -> promise.succeed(requestPrincipal(request)))))
+            .withSecurity(SecurityPolicy.unspecified()).asText());
+        var open = Route.withRequestContext(Route.<Handler<String>>get("/s/open").withoutParameters()
+            .to(_ -> Promise.success(request -> Promise.success(requestPrincipal(request))))
+            .withSecurity(SecurityPolicy.publicRoute()).asText());
+        var host = start(List.of(later, hop, open), HttpAuthenticator.apiKeyValidator(KEYS), new AtomicInteger());
+        try (var client = HttpClient.newHttpClient()) {
+            var pending = CompletableFuture.supplyAsync(() -> {
+                try { return get(client, host, "/s/later", "X-API-Key", "reader-secret"); } catch (Exception e) { throw new IllegalStateException(e); }
+            });
+            while (gate.get() == null) { Thread.onSpinWait(); }
+            gate.get().succeed(Unit.unit());
+
+            assertThat(pending.get(5, TimeUnit.SECONDS).body()).isEqualTo("later:api-key:reader|holder:none");
+            assertThat(get(client, host, "/s/hop", "X-API-Key", "reader-secret").body()).isEqualTo("api-key:reader|holder:none");
+            assertThat(get(client, host, "/s/open").body()).startsWith("anonymous|");
+        } finally { close(host); }
+    }
+
+    private static Promise<String> laterPrincipal(AtomicReference<Promise<Unit>> gate, RequestContext request) {
+        var pending = Promise.<Unit>promise();
+        var principal = pending.map(_ -> "later:" + requestPrincipal(request));
+        gate.set(pending);
+        return principal;
+    }
+
+    private static String requestPrincipal(RequestContext request) {
+        return RequestSecurity.securityOf(request).principal().value() + "|holder:" + currentPrincipalOrNone();
     }
 
     /// #2879: a Terra route declared the way a slice's generated route is (`Route.withRequestContext`) hands the

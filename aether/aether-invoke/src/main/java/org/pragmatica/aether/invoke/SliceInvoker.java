@@ -25,6 +25,8 @@ import org.pragmatica.aether.http.forward.ForwardError;
 import org.pragmatica.aether.endpoint.EndpointRegistry.Endpoint;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse;
+import org.pragmatica.aether.http.handler.security.SecurityContext;
+import org.pragmatica.aether.slice.CallerRequest;
 import org.pragmatica.aether.slice.MethodHandle;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.TopicTierMismatch;
@@ -491,6 +493,7 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                                                                 slice,
                                                                                                                 method,
                                                                                                                 payload,
+                                                                                                                wireCaller(request),
                                                                                                                 COMPLETION_ONLY,
                                                                                                                 deadline,
                                                                                                                 boundMs,
@@ -559,7 +562,8 @@ class SliceInvokerImpl implements SliceInvoker {
         return encodeFireAndForgetRequest(slice, request).flatMap(payload -> sendFireAndForgetPayload(endpoint,
                                                                                                       slice,
                                                                                                       method,
-                                                                                                      payload));
+                                                                                                      payload,
+                                                                                                      wireCaller(request)));
     }
 
     /// #272 R12: a `Unit` request needs no slice bridge. Its wire form is fixed — the single VLQ byte
@@ -570,18 +574,27 @@ class SliceInvokerImpl implements SliceInvoker {
     /// scheduled fire from a leader that does not host the slice encodes exactly what a hosting
     /// sender would have. Any other request type still needs a bridge that knows it.
     private Promise<byte[]> encodeFireAndForgetRequest(Artifact slice, Object request) {
-        if (request instanceof Unit) {
-            return Promise.lift(Causes::fromThrowable, () -> serializer.encode(request));
+        var payload = CallerRequest.payloadOf(request);
+
+        if (payload instanceof Unit) {
+            return Promise.lift(Causes::fromThrowable, () -> serializer.encode(payload));
         }
 
-        return findSenderBridge(slice, request).async(SENDER_BRIDGE_NOT_FOUND)
-                               .flatMap(senderBridge -> senderBridge.encode(request));
+        return findSenderBridge(slice, payload).async(SENDER_BRIDGE_NOT_FOUND)
+                               .flatMap(senderBridge -> senderBridge.encode(payload));
+    }
+
+    /// #2157: the caller identity a request carries goes on the wire only as the authenticated [SecurityContext] the
+    /// edge validated; anything else (no identity, an anonymous one) travels as empty.
+    private static Option<SecurityContext> wireCaller(Object request) {
+        return SecurityContext.fromCallerIdentity(CallerRequest.callerOf(request));
     }
 
     private Promise<Unit> sendFireAndForgetPayload(Endpoint endpoint,
                                                    Artifact slice,
                                                    MethodName method,
-                                                   byte[] payload) {
+                                                   byte[] payload,
+                                                   Option<SecurityContext> caller) {
         var correlationId = IdGenerator.generate();
         var requestId = InvocationContext.getOrGenerateRequestId();
         var invokeRequest = InvokeRequest.invokeRequest(self,
@@ -593,7 +606,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                                         false,
                                                         InvocationContext.currentDepth() + 1,
                                                         1,
-                                                        InvocationContext.isSampled());
+                                                        InvocationContext.isSampled(),
+                                                        caller);
         // Nobody waits for a fire-and-forget call, so there is no caller deadline to hand over: plain send, which the
         // transport bounds by the cluster-wide offline-buffer cap (#1996).
         network.send(endpoint.nodeId(), invokeRequest);
@@ -769,12 +783,15 @@ class SliceInvokerImpl implements SliceInvoker {
                                                MethodName method,
                                                Object request,
                                                Deadline deadline) {
-        return findSenderBridge(slice, request).<Promise<R>> fold(() -> SENDER_BRIDGE_NOT_FOUND.promise(),
-                                                                  senderBridge -> senderBridge.encode(request)
-                                                                                              .flatMap(payload -> sendAndAwaitResponse(endpoint,
-                                                                                                                                       slice,
-                                                                                                                                       method,
-                                                                                                                                       payload,
+        var payloadObject = CallerRequest.payloadOf(request);
+
+        return findSenderBridge(slice, payloadObject).<Promise<R>> fold(() -> SENDER_BRIDGE_NOT_FOUND.promise(),
+                                                                        senderBridge -> senderBridge.encode(payloadObject)
+                                                                                                    .flatMap(payload -> sendAndAwaitResponse(endpoint,
+                                                                                                                                             slice,
+                                                                                                                                             method,
+                                                                                                                                             payload,
+                                                                                                                                             wireCaller(request),
                                                                                                                                        senderBridge,
                                                                                                                                        deadline,
                                                                                                                                        timeoutMs,
@@ -786,6 +803,7 @@ class SliceInvokerImpl implements SliceInvoker {
                                                 Artifact slice,
                                                 MethodName method,
                                                 byte[] payload,
+                                                Option<SecurityContext> caller,
                                                 SliceBridge senderBridge,
                                                 Deadline deadline,
                                                 long boundMs,
@@ -799,6 +817,7 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                         slice,
                                                                         method,
                                                                         payload,
+                                                                        caller,
                                                                         senderBridge,
                                                                         deadline,
                                                                         boundMs,
@@ -811,6 +830,7 @@ class SliceInvokerImpl implements SliceInvoker {
                                         Artifact slice,
                                         MethodName method,
                                         byte[] payload,
+                                        Option<SecurityContext> caller,
                                         SliceBridge senderBridge,
                                         Deadline deadline,
                                         long boundMs,
@@ -839,7 +859,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                                         true,
                                                         InvocationContext.currentDepth() + 1,
                                                         1,
-                                                        InvocationContext.isSampled());
+                                                        InvocationContext.isSampled(),
+                                                        caller);
         // The frame must not outlive the wait that just started: a call delivered after its caller timed out ("may
         // have run") would run minutes later on reattach (#1996).
         network.send(targetNode, invokeRequest, callerWait)
@@ -931,11 +952,13 @@ class SliceInvokerImpl implements SliceInvoker {
         // case keeps working. The wire is tag-based (deterministicTag over the FQCN), so the target
         // resolves the bytes through its own codec regardless of which codec wrote them, and the
         // response is decoded back into the caller's own types the same way.
-        var senderBridge = findSenderBridge(slice, request).or(targetBridge);
+        var payload = CallerRequest.payloadOf(request);
+        var senderBridge = findSenderBridge(slice, payload).or(targetBridge);
 
-        return senderBridge.encode(request)
-                           .flatMap(inputBytes -> targetBridge.invoke(method.name(),
-                                                                      inputBytes))
+        return senderBridge.encode(payload)
+                           .flatMap(inputBytes -> targetBridge.invokeAsCaller(method.name(),
+                                                                              inputBytes,
+                                                                              CallerRequest.callerOf(request)))
                            .flatMap(responseBytes -> senderBridge.decode(responseBytes))
                            .map(result -> (R) result);
     }
@@ -1186,7 +1209,7 @@ class SliceInvokerImpl implements SliceInvoker {
         var resolver = Option.option(affinityResolvers.get(affinityLookupKey(slice, method)));
         var excluded = excludedNodes(slice, method, refusedNodes);
         // #275: affinity to an inaccessible node yields to the filtered plain selection below.
-        var affinityEndpoint = resolver.flatMap(r -> r.resolveAffinityNode(request))
+        var affinityEndpoint = resolver.flatMap(r -> r.resolveAffinityNode(CallerRequest.payloadOf(request)))
                                        .filter(node -> !excluded.contains(node))
                                        .flatMap(node -> endpointRegistry.selectEndpointByAffinity(slice, method, node))
                                        .filter(endpoint -> !excluded.contains(endpoint.nodeId()));

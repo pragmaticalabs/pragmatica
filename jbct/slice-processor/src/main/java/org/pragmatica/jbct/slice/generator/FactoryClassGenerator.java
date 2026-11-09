@@ -61,6 +61,7 @@ public class FactoryClassGenerator {
     /// Carrier the runtime hands a context-carrying subscriber (#386 D5): the adapter accepts it,
     /// unpacks it, and invokes the user method with `(T event, MessageContext context)`.
     private static final String CONTEXTUAL_EVENT_TYPE = "org.pragmatica.aether.slice.topic.ContextualEvent";
+    private static final String CALLER_REQUEST_TYPE = "org.pragmatica.aether.slice.CallerRequest";
 
     private boolean terraTarget() {
         return "terra".equals(processingEnv.getOptions().get("slice.target"));
@@ -247,7 +248,32 @@ public class FactoryClassGenerator {
                 generateRequestRecord(out, method, importTracker);
                 out.println();
             }
+
+            if (hasWireRequestRecord(method)) {
+                generateWireRequestRecord(out, method, importTracker);
+                out.println();
+            }
         }
+    }
+
+    /// #2157: a method called on its caller's behalf whose payload still has two or more parameters (the business
+    /// record and `RequestHeaders`) is encoded as a record of exactly those, without the security parameters.
+    private boolean hasWireRequestRecord(MethodModel method) {
+        return method.takesCaller() && method.wireParameters()
+                                             .size() > 1;
+    }
+
+    private String wireRequestRecordName(MethodModel method) {
+        return capitalize(method.name()) + "WireRequest";
+    }
+
+    private void generateWireRequestRecord(PrintWriter out, MethodModel method, ImportTracker importTracker) {
+        var components = method.wireParameters()
+                               .stream()
+                               .map(p -> importTracker.use(p.type().toString()) + " " + p.name())
+                               .collect(Collectors.joining(", "));
+
+        out.println("    public record " + wireRequestRecordName(method) + "(" + components + ") {}");
     }
 
     private void generateRequestRecord(PrintWriter out, MethodModel method, ImportTracker importTracker) {
@@ -1041,6 +1067,10 @@ public class FactoryClassGenerator {
     }
 
     private String resolveProxyRequestType(HandleInfo handle, ImportTracker importTracker) {
+        if (handle.method.takesCaller()) {
+            return importTracker.use(CALLER_REQUEST_TYPE);
+        }
+
         if (handle.method.hasNoParams()) {
             return "Unit";
         }
@@ -1055,6 +1085,26 @@ public class FactoryClassGenerator {
     private record ProxyParamInfo(String name, String type) {}
 
     private record ProxyMethodInfo(String name, String responseType, List<ProxyParamInfo> params) {
+        /// #2157: the callee takes a `SecurityContext`, so the call carries its caller's identity beside the payload.
+        boolean takesCaller() {
+            return params.stream()
+                         .anyMatch(p -> p.type()
+                                         .equals(MethodModel.SECURITY_CONTEXT_TYPE));
+        }
+
+        /// The parameters encoded as the payload: all but the security ones of a [#takesCaller] call.
+        List<ProxyParamInfo> wireParams() {
+            return takesCaller()
+                   ? params.stream()
+                           .filter(p -> !isSecurityType(p.type()))
+                           .toList()
+                   : params;
+        }
+
+        private static boolean isSecurityType(String type) {
+            return type.equals(MethodModel.SECURITY_CONTEXT_TYPE) || type.equals(MethodModel.PRINCIPAL_TYPE);
+        }
+
         boolean hasNoParams() {
             return params.isEmpty();
         }
@@ -1218,9 +1268,11 @@ public class FactoryClassGenerator {
         var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
         // Generate request records for multi-param proxy methods BEFORE the proxy record
         for (var method : methods) {
-            if (method.hasMultipleParams()) {
+            if (method.wireParams()
+                      .size() > 1) {
                 var proxyRequestRecordName = dep.parameterName() + "_" + capitalize(method.name) + "Request";
-                var reqComponents = method.params.stream()
+                var reqComponents = method.wireParams()
+                                          .stream()
                                                  .map(p -> importTracker.use(p.type()) + " " + p.name())
                                                  .collect(Collectors.joining(", "));
 
@@ -1234,7 +1286,12 @@ public class FactoryClassGenerator {
         for (var m : methods) {
             var respType = importTracker.use(m.responseType);
 
-            if (m.hasNoParams()) {
+            if (m.takesCaller()) {
+                components.add("MethodHandle<" + respType
+                              + ", " + importTracker.use(CALLER_REQUEST_TYPE)
+                              + "> " + m.name
+                              + "Handle");
+            } else if (m.hasNoParams()) {
                 components.add("MethodHandle<" + respType + ", Unit> " + m.name + "Handle");
             } else if (m.hasSingleParam()) {
                 components.add("MethodHandle<" + respType
@@ -1268,7 +1325,9 @@ public class FactoryClassGenerator {
 
         out.println();
         out.println("            @Override");
-        if (method.hasNoParams()) {
+        if (method.takesCaller()) {
+            generateCallerProxyMethod(out, method, dep, importTracker, respType);
+        } else if (method.hasNoParams()) {
             out.println("            public Promise<" + respType + "> " + method.name + "() {");
             out.println("                return " + method.name + "Handle.invoke(Unit.unit());");
         } else if (method.hasSingleParam()) {
@@ -1297,6 +1356,51 @@ public class FactoryClassGenerator {
         }
 
         out.println("            }");
+    }
+
+    /// #2157: a call whose callee takes a `SecurityContext` hands its handle a [CallerRequest]: the payload (the wire
+    /// parameters: none, one, or their request record) and the caller's identity, taken from the `SecurityContext`
+    /// argument exactly as the caller holds it (none when it is unauthenticated or absent).
+    private void generateCallerProxyMethod(PrintWriter out,
+                                           ProxyMethodInfo method,
+                                           DependencyModel dep,
+                                           ImportTracker importTracker,
+                                           String respType) {
+        var paramList = method.params.stream()
+                                     .map(p -> importTracker.use(p.type()) + " " + p.name())
+                                     .collect(Collectors.joining(", "));
+        var contextParam = method.params.stream()
+                                        .filter(p -> p.type()
+                                                      .equals(MethodModel.SECURITY_CONTEXT_TYPE))
+                                        .findFirst()
+                                        .orElseThrow()
+                                        .name();
+        var identity = importTracker.use(MethodModel.SECURITY_CONTEXT_TYPE) + ".callerIdentity(" + contextParam + ")";
+
+        out.println("            public Promise<" + respType + "> " + method.name + "(" + paramList + ") {");
+        out.println("                return " + method.name
+                   + "Handle.invoke(" + importTracker.use(CALLER_REQUEST_TYPE)
+                   + ".callerRequest(" + callerPayload(method, dep, importTracker)
+                   + ", " + identity
+                   + "));");
+    }
+
+    private String callerPayload(ProxyMethodInfo method, DependencyModel dep, ImportTracker importTracker) {
+        var wire = method.wireParams();
+
+        if (wire.isEmpty()) {
+            return "Unit.unit()";
+        }
+
+        if (wire.size() == 1) {
+            return callArgument(wire.getFirst(), importTracker);
+        }
+
+        var argList = wire.stream()
+                          .map(p -> callArgument(p, importTracker))
+                          .collect(Collectors.joining(", "));
+
+        return "new " + dep.parameterName() + "_" + capitalize(method.name) + "Request(" + argList + ")";
     }
 
     /// The argument expression of an inter-slice call. A `RequestHeaders` argument that the caller passes as null is
@@ -1662,6 +1766,21 @@ public class FactoryClassGenerator {
                        + ") contextual.event(), contextual.context()),");
             out.println("                        new TypeToken<" + responseType + ">() {},");
             out.println("                        new TypeToken<" + contextualEvent + ">() {}");
+        } else if (method.takesCaller()) {
+            // #2157: the bridge delivers a CallerRequest (the decoded payload and the caller's identity); the adapter
+            // hands the identity to the security parameters, so the user method keeps its declared shape.
+            var callerRequest = importTracker.use(CALLER_REQUEST_TYPE);
+            var argList = method.parameters()
+                                .stream()
+                                .map(p -> callerArgument(method, p, importTracker))
+                                .collect(Collectors.joining(", "));
+
+            out.println("                        __caller -> " + delegateExpr
+                       + "." + method.name()
+                       + "(" + argList
+                       + "),");
+            out.println("                        new TypeToken<" + responseType + ">() {},");
+            out.println("                        new TypeToken<" + callerRequest + ">() {}");
         } else if (method.hasNoParams()) {
             out.println("                        _unit -> " + delegateExpr + "." + method.name() + "(),");
             out.println("                        new TypeToken<" + responseType + ">() {},");
@@ -1704,6 +1823,22 @@ public class FactoryClassGenerator {
                                       .equals(parameterName))
                     .findFirst()
                     .orElse(null);
+    }
+
+    /// The argument a caller-taking method (#2157) is given for `param`: the caller's context for a `SecurityContext`,
+    /// its principal for a `Principal`, and the payload (or its record component) for every other parameter.
+    private String callerArgument(MethodModel method, MethodParameterInfo param, ImportTracker importTracker) {
+        if (MethodModel.isSecurityContextParam(param)) {
+            return importTracker.use(MethodModel.SECURITY_CONTEXT_TYPE) + ".forCaller(__caller.caller())";
+        }
+
+        if (MethodModel.isPrincipalParam(param)) {
+            return importTracker.use(MethodModel.SECURITY_CONTEXT_TYPE) + ".forCaller(__caller.caller()).principal()";
+        }
+
+        return hasWireRequestRecord(method)
+               ? "((" + wireRequestRecordName(method) + ") __caller.request())." + param.name() + "()"
+               : "((" + importTracker.use(param.type().toString()) + ") __caller.request())";
     }
 
     /// Returns the effective parameter type string for a method.
@@ -2701,6 +2836,21 @@ public class FactoryClassGenerator {
             // Also include individual user-defined parameter types
             for (var param : method.parameters()) {
                 addCodecEntry(param.type(), importTracker, seen, entries);
+            }
+        }
+
+        if (hasWireRequestRecord(method)) {
+            var wireRecordName = wireRequestRecordName(method);
+            var wireFqn = model.packageName() + "." + model.simpleName() + "Factory." + wireRecordName;
+
+            if (seen.add(wireFqn)) {
+                var components = method.wireParameters()
+                                       .stream()
+                                       .map(p -> new ComponentInfo(p.name(),
+                                                                   importTracker.use(getQualifiedTypeName(p.type()))))
+                                       .toList();
+
+                entries.add(CodecTypeEntry.record(wireFqn, wireRecordName, components));
             }
         }
     }

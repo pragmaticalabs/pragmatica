@@ -9,6 +9,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.SliceBridge;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
@@ -115,7 +116,7 @@ class AdmittedSliceBridgeTest {
         var gate = new Gate();
         var replies = new AtomicInteger();
         var bridge = new AdmittedSliceBridge(new Bridge(new AtomicInteger(), execution), () -> gate);
-        bridge.invokeWithReply("call", new byte[0], TimeSpan.timeSpan(1).seconds(), result -> {
+        bridge.invokeWithReply("call", new byte[0], Option.none(), TimeSpan.timeSpan(1).seconds(), result -> {
             assertThat(result.isSuccess()).isTrue();
             assertThat(gate.count.get()).isEqualTo(1);
             assertThat(gate.drained.isResolved()).isFalse();
@@ -135,7 +136,7 @@ class AdmittedSliceBridgeTest {
         var replies = new AtomicInteger();
         var replied = Promise.<Unit>promise();
         var bridge = new AdmittedSliceBridge(new Bridge(new AtomicInteger(), execution), () -> gate);
-        bridge.invokeWithReply("call", new byte[0], TimeSpan.timeSpan(10).millis(), result -> {
+        bridge.invokeWithReply("call", new byte[0], Option.none(), TimeSpan.timeSpan(10).millis(), result -> {
             assertThat(result.isFailure()).isTrue();
             replies.incrementAndGet();
             replied.succeed(Unit.unit());
@@ -158,7 +159,7 @@ class AdmittedSliceBridgeTest {
         var gate = new Gate();
         gate.open.set(false);
         var bridge = new AdmittedSliceBridge(new Bridge(calls, Promise.success(new byte[0])), () -> gate);
-        bridge.invokeWithReply("call", new byte[0], TimeSpan.timeSpan(1).seconds(), result -> {
+        bridge.invokeWithReply("call", new byte[0], Option.none(), TimeSpan.timeSpan(1).seconds(), result -> {
             assertThat(result.isFailure()).isTrue();
             replies.incrementAndGet();
         });

@@ -5,9 +5,11 @@
 package org.pragmatica.aether.invoke;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 import org.pragmatica.serialization.CodecFor;
@@ -21,6 +23,10 @@ public sealed interface InvocationMessage extends ProtocolMessage {
         return StreamType.INVOKE;
     }
 
+    /// `caller` (#2157) is the identity of the slice call's caller, as the edge validated it: empty for an
+    /// unauthenticated caller and for every call that is not made on a caller's behalf. The receiving node hands it to
+    /// the target method as its explicit `SecurityContext`/`Principal` parameter; it is identity, never authorization:
+    /// no route security on the receiver reads it.
     record InvokeRequest(NodeId sender,
                          String correlationId,
                          String requestId,
@@ -30,7 +36,32 @@ public sealed interface InvocationMessage extends ProtocolMessage {
                          boolean expectResponse,
                          int depth,
                          int hops,
-                         boolean sampled) implements InvocationMessage {
+                         boolean sampled,
+                         Option<SecurityContext> caller) implements InvocationMessage {
+        public static InvokeRequest invokeRequest(NodeId sender,
+                                                  String correlationId,
+                                                  String requestId,
+                                                  Artifact targetSlice,
+                                                  MethodName method,
+                                                  byte[] payload,
+                                                  boolean expectResponse,
+                                                  int depth,
+                                                  int hops,
+                                                  boolean sampled,
+                                                  Option<SecurityContext> caller) {
+            return new InvokeRequest(sender,
+                                     correlationId,
+                                     requestId,
+                                     targetSlice,
+                                     method,
+                                     payload,
+                                     expectResponse,
+                                     depth,
+                                     hops,
+                                     sampled,
+                                     caller);
+        }
+
         public static InvokeRequest invokeRequest(NodeId sender,
                                                   String correlationId,
                                                   String requestId,
@@ -50,7 +81,8 @@ public sealed interface InvocationMessage extends ProtocolMessage {
                                      expectResponse,
                                      depth,
                                      hops,
-                                     sampled);
+                                     sampled,
+                                     Option.none());
         }
 
         public static InvokeRequest invokeRequest(NodeId sender,
@@ -69,7 +101,8 @@ public sealed interface InvocationMessage extends ProtocolMessage {
                                      expectResponse,
                                      0,
                                      0,
-                                     false);
+                                     false,
+                                     Option.none());
         }
     }
 

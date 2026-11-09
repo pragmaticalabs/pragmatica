@@ -17,6 +17,7 @@ import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.ExecutionOutcome;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.Origin;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.Settlement;
+import org.pragmatica.aether.slice.CallerIdentity;
 import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.consensus.net.ClusterNetwork;
@@ -336,6 +337,8 @@ class InvocationHandlerImpl implements InvocationHandler {
         metricsCollector.onPresent(mc -> mc.recordStart(request.targetSlice(), request.method()));
         bridge.invokeWithReply(request.method().name(),
                                request.payload(),
+                               request.caller()
+                                      .map(CallerIdentity.class::cast),
                                Deadline.current().bounded(invocationTimeout),
                                result -> result.apply(cause -> handleInvocationFailure(request,
                                                                                        cause,
