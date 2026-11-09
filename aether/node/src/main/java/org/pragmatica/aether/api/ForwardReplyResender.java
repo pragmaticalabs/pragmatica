@@ -20,6 +20,7 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /// #2569 (part of #2583, P2): sends the receiver's reply to a forwarded management request and re-sends it when the
 /// transport proves it did not write it.
 ///
@@ -58,7 +59,9 @@ final class ForwardReplyResender {
 
     /// The production resender: shared scheduler, system nano clock, jittered backoff.
     static ForwardReplyResender forwardReplyResender() {
-        return forwardReplyResender(ForwardReplyResender::scheduleShared, System::nanoTime, RefusalBackoff.refusalBackoff());
+        return forwardReplyResender(ForwardReplyResender::scheduleShared,
+                                    System::nanoTime,
+                                    RefusalBackoff.refusalBackoff());
     }
 
     static ForwardReplyResender forwardReplyResender(BiConsumer<Runnable, TimeSpan> scheduler,
@@ -73,7 +76,10 @@ final class ForwardReplyResender {
               NodeId target,
               HttpForwardResponse reply,
               TimeSpan budget) {
-        write(transport, target, reply, nanoClock.getAsLong() + budget.nanos());
+        write(transport,
+              target,
+              reply,
+              nanoClock.getAsLong() + budget.nanos());
     }
 
     @Contract
@@ -93,8 +99,11 @@ final class ForwardReplyResender {
         switch (outcome) {
             case WriteOutcome.Sent _ -> holds.sent(target);
             case WriteOutcome.EncodeFailed _ -> giveUp(target, reply, outcome, "cannot be encoded");
-            case WriteOutcome.BackpressureRefused _, WriteOutcome.NoPeerState _, WriteOutcome.ConnectionDead _ ->
-            holdThenResend(transport, target, reply, outcome, deadlineNanos);
+            case WriteOutcome.BackpressureRefused _, WriteOutcome.NoPeerState _, WriteOutcome.ConnectionDead _ -> holdThenResend(transport,
+                                                                                                                                 target,
+                                                                                                                                 reply,
+                                                                                                                                 outcome,
+                                                                                                                                 deadlineNanos);
         }
     }
 
@@ -107,7 +116,10 @@ final class ForwardReplyResender {
         var hold = holds.refused(target);
 
         if (hold.nanos() >= deadlineNanos - nanoClock.getAsLong()) {
-            giveUp(target, reply, outcome, "the requester's budget cannot cover the next hold of " + hold.millis() + " ms");
+            giveUp(target,
+                   reply,
+                   outcome,
+                   "the requester's budget cannot cover the next hold of " + hold.millis() + " ms");
 
             return;
         }

@@ -2066,12 +2066,13 @@ class ManagementServerImpl implements ManagementServer {
     /// #2569 / #2583 P2: the reply is re-sent while the transport proves it did not write it (see [ForwardReplyResender]),
     /// for as long as the requester can still be waiting. The window is the budget the request arrived with, measured from
     /// this first reply send: it can only overstate what is left, and a reply that outlives its requester is ignored there.
-    private void sendManagementForwardReply(ClusterNetwork network, HttpForwardRequest request, HttpForwardResponse reply) {
+    private void sendManagementForwardReply(ClusterNetwork network,
+                                            HttpForwardRequest request,
+                                            HttpForwardResponse reply) {
         replyResender.send(network::send,
                            request.sender(),
                            reply,
-                           Deadline.fromWireMillis(request.remainingMillis())
-                                   .bounded(UNBUDGETED_REPLY_WINDOW));
+                           Deadline.fromWireMillis(request.remainingMillis()).bounded(UNBUDGETED_REPLY_WINDOW));
     }
 
     @SuppressWarnings("JBCT-PAT-01")
