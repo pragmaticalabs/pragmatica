@@ -112,6 +112,16 @@ public final class ProcessorError {
                                                                                                : ".");
     }
 
+    public static String provenNonNullToOption(String method, String output, String field, String proof, String plainType) {
+        return PREFIX
+             + "Method '" + method
+             + "': output '" + output
+             + "' is proven non-null (" + proof
+             + ") but field '" + field
+             + "' is declared Option<" + plainType
+             + ">. Declared types must match proven nullability. Fix: declare the field as the plain type " + plainType + ".";
+    }
+
     public static String ambiguousOutputName(String method, String output, int count, String field) {
         return PREFIX
              + "Method '" + method

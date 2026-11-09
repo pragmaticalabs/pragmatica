@@ -20,7 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// #2889: a query output NOT PROVEN non-null, read into a non-`Option` field or a scalar return, fails the build;
 /// the diagnostic names the method, the output, why it may be NULL and the fix. A provably non-null output is
-/// accepted, and `Option<T>` on one draws no warning.
+/// accepted; `Option<T>` on one fails the build (#2962).
 ///
 /// Schema (`src/test/resources/schema`): `orders(id, user_id, status, total NOT NULL; correlation_id nullable)`,
 /// `users(id, name, email NOT NULL)`, `events(id, name, type NOT NULL; event_date nullable)`.
@@ -160,15 +160,56 @@ class NullableOutputValidationTest {
                : type;
     }
 
+    /// #2962: declared types match proven nullability in both directions - a PROVEN non-null output read into an
+    /// `Option` field fails the build, naming the method, the output, the proof rule and the plain-type fix.
+    static Stream<Arguments> provenIntoOption() {
+        return Stream.of(
+            Arguments.of("not null column", "Option<String> status", "SELECT id, status FROM orders", "status", "column 'orders.status' is a NOT NULL column"),
+            Arguments.of("top-level IS NOT NULL conjunct", "Option<UUID> correlationId", "SELECT correlation_id FROM orders WHERE correlation_id IS NOT NULL", "correlation_id", "a top-level WHERE conjunct rejects NULL for column 'orders.correlation_id'"),
+            Arguments.of("exists", "Option<Boolean> found", "SELECT EXISTS (SELECT 1 FROM users u WHERE u.id = o.user_id) AS found FROM orders o", "found", "EXISTS (..) always yields true or false"),
+            Arguments.of("not exists", "Option<Boolean> missing", "SELECT NOT EXISTS (SELECT 1 FROM users u WHERE u.id = o.user_id) AS missing FROM orders o", "missing", "NOT EXISTS (..) always yields true or false"),
+            Arguments.of("ungrouped count subquery", "Option<Long> n", "SELECT (SELECT count(*) FROM users u WHERE u.id = o.user_id) AS n FROM orders o", "n", "ungrouped count(..) scalar subquery"),
+            Arguments.of("count star", "Option<Long> n", "SELECT count(*) AS n FROM orders", "n", "count(..) never yields NULL"),
+            Arguments.of("literal", "Option<String> s", "SELECT 'x' AS s FROM orders", "s", "a non-NULL literal"),
+            Arguments.of("coalesce with literal last", "Option<BigDecimal> total", "SELECT COALESCE(max(total), 0) AS total FROM orders", "total", "COALESCE whose last argument is proven non-null"),
+            Arguments.of("left join root side", "Option<String> name", "SELECT o.status AS name FROM orders o LEFT JOIN users u ON u.id = o.user_id", "name", "column 'o.status' is a NOT NULL column"),
+            Arguments.of("where proves left join side column", "Option<String> name", "SELECT u.name AS name FROM orders o LEFT JOIN users u ON u.id = o.user_id WHERE u.name LIKE 'a%'", "name", "a top-level WHERE conjunct rejects NULL for column 'u.name'"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("provenIntoOption")
+    void provenNonNullOutput_onOptionField_failsTheBuild(String name, String field, String sql, String output, String proof) throws Exception {
+        var result = compile(repo("ProvenOptionRepo", "record Row(" + field + ") {}", sql, "Promise<List<Row>> run()"));
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.diagnostics())
+            .contains("ERROR")
+            .contains("Method 'run'")
+            .contains("output '" + output + "' is proven non-null")
+            .contains(proof)
+            .contains("declare the field as the plain type")
+            .doesNotContain(MAY_BE_NULL);
+    }
+
+    /// Control: the proof is per output - an unproven `Option` field beside a proven plain field compiles.
     @Test
-    void optionField_onProvenNonNullOutput_drawsNoWarning() throws Exception {
-        var result = compile(repo("OptionOnProvenRepo",
-                                  "record Row(long id, Option<String> status) {}",
-                                  "SELECT id, status FROM orders",
+    void unprovenOutput_onOptionField_besideProvenPlainField_isAccepted() throws Exception {
+        var result = compile(repo("MixedRepo",
+                                  "record Row(long id, Option<UUID> correlationId) {}",
+                                  "SELECT id, correlation_id FROM orders",
                                   "Promise<List<Row>> run()"));
 
         assertThat(result.success()).as(result.diagnostics()).isTrue();
-        assertThat(result.diagnostics()).doesNotContain("Method 'run'").doesNotContain(MAY_BE_NULL);
+        assertThat(result.diagnostics()).doesNotContain("proven non-null");
+    }
+
+    /// Control: an `Option` scalar return stays accepted on a proven output - there `Option` is the row wrapper
+    /// (zero rows), never a NULL holder, so declared nullability cannot disagree with the proof.
+    @Test
+    void optionScalarReturn_onProvenOutput_isAccepted() throws Exception {
+        var result = compile(repo("ProvenScalarOptionRepo", "", "SELECT id AS m FROM orders WHERE id = 1", "Promise<Option<Long>> run()"));
+
+        assertThat(result.success()).as(result.diagnostics()).isTrue();
     }
 
     /// The same name twice in one select list is ambiguous for a name-based mapper, whatever the field type.
