@@ -1565,10 +1565,20 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Recovery: design-out -- the wait's outcome is not read. The accept gate ([#committedLife]) decides from the life
     /// applied here, so a commit slower than the wait leaves the publish refused retriably, never accepted into an
     /// uncommitted life.
+    ///
+    /// The continuation hops off whichever thread ended the wait ([#offResolver]): a timed-out wait ends on the JVM-wide
+    /// single `promise-timeout-scheduler` thread, an in-time commit on the thread that resolves the lane, and the
+    /// post-wait work (ordered section, WAL frame write, transport send) belongs on neither (#2952).
     private static Promise<Unit> boundedCommitWait(Promise<Unit> lane) {
         return lane.map(_ -> unit())
                    .timeout(PUBLISH_COMMIT_WAIT)
-                   .recover(_ -> unit());
+                   .recover(_ -> unit())
+                   .flatMap(StreamPartitionManager::offResolver);
+    }
+
+    /// A fresh promise resolved on the async executor's own virtual thread, so what is composed after it runs there.
+    private static Promise<Unit> offResolver(Unit settled) {
+        return Promise.promise(Result::unitResult);
     }
 
     /// #1564: create a DECLARED stream — a `[streams.X]` resource, a durable topic (and its dead-letter stream)
@@ -1879,6 +1889,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Names with a config submission still in flight; zero when every lane has settled (test seam, #2627).
     int commitLaneCount() {
         return commitLanes.size();
+    }
+
+    /// The name's open commit lane, if any (test seam, #2952: the thread-hop test reads which thread settles it).
+    Option<Promise<Unit>> commitLaneOf(String streamName) {
+        return option(commitLanes.get(streamName));
     }
 
     private void settleLane(String streamName, Promise<Unit> settled) {
@@ -6435,6 +6450,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// list directories this process created after the first adoption. A report leaves out the lives this process proposed or adopted up
     /// to the adoption it reports, captured now; a later own life it still names (one created while the walk ran) is announced and then
     /// released by the report of that life's own adoption, or of the stream's next one, which is queued behind it.
+    ///
+    /// Reports still queued, or mid-walk, when [#close] runs or the JVM exits are dropped: nothing drains the queue on close, and the drainer is a
+    /// virtual (daemon) thread. They are operator announcements only -- nothing durable depends on one and adoption deletes no life -- so the
+    /// accepted cost is a warning lost at shutdown.
     private Result<Unit> reportOtherLives(StreamConfig config, Result<List<StreamFootprint.OtherLife>> adopted) {
         var others = adopted.or(List.of());
         var ownLives = Set.copyOf(entries.ownLives());

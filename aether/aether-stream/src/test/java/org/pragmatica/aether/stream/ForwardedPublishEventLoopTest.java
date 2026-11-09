@@ -8,11 +8,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import org.junit.jupiter.api.AfterEach;
@@ -21,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.stream.forward.AcceptingStreamForwardTransport;
@@ -144,6 +147,56 @@ class ForwardedPublishEventLoopTest {
         node.awaitRemove();
 
         assertThat(node.applyCount()).as("the Remove follows the resolved Put").isEqualTo(2);
+    }
+
+    /// The post-wait work (ordered section, WAL frame write, transport send) must run on neither thread that can finish the
+    /// wait: the one that resolves the name's commit lane (in production the consensus apply / KV dispatcher side, the
+    /// thread #2952 freed) nor the JVM-wide single `promise-timeout-scheduler` thread. Control: the first attempt runs on
+    /// the caller thread, and the lane's resolver is read from a synchronous dependent registered on the lane itself
+    /// (synchronous dependents run inline on the resolving thread, as the wait's own continuation did before the hop).
+    @Test
+    void continuationThread_isNotTheLaneResolver_whenTheCommitArrivesInTime() {
+        var seen = new ConcurrentLinkedQueue<Thread>();
+        var resolver = new AtomicReference<Thread>();
+        owner.ownerEpochSource((_, _) -> recordThread(seen));
+        forwardOnTheLoop("first", LAGGING);
+        node.awaitPut();
+        owner.commitLaneOf(LAGGING)
+             .onPresent(lane -> lane.map(_ -> observeThread(resolver)));
+        node.commit();
+        response("first", BOUNDED_MS);
+
+        assertThat(resolver.get()).as("control: the lane settled and its resolver was observed").isNotNull();
+        assertThat(seen).as("control: the append ran").isNotEmpty();
+        assertThat(seen).as("not the thread that resolved the lane").doesNotContain(resolver.get());
+        assertThat(seen).as("not the timeout scheduler").noneMatch(ForwardedPublishEventLoopTest::isTimeoutScheduler);
+    }
+
+    @Test
+    void continuationThread_isNotTheTimeoutScheduler_whenTheWaitElapses() {
+        var seen = new ConcurrentLinkedQueue<Thread>();
+        owner.ownerEpochSource((_, _) -> recordThread(seen));
+        forwardOnTheLoop("first", LAGGING);
+        node.awaitPut();
+        var answered = response("first", BOUNDED_MS);
+
+        assertThat(answered.retryable()).as("fixture: the wait elapsed without a commit: %s", answered).isTrue();
+        assertThat(seen).as("control: the post-wait work ran").isNotEmpty();
+        assertThat(seen).as("not the timeout scheduler that fired the wait").noneMatch(ForwardedPublishEventLoopTest::isTimeoutScheduler);
+    }
+
+    private static Unit observeThread(AtomicReference<Thread> resolver) {
+        resolver.set(Thread.currentThread());
+        return Unit.unit();
+    }
+
+    private static Epoch recordThread(ConcurrentLinkedQueue<Thread> seen) {
+        seen.add(Thread.currentThread());
+        return Epoch.ZERO;
+    }
+
+    private static boolean isTimeoutScheduler(Thread thread) {
+        return thread.getName().startsWith("promise-timeout-scheduler");
     }
 
     private void forwardOnTheLoop(String correlationId, String stream) {
