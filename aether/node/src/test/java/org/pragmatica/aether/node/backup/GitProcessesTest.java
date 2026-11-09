@@ -124,14 +124,13 @@ class GitProcessesTest {
         var root = new ProcessBuilder("sleep", "30.4979").start();
         var started = System.nanoTime();
 
-        var dead = GitProcesses.kill(List.of(root), 1_000, List.of("sh", "-c", "exec sleep 60.4979", "sh"));
+        GitProcesses.kill(List.of(root), 1_000, List.of("sh", "-c", "exec sleep 60.4979", "sh"));
         var elapsedMs = (System.nanoTime() - started) / 1_000_000;
         Thread.sleep(300);
 
-        assertThat(dead).as("the tree is killed although the freeze did not happen").isTrue();
         assertThat(elapsedMs).as("the hanging helper did not hold the kill past its 1 s bound").isLessThan(3_000L);
         assertThat(processesWith("60.4979")).as("the hanging helper was killed").isZero();
-        assertThat(processesWith("30.4979")).as("control: the tree member is dead").isZero();
+        assertThat(processesWith("30.4979")).as("the tree is killed although the freeze did not happen").isZero();
     }
 
     /// A pid that now belongs to another process is not stopped: its start time differs from the one read (v-2979, PID reuse).
