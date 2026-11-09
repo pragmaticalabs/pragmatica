@@ -108,4 +108,9 @@ class RequestHeadersTest {
 
         assertThat(RequestHeaders.requestHeaders(transport).all("SET-THING")).containsExactly("a", "b");
     }
+
+    @Test
+    void empty_carriesNoFieldAtAll() {
+        assertThat(RequestHeaders.empty().fields()).isEmpty();
+    }
 }
