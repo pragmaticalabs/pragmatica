@@ -31,13 +31,11 @@ final class JwtSignatureVerifier {
         return asymmetricAlgorithm(jwt).flatMap(jdkAlg -> performVerification(jwt, key, jdkAlg));
     }
 
-    /// JWKS mode: the JDK algorithm for a RS*/ES* token, decided BEFORE any key is looked up. HS*, `none` and any
-    /// other algorithm are refused here. A header without `alg` keeps its historical reading as RS256 (#2880: JWKS
-    /// mode is unchanged); HS256 mode refuses it ([#verifyHmac]).
+    /// JWKS mode: the JDK algorithm for a RS*/ES* token, decided BEFORE any key is looked up. HS*, `none`, an empty or
+    /// blank `alg` and any other algorithm are refused here. A header without `alg` keeps its historical reading as
+    /// RS256 (the parser decides that, #2880: JWKS mode is unchanged); HS256 mode refuses it ([#verifyHmac]).
     static Result<String> asymmetricAlgorithm(JwtTokenParser.ParsedJwt jwt) {
-        return resolveAlgorithm(jwt.header().alg().isEmpty()
-                                ? "RS256"
-                                : jwt.header().alg());
+        return resolveAlgorithm(jwt.header().alg());
     }
 
     /// HS256 mode (#2880): the token must itself name HS256 (a missing or different `alg` is refused before the
