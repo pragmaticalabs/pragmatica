@@ -62,21 +62,31 @@ public sealed interface Lifecycle {
     /// `WorkerLeave` for a worker, in id order (a deterministic `Rebuild`). The FSM applies them right after `Rebuild`, before
     /// the inputs held while rebuilding, so each counts as a removal input processed after `Rebuild` (W4, R-2.11). They run C17
     /// unchanged: its guard (n not in `departed` or `departing`) refuses a node already recorded, and the R-4.3.0 fence refuses
-    /// a re-admission that commits first. A verdict this node never reached is left to C9-C11.
-    static List<ClusterInput> removalsAtRebuild(Snapshot snapshot) {
-        return Stream.concat(synthesised(snapshot.dead()
-                                                 .cores(),
+    /// a re-admission that commits first. A verdict this node never reached is left to C9-C11. Draft 8.1a guard (NT-169): only
+    /// an id with residue in the rebuilt model is synthesised, because membership keeps DEAD ids forever while R-4.3.3 removes
+    /// the DEPARTED record with the last residue; a ghost id would otherwise get a fresh DEPARTED on every `Rebuild`.
+    static List<ClusterInput> removalsAtRebuild(ClusterModel m, Snapshot snapshot) {
+        return Stream.concat(synthesised(m,
+                                         snapshot.dead().cores(),
                                          ClusterInput.NodeRemoved::new),
-                             synthesised(snapshot.dead()
-                                                 .workers(),
+                             synthesised(m,
+                                         snapshot.dead().workers(),
                                          ClusterInput.WorkerLeave::new))
                      .toList();
     }
 
-    private static Stream<ClusterInput> synthesised(Set<NodeId> nodes, Function<NodeId, ClusterInput> removal) {
+    private static Stream<ClusterInput> synthesised(ClusterModel m,
+                                                    Set<NodeId> nodes,
+                                                    Function<NodeId, ClusterInput> removal) {
         return nodes.stream()
+                    .filter(node -> hasResidue(m, node))
                     .sorted(Comparator.comparing(NodeId::id))
                     .map(removal);
+    }
+
+    /// C17r residue (draft 8.1a): a committed `NodeDepartureKey(n)` record, a directive, or desired or observed rows.
+    private static boolean hasResidue(ClusterModel m, NodeId node) {
+        return m.records.containsKey(node) || m.directives.containsKey(node) || m.desiredByNode.containsKey(node) || m.observedByNode.containsKey(node);
     }
 
     /// H-1: C11f's non-STALE extension applies to the DEPARTED records that were already committed when this leader rebuilt.

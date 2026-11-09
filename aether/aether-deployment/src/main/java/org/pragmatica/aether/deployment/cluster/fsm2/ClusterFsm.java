@@ -190,7 +190,7 @@ public final class ClusterFsm {
     private ClusterModel withDeadRemoved(ClusterModel model, Rebuild rebuild, Ctx ctx) {
         var next = model;
 
-        for (var removal : Lifecycle.removalsAtRebuild(rebuild.snapshot())) {
+        for (var removal : Lifecycle.removalsAtRebuild(model, rebuild.snapshot())) {
             next = apply(next, removal, ctx);
         }
 

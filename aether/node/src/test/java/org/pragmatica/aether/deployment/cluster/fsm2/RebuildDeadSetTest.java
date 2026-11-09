@@ -9,8 +9,11 @@ import java.util.Set;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.DeadSet;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureCause;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureState;
@@ -22,6 +25,8 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
+
+import java.util.function.UnaryOperator;
 
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -57,6 +62,12 @@ class RebuildDeadSetTest {
         return DeadSet.deadSet(Set.of(cores), Set.of());
     }
 
+    /// The `NodeRemoved` inputs the Dormant FSM dropped (the set-up's own admissions are dropped too, so the input is named).
+    private static long droppedDormant(MbWorld w) {
+        return w.h.metricTotal("aether_deployment_fsm_inputs_total",
+                               tags -> "dropped_dormant".equals(tags.get("result")) && "NodeRemoved".equals(tags.get("input")));
+    }
+
     private static Option<DepartureState> stateOf(MbWorld w, NodeId node) {
         return w.recordOf(node)
                 .map(NodeDepartureValue::state);
@@ -68,12 +79,11 @@ class RebuildDeadSetTest {
     @Test
     void rebuild_coreDeadAsFollower_isDepartedWithinTheActivationDrain() {
         var w = world();
+        var droppedBefore = droppedDormant(w);
 
         w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
-        assertThat(w.h.metricTotal("aether_deployment_fsm_inputs_total",
-                                   tags -> "dropped_dormant".equals(tags.get("result"))))
-                  .as("precondition: the follower dropped the removal input")
-                  .isEqualTo(1L);
+        assertThat(droppedDormant(w) - droppedBefore).as("precondition: the follower dropped the removal input")
+                                                       .isEqualTo(1L);
         w.h.dead = deadCores(CORE_2);
         w.activate();
 
@@ -171,5 +181,82 @@ class RebuildDeadSetTest {
         w.h.deliver(new ClusterInput.Rebuild(w.h.snapshot()));
 
         assertThat(stateOf(w, CORE_2)).isEqualTo(Option.some(DepartureState.DEPARTED));
+    }
+
+    /// The three cores admitted, and nothing else committed: no target, no directive, no rows, no record.
+    private static MbWorld bareWorld() {
+        var w = MbWorld.world(CORE_1, CORE_2, CORE_3);
+
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, TOKEN_2);
+        w.admit(CORE_3, 0x3333L);
+
+        return w;
+    }
+
+    private static Option<DepartureState> departedWithOnly(UnaryOperator<MbWorld> residue) {
+        var w = residue.apply(bareWorld());
+
+        w.h.dead = deadCores(CORE_2);
+        w.activate();
+
+        return stateOf(w, CORE_2);
+    }
+
+    // NT-169 (draft 8.1a residue guard)
+    // Red when: a DEAD id whose departure was fully GC'd (no record, no directive, no desired or observed rows) gets any
+    // departure write from a Rebuild, or a NodeDepartureKey exists after two successive Rebuilds.
+    @Test
+    void rebuild_ghostDeadIdAfterGc_writesNothingOverTwoRebuilds() {
+        var w = bareWorld();
+
+        w.h.dead = deadCores(CORE_2);
+        w.activate();
+        w.h.deliver(new ClusterInput.Rebuild(w.h.snapshot()));
+
+        assertThat(w.h.submits(SubmitKind.DEPARTURE)).isEmpty();
+        assertThat(w.present(new NodeDepartureKey(CORE_2))).isFalse();
+    }
+
+    // NT-169 (positive control: orphan observed row without a record)
+    // Red when: a DEAD id whose only residue is one observed row is not departed by C17r.
+    @Test
+    void rebuild_deadWithOnlyAnObservedRow_isDeparted() {
+        assertThat(departedWithOnly(w -> seeded(w,
+                                                new SliceObservedKey(CORE_2, ORDERS),
+                                                row(SliceObservedState.ACTIVE, 1L, gen(1), process(TOKEN_2)))))
+                  .isEqualTo(Option.some(DepartureState.DEPARTED));
+    }
+
+    // NT-169 (positive control: orphan desired row without a record)
+    // Red when: a DEAD id whose only residue is one desired row is not departed by C17r.
+    @Test
+    void rebuild_deadWithOnlyADesiredRow_isDeparted() {
+        assertThat(departedWithOnly(w -> seeded(w,
+                                                new SliceDesiredKey(CORE_2, ORDERS),
+                                                desired(SliceGoal.ACTIVE, gen(1)))))
+                  .isEqualTo(Option.some(DepartureState.DEPARTED));
+    }
+
+    // NT-169 (positive control: directive only)
+    // Red when: a DEAD id whose only residue is its directive is not departed by C17r.
+    @Test
+    void rebuild_deadWithOnlyADirective_isDeparted() {
+        assertThat(departedWithOnly(w -> w.directive(CORE_2, ActivationDirectiveValue.core())))
+                  .isEqualTo(Option.some(DepartureState.DEPARTED));
+    }
+
+    // NT-169 (positive control: committed record only)
+    // Red when: a DEAD id whose only residue is a committed ADMITTED record is not departed by C17r.
+    @Test
+    void rebuild_deadWithOnlyAnAdmittedRecord_isDeparted() {
+        assertThat(departedWithOnly(w -> w.record(CORE_2, DepartureState.ADMITTED, 1L, TOKEN_2, null)))
+                  .isEqualTo(Option.some(DepartureState.DEPARTED));
+    }
+
+    private static MbWorld seeded(MbWorld w, AetherKey key, AetherValue value) {
+        w.h.seedQuietly(key, value);
+
+        return w;
     }
 }
