@@ -349,6 +349,21 @@ class PoolDemandGuardTest {
     }
 
     @Test
+    void poolClose_leavingMaxExactlyAtTheLimit_raisesTheInfoRecovery() throws Exception { // m7 boundary
+        var provider = provider(perSlice(50, 50), new FakeShareableFactory(), _ -> answers(100));
+
+        openSlices(provider, 3);
+        assertThat(settled()).extracting(OperatorWarning::code)
+                             .containsOnly(OperatorWarningCode.DATASOURCE_DEMAND_EXCEEDS_SERVER_LIMIT);
+
+        release(provider, "slice-0");
+
+        assertThat(settled()).last()
+                             .satisfies(warning -> assertThat(warning.code())
+                                     .isEqualTo(OperatorWarningCode.DATASOURCE_DEMAND_WITHIN_SERVER_LIMIT));
+    }
+
+    @Test
     void demandBackWithinTheLimit_afterALaterProbeAnswersAHigherLimit_raisesTheInfoRecovery() throws Exception { // E
         var calls = new java.util.concurrent.atomic.AtomicInteger();
         var provider = provider(perSlice(40, 40),

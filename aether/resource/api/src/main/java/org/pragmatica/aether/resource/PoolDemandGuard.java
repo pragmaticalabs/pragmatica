@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -60,6 +61,10 @@ final class PoolDemandGuard {
                                                 + " again: this node's pools open {} connections at warm-up and up to {}"
                                                 + " under load, the server allows {} non-superuser connections.";
 
+    private static final String RETIRED_TEMPLATE = "PostgreSQL {} is no longer where this node's datasource pools"
+                                                 + " connect: their configured server now answers as another address."
+                                                 + " The earlier warning for it is cleared.";
+
     private static final String ACCEPTING_TEMPLATE = "PostgreSQL {} answered the demand probe again after refusing a"
                                                    + " connection (53300); the server allows {} non-superuser connections.";
 
@@ -81,8 +86,11 @@ final class PoolDemandGuard {
     private final Map<Object, Registered> pools = new ConcurrentHashMap<>();
     private final Map<ServerId, ServerId> aliases = new ConcurrentHashMap<>();
     private final Map<ServerId, Integer> lastAvailable = new ConcurrentHashMap<>();
-    private final Set<ServerId> overLimit = ConcurrentHashMap.newKeySet();
-    private final Set<ServerId> refusing = ConcurrentHashMap.newKeySet();
+    /// The warning sets are guarded by `this`, together with the publication of every raise and recovery (see
+    /// [#answered], [#refused], [#closed]): a recovery interleaved with a raise on another thread can then neither
+    /// publish a warning that no set entry stands for, nor leave an entry whose warning was never published.
+    private final Set<ServerId> overLimit = new HashSet<>();
+    private final Set<ServerId> refusing = new HashSet<>();
     private final Supplier<OperatorWarningSink> sink;
 
     private PoolDemandGuard(Supplier<OperatorWarningSink> sink) {
@@ -107,7 +115,7 @@ final class PoolDemandGuard {
 
     /// The close funnel's deregistration; a pool that never registered (a failed open) has nothing to remove. The
     /// close lowers the server's sums, so it is also a chance to clear a standing demand warning.
-    Unit closed(Object poolId) {
+    synchronized Unit closed(Object poolId) {
         return option(pools.remove(poolId)).map(this::clearAfterClose)
                      .or(Unit.unit());
     }
@@ -172,18 +180,44 @@ final class PoolDemandGuard {
     }
 
     /// Records the answer, then evaluates the answered server's sums.
-    Unit answered(ServerId configured, ServerProbe answer) {
+    synchronized Unit answered(ServerId configured, ServerProbe answer) {
         var server = answer.addr()
                            .map(addr -> ServerId.serverId(configured.type(),
                                                           addr,
                                                           answer.port()))
                            .or(configured);
 
-        aliases.put(configured, server);
+        option(aliases.put(configured, server)).filter(previous -> !previous.equals(server))
+              .onPresent(this::retireIfUnused);
         lastAvailable.put(server, answer.available());
         acceptedAgain(configured, server, answer.available());
 
         return evaluate(server, answer.available());
+    }
+
+    /// The configured server was remapped away from `previous` to a different answered id, so a warning standing under
+    /// `previous` would never see its clearing event if no pool is left there: it is cleared now, with its recovery
+    /// event. A pool still resolving to `previous` keeps the warning: that server's own probes and closes clear it.
+    private Unit retireIfUnused(ServerId previous) {
+        return pools.values()
+                    .stream()
+                    .anyMatch(registered -> serverOf(registered).equals(previous))
+               ? Unit.unit()
+               : retire(previous);
+    }
+
+    private Unit retire(ServerId previous) {
+        var demandCleared = overLimit.remove(previous)
+                            ? raiseRetired(OperatorWarningCode.DATASOURCE_DEMAND_WITHIN_SERVER_LIMIT, previous)
+                            : Unit.unit();
+
+        return refusing.remove(previous)
+               ? raiseRetired(OperatorWarningCode.DATASOURCE_SERVER_ACCEPTING_CONNECTIONS, previous)
+               : demandCleared;
+    }
+
+    private Unit raiseRetired(OperatorWarningCode code, ServerId previous) {
+        return OperatorWarnings.raise(LOG, sink.get(), code, previous.subject(), RETIRED_TEMPLATE, previous.subject());
     }
 
     private Unit evaluate(ServerId server, int available) {
@@ -212,7 +246,7 @@ final class PoolDemandGuard {
 
     /// A probe that failed with SQLSTATE 53300 means the server is refusing connections now. Any other failure is not a
     /// statement about the limit and stays at DEBUG; the pool is unaffected either way.
-    Unit refused(ServerId configured, Cause cause) {
+    synchronized Unit refused(ServerId configured, Cause cause) {
         return isServerFull(cause)
                ? raiseRefused(configured)
                : probeFailed(configured, cause);
