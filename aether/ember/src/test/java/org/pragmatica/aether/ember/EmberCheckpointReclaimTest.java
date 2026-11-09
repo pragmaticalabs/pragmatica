@@ -285,6 +285,31 @@ class EmberCheckpointReclaimTest {
         assertThat(nodes).as("control: the block the pointer names is readable through every node").allSatisfy(node -> assertThat(readable(node, pointed(nodeB, 1))).isTrue());
     }
 
+    @Test
+    @Order(9)
+    @Timeout(900)
+    void probeDisableRightAfterElection() {
+        for (int round = 0; round < 8; round++) {
+            startAFreshCluster();
+            cluster = EmberTestPorts.startedCluster(PORTS, this::threeNodes, START_BOUND);
+            awaitCondition("a leader is elected", LEADER_BUDGET_MS, () -> cluster.currentLeader().isPresent());
+            var leaderId = cluster.currentLeader().or("none");
+            var leaderNode = cluster.allNodes().stream().filter(node -> node.self().id().equals(leaderId)).findFirst().orElseThrow();
+            var t0 = System.currentTimeMillis();
+
+            for (int attempt = 0; attempt < 40; attempt++) {
+                var outcome = leaderNode.clusterTopologyManager()
+                                        .map(ctm -> ctm.setAutoHealEnabled(false, "probe").await(SAVE_BOUND).fold(Cause::message, _ -> "disabled"))
+                                        .or("no ctm");
+                System.out.printf("PROBE2939 round %d attempt %d +%d ms: %s%n", round, attempt, System.currentTimeMillis() - t0, outcome);
+                if (outcome.equals("disabled")) {
+                    break;
+                }
+                try { Thread.sleep(20); } catch (InterruptedException e) { return; }
+            }
+        }
+    }
+
     /// Arm b declares a replica Dead (the survivors then provision a replacement), which the arms before it would leave behind: it starts
     /// on a cluster of its own, as its v-2516 probe did. Run 1 on the shared cluster saw the replica declared Dead in 6 s and never a member
     /// again.
