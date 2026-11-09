@@ -71,6 +71,7 @@ class JwtSecurityValidator implements HttpAuthenticator {
     public Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy) {
         return switch (policy) {
             case SecurityPolicy.Public() -> success(SecurityContext.securityContext());
+            case SecurityPolicy.OptionalAuth() -> validateBearerTokenIfPresented(request);
             case SecurityPolicy.BearerTokenRequired() -> validateBearerToken(request);
             case SecurityPolicy.Authenticated() -> validateBearerToken(request);
             case SecurityPolicy.RoleRequired _ -> validateBearerToken(request);
@@ -83,6 +84,13 @@ class JwtSecurityValidator implements HttpAuthenticator {
     private Result<SecurityContext> validateBearerToken(HttpRequestContext request) {
         return extractToken(request.headers()).toResult(SecurityError.MISSING_BEARER_TOKEN)
                            .flatMap(this::validateToken);
+    }
+
+    /// #2946: a request presenting no token (by the same rule a required route applies) is anonymous; one presenting a
+    /// token is held to the full validation, so an invalid or expired token is refused rather than downgraded.
+    private Result<SecurityContext> validateBearerTokenIfPresented(HttpRequestContext request) {
+        return extractToken(request.headers()).map(this::validateToken)
+                           .or(() -> success(SecurityContext.securityContext()));
     }
 
     private Result<SecurityContext> validateToken(String token) {

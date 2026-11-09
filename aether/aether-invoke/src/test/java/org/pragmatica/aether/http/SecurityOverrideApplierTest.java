@@ -120,6 +120,47 @@ class SecurityOverrideApplierTest {
         }
 
         @Test
+        void applyOverrides_rejectsOptionalOverride_onUnspecifiedRoute_withStrengthenOnly() {
+            // #2946: `optional` serves an anonymous request just as `public` does, so on an undeclared route it
+            // weakens under every enforcing global mode and is refused the same way.
+            var routes = List.of(route("GET", "/api/v1/urls/", SecurityPolicy.unspecified()));
+            var overrides = SecurityOverrides.securityOverrides(
+                List.of(SecurityOverrides.Entry.entry("GET /api/v1/urls/*", "optional")),
+                SecurityOverridePolicy.STRENGTHEN_ONLY
+            );
+
+            var result = SecurityOverrideApplier.applyOverrides(routes, overrides);
+
+            assertThat(result.getFirst().security()).isInstanceOf(SecurityPolicy.Unspecified.class);
+        }
+
+        @Test
+        void applyOverrides_appliesOptionalOverride_overPublicRoute_withStrengthenOnly() {
+            var routes = List.of(route("GET", "/api/v1/urls/", SecurityPolicy.publicRoute()));
+            var overrides = SecurityOverrides.securityOverrides(
+                List.of(SecurityOverrides.Entry.entry("GET /api/v1/urls/*", "optional")),
+                SecurityOverridePolicy.STRENGTHEN_ONLY
+            );
+
+            var result = SecurityOverrideApplier.applyOverrides(routes, overrides);
+
+            assertThat(result.getFirst().security()).isInstanceOf(SecurityPolicy.OptionalAuth.class);
+        }
+
+        @Test
+        void applyOverrides_rejectsPublicOverride_overOptionalRoute_withStrengthenOnly() {
+            var routes = List.of(route("GET", "/api/v1/urls/", SecurityPolicy.optional()));
+            var overrides = SecurityOverrides.securityOverrides(
+                List.of(SecurityOverrides.Entry.entry("GET /api/v1/urls/*", "public")),
+                SecurityOverridePolicy.STRENGTHEN_ONLY
+            );
+
+            var result = SecurityOverrideApplier.applyOverrides(routes, overrides);
+
+            assertThat(result.getFirst().security()).isInstanceOf(SecurityPolicy.OptionalAuth.class);
+        }
+
+        @Test
         void applyOverrides_appliesAuthenticated_onUnspecifiedRoute_withStrengthenOnly() {
             // #866 review F1: refusing EVERY override on an undeclared route was a
             // privilege-escalation regression, not a conservative choice. The refused route stays

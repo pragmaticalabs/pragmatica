@@ -1342,7 +1342,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private static boolean requiresAuthentication(SecurityPolicy policy) {
-        return ! (policy instanceof SecurityPolicy.Public());
+        return ! (policy instanceof SecurityPolicy.Public || policy instanceof SecurityPolicy.OptionalAuth);
     }
 
     private static Result<SecurityContext> enforceRoleIfRequired(SecurityContext context, SecurityPolicy policy) {
