@@ -407,7 +407,8 @@ public sealed interface SliceRuntimeAssembly {
         // Silent-death fix: the data-path forwarder narrows candidates to currently-reachable nodes so
         // a hard-killed peer (QUIC still CONNECTED until eviction) is dropped from selection/retry long
         // before the forward timeout would otherwise burn. Membership-FSM unification (Wave D, consumer
-        // #2): reachability is now decided by the authoritative MembershipFsm.reachableMembers (counted
+        // #2): reachability is now decided by the authoritative MembershipFsm.forwardableMembers (#2936: reachable
+        // minus peers reporting quorum loss) over MembershipFsm.reachableMembers (counted
         // MEMBER + SUSPECT) rather than NTT.keepOnlyAccessible. The FSM is constructed later (membership
         // v2 wiring below), so the filter derefs the shared membershipFsmRef at request time; before the
         // FSM exists it degrades to identity (forward falls back to the connectedPeers-only behavior).
@@ -418,7 +419,7 @@ public sealed interface SliceRuntimeAssembly {
                                                                                                                        fsm,
                                                                                                                        clusterNode.network()
                                                                                                                                   .connectedPeers())
-                                                                                  : fsm.reachableMembers(candidates))
+                                                                                  : fsm.forwardableMembers(candidates))
                                                                       .or(candidates);
         // #275: the same narrowing for slice-to-slice invocation — a co-confirmed-DEAD node's endpoints
         // stay registered until the CDM's removal cleanup lands, and without this a new invocation

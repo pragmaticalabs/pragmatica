@@ -295,13 +295,23 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Piggyback byte budget for messages this node sends, from ITS OWN id length (see [PiggybackBuffer#piggybackBudgetFor]).
     private final int piggybackBudgetBytes;
 
+    /// The one gossiped STATE label (#2936): a node's own report that it cannot write to its quorum, present with
+    /// value [#QUORUM_LOST] while the report holds and absent otherwise. Unlike the identity labels below it changes
+    /// over a node's life, so it is ordered by the subject's incarnation: the subject bumps its incarnation on every
+    /// change ([#reportSelfQuorumLoss]) and a receiver takes it only from a STRICTLY newer update ([#withQuorumReport]).
+    private static final String LABEL_QUORUM = "quorum";
+    private static final String QUORUM_LOST = "lost";
+
     /// The only labels gossip carries: what core counting and the member descriptor read (`role`, `source`) plus `zone`,
     /// which feeds the anti-affinity placement hint (a decision, and a few bytes). Hostname, pool and instance type stay out.
     /// The full label map stays on ANNOUNCE and the QUIC Hello — an update with every label is several times
     /// larger and, at the default eight updates per message, would push EVERY probe past the datagram budget.
     private static final Set<String> GOSSIPED_LABEL_KEYS = Set.of(NodeInfo.LABEL_ROLE,
                                                                   NodeInfo.LABEL_SOURCE,
-                                                                  NodeInfo.LABEL_ZONE);
+                                                                  NodeInfo.LABEL_ZONE,
+                                                                  LABEL_QUORUM);
+    /// Serialises [#reportSelfQuorumLoss]: the label swap and its incarnation bump are one step.
+    private final Object selfQuorumReportLock = new Object();
 
     /// Boot-token registry (owner ruling, session 28: terminal removal) — shared with the QUIC
     /// transport via [#setBootTokens] so both layers hold ONE view of which process owns a NodeId.
@@ -2446,13 +2456,15 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// SWIM port minus `swimPortOffset` (inverse of [swimAddressFor]); prefer the kernel-resolved
     /// IP when present (DNS-free dial), else fall back to the address host string. The member's
     /// stored labels (role/source learned via ANNOUNCE) are hydrated into the reconstructed
-    /// `NodeInfo`; an empty label map yields an address-only `NodeInfo` exactly as before.
+    /// `NodeInfo`; an empty label map yields an address-only `NodeInfo` exactly as before. The quorum report (#2936)
+    /// is state, not identity, and stays out: `NodeInfo` equality includes labels, so carrying it would make one peer
+    /// two identities across a report change.
     private NodeInfo dialInfoFor(SwimMember member) {
         var swimAddr = member.address();
         var quicPort = swimAddr.getPort() - config.swimPortOffset();
         var host = Option.option(swimAddr.getAddress()).map(InetAddress::getHostAddress).or(swimAddr.getHostString());
 
-        return NodeInfo.nodeInfo(member.nodeId(), new NodeAddress(host, quicPort), member.labels());
+        return NodeInfo.nodeInfo(member.nodeId(), new NodeAddress(host, quicPort), withQuorumReport(member.labels(), Map.of()));
     }
 
     /// Send ANNOUNCE to all seeds every 500ms until this node is acknowledged by a peer or 60 attempts are exhausted.
@@ -2492,7 +2504,7 @@ public final class SwimProtocol implements SwimMessageHandler {
             joinAckReceived = false;
             selfIncarnation.updateAndGet(cur -> Math.max(cur, incarnation));
             selfBootToken.compareAndSet(0L, bootToken);
-            selfLabels = gossipLabels(self.labels());
+            selfLabels = withQuorumReport(gossipLabels(self.labels()), selfLabels);
             if (seeds.isEmpty()) {
                 return;
             }
@@ -3065,18 +3077,35 @@ public final class SwimProtocol implements SwimMessageHandler {
             return;
         }
 
+        var labels = update.incarnation() > existing.incarnation()
+                     ? withQuorumReport(resident.labels(), update.labels())
+                     : resident.labels();
         var updated = SwimMember.swimMember(update.nodeId(),
                                             update.state(),
                                             update.incarnation(),
                                             addressUnderPin(update,
                                                             Option.some(existing.address())),
-                                            resident.labels());
+                                            labels);
 
         if (!storeScopedMember(update.nodeId(), updated)) {
             return;
         }
 
         notifyStateChange(existing.state(), updated, accuser);
+        reemitHealthyOnQuorumReportChange(existing, resident, updated);
+    }
+
+    /// #2936: a quorum-report change carried by an ALIVE->ALIVE newer-incarnation update produces no state edge, so
+    /// [#notifyStateChange] emits nothing and the membership layer would never re-read the report — a node it held in
+    /// DEPARTING for reporting quorum loss would stay there after the report cleared. Re-emit `HealthyObserved` at the
+    /// new incarnation (direct, not edge-deduped: the SWIM health is unchanged) so the report change reaches it.
+    @Contract
+    private void reemitHealthyOnQuorumReportChange(SwimMember existing, SwimMember resident, SwimMember updated) {
+        if (existing.state() == MemberState.ALIVE && updated.state() == MemberState.ALIVE
+            && reportsQuorumLoss(resident.labels()) != reportsQuorumLoss(updated.labels())
+            && inMembershipScope(updated.nodeId())) {
+            deliverObservation(new SwimObservation.HealthyObserved(updated.nodeId(), updated.incarnation()));
+        }
     }
 
     /// First-non-blank-wins label adoption from gossip: a resident member with NO labels takes the
@@ -3252,6 +3281,21 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                                     member.address(),
                                                                     bootTokenOf(member.nodeId()),
                                                                     gossipLabels(member.labels())));
+    }
+
+    /// `labels` with its quorum report replaced by the one `source` carries (#2936): identity keys stay as they are,
+    /// the [#LABEL_QUORUM] key follows `source` (kept when present there, dropped when absent).
+    private static Map<String, String> withQuorumReport(Map<String, String> labels, Map<String, String> source) {
+        var merged = new HashMap<>(labels);
+
+        merged.remove(LABEL_QUORUM);
+        Option.option(source.get(LABEL_QUORUM)).onPresent(report -> merged.put(LABEL_QUORUM, report));
+
+        return Map.copyOf(merged);
+    }
+
+    private static boolean reportsQuorumLoss(Map<String, String> labels) {
+        return QUORUM_LOST.equals(labels.get(LABEL_QUORUM));
     }
 
     private static Map<String, String> gossipLabels(Map<String, String> labels) {
@@ -3754,6 +3798,58 @@ public final class SwimProtocol implements SwimMessageHandler {
     Option<Long> effectiveSuspicionWindowForTest(NodeId peer) {
         return option(suspicions.get(peer)).map(_ -> effectiveSuspicionWindowMs(peer,
                                                                                 config.suspectTimeout().millis()));
+    }
+
+    /// #2936: publish this node's own quorum-loss report on its SWIM self-ALIVE. A change swaps the gossiped
+    /// [#LABEL_QUORUM] label and advances the durable self-incarnation (atomic +1), so the new `Alive(self, k+1)`
+    /// out-ranks every relay of the old report and receivers adopt it ([#applyExistingMember] takes the report only
+    /// from a strictly newer incarnation). An unchanged report is a no-op: no bump, no gossip. Before `announceJoin`
+    /// seeds the incarnation the label is only stored, and the first self-ALIVE carries it.
+    public Unit reportSelfQuorumLoss(boolean lost) {
+        synchronized (selfQuorumReportLock) {
+            var next = withQuorumReport(selfLabels,
+                                        lost
+                                        ? Map.of(LABEL_QUORUM, QUORUM_LOST)
+                                        : Map.of());
+
+            if (next.equals(selfLabels)) {
+                return Unit.unit();
+            }
+
+            selfLabels = next;
+            advertiseQuorumReport(lost);
+        }
+
+        return Unit.unit();
+    }
+
+    @Contract
+    private void advertiseQuorumReport(boolean lost) {
+        if (selfIncarnation.get() == 0) {
+            return;
+        }
+
+        var bumped = selfIncarnation.incrementAndGet();
+
+        LOG.info("SWIM self quorum report (#2936): quorum {} — advancing self-incarnation to {}",
+                 lost
+                 ? "LOST"
+                 : "held",
+                 bumped);
+        addMemberUpdate(MembershipUpdate.membershipUpdate(selfId,
+                                                          MemberState.ALIVE,
+                                                          bumped,
+                                                          selfAddress,
+                                                          selfBootToken.get(),
+                                                          selfLabels));
+    }
+
+    /// #2936: whether `peer`'s latest gossiped self-report says it cannot write to its quorum. `false` for an unknown
+    /// peer and for a peer that never reported (an older node, a worker, a node that has not lost quorum).
+    public boolean reportsQuorumLoss(NodeId peer) {
+        return Option.option(members.get(peer))
+                     .map(member -> reportsQuorumLoss(member.labels()))
+                     .or(false);
     }
 
     /// This node's current durable self-incarnation (boot-seeded monotonic generation;

@@ -1104,6 +1104,77 @@ class QuorumLossDetectorTest {
     /// AFTER a check's entry latch and BEFORE `emitIntent`, so it is the observable that distinguishes
     /// "bailed at the entry" from "ran the whole check and was stopped at the last gate". Without it
     /// the entry latches are invisible to a test, because `emitIntent`'s latch masks their absence.
+    /// #2936 — the node's own quorum-loss REPORT (what it gossips so peers keep it out of their forward set and hold a
+    /// refuted drain): edge-published, undebounced, armed-gated, the OR of the count path and the consensus presence
+    /// path, and replayed to a late listener.
+    @Nested
+    class QuorumReport {
+        private final List<Boolean> reports = new CopyOnWriteArrayList<>();
+
+        @Test
+        void coldBoot_belowThreshold_reportsNothing() {
+            detector.setQuorumReportListener(reports::add);
+            members(2);
+            coreCount(5);
+
+            assertThat(detector.isBelowThreshold()).isTrue();
+            assertThat(reports).as("a never-armed node does not report quorum loss").containsExactly(false);
+        }
+
+        @Test
+        void armedThenBelow_reportsLostAtOnce_andRecoveryClearsIt() {
+            detector.setQuorumReportListener(reports::add);
+            members(5);
+            coreCount(5);
+            members(2);
+
+            assertThat(reports).as("reported on the edge, not after the split window").containsExactly(false, true);
+
+            members(5);
+            members(5);
+
+            assertThat(reports).as("cleared once on recovery; an unchanged state publishes nothing")
+                               .containsExactly(false, true, false);
+        }
+
+        @Test
+        void presenceLost_reportsLost_andPresenceBackClearsIt() {
+            detector.setQuorumReportListener(reports::add);
+            members(5);
+            coreCount(5);
+            detector.onQuorumPresence(false);
+            detector.onQuorumPresence(true);
+
+            assertThat(reports).containsExactly(false, true, false);
+        }
+
+        @Test
+        void bothSourcesLost_clearingOneKeepsTheReport() {
+            detector.setQuorumReportListener(reports::add);
+            members(5);
+            coreCount(5);
+            members(2);
+            detector.onQuorumPresence(false);
+            detector.onQuorumPresence(true);
+
+            assertThat(reports).as("still below threshold: the report holds").containsExactly(false, true);
+
+            members(5);
+
+            assertThat(reports).containsExactly(false, true, false);
+        }
+
+        @Test
+        void lateListener_receivesTheCurrentReport() {
+            members(5);
+            coreCount(5);
+            members(2);
+            detector.setQuorumReportListener(reports::add);
+
+            assertThat(reports).containsExactly(true);
+        }
+    }
+
     private static final class CountingCoConfirmation implements Supplier<QuorumCoConfirmation> {
         private final AtomicInteger samples = new AtomicInteger();
 

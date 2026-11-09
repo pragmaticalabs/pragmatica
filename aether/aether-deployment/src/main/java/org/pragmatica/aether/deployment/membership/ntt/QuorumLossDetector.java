@@ -129,6 +129,12 @@ public final class QuorumLossDetector {
     /// check that [`SharedScheduler`] has already dispatched to a virtual thread.
     private volatile boolean stopped;
     private volatile Consumer<QuorumLossIntent> listener = QuorumLossDetector::ignoreIntent;
+    /// #2936 — receives this node's own quorum-loss REPORT on every change: `true` while the detector is armed and
+    /// either below threshold or consensus-PASSIVE, `false` otherwise. Unlike [#listener] it is not debounced by the
+    /// split window: it says "cannot write to the quorum NOW", which peers use to keep this node out of their
+    /// forward set and to hold a refuted drain. Guarded by this object's monitor, like [#reportedLost].
+    private volatile Consumer<Boolean> reportListener = QuorumLossDetector::ignoreReport;
+    private boolean reportedLost;
     /// Membership co-confirmation supplier (Fix C, split-brain safety). When present, the firing
     /// check consults it to decide whether a STRICT-count quorum loss is a genuine partition or a
     /// stuck-promotion artifact: SUPPRESS the drain iff the EFFECTIVE quorum count (strict count +
@@ -234,6 +240,7 @@ public final class QuorumLossDetector {
             quorumPresenceLost = false;
             suppressing = false;
             cancelPresenceFuture();
+            publishReport();
 
             return;
         }
@@ -244,6 +251,7 @@ public final class QuorumLossDetector {
 
         quorumPresenceLost = true;
         schedulePresenceCheck(timeSource.nanoTime());
+        publishReport();
     }
 
     /// Register the consumer that will receive emitted [`QuorumLossIntent`]s. At E1 the
@@ -252,6 +260,14 @@ public final class QuorumLossDetector {
     @Contract
     public void setQuorumLossListener(Consumer<QuorumLossIntent> newListener) {
         listener = newListener;
+    }
+
+    /// Register the consumer of this node's own quorum-loss report (#2936, see [#reportListener]). It is called with
+    /// the CURRENT report at once, so a listener registered after the first edge still starts from the truth.
+    @Contract
+    public synchronized void setQuorumReportListener(Consumer<Boolean> newListener) {
+        reportListener = newListener;
+        newListener.accept(reportedLost);
     }
 
     /// Inject the membership co-confirmation supplier (Fix C). Sampled at firing time (NOT at
@@ -356,6 +372,20 @@ public final class QuorumLossDetector {
         }
 
         reconcileWindow(nowBelow, now);
+        publishReport();
+    }
+
+    /// Push the quorum-loss report to [#reportListener] when it changed (#2936). A never-armed node reports nothing:
+    /// at cold boot every node is below threshold, and reporting it would make peers hold each other out while the
+    /// cluster forms [taste, marked: mirrors the drain's own arm gate]. Callers hold this object's monitor.
+    @Contract
+    private void publishReport() {
+        var lost = armed && (belowThresholdSinceNanos.get() != Long.MIN_VALUE || quorumPresenceLost);
+
+        if (lost != reportedLost) {
+            reportedLost = lost;
+            reportListener.accept(lost);
+        }
     }
 
     private synchronized void reconcileWindow(boolean nowBelow, long now) {
@@ -583,6 +613,10 @@ public final class QuorumLossDetector {
     }
 
     @Contract
+    private static void ignoreReport(boolean lost) {
+    // intentionally empty — default report listener prior to wiring
+    }
+
     private static void ignoreIntent(QuorumLossIntent intent) {
     // intentionally empty — default listener prior to wiring
     }

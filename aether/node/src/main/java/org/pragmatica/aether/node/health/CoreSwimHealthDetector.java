@@ -80,6 +80,23 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private volatile Option<BootTokens> bootTokens = Option.none();
     private volatile Option<OperatorWarningSink> operatorWarningSink = Option.none();
     private volatile List<NodeInfo> peerDirectory = List.of();
+    /// #2936: this node's last quorum-loss report, replayed onto a protocol created after it was made.
+    private volatile boolean selfQuorumLost;
+
+    /// #2936: publish this node's own quorum-loss report on its SWIM self-ALIVE (see
+    /// `SwimProtocol.reportSelfQuorumLoss`). Kept and replayed when the protocol starts later.
+    public Unit reportSelfQuorumLoss(boolean lost) {
+        selfQuorumLost = lost;
+        protocol().onPresent(protocol -> protocol.reportSelfQuorumLoss(lost));
+
+        return Unit.unit();
+    }
+
+    /// #2936: whether `peer` reports, over SWIM, that it cannot write to its quorum. `false` before SWIM starts.
+    public boolean reportsQuorumLoss(NodeId peer) {
+        return protocol().map(protocol -> protocol.reportsQuorumLoss(peer))
+                         .or(false);
+    }
 
     public Unit setMembershipEligibility(Predicate<NodeId> eligibility) {
         membershipEligibility = eligibility;
@@ -809,6 +826,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         pendingObservationListeners.forEach(protocol::addObservationListener);
         pendingTransportObservationEmitters.forEach(protocol::addTransportObservationEmitter);
         pendingGossipChannels.forEach(protocol::registerGossipChannel);
+        protocol.reportSelfQuorumLoss(selfQuorumLost);
         seedMembers(protocol);
         seedPeerDirectory(protocol);
         pendingAnnounceJoin.onPresent(call -> protocol.announceJoin(call.self(),
