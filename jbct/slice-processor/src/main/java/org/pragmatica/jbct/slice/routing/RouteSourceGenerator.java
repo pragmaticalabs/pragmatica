@@ -314,14 +314,16 @@ public class RouteSourceGenerator {
     // encoded from its runtime value, so it gets only its element codecs.
     private static Option<String> addJsonRoot(JsonCodecGenerator json, JsonRoot root) {
         return root.body()
-               ? json.addBodyRoot(root.type())
+               ? json.addBodyRoot(root.type(), root.requestBound())
                : json.addRoot(root.type());
     }
 
-    /// A JSON route root and whether it is the request body (decoded by declared type) or the response.
-    record JsonRoot(TypeMirror type, boolean body) {
-        static JsonRoot jsonRoot(TypeMirror type, boolean body) {
-            return new JsonRoot(type, body);
+    /// A JSON route root, whether it is the request body (decoded by declared type) or the response, and, for a body,
+    /// the names the route binds from its path and query: the merged constructor fills those components from the
+    /// request, so the body codec must not require them (#2957).
+    record JsonRoot(TypeMirror type, boolean body, Set<String> requestBound) {
+        static JsonRoot jsonRoot(TypeMirror type, boolean body, Set<String> requestBound) {
+            return new JsonRoot(type, body, requestBound);
         }
     }
 
@@ -336,11 +338,13 @@ public class RouteSourceGenerator {
         };
 
         if (jsonBody) {
-            requestBodyType(method).onPresent(type -> roots.add(JsonRoot.jsonRoot(type, true)));
+            requestBodyType(method).onPresent(type -> roots.add(JsonRoot.jsonRoot(type,
+                                                                                  true,
+                                                                                  pathQueryParamNames(routeDsl))));
         }
 
         if (routeDsl.produces().isJson() && !isUnit(method.responseType())) {
-            roots.add(JsonRoot.jsonRoot(method.responseType(), false));
+            roots.add(JsonRoot.jsonRoot(method.responseType(), false, Set.of()));
         }
 
         return roots;

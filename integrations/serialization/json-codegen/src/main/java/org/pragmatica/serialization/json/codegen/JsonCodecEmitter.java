@@ -70,11 +70,19 @@ final class JsonCodecEmitter {
     private static final String ENTRY_POINT_SUFFIX = "JsonCodec";
 
     private final JsonTypeAnalyzer analyzer;
+    private final Map<String, Set<String>> requestBound;
     private final Map<String, String> names = new HashMap<>();
     private final Set<String> taken = new HashSet<>();
 
     JsonCodecEmitter(JsonTypeAnalyzer analyzer) {
+        this(analyzer, Map.of());
+    }
+
+    /// `requestBound` names, per record (by qualified name), the components a route fills from its path or query
+    /// (#2957): the record's reader does not require them and skips a body member of the same name unread.
+    JsonCodecEmitter(JsonTypeAnalyzer analyzer, Map<String, Set<String>> requestBound) {
         this.analyzer = analyzer;
+        this.requestBound = requestBound;
     }
 
     /// The holder `holderName`, marked as generated for `generatedFor` (`JsonCodecGenerator.generatedForMarker`).
@@ -351,7 +359,7 @@ final class JsonCodecEmitter {
         var lines = new ArrayList<String>();
 
         lines.add("    interface " + name + " {");
-        lines.addAll(objectConstants(definition));
+        lines.addAll(objectConstants(definition, requestBound(definition)));
         lines.add("        " + RT
                  + "JsonTypeCodec<" + type
                  + "> CODEC = " + RT
@@ -394,7 +402,7 @@ final class JsonCodecEmitter {
         var lines = new ArrayList<String>();
 
         lines.add("    interface " + name + " {");
-        lines.addAll(objectConstants(definition));
+        lines.addAll(objectConstants(definition, requestBound(definition)));
         lines.add("        " + RT
                  + "JsonTypeCodec<" + type
                  + "> CODEC = " + RT
@@ -425,14 +433,20 @@ final class JsonCodecEmitter {
         return lines;
     }
 
-    private static List<String> objectConstants(JsonType.RecordDefinition definition) {
+    // The components of `definition` a route fills from its path or query, none for most records.
+    private Set<String> requestBound(JsonType.RecordDefinition definition) {
+        return requestBound.getOrDefault(definition.element().getQualifiedName().toString(),
+                                         Set.of());
+    }
+
+    private static List<String> objectConstants(JsonType.RecordDefinition definition, Set<String> requestBound) {
         var components = definition.components();
         var nameList = String.join(", ",
                                    components.stream().map(c -> "\"" + c.wireName() + "\"").toList());
         var required = 0L;
 
         for (int i = 0; i < components.size(); i++) {
-            if (!isOptionalMember(components.get(i).type())) {
+            if (!isOptionalMember(components.get(i).type()) && !requestBound.contains(components.get(i).name())) {
                 required |= 1L << i;
             }
         }
@@ -474,6 +488,7 @@ final class JsonCodecEmitter {
     private List<String> objectReader(JsonType.RecordDefinition definition, String method) {
         var type = typeName(definition.element());
         var components = definition.components();
+        var bound = requestBound(definition);
         var lines = new ArrayList<String>();
 
         lines.add("        static " + type + " " + method + "(" + SPI + "JsonReader in) {");
@@ -503,10 +518,12 @@ final class JsonCodecEmitter {
         for (int i = 0; i < components.size(); i++) {
             var component = components.get(i);
 
-            lines.add("                    case " + i
-                     + " -> f_" + component.name()
-                     + " = " + readField(component, i)
-                     + ";");
+            lines.add(bound.contains(component.name())
+                      ? "                    case " + i + " -> in.skipValue();"
+                      : "                    case " + i
+                       + " -> f_" + component.name()
+                       + " = " + readField(component, i)
+                       + ";");
         }
 
         lines.add("                    default -> unknown = in.skipUnknown(unknown);");
@@ -534,8 +551,9 @@ final class JsonCodecEmitter {
         lines.add("            }");
         var args = String.join(", ",
                                components.stream().map(c -> "f_" + c.name()).toList());
-
-        lines.add(definition.factory().isEmpty()
+        // A request-bound component is not in the body, so the factory cannot judge this partial value: the route
+        // builds the record again from the request and the body, and validates it then.
+        lines.add(definition.factory().isEmpty() || !bound.isEmpty()
                   ? "            return new " + type + "(" + args + ");"
                   : "            return in.accept(" + type
                    + "." + definition.factoryName()
