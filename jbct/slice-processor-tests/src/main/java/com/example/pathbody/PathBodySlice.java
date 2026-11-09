@@ -6,8 +6,9 @@ package com.example.pathbody;
 import java.util.List;
 
 import org.pragmatica.aether.slice.annotation.Slice;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+
+import static org.pragmatica.lang.Option.none;
 
 
 /// Test slice for #2957: routes that merge path parameters with a JSON body, in the Conduit shapes, plus records whose
@@ -35,81 +36,81 @@ public interface PathBodySlice {
         return new PathBodySlice() {
             @Override
             public Promise<Echo> addComment(AddComment request) {
-                return echo("slug=" + request.slug() + ",body=" + request.comment().body().or("-"));
+                return Promise.success(echo("slug=" + request.slug() + ",body=" + request.comment().body().or("-")));
             }
 
             @Override
             public Promise<Echo> updateArticle(UpdateArticle request) {
-                return echo("slug=" + request.slug()
-                           + ",title=" + request.article()
-                                                .title()
-                                                .applyTo(Option.none())
-                                                .or("-"));
+                return Promise.success(echo("slug=" + request.slug()
+                                           + ",title=" + request.article()
+                                                                .title()
+                                                                .applyTo(none())
+                                                                .or("-")));
             }
 
             @Override
             public Promise<Echo> renameArticle(RenameArticle request) {
-                return echo("slug=" + request.slug() + ",title=" + request.title());
+                return Promise.success(echo("slug=" + request.slug() + ",title=" + request.title()));
             }
 
             @Override
             public Promise<Echo> mergedFirst(MergedFirst request) {
-                return echo("id=" + request.id() + ",text=" + request.text());
+                return Promise.success(echo("id=" + request.id() + ",text=" + request.text()));
             }
 
             @Override
             public Promise<Echo> mergedFirstPlain(MergedFirst request) {
-                return echo("id=" + request.id() + ",text=" + request.text());
+                return Promise.success(echo("id=" + request.id() + ",text=" + request.text()));
             }
 
             @Override
             public Promise<Echo> plainFirstPlain(PlainFirst request) {
-                return echo("id=" + request.id() + ",text=" + request.text());
+                return Promise.success(echo("id=" + request.id() + ",text=" + request.text()));
             }
 
             @Override
             public Promise<Echo> plainFirst(PlainFirst request) {
-                return echo("id=" + request.id() + ",text=" + request.text());
+                return Promise.success(echo("id=" + request.id() + ",text=" + request.text()));
             }
 
             @Override
             public Promise<Echo> nested(NestedNote request) {
-                return echo("id=" + request.id() + ",text=" + request.text());
+                return Promise.success(echo("id=" + request.id() + ",text=" + request.text()));
             }
 
             @Override
             public Promise<Echo> envelope(Envelope request) {
-                return echo("id=" + request.inner().id() + ",text=" + request.inner().text());
+                return Promise.success(echo("id=" + request.inner().id() + ",text=" + request.inner().text()));
             }
 
             @Override
             public Promise<Echo> optNote(OptNote request) {
-                return echo("id=" + request.id());
+                return Promise.success(echo("id=" + request.id()));
             }
 
             @Override
             public Promise<Echo> patchNote(PatchNote request) {
-                return echo("id=" + request.id());
+                return Promise.success(echo("id=" + request.id()));
             }
 
             @Override
             public Promise<Echo> listNote(ListNote request) {
-                return echo("id=" + request.id());
+                return Promise.success(echo("id=" + request.id()));
             }
 
             @Override
             public Promise<Echo> mapNote(MapNote request) {
-                return echo("id=" + request.id());
+                return Promise.success(echo("id=" + request.id()));
             }
 
             @Override
             public Promise<Echo> listedNote(ListedNote request) {
-                return echo("id=" + request.id());
+                return Promise.success(echo("id=" + request.id()));
             }
 
             @Override
             public Promise<Echo> listedNotes(List<ListedNote> request) {
-                return echo("ids=" + request.stream().map(ListedNote::id).toList());
+                return Promise.success(echo("ids=" + request.stream().map(ListedNote::id).toList()));
             }
 
             @Override
@@ -119,7 +120,7 @@ public interface PathBodySlice {
         };
     }
 
-    private static Promise<Echo> echo(String detail) {
-        return Promise.success(new Echo(detail));
+    private static Echo echo(String detail) {
+        return new Echo(detail);
     }
 }
