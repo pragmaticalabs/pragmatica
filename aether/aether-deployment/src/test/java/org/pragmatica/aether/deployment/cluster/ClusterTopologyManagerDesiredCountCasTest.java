@@ -155,6 +155,10 @@ class ClusterTopologyManagerDesiredCountCasTest {
         assertThat(harness.committed().get().desiredCountFor("eu", "core")).isEqualTo(5);
     }
 
+    private static long elapsedMillis(long startedNanos) {
+        return (System.nanoTime() - startedNanos) / 1_000_000L;
+    }
+
     /// The property stage 2 created the need for: two INDEPENDENT edits — our `eu/core=5` racing a
     /// competitor's `us/worker=9` — must BOTH survive. Pre-fence, the loser was silently discarded;
     /// with the fence + retry, the loser recomputes on top of the winner and lands.
@@ -162,6 +166,7 @@ class ClusterTopologyManagerDesiredCountCasTest {
     void applyDesiredCount_losesOnce_retriesFromFreshValue_bothWritesSurvive() {
         var competitor = base().withDesiredCount("us", "worker", 9);
         var harness = Harness.harness(base());
+        var started = System.nanoTime();
 
         var result = ClusterTopologyManagerRecord.applyDesiredCount(harness.reader(),
                                                                     harness.writer(harness.losesFirstTo(competitor)),
@@ -173,6 +178,7 @@ class ClusterTopologyManagerDesiredCountCasTest {
 
         assertThat(result.isSuccess()).isTrue();
         assertThat(harness.applies().get()).isEqualTo(2);
+        assertThat(elapsedMillis(started)).as("#2944: the retry pauses before re-reading").isGreaterThanOrEqualTo(40L);
 
         var settled = harness.committed().get();
         assertThat(settled.desiredCountFor("eu", "core")).as("our edit must land on retry").isEqualTo(5);
@@ -184,6 +190,7 @@ class ClusterTopologyManagerDesiredCountCasTest {
     @Test
     void applyDesiredCount_losesEveryTime_failsAfterBoundedAttempts() {
         var harness = Harness.harness(base());
+        var started = System.nanoTime();
 
         var result = ClusterTopologyManagerRecord.applyDesiredCount(harness.reader(),
                                                                     harness.writer(harness.alwaysLoses()),
@@ -195,6 +202,7 @@ class ClusterTopologyManagerDesiredCountCasTest {
 
         assertThat(result.isFailure()).isTrue();
         assertThat(harness.applies().get()).isEqualTo(ClusterTopologyManagerRecord.DESIRED_COUNT_CAS_ATTEMPTS);
+        assertThat(elapsedMillis(started)).as("#2944: pauses of 50 and 100 ms between the three attempts").isGreaterThanOrEqualTo(140L);
         result.onFailure(cause -> assertThat(cause.message()).contains("Hierarchy state changed"));
     }
 

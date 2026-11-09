@@ -7,6 +7,8 @@ package org.pragmatica.aether.api.routes;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.pragmatica.aether.deployment.cluster.HierarchyStateWriter;
+import org.pragmatica.aether.slice.kvstore.SliceTargetFence.SliceTargetFenceError;
 import org.pragmatica.http.ContentType;
 import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
@@ -49,5 +51,75 @@ class ProblemResponsesChainTest {
         }, failure, "/x", "req-1");
 
         assertThat(body.get()).contains("top").doesNotContain(SENTINEL);
+    }
+
+    /// #2944: a fence CONFLICT that outlasted the leader-side retry reaches the wire as 409 with the retry hint, not as 500.
+    @Test
+    void writeProblem_ofFenceConflictRefusal_answers409WithRetryHint() {
+        var status = new AtomicReference<HttpStatus>();
+        var body = new AtomicReference<String>();
+
+        ProblemResponses.writeProblem(new ResponseWriter() {
+            @Override
+            public void write(HttpStatus responseStatus, byte[] bytes, ContentType contentType) {
+                status.set(responseStatus);
+                body.set(new String(bytes, StandardCharsets.UTF_8));
+            }
+
+            @Override
+            public ResponseWriter header(String name, String value) {
+                return this;
+            }
+        }, HierarchyStateWriter.Refusal.CONFLICT, "/api/cluster/topology/auto-heal/disable", "req-2");
+
+        assertThat(status.get()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(body.get()).contains("retry the request");
+    }
+
+    /// #2944: an exhausted ab-test / rolling-update fence write used to reach the wire as a 500; it is a 409 carrying the retry hint.
+    @Test
+    void writeProblem_ofExhaustedSliceTargetFence_answers409WithRetryHint() {
+        var status = new AtomicReference<HttpStatus>();
+        var body = new AtomicReference<String>();
+
+        ProblemResponses.writeProblem(new ResponseWriter() {
+            @Override
+            public void write(HttpStatus responseStatus, byte[] bytes, ContentType contentType) {
+                status.set(responseStatus);
+                body.set(new String(bytes, StandardCharsets.UTF_8));
+            }
+
+            @Override
+            public ResponseWriter header(String name, String value) {
+                return this;
+            }
+        }, new SliceTargetFenceError.Contended("ab-test-conclude t1", 6), "/api/ab-test/t1/conclude", "req-3");
+
+        assertThat(status.get()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(body.get()).contains("retry the request");
+    }
+
+    /// #2964: an A/B lifecycle write commits the test's state before the fence write, so its refusal is a 409 whose body does NOT say
+    /// "retry the request" (the phrase the CLI retries a 409 on), while the single-transaction writers' refusal still does.
+    @Test
+    void writeProblem_ofAbTestFenceRefusal_answers409WithoutTheRetryHint() {
+        var status = new AtomicReference<HttpStatus>();
+        var body = new AtomicReference<String>();
+
+        ProblemResponses.writeProblem(new ResponseWriter() {
+            @Override
+            public void write(HttpStatus responseStatus, byte[] bytes, ContentType contentType) {
+                status.set(responseStatus);
+                body.set(new String(bytes, StandardCharsets.UTF_8));
+            }
+
+            @Override
+            public ResponseWriter header(String name, String value) {
+                return this;
+            }
+        }, new SliceTargetFenceError.ContendedAfterStateChange("ab-test-conclude t1", 6, "CONCLUDING"), "/api/ab-test/t1/conclude", "req-4");
+
+        assertThat(status.get()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(body.get()).contains("CONCLUDING").doesNotContain("retry the request");
     }
 }

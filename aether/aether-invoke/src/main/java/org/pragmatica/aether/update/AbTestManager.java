@@ -294,6 +294,7 @@ public interface AbTestManager {
                                                clusterNode::apply,
                                                () -> targetTransaction(test.artifactBase(),
                                                                        current -> variantTarget(current, version)))
+                                       .mapError(cause -> committedStateRefusal(cause, AbTestState.DEPLOYING_VARIANTS))
                                        .timeout(kvOperationTimeout);
             }
 
@@ -419,6 +420,7 @@ public interface AbTestManager {
                                                clusterNode::apply,
                                                () -> targetTransaction(test.artifactBase(),
                                                                        current -> concludedTarget(current, winnerVersion)))
+                                       .mapError(cause -> committedStateRefusal(cause, AbTestState.CONCLUDING))
                                        .timeout(kvOperationTimeout)
                                        .flatMap(_ -> persistAndTransition(test, AbTestState.COMPLETED));
             }
@@ -450,10 +452,23 @@ public interface AbTestManager {
                                                () -> targetTransaction(test.artifactBase(),
                                                                        current -> concludedTarget(current,
                                                                                                   test.baselineVersion())))
+                                       .mapError(cause -> committedStateRefusal(cause, AbTestState.ROLLING_BACK))
                                        .timeout(kvOperationTimeout)
                                        .replaceResult(result -> result.fold(cause -> nothingToRestore(test, cause),
                                                                             Result::success))
                                        .flatMap(_ -> persistAndTransition(test, AbTestState.ROLLED_BACK));
+            }
+
+            /// The three lifecycle writes commit the test's next state BEFORE the fenced write (#2964), so a contended refusal leaves the test in
+            /// `state` and repeating the request is not safe: the refusal is re-labelled without the "retry the request" hint the CLI retries on.
+            /// Every other failure passes through unchanged.
+            private static Cause committedStateRefusal(Cause cause, AbTestState state) {
+                return switch (cause) {
+                    case SliceTargetFenceError.Contended contended -> new SliceTargetFenceError.ContendedAfterStateChange(contended.write(),
+                                                                                                                          contended.submissions(),
+                                                                                                                          state.name());
+                    default -> cause;
+                };
             }
 
             /// FER (degrade forward): a rollback whose target, or the target's owning blueprint, is no longer committed has nothing to

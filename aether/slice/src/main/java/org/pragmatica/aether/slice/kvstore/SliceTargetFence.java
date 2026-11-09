@@ -111,7 +111,20 @@ public sealed interface SliceTargetFence {
             public String message() {
                 return "Slice-target write " + write
                      + " was refused " + submissions
-                     + " times by concurrent changes to the target or its blueprint and was NOT written";
+                     + " times by concurrent changes to the target or its blueprint and was NOT written; retry the request";
+            }
+        }
+
+        /// As [Contended], for a writer that committed a state of its own BEFORE the fenced write (the A/B test lifecycle): the slice target
+        /// was not written, but the writer's state was, so the request is NOT safe to repeat and the message carries no retry hint (the
+        /// CLI retries only a refusal that says "retry the request"). #2964 tracks making those writers retry-safe.
+        record ContendedAfterStateChange(String write, int submissions, String state) implements SliceTargetFenceError {
+            @Override
+            public String message() {
+                return "Slice-target write " + write
+                     + " was refused " + submissions
+                     + " times by concurrent changes to the target or its blueprint and was NOT written; the A/B test is now in state " + state
+                     + ": inspect it, then roll it back or conclude it";
             }
         }
     }

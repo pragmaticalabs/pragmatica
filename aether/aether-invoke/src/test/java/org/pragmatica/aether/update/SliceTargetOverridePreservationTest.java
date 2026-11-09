@@ -335,6 +335,17 @@ class SliceTargetOverridePreservationTest {
         return commands.stream().map(SliceTargetOverridePreservationTest::acceptedResult).toList();
     }
 
+    /// The results of an apply in which every transaction was refused by the fence.
+    static List<Object> refusedResults(List<KVCommand<AetherKey>> commands) {
+        return commands.stream().map(SliceTargetOverridePreservationTest::refusedResult).toList();
+    }
+
+    private static Object refusedResult(KVCommand<AetherKey> command) {
+        return command instanceof KVCommand.LeaderTransaction<?, ?> transaction
+               ? new KVCommand.TransactionResult(transaction.transactionId(), false)
+               : Unit.unit();
+    }
+
     private static Object acceptedResult(KVCommand<AetherKey> command) {
         return command instanceof KVCommand.LeaderTransaction<?, ?> transaction
                ? new KVCommand.TransactionResult(transaction.transactionId(), true)
@@ -360,6 +371,8 @@ class SliceTargetOverridePreservationTest {
     static final class CapturingRabiaNode implements RabiaNode<KVCommand<AetherKey>> {
         private final NodeId self;
         final List<KVCommand<AetherKey>> appliedCommands = new CopyOnWriteArrayList<>();
+        /// When set, every leader transaction is answered as refused by the fence (a concurrent change), as the applier does.
+        volatile boolean refuseTransactions;
 
         CapturingRabiaNode(NodeId self) {
             this.self = self;
@@ -390,7 +403,9 @@ class SliceTargetOverridePreservationTest {
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
             appliedCommands.addAll(commands);
 
-            return Promise.success((List<R>) acceptedResults(commands));
+            return Promise.success((List<R>) (refuseTransactions
+                                              ? refusedResults(commands)
+                                              : acceptedResults(commands)));
         }
 
         @Override

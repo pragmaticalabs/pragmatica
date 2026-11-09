@@ -11,6 +11,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.slice.kvstore.SliceTargetFence.SliceTargetFenceError;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
@@ -167,6 +168,9 @@ public final class ManagementStatus {
                                                                      Listing.listing(ROUTES
                                                                                     + "ClusterConfigRoutes$UpgradeError$AlreadyAtVersion",
                                                                                      CONFLICT),
+                                                                     Listing.listing("org.pragmatica.aether.deployment.cluster.HierarchyStateWriter$Refusal",
+                                                                                     CONFLICT,
+                                                                                     "CONFLICT"),
                                                                      Listing.listing(API
                                                                                     + "AlertForwarder$AlertForwarderError$WebhookError",
                                                                                      HttpStatus.BAD_GATEWAY))
@@ -187,6 +191,9 @@ public final class ManagementStatus {
             case HttpStatusAware aware -> some(aware.httpStatus());
             case ParameterError _ -> some(HttpStatus.BAD_REQUEST);
             case StreamError error -> some(StreamErrorStatus.statusOf(error));
+            // #2944: a fenced slice-target write refused (ab-test, rolling update, scale) is a state the request lost to (409), or an election (503).
+            case SliceTargetFenceError.NoCommittedLeader _ -> some(HttpStatus.SERVICE_UNAVAILABLE);
+            case SliceTargetFenceError _ -> some(HttpStatus.CONFLICT);
             case Causes.CompositeCause composite -> compositeStatus(composite);
             default -> option(CENTRAL.get(centralKey(cause)));
         };

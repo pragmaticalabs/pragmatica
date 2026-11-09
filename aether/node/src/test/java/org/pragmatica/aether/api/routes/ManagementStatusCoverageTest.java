@@ -5,7 +5,10 @@
 package org.pragmatica.aether.api.routes;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.artifact.ArtifactBase;
+import org.pragmatica.aether.slice.kvstore.SliceTargetFence.SliceTargetFenceError;
 import org.pragmatica.aether.stream.StreamError;
+import org.pragmatica.aether.deployment.cluster.HierarchyStateWriter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
@@ -150,7 +153,8 @@ class ManagementStatusCoverageTest {
     /// `HttpStatusAware`.
     @Test
     void centralTable_listsExactlyTheTypesThatDoNotStateTheirOwnStatus() throws Exception {
-        var expected = new java.util.TreeSet<>(List.of("org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator$CoordinatorError#NOT_LEADER"));
+        var expected = new java.util.TreeSet<>(List.of("org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator$CoordinatorError#NOT_LEADER",
+                                                                    "org.pragmatica.aether.deployment.cluster.HierarchyStateWriter$Refusal#CONFLICT"));
 
         for (var type : causeTypes()) {
             if (!HttpStatusAware.class.isAssignableFrom(type)) {
@@ -187,6 +191,28 @@ class ManagementStatusCoverageTest {
     @Test
     void coordinatorNotLeader_answers409() {
         assertThat(ManagementStatus.statusOf(ConsumerGroupCoordinator.CoordinatorError.NOT_LEADER)).isEqualTo(HttpStatus.CONFLICT);
+    }
+
+    /// #2944: the leader-side fence refusing a write as a transient conflict is a retryable state conflict, not a server fault; the other
+    /// refusal keeps its prior (unclassified) status.
+    @Test
+    void fenceConflictRefusal_answers409_andOtherRefusalKeepsItsStatus() {
+        assertThat(ManagementStatus.statusOf(HierarchyStateWriter.Refusal.CONFLICT)).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(ManagementStatus.statusOf(HierarchyStateWriter.Refusal.INACTIVE)).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+        assertThat(HierarchyStateWriter.Refusal.CONFLICT.message()).contains("retry");
+    }
+
+    /// #2944: a fenced slice-target write refused (ab-test, rolling update, scale) reaches the funnel raw: every refusal is a 409 (the request lost to a
+    /// state of the cluster), except an election in progress (503). Contention carries the retry hint the CLI retries on.
+    @Test
+    void sliceTargetFenceRefusals_answer409_andAnElectionAnswers503() {
+        var base = ArtifactBase.artifactBase("org.example:slice").unwrap();
+
+        assertThat(ManagementStatus.statusOf(new SliceTargetFenceError.Contended("ab-test-conclude t1", 6))).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(ManagementStatus.statusOf(new SliceTargetFenceError.TargetMoved(base))).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(ManagementStatus.statusOf(new SliceTargetFenceError.TargetAbsent(base))).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(ManagementStatus.statusOf(SliceTargetFenceError.NoCommittedLeader.INSTANCE)).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(new SliceTargetFenceError.Contended("ab-test-conclude t1", 6).message()).contains("retry the request");
     }
 
     @Test

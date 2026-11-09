@@ -2137,6 +2137,7 @@ class NodeReplacementRealRegistryReapTest {
     }
 
     /// A clear that lost to a newer mark (a later incarnation's, a different value) deletes nothing: the delete carries the exact value read.
+    /// The fence's refusal is reported as the conflict it is (#2944), not as `Changed`.
     @Test
     void clearUnconfirmed_doesNotDeleteAMarkThatChangedUnderIt() {
         absentMark();
@@ -2146,7 +2147,7 @@ class NodeReplacementRealRegistryReapTest {
         ctmUnderTest.setUnconfirmedMarks(() -> read);
         replaceMark(OLD, read.get(OLD), newer);
 
-        assertThat(refusalOf(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1"))).isInstanceOf(ClusterTopologyManager.UnconfirmedClearRefusal.Changed.class);
+        assertThat(refusalOf(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1"))).isInstanceOf(ClusterTopologyManager.UnconfirmedClearRefusal.Conflicted.class);
         assertThat(persistedMark(OLD)).as("the newer mark survives").isEqualTo(Option.some(newer));
         settle();
         assertThat(anyCleared()).isFalse();
