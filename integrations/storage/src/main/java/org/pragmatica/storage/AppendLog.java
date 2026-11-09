@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
@@ -299,6 +300,27 @@ public final class AppendLog implements AutoCloseable {
                : Result.success(LogExtent.EMPTY);
     }
 
+    /// Up to `maxRecords` records of the log at `file` with offsets at or above `fromOffset`, in file order (which the order
+    /// rule makes offset order, [WalError.OffsetRegression]), READ-ONLY as [#inspect] (#1759, I-27): nothing is opened,
+    /// recovered or cut. The scan starts at byte `startPosition`, the [RangePage#endPosition] of an earlier page of the same
+    /// file, or `0`; the caller checks that a page read from a remembered position begins where it expects.
+    ///
+    /// A torn FINAL frame -- a header or a payload cut short by the end of the file, the normal outcome of a crash -- ends the
+    /// log (#1759, CTO A2): the intact prefix is the page, as [#replay] recovers it. A frame that fits in the file but fails
+    /// validation (a CRC mismatch, a negative length) is damage inside the log: the scan fails with [WalError.LogDamaged]
+    /// rather than return the valid prefix as if it were the log's end. A length field damaged to run past the end of the
+    /// file cannot be told from a torn payload and ends the log the same way. A log that was never created holds nothing: an
+    /// empty page. Same validity rules and the same fixed
+    /// [#REPLAY_BUFFER_BYTES] buffer as [#replay]; only delivered payloads are allocated.
+    public static Result<RangePage> readRange(Path file, long fromOffset, int maxRecords, long startPosition) {
+        return Files.exists(file)
+               ? Result.lift(t -> new FileError.ReadFailed(file,
+                                                           String.valueOf(t.getMessage())),
+                             () -> rangeScan(file, fromOffset, maxRecords, startPosition))
+                       .flatMap(scan -> scan)
+               : Result.success(RangePage.EMPTY);
+    }
+
     static final int INSPECT_BUFFER_BYTES = 64 * 1024;
     /// The [#replay] scan buffer. [guess: the size of the inspect buffer; nothing measured it]
     static final int REPLAY_BUFFER_BYTES = 64 * 1024;
@@ -569,10 +591,10 @@ public final class AppendLog implements AutoCloseable {
              Long.MIN_VALUE,
              record -> {
                  if (open[0] && record.offset() <= keepThrough) {
-                 holder[0] = new ScanResult(buf.position(), record.offset());
-             } else {
-                 open[0] = false;
-             }
+                     holder[0] = new ScanResult(buf.position(), record.offset());
+                 } else {
+                     open[0] = false;
+                 }
              });
 
         return holder[0];
@@ -1188,6 +1210,61 @@ public final class AppendLog implements AutoCloseable {
         return unit();
     }
 
+    /// The scan of [#readRange]. Imperative I/O leaf, as [#replayScan]; its one refusal is returned, not thrown.
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<RangePage> rangeScan(Path file, long fromOffset, int maxRecords, long startPosition) throws IOException {
+        var chunk = new byte[REPLAY_BUFFER_BYTES];
+        var window = ByteBuffer.wrap(chunk);
+        var header = ByteBuffer.wrap(chunk, 0, HEADER_BYTES).order(ByteOrder.BIG_ENDIAN);
+        var records = new ArrayList<WalRecord>();
+        var position = startPosition;
+
+        try (var channel = FileChannel.open(file, StandardOpenOption.READ)) {
+            var size = channel.size();
+
+            while (records.size() < maxRecords && size - position >= HEADER_BYTES) {
+                if (readAt(channel, window, HEADER_BYTES, position) != HEADER_BYTES) {
+                    return new WalError.LogDamaged(file, position, size).result();
+                }
+
+                header.clear();
+                var payloadLen = header.getInt();
+                var offset = header.getLong();
+                var timestampMillis = header.getLong();
+                var storedCrc = header.getInt();
+
+                if (payloadLen < 0) {
+                    return new WalError.LogDamaged(file, position, size).result();
+                }
+
+                if (payloadLen > size - position - HEADER_BYTES) {
+                    break;
+                }
+
+                var crc = new CRC32();
+
+                crc.update(chunk, 4, CRC_HEADER_BYTES);
+                if (!crcOfPayloadAt(channel, window, position + HEADER_BYTES, payloadLen, crc) || (int) crc.getValue() != storedCrc) {
+                    return new WalError.LogDamaged(file, position, size).result();
+                }
+
+                if (offset >= fromOffset) {
+                    var payload = new byte[payloadLen];
+
+                    if (readAt(channel, ByteBuffer.wrap(payload), payloadLen, position + HEADER_BYTES) != payloadLen) {
+                        return new WalError.LogDamaged(file, position, size).result();
+                    }
+
+                    records.add(new WalRecord(offset, timestampMillis, payload));
+                }
+
+                position += HEADER_BYTES + payloadLen;
+            }
+        }
+
+        return Result.success(new RangePage(List.copyOf(records), position));
+    }
+
     @SuppressWarnings("JBCT-EX-01")
     private static boolean crcOfPayloadAt(FileChannel channel,
                                           ByteBuffer window,
@@ -1531,6 +1608,48 @@ public final class AppendLog implements AutoCloseable {
             return StorageError.LogsUnsupported.logsUnsupported("opener").result();
         }
 
+        /// A page of log `name`, READ-ONLY ([AppendLog#readRange], #1759): nothing is opened, recovered or cut, so it is
+        /// safe beside a materialization of the same log. An opener with no way to look refuses.
+        default Result<RangePage> readRange(String name, long fromOffset, int maxRecords, long startPosition) {
+            return StorageError.InspectUnsupported.inspectUnsupported(name).result();
+        }
+
+        /// The owner-epoch history of log `name`, READ-ONLY ([AppendLog#readEpochHistory], #1759). An opener with no way to
+        /// look refuses, and the caller must treat that as "unknown", never as an empty history.
+        default Result<List<EpochStart>> readEpochHistory(String name) {
+            return StorageError.InspectUnsupported.inspectUnsupported(name).result();
+        }
+
+        /// The opener of `instance`'s logs: every operation, the read-only ones included, goes through the instance.
+        static Opener storage(StorageInstance instance) {
+            return new Opener() {
+                @Override
+                public Result<AppendLog> open(String name) {
+                    return instance.openLog(name);
+                }
+
+                @Override
+                public Result<LogExtent> inspect(String name) {
+                    return instance.inspectLog(name);
+                }
+
+                @Override
+                public Result<List<String>> listLogs() {
+                    return instance.listLogs();
+                }
+
+                @Override
+                public Result<RangePage> readRange(String name, long fromOffset, int maxRecords, long startPosition) {
+                    return instance.readLogRange(name, fromOffset, maxRecords, startPosition);
+                }
+
+                @Override
+                public Result<List<EpochStart>> readEpochHistory(String name) {
+                    return instance.readLogEpochHistory(name);
+                }
+            };
+        }
+
         /// An opener that can also inspect, over the same log names.
         static Opener opener(Fn1<Result<AppendLog>, String> open, Fn1<Result<LogExtent>, String> inspect) {
             return new Opener() {
@@ -1571,9 +1690,32 @@ public final class AppendLog implements AutoCloseable {
         /// A standalone opener laying logs out as `<root>/<name>.wal` -- the layout of
         /// [StorageInstance#openLog] -- for wiring that has no storage instance (tests, tools).
         static Opener directory(Path root) {
-            return opener(name -> AppendLog.open(root.resolve(name + LOG_SUFFIX)),
-                          name -> AppendLog.inspect(root.resolve(name + LOG_SUFFIX)),
-                          () -> logNamesUnder(root));
+            return new Opener() {
+                @Override
+                public Result<AppendLog> open(String name) {
+                    return AppendLog.open(root.resolve(name + LOG_SUFFIX));
+                }
+
+                @Override
+                public Result<LogExtent> inspect(String name) {
+                    return AppendLog.inspect(root.resolve(name + LOG_SUFFIX));
+                }
+
+                @Override
+                public Result<List<String>> listLogs() {
+                    return logNamesUnder(root);
+                }
+
+                @Override
+                public Result<RangePage> readRange(String name, long fromOffset, int maxRecords, long startPosition) {
+                    return AppendLog.readRange(root.resolve(name + LOG_SUFFIX), fromOffset, maxRecords, startPosition);
+                }
+
+                @Override
+                public Result<List<EpochStart>> readEpochHistory(String name) {
+                    return AppendLog.readEpochHistory(root.resolve(name + LOG_SUFFIX));
+                }
+            };
         }
     }
 
@@ -1581,6 +1723,17 @@ public final class AppendLog implements AutoCloseable {
     public record WalRecord(long offset, long timestampMillis, byte[] payload) {}
 
     private record ScanResult(long validEnd, long lastOffset) {}
+
+    /// One page of [#readRange]: the records, in offset order, and the byte position just past the last one scanned -- where a
+    /// following page of the same, unchanged file may start.
+    public record RangePage(List<WalRecord> records, long endPosition) {
+        /// The page of a log that does not exist.
+        public static final RangePage EMPTY = new RangePage(List.of(), 0L);
+
+        public RangePage {
+            records = List.copyOf(records);
+        }
+    }
 
     /// Owner epoch `key` began writing the log at `startOffset`.
     public record EpochStart(EpochKey key, long startOffset) {}
@@ -1716,6 +1869,18 @@ public final class AppendLog implements AutoCloseable {
             @Override
             public String message() {
                 return "WAL close failed: " + detail;
+            }
+        }
+
+        /// A read-only range scan ([AppendLog#readRange]) met a damaged frame -- a CRC mismatch or an impossible length, inside the
+        /// file -- at byte `position` of a `fileBytes`-byte log before the page was full (#1759). The records past it are unknown, so the
+        /// scan answers nothing rather than a partial range. (A torn FINAL frame is not damage: it ends the log.) The log needs inspecting.
+        record LogDamaged(Path file, long position, long fileBytes) implements WalError {
+            @Override
+            public String message() {
+                return "WAL %s cannot be read past byte %d of %d: the frame there is torn or damaged".formatted(file,
+                                                                                                                position,
+                                                                                                                fileBytes);
             }
         }
 

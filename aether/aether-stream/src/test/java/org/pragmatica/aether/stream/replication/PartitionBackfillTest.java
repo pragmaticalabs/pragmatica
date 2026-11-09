@@ -2843,7 +2843,8 @@ class PartitionBackfillTest {
             clock.set(10 * BOUND.millis());
             assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure()).isTrue();
             assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.SYNCING);
-            assertThat(catchups.get()).as("the owner tried to catch up from the paced peer each time").isEqualTo(2);
+            assertThat(catchups.get()).as("each round the owner tried to catch up from every paced peer once (fallback to the next-ranked)")
+                                      .isEqualTo(2 * otherMembers().size());
         }
 
         private static List<NodeId> otherMembers() {

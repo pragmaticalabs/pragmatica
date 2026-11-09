@@ -248,11 +248,15 @@ class HeldNotMaterializedProbeTest {
         assertThat(manager.heldNotMaterializedWatermark("restarted", 0)).isEqualTo(Option.some(3L));
     }
 
-    /// The production naming path: the owner is a REGISTERED replica on the peer, so its catch-up probe is served by
+    /// The production catch-up path: the owner is a REGISTERED replica on the peer, so its catch-up probe is served by
     /// `readAppended`, not `readVisible`. The unregistered sender used elsewhere in this class exercises only the
     /// latter.
+    ///
+    /// #1759 (I-27): a registered replica's catch-up read of a held, unmaterialized partition is served from its WAL,
+    /// read-only, rather than named unavailable: `fresh[0]` has no WAL, so the page is empty, vouched by an empty history,
+    /// and the partition stays unmaterialized. (Before #1759 this answered `PartitionHeldNotMaterialized` at -1.)
     @Test
-    void catchupRead_fromARegisteredReplica_ofAHeldUnmaterializedPartition_isNamed() {
+    void catchupRead_fromARegisteredReplica_ofAHeldUnmaterializedPartition_isServedFromItsWal() {
         var registry = org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry();
 
         registry.registerReplica("fresh", 0, PEER);
@@ -275,9 +279,10 @@ class HeldNotMaterializedProbeTest {
 
             registeredHandler.onReadForward(readForward(PEER, "corr", "fresh", 0, 0L, PAGE, false, true));
 
-            assertThat(answers.getLast().success()).isFalse();
-            assertThat(StreamError.PartitionHeldNotMaterialized.watermarkOf(new StreamForwardError.ReadForwardFailed(answers.getLast().errorMessage())))
-                .isEqualTo(Option.some(-1L));
+            assertThat(answers.getLast().success()).as("answer %s", answers.getLast().errorMessage()).isTrue();
+            assertThat(answers.getLast().events()).isEmpty();
+            assertThat(answers.getLast().history()).isEmpty();
+            assertThat(registered.partitionBuffer("fresh", 0).isEmpty()).as("still unmaterialized").isTrue();
         } finally {
             registered.close();
         }

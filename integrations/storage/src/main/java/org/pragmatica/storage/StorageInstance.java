@@ -278,6 +278,17 @@ public interface StorageInstance {
         return StorageError.LogsUnsupported.logsUnsupported(name()).result();
     }
 
+    /// A page of log `name` -- up to `maxRecords` records at or above `fromOffset`, scanned from byte `startPosition` --
+    /// READ-ONLY ([AppendLog#readRange]; #1759): nothing is opened, recovered or cut.
+    default Result<AppendLog.RangePage> readLogRange(String name, long fromOffset, int maxRecords, long startPosition) {
+        return StorageError.LogsUnsupported.logsUnsupported(name()).result();
+    }
+
+    /// The owner-epoch history of log `name`, READ-ONLY ([AppendLog#readEpochHistory]; #1759).
+    default Result<List<AppendLog.EpochStart>> readLogEpochHistory(String name) {
+        return StorageError.LogsUnsupported.logsUnsupported(name()).result();
+    }
+
     /// Seal offsets `[fromOffset, toOffset]` of `log`: store `block` -- the caller's encoding of that
     /// range -- under `refName`, and only then let `log` be truncated through `toOffset` (#1567).
     ///
@@ -1114,6 +1125,23 @@ final class DefaultStorageInstance implements StorageInstance {
         return logRoot.toResult(StorageError.LogsUnsupported.logsUnsupported(name))
                       .flatMap(root -> logFile(root, logName))
                       .flatMap(AppendLog::inspect);
+    }
+
+    @Override
+    public Result<AppendLog.RangePage> readLogRange(String logName,
+                                                    long fromOffset,
+                                                    int maxRecords,
+                                                    long startPosition) {
+        return logRoot.toResult(StorageError.LogsUnsupported.logsUnsupported(name))
+                      .flatMap(root -> logFile(root, logName))
+                      .flatMap(file -> AppendLog.readRange(file, fromOffset, maxRecords, startPosition));
+    }
+
+    @Override
+    public Result<List<AppendLog.EpochStart>> readLogEpochHistory(String logName) {
+        return logRoot.toResult(StorageError.LogsUnsupported.logsUnsupported(name))
+                      .flatMap(root -> logFile(root, logName))
+                      .flatMap(AppendLog::readEpochHistory);
     }
 
     /// Steps 1-3 of the interface doc, as a data dependency: the ref is repointed only in a continuation
