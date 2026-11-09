@@ -95,6 +95,16 @@ class AppHttpServerOptionalAuthTest {
     }
 
     @Test
+    void jwt_bareBearerScheme_is401InvalidToken() throws Exception {
+        assertRefusedInvalidToken("Bearer");
+    }
+
+    @Test
+    void jwt_unknownScheme_is401InvalidToken() throws Exception {
+        assertRefusedInvalidToken("Basic dXNlcjpwdw==");
+    }
+
+    @Test
     void jwt_expiredToken_is401InvalidToken() throws Exception {
         assertRefusedInvalidToken("Bearer " + token(HS256, "{\"sub\":\"alice\",\"exp\":" + (now() - 3600) + "}", SECRET));
     }

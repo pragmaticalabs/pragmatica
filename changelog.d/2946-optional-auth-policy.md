@@ -1,9 +1,11 @@
 ### Added (2026-11-09 — #2946: optional-authentication route policy)
 - **`SecurityPolicy.optional()` / routes.toml `security = "optional"`: authenticate if a credential is presented.** No
   credential is served anonymously (the slice's `SecurityContext` is the empty context); a credential that fails
-  validation (malformed, expired, bad signature, wrong `alg`, wrong issuer/audience) is a `401` with
+  validation (a bare `Authorization: Bearer`, an empty or unknown-scheme `Authorization` header, an empty `X-API-Key`, malformed, expired, bad signature, wrong `alg`, wrong issuer/audience) is a `401` with
   `WWW-Authenticate: <first auth_schemes entry> realm=..., error="invalid_token"` (the #2926 mapping), never downgraded
   to anonymous; a valid credential reaches the slice through its `Principal` / `SecurityContext` parameters (#2157).
+  Only an ABSENT credential header is anonymous. Across nodes `optional` never outranks `unspecified` (the
+  inherited global mode), so a stricter node's route is not weakened by an `optional` declaration elsewhere.
   Aether (JWT, API key, KV-held API keys) and Terra. The names `optional` / `OptionalAuth` are a guess.
 - **`public` is unchanged and still ignores a presented credential; `authenticated`, `role:<name>`, `api_key` and
   `bearer_token` are unchanged.** `optional` ranks between `public` and `authenticated` for route-policy strength; a

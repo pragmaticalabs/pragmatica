@@ -86,11 +86,25 @@ class JwtSecurityValidator implements HttpAuthenticator {
                            .flatMap(this::validateToken);
     }
 
-    /// #2946: a request presenting no token (by the same rule a required route applies) is anonymous; one presenting a
-    /// token is held to the full validation, so an invalid or expired token is refused rather than downgraded.
+    /// #2946: only an ABSENT `Authorization` header is anonymous. A present header is a credential attempt: one that
+    /// yields no token (bare scheme, empty value, unknown scheme) is refused as malformed (401 `invalid_token`), and
+    /// one that yields a token is held to the full validation, so nothing is downgraded to anonymous.
     private Result<SecurityContext> validateBearerTokenIfPresented(HttpRequestContext request) {
-        return extractToken(request.headers()).map(this::validateToken)
-                           .or(() -> success(SecurityContext.securityContext()));
+        return Option.some(request.headers())
+                     .filter(JwtSecurityValidator::hasAuthorizationHeader)
+                     .map(this::validatePresentedCredential)
+                     .or(() -> success(SecurityContext.securityContext()));
+    }
+
+    private Result<SecurityContext> validatePresentedCredential(Map<String, List<String>> headers) {
+        return extractToken(headers).toResult(SecurityError.MALFORMED_TOKEN)
+                           .flatMap(this::validateToken);
+    }
+
+    private static boolean hasAuthorizationHeader(Map<String, List<String>> headers) {
+        return headers.keySet()
+                      .stream()
+                      .anyMatch("authorization"::equalsIgnoreCase);
     }
 
     private Result<SecurityContext> validateToken(String token) {

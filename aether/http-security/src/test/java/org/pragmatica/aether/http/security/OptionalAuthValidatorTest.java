@@ -57,10 +57,23 @@ class OptionalAuthValidatorTest {
     }
 
     @Test
-    void jwt_foreignAuthorizationScheme_servedAnonymously() {
-        var ctx = served(hsValidator(), request(Map.of("Authorization", List.of("Basic dXNlcjpwdw=="))), SecurityPolicy.optional());
+    void jwt_foreignAuthorizationScheme_refusedAs401InvalidToken() {
+        assertInvalidToken401(refused(hsValidator(), request(Map.of("Authorization", List.of("Basic dXNlcjpwdw==")))));
+    }
 
-        assertThat(ctx.isAuthenticated()).isFalse();
+    @Test
+    void jwt_bareBearerScheme_refusedAs401InvalidToken() {
+        assertInvalidToken401(refused(hsValidator(), request(Map.of("Authorization", List.of("Bearer")))));
+    }
+
+    @Test
+    void jwt_emptyAuthorizationHeader_refusedAs401InvalidToken() {
+        assertInvalidToken401(refused(hsValidator(), request(Map.of("Authorization", List.of("")))));
+    }
+
+    @Test
+    void jwt_lowercaseHeaderNameBareScheme_refusedAs401InvalidToken() {
+        assertInvalidToken401(refused(hsValidator(), request(Map.of("authorization", List.of("Bearer")))));
     }
 
     @Test
@@ -159,6 +172,16 @@ class OptionalAuthValidatorTest {
                                      .fold(c -> c, _ -> fail("must be refused"));
 
         assertInvalidToken401(cause);
+    }
+
+    @Test
+    void apiKey_presentButEmptyKey_refusedAs401InvalidToken() {
+        for (var value : List.of("", "   ")) {
+            var cause = apiKeyValidator().validate(request(Map.of("X-API-Key", List.of(value))), SecurityPolicy.optional())
+                                         .fold(c -> c, _ -> fail("must be refused"));
+
+            assertInvalidToken401(cause);
+        }
     }
 
     @Test

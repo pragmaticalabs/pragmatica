@@ -16,3 +16,5 @@ org.pragmatica.aether.http.UploadIngestSliceRoutes
 org.pragmatica.aether.http.StubRouteSliceRoutes
 org.pragmatica.aether.http.NestedPrefixRouteFactories$OuterFactory
 org.pragmatica.aether.http.NestedPrefixRouteFactories$InnerFactory
+org.pragmatica.aether.http.OptionalVsUnspecifiedSliceRoutes$OptionalFirst
+org.pragmatica.aether.http.OptionalVsUnspecifiedSliceRoutes$InheritedFirst

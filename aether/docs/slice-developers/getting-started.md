@@ -1035,8 +1035,8 @@ route that serves everyone but personalises for a signed-in caller (a feed with 
 
 | Request | Outcome |
 |---|---|
-| no credential (`Authorization` / `X-API-Key` absent, or an `Authorization` scheme this server does not accept) | served anonymously: the slice's `SecurityContext` parameter is the empty context (`isAuthenticated() == false`) |
-| a credential that fails validation (malformed, expired, bad signature, wrong `alg`, wrong issuer/audience, unknown key) | `401` with `WWW-Authenticate: <first auth_schemes entry> realm="Aether", error="invalid_token"` -- never downgraded to anonymous |
+| no credential (`Authorization` / `X-API-Key` header absent) | served anonymously: the slice's `SecurityContext` parameter is the empty context (`isAuthenticated() == false`) |
+| a credential header that is present but fails validation (bare `Bearer`, empty value, unknown scheme, empty `X-API-Key`, malformed, expired, bad signature, wrong `alg`, wrong issuer/audience, unknown key) | `401` with `WWW-Authenticate: <first auth_schemes entry> realm="Aether", error="invalid_token"` -- never downgraded to anonymous |
 | a valid credential | served; the slice's `Principal` / `SecurityContext` parameters carry the validated identity |
 
 `public` is unchanged: it never reads a credential, so a bad token on a `public` route is ignored. `authenticated`
