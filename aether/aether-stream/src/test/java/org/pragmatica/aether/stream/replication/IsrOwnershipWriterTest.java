@@ -252,17 +252,48 @@ class IsrOwnershipWriterTest {
         }
     }
 
+    /// #2981: a planned move (the committed owner still live) goes only to a member of the LIVE ISR, as failover elects.
+    /// The deposed owner keeps acknowledging on the ISR of its own view until it applies the move, so a target outside that
+    /// ISR is not in its acknowledgement set and can activate without a record the deposed owner acknowledged meanwhile
+    /// (TLA+ `Streams.tla` PlannedMove under `MoveToIsrOnly`).
     @Nested
     class PlannedMove {
-        /// The committed owner is still live (an entity hosting change): the new owner leads, the live ISR stays, and
-        /// the new owner's activation catches up from those live holders before it serves.
+        /// The committed owner is still live and the desired owner is a live ISR member: the new owner leads, the live
+        /// ISR stays, and the new owner's activation catches up from those live holders before it serves.
         @Test
-        void next_ownerLive_desiredElsewhere_movesAndKeepsTheLiveIsr() {
+        void next_ownerLive_desiredInTheLiveIsr_movesAndKeepsTheLiveIsr() {
             var current = record(A, 3L, List.of(A, B), 4L);
-            var next = writer.next(STREAM, PARTITION, Option.some(current), D, GENERATION, List.of(A, B, D)).unwrap();
+            var next = writer.next(STREAM, PARTITION, Option.some(current), B, GENERATION, List.of(A, B, D)).unwrap();
 
-            assertThat(next.owner()).isEqualTo(D);
-            assertThat(next.isr()).containsExactly(D, A, B);
+            assertThat(next.owner()).isEqualTo(B);
+            assertThat(next.isr()).containsExactly(B, A);
+            assertThat(next.ownershipTerm()).isEqualTo(4L);
+        }
+
+        /// The N2 trigger: D is live and desired (the reconcile snapshot's HRW owner) but not in the ISR. The owner keeps
+        /// the partition; the move waits until the owner's ISR monitor admits D and the committed ISR change re-runs the
+        /// reconcile.
+        @Test
+        void next_ownerLive_desiredOutsideTheIsr_keepsTheOwner_writesNothing() {
+            var current = record(A, 3L, List.of(A, B), 4L);
+
+            assertThat(writer.next(STREAM, PARTITION, Option.some(current), D, GENERATION, List.of(A, B, D)).isEmpty())
+                .as("no planned move to a live node outside the ISR (#2981)")
+                .isTrue();
+        }
+
+        /// The guard reads the LIVE ISR, not the committed one: C is in the committed ISR but not live in the leader's
+        /// fresh view (the reconcile snapshot that chose it is stale). The owner keeps the partition and only the shrink
+        /// that drops C is written.
+        @Test
+        void next_ownerLive_desiredInTheCommittedIsrButNotLive_keepsTheOwner_andOnlyShrinks() {
+            var current = record(A, 3L, List.of(A, B, C), 4L);
+            var next = writer.next(STREAM, PARTITION, Option.some(current), C, GENERATION, List.of(A, B, D)).unwrap();
+
+            assertThat(next.owner()).as("no planned move to a member that left the live set (#2981)").isEqualTo(A);
+            assertThat(next.ownershipTerm()).isEqualTo(3L);
+            assertThat(next.isr()).containsExactly(A, B);
+            assertThat(next.fenced()).containsExactly(C);
         }
     }
 
