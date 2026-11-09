@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.LongStream;
 
 import org.junit.jupiter.api.AfterEach;
@@ -20,6 +21,7 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart;
 import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
+import org.pragmatica.aether.stream.replication.AlignedRecovery;
 import org.pragmatica.aether.stream.replication.BackfillError;
 import org.pragmatica.aether.stream.replication.PartitionBackfill;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
@@ -214,6 +216,39 @@ class OwnerCatchupCommittedLineageTest {
         assertThat(fixture.served()).containsExactly(SOURCE);
     }
 
+    /// P10, a learned cap keeps the raw tail it was observed with: R1's first page is clipped (raw 20, lineage end 10) and its apply
+    /// fails, so the next run reads R1 again, ranked by its lineage end, and activates at 10. Once R1's row reports that same raw 20,
+    /// R1 is not a survivor ahead of the owner: its cap still holds against the tail it was learned on.
+    @Test
+    void probePath_aSourceReadAgainByItsLearnedEnd_keepsItsCapAgainstItsRawTail() {
+        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
+
+        var fixture = fixture(true,
+                              List.of(new Replica(SOURCE, 20L, List.of(ProvenanceEntry.provenanceEntry(E1, 0)))),
+                              failingFirstApply(owner.alignedRecovery()));
+
+        assertThat(fixture.backfill().backfill("s", 0).await().isFailure()).as("first apply fails").isTrue();
+        assertThat(fixture.backfill().backfill("s", 0).await().isSuccess()).isTrue();
+        assertThat(head()).isEqualTo(10L);
+
+        fixture.registry().updateWatermark("s", 0, SOURCE, 20L, ReplicationState.CAUGHT_UP);
+
+        assertThat(fixture.served()).containsExactly(SOURCE, SOURCE);
+        assertThat(fixture.backfill().redriveCandidates()).as("R1's raw 20 is capped at 10").isEmpty();
+    }
+
+    private static AlignedRecovery failingFirstApply(AlignedRecovery real) {
+        var failures = new AtomicInteger(1);
+
+        return AlignedRecovery.alignedRecovery(real::appendRecovered,
+                                               (stream, partition, from, to, slice, apply) -> failures.getAndDecrement() > 0
+                                                                                              ? BackfillError.General.MALFORMED_RESPONSE.<Long>result()
+                                                                                              : real.applyAttributed(stream, partition, from, to, slice, apply),
+                                               real::applyOwnerAttributed,
+                                               real::applyUnattributed,
+                                               real::reassignedFrom);
+    }
+
     /// P14, the registry path with two learned caps: raw tails 30 / 25 / 18, committed-lineage ends 10 / 13 / 18 (E3 @ 11, E4 @ 14).
     /// Each redrive reads the replica with the highest lineage end still unknown, is held to the best other end, and the third
     /// activates at 18; no survivor is then ahead.
@@ -241,11 +276,15 @@ class OwnerCatchupCommittedLineageTest {
 
     private record Replica(NodeId node, long tail, List<ProvenanceEntry> history) {}
 
-    private record Replicas(PartitionBackfill backfill, List<NodeId> served) {}
+    private record Replicas(ReplicaRegistry registry, PartitionBackfill backfill, List<NodeId> served) {}
 
     /// The replicas serve their whole tail with their own history; `blind` leaves their registry rows at `-1` so the backfill
     /// learns the tails by probe (the production path), otherwise the rows carry the tails.
     private Replicas fixture(boolean blind, List<Replica> replicas) {
+        return fixture(blind, replicas, owner.alignedRecovery());
+    }
+
+    private Replicas fixture(boolean blind, List<Replica> replicas, AlignedRecovery recovery) {
         var registry = ReplicaRegistry.replicaRegistry();
         var served = new CopyOnWriteArrayList<NodeId>();
 
@@ -253,7 +292,7 @@ class OwnerCatchupCommittedLineageTest {
         replicas.forEach(replica -> register(registry, replica, blind));
 
         var backfill = PartitionBackfill.partitionBackfill(registry,
-                                                           owner.alignedRecovery(),
+                                                           recovery,
                                                            (node, request) -> serve(replicaOf(replicas, node), request, served),
                                                            ReplicationTransport.NOOP,
                                                            (peer, _, _) -> Promise.success(replicaOf(replicas, peer).tail()),
@@ -263,7 +302,7 @@ class OwnerCatchupCommittedLineageTest {
                                                            () -> List.of(SELF),
                                                            CommittedStreamOwnerSource.none());
 
-        return new Replicas(backfill, served);
+        return new Replicas(registry, backfill, served);
     }
 
     private static void register(ReplicaRegistry registry, Replica replica, boolean blind) {
