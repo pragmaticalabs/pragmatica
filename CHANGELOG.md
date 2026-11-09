@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc5] - Unreleased
 
+### Fixed (2026-11-09 — #2947 Terra refused sibling routes of different slices)
+- **`TerraHttpRoutes.checkRoutes` keyed route ownership on method + static path prefix, so `GET /articles/{slug}` (one slice) and `GET /articles/{slug}/comments` (another) failed with "Multiple slices own route base" (7 of 19 Conduit operations).** Ownership is now keyed by the full route shape the shared `RouteShapeSelector` dispatches by: method, base, trailing-segment arity, spacers and their slots (path variables are wildcards, so `{a}` vs `{b}` is one shape). Only one shape owned by two slices is refused, with a message naming both slices ("Multiple slices own route shape"). Precedence is unchanged and identical to Aether's: arity must equal the request's trailing segments, then a shape whose literal segments all match beats an all-variable one. `[mechanism: RouteShapeSelector.select arity filter + spacer-slot match]`
+
 ## [1.0.0-rc4] - 2026-10-17
 
 ### Fixed (2026-10-17 — disruption-budget suite mistook the slice-floor 409 for the quorum budget)
