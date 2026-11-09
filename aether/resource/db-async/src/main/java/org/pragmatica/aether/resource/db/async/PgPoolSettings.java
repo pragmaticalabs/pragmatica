@@ -4,6 +4,7 @@
 package org.pragmatica.aether.resource.db.async;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -97,26 +98,46 @@ final class PgPoolSettings {
     // connection timeout) still serves requests: the pool opens sessions on demand, exactly as it did before the
     // warm-up existed. Guarantee earned: provisioning succeeds as it always has, after at most `bound`, and a first
     // request may pay connection setup; it is NOT a promise that `min_connections` sessions are open. Mechanism: one
-    // attempt, no retry. Each session is handed back to the pool the moment it opens (per-session release, joined
-    // afterwards), never held until every session has opened: the pool hands a new connection to its oldest waiter, and
-    // a warm-up waiter whose own session hangs would otherwise keep every later connection for itself after the bound
-    // (B1, #2955). A connection that reaches a waiter left over from an expired warm-up is released at once, so it goes
-    // to the next waiter or to the idle set.
+    // attempt, no retry. Sessions are held until all have opened or the bound expires (a session returned earlier would
+    // be reused by the next warm-up request instead of opening a new one, leaving fewer than `count` sessions), then
+    // all are returned together. After the bound the warm-up is over: a connection that still reaches one of its
+    // waiters is returned at once, so it goes to the next waiter or to the idle set instead of being kept (B1, #2955).
     static Promise<Unit> warmUp(Connectible pool, int count, Duration bound) {
-        return Promise.allOf(warmed(pool, count))
+        var held = new Held();
+
+        return Promise.allOf(opened(pool, count, held))
                       .map(_ -> Unit.unit())
                       .timeout(TimeSpan.fromDuration(bound))
-                      .recover(_ -> Unit.unit());
+                      .recover(_ -> Unit.unit())
+                      .flatMap(_ -> held.releaseAll());
     }
 
-    private static List<Promise<Unit>> warmed(Connectible pool, int count) {
+    private static List<Promise<Connection>> opened(Connectible pool, int count, Held held) {
         return IntStream.range(0, count)
-                        .mapToObj(_ -> openAndRelease(pool))
+                        .mapToObj(_ -> pool.getConnection()
+                                           .onSuccess(held::accept))
                         .toList();
     }
 
-    private static Promise<Unit> openAndRelease(Connectible pool) {
-        return pool.getConnection()
-                   .flatMap(Connection::close);
+    /// Connections the warm-up holds. Once released, whatever arrives is returned at once.
+    private static final class Held {
+        private final List<Connection> connections = new ArrayList<>();
+        private boolean released;
+
+        synchronized Promise<Unit> accept(Connection connection) {
+            if (released) {
+                return connection.close();
+            }
+
+            connections.add(connection);
+
+            return Promise.success(Unit.unit());
+        }
+
+        synchronized Promise<Unit> releaseAll() {
+            released = true;
+
+            return Promise.allOf(connections.stream().map(Connection::close).toList()).map(_ -> Unit.unit());
+        }
     }
 }

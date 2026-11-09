@@ -152,6 +152,17 @@ class PgPoolWarmUpPoolTest {
         assertThat(beyondMax.await(GUARD).isSuccess()).as("a released session serves the waiting request").isTrue();
     }
 
+    // A session handed back while the warm-up is still asking for the next one would be reused by that request, leaving
+    // fewer than min sessions (the live Postgres failure at 424d442f20: 2 of 3). Every opened session is held until all are open.
+    @Test
+    void warmUp_opensExactlyCountDistinctSessions_whenOpensAnswerImmediately() {
+        var pool = pool(0, 5);
+
+        assertThat(PgPoolSettings.warmUp(pool, 3, BOUND).await(GUARD).isSuccess()).isTrue();
+
+        assertThat(connects.get()).as("three warm-up requests open three sessions, not one reused").isEqualTo(3);
+    }
+
     private static final class BuilderWithProperties extends NettyConnectibleBuilder {
         ConnectibleBuilder.ConnectibleConfiguration configuration() {
             return properties;
