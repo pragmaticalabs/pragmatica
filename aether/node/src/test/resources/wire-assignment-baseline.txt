@@ -141,6 +141,7 @@ SHAPE org.pragmatica.aether.http.handler.security.Role (value:java.lang.String)
 SHAPE org.pragmatica.aether.http.handler.security.SecurityContext (principal:org.pragmatica.aether.http.handler.security.Principal,roles:java.util.Set<org.pragmatica.aether.http.handler.security.Role>,claims:java.util.Map<java.lang.String, java.lang.String>,authorizationRole:org.pragmatica.aether.http.handler.security.AuthorizationRole)
 SHAPE org.pragmatica.aether.invoke.InvocationMessage$InvokeRequest (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,requestId:java.lang.String,targetSlice:org.pragmatica.aether.artifact.Artifact,method:org.pragmatica.aether.slice.MethodName,payload:byte[],expectResponse:boolean,depth:int,hops:int,sampled:boolean,caller:org.pragmatica.lang.Option<org.pragmatica.aether.http.handler.security.SecurityContext>)
 SHAPE org.pragmatica.aether.invoke.InvocationMessage$InvokeResponse (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,requestId:java.lang.String,success:boolean,payload:byte[])
+SHAPE org.pragmatica.aether.invoke.LegacyInvokeRequest (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,requestId:java.lang.String,targetSlice:org.pragmatica.aether.artifact.Artifact,method:org.pragmatica.aether.slice.MethodName,payload:byte[],expectResponse:boolean,depth:int,hops:int,sampled:boolean)
 SHAPE org.pragmatica.aether.node.entityforward.EntityForwardMessage$EntityCancelTimerForward (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,keyspace:java.lang.String,key:byte[],token:java.lang.String,remainingMillis:long)
 SHAPE org.pragmatica.aether.node.entityforward.EntityForwardMessage$EntityCreateForward (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,keyspace:java.lang.String,key:byte[],initial:byte[],remainingMillis:long)
 SHAPE org.pragmatica.aether.node.entityforward.EntityForwardMessage$EntityDeleteForward (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,keyspace:java.lang.String,key:byte[],remainingMillis:long)
@@ -573,8 +574,9 @@ TAG  org.pragmatica.aether.http.handler.security.AuthorizationRole 517
 TAG  org.pragmatica.aether.http.handler.security.Principal 518
 TAG  org.pragmatica.aether.http.handler.security.Role 519
 TAG  org.pragmatica.aether.http.handler.security.SecurityContext 520
-TAG  org.pragmatica.aether.invoke.InvocationMessage$InvokeRequest 642
+TAG  org.pragmatica.aether.invoke.InvocationMessage$InvokeRequest 644
 TAG  org.pragmatica.aether.invoke.InvocationMessage$InvokeResponse 643
+TAG  org.pragmatica.aether.invoke.LegacyInvokeRequest 642
 TAG  org.pragmatica.aether.node.entityforward.EntityForwardMessage$EntityCancelTimerForward 1670
 TAG  org.pragmatica.aether.node.entityforward.EntityForwardMessage$EntityCreateForward 1661
 TAG  org.pragmatica.aether.node.entityforward.EntityForwardMessage$EntityDeleteForward 1662
