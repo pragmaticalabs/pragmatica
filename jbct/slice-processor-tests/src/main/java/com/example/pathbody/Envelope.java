@@ -3,5 +3,16 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package com.example.pathbody;
 
-/// A body that carries a [NestedNote] as a nested value.
-public record Envelope(NestedNote inner) {}
+import java.util.List;
+import java.util.Map;
+
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Patch;
+
+
+/// A body that nests records the slice also binds from the path, directly and through every container kind.
+public record Envelope(NestedNote inner,
+                       Option<OptNote> opt,
+                       Patch<PatchNote> patched,
+                       List<ListNote> listed,
+                       Map<String, MapNote> mapped) {}

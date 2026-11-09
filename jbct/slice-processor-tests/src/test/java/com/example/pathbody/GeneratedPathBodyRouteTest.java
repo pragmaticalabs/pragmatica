@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 class GeneratedPathBodyRouteTest {
     private static final JsonMapper PRODUCTION = JsonMapper.valueObjectJsonMapper();
     private static final TimeSpan AWAIT = TimeSpan.timeSpan(10).seconds();
+    private static final String COMPLETE_INNER = "\"inner\":{\"id\":\"e1\",\"text\":\"x\"}";
 
     private SliceRouter router;
 
@@ -108,18 +109,72 @@ class GeneratedPathBodyRouteTest {
 
         @Test
         void recordNestedInAnotherBody_stillRequiresTheComponent() {
-            assertThat(send("POST", "/api/pathbody/envelope", "{\"inner\":{\"text\":\"x\"}}")).startsWith("400 ")
-                                                                                             .contains("id");
+            assertThat(send("POST", "/api/pathbody/envelope", envelope("\"inner\":{\"text\":\"x\"}"))).startsWith("400 ")
+                                                                                                  .contains("id");
             assertThat(send("PUT", "/api/pathbody/nested/n1", "{\"text\":\"x\"}")).startsWith("400 ");
+        }
+
+        @Test
+        void recordNestedThroughAnOption_stillRequiresTheComponent() {
+            assertNestedStrict("\"opt\":{\"text\":\"x\"}", "/api/pathbody/opt-note/o1");
+        }
+
+        @Test
+        void recordNestedThroughAPatch_stillRequiresTheComponent() {
+            assertNestedStrict("\"patched\":{\"text\":\"x\"}", "/api/pathbody/patch-note/p1");
+        }
+
+        @Test
+        void recordNestedThroughAList_stillRequiresTheComponent() {
+            assertNestedStrict("\"listed\":[{\"text\":\"x\"}]", "/api/pathbody/list-note/l1");
+        }
+
+        @Test
+        void recordNestedAsAMapValue_stillRequiresTheComponent() {
+            assertNestedStrict("\"mapped\":{\"k\":{\"text\":\"x\"}}", "/api/pathbody/map-note/m1");
+        }
+
+        @Test
+        void recordDecodedAsAListBodyElement_stillRequiresTheComponent() {
+            assertThat(send("POST", "/api/pathbody/listed", "[{\"text\":\"x\"}]")).startsWith("400 ")
+                                                                                   .contains("id");
+            assertThat(send("PUT", "/api/pathbody/listed/l1", "{\"text\":\"x\"}")).startsWith("400 ");
         }
 
         @Test
         void strictRecords_stillServeACompleteBody() {
             assertThat(send("PUT", "/api/pathbody/merged-first/m1", "{\"id\":\"body\",\"text\":\"x\"}"))
                 .isEqualTo("200 {\"detail\":\"id=m1,text=x\"}");
-            assertThat(send("POST", "/api/pathbody/envelope", "{\"inner\":{\"id\":\"e1\",\"text\":\"x\"}}"))
+            assertThat(send("POST", "/api/pathbody/envelope", envelope("\"inner\":{\"id\":\"e1\",\"text\":\"x\"}")))
                 .isEqualTo("200 {\"detail\":\"id=e1,text=x\"}");
         }
+
+        // The envelope is complete but for the probed member, whose nested record lacks its path-bound `id`.
+        private void assertNestedStrict(String probedMember, String mergedPath) {
+            assertThat(send("POST", "/api/pathbody/envelope", envelope(COMPLETE_INNER + "," + probedMember)))
+                .startsWith("400 ")
+                .contains("id");
+            assertThat(send("PUT", mergedPath, "{\"text\":\"x\"}")).startsWith("400 ");
+        }
+    }
+
+    // A response use encodes the record and never decodes it, so it leaves the merged route's relaxation alone.
+    @Test
+    void recordAlsoAnsweredAsResponse_isStillRelaxedForItsMergedRoute() {
+        assertThat(send("PUT", "/api/pathbody/touch/t1", "{\"text\":\"x\"}")).isEqualTo("200 {\"id\":\"t1\",\"text\":\"x\"}");
+    }
+
+    // An envelope body: `members` (which must include `inner` unless it is the probe) plus empty required containers,
+    // unless `members` supplies them.
+    private static String envelope(String members) {
+        var listed = members.contains("\"listed\"")
+                     ? ""
+                     : ",\"listed\":[]";
+        var mapped = members.contains("\"mapped\"")
+                     ? ""
+                     : ",\"mapped\":{}";
+
+        return "{" + members + listed + mapped + "}";
     }
 
     private String send(String method, String path, String body) {
