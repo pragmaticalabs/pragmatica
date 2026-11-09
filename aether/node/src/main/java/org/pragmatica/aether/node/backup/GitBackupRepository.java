@@ -46,7 +46,8 @@ public record GitBackupRepository(Path dir,
                                   Option<String> remote,
                                   String branch,
                                   TimeSpan timeout,
-                                  Map<String, String> environment) {
+                                  Map<String, String> environment,
+                                  GitProcesses processes) {
     public static final String FILE = "kv-backup.txt";
     /// The operator's genesis declaration: `<lineage> <incarnation>`. Committed beside [#FILE] by
     /// `aether backup declare-genesis`; the only thing that lets a different lineage replace the head.
@@ -86,7 +87,8 @@ public record GitBackupRepository(Path dir,
                                        remote.filter(url -> !url.isBlank()),
                                        branch,
                                        timeout,
-                                       Map.copyOf(environment));
+                                       Map.copyOf(environment),
+                                       new GitProcesses());
     }
 
     /// Every way a git operation can fail.
@@ -105,6 +107,16 @@ public record GitBackupRepository(Path dir,
             static final Fn1<PushRejected, String> FACTORY = Causes.forOneValue("push is not a fast-forward: %s",
                                                                                 PushRejected::new);
         }
+    }
+
+    /// Close the repository to git: from here on no git is started, and the ones in flight are handed back for [#reap] (#2924).
+    List<Process> halt() {
+        return processes.close();
+    }
+
+    /// Kill the git processes `inFlight` (from [#halt]) with everything they started, within `boundMillis`. `true` when all are dead.
+    boolean reap(List<Process> inFlight, long boundMillis) {
+        return GitProcesses.kill(inFlight, boundMillis);
     }
 
     public boolean hasRemote() {
@@ -326,7 +338,7 @@ public record GitBackupRepository(Path dir,
 
     private Result<GitResult> run(List<String> args) {
         return Result.lift(GitBackupRepository::unavailable,
-                           () -> processBuilder(args).start())
+                           () -> processes.start(processBuilder(args)))
                      .flatMap(this::collect);
     }
 
@@ -363,16 +375,17 @@ public record GitBackupRepository(Path dir,
                      .onFailure(_ -> abandon(process))
                      .map(finished -> finished
                                       ? completed(process, output)
-                                      : timedOut(process));
+                                      : timedOut(process))
+                     .onResultRun(() -> processes.finished(process));
     }
 
-    /// The wait ended in an interruption (the stop's deadline): kill git and whatever it started, and leave the interrupt visible to the caller. On a
+    /// The wait ended in an interruption (the stop's deadline): kill git and whatever it started, and leave the interrupt visible to the caller. The
+    /// tree is frozen before it is killed ([GitProcesses#kill]), so git cannot fork its hook between the decision and the kill (#2924). On a
     /// local remote the server side is among the children, so nothing in flight lands afterwards. Over a network a push the server has already received
     /// can still land; that is harmless, a fast-forward of the node's own decided state. What is guaranteed is that no git of ours outlives the stop.
     @Contract
-    private static void abandon(Process process) {
-        process.descendants().forEach(ProcessHandle::destroyForcibly);
-        process.destroyForcibly();
+    private void abandon(Process process) {
+        GitProcesses.kill(List.of(process), timeout.millis());
         Thread.currentThread().interrupt();
     }
 
