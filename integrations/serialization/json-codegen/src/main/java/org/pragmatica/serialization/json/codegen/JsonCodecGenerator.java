@@ -32,6 +32,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -125,12 +126,7 @@ public final class JsonCodecGenerator {
                     .filter(JsonType.ListOf.class::isInstance)
                     .map(JsonType.ListOf.class::cast)
                     .onPresent(containerRoots::add);
-            analyzed.filter(_ -> body)
-                    .filter(JsonType.RecordRef.class::isInstance)
-                    .map(JsonType.RecordRef.class::cast)
-                    .onPresent(ref -> requestBound.merge(qualifiedName(ref.element()),
-                                                         Set.copyOf(bound),
-                                                         JsonCodecGenerator::common));
+            analyzed.filter(_ -> body).onPresent(root -> bindRequest(root, bound));
 
             return none();
         }
@@ -160,28 +156,38 @@ public final class JsonCodecGenerator {
                                                                              containerRoots);
     }
 
+    // A record body root remembers the components its route binds from the request, intersected with earlier uses.
+    private void bindRequest(JsonType root, Set<String> bound) {
+        if (root instanceof JsonType.RecordRef ref) {
+            requestBound.merge(qualifiedName(ref.element()), Set.copyOf(bound), JsonCodecGenerator::common);
+        }
+    }
+
     // The request-bound components per record, for the records no decode reaches as a nested value.
     private Map<String, Set<String>> requestBoundComponents() {
-        var result = new HashMap<String, Set<String>>();
+        return requestBound.entrySet()
+                           .stream()
+                           .filter(this::relaxable)
+                           .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+    }
 
-        requestBound.entrySet()
-                    .stream()
-                    .filter(entry -> !reachedAsNested(entry.getKey()))
-                    .forEach(entry -> result.put(entry.getKey(),
-                                                 entry.getValue()));
-
-        return result;
+    private boolean relaxable(Map.Entry<String, Set<String>> entry) {
+        return ! reachedAsNested(entry.getKey());
     }
 
     private boolean reachedAsNested(String record) {
+        return reachedByComponent(record) || containerRoots.stream()
+                                                           .anyMatch(root -> reaches(root, record));
+    }
+
+    private boolean reachedByComponent(String record) {
         return analyzer.records()
                        .values()
                        .stream()
                        .flatMap(definition -> definition.components()
                                                         .stream())
                        .anyMatch(component -> reaches(component.type(),
-                                                      record)) || containerRoots.stream()
-                                                                                .anyMatch(root -> reaches(root, record));
+                                                      record));
     }
 
     private static boolean reaches(JsonType type, String record) {
