@@ -23,6 +23,7 @@ class RouteWithRequestContextTest {
     };
 
     private static final UploadSpec UPLOAD = UploadSpec.uploadSpec(true, 1_000, 5_000);
+    private static final SuccessSpec SUCCESS = SuccessSpec.successSpec(201, _ -> "/items/1");
 
     private static Route<Handler<String>> bound() {
         return Route.<Handler<String>>get("/items/")
@@ -32,7 +33,8 @@ class RouteWithRequestContextTest {
                     .withSecurity(DENY_ALL)
                     .versioned(3)
                     .withUpload(UPLOAD)
-                    .asJson();
+                    .asJson()
+                    .withSuccess(SUCCESS);
     }
 
     @Test
@@ -72,6 +74,7 @@ class RouteWithRequestContextTest {
         assertThat(route.spacers()).containsExactly("detail");
         assertThat(route.spacerSlots()).isEqualTo(declared.spacerSlots());
         assertThat(route.uploadSpec()).isEqualTo(UPLOAD);
+        assertThat(route.successSpec()).isSameAs(SUCCESS);
     }
 
     @Test

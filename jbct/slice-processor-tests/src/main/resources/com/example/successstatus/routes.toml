@@ -11,6 +11,8 @@ find = "GET /articles/{slug}"
 broken = "GET /broken"
 locate = { route = "POST /located", location = "/api/blog/articles/{slug}" }
 lookup = { route = "GET /lookup/{slug}", status = 200, location = "/api/blog/articles/{slug}" }
+createWithHeaders = { route = "POST /with-headers", status = 201, location = "/api/blog/articles/{slug}" }
+createWithContext = { route = "POST /with-context", status = 201, location = "/api/blog/articles/{slug}" }
 
 [errors]
 default = 500

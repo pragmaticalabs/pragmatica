@@ -3,6 +3,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package com.example.successstatus;
 
+import org.pragmatica.aether.http.handler.RequestHeaders;
+import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -22,6 +24,9 @@ public interface SuccessStatusSlice {
     Promise<Article> broken();
     Promise<Article> locate(ArticleRequest request);
     Promise<Option<Article>> lookup(SlugRequest request);
+    // #2965: an injected request value wraps the route in Route.withRequestContext, which must keep the declared success.
+    Promise<Article> createWithHeaders(RequestHeaders headers, ArticleRequest request);
+    Promise<Article> createWithContext(SecurityContext context, ArticleRequest request);
 
     static SuccessStatusSlice successStatusSlice() {
         return new SuccessStatusSlice() {
@@ -76,6 +81,16 @@ public interface SuccessStatusSlice {
             @Override
             public Promise<Option<Article>> lookup(SlugRequest request) {
                 return find(request);
+            }
+
+            @Override
+            public Promise<Article> createWithHeaders(RequestHeaders headers, ArticleRequest request) {
+                return Promise.success(new Article(request.slug(), request.title()));
+            }
+
+            @Override
+            public Promise<Article> createWithContext(SecurityContext context, ArticleRequest request) {
+                return Promise.success(new Article(request.slug(), request.title()));
             }
         };
     }
