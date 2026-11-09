@@ -1146,9 +1146,11 @@ class SliceProcessorTest {
         assertThat(manifest.getProperty("dependencies.count")).isEqualTo("1");
         assertThat(manifest.getProperty("dependency.0.interface")).isEqualTo("com.example.app.payments.PaymentService");
         assertThat(manifest.getProperty("dependency.0.artifact")).isEqualTo("com.example:app-payment-service");
-        assertThat(manifest.stringPropertyNames()).noneMatch(name -> name.startsWith("dependency.1."));
-        assertThat(manifest.values().stream().map(Object::toString)).noneMatch(value -> value.contains("OrderValidator")
-                                                                                       || value.contains("order-validator"));
+        assertThat(manifest.stringPropertyNames().stream().anyMatch(name -> name.startsWith("dependency.1."))).isFalse();
+        assertThat(manifest.values()
+                           .stream()
+                           .anyMatch(value -> value.toString().contains("OrderValidator")
+                                              || value.toString().contains("order-validator"))).isFalse();
 
         var factory = compilation.generatedSourceFile("com.example.app.orders.OrderServiceFactory")
                                  .get()
