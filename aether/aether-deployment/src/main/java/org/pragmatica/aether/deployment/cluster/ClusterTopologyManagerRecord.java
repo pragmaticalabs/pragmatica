@@ -3389,7 +3389,15 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                                                                     Option.some((AetherValue) mark),
                                                                                                                     Option.none())),
                                                              List.of())
-                                                     .mapError(_ -> new UnconfirmedClearRefusal.Changed(nodeId)));
+                                                     .mapError(cause -> markDeleteRefusal(nodeId, cause)));
+    }
+
+    /// A fence CONFLICT is reported as itself ([UnconfirmedClearRefusal.Conflicted]), not as [UnconfirmedClearRefusal.Changed]; any other failure of
+    /// the delete is a clear not confirmed committed.
+    private static UnconfirmedClearRefusal markDeleteRefusal(NodeId nodeId, Cause cause) {
+        return cause == HierarchyStateWriter.Refusal.CONFLICT
+               ? new UnconfirmedClearRefusal.Conflicted(nodeId)
+               : new UnconfirmedClearRefusal.Changed(nodeId);
     }
 
     private Promise<Unit> afterClear(NodeId nodeId, long generation, Cleared cleared, ProviderSeen seen) {

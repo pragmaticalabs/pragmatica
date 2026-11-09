@@ -309,6 +309,17 @@ public interface ClusterTopologyManager extends TopologyManager {
             }
         }
 
+        /// The leader's conditional-commit fence refused the delete ([HierarchyStateWriter.Refusal#CONFLICT]): nothing was cleared. Either the mark
+        /// was replaced since it was read, or this node's applied view lagged; the clear is not retried automatically, because a retry could meet
+        /// a later incarnation's mark.
+        record Conflicted(NodeId node) implements UnconfirmedClearRefusal {
+            @Override
+            public String message() {
+                return "The leader's conditional commit refused the clear of the unconfirmed-termination mark of " + node.id()
+                     + " (the mark changed since it was read, or this node's view lagged); nothing was cleared; read the mark again before retrying";
+            }
+        }
+
         record Changed(NodeId node) implements UnconfirmedClearRefusal {
             @Override
             public String message() {
