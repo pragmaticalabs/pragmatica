@@ -1716,7 +1716,6 @@ public final class PartitionBackfill {
     /// {@link #probeThenPromoteOwner}, which probes the blind survivors' REAL tails before it may self-promote.
     private Promise<Long> promoteOwner(String streamName, int partition, List<ReplicaDescriptor> replicas) {
         var localWatermark = selfWatermark.localWatermark(streamName, partition);
-
         var ahead = aheadSurvivors(replicas, localWatermark);
 
         if (ahead.isEmpty()) {
@@ -1726,10 +1725,10 @@ public final class PartitionBackfill {
         clearOversized(streamName, partition);
 
         return inRankOrder(ahead.stream()
-                                .<Supplier<Promise<Long>>>map(survivor -> () -> catchupOwnerFromSurvivor(streamName,
-                                                                                                         partition,
-                                                                                                         survivor,
-                                                                                                         localWatermark))
+                                .<Supplier<Promise<Long>>> map(survivor -> () -> catchupOwnerFromSurvivor(streamName,
+                                                                                                          partition,
+                                                                                                          survivor,
+                                                                                                          localWatermark))
                                 .toList());
     }
 
@@ -1743,13 +1742,13 @@ public final class PartitionBackfill {
     /// ranked attempts, each started only after the previous one failed.
     private static Promise<Long> inRankOrder(List<Supplier<Promise<Long>>> attempts) {
         return attempts.stream()
-                       .reduce(NO_SOURCE_REPLICA.<Long>promise(),
+                       .reduce(NO_SOURCE_REPLICA.<Long> promise(),
                                PartitionBackfill::unlessShort,
                                (first, _) -> first);
     }
 
     private static Promise<Long> unlessShort(Promise<Long> previous, Supplier<Promise<Long>> next) {
-        var settled = Promise.<Long>promise();
+        var settled = Promise.<Long> promise();
 
         previous.onResult(result -> settleAfter(result, next, settled));
 
@@ -1759,7 +1758,8 @@ public final class PartitionBackfill {
     private static Promise<Long> settleAfter(Result<Long> result, Supplier<Promise<Long>> next, Promise<Long> settled) {
         return result.fold(cause -> cause == INCOMPLETE_BACKFILL
                                     ? settled.resolve(result)
-                                    : next.get().onResult(settled::resolve),
+                                    : next.get()
+                                          .onResult(settled::resolve),
                            _ -> settled.resolve(result));
     }
 
@@ -1790,7 +1790,8 @@ public final class PartitionBackfill {
     /// registry order); the head is {@link #aheadSurvivor}.
     private List<ReplicaDescriptor> aheadSurvivors(List<ReplicaDescriptor> replicas, long localWatermark) {
         return replicas.stream()
-                       .filter(descriptor -> !descriptor.nodeId().equals(self))
+                       .filter(descriptor -> !descriptor.nodeId()
+                                                        .equals(self))
                        .filter(survivor -> lineageEnd(survivor) > localWatermark)
                        .sorted(Comparator.comparingLong((ReplicaDescriptor descriptor) -> lineageEnd(descriptor)).reversed())
                        .toList();
@@ -2050,16 +2051,19 @@ public final class PartitionBackfill {
         if (bestEnd > localWatermark) {
             clearOversized(streamName, partition);
 
-            return inRankOrder(IntStream.range(0, ends.size())
+            return inRankOrder(IntStream.range(0,
+                                               ends.size())
                                         .boxed()
                                         .filter(i -> ends.get(i) > localWatermark)
                                         .sorted(Comparator.comparingLong((Integer i) -> ends.get(i)).reversed())
-                                        .<Supplier<Promise<Long>>>map(i -> () -> catchupOwnerFromSurvivor(streamName,
-                                                                                                         partition,
-                                                                                                         peers.get(i),
-                                                                                                         results.get(i).or(-1L),
-                                                                                                         localWatermark,
-                                                                                                         () -> othersMax(ends, i)))
+                                        .<Supplier<Promise<Long>>> map(i -> () -> catchupOwnerFromSurvivor(streamName,
+                                                                                                           partition,
+                                                                                                           peers.get(i),
+                                                                                                           results.get(i)
+                                                                                                                  .or(-1L),
+                                                                                                           localWatermark,
+                                                                                                           () -> othersMax(ends,
+                                                                                                                           i)))
                                         .toList());
         }
 
