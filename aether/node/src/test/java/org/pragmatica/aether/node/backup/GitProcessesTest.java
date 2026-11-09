@@ -143,6 +143,19 @@ class GitProcessesTest {
         assertThat(GitProcesses.sameStart(read, handleStartedAt(Option.none()))).isFalse();
     }
 
+    /// The freeze addresses only members that still have the start time they were read with: the member whose pid now belongs to another process is
+    /// left out of the `SIGSTOP` list.
+    @Test
+    void stoppable_leavesOutAMemberWhosePidWasReused() {
+        var readAt = Option.some(Instant.parse("2026-11-09T10:00:00Z"));
+        var tree = new java.util.LinkedHashMap<ProcessHandle, Option<Instant>>();
+
+        tree.put(aliveHandle(101L, readAt), readAt);
+        tree.put(aliveHandle(202L, Option.some(Instant.parse("2026-11-09T10:00:09Z"))), readAt);
+
+        assertThat(GitProcesses.stoppable(tree)).containsExactly("101");
+    }
+
     /// A process whose tree outlived its bound is not forgotten: it stays in flight, so the stop's close hands it over again.
     @Test
     void killOrKeep_keepsATreeThatIsNotDead_inFlightForTheStop() {
@@ -174,9 +187,20 @@ class GitProcessesTest {
     }
 
     private static ProcessHandle handleStartedAt(Option<Instant> startedAt) {
+        return aliveHandle(1L, startedAt);
+    }
+
+    private static ProcessHandle aliveHandle(long pid, Option<Instant> startedAt) {
         return (ProcessHandle) Proxy.newProxyInstance(GitProcessesTest.class.getClassLoader(),
                                                       new Class<?>[]{ProcessHandle.class},
-                                                      (proxy, method, args) -> "info".equals(method.getName()) ? infoStartedAt(startedAt) : null);
+                                                      (proxy, method, args) -> switch (method.getName()) {
+                                                          case "info" -> infoStartedAt(startedAt);
+                                                          case "pid" -> pid;
+                                                          case "isAlive" -> true;
+                                                          case "hashCode" -> System.identityHashCode(proxy);
+                                                          case "equals" -> proxy == args[0];
+                                                          default -> null;
+                                                      });
     }
 
     private static ProcessHandle.Info infoStartedAt(Option<Instant> startedAt) {

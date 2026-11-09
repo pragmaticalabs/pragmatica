@@ -165,7 +165,7 @@ class GitProcesses {
     private static void stop(Map<ProcessHandle, Option<Instant>> tree, long deadline, List<String> freeze) {
         var command = new ArrayList<String>(freeze);
 
-        tree.forEach((handle, read) -> addIfSame(command, handle, read));
+        command.addAll(stoppable(tree));
         try {
             awaitHelper(new ProcessBuilder(command).redirectErrorStream(true).start(),
                         deadline);
@@ -174,11 +174,15 @@ class GitProcesses {
         }
     }
 
-    @Contract
-    private static void addIfSame(List<String> command, ProcessHandle handle, Option<Instant> read) {
-        if (handle.isAlive() && sameStart(read, handle)) {
-            command.add(Long.toString(handle.pid()));
-        }
+    /// The pids of the members of `tree` that are alive and still have the start time they were read with.
+    static List<String> stoppable(Map<ProcessHandle, Option<Instant>> tree) {
+        return tree.entrySet()
+                   .stream()
+                   .filter(member -> member.getKey()
+                                           .isAlive() && sameStart(member.getValue(),
+                                                                   member.getKey()))
+                   .map(member -> Long.toString(member.getKey().pid()))
+                   .toList();
     }
 
     /// Wait for the freeze helper no longer than the kill's own deadline, and kill it when it has not finished by then.
