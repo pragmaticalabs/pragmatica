@@ -133,7 +133,7 @@ class EmberPublishReplyLegRefusedTest {
         ((QuicClusterNetwork) StreamTripwireSupport.component(node, "clusterNode", RabiaNode.class)
                                                    .network()).setOutboundRefusalFilter((_, message) -> message instanceof HttpForwardResponse reply
                                                                        && reply.pipeline() == Pipeline.MANAGEMENT
-                                                                       && refused.getAndIncrement() < limit);
+                                                                       && refused.getAndUpdate(count -> count < limit ? count + 1 : count) < limit);
     }
 
     private StreamPartitionOwnershipValue awaitFullIsr() {
