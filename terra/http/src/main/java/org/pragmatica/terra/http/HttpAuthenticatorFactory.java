@@ -25,6 +25,8 @@ public interface HttpAuthenticatorFactory {
     /// `terra.toml` (for example `authenticator.<name>.issuer`), which the launcher accepts without interpreting.
     ///
     /// Called once per launch, also by `--check`: it must not open connections or acquire resources before the first
-    /// request. A failure refuses the launch.
+    /// request. A failure refuses the launch; so does a factory whose `name()` or this method throws or returns nothing
+    /// (the launch refusal names the provider class). The authenticator returned is wrapped in a [GuardedAuthenticator]:
+    /// one that throws per request answers HTTP 500 with a generic body and an ERROR log naming the provider.
     Result<HttpAuthenticator> authenticator(ConfigurationProvider settings);
 }

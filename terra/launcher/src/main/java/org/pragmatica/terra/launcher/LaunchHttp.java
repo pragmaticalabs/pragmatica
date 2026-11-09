@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -30,6 +31,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.terra.http.GuardedAuthenticator;
 import org.pragmatica.terra.http.HttpAuthenticatorFactory;
 import org.pragmatica.terra.http.TerraHttpConfig;
 
@@ -149,16 +151,61 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
     }
 
     /// #2880: `http.security_mode = "custom"` selects, by `http.authenticator`, one installed [HttpAuthenticatorFactory].
+    /// Provider code is untrusted to behave: a factory whose `name()` or `authenticator(...)` throws, or returns nothing,
+    /// refuses the launch naming the provider class, and the authenticator it builds is wrapped so that a failure per
+    /// request is a generic 500 ([GuardedAuthenticator]).
     private static Result<Security> custom(ConfigurationProvider settings,
                                            Fn0<Result<List<HttpAuthenticatorFactory>>> discovery) {
         return settings.getString("http.authenticator")
                        .filter(name -> !name.isBlank())
                        .toResult(new TerraLaunchError("http.security_mode = custom requires http.authenticator, the name of an installed authenticator"))
                        .flatMap(name -> discovery.apply()
+                                                 .flatMap(LaunchHttp::named)
                                                  .flatMap(installed -> selected(name, installed)))
-                       .flatMap(factory -> factory.authenticator(settings)
-                                                  .mapError(LaunchHttp::invalidAuthenticator))
+                       .flatMap(provider -> built(provider, settings))
                        .map(LaunchHttp::customSecurity);
+    }
+
+    /// An installed factory with the name it answered, read once under a guard.
+    private record Provider(String name, HttpAuthenticatorFactory factory) {}
+
+    private static Result<List<Provider>> named(List<HttpAuthenticatorFactory> installed) {
+        return Result.allOf(installed.stream().map(LaunchHttp::named).toList());
+    }
+
+    private static Result<Provider> named(HttpAuthenticatorFactory factory) {
+        return Result.lift(failure -> providerDefect(factory, "name()", failure),
+                           () -> new Provider(Objects.requireNonNull(factory.name(), "no name"),
+                                              factory));
+    }
+
+    private static Result<GuardedAuthenticator> built(Provider provider, ConfigurationProvider settings) {
+        return Result.lift(failure -> providerDefect(provider.factory(),
+                                                     "authenticator(...)",
+                                                     failure),
+                           () -> Objects.requireNonNull(provider.factory().authenticator(settings),
+                                                        "no result"))
+                     .flatMap(result -> result.mapError(LaunchHttp::invalidAuthenticator))
+                     .flatMap(authenticator -> Option.option(authenticator).toResult(providerDefect(provider.factory(),
+                                                                                                    "authenticator(...)",
+                                                                                                    "returned no authenticator")))
+                     .map(authenticator -> new GuardedAuthenticator(provider.factory().getClass().getName(),
+                                                                    authenticator));
+    }
+
+    /// Names the provider class and the failing call, and the exception TYPE only (or a stated reason): a provider's own message may carry
+    /// its settings, and the launch refusal is printed.
+    private static TerraLaunchError providerDefect(HttpAuthenticatorFactory factory, String call, Throwable failure) {
+        return providerDefect(factory,
+                              call,
+                              failure.getClass().getSimpleName());
+    }
+
+    private static TerraLaunchError providerDefect(HttpAuthenticatorFactory factory, String call, String reason) {
+        return new TerraLaunchError("Authenticator provider " + factory.getClass()
+                                                                       .getName()
+                                   + " failed in " + call
+                                   + ": " + reason);
     }
 
     private static Security customSecurity(HttpAuthenticator authenticator) {
@@ -170,8 +217,8 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
     }
 
     /// Zero factories of the name refuse the launch naming the installed ones; two refuse it naming both classes.
-    private static Result<HttpAuthenticatorFactory> selected(String name, List<HttpAuthenticatorFactory> installed) {
-        var matching = installed.stream().filter(factory -> name.equals(factory.name())).toList();
+    private static Result<Provider> selected(String name, List<Provider> installed) {
+        var matching = installed.stream().filter(provider -> name.equals(provider.name())).toList();
 
         return switch (matching.size()) {
             case 0 -> new TerraLaunchError("No authenticator named '" + name + "' is installed (installed: " + installedNames(installed) + ")").result();
@@ -180,18 +227,19 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
         };
     }
 
-    private static String installedNames(List<HttpAuthenticatorFactory> installed) {
+    private static String installedNames(List<Provider> installed) {
         return installed.isEmpty()
                ? "none"
                : installed.stream()
-                          .map(HttpAuthenticatorFactory::name)
+                          .map(Provider::name)
                           .collect(Collectors.joining(", "));
     }
 
-    private static String classNames(List<HttpAuthenticatorFactory> factories) {
-        return factories.stream()
-                        .map(factory -> factory.getClass()
-                                               .getName())
+    private static String classNames(List<Provider> providers) {
+        return providers.stream()
+                        .map(provider -> provider.factory()
+                                                 .getClass()
+                                                 .getName())
                         .collect(Collectors.joining(" and "));
     }
 
@@ -271,8 +319,8 @@ record LaunchHttp(TerraHttpConfig config, Fn0<HttpAuthenticator> authenticator) 
     }
 
     /// `[jwt] secret`: the HS256 shared secret, an environment or property value (`TERRA_JWT__SECRET`) per
-    /// `terra/SPEC.md`, because Terra has no secrets provider. Length is checked by [JwtSecret]; the value is never
-    /// part of any message.
+    /// `terra/SPEC.md`, because Terra has no secrets provider. Blank (empty or whitespace-only) and short secrets are
+    /// refused by [JwtSecret], which uses the text exactly as given (no trimming); the value is never part of any message.
     private static Result<Option<JwtSecret>> secret(ConfigurationProvider settings) {
         return settings.getString("jwt.secret")
                        .fold(() -> Result.success(Option.<JwtSecret> none()),

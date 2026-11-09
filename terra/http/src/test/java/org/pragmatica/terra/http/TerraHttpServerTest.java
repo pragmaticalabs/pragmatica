@@ -195,6 +195,20 @@ class TerraHttpServerTest {
         } finally { close(host); }
     }
 
+    /// #2880: a provider authenticator that throws is a 500 with a generic body, whatever the exception said.
+    @Test void serve_throwingProviderAuthenticator_answers500WithAGenericBody() throws Exception {
+        var routes = List.<Route<?>>of(Route.<String>get("/private").withoutParameters().to(_ -> Promise.success("never"))
+            .withSecurity(SecurityPolicy.authenticated()).asText());
+        var throwing = new GuardedAuthenticator("test-provider", (_, _) -> { throw new IllegalStateException("db-password=hunter2"); });
+        var host = start(routes, throwing, new AtomicInteger());
+        try (var client = HttpClient.newHttpClient()) {
+            var response = get(client, host, "/private");
+
+            assertThat(response.statusCode()).isEqualTo(500);
+            assertThat(response.body()).doesNotContain("hunter2").doesNotContain("IllegalStateException").doesNotContain("test-provider");
+        } finally { close(host); }
+    }
+
     @Test void serve_jwtWithLiveJwks_verifiesSignatureClaimsAndRole() throws Exception {
         var generator = java.security.KeyPairGenerator.getInstance("RSA");
         generator.initialize(2048);
