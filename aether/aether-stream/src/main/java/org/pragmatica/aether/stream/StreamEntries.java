@@ -33,8 +33,10 @@ final class StreamEntries {
     /// The WAL directories already reported as orphaned by this process: one event per directory, however many streams adopt
     /// after it.
     private final Set<String> orphanedWalReported = ConcurrentHashMap.newKeySet();
+
     /// The lives announced as released: the startup snapshot still lists them, and must not announce them again.
     private final Set<String> releasedOrphans = ConcurrentHashMap.newKeySet();
+
     /// #2952: the lives (`<stream>@<incarnation>`) this process proposed or adopted, so far. Their WAL directories are its own,
     /// never an orphan, though the startup snapshot, taken off the KV dispatcher, can list one created while it ran.
     private final Set<String> ownLives = ConcurrentHashMap.newKeySet();

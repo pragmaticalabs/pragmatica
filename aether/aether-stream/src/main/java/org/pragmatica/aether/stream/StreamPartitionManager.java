@@ -318,7 +318,6 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// the KV dispatcher ~670 ms). The drain starts right after the first adoption, so the walk can list a directory this process created
     /// meanwhile: a report never names a life this process proposed or adopted up to the adoption it reports ([StreamEntries#ownLives]).
     private final Lazy<List<String>> walDirectoriesAtStart = Lazy.lazy(this::scanWalDirectories);
-
     /// #2952: held by the one thread draining [StreamEntries#lifeReports], so the reports run one at a time, in adoption order.
     private final AtomicBoolean lifeReportsDraining = new AtomicBoolean();
 
@@ -6172,8 +6171,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #2952: `config`'s life is this process's own from here on, before any WAL directory of it exists: the startup snapshot, which
     /// can list a directory created while it is taken, never reports it as an orphan ([#raiseOrphanedLives]).
     private StreamConfig ownLife(StreamConfig config) {
-        entries.ownLives()
-               .add(SegmentIndex.durableName(config.name(), config.incarnation()));
+        entries.ownLives().add(SegmentIndex.durableName(config.name(), config.incarnation()));
 
         return config;
     }
@@ -6192,11 +6190,8 @@ public final class StreamPartitionManager implements AutoCloseable {
         var others = adopted.or(List.of());
         var ownLives = Set.copyOf(entries.ownLives());
 
-        entries.lifeReports()
-               .add(() -> announceOtherLives(config, others, ownLives));
-        Thread.ofVirtual()
-              .name("stream-life-reports")
-              .start(this::drainLifeReports);
+        entries.lifeReports().add(() -> announceOtherLives(config, others, ownLives));
+        Thread.ofVirtual().name("stream-life-reports").start(this::drainLifeReports);
 
         return adopted.mapToUnit();
     }
@@ -6211,8 +6206,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// that drainer, or by this loop once the flag is released: the queue is re-checked after every release.
     @Contract
     private void drainLifeReports() {
-        while (!entries.lifeReports()
-                      .isEmpty() && lifeReportsDraining.compareAndSet(false, true)) {
+        while (!entries.lifeReports().isEmpty() && lifeReportsDraining.compareAndSet(false, true)) {
             runQueuedLifeReports();
             lifeReportsDraining.set(false);
         }
@@ -6221,12 +6215,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Only the flag holder removes, so the queue is not empty at `remove`. A report that throws is logged and the rest still run.
     @Contract
     private void runQueuedLifeReports() {
-        while (!entries.lifeReports()
-                      .isEmpty()) {
-            Result.lift(entries.lifeReports()
-                               .remove()::run)
-                  .onFailure(cause -> log.warn("Stream life report failed: {}",
-                                               cause.message()));
+        while (!entries.lifeReports().isEmpty()) {
+            Result.lift(entries.lifeReports().remove()::run).onFailure(cause -> log.warn("Stream life report failed: {}",
+                                                                                         cause.message()));
         }
     }
 
@@ -6235,7 +6226,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// config mints a fresh one). It is never deleted, and never silent: raised once per life, naming the stream, both incarnations and the
     /// sealed-segment count.
     @Contract
-    private void raiseOrphanedLives(StreamConfig config, List<StreamFootprint.OtherLife> sealedLives, Set<String> ownLives) {
+    private void raiseOrphanedLives(StreamConfig config,
+                                    List<StreamFootprint.OtherLife> sealedLives,
+                                    Set<String> ownLives) {
         var sealed = sealedLives.stream()
                                 .collect(Collectors.toMap(StreamFootprint.OtherLife::incarnation,
                                                           StreamFootprint.OtherLife::sealedSegments));
@@ -6305,8 +6298,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// True when `report` was deferred because the sink is not bound yet; under the lock [#bindAndTakeDeferredReports] binds under.
     private boolean deferredUnlessBound(Runnable report) {
         synchronized (entries.deferredReports()) {
-            return !operatorWarningsBound && entries.deferredReports()
-                                                    .add(report);
+            return ! operatorWarningsBound && entries.deferredReports()
+                                                     .add(report);
         }
     }
 
