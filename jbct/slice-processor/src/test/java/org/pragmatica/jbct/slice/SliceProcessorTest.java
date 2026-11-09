@@ -2394,6 +2394,68 @@ class SliceProcessorTest {
         assertThat(factoryContent).contains("searchHandle.invoke(new search_SearchRequest(query, limit))");
     }
 
+    /// #2157 A6-1: the multi-parameter payload record is a member of the factory, and the slice's codec writes it under the
+    /// tag of the record the callee's factory decodes it as, so the caller's bytes are the callee's record.
+    @Test
+    void multiParamDependencyProxy_payloadRecordIsEncodedUnderTheCalleesRecordTag() throws Exception {
+        var factoryContent = generatedFactory(aggregatorSources("Promise<String> aggregate(String query);"));
+
+        assertThat(factoryContent).contains("    record search_SearchRequest(String query, int limit) {}");
+        assertThat(factoryContent).contains("new SliceCodec.TypeCodec<test.AggregatorServiceFactory.search_SearchRequest>(");
+        assertThat(factoryContent).contains("SliceCodec.deterministicTag(\"external.SearchServiceFactory.SearchRequest\")");
+        assertThat(factoryContent).doesNotContain("SliceCodec.deterministicTag(\"test.AggregatorServiceFactory.search_SearchRequest\")");
+    }
+
+    /// The compile-time collision check covers the tag a proxy payload record is written under, not its own name:
+    /// `test.Collider71027` derives tag 101652, the tag of `external.SearchServiceFactory.SearchRequest`.
+    @Test
+    void multiParamDependencyProxy_tagCollisionIsCheckedOnTheCalleesRecordName() {
+        var collider = JavaFileObjects.forSourceString("test.Collider71027",
+                                                       """
+            package test;
+            public record Collider71027(String value) {}
+            """);
+        var sources = aggregatorSources("Promise<String> aggregate(Collider71027 query);");
+        sources.add(collider);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).hadErrorContaining("test.Collider71027 and external.SearchServiceFactory.SearchRequest both derive tag 101652");
+    }
+
+    private List<JavaFileObject> aggregatorSources(String method) {
+        var searchService = JavaFileObjects.forSourceString("external.SearchService",
+                                                             """
+            package external;
+            import org.pragmatica.lang.Promise;
+            public interface SearchService {
+                Promise<String> search(String query, int limit);
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.AggregatorService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.SearchService;
+            @Slice
+            public interface AggregatorService {
+                %s
+                static AggregatorService aggregatorService(SearchService search) { return null; }
+            }
+            """.formatted(method));
+        var sources = commonSources();
+        sources.add(searchService);
+        sources.add(source);
+        return sources;
+    }
+
+    private String generatedFactory(List<JavaFileObject> sources) throws Exception {
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+        return compilation.generatedSourceFile("test.AggregatorServiceFactory")
+                          .get().getCharContent(false).toString();
+    }
+
     @Test
     void should_generate_proper_imports_no_fqcn() throws Exception {
         var request = JavaFileObjects.forSourceString("test.dto.CreateUserRequest",
