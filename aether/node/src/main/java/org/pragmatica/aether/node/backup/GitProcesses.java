@@ -151,8 +151,7 @@ class GitProcesses {
     }
 
     private static Option<Instant> startOf(ProcessHandle handle) {
-        return handle.info()
-                     .startInstant();
+        return Option.from(handle.info().startInstant());
     }
 
     /// Whether `handle` is still the process that was read with start time `read`: a pid reused by another process starts at another time.
