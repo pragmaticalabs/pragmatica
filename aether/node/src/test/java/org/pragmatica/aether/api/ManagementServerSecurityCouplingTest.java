@@ -138,6 +138,17 @@ class ManagementServerSecurityCouplingTest {
         assertThat(serializer.header("WWW-Authenticate")).isNull();
     }
 
+    /// #2926: a failed key fetch is the server's fault -- 503 and no challenge, since no credential can fix it.
+    @Test
+    void keyFetchFailure_refusedWith503_andNoChallenge() {
+        var validator = validatorReturning(new SecurityError.JwksFetchFailed("jwks down").result());
+
+        server(validator, true).onHttpForwardRequest(forwardRequest());
+
+        assertThat(serializer.status()).isEqualTo(503);
+        assertThat(serializer.header("WWW-Authenticate")).isNull();
+    }
+
     @Test
     void insufficientRole_refusalNamesThePlaneAndTheAuthorizationRoleAxis() {
         var validator = validatorReturning(Result.success(SecurityContext.securityContext("ops-alice",
