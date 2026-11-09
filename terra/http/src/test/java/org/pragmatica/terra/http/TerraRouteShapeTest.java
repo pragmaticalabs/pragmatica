@@ -91,6 +91,29 @@ class TerraRouteShapeTest {
         } finally { close(host); }
     }
 
+    @Test void serve_noParamRouteBesideParamSiblingsOfOtherSlices_stayDistinctShapes() throws Exception {
+        var articles = List.<Route<?>>of(
+            Route.<String>get("/api/articles").withoutParameters().to(_ -> Promise.success("articles:list")).withSecurity(SecurityPolicy.publicRoute()).asText(),
+            Route.<String>get("/api/articles/").withPath(aString()).to(slug -> Promise.success("articles:get:" + slug)).withSecurity(SecurityPolicy.publicRoute()).asText(),
+            Route.<String>post("/api/articles").withoutParameters().to(_ -> Promise.success("articles:create")).withSecurity(SecurityPolicy.publicRoute()).asText());
+        var comments = List.<Route<?>>of(
+            Route.<String>get("/api/articles/").withPath(aString(), spacer("comments")).to((slug, _) -> Promise.success("comments:list:" + slug)).withSecurity(SecurityPolicy.publicRoute()).asText(),
+            Route.<String>post("/api/articles/").withPath(aString(), spacer("comments")).to((slug, _) -> Promise.success("comments:add:" + slug)).withSecurity(SecurityPolicy.publicRoute()).asText());
+        var favorites = List.<Route<?>>of(
+            Route.<String>post("/api/articles/").withPath(aString(), spacer("favorite")).to((slug, _) -> Promise.success("favorites:add:" + slug)).withSecurity(SecurityPolicy.publicRoute()).asText());
+        var host = start(List.of(new TerraHttpServerTest.Routes<>(Articles.class, articles, SliceVersionRegistry.UNVERSIONED),
+                                 new TerraHttpServerTest.Routes<>(Comments.class, comments, SliceVersionRegistry.UNVERSIONED),
+                                 new TerraHttpServerTest.Routes<>(Favorites.class, favorites, SliceVersionRegistry.UNVERSIONED))).unwrap();
+        try (var client = HttpClient.newHttpClient()) {
+            assertThat(call(client, host, "GET", "/api/articles")).isEqualTo("articles:list");
+            assertThat(call(client, host, "GET", "/api/articles/a1")).isEqualTo("articles:get:a1");
+            assertThat(call(client, host, "GET", "/api/articles/a1/comments")).isEqualTo("comments:list:a1");
+            assertThat(call(client, host, "POST", "/api/articles")).isEqualTo("articles:create");
+            assertThat(call(client, host, "POST", "/api/articles/a1/comments")).isEqualTo("comments:add:a1");
+            assertThat(call(client, host, "POST", "/api/articles/a1/favorite")).isEqualTo("favorites:add:a1");
+        } finally { close(host); }
+    }
+
     private static List<Route<?>> articleRoutes() {
         return List.of(
             Route.<String>get("/articles/").withPath(aString()).to(slug -> Promise.success("articles:get:" + slug)).withSecurity(SecurityPolicy.publicRoute()).asText(),
