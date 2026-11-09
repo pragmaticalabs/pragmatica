@@ -146,11 +146,20 @@ and it reaches a slice only as an explicit `SecurityContext`/`Principal` method 
   anonymous, or that is not a `SecurityContext`, is delivered as the anonymous context.
 - A method taking only a `Principal` keeps it in the payload on an inter-slice call (the caller holds no validated context).
 - `SecurityContext.toString()` withholds claim values, since the context now rides a logged message.
+- Wire: `InvokeRequest` with `caller` has tag 644. Tag 642 decodes the previous ten-component shape (`LegacyInvokeRequest`)
+  as a request with no caller, so a node of the previous build calling a slice during a rolling upgrade reaches its
+  `SecurityContext` parameter as the anonymous context (fail-closed); calls the other way fail until that node is upgraded.
+- A payload of two or more parameters (for example `RequestHeaders` and a business record beside a `SecurityContext`)
+  crosses as the caller's generated proxy record, which the caller's codec writes under the tag of the record the callee's
+  factory decodes it as.
 
 Pinned by `PrincipalPropagationTripwireTest` (`aether-invoke`: wire shape, value on the wire, delivery, the context-free
 call, the forged caller; permanent pins for the receiver's ambient state, the local hop and plain continuations; hazard
 tripwires for the executor hop), `GeneratedCallerPropagationTest` (`slice-processor-tests`: edge, one hop, two hops,
-unauthenticated, forged) and `TerraHttpServerTest` (`holder_*` pins and the request-carried context surviving async steps).
+unauthenticated, forged, each hop through the senders' and callee's real codecs and `DefaultSliceBridge`),
+`InvokeRequestWireCompatibilityTest` (`aether/node`: the previous build's bytes decode with no caller; the caller round
+trip), `TerraHttpServerTest` (`holder_*` pins and the request-carried context surviving async steps) and
+`TerraCallerPropagationTest` (`terra/examples`: edge to slice to slice on Terra, authenticated and public).
 
 ## EndpointRegistry
 
