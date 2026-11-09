@@ -137,7 +137,7 @@ public class FactoryClassGenerator {
         var proxyMethodsCache = new LinkedHashMap<String, List<ProxyMethodInfo>>();
 
         for (var dep : allDeps) {
-            if (!terraTarget() && !dep.isResource() && !dep.isPlainInterface()) {
+            if (!terraTarget() && dep.isSliceDependency()) {
                 proxyMethodsCache.put(dep.interfaceQualifiedName(), collectProxyMethods(dep));
             }
         }
@@ -319,7 +319,7 @@ public class FactoryClassGenerator {
         var methodName = lowercaseFirst(sliceName);
         // Split dependencies: resource deps, slice deps (get proxy records), plain interface deps
         var resourceDeps = allDeps.stream().filter(DependencyModel::isResource).toList();
-        var sliceDeps = allDeps.stream().filter(d -> !d.isResource() && !d.isPlainInterface()).toList();
+        var sliceDeps = allDeps.stream().filter(DependencyModel::isSliceDependency).toList();
         var plainDeps = allDeps.stream().filter(DependencyModel::isPlainInterface).toList();
 
         out.println("    public static Promise<" + sliceName

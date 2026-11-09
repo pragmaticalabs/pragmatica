@@ -133,7 +133,7 @@ public final class TerraDescriptorGenerator {
                        + ".class; }");
             var dependencies = model.dependencies()
                                     .stream()
-                                    .filter(d -> !d.isResource() && !d.isPlainInterface())
+                                    .filter(DependencyModel::isSliceDependency)
                                     .map(d -> d.interfaceQualifiedName() + ".class")
                                     .collect(java.util.stream.Collectors.joining(", "));
 
