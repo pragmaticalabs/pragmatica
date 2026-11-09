@@ -1532,8 +1532,39 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// failure. The committed-and-materialized steady state returns `Result.unitResult()` instantly with
     /// NO consensus round-trip (the same hot path `createStream` short-circuits, but as success rather
     /// than the `STREAM_ALREADY_EXISTS` sentinel the explicit-create contract requires).
+    ///
+    /// [TerminalOperation] (#2952): this blocks its caller for at most [#PUBLISH_COMMIT_WAIT] while the fired commit
+    /// settles ([#materializeForPublish]). Its callers run on threads that may park: the management publish route and
+    /// the control log's serial queue (a virtual thread). The forwarded publish, which runs on the transport's event
+    /// loop, composes [#materializeForPublish] instead and never waits here.
+    @TerminalOperation
     public Result<Unit> ensureStreamMaterialized(StreamConfig config) {
-        return createStream(config, CommitMode.ASYNC);
+        return materializeForPublish(config).await();
+    }
+
+    /// #2952: the publish-path create as a promise. The local materialization runs now, the config `Put` is fired into
+    /// the name's commit lane, and the promise resolves once that lane settles or [#PUBLISH_COMMIT_WAIT] elapses
+    /// (#1278 ruling F), so nothing parks a thread while the commit is in flight.
+    private Promise<Unit> materializeForPublish(StreamConfig config) {
+        return createStream(config, CommitMode.ASYNC).fold(Cause::promise, _ -> publishCommitSettled(config.name()));
+    }
+
+    /// The bounded wait of [#materializeForPublish]: the name's commit lane settling, at most [#PUBLISH_COMMIT_WAIT]. With
+    /// no lane open, no `Put` is in flight and nothing is waited for.
+    private Promise<Unit> publishCommitSettled(String streamName) {
+        return option(commitLanes.get(streamName)).fold(Promise::unitPromise, StreamPartitionManager::boundedCommitWait);
+    }
+
+    /// The timeout fails a DERIVED promise, never the lane itself: the lane settles only when its `Put` resolves, so a
+    /// destroy of the name stays queued behind the `Put` however long it takes ([#inLane], #2627).
+    ///
+    /// Recovery: design-out -- the wait's outcome is not read. The accept gate ([#committedLife]) decides from the life
+    /// applied here, so a commit slower than the wait leaves the publish refused retriably, never accepted into an
+    /// uncommitted life.
+    private static Promise<Unit> boundedCommitWait(Promise<Unit> lane) {
+        return lane.map(_ -> unit())
+                   .timeout(PUBLISH_COMMIT_WAIT)
+                   .recover(_ -> unit());
     }
 
     /// #1564: create a DECLARED stream — a `[streams.X]` resource, a durable topic (and its dead-letter stream)
@@ -1950,19 +1981,15 @@ public final class StreamPartitionManager implements AutoCloseable {
         return List.of(new KVCommand.Put<AetherKey, AetherValue>(key, value));
     }
 
-    /// Publish-path commit (#1278 ruling F): fire the config `Put` and wait at most [#PUBLISH_COMMIT_WAIT] for it to
-    /// commit and apply here, so the first publish to a new stream normally lands in its committed life. The outcome
-    /// is not read: the accept gate ([#committedLife]) decides from the applied life, and a commit slower than the
-    /// wait — a still-catching-up leader — leaves the publish refused retriably instead of stalling it. The `Put` is
-    /// submitted through the name's commit lane ([#inLane], #2627): a wait that elapses leaves the `Put` in flight, and a
-    /// destroy of the name is then queued behind it instead of racing it.
-    private Result<Unit> fireAsyncCommit(ClusterNode<KVCommand<AetherKey>> node,
-                                         StreamConfig config,
-                                         StreamEntry entry) {
-        return inLane(config.name(),
-                      () -> applyPutCommandAsync(node, config)).await(PUBLISH_COMMIT_WAIT)
-                     .fold(_ -> success(unit()),
-                           _ -> success(unit()));
+    /// Publish-path commit (#1278 ruling F): fire the config `Put` through the name's commit lane ([#inLane], #2627) and
+    /// return at once. The bounded wait for it to commit and apply here, so the first publish to a new stream normally
+    /// lands in its committed life, is the caller's ([#publishCommitSettled], #2952): it composes on the lane and never
+    /// parks a thread. A wait that elapses leaves the `Put` in flight, and a destroy of the name is then queued behind it
+    /// instead of racing it. The `Put`'s failure is logged by [#applyPutCommandAsync] and otherwise not read: the accept
+    /// gate ([#committedLife]) decides from the applied life.
+    @Contract
+    private void fireAsyncCommit(ClusterNode<KVCommand<AetherKey>> node, StreamConfig config) {
+        inLane(config.name(), () -> applyPutCommandAsync(node, config));
     }
 
     /// Commit strategy threaded through the shared create/materialize chain so `createStream` (explicit
@@ -1993,15 +2020,18 @@ public final class StreamPartitionManager implements AutoCloseable {
                 return StreamError.General.STREAM_ALREADY_EXISTS.result();
             }
         },
-        /// Publish auto-create path: fire the commit async (never blocks); already-committed and
-        /// republished both report success so the caller proceeds straight to `publishLocal`.
+        /// Publish auto-create path: fire the commit async (never blocks; the bounded wait is composed by
+        /// [StreamPartitionManager#materializeForPublish]); already-committed and republished both report success so
+        /// the caller proceeds straight to `publishLocal`.
         ASYNC {
             @Override
             Result<Unit> publish(StreamPartitionManager mgr,
                                  ClusterNode<KVCommand<AetherKey>> node,
                                  StreamConfig config,
                                  StreamEntry entry) {
-                return mgr.fireAsyncCommit(node, config, entry);
+                mgr.fireAsyncCommit(node, config);
+
+                return success(unit());
             }
 
             @Override
@@ -2376,52 +2406,61 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// The owner re-checks the stream's consistency ({@link #ensureWritableConsistency}, #1262) on BOTH
     /// attempts — the first append and the post-materialize retry — rather than trusting the forwarder to
     /// have refused: a STRONG or UNKNOWN stream is never appended here as EVENTUAL.
-    public Result<Long> publishForwarded(String streamName,
-                                         int partition,
-                                         byte[] payload,
-                                         long timestamp,
-                                         int minAcks) {
+    ///
+    /// #2952: the answer is a promise and nothing on this path waits on the calling thread for a commit or an fsync; that
+    /// thread is the transport's event loop ([org.pragmatica.aether.stream.forward.StreamForwardHandler#onPublishForward]): the lazy materialization's
+    /// bounded commit wait is composed ([#materializeForPublish]), and the owner append resolves on its group-commit
+    /// fsync ([#durablePublish]) instead of awaiting it.
+    public Promise<Long> publishForwarded(String streamName,
+                                          int partition,
+                                          byte[] payload,
+                                          long timestamp,
+                                          int minAcks) {
         return publishForwarded(streamName, partition, payload, timestamp, minAcks, false);
     }
 
     /// `systemWriter` is true only for a publish that the sending node's own system publisher forwarded (#1338): the
     /// owner refuses a forwarded write to a `system:` stream without it, so the origin-side check is not the only one.
-    public Result<Long> publishForwarded(String streamName,
-                                         int partition,
-                                         byte[] payload,
-                                         long timestamp,
-                                         int minAcks,
-                                         boolean systemWriter) {
-        return writableAppend(streamName, partition, payload, timestamp, minAcks, systemWriter).fold(cause -> recoverForwardedPublish(cause,
-                                                                                                                                      streamName,
-                                                                                                                                      partition,
-                                                                                                                                      payload,
-                                                                                                                                      timestamp,
-                                                                                                                                      systemWriter),
-                                                                                                     Result::success);
+    public Promise<Long> publishForwarded(String streamName,
+                                          int partition,
+                                          byte[] payload,
+                                          long timestamp,
+                                          int minAcks,
+                                          boolean systemWriter) {
+        return writableAppend(streamName, partition, payload, timestamp, minAcks, systemWriter).fold(result -> recoverForwardedPublish(result,
+                                                                                                                                       streamName,
+                                                                                                                                       partition,
+                                                                                                                                       payload,
+                                                                                                                                       timestamp,
+                                                                                                                                       systemWriter));
     }
 
-    private Result<Long> recoverForwardedPublish(Cause cause,
-                                                 String streamName,
-                                                 int partition,
-                                                 byte[] payload,
-                                                 long timestamp,
-                                                 boolean systemWriter) {
-        return cause instanceof StreamError.StreamNotFound
-               ? materializeThenRetryPublish(streamName, partition, payload, timestamp, systemWriter)
-               : cause.result();
+    private Promise<Long> recoverForwardedPublish(Result<Long> result,
+                                                  String streamName,
+                                                  int partition,
+                                                  byte[] payload,
+                                                  long timestamp,
+                                                  boolean systemWriter) {
+        return result.fold(cause -> cause instanceof StreamError.StreamNotFound
+                                    ? materializeThenRetryPublish(streamName,
+                                                                  partition,
+                                                                  payload,
+                                                                  timestamp,
+                                                                  systemWriter)
+                                    : cause.promise(),
+                           Promise::success);
     }
 
     /// Lazily materialize from the locally-visible committed config, then retry the append once. When the
     /// committed config is not yet visible on this node the append cannot be recovered here, so the
     /// retryable {@link StreamError.StreamConfigNotYetVisible} is returned for the forwarder to back off on.
-    private Result<Long> materializeThenRetryPublish(String streamName,
-                                                     int partition,
-                                                     byte[] payload,
-                                                     long timestamp,
-                                                     boolean systemWriter) {
+    private Promise<Long> materializeThenRetryPublish(String streamName,
+                                                      int partition,
+                                                      byte[] payload,
+                                                      long timestamp,
+                                                      boolean systemWriter) {
         return committedConfigSource.committedConfig(streamName)
-                                    .fold(() -> new StreamError.StreamConfigNotYetVisible(streamName).result(),
+                                    .fold(() -> new StreamError.StreamConfigNotYetVisible(streamName).promise(),
                                           config -> materializeThenPublish(config,
                                                                            streamName,
                                                                            partition,
@@ -2432,32 +2471,35 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// The retry's replica floor is the committed config's own `CF - 1`: the caller's floor was read
     /// before the stream existed here and is therefore always 0 on this path.
-    private Result<Long> materializeThenPublish(StreamConfig config,
-                                                String streamName,
-                                                int partition,
-                                                byte[] payload,
-                                                long timestamp,
-                                                boolean systemWriter) {
-        return ensureStreamMaterialized(config).flatMap(_ -> writableAppend(streamName,
-                                                                            partition,
-                                                                            payload,
-                                                                            timestamp,
-                                                                            config.confirmationFactor() - 1,
-                                                                            systemWriter));
+    private Promise<Long> materializeThenPublish(StreamConfig config,
+                                                 String streamName,
+                                                 int partition,
+                                                 byte[] payload,
+                                                 long timestamp,
+                                                 boolean systemWriter) {
+        return materializeForPublish(config).flatMap(_ -> writableAppend(streamName,
+                                                                         partition,
+                                                                         payload,
+                                                                         timestamp,
+                                                                         config.confirmationFactor() - 1,
+                                                                         systemWriter));
     }
 
-    private Result<Long> writableAppend(String streamName,
-                                        int partition,
-                                        byte[] payload,
-                                        long timestamp,
-                                        int minAcks,
-                                        boolean systemWriter) {
-        return ensureWritableConsistency(streamName).flatMap(_ -> publishLocalAtFloor(streamName,
-                                                                                      partition,
-                                                                                      payload,
-                                                                                      timestamp,
-                                                                                      minAcks,
-                                                                                      systemWriter));
+    private Promise<Long> writableAppend(String streamName,
+                                         int partition,
+                                         byte[] payload,
+                                         long timestamp,
+                                         int minAcks,
+                                         boolean systemWriter) {
+        return ensureWritableConsistency(streamName).fold(Cause::promise,
+                                                          _ -> durablePublish(streamName,
+                                                                              partition,
+                                                                              payload,
+                                                                              timestamp,
+                                                                              ownerEpochSource.currentOwnerEpoch(streamName,
+                                                                                                                 partition),
+                                                                              minAcks,
+                                                                              systemWriter));
     }
 
     public Result<Long> publishLocal(String streamName, int partition, byte[] payload, long timestamp) {
@@ -2541,22 +2583,56 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       Epoch ownerEpoch,
                                       int minAcks,
                                       boolean systemWriter) {
-        return StreamWriteRouter.systemWriteRefusal(streamName, systemWriter)
-                                .<Result<Long>> map(Cause::result)
-                                .or(() -> admittedPublishLocal(streamName,
-                                                               partition,
-                                                               payload,
-                                                               timestamp,
-                                                               ownerEpoch,
-                                                               minAcks));
+        return ownerAppend(streamName, partition, payload, timestamp, ownerEpoch, minAcks, systemWriter).flatMap(this::awaitDurable)
+                          .onSuccess(offset -> ownerDurable(streamName, partition, offset))
+                          .fold(cause -> handleDrop(cause, streamName, partition),
+                                Result::success);
     }
 
-    private Result<Long> admittedPublishLocal(String streamName,
-                                              int partition,
-                                              byte[] payload,
-                                              long timestamp,
-                                              Epoch ownerEpoch,
-                                              int minAcks) {
+    /// #2952: the forwarded publish's owner append — the same append, admission and drop handling as
+    /// [#publishLocal], but the group-commit fsync is composed rather than awaited, so the transport's event loop
+    /// that runs the forward never parks on it. The answer still resolves only once the frame is durable.
+    private Promise<Long> durablePublish(String streamName,
+                                         int partition,
+                                         byte[] payload,
+                                         long timestamp,
+                                         Epoch ownerEpoch,
+                                         int minAcks,
+                                         boolean systemWriter) {
+        return ownerAppend(streamName, partition, payload, timestamp, ownerEpoch, minAcks, systemWriter).fold(cause -> handleDrop(cause,
+                                                                                                                                  streamName,
+                                                                                                                                  partition).async(),
+                                                                                                              logged -> durableOffset(logged,
+                                                                                                                                      streamName,
+                                                                                                                                      partition));
+    }
+
+    /// The append's offset once its fsync resolves, marked durable here BEFORE the promise's dependents run
+    /// ([Promise#withSuccess]), so visibility is recomputed before the publish is answered, as in [#publishLocal].
+    private Promise<Long> durableOffset(LoggedAppend logged, String streamName, int partition) {
+        return logged.durable()
+                     .map(_ -> logged.offset())
+                     .withSuccess(offset -> ownerDurable(streamName, partition, offset));
+    }
+
+    private Result<LoggedAppend> ownerAppend(String streamName,
+                                             int partition,
+                                             byte[] payload,
+                                             long timestamp,
+                                             Epoch ownerEpoch,
+                                             int minAcks,
+                                             boolean systemWriter) {
+        return StreamWriteRouter.systemWriteRefusal(streamName, systemWriter)
+                                .<Result<LoggedAppend>> map(Cause::result)
+                                .or(() -> admittedAppend(streamName, partition, payload, timestamp, ownerEpoch, minAcks));
+    }
+
+    private Result<LoggedAppend> admittedAppend(String streamName,
+                                                int partition,
+                                                byte[] payload,
+                                                long timestamp,
+                                                Epoch ownerEpoch,
+                                                int minAcks) {
         return resolveWritableEntry(streamName).flatMap(entry -> publishInSection(entry,
                                                                                   streamName,
                                                                                   partition,
@@ -2567,11 +2643,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                   partition,
                                                                                                   minAcks).flatMap(_ -> provenanceAdmits(streamName,
                                                                                                                                          partition,
-                                                                                                                                         some(ownerEpoch)))))
-                                   .flatMap(this::awaitDurable)
-                                   .onSuccess(offset -> ownerDurable(streamName, partition, offset))
-                                   .fold(cause -> handleDrop(cause, streamName, partition),
-                                         Result::success);
+                                                                                                                                         some(ownerEpoch)))));
     }
 
     /// The owner's append at `offset` is durable — its group commit resolved, and group commit resolves in

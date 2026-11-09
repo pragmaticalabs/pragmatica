@@ -216,6 +216,26 @@ class StreamPartitionManagerFrozenRingDropTest {
         manager.close();
     }
 
+    /// #2952: the forwarded publish's owner append composes its fsync instead of awaiting it, and keeps the same drop
+    /// handling: a best-effort drop is absorbed at the unchanged head and counted, exactly as [#publishLocal] does.
+    @Test
+    void publishForwarded_absorbsDropAtUnchangedHead_andCountsIt_onBestEffortStream() {
+        var config = plainConfig();
+        var manager = streamPartitionManager(floorBudget(config), Option.none());
+        create(manager, config);
+
+        publishExpecting(manager, config, 0, 0);
+
+        manager.publishForwarded(config.name(), PARTITION, new byte[OVERSIZED], 9_999L, 0)
+               .await()
+               .onFailure(cause -> fail("best-effort drop must be absorbed, but failed: " + cause.message()))
+               .onSuccess(offset -> assertThat(offset).as("acked at the unchanged head").isZero());
+        assertThat(manager.droppedEventsSinceBoot()).isEqualTo(1L);
+
+        publishExpecting(manager, config, 1, 1);
+        manager.close();
+    }
+
     // === helpers ===
 
     private static StreamConfig durableTopicConfig() {

@@ -144,7 +144,7 @@ class SystemStreamForwardPinsTest {
     void unmarkedForward_toAnOwnerWithNoRing_isRefused_andMintsNoRing() {
         var bare = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
         try {
-            var res = bare.publishForwarded(SYSTEM, 0, new byte[]{1}, 1L, 0);
+            var res = bare.publishForwarded(SYSTEM, 0, new byte[]{1}, 1L, 0).await();
 
             assertThat(res.isFailure()).as("res=%s", res).isTrue();
             assertThat(bare.streamInfo(SYSTEM).isPresent()).as("no ring minted by an unmarked forward").isFalse();
@@ -204,8 +204,8 @@ class SystemStreamForwardPinsTest {
         try {
             marked.committedConfigSource(name -> Option.some(StreamConfig.streamConfig(name)));
             unmarked.committedConfigSource(name -> Option.some(StreamConfig.streamConfig(name)));
-            var ok = marked.publishForwarded(SYSTEM, 0, new byte[]{1}, 1L, 0, true);
-            var refused = unmarked.publishForwarded(SYSTEM, 0, new byte[]{1}, 1L, 0, false);
+            var ok = marked.publishForwarded(SYSTEM, 0, new byte[]{1}, 1L, 0, true).await();
+            var refused = unmarked.publishForwarded(SYSTEM, 0, new byte[]{1}, 1L, 0, false).await();
             assertThat(ok.isSuccess()).as("marked forward after lazy materialize ok=%s", ok).isTrue();
             assertThat(events(marked, SYSTEM)).isEqualTo(1L);
             assertThat(refused.isFailure()).isTrue();

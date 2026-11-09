@@ -81,7 +81,7 @@ class StrongConsistencyFailClosedTest {
     /// refuse (an older node, or any future path) must not get a STRONG append landed as EVENTUAL here.
     @Test
     void publishForwarded_refusesWithConsensusPathUnavailable_forStrongStream() {
-        partitionManager.publishForwarded(STRONG_STREAM, PARTITION, "e0".getBytes(), 1L, NO_FLOOR)
+        partitionManager.publishForwarded(STRONG_STREAM, PARTITION, "e0".getBytes(), 1L, NO_FLOOR).await()
                         .onSuccessRun(Assertions::fail)
                         .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.CONSENSUS_PATH_UNAVAILABLE));
         assertThat(partitionManager.nextExpectedOffset(STRONG_STREAM, PARTITION)).isZero();
@@ -111,7 +111,7 @@ class StrongConsistencyFailClosedTest {
 
     @Test
     void publishForwarded_refusesUnreadableConsistencyMode() {
-        partitionManager.publishForwarded(UNKNOWN_STREAM, PARTITION, "e0".getBytes(), 1L, NO_FLOOR)
+        partitionManager.publishForwarded(UNKNOWN_STREAM, PARTITION, "e0".getBytes(), 1L, NO_FLOOR).await()
                         .onSuccessRun(Assertions::fail)
                         .onFailure(StrongConsistencyFailClosedTest::assertUnreadableMode);
         assertThat(partitionManager.nextExpectedOffset(UNKNOWN_STREAM, PARTITION)).isZero();
@@ -176,7 +176,7 @@ class StrongConsistencyFailClosedTest {
                                             ? Option.some(lagging)
                                             : Option.none());
 
-        owner.publishForwarded(lagging.name(), PARTITION, "e0".getBytes(), 1L, NO_FLOOR)
+        owner.publishForwarded(lagging.name(), PARTITION, "e0".getBytes(), 1L, NO_FLOOR).await()
              .onSuccessRun(Assertions::fail)
              .onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.CONSENSUS_PATH_UNAVAILABLE));
         assertThat(owner.nextExpectedOffset(lagging.name(), PARTITION)).isZero();
