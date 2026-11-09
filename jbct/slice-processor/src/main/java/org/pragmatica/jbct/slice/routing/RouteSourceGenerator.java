@@ -148,6 +148,9 @@ public class RouteSourceGenerator {
 
     private static final String REQUEST_HEADERS_FACTORY = "org.pragmatica.aether.http.handler.RequestHeaders.requestHeaders";
 
+    /// #2157: the security context the edge validated for THIS request, read from the request itself.
+    private static final String REQUEST_SECURITY = "org.pragmatica.aether.http.adapter.RequestSecurity.securityOf(__request)";
+
     private static final Map<Integer, String> HTTP_STATUS_NAMES = Map.ofEntries(Map.entry(200, "OK"),
                                                                                 Map.entry(201, "CREATED"),
                                                                                 Map.entry(202, "ACCEPTED"),
@@ -534,11 +537,6 @@ public class RouteSourceGenerator {
         }
 
         out.println("import org.pragmatica.aether.http.handler.security.SecurityPolicy;");
-        if (anyMethodHasSecurityParams(methods)) {
-            out.println("import org.pragmatica.aether.http.handler.security.SecurityContext;");
-            out.println("import org.pragmatica.aether.http.handler.security.SecurityContextHolder;");
-        }
-
         if (usesCommonContentType(routeConfig)) {
             out.println("import org.pragmatica.http.CommonContentType;");
         }
@@ -1556,7 +1554,7 @@ public class RouteSourceGenerator {
 
     /// Build the delegate method call with security params injected in the correct positions.
     /// For non-security methods, returns a simple delegate call.
-    /// For security methods, inserts __ctx.principal() or __ctx for security params.
+    /// For security methods, inserts the request's security context (or its principal) for security params.
     private String delegateCallWithSecurity(MethodModel method, Map<String, String> businessArgsByName) {
         if (!method.hasInjectedParams()) {
             var args = method.parameters()
@@ -1578,11 +1576,11 @@ public class RouteSourceGenerator {
 
     private String securityArgForParam(MethodModel.MethodParameterInfo param, Map<String, String> businessArgsByName) {
         if (MethodModel.isPrincipalParam(param)) {
-            return "__ctx.principal()";
+            return REQUEST_SECURITY + ".principal()";
         }
 
         if (MethodModel.isSecurityContextParam(param)) {
-            return "__ctx";
+            return REQUEST_SECURITY;
         }
 
         if (MethodModel.isRequestHeadersParam(param)) {
@@ -1594,49 +1592,25 @@ public class RouteSourceGenerator {
 
     /// Generate the `.to(...)` handler of a route whose method takes injected parameters.
     ///
-    /// Security parameters come from the security context read inside the handler, as
-    /// `lambdaParams -> { var __ctx = ...; return delegateCall; }`. RequestHeaders (#2879) come from the request
-    /// context of the same request: the argument-binding lambda returns the request-bound handler
-    /// `__request -> delegateCall`, which [Route#withRequestContext] (see [#routeStart]) feeds that request, so the
-    /// headers are passed straight in, never read from ambient state.
+    /// The argument-binding lambda returns the request-bound handler `__request -> delegateCall`, which
+    /// [Route#withRequestContext] (see [#routeStart]) feeds the same request. Every injected value comes from that
+    /// request: RequestHeaders (#2879) from its headers, Principal/SecurityContext (#2157) from the security context the
+    /// edge validated and put on it. Nothing is read from ambient state, so an asynchronous step before the handler
+    /// (a body decode) cannot lose the caller.
     private void generateInjectingLambda(PrintWriter out,
                                          MethodModel method,
                                          String lambdaParams,
                                          String delegateCall) {
-        if (!method.hasRequestHeaders()) {
-            generateSecurityLambda(out, lambdaParams, delegateCall);
-
-            return;
-        }
-
-        var bound = "org.pragmatica.lang.Promise.success(__request -> " + delegateCall + ")";
-
-        if (!method.hasSecurityParams()) {
-            out.println("                 .to(" + lambdaParams + " " + bound + ")");
-
-            return;
-        }
-
-        out.println("                 .to(" + lambdaParams + " {");
-        out.println("                     var __ctx = SecurityContextHolder.currentContext().or(SecurityContext.securityContext());");
-        out.println("                     return " + bound + ";");
-        out.println("                 })");
+        out.println("                 .to(" + lambdaParams
+                   + " org.pragmatica.lang.Promise.success(__request -> " + delegateCall
+                   + "))");
     }
 
-    /// Generate a block lambda with security context extraction.
-    /// Wraps: `lambdaParams -> { var __ctx = ...; return delegateCall; }`
-    private void generateSecurityLambda(PrintWriter out, String lambdaParams, String delegateCall) {
-        out.println("                 .to(" + lambdaParams + " {");
-        out.println("                     var __ctx = SecurityContextHolder.currentContext().or(SecurityContext.securityContext());");
-        out.println("                     return " + delegateCall + ";");
-        out.println("                 })");
-    }
-
-    /// The first line of a route expression. A route whose method takes RequestHeaders (#2879) is declared as a route
+    /// The first line of a route expression. A route whose method takes injected parameters (#2879, #2157) is declared as a route
     /// of request-bound handlers and completed by [Route#withRequestContext]; [#routeClose] supplies the matching
     /// parenthesis ahead of the trailing comma.
     private String routeStart(MethodModel method, String responseType, String httpMethod, String path) {
-        return method.hasRequestHeaders()
+        return method.hasInjectedParams()
                ? "Route.withRequestContext(Route.<" + HANDLER_TYPE
                 + "<" + responseType
                 + ">>" + httpMethod
@@ -1646,15 +1620,9 @@ public class RouteSourceGenerator {
     }
 
     private String routeClose(MethodModel method) {
-        return method.hasRequestHeaders()
+        return method.hasInjectedParams()
                ? ")"
                : "";
-    }
-
-    /// Check if any method in the model has security parameters.
-    private boolean anyMethodHasSecurityParams(List<MethodModel> methods) {
-        return methods.stream()
-                      .anyMatch(MethodModel::hasSecurityParams);
     }
 
     private void generateNoParamsRoute(PrintWriter out,

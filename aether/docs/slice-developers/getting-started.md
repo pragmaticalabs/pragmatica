@@ -1119,6 +1119,26 @@ private Promise<ShortUrl> traced(RequestHeaders headers, ResolveRequest request)
   behalf. A slice that must pass the headers on does so explicitly. A `null` `RequestHeaders` argument on such a
   call is sent as empty headers by the generated proxy rather than failing.
 
+### The caller across slice-to-slice calls
+
+A `SecurityContext` parameter is the caller's identity on every hop, not only at the edge:
+
+- **At the edge** the generated route passes the context the edge validated for this request (and, for a `Principal`
+  parameter, its principal) straight into the method. It is taken from the request, never from ambient state, so a
+  body decode or any other asynchronous step before the handler cannot lose it. An unauthenticated request gets the
+  anonymous context.
+- **Across a slice-to-slice call** to a method that declares `SecurityContext`, the caller passes its context as the
+  argument, as with any parameter. The generated proxy does not put it in the payload: it travels beside the payload, on
+  the invoke message, exactly as the edge validated it (principal, roles, claims). The receiving method gets it in its
+  `SecurityContext` parameter, and a `Principal` parameter beside it gets its principal. An unauthenticated or absent
+  context travels as "no identity" and arrives as the anonymous context, never as a stand-in principal or a default
+  role.
+- **Identity, never authorization.** The receiving node's route security never reads a propagated context; it only
+  ever authorizes the HTTP requests it serves itself. Treat the context as who is calling, for slice logic and audit.
+- A method that declares a `Principal` and no `SecurityContext` receives its `Principal` as an ordinary argument on a
+  slice-to-slice call: the caller holds only a principal there, so there is no validated context to carry.
+- `SecurityContext.toString()` prints claim names but not claim values, so logging a context does not leak a token.
+
 ## Securing Your Endpoints
 
 The app HTTP server defaults to `api-key` mode when `security_mode` is omitted from `aether.toml`
