@@ -76,6 +76,7 @@ class PrincipalPropagationTripwireTest {
 
     private final RecordingNetwork network = new RecordingNetwork();
     private SliceInvoker invoker;
+    private RecordingBridge senderBridge;
 
     @AfterEach
     void tearDown() {
@@ -121,6 +122,7 @@ class PrincipalPropagationTripwireTest {
     @Test
     void remoteInvoke_requestOnTheWireCarriesTheCallersContext() {
         assertThat(senderRequestFromAliceScope(callerRequest(ALICE)).caller()).isEqualTo(Option.some(ALICE));
+        assertThat(senderBridge.encoded()).as("only the business request is encoded as the payload").containsExactly("request");
     }
 
     /// The sender never reads ambient state: a call made without an explicit caller, from inside a fully bound edge
@@ -173,6 +175,17 @@ class PrincipalPropagationTripwireTest {
         inAliceScope(() -> invoker.invoke(ARTIFACT, METHOD, callerRequest(ALICE)));
 
         assertThat(network.awaitRequest().caller()).isEqualTo(Option.some(ALICE));
+        assertThat(senderBridge.encoded()).as("only the business request is encoded as the payload").containsExactly("request");
+    }
+
+    /// The awaiting-completion path (#1723) carries the caller the same way.
+    @Test
+    void remoteAwaitingCompletion_carriesTheCaller() {
+        startRemoteInvoker();
+        invoker.invokeAwaitingCompletion(ARTIFACT, METHOD, callerRequest(ALICE));
+
+        assertThat(network.awaitRequest().caller()).isEqualTo(Option.some(ALICE));
+        assertThat(senderBridge.encoded()).as("only the business request is encoded as the payload").containsExactly("request");
     }
 
     /// Affinity is resolved from the business request, never from its [CallerRequest] wrapper.
@@ -226,7 +239,8 @@ class PrincipalPropagationTripwireTest {
     private void startRemoteInvoker() {
         var handler = InvocationHandler.invocationHandler(SENDER, network);
 
-        handler.registerSlice(ARTIFACT, new RecordingBridge());
+        senderBridge = new RecordingBridge();
+        handler.registerSlice(ARTIFACT, senderBridge);
         var registry = EndpointRegistry.endpointRegistry();
 
         registry.registerEndpoint(new EndpointKey(ARTIFACT, METHOD, 0), EndpointValue.endpointValue(RECEIVER));
@@ -270,6 +284,7 @@ class PrincipalPropagationTripwireTest {
         inAliceScope(() -> invoker.invokeLocal(ARTIFACT, METHOD, callerRequest(ALICE), new TypeToken<String>() {}));
 
         assertThat(bridge.awaitSeen().caller()).isEqualTo(Option.some(ALICE));
+        assertThat(bridge.encoded()).as("only the business request is encoded as the payload").containsExactly("request");
     }
 
     private static CallerRequest callerRequest(SecurityContext caller) {
@@ -426,6 +441,11 @@ class PrincipalPropagationTripwireTest {
     private static final class RecordingBridge implements SliceBridge {
         private final AtomicReference<Seen> seen = new AtomicReference<>();
         private final CountDownLatch invoked = new CountDownLatch(1);
+        private final List<Object> encoded = new CopyOnWriteArrayList<>();
+
+        List<Object> encoded() {
+            return encoded;
+        }
 
         Seen awaitSeen() throws InterruptedException {
             assertThat(invoked.await(WAIT_SECONDS, TimeUnit.SECONDS)).as("the downstream slice was invoked").isTrue();
@@ -448,6 +468,8 @@ class PrincipalPropagationTripwireTest {
 
         @Override
         public Promise<byte[]> encode(Object input) {
+            encoded.add(input);
+
             return Promise.success(new byte[0]);
         }
 
