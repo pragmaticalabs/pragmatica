@@ -425,6 +425,7 @@ public final class QuorumLossDetector {
         var report = currentReport();
 
         if (report != reported) {
+            log.info("Quorum report (#2936): {} -> {}", reported, report);
             reported = report;
             reportListener.accept(report);
         }

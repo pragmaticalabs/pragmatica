@@ -1232,6 +1232,18 @@ class QuorumLossDetectorTest {
         }
 
         @Test
+        void lostVoter_thenDemoted_reportsObserver() {
+            detector.setQuorumReportListener(reports::add);
+            members(5);
+            coreCount(5);
+            detector.onConsensusEdge(false, ConsensusRole.UNCHANGED);
+            detector.onConsensusEdge(false, ConsensusRole.OBSERVER);
+
+            assertThat(reports).as("a role edge publishes even when presence was already lost")
+                               .containsExactly(HELD, LOST, OBSERVER);
+        }
+
+        @Test
         void observerResumed_reportsObserver() {
             detector.setQuorumReportListener(reports::add);
             members(5);
