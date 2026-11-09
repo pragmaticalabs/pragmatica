@@ -214,6 +214,41 @@ class NullableOutputValidationTest {
         assertThat(result.diagnostics()).doesNotContain("proven non-null");
     }
 
+    /// #2962: the proven-non-null check on an `Option` RECORD FIELD holds under every row wrapper, not only `List`.
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"Promise<Row>", "Promise<Option<Row>>", "Promise<List<Row>>"})
+    void provenNonNullOutput_onOptionField_failsTheBuild_underEveryRowWrapper(String wrapper) throws Exception {
+        var result = compile(repo("WrappedProvenRepo" + wrapperId(wrapper),
+                                  "record Row(Option<String> status) {}",
+                                  "SELECT status FROM orders",
+                                  wrapper + " run()"));
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.diagnostics())
+            .contains("ERROR")
+            .contains("Method 'run'")
+            .contains("output 'status' is proven non-null")
+            .contains("column 'orders.status' is a NOT NULL column")
+            .contains("declare the field as the plain type");
+    }
+
+    /// Control per wrapper: an UNPROVEN output into the same `Option` field compiles.
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"Promise<Row>", "Promise<Option<Row>>", "Promise<List<Row>>"})
+    void unprovenOutput_onOptionField_isAccepted_underEveryRowWrapper(String wrapper) throws Exception {
+        var result = compile(repo("WrappedUnprovenRepo" + wrapperId(wrapper),
+                                  "record Row(Option<UUID> correlationId) {}",
+                                  "SELECT correlation_id FROM orders",
+                                  wrapper + " run()"));
+
+        assertThat(result.success()).as(result.diagnostics()).isTrue();
+        assertThat(result.diagnostics()).doesNotContain("proven non-null");
+    }
+
+    private static String wrapperId(String wrapper) {
+        return wrapper.replaceAll("[^A-Za-z]", "");
+    }
+
     /// Control: an `Option` scalar return stays accepted on a proven output - there `Option` is the row wrapper
     /// (zero rows), never a NULL holder, so declared nullability cannot disagree with the proof.
     @Test
