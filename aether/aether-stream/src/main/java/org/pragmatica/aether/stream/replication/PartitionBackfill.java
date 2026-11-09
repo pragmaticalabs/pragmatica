@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
+import java.util.stream.IntStream;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -118,6 +119,8 @@ public final class PartitionBackfill {
     /// How many of the owner's newest records a replica that claims to hold them all compares before it is promoted
     /// (#1730 phase 2, the window the promotion gate compares as well).
     private static final long TAIL_VERIFY_WINDOW = 1024L;
+    /// The promotion gate's own catch-up ([#catchUpOwnerFrom]) weighs no other survivor: it would probe the same source again.
+    private static final LongSupplier NO_OTHER_SURVIVOR = () -> - 1L;
 
     private final ReplicaRegistry registry;
     private final AlignedRecovery partitionRecovery;
@@ -196,6 +199,15 @@ public final class PartitionBackfill {
     /// offset and becomes a no-op once the replica reaches the owner's true tail — never a per-tick probe.
     /// A failed re-verify leaves `confirmedOffset` unchanged AND unrecorded, so the next tick retries.
     private final ConcurrentHashMap<PartitionKey, Long> reverifiedAtOffset;
+    /// I-27 (#1759, CTO A1): per partition and source replica, where that replica's committed lineage ENDS, learned when an owner
+    /// catch-up clipped its page ([#withinCommittedLineage]). The replica's `confirmedOffset` is its raw WAL tail, which may run past
+    /// the lineage into a deposed epoch's records; ranking by the raw tail would pick it again on every redrive. The entry is valid
+    /// only while the replica's tail is the one observed ([Lineage#rawTail]); a larger tail is new data and is re-read. Shared by
+    /// the per-run views.
+    private final ConcurrentHashMap<PartitionKey, ConcurrentHashMap<NodeId, Lineage>> committedLineageEnds;
+
+    /// A source replica's committed-lineage end `end`, observed while its raw tail was `rawTail`.
+    private record Lineage(long rawTail, long end) {}
 
     /// Per-partition wall-clock instant (ms) of the last owner re-verify for a CAUGHT_UP non-owner replica
     /// (#333 write-idle residual). Sibling of {@link #firstNoSourceMs}: it quiesces the periodic re-verify so
@@ -273,6 +285,7 @@ public final class PartitionBackfill {
         this.firstNoSourceMs = new ConcurrentHashMap<>();
         this.unreachableSinceMs = new ConcurrentHashMap<>();
         this.reverifiedAtOffset = new ConcurrentHashMap<>();
+        this.committedLineageEnds = new ConcurrentHashMap<>();
         this.lastReverifyMs = new ConcurrentHashMap<>();
         this.inFlight = new ConcurrentHashMap<>();
         this.reportedOversized = new ConcurrentHashMap<>();
@@ -304,6 +317,7 @@ public final class PartitionBackfill {
         this.committedIsr = shared.committedIsr;
         this.promotionEscapeAfter = shared.promotionEscapeAfter;
         this.reverifiedAtOffset = shared.reverifiedAtOffset;
+        this.committedLineageEnds = shared.committedLineageEnds;
         this.lastReverifyMs = shared.lastReverifyMs;
         this.inFlight = shared.inFlight;
         this.ownerResolver = shared.ownerResolver;
@@ -1702,19 +1716,51 @@ public final class PartitionBackfill {
     /// {@link #probeThenPromoteOwner}, which probes the blind survivors' REAL tails before it may self-promote.
     private Promise<Long> promoteOwner(String streamName, int partition, List<ReplicaDescriptor> replicas) {
         var localWatermark = selfWatermark.localWatermark(streamName, partition);
+        var ahead = aheadSurvivors(replicas, localWatermark);
 
-        return aheadSurvivor(replicas, localWatermark).fold(() -> probeThenPromoteOwner(streamName,
-                                                                                        partition,
-                                                                                        replicas,
-                                                                                        localWatermark),
-                                                            survivor -> {
-                                                                clearOversized(streamName, partition);
+        if (ahead.isEmpty()) {
+            return probeThenPromoteOwner(streamName, partition, replicas, localWatermark);
+        }
 
-                                                                return catchupOwnerFromSurvivor(streamName,
-                                                                                                partition,
-                                                                                                survivor,
-                                                                                                localWatermark);
-                                                            });
+        clearOversized(streamName, partition);
+
+        return inRankOrder(ahead.stream()
+                                .<Supplier<Promise<Long>>> map(survivor -> () -> catchupOwnerFromSurvivor(streamName,
+                                                                                                          partition,
+                                                                                                          survivor,
+                                                                                                          localWatermark))
+                                .toList());
+    }
+
+    /// I-27 (#1759, CTO ruling 2026-11-09, FER): the catch-up of the top-ranked source failed (unreadable, damaged, unreachable), so the
+    /// owner falls back to the NEXT-ranked source by committed-lineage end, each tried once per round. Every attempt keeps its own target
+    /// rule (its lineage end, raised to the best other end), so a fallback never activates the owner below a replica that holds more of
+    /// the committed lineage. A source that WAS read but whose run stayed short of the target ([BackfillError.General#INCOMPLETE_BACKFILL])
+    /// is the target rule holding the owner back, not an unreadable source: no fallback. The guarantee: a round activates only through a
+    /// source whose read succeeded and reached the target; when every source fails the last failure propagates, self stays SYNCING and the
+    /// redrive retries (a failed source is read again only in a later round, after the others were tried). Mechanism: a lazy chain over the
+    /// ranked attempts, each started only after the previous one failed.
+    private static Promise<Long> inRankOrder(List<Supplier<Promise<Long>>> attempts) {
+        return attempts.stream()
+                       .reduce(NO_SOURCE_REPLICA.<Long> promise(),
+                               PartitionBackfill::unlessShort,
+                               (first, _) -> first);
+    }
+
+    private static Promise<Long> unlessShort(Promise<Long> previous, Supplier<Promise<Long>> next) {
+        var settled = Promise.<Long> promise();
+
+        previous.onResult(result -> settleAfter(result, next, settled));
+
+        return settled;
+    }
+
+    private static Promise<Long> settleAfter(Result<Long> result, Supplier<Promise<Long>> next, Promise<Long> settled) {
+        return result.fold(cause -> cause == INCOMPLETE_BACKFILL
+                                    ? settled.resolve(result)
+                                    : next.get()
+                                          .onResult(settled::resolve),
+                           _ -> settled.resolve(result));
     }
 
     /// #1555 owner promotion gate: pull `(local watermark + 1) .. sourceTail` of `(streamName, partition)` from
@@ -1726,7 +1772,8 @@ public final class PartitionBackfill {
                                         partition,
                                         source,
                                         sourceTail,
-                                        selfWatermark.localWatermark(streamName, partition));
+                                        selfWatermark.localWatermark(streamName, partition),
+                                        NO_OTHER_SURVIVOR);
     }
 
     /// The surviving NON-SELF replica holding the highest `confirmedOffset`, but only when it is STRICTLY
@@ -1736,10 +1783,56 @@ public final class PartitionBackfill {
     /// single best-effort pick) is what makes the target the true watermark, since any one survivor may hold
     /// a different acked subset.
     private Option<ReplicaDescriptor> aheadSurvivor(List<ReplicaDescriptor> replicas, long localWatermark) {
-        return Option.from(replicas.stream()
-                                   .filter(descriptor -> !descriptor.nodeId()
-                                                                    .equals(self))
-                                   .max(Comparator.comparingLong(ReplicaDescriptor::confirmedOffset))).filter(survivor -> survivor.confirmedOffset() > localWatermark);
+        return Option.from(aheadSurvivors(replicas, localWatermark).stream().findFirst());
+    }
+
+    /// Every surviving NON-SELF replica strictly ahead of `localWatermark`, ranked by committed-lineage end, highest first (ties keep
+    /// registry order); the head is {@link #aheadSurvivor}.
+    private List<ReplicaDescriptor> aheadSurvivors(List<ReplicaDescriptor> replicas, long localWatermark) {
+        return replicas.stream()
+                       .filter(descriptor -> !descriptor.nodeId()
+                                                        .equals(self))
+                       .filter(survivor -> lineageEnd(survivor) > localWatermark)
+                       .sorted(Comparator.comparingLong((ReplicaDescriptor descriptor) -> lineageEnd(descriptor)).reversed())
+                       .toList();
+    }
+
+    /// I-27 (#1759, CTO A1): the offset up to which `replica` is a source for the owner: its `confirmedOffset`, capped at the
+    /// committed-lineage end an earlier clipped catch-up learned for it, while its tail is still the one observed then.
+    private long lineageEnd(ReplicaDescriptor replica) {
+        return lineageEnd(replica.streamName(), replica.partition(), replica.nodeId(), replica.confirmedOffset());
+    }
+
+    /// I-27 (#1759, CTO P10): the offset up to which `node`, whose tail is `tail` (registry-known or probed), is a source for the
+    /// owner: `tail` capped at the committed-lineage end an earlier clipped catch-up learned for it, while `tail` is still the one
+    /// observed then.
+    private long lineageEnd(String streamName, int partition, NodeId node, long tail) {
+        return Option.option(committedLineageEnds.get(partitionKey(streamName, partition)))
+                     .flatMap(ends -> Option.option(ends.get(node)))
+                     .filter(lineage -> tail <= lineage.rawTail())
+                     .map(lineage -> Math.min(tail,
+                                              lineage.end()))
+                     .or(tail);
+    }
+
+    private void rememberLineageEnd(String streamName, int partition, NodeId source, long rawTail, long end) {
+        committedLineageEnds.computeIfAbsent(partitionKey(streamName, partition),
+                                             _ -> new ConcurrentHashMap<>())
+                            .put(source,
+                                 new Lineage(rawTail, end));
+    }
+
+    /// The highest [#lineageEnd] among the survivors other than `source`: what the owner must still reach before it may be
+    /// authoritative once `source`'s page was clipped, so a replica that holds more of the committed lineage is read on the next redrive.
+    private long otherSurvivorsEnd(String streamName, int partition, NodeId source) {
+        return registry.replicasFor(streamName, partition)
+                       .stream()
+                       .filter(descriptor -> !descriptor.nodeId()
+                                                        .equals(self) && !descriptor.nodeId()
+                                                                                    .equals(source))
+                       .mapToLong(this::lineageEnd)
+                       .max()
+                       .orElse(-1L);
     }
 
     /// Hold self NON-authoritative (SYNCING at the local watermark, so the read path forwards to the
@@ -1758,7 +1851,8 @@ public final class PartitionBackfill {
                                         partition,
                                         survivor.nodeId(),
                                         survivor.confirmedOffset(),
-                                        localWatermark);
+                                        localWatermark,
+                                        () -> otherSurvivorsEnd(streamName, partition, survivor.nodeId()));
     }
 
     /// Core promoted-owner catch-up against an explicit `(survivorNode, survivorTail)`. The local-registry
@@ -1780,7 +1874,8 @@ public final class PartitionBackfill {
                                                    int partition,
                                                    NodeId survivorNode,
                                                    long survivorTail,
-                                                   long localWatermark) {
+                                                   long localWatermark,
+                                                   LongSupplier othersEnd) {
         updateWatermark(streamName, partition, self, localWatermark, ReplicationState.SYNCING);
         var fromOffset = localWatermark + 1;
         var request = catchupRequest(survivorNode, streamName, partition, fromOffset);
@@ -1796,8 +1891,71 @@ public final class PartitionBackfill {
         return transport.requestCatchup(survivorNode,
                                         request,
                                         () -> progress(streamName, partition))
-                        .flatMap(response -> applyAndPromote(streamName, partition, survivorTail, response))
+                        .flatMap(response -> applyWithinLineage(streamName,
+                                                                partition,
+                                                                survivorNode,
+                                                                survivorTail,
+                                                                othersEnd,
+                                                                response))
                         .withSuccess(_ -> recordSurvivorConfirmed(streamName, partition, survivorNode, survivorTail));
+    }
+
+    /// I-27 (#1759, CTO A1, P10): the activating owner targets the source's committed-lineage end, never its raw tail. When the page
+    /// was clipped the end is remembered for the source ([#lineageEnd]) and the target is raised to `othersEnd` — the best
+    /// committed-lineage end among the OTHER survivors (registry-ranked or probed; `-1` on the promotion gate's own path), so the run
+    /// (clipped, or a fallback source ranked below an unreadable one) stays short of a replica that holds more of the lineage and the next redrive reads that replica instead of this source again.
+    private Promise<Long> applyWithinLineage(String streamName,
+                                             int partition,
+                                             NodeId survivorNode,
+                                             long survivorTail,
+                                             LongSupplier othersEnd,
+                                             ReplicationMessage.CatchupResponse response) {
+        var bound = lineageBound(response);
+        var end = bound.map(b -> Math.min(survivorTail, b - 1))
+                       .onPresent(e -> rememberLineageEnd(streamName, partition, survivorNode, survivorTail, e));
+        var target = Math.max(end.or(survivorTail), othersEnd.getAsLong());
+
+        return applyAndPromote(streamName,
+                               partition,
+                               target,
+                               bound.map(b -> clippedBefore(response, b)).or(response));
+    }
+
+    /// I-27 (#1759, CTO D1): the activating owner takes a source's records only up to the lowest offset a later committed epoch
+    /// re-assigned ([AlignedRecovery#reassignedFrom]): a replica serving its WAL ships what it holds, a deposed epoch's tail
+    /// included, vouched by its own history, and the receiver clips it. What is left out is never installed; the promotion
+    /// gate then finds the run short of the source's tail and the activation stays un-activated, as for any short run.
+    private Option<Long> lineageBound(ReplicationMessage.CatchupResponse response) {
+        return partitionRecovery.reassignedFrom(response.streamName(),
+                                                response.partition(),
+                                                response.fromOffset(),
+                                                response.toOffset(),
+                                                response.history())
+                                .onPresent(bound -> log.warn("Backfill {}[{}]: source {} serves records from {} that a later committed epoch "
+                                                            + "re-assigned; they are not installed",
+                                                             response.streamName(),
+                                                             response.partition(),
+                                                             response.governorId(),
+                                                             bound));
+    }
+
+    private static ReplicationMessage.CatchupResponse clippedBefore(ReplicationMessage.CatchupResponse response,
+                                                                    long bound) {
+        var kept = (int) Math.clamp(bound - response.fromOffset(),
+                                    0L,
+                                    response.payloads().size());
+
+        return ReplicationMessage.CatchupResponse.catchupResponse(response.governorId(),
+                                                                  response.streamName(),
+                                                                  response.partition(),
+                                                                  response.fromOffset(),
+                                                                  response.fromOffset() + kept - 1,
+                                                                  response.payloads().subList(0, kept),
+                                                                  response.timestamps()
+                                                                          .subList(0,
+                                                                                   Math.min(kept,
+                                                                                            response.timestamps().size())),
+                                                                  response.history());
     }
 
     /// After a SUCCESSFUL owner catch-up the owner has just read `localWatermark + 1 .. survivorTail` FROM
@@ -1869,26 +2027,38 @@ public final class PartitionBackfill {
                        .toList();
     }
 
-    /// Decide the promoted owner's next move from the probed REAL tails of the blind survivors:
-    ///   - the highest REACHABLE tail strictly exceeds `localWatermark` → catch up from that survivor (the
-    ///     fresh-owner fix: pull the partition the local registry could not see),
-    ///   - no reachable tail is ahead but some peer is UNREACHABLE → its watermark is unknown and might be
+    /// Decide the promoted owner's next move from the probed REAL tails of the blind survivors, each capped at its committed-lineage
+    /// end ([#lineageEnd]; I-27, #1759, CTO P10 — never ranked by a raw tail, which may run into a deposed epoch's records):
+    ///   - the highest REACHABLE lineage end strictly exceeds `localWatermark` → catch up from a survivor holding it (the
+    ///     fresh-owner fix: pull the partition the local registry could not see), held short of the best OTHER probed end so a
+    ///     clipped page does not activate the owner below a replica that holds more of the committed lineage,
+    ///   - no reachable lineage end is ahead but some peer is UNREACHABLE → its watermark is unknown and might be
     ///     ahead, so route to the bounded-wait {@link #escapeOwnerCatchup} (never self-promote empty past a
     ///     possibly-ahead peer; never wedge — self stays SYNCING so the redrive retries, then degrades),
     ///   - every peer reachable and none ahead → genuinely nothing ahead → {@link #ownerSelfPromote}.
     private Promise<Long> decideOwnerCatchup(String streamName, int partition, Probed probed, long localWatermark) {
         var peers = probed.peers();
         var results = probed.results();
-        var bestTail = results.stream().mapToLong(result -> result.or(-1L)).max().orElse(-1L);
+        var ends = probedEnds(streamName, partition, peers, results);
+        var bestEnd = ends.stream().mapToLong(Long::longValue).max().orElse(-1L);
 
-        if (bestTail > localWatermark) {
+        if (bestEnd > localWatermark) {
             clearOversized(streamName, partition);
 
-            return catchupOwnerFromSurvivor(streamName,
-                                            partition,
-                                            peerWithTail(peers, results, bestTail),
-                                            bestTail,
-                                            localWatermark);
+            return inRankOrder(IntStream.range(0,
+                                               ends.size())
+                                        .boxed()
+                                        .filter(i -> ends.get(i) > localWatermark)
+                                        .sorted(Comparator.comparingLong((Integer i) -> ends.get(i)).reversed())
+                                        .<Supplier<Promise<Long>>> map(i -> () -> catchupOwnerFromSurvivor(streamName,
+                                                                                                           partition,
+                                                                                                           peers.get(i),
+                                                                                                           results.get(i)
+                                                                                                                  .or(-1L),
+                                                                                                           localWatermark,
+                                                                                                           () -> othersMax(ends,
+                                                                                                                           i)))
+                                        .toList());
         }
 
         var oversizedAt = oversizedIndex(results);
@@ -1976,17 +2146,28 @@ public final class PartitionBackfill {
         return cause.promise();
     }
 
-    /// The reachable peer whose probed tail equals `tail` (index-aligned with `results`, since
-    /// {@link Promise#allOf} preserves order). `tail` is a strictly-positive reachable maximum here, so an
-    /// unreachable peer's `-1` can never match; the final fallback is unreachable in practice.
-    private NodeId peerWithTail(List<NodeId> peers, List<Result<Long>> results, long tail) {
-        for (var i = 0; i < peers.size(); i++) {
-            if (results.get(i).or(-1L) == tail) {
-                return peers.get(i);
-            }
-        }
+    /// The committed-lineage end ([#lineageEnd]) of each probed peer (index-aligned with `results`, since
+    /// {@link Promise#allOf} preserves order); an unreachable peer reads `-1`.
+    private List<Long> probedEnds(String streamName, int partition, List<NodeId> peers, List<Result<Long>> results) {
+        return IntStream.range(0,
+                               peers.size())
+                        .mapToObj(i -> results.get(i)
+                                              .map(tail -> lineageEnd(streamName,
+                                                                      partition,
+                                                                      peers.get(i),
+                                                                      tail))
+                                              .or(-1L))
+                        .toList();
+    }
 
-        return peers.getFirst();
+    /// The highest of `ends` other than the one at `source`, `-1` when there is none.
+    private static long othersMax(List<Long> ends, int source) {
+        return IntStream.range(0,
+                               ends.size())
+                        .filter(i -> i != source)
+                        .mapToLong(ends::get)
+                        .max()
+                        .orElse(-1L);
     }
 
     /// Liveness escape for a promoted owner blocked ONLY by an UNREACHABLE blind peer — the
