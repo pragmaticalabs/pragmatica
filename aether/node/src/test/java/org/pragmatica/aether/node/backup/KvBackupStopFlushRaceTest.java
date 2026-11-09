@@ -19,6 +19,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
+import java.util.stream.IntStream;
 
 import org.pragmatica.aether.node.ClusterTestPorts;
 import org.pragmatica.aether.node.NodeCodecs;
@@ -199,7 +200,8 @@ class KvBackupStopFlushRaceTest {
     /// At the production bound the loop keeps deciding again until the end of the 10 s, and nothing is pushed once `stopFlushed` has returned.
     /// The bound is read from the return of `stopFlushed`, not from the time of the last push: a pass is a clone, a race and a push and takes as long
     /// as the machine lets it, and the loop checks the deadline only after a pass, so the last push may start any pass-duration before the bound
-    /// (#2924: 640 ms early on a loaded runner). The loop ending early returns early (a mutation at half the deadline returns at ~5 s); the clock is
+    /// (#2924: 640 ms early on a loaded runner). The loop ending early returns early (a mutation at half the deadline returns at ~5 s) and one idling before the
+    /// deadline leaves a gap between its last decision and the return far beyond its own pass length; the clock is
     /// the production one (`nanoTime`), so the bound has no margin to guess.
     @Test
     void reDecide_runsUntilTheProductionDeadline_andPushesNothingAfterTheStop() throws Exception {
@@ -222,8 +224,17 @@ class KvBackupStopFlushRaceTest {
 
         assertThat(returnedAfterMs).as("the loop kept deciding again until the 10 s bound; it never gave up early").isGreaterThanOrEqualTo(10_000L);
         assertThat(lines).as("control: it did decide again, every push being a lost race").hasSizeGreaterThanOrEqualTo(2);
+        assertThat(returnedAfterMs - last).as("and it was still deciding at the end: the last decision is within two of its own longest passes (+500 ms) of the return")
+                                          .isLessThanOrEqualTo(2 * longestGap(lines) + 500);
         assertThat(last).as("nothing is pushed after the stop returned").isLessThanOrEqualTo(stoppedEpoch - startedEpoch + 200);
         assertThat(node.warnings()).extracting(BackupWarning::code).containsExactly(Code.BACKUP_STOP_FLUSH_FAILED);
+    }
+
+    /// The longest gap between consecutive decisions (stamps), i.e. the longest pass this run produced.
+    private static long longestGap(List<String> stamps) {
+        var times = stamps.stream().map(line -> Long.parseLong(line.strip())).toList();
+
+        return IntStream.range(1, times.size()).mapToLong(i -> times.get(i) - times.get(i - 1)).max().orElse(0L);
     }
 
     // ---------------- what counts as a rejection ----------------
