@@ -54,6 +54,19 @@ class HttpRoutePublisherOptionalVsUnspecifiedTest {
         }
     }
 
+    @Test
+    void optionalDeclaration_neverWeakensAnAuthenticatedSibling_inEitherOrder() {
+        for (var slice : List.<Object>of(new OptionalVsUnspecifiedSliceRoutes.OptionalThenAuthenticatedSlice(),
+                                         new OptionalVsUnspecifiedSliceRoutes.AuthenticatedThenOptionalSlice())) {
+            var publisher = publish(slice);
+
+            assertThat(publisher.findLocalRoute("GET", "/things/5")
+                                .map(HttpRoutePublisher.LocalRouteInfo::security)
+                                .or(SecurityPolicy.publicRoute())).as("%s", slice.getClass().getSimpleName())
+                                                                  .isEqualTo(SecurityPolicy.authenticated());
+        }
+    }
+
     private static HttpRoutePublisher publish(Object slice) {
         var publisher = HttpRoutePublisher.httpRoutePublisher(SELF, new SilentCluster());
 

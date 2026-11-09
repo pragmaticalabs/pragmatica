@@ -40,7 +40,20 @@ public final class OptionalVsUnspecifiedSliceRoutes {
                     .asJson();
     }
 
+    static Route<?> authenticatedThing() {
+        return Route.<String>get("/things/")
+                    .withPath(aLong())
+                    .to(id -> Promise.success("authenticated-" + id))
+                    .named("authenticatedThing")
+                    .withSecurity(SecurityPolicy.authenticated())
+                    .asJson();
+    }
+
     public static final class OptionalFirstSlice {}
+
+    public static final class OptionalThenAuthenticatedSlice {}
+
+    public static final class AuthenticatedThenOptionalSlice {}
 
     public static final class InheritedFirstSlice {}
 
@@ -95,6 +108,60 @@ public final class OptionalVsUnspecifiedSliceRoutes {
         @Override
         public Stream<Route<?>> routes() {
             return Stream.of(inheritedThing(), optionalThing());
+        }
+    }
+
+    public static final class OptionalThenAuthenticated implements RouteSource, SliceRouterFactory<OptionalThenAuthenticatedSlice> {
+        @Override
+        public Class<OptionalThenAuthenticatedSlice> sliceType() {
+            return OptionalThenAuthenticatedSlice.class;
+        }
+
+        @Override
+        public int routeSecurityContract() {
+            return SliceRouterFactory.ROUTE_SECURITY_CONTRACT;
+        }
+
+        @Override
+        public SliceRouter create(OptionalThenAuthenticatedSlice slice) {
+            return create(slice, JsonMapper.defaultJsonMapper());
+        }
+
+        @Override
+        public SliceRouter create(OptionalThenAuthenticatedSlice slice, JsonMapper jsonMapper) {
+            return SliceRouter.sliceRouter(this, ErrorMapper.defaultMapper(), jsonMapper);
+        }
+
+        @Override
+        public Stream<Route<?>> routes() {
+            return Stream.of(optionalThing(), authenticatedThing());
+        }
+    }
+
+    public static final class AuthenticatedThenOptional implements RouteSource, SliceRouterFactory<AuthenticatedThenOptionalSlice> {
+        @Override
+        public Class<AuthenticatedThenOptionalSlice> sliceType() {
+            return AuthenticatedThenOptionalSlice.class;
+        }
+
+        @Override
+        public int routeSecurityContract() {
+            return SliceRouterFactory.ROUTE_SECURITY_CONTRACT;
+        }
+
+        @Override
+        public SliceRouter create(AuthenticatedThenOptionalSlice slice) {
+            return create(slice, JsonMapper.defaultJsonMapper());
+        }
+
+        @Override
+        public SliceRouter create(AuthenticatedThenOptionalSlice slice, JsonMapper jsonMapper) {
+            return SliceRouter.sliceRouter(this, ErrorMapper.defaultMapper(), jsonMapper);
+        }
+
+        @Override
+        public Stream<Route<?>> routes() {
+            return Stream.of(authenticatedThing(), optionalThing());
         }
     }
 }
