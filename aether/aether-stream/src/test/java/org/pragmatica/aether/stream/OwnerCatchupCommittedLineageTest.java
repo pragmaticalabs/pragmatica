@@ -704,6 +704,40 @@ class OwnerCatchupCommittedLineageTest {
         assertThat(alarm.resolved()).containsExactlyElementsOf(alarm.raised());
     }
 
+    /// #2960: the state ends when this node stops being the partition's owner: the committed owner names another node, so the redrive no
+    /// longer runs the owner catch-up and the warning is resolved, not left open.
+    @Test
+    void registryPath_ownershipMovingAwayAfterAllStalled_resolvesTheWarning() {
+        var fixture = fixture(false, singleReplica());
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+        assertThat(alarm.raised()).hasSize(1);
+
+        fixture.backfill().ownerResolver((_, _) -> Option.some(SOURCE));
+        settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(alarm.resolved()).containsExactlyElementsOf(alarm.raised());
+    }
+
+    /// #2960: the state ends when the probe finds no source answering ahead of the owner (the stalled source stopped answering): the
+    /// warning is resolved, and it is raised again only if the all-stalled state comes back.
+    @Test
+    void probePath_noSourceAnsweringAhead_afterAllStalled_resolvesTheWarning() {
+        var fixture = fixture(true, singleReplica());
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+        assertThat(alarm.raised()).hasSize(1);
+
+        unanswered.add(SOURCE);
+        settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(alarm.resolved()).containsExactlyElementsOf(alarm.raised());
+    }
+
     /// #2960: `demoteStalled` settles its promise even when the code that runs on the attempt's result throws (here the alarm's `resolved`,
     /// reached through the stall bookkeeping): the round fails, it does not hang.
     @Test

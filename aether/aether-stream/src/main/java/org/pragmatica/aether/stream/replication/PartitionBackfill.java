@@ -892,6 +892,7 @@ public final class PartitionBackfill {
         }
 
         clearOversized(streamName, partition);
+        clearStalled(streamName, partition);
 
         return hrwOwner(streamName, partition).filter(owner -> !owner.equals(self))
                        .fold(() -> backfillViaRegistryOrColdStart(streamName, partition, replicas),
@@ -1734,8 +1735,6 @@ public final class PartitionBackfill {
         var ahead = aheadSurvivors(replicas, localWatermark);
 
         if (ahead.isEmpty()) {
-            clearStalled(streamName, partition);
-
             return probeThenPromoteOwner(streamName, partition, replicas, localWatermark);
         }
 
@@ -1803,7 +1802,7 @@ public final class PartitionBackfill {
         return result;
     }
 
-    private Unit raiseStalled(String streamName, int partition) {
+    Unit raiseStalled(String streamName, int partition) {
         var block = new OwnerActivation.ActivationBlock.CatchupStalled(streamName, partition, MAX_STALLED_ROUNDS);
         // `current` is read INSIDE the monitor, as in [#oversizedPeer]: a superseded flight must not raise after its successor's clear.
         synchronized (oversizedOrder) {
@@ -1815,7 +1814,7 @@ public final class PartitionBackfill {
         return Unit.unit();
     }
 
-    /// The all-stalled state no longer holds (#2960): a source advanced the owner, the round activated it, or no source is ahead any more.
+    /// The all-stalled state no longer holds (#2960): a source advanced the owner, the round activated it, no source answered ahead of it any more, or this node is no longer the partition's owner.
     /// Forgetting the report lets the state raise again when it recurs; the alarm is told so the operator sees it end.
     Unit clearStalled(String streamName, int partition) {
         synchronized (oversizedOrder) {

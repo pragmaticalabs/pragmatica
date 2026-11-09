@@ -2005,7 +2005,7 @@ public sealed interface StreamAssembly {
                                                                                                   sink,
                                                                                                   OperatorWarningCode.STREAM_OWNER_CATCHUP_PROGRESSING,
                                                                                                   partitionSubject(stalled),
-                                                                                                  "Owner catch-up of {} is no longer stalled: its head advanced, it activated, or no source is ahead of it any more.",
+                                                                                                  "Owner catch-up of {} is no longer stalled: its head advanced, it activated, no source answered ahead of it any more, or this node is no longer its owner.",
                                                                                                   partitionSubject(stalled));
             default -> Unit.unit();
         };

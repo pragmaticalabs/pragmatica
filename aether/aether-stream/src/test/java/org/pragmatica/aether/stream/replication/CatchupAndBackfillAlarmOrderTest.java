@@ -208,6 +208,53 @@ class CatchupAndBackfillAlarmOrderTest {
         assertThat(events).as("the successor's own clear still resolves its block").containsExactly("raise", "resolved");
     }
 
+    /// #2960: the all-stalled block follows the same flight gate. A superseded flight raises nothing and its clear resolves nothing; only the
+    /// current flight raises and clears. Mutation: the `current` gate in `raiseStalled` or in `clearStalled` always true turns this red.
+    @Test
+    void backfill_aSupersededFlightNeitherRaisesNorClearsTheAllStalledBlock() throws Exception {
+        var events = new CopyOnWriteArrayList<String>();
+        var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
+
+        manager.createStream(StreamConfig.streamConfig(STREAM));
+        var base = partitionBackfill(replicaRegistry(),
+                                     manager.alignedRecovery(),
+                                     CatchupTransport.NOOP,
+                                     (_, _, _) -> ReplicationError.General.REPLICATION_TIMEOUT.promise(),
+                                     (_, _) -> 3L,
+                                     SELF,
+                                     TimeSpan.timeSpan(10).seconds(),
+                                     () -> 0L);
+
+        base.blockAlarm(new OwnerActivation.BlockAlarm() {
+            @Override
+            public Unit raise(OwnerActivation.ActivationBlock block) {
+                events.add("raise");
+
+                return Unit.unit();
+            }
+
+            @Override
+            public Unit resolved(OwnerActivation.ActivationBlock block) {
+                events.add("resolved");
+
+                return Unit.unit();
+            }
+        });
+
+        var successor = base.withCurrent(() -> true);
+        var stale = base.withCurrent(() -> false);
+
+        stale.raiseStalled(STREAM, PARTITION);
+        assertThat(events).as("a superseded flight raises nothing").isEmpty();
+        successor.raiseStalled(STREAM, PARTITION);
+        successor.raiseStalled(STREAM, PARTITION);
+        assertThat(events).as("the current flight raises once").containsExactly("raise");
+        stale.clearStalled(STREAM, PARTITION);
+        assertThat(events).as("the superseded flight's clear resolved nothing").containsExactly("raise");
+        successor.clearStalled(STREAM, PARTITION);
+        assertThat(events).as("the successor's own clear resolves it").containsExactly("raise", "resolved");
+    }
+
     /// Lock order and delivery order under real threads: raise and clear race over many episodes at the two sites; the deadlock detector sees no
     /// cycle, every thread finishes inside the bound, and no key ever delivers a recovery before its raise.
     @Test

@@ -501,7 +501,8 @@ public enum OperatorWarningCode {
     /// not per tick; the message names the partition. Closed by [#STREAM_OWNER_CATCHUP_PROGRESSING].
     STREAM_OWNER_CATCHUP_STALLED("stream-owner-catchup-stalled", "stream-replication", WarningLevel.CRITICAL),
     /// The recovery of a [#STREAM_OWNER_CATCHUP_STALLED] (#2960), same subject: the owner's head advanced, the catch-up reached its target
-    /// and the owner activated, or this node no longer has an ahead source to catch up from (the message says which).
+    /// and the owner activated, no source answered ahead of it any more, or this node stopped being the partition's owner (the message
+    /// says which).
     STREAM_OWNER_CATCHUP_PROGRESSING("stream-owner-catchup-progressing",
                                      "stream-replication",
                                      WarningLevel.INFO,
