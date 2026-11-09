@@ -17,7 +17,10 @@ import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterState;
 import org.pragmatica.aether.deployment.cluster.fsm2.RoutedEvent;
 import org.pragmatica.aether.deployment.cluster.fsm2.Seams;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.testlogging.LogCapture;
@@ -353,6 +356,25 @@ class ClusterFsmInterpreterTest {
                 rig.settle();
 
                 assertThat(model(rig).isDeparted(ClusterRig.CORE_2)).as("control: a full window after Rebuild supersedes the record").isFalse();
+            }
+        }
+
+        /// #2937 through the production interpreter (C17r, NT-168): the DEAD set local membership reports reaches the `Rebuild` of the
+        /// activation, so a core DEAD as a follower that still holds residue is recorded DEPARTED by it.
+        // Red when: the interpreter hands the Rebuild snapshot an empty DEAD set instead of the one its parts supply.
+        @Test
+        void rebuild_readsTheDeadSetOfItsParts_andDepartsADeadCoreWithResidue() {
+            try (var rig = new ClusterRig()) {
+                var departure = NodeDepartureKey.nodeDepartureKey(ClusterRig.CORE_2);
+
+                rig.applier.put(ActivationDirectiveKey.activationDirectiveKey(ClusterRig.CORE_2),
+                                ActivationDirectiveValue.core());
+                rig.dead = ClusterInput.DeadSet.deadSet(Set.of(ClusterRig.CORE_2), Set.of());
+
+                rig.activate();
+                rig.awaitThat(() -> rig.store.get(departure).isPresent());
+
+                assertThat(rig.store.get(departure).isPresent()).isTrue();
             }
         }
 
