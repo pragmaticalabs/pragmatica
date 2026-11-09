@@ -87,7 +87,9 @@ class SqlConnectorViewTest {
     }
 
     /// A pool that implements `pinned` itself, so a view inheriting the default would be told apart.
-    static final class PinnedPool implements PgSqlConnector {
+    static final class PinnedPool extends PinnedPoolBase {}
+
+    static class PinnedPoolBase implements PgSqlConnector {
         final AtomicInteger pinnedCalls = new AtomicInteger();
         final AtomicInteger stops = new AtomicInteger();
 

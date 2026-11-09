@@ -87,6 +87,7 @@ class NodeShareableContractTest {
             assertThat(factory.shareKey(reference)).as(name).isNotEqualTo(factory.shareKey(config("h", "db-a", "q", null)));
             assertThat(factory.shareKey(config("h", "db-a", "p", PoolScope.SLICE)).isEmpty()).as(name).isTrue();
             assertThat(factory.demand(reference).max()).as(name).isEqualTo(reference.poolConfig().maxConnections());
+            assertThat(factory.demand(reference).warm()).as("%s: the transport's real warm-up", name).isEqualTo(4);
             assertThat(factory.demand(reference).endpoint()).as(name).doesNotContain("p@").contains("h:5432");
         }
     }
