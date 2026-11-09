@@ -771,6 +771,71 @@ class CodecProcessorTest {
             assertThat(compilation).hadErrorContaining("@Json type 'com.example.Holder' cannot get a generated codec");
             assertThat(compilation).hadErrorContaining("neither a record nor an enum");
         }
+
+        // #2884: a Patch has a missing state only as an object member, so every other position is refused.
+        private static final String PATCH_POSITION = "a Patch is supported only as a record component, over a type that is neither an Option nor a Patch";
+
+        @Test
+        void json_generatesCodec_forPatchComponents() {
+            var compilation = compileWith(patchHolder("Patch<String> name, Patch<java.util.List<String>> tags, String id"));
+
+            assertThat(compilation).succeeded();
+            assertThat(compilation).generatedSourceFile("com.example.HolderJson")
+                                   .contentsAsUtf8String()
+                                   .contains("f_name = org.pragmatica.lang.Patch.absent();");
+        }
+
+        @Test
+        void json_failsCompilation_forPatchListElement() {
+            assertPatchRefused("java.util.List<Patch<String>> x");
+        }
+
+        @Test
+        void json_failsCompilation_forPatchSetElement() {
+            assertPatchRefused("java.util.Set<Patch<String>> x");
+        }
+
+        @Test
+        void json_failsCompilation_forPatchMapValue() {
+            assertPatchRefused("java.util.Map<String, Patch<String>> x");
+        }
+
+        @Test
+        void json_failsCompilation_forPatchInsideOption() {
+            assertPatchRefused("org.pragmatica.lang.Option<Patch<String>> x");
+        }
+
+        @Test
+        void json_failsCompilation_forOptionInsidePatch() {
+            assertPatchRefused("Patch<org.pragmatica.lang.Option<String>> x");
+        }
+
+        @Test
+        void json_failsCompilation_forPatchInsidePatch() {
+            assertPatchRefused("Patch<Patch<String>> x");
+        }
+
+        @Test
+        void json_failsCompilation_forPatchInsideAPatchedList() {
+            assertPatchRefused("Patch<java.util.List<Patch<String>>> x");
+        }
+
+        private static void assertPatchRefused(String components) {
+            var compilation = compileWith(patchHolder(components));
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("@Json type 'com.example.Holder' cannot get a generated codec");
+            assertThat(compilation).hadErrorContaining(PATCH_POSITION);
+        }
+
+        private static JavaFileObject patchHolder(String components) {
+            return JavaFileObjects.forSourceString("com.example.Holder",
+                                                   "package com.example;\n\n"
+                                                   + "import org.pragmatica.lang.Patch;\n"
+                                                   + "import org.pragmatica.serialization.json.Json;\n\n"
+                                                   + "@Json\n"
+                                                   + "public record Holder(" + components + ") {}\n");
+        }
     }
 
     /// A type Jackson would shape through its annotations is refused, wherever the annotation sits: a generated
