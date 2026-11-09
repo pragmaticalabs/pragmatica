@@ -413,17 +413,13 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// ```
     ///
     /// ```tla SharedPools:SP_Provision
-    /// \* `provisionBound(...).onResult(placeholder::resolve)`: a factory that throws synchronously leaves it unresolved.
+    /// \* Contained: a factory that throws synchronously fails the placeholder (Resolve's failure branch, evicted).
     /// SP_Provision(s) ==
     ///     /\ spc[s] # 0
     ///     /\ spc' = [spc EXCEPT ![s] = 0]
-    ///     /\ \/ /\ inflight' = inflight \cup {spc[s]}
-    ///           /\ UNCHANGED faults
-    ///        \/ /\ faults < MaxFaults
-    ///           /\ faults' = faults + 1
-    ///           /\ UNCHANGED inflight
+    ///     /\ inflight' = inflight \cup {spc[s]}
     ///     /\ UNCHANGED <<entry, count, closed, poolSt, shared, closing, captures, closes, caVars, thr, slotSt, slotOf,
-    ///                    nAcq, nPools, staleHit, sliceCache>>
+    ///                    nAcq, nPools, faults, staleHit, sliceCache>>
     /// ```
     @SuppressWarnings("unchecked")
     private <T, C> Promise<T> provideSlicePool(ResourceFactory<T, C> factory,

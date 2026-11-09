@@ -12,14 +12,15 @@ python3 "$here/extract.py" --module "$module" --out "$out" --base . "$@"
 cfg="$out/${module}_${variant}.cfg"
 [ -f "$cfg" ] || { echo "check: ERROR no config fragment $module:$variant" >&2; exit 2; }
 set +e
-( cd "$out" && java -XX:+UseParallelGC -cp "$jar" tlc2.TLC -workers "${TLC_WORKERS:-4}" -cleanup -deadlock ${TLC_OPTS:-} \
-    -config "${module}_${variant}.cfg" "$module.tla" ) 2>&1 | awk -v map="$out/$module.map.tsv" -v mod="$module" '
+( cd "$out" && exec java -XX:+UseParallelGC -cp "$jar" tlc2.TLC -workers "${TLC_WORKERS:-4}" -cleanup -deadlock ${TLC_OPTS:-} \
+    -config "${module}_${variant}.cfg" "$module.tla" ) > "$out/${module}_${variant}.raw" 2>&1
+rc=$?
+awk -v map="$out/$module.map.tsv" -v mod="$module" '
   BEGIN { while ((getline l < map) > 0) { split(l, f, "\t"); src[f[1]] = f[2] } }
   { line = $0
     if (match(line, "line [0-9]+, col [0-9]+ to line [0-9]+, col [0-9]+ of module " mod)) {
       split(substr(line, RSTART, RLENGTH), w, /[ ,]+/); line = line "   [java " src[w[2]] "]" }
-    print line; fflush() }' > "$out/${module}_${variant}.log"
-rc=${PIPESTATUS[0]}
+    print line }' "$out/${module}_${variant}.raw" > "$out/${module}_${variant}.log"
 # Summary: the verdict, the counterexample as a sequence of actions, and the state counts. Full log beside it.
 grep -E '^Error:|is violated|^State [0-9]+:|^Temporal|^Back to state|states generated|distinct states|^Model checking completed|^Finished in|depth of the complete|Semantic error|Parse Error|^\*\*\*|line [0-9]+, col' \
     "$out/${module}_${variant}.log" | sed -E 's/ line [0-9]+, col [0-9]+ to line [0-9]+, col [0-9]+ of module [A-Za-z_]+>/>/' | head -${TLC_SUMMARY_LINES:-60}

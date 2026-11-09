@@ -4,7 +4,7 @@
 
 /// Resource provisioning for slices.
 ///
-/// The TLA+ model `SharedPools` of the node-shared pools ([SharedPools]) and the per-slice path of
+/// The TLA+ model `SharedPools` (at adb7a765da) of the node-shared pools ([SharedPools]) and the per-slice path of
 /// `SpiResourceProvider.provideShared` lives in doc-comment fragments: this skeleton carries the constants,
 /// variables, helpers, `Init`, `Next`, fairness and the properties; each action sits on the code that implements it.
 /// `tools/tla/check.sh SharedPools <variant> aether/resource/api/src/main/java` extracts and checks it.
@@ -14,7 +14,9 @@
 ///
 /// \* Acquirer threads are (scope, key) pairs. A pool is a provision promise plus the resource it opens.
 /// \* SlicePath enables the per-slice path (provideSlicePool) beside the shared one.
-/// CONSTANTS Keys, Scopes, MaxPools, MaxAcquires, MaxFaults, SlicePath
+/// \* Ruling: an acquire that sees closed after admission fails with ProviderClosed (not implemented at adb7a765da).
+/// \* ExactEmpty: closeAll loops until a key-set pass is empty instead of reading isEmpty() (not implemented).
+/// CONSTANTS Keys, Scopes, MaxPools, MaxAcquires, MaxFaults, SlicePath, Ruling, ExactEmpty
 ///
 /// Pools == 1..MaxPools
 /// Slots == 1..MaxAcquires
@@ -176,56 +178,65 @@
 /// SPECIFICATION Spec
 /// ```
 ///
-/// ```tlacfg SharedPools:safety
+/// ```tlacfg SharedPools:fixed
 /// SYMMETRY Perms
 /// CONSTANT SlicePath = FALSE
-/// INVARIANT NoWedge NoStaleRelease NoHandleAfterClosed ExactlyOnce NoLeakAfterStop
+/// CONSTANT Ruling = FALSE
+/// CONSTANT ExactEmpty = FALSE
+/// INVARIANT NoWedge NoStaleRelease ExactlyOnce NoLeakAfterStop
 /// ```
 ///
-/// ```tlacfg SharedPools:wedgeslice
+/// ```tlacfg SharedPools:fixedexact
+/// SYMMETRY Perms
+/// CONSTANT SlicePath = FALSE
+/// CONSTANT Ruling = FALSE
+/// CONSTANT ExactEmpty = TRUE
+/// INVARIANT NoWedge NoStaleRelease ExactlyOnce NoLeakAfterStop
+/// ```
+///
+/// ```tlacfg SharedPools:fixedslice
 /// SYMMETRY Perms
 /// CONSTANT SlicePath = TRUE
-/// INVARIANT NoWedge
-/// ```
-///
-/// ```tlacfg SharedPools:wedge
-/// SYMMETRY Perms
-/// CONSTANT SlicePath = FALSE
-/// INVARIANT NoWedge
-/// ```
-///
-/// ```tlacfg SharedPools:stale
-/// SYMMETRY Perms
-/// CONSTANT SlicePath = FALSE
-/// INVARIANT NoStaleRelease
+/// CONSTANT Ruling = FALSE
+/// CONSTANT ExactEmpty = TRUE
+/// INVARIANT NoWedge NoStaleRelease ExactlyOnce NoLeakAfterStop
 /// ```
 ///
 /// ```tlacfg SharedPools:afterclosed
 /// SYMMETRY Perms
 /// CONSTANT SlicePath = FALSE
+/// CONSTANT Ruling = FALSE
+/// CONSTANT ExactEmpty = TRUE
 /// INVARIANT NoHandleAfterClosed
 /// ```
 ///
-/// ```tlacfg SharedPools:once
+/// ```tlacfg SharedPools:ruling
 /// SYMMETRY Perms
 /// CONSTANT SlicePath = FALSE
-/// INVARIANT ExactlyOnce
-/// ```
-///
-/// ```tlacfg SharedPools:leak
-/// SYMMETRY Perms
-/// CONSTANT SlicePath = FALSE
-/// INVARIANT NoLeakAfterStop
+/// CONSTANT Ruling = TRUE
+/// CONSTANT ExactEmpty = TRUE
+/// INVARIANT NoWedge NoStaleRelease NoHandleAfterClosed ExactlyOnce NoLeakAfterStop
 /// ```
 ///
 /// ```tlacfg SharedPools:strict
 /// SYMMETRY Perms
 /// CONSTANT SlicePath = FALSE
+/// CONSTANT Ruling = TRUE
+/// CONSTANT ExactEmpty = TRUE
 /// INVARIANT NoOpenAfterStop
 /// ```
 ///
 /// ```tlacfg SharedPools:live
 /// CONSTANT SlicePath = FALSE
+/// CONSTANT Ruling = FALSE
+/// CONSTANT ExactEmpty = FALSE
+/// PROPERTY CloseAllCompletes AllSharedSettle
+/// ```
+///
+/// ```tlacfg SharedPools:liveruling
+/// CONSTANT SlicePath = FALSE
+/// CONSTANT Ruling = TRUE
+/// CONSTANT ExactEmpty = TRUE
 /// PROPERTY CloseAllCompletes AllSharedSettle
 /// ```
 package org.pragmatica.aether.resource;

@@ -101,29 +101,16 @@ final class SharedPools {
     /// Adds `scope` as a holder of the pool under `key` and yields that holder's view. `provision` runs only when this
     /// call inserted the entry, after `compute` returned.
     ///
-    /// ```tla SharedPools:Acq_Post
-    /// \* After the admission compute returned (where a re-check of `closed` would sit; there is none here). The ghost
-    /// \* sawClosed records what such a check would read.
-    /// Acq_Post(t) == /\ pc[t] = "post"
-    ///                /\ sawClosed' = [sawClosed EXCEPT ![t] = closed]
-    ///                /\ pc' = [pc EXCEPT ![t] = IF created[t] THEN "provision" ELSE "wait"]
-    ///                /\ UNCHANGED <<entry, count, closed, poolSt, shared, inflight, closing, captures, closes, caVars,
-    ///                               created, newHolder, tslot, tpool, afterClosedHit, slotSt, slotOf, nAcq, nPools, faults,
-    ///                               staleHit, sliceCache, spc>>
-    /// ```
-    ///
     /// ```tla SharedPools:Acq_Provision
-    /// \* `provision.apply()` is called directly: a factory that throws synchronously leaves the pool promise unresolved.
+    /// \* Contained (`Promise.unitPromise().flatMap(_ -> provision.apply())`): a factory that throws synchronously fails
+    /// \* the pool like an asynchronous failure (Resolve's failure branch), so it is evicted instead of wedging the key.
     /// Acq_Provision(t) ==
     ///     /\ pc[t] = "provision"
     ///     /\ pc' = [pc EXCEPT ![t] = "wait"]
-    ///     /\ \/ /\ inflight' = inflight \cup {tpool[t]}
-    ///           /\ UNCHANGED faults
-    ///        \/ /\ faults < MaxFaults
-    ///           /\ faults' = faults + 1
-    ///           /\ UNCHANGED inflight
+    ///     /\ inflight' = inflight \cup {tpool[t]}
     ///     /\ UNCHANGED <<entry, count, closed, poolSt, shared, closing, captures, closes, caVars, created, newHolder,
-    ///                    tslot, tpool, sawClosed, afterClosedHit, slotSt, slotOf, nAcq, nPools, staleHit, sliceCache, spc>>
+    ///                    tslot, tpool, sawClosed, afterClosedHit, slotSt, slotOf, nAcq, nPools, faults, staleHit,
+    ///                    sliceCache, spc>>
     /// ```
     @SuppressWarnings("unchecked")
     <T> Promise<T> acquire(Object key,
@@ -279,21 +266,6 @@ final class SharedPools {
     ///        /\ UNCHANGED <<entry, count, closed, poolSt, shared, inflight, closing, captures, closes, caVars,
     ///                       slotOf, nAcq, nPools, faults, staleHit, sliceCache, spc>>
     /// ```
-    ///
-    /// ```tla SharedPools:ViewStop
-    /// \* The view's stop runs `release(key, scope)`: bound to the scope, not to the holding the view was issued for.
-    /// ViewStop(sl) ==
-    ///     LET s == slotOf[sl][1]
-    ///         k == slotOf[sl][2]
-    ///     IN /\ slotSt[sl] = "view"
-    ///        /\ slotSt' = [slotSt EXCEPT ![sl] = "stopped"]
-    ///        /\ IF entry[k].holders[s] # 0
-    ///           THEN /\ Leave(k, s)
-    ///                /\ staleHit' = (staleHit \/ entry[k].holders[s] # sl)
-    ///           ELSE UNCHANGED <<entry, count, captures, closing, staleHit>>
-    ///        /\ UNCHANGED <<closed, poolSt, shared, inflight, closes, caVars, thr, slotOf, nAcq, nPools, faults,
-    ///                       sliceCache, spc>>
-    /// ```
     @SuppressWarnings("unchecked")
     private <T> Promise<T> fillSlot(Promise<T> slot,
                                     Result<Provisioned<?>> result,
@@ -357,6 +329,23 @@ final class SharedPools {
         return closeIfCaptured(departure, scope);
     }
 
+    /// The `compute` mapping function of a view's release: leaves only when `scope` still holds `slot`.
+    ///
+    /// ```tla SharedPools:ViewStop
+    /// \* The view's stop runs releaseSlot(key, scope, slot): it leaves only the holding it was issued for. The ghost
+    /// \* staleHit records a stop that changed a holding other than its own (implementation-independent).
+    /// ViewStop(sl) ==
+    ///     LET s == slotOf[sl][1]
+    ///         k == slotOf[sl][2]
+    ///     IN /\ slotSt[sl] = "view"
+    ///        /\ slotSt' = [slotSt EXCEPT ![sl] = "stopped"]
+    ///        /\ IF entry[k].holders[s] = sl
+    ///           THEN Leave(k, s)
+    ///           ELSE UNCHANGED <<entry, count, captures, closing>>
+    ///        /\ staleHit' = (staleHit \/ (entry[k].holders[s] # sl /\ entry'[k].holders[s] # entry[k].holders[s]))
+    ///        /\ UNCHANGED <<closed, poolSt, shared, inflight, closes, caVars, thr, slotOf, nAcq, nPools, faults,
+    ///                       sliceCache, spc>>
+    /// ```
     @NullReturn
     private static SharedEntry departIfHolding(SharedEntry current,
                                                String scope,
@@ -370,6 +359,36 @@ final class SharedPools {
 
     /// Store-then-load against `closeAll`'s flag: either the drain sees this acquirer's insert, or this acquirer sees
     /// the flag and drains its own key through the same capture.
+    ///
+    /// ```tla SharedPools:Acq_Post
+    /// \* Runs after the admission compute returned: re-reads `closed` and, when set, drains this key through the same
+    /// \* capture as closeAll. The ghost sawClosed records the read. Ruling (2026-11-09, NOT implemented at adb7a765da,
+    /// \* enabled by the constant Ruling): an acquire that sees closed here fails with ProviderClosed, and a pool it
+    /// \* created is resolved with that failure instead of being provisioned.
+    /// Acq_Post(t) ==
+    ///     LET k == t[2]
+    ///         e == entry[k]
+    ///         fail == Ruling /\ closed
+    ///     IN /\ pc[t] = "post"
+    ///        /\ sawClosed' = [sawClosed EXCEPT ![t] = closed /\ ~fail]
+    ///        /\ IF closed /\ e.pool # 0
+    ///           THEN /\ entry' = [entry EXCEPT ![k] = NoEntry]
+    ///                /\ count' = [count EXCEPT ![k] = @ - 1]
+    ///                /\ Capture(e.pool)
+    ///           ELSE UNCHANGED <<entry, count, captures, closing>>
+    ///        /\ IF fail
+    ///           THEN /\ poolSt' = IF created[t] THEN [poolSt EXCEPT ![tpool[t]] = "failed"] ELSE poolSt
+    ///                /\ slotSt' = IF newHolder[t] THEN [slotSt EXCEPT ![tslot[t]] = "failed"] ELSE slotSt
+    ///                /\ pc' = [pc EXCEPT ![t] = "idle"]
+    ///                /\ created' = [created EXCEPT ![t] = FALSE]
+    ///                /\ newHolder' = [newHolder EXCEPT ![t] = FALSE]
+    ///                /\ tslot' = [tslot EXCEPT ![t] = 0]
+    ///                /\ tpool' = [tpool EXCEPT ![t] = 0]
+    ///           ELSE /\ pc' = [pc EXCEPT ![t] = IF created[t] THEN "provision" ELSE "wait"]
+    ///                /\ UNCHANGED <<poolSt, slotSt, created, newHolder, tslot, tpool>>
+    ///        /\ UNCHANGED <<closed, shared, inflight, closes, caVars, afterClosedHit, slotOf, nAcq, nPools, faults,
+    ///                       staleHit, sliceCache, spc>>
+    /// ```
     private void drainIfClosedMeanwhile(Object key) {
         if (closed.get()) {
             var late = new Departure();
@@ -473,9 +492,11 @@ final class SharedPools {
     /// ```
     ///
     /// ```tla SharedPools:CA_Check
-    /// \* `while (!entries.isEmpty())` reads the published count; a pass snapshots the key set.
+    /// \* `while (!entries.isEmpty())` reads the published count (CHM sumCount, which a concurrent insert not yet
+    /// \* counted can drive to <= 0 while another key is present); a pass snapshots the key set. ExactEmpty (NOT
+    /// \* implemented at adb7a765da) is the candidate fix: loop until a key-set pass finds no key.
     /// CA_Check == /\ ca = "check"
-    ///             /\ IF Total <= 0
+    ///             /\ IF IF ExactEmpty THEN \A k \in Keys : entry[k].pool = 0 ELSE Total <= 0
     ///                THEN /\ ca' = "returned"
     ///                     /\ UNCHANGED caSnap
     ///                ELSE /\ caSnap' = {k \in Keys : entry[k].pool # 0}
