@@ -3885,6 +3885,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// The owner-side pre-checks — epoch fence, then `admission` (owner admission and replica floor, #1230/#1236)
     /// — run BEFORE the partition's ordered section: they read committed state the section cannot make
     /// atomic with the append, and a refused write must neither take an offset nor hold the lock.
+    ///
+    /// #263: an admitted write then reserves its payload in the replication send budget, so a spent budget refuses it
+    /// (`REPLICATION_BEHIND`) before it takes an offset; the reservation is released once the append returned, when the
+    /// event, if appended, is already held by the replication batcher.
     private Result<LoggedAppend> publishInSection(StreamEntry entry,
                                                   String streamName,
                                                   int partition,
@@ -3892,15 +3896,36 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                   long timestamp,
                                                   Epoch ownerEpoch,
                                                   Result<Unit> admission) {
-        return appendToPartition(entry,
-                                 streamName,
-                                 partition,
-                                 payload,
-                                 timestamp,
-                                 ownerEpoch,
-                                 admission,
-                                 ownerSection(streamName, partition, ownerEpoch),
-                                 offset -> logAndReplicate(streamName, partition, offset, payload, timestamp, ownerEpoch));
+        var reservation = admission.flatMap(_ -> replicationManager.reserveSend(payload.length));
+
+        return releasingSend(reservation,
+                             payload.length,
+                             appendToPartition(entry,
+                                               streamName,
+                                               partition,
+                                               payload,
+                                               timestamp,
+                                               ownerEpoch,
+                                               reservation,
+                                               ownerSection(streamName, partition, ownerEpoch),
+                                               offset -> logAndReplicate(streamName,
+                                                                         partition,
+                                                                         offset,
+                                                                         payload,
+                                                                         timestamp,
+                                                                         ownerEpoch)));
+    }
+
+    /// Returns `outcome` once the send-budget reservation it was appended under, if granted, is released (#263).
+    private <T> Result<T> releasingSend(Result<Unit> reservation, long bytes, Result<T> outcome) {
+        return outcome.onResultRun(() -> releaseIfReserved(reservation, bytes));
+    }
+
+    @Contract
+    private void releaseIfReserved(Result<Unit> reservation, long bytes) {
+        if (reservation.isSuccess()) {
+            replicationManager.releaseSend(bytes);
+        }
     }
 
     /// The in-section admission of an owner append (#2201 A-01): the epoch fence, the provenance check and the log's health, re-read
@@ -4307,21 +4332,26 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                        long timestamp,
                                                        Epoch ownerEpoch,
                                                        int minAcks) {
-        return ensureNotStale(streamName, partition, ownerEpoch).flatMap(_ -> admitOwnerWrite(streamName,
-                                                                                              partition,
-                                                                                              minAcks))
-                             .flatMap(_ -> provenanceAdmits(streamName,
-                                                            partition,
-                                                            some(ownerEpoch)))
-                             .flatMap(_ -> checkEventSizes(entry, payloads))
-                             .flatMap(_ -> resolveAppendTarget(streamName, partition, entry))
-                             .flatMap(buffer -> appendRunInSection(buffer,
-                                                                   streamName,
-                                                                   partition,
-                                                                   payloads,
-                                                                   timestamp,
-                                                                   ownerEpoch))
-                             .onSuccess(_ -> entry.updateActivity());
+        var bytes = payloads.stream().mapToLong(payload -> payload.length).sum();
+        var reservation = ensureNotStale(streamName, partition, ownerEpoch).flatMap(_ -> admitOwnerWrite(streamName,
+                                                                                                         partition,
+                                                                                                         minAcks))
+                                        .flatMap(_ -> provenanceAdmits(streamName,
+                                                                       partition,
+                                                                       some(ownerEpoch)))
+                                        .flatMap(_ -> checkEventSizes(entry, payloads))
+                                        .flatMap(_ -> replicationManager.reserveSend(bytes));
+
+        return releasingSend(reservation,
+                             bytes,
+                             reservation.flatMap(_ -> resolveAppendTarget(streamName, partition, entry))
+                                        .flatMap(buffer -> appendRunInSection(buffer,
+                                                                              streamName,
+                                                                              partition,
+                                                                              payloads,
+                                                                              timestamp,
+                                                                              ownerEpoch))
+                                        .onSuccess(_ -> entry.updateActivity()));
     }
 
     private Result<LoggedAppend> appendRunInSection(OffHeapRingBuffer buffer,

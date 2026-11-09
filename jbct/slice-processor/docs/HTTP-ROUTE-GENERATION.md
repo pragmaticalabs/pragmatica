@@ -185,6 +185,13 @@ HTTP_429 = ["*RateLimit*", "*TooMany*"]
 OrderNotFoundButValid = 200
 ```
 
+An `[errors.explicit]` key is a simple name or a fully-qualified name. A simple-name key that matches more than one discovered `Cause` type (for example two listed `[errors] packages` that each declare a `Denied`) fails the build with a message naming every match; use the fully-qualified key to map exactly one of them:
+
+```toml
+[errors.explicit]
+"shared.one.OneError.Denied" = 404
+```
+
 ### Inline route keys
 
 An inline-table route takes these keys: `route` (required), `consumes`, `produces`, `security`, `method` (versioned bind keys only), the per-route ingest limits `max_size` and `max_duration`, and the multipart part limits `max_files`, `max_file_size`, `max_fields` and `max_field_size`:
@@ -199,6 +206,26 @@ uploadGallery = { route = "POST /gallery", consumes = "multipart/form-data", max
 - `max_files` and `max_fields` are whole numbers of parts (greater than zero); `max_file_size` and `max_field_size` are sizes like `max_size`. A file is a part with a filename, or a part without one that declares a Content-Type other than `text/plain`; every other part is a field. A part whose Content-Type is `multipart/*` is nested whatever its disposition (a `filename` included) or subtype, and is refused `400` on a route that declares part limits. A size is the number of bytes between the part's header block and the next delimiter. The node counts and measures them from the multipart framing of the aggregated body, off the event loop and without decoding it, and answers `413` when one is exceeded; a body that is not `multipart/form-data`, or is not a closed multipart body, is left to the handler.
 - The generated route carries the limits as `.withUpload(UploadSpec.uploadSpec(upload, maxSizeBytes, maxDurationMillis))`, where `upload` is true for a binary or multipart `consumes`; a route that declares a part limit carries the seven-argument form, `.withUpload(UploadSpec.uploadSpec(upload, maxSizeBytes, maxDurationMillis, maxFiles, maxFileBytes, maxFields, maxFieldBytes))`, with `0L` for each part limit it does not declare. The node that accepts the request enforces them before it reads the body (the size and time limits) or before it dispatches it (the part limits); a route that declares none of them and consumes JSON, text or XML generates no `withUpload` call.
 - Any other key is a compile error naming it and the valid keys. Only `resumable` and `unclaimed_ttl` are refused as not enforced yet, not ignored.
+
+### Success status and Location
+
+An inline-table route may declare its success response (#2805):
+
+```toml
+[routes]
+create = { route = "POST /articles", status = 201, location = "/articles/{slug}" }
+enqueue = { route = "POST /jobs", status = 202 }
+```
+
+- `status` is one of `200`, `201`, `202`, `204`, written as a number; `203`, `205`, `206` and anything else fail the build.
+  `204` is accepted only on a `Promise<Unit>` method.
+- `location` is a `Location` template. Each `{field}` names a component of the result record (of the element, for an
+  `Option` result) and is rendered as one percent-encoded path segment; a value-object component is rendered through
+  its `valueMapping().lower()`. A placeholder that names no component fails the build. With no `location`, no header
+  is sent.
+- Undeclared defaults: a value answers `200` with its body; a `Unit` answers `204` with no body; an empty `Option`
+  answers `404` with the RFC 9457 body. A null success value is a JBCT violation: it answers `500` and is logged at
+  WARN with the route.
 
 ## Generated Code
 

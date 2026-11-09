@@ -682,6 +682,25 @@ from the JSON body automatically.
 **Supported types:** `String` (default), `Integer`, `Long`, `Double`, `Float`, `Boolean`,
 `BigDecimal`, `LocalDate`, `LocalDateTime`, `LocalTime`, `OffsetDateTime`, `Duration`.
 
+**Success status** is declared with an inline-table route and `status`. The allowed set is
+`200`, `201`, `202` and `204`; `203`, `205`, `206` and any other value fail the build.
+`204` is valid only when the method returns `Unit`:
+
+```toml
+accept = { route = "POST /jobs", status = 202 }
+```
+
+**Location header** is declared with `location`, a template whose `{field}` placeholders name
+components of the result record (an `Option` result is read inside). Each field is rendered as
+one percent-encoded path segment. A `201` with no `location` sends no header:
+
+```toml
+create = { route = "POST /articles", status = 201, location = "/articles/{slug}" }
+```
+
+**Defaults:** a method returning `Unit` answers `204` with no body (or the declared status),
+an empty `Option` answers `404`, and a `null` success value is a bug answered `500`.
+
 ### Error Mapping
 
 The `[errors]` section uses glob patterns to match `Cause` type names to HTTP status codes:

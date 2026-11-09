@@ -120,6 +120,31 @@ public interface Route<T> extends RouteSource, RouteShape {
         return UploadSpec.NONE;
     }
 
+    /// Returns the success response this route declares in `routes.toml` (`status`, `location`, #2805);
+    /// [SuccessSpec#DEFAULT] when it declares none.
+    default SuccessSpec successSpec() {
+        return SuccessSpec.DEFAULT;
+    }
+
+    /// Returns this route with the success response it declares (`status`, `location` in `routes.toml`, #2805).
+    ///
+    /// @param successSpec the declared success response
+    /// @return a route answering its success with the declared status and `Location` header
+    default Route<T> withSuccess(SuccessSpec successSpec) {
+        return route(method(),
+                     path(),
+                     handler(),
+                     contentType(),
+                     spacers(),
+                     name(),
+                     security(),
+                     version(),
+                     pathParamCount(),
+                     spacerSlots(),
+                     uploadSpec(),
+                     successSpec);
+    }
+
     @Override
     default Stream<Route<?>> routes() {
         return Stream.of(this);
@@ -216,6 +241,32 @@ public interface Route<T> extends RouteSource, RouteShape {
                               int pathArity,
                               List<Integer> spacerSlots,
                               UploadSpec uploadSpec) {
+        return route(method,
+                     path,
+                     handler,
+                     contentType,
+                     spacers,
+                     name,
+                     security,
+                     version,
+                     pathArity,
+                     spacerSlots,
+                     uploadSpec,
+                     SuccessSpec.DEFAULT);
+    }
+
+    static <T> Route<T> route(HttpMethod method,
+                              String path,
+                              Handler<T> handler,
+                              ContentType contentType,
+                              List<String> spacers,
+                              String name,
+                              RouteSecurityPolicy security,
+                              int version,
+                              int pathArity,
+                              List<Integer> spacerSlots,
+                              UploadSpec uploadSpec,
+                              SuccessSpec successSpec) {
         record route <T>(HttpMethod method,
                          String path,
                          Handler<T> handler,
@@ -226,7 +277,8 @@ public interface Route<T> extends RouteSource, RouteShape {
                          int version,
                          int pathArity,
                          List<Integer> spacerSlots,
-                         UploadSpec uploadSpec) implements Route<T> {
+                         UploadSpec uploadSpec,
+                         SuccessSpec successSpec) implements Route<T> {
             @Override
             public int pathParamCount() {
                 return pathArity;
@@ -244,7 +296,8 @@ public interface Route<T> extends RouteSource, RouteShape {
                              version,
                              pathArity,
                              spacerSlots,
-                             uploadSpec);
+                             uploadSpec,
+                             successSpec);
             }
 
             @Override
@@ -273,7 +326,8 @@ public interface Route<T> extends RouteSource, RouteShape {
                             version,
                             pathArity,
                             spacerSlots,
-                            uploadSpec);
+                            uploadSpec,
+                            successSpec);
     }
 
     /// Mount a route in path mode (#198 §6.4, the default detection mode). For a versioned route
@@ -298,7 +352,8 @@ public interface Route<T> extends RouteSource, RouteShape {
                        route.version(),
                        route.pathParamCount(),
                        route.spacerSlots(),
-                       route.uploadSpec());
+                       route.uploadSpec(),
+                       route.successSpec());
     }
 
     /// Mount a route in header mode (#198 §7). For a versioned route (`version > 0`) the un-versioned
@@ -324,7 +379,8 @@ public interface Route<T> extends RouteSource, RouteShape {
                        route.version(),
                        route.pathParamCount(),
                        route.spacerSlots(),
-                       route.uploadSpec());
+                       route.uploadSpec(),
+                       route.successSpec());
     }
 
     /// Completes a route whose argument-binding lambda returns the request-bound [Handler] rather than the response

@@ -5,12 +5,14 @@
 package org.pragmatica.aether.http;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.blueprint.SecurityOverridePolicy;
 import org.pragmatica.aether.slice.blueprint.SecurityOverrides;
@@ -101,6 +103,20 @@ class HttpRoutePublisherUploadSpecTest {
         assertThat(republished.maxFields()).isEqualTo(10L);
         assertThat(republished.maxFieldBytes()).isEqualTo(4096L);
         assertThat(publisher.findLocalRoute("POST", "/uploads/x").unwrap().uploadSpec()).isEqualTo(UploadIngestSliceRoutes.DECLARED);
+    }
+
+    /// #2805: the publisher rewraps every route's handler; the rewrapped route must keep the declared success status and
+    /// `Location`, or the node would answer 200 for a route that declares 201.
+    @Test
+    void theServedRoute_keepsTheDeclaredSuccessStatusAndLocation_throughTheHandlerWrap() {
+        var response = publisher.getSliceRouter(ARTIFACT)
+                                .unwrap()
+                                .handle(HttpRequestContext.httpRequestContext("/created/", "POST", Map.of(), Map.of(), new byte[0], "req_created"))
+                                .await(timeSpan(10).seconds())
+                                .unwrap();
+
+        assertThat(response.statusCode()).isEqualTo(201);
+        assertThat(response.headers()).containsEntry("Location", "/created/1");
     }
 
     private static SliceInvokerFacade stubInvokerFacade() {

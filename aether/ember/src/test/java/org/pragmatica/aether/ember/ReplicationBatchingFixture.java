@@ -13,10 +13,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.Disabled;
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
@@ -28,36 +25,21 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.PARTITION;
 import static org.pragmatica.aether.ember.StreamTripwireSupport.engineKey;
 import static org.pragmatica.aether.ember.StreamTripwireSupport.sleepQuietly;
 
-/// Streams overhaul tripwire, step 2 (#2201), replication transport: C-04 - `ReplicationBatcher` is not wired, so every
-/// single publish sends one `ReplicateEvents` per replica.
-///
-/// Each node counts, through its inbound fault filter (a pure observer: it always lets the message through), the
-/// `ReplicateEvents` messages it receives. 192 single publishes are made through the owner's real `StreamWriteRouter`
-/// from 16 concurrent callers, so a batcher would have something to coalesce. A positive control makes one owner-local
-/// `publishBatch` of 100 events, the path 1b-perf found already batched (#1245): its replicas receive a handful of messages,
-/// which shows the counter can see batching.
-///
-/// **No data directory, on purpose.** With a WAL the ordered append section does not wait on the fsync: it writes the frame
-/// and only requests the group commit (`StreamPartitionManager.writeWalFrame` -> `wal.commit(writeSeq)`, StreamPartitionManager.java:3416-3422),
-/// which is awaited after the section (`awaitDurable`, :3545); the fsync is `AppendLog.commit` (AppendLog.java:375) ->
-/// `groupCommit` (:734) -> one `force(false)` (:760) under `syncLock` (:745). On macOS/APFS, though, the in-section frame
-/// `pwrite` stalls behind the group-commit `force` already in flight, so the per-event section time exceeds the batcher's 1 ms
-/// window (`ReplicationBatcher.DEFAULT_MAX_DELAY`, ReplicationBatcher.java:63) and even a wired default batcher coalesced
-/// almost nothing (one mutation run: 182 messages for 192 events); on ZFS (bigboy) the same run gives 0.2-0.3. The wiring gap
-/// does not depend on the WAL, so it is measured on the ephemeral-storage node, where appends are microseconds apart.
-/// - Tripwire: messages per event per replica is at least 0.9.
-/// - `@Disabled` acceptance: at most 0.5 (the overhaul's batching must at least halve the frames under this load).
-@PortBudget
+/// Shared C-04 fixture (#263): a three-node Ember cluster whose nodes count, through their inbound fault filter (a pure
+/// observer: it always lets the message through), the `ReplicateEvents` messages they receive for one stream; 16
+/// concurrent callers make single publishes through the owner's real `StreamWriteRouter`, and one owner-local
+/// `publishBatch` is the positive control. Subclasses choose the cluster: [EmberReplicationBatchingTest] without a WAL
+/// (gated), [EmberReplicationBatchingWalMeasurementTest] with one (measured only).
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-class EmberReplicationBatchingTripwireTest {
+abstract class ReplicationBatchingFixture {
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
     private static final TimeSpan PUBLISH_BOUND = TimeSpan.timeSpan(30).seconds();
     private static final long ISR_BUDGET_MS = 90_000L;
     private static final int CALLERS = 16;
     private static final int PER_CALLER = 12;
-    private static final int SINGLE_PUBLISHES = CALLERS * PER_CALLER;
-    private static final int BATCH = 100;
+    static final int SINGLE_PUBLISHES = CALLERS * PER_CALLER;
+    static final int BATCH = 100;
     private static final String STREAM = "c04";
     private static final String ENGINE_KEY = engineKey(STREAM);
 
@@ -76,40 +58,9 @@ class EmberReplicationBatchingTripwireTest {
         }
     }
 
-    @Test
-    @Timeout(600)
-    void singlePublishes_tripwire_sendOneReplicateEventsMessagePerEventPerReplica() {
-        boot();
+    record Traffic(List<Long> messagesPerReplica, List<Long> eventsPerReplica) {}
 
-        var burst = publishSinglesConcurrently(SINGLE_PUBLISHES);
-        var control = publishOneBatch(BATCH);
-
-        assertThat(burst.eventsPerReplica()).as("control: every replica received all %d events", SINGLE_PUBLISHES).allSatisfy(events -> assertThat(events).isEqualTo((long) SINGLE_PUBLISHES));
-        assertThat(burst.messagesPerReplica()).as("C-04 fixed? Single publishes are now coalesced (messages per replica %s for %d events). "
-                                                 + "Delete this tripwire and enable singlePublishes_areBatchedIntoFewerMessages (#2201)",
-                                                 burst.messagesPerReplica(),
-                                                 SINGLE_PUBLISHES)
-                                              .allSatisfy(messages -> assertThat(messages).isGreaterThanOrEqualTo((long) (0.9 * SINGLE_PUBLISHES)));
-        assertThat(control.eventsPerReplica()).as("control: every replica received the %d batched events", BATCH).allSatisfy(events -> assertThat(events).isEqualTo((long) BATCH));
-        assertThat(control.messagesPerReplica()).as("control: the owner-local publishBatch is already coalesced (#1245), so the counter can see batching")
-                                                .allSatisfy(messages -> assertThat(messages).isLessThanOrEqualTo(3L));
-    }
-
-    @Test
-    @Disabled("C-04 (#2201): enable when single publishes are batched on the wire; RED today: one ReplicateEvents per event per replica")
-    @Timeout(600)
-    void singlePublishes_areBatchedIntoFewerMessages() {
-        boot();
-
-        var burst = publishSinglesConcurrently(SINGLE_PUBLISHES);
-
-        assertThat(burst.messagesPerReplica()).as("ReplicateEvents messages per replica for %d concurrent single publishes", SINGLE_PUBLISHES)
-                                              .allSatisfy(messages -> assertThat(messages).isLessThanOrEqualTo((long) (0.5 * SINGLE_PUBLISHES)));
-    }
-
-    private record Traffic(List<Long> messagesPerReplica, List<Long> eventsPerReplica) {}
-
-    private void boot() {
+    void boot() {
         if (bootFailure != null) {
             throw new AssertionError("the shared cluster failed to boot for an earlier test: " + bootFailure, bootFailure);
         }
@@ -157,7 +108,7 @@ class EmberReplicationBatchingTripwireTest {
         return true;
     }
 
-    private Traffic publishSinglesConcurrently(int count) {
+    Traffic publishSinglesConcurrently(int count) {
         var before = snapshot();
         var router = StreamTripwireSupport.component(owner, "streamWriteRouter", StreamWriteRouter.class);
         try (var pool = Executors.newFixedThreadPool(CALLERS)) {
@@ -180,7 +131,7 @@ class EmberReplicationBatchingTripwireTest {
         }
     }
 
-    private Traffic publishOneBatch(int count) {
+    Traffic publishOneBatch(int count) {
         var before = snapshot();
         var router = StreamTripwireSupport.component(owner, "streamWriteRouter", StreamWriteRouter.class);
         var payloads = IntStream.range(0, count).mapToObj(i -> ("batch-" + i).getBytes(StandardCharsets.UTF_8)).toList();
@@ -207,11 +158,11 @@ class EmberReplicationBatchingTripwireTest {
                            replicas.stream().map(id -> replicatedEvents.get(id).get() - before.get(id)[1]).toList());
     }
 
-    private EmberCluster threeNodes(int basePort) {
-        return EmberCluster.emberCluster(StreamTripwireSupport.CLUSTER_SIZE,
-                                         basePort,
-                                         basePort + StreamTripwireSupport.MGMT_OFFSET,
-                                         basePort + StreamTripwireSupport.APP_HTTP_OFFSET,
-                                         "c04");
+    /// The partition's owner, once [#boot] ran.
+    AetherNode ownerNode() {
+        return owner;
     }
+
+    /// The cluster under measurement; the subclass decides whether its nodes have a WAL.
+    abstract EmberCluster threeNodes(int basePort);
 }

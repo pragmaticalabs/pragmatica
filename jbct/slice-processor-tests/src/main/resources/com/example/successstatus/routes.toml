@@ -1,0 +1,16 @@
+prefix = "/api/blog"
+
+[routes]
+create = { route = "POST /articles", status = 201, location = "/api/blog/articles/{slug}" }
+register = { route = "POST /registrations", status = 201 }
+draft = { route = "POST /drafts", status = 201, location = "/api/blog/drafts/{id}/view" }
+enqueue = { route = "POST /jobs", status = 202 }
+remove = "DELETE /articles/{slug}"
+purge = { route = "POST /purge/{slug}", status = 204 }
+find = "GET /articles/{slug}"
+broken = "GET /broken"
+locate = { route = "POST /located", location = "/api/blog/articles/{slug}" }
+lookup = { route = "GET /lookup/{slug}", status = 200, location = "/api/blog/articles/{slug}" }
+
+[errors]
+default = 500

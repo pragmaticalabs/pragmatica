@@ -33,7 +33,7 @@ import org.pragmatica.lang.utils.Causes;
 /// - [ContentCategory#FORM_URLENCODED]/[ContentCategory#MULTIPART] → input-only, never a valid
 ///   `produces` category, so serialization returns an error
 ///
-/// HTTP-level concerns (`null`→204, status selection, error→`ProblemDetail`) stay in the
+/// HTTP-level concerns (success status selection, error→`ProblemDetail`) stay in the
 /// adapters; this function only turns a value into bytes.
 public sealed interface ResponseSerializer {
     Fn1<Cause, ContentCategory> NON_SERIALIZABLE_CATEGORY = Causes.forOneValue("Content category %s is an input-only type and cannot be serialized as a response body");

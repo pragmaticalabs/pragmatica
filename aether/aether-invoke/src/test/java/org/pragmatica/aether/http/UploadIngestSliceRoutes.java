@@ -12,12 +12,14 @@ import org.pragmatica.aether.http.adapter.SliceRouterFactory;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
+import org.pragmatica.http.routing.SuccessSpec;
 import org.pragmatica.http.routing.UploadSpec;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Promise;
 
 /// Fixture for the upload ingest gate: one slice with an upload route that declares `max_size = 5 MiB` and
-/// `max_duration = 90 s`, and a plain route that declares nothing, as the route generator emits them.
+/// `max_duration = 90 s`, a plain route that declares nothing, and a route that declares a success status and
+/// `Location` (#2805), as the route generator emits them.
 public final class UploadIngestSliceRoutes implements RouteSource, SliceRouterFactory<UploadIngestSlice> {
     public static final UploadSpec DECLARED = UploadSpec.uploadSpec(true, 5L * 1024 * 1024, 90_000, 3, 2L * 1024 * 1024, 10, 4096);
 
@@ -55,6 +57,13 @@ public final class UploadIngestSliceRoutes implements RouteSource, SliceRouterFa
                               .to(_ -> Promise.success("plain"))
                               .named("plain")
                               .withSecurity(SecurityPolicy.authenticated())
-                              .asJson());
+                              .asJson(),
+                         Route.<String>post("/created/")
+                              .withoutParameters()
+                              .to(_ -> Promise.success("created"))
+                              .named("created")
+                              .withSecurity(SecurityPolicy.publicRoute())
+                              .asJson()
+                              .withSuccess(SuccessSpec.successSpec(201, _ -> "/created/1")));
     }
 }

@@ -210,4 +210,89 @@ class ErrorMappingValidatorTest {
             assertThat(issues).isEmpty();
         }
     }
+
+    @Nested
+    class ExplicitAmbiguity {
+
+        private ErrorMappingValidator.CauseDescriptor denied(String pkg) {
+            return new ErrorMappingValidator.CauseDescriptor("Denied", pkg + ".Denied", true);
+        }
+
+        @Test
+        void ambiguousExplicitMappings_flagsSimpleKeyMatchingTwoQualifiedNames() {
+            var issues = ErrorMappingValidator.ambiguousExplicitMappings(List.of(denied("b"), denied("a")),
+                                                                         config(Map.of(), Map.of("Denied", 404)),
+                                                                         PATH);
+
+            assertThat(issues).hasSize(1);
+            assertThat(issues.getFirst().kind()).isEqualTo(ErrorMappingValidator.IssueKind.AMBIGUOUS_EXPLICIT);
+            assertThat(issues.getFirst().message()).contains("'Denied'", "a.Denied, b.Denied", "fully-qualified");
+        }
+
+        @Test
+        void ambiguousExplicitMappings_acceptsQualifiedKeyAndUniqueSimpleKey() {
+            var qualified = ErrorMappingValidator.ambiguousExplicitMappings(List.of(denied("a"), denied("b")),
+                                                                            config(Map.of(), Map.of("a.Denied", 404)),
+                                                                            PATH);
+            var unique = ErrorMappingValidator.ambiguousExplicitMappings(List.of(denied("a")),
+                                                                         config(Map.of(), Map.of("Denied", 404)),
+                                                                         PATH);
+
+            assertThat(qualified).isEmpty();
+            assertThat(unique).isEmpty();
+        }
+
+        @Test
+        void ambiguousExplicitMappings_sameQualifiedNameTwice_isNotAmbiguous() {
+            var issues = ErrorMappingValidator.ambiguousExplicitMappings(List.of(denied("a"), denied("a")),
+                                                                         config(Map.of(), Map.of("Denied", 404)),
+                                                                         PATH);
+
+            assertThat(issues).isEmpty();
+        }
+
+        @Test
+        void ambiguousExplicitMappings_matchesSimpleNamesCaseSensitively() {
+            var lower = new ErrorMappingValidator.CauseDescriptor("denied", "b.denied", true);
+
+            var issues = ErrorMappingValidator.ambiguousExplicitMappings(List.of(denied("a"), lower),
+                                                                         config(Map.of(), Map.of("Denied", 404)),
+                                                                         PATH);
+
+            assertThat(issues).isEmpty();
+        }
+
+        @Test
+        void ambiguousExplicitMappings_severalKeys_areReportedInKeyOrder() {
+            var causes = List.of(denied("a"), denied("b"), named("Zeta", "a"), named("Zeta", "b"), named("Alpha", "a"),
+                                 named("Alpha", "b"), named("Mid", "a"), named("Mid", "b"), named("Beta", "a"), named("Beta", "b"));
+            var explicit = Map.of("Zeta", 404, "Denied", 404, "Alpha", 404, "Mid", 404, "Beta", 404);
+
+            var issues = ErrorMappingValidator.ambiguousExplicitMappings(causes, config(Map.of(), explicit), PATH);
+
+            assertThat(issues).extracting(issue -> issue.message().split("'")[1])
+                              .containsExactly("Alpha", "Beta", "Denied", "Mid", "Zeta");
+        }
+
+        @Test
+        void explicitStatus_qualifiedKeyWinsOverSimpleKey() {
+            var config = config(Map.of(), Map.of("Denied", 404, "a.Denied", 403));
+
+            assertThat(config.explicitStatus("Denied", "a.Denied").or(-1)).isEqualTo(403);
+            assertThat(config.explicitStatus("Denied", "b.Denied").or(-1)).isEqualTo(404);
+        }
+
+        private ErrorMappingValidator.CauseDescriptor named(String simpleName, String pkg) {
+            return new ErrorMappingValidator.CauseDescriptor(simpleName, pkg + "." + simpleName, true);
+        }
+
+        @Test
+        void validate_qualifiedExplicitKey_isMappedAndNotDead() {
+            var issues = ErrorMappingValidator.validate(List.of(denied("a")),
+                                                        config(Map.of(), Map.of("a.Denied", 404)),
+                                                        PATH);
+
+            assertThat(issues).isEmpty();
+        }
+    }
 }
