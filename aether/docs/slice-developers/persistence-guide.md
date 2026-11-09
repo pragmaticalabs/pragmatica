@@ -259,8 +259,10 @@ column proves that column too (`col IS NOT NULL`, `=`, `<>`, `<`, `>`, `<=`, `>=
 but only as a top-level `AND` conjunct of the `WHERE` of the same `SELECT`: not under `OR` or `NOT`, not inside a
 subquery, not in `HAVING`, not in an outer join's `ON`, and a predicate on an expression (`lower(col) = ..`,
 `col::text = ..`) proves nothing. It proves only that column, and a `WHERE` predicate on a column of the nullable side of a
-`LEFT JOIN` proves that column (the other columns of that side stay unproven). `Option<T>` on a proven output is
-accepted without a warning. A scalar or `@Jsonb` single-output method reads its value through a non-nullable accessor,
+`LEFT JOIN` proves that column (the other columns of that side stay unproven). The converse also holds (#2962): an
+`Option<T>` record component on a PROVEN non-null output fails the build, naming the method, the output, the proof (the
+rule above that fired) and the fix (declare the plain `T`); declared types match proven nullability in both directions,
+and an output that is not proven may still be read into `Option<T>`. A scalar or `@Jsonb` single-output method reads its value through a non-nullable accessor,
 so `Promise<Option<T>>` (row optional) does not make a NULL value acceptable; use `COALESCE`. CRUD-generated methods
 are not analysed. An unaliased output is matched under the name PostgreSQL gives it (`max(total)` is `max`,
 `col::text` is `col`), and an output with no certain name is treated as possibly read by any field no named output

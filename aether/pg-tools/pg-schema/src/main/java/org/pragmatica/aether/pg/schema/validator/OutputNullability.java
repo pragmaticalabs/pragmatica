@@ -40,13 +40,15 @@ public final class OutputNullability {
 
     /// The verdict for one output expression.
     public sealed interface Nullability {
-        /// Proven never NULL.
-        record NonNull() implements Nullability {}
+        /// Proven never NULL; `proof` names the rule of the proven set that made it so (#2962).
+        record NonNull(String proof) implements Nullability {}
 
         /// Not proven non-null; `reason` says which form makes it so.
         record MayBeNull(String reason) implements Nullability {}
 
-        Nullability NON_NULL = new NonNull();
+        static Nullability nonNull(String proof) {
+            return new NonNull(proof);
+        }
 
         static Nullability mayBeNull(String reason) {
             return new MayBeNull(reason);
@@ -197,7 +199,20 @@ public final class OutputNullability {
             if (!verdict.isNonNull()) return verdict;
         }
 
-        return Nullability.NON_NULL;
+        return branches.size() > 1
+               ? Nullability.nonNull("every set operation branch is proven non-null (" + proofOf(branches.getFirst()
+                                                                                                         .get(position)
+                                                                                                         .nullability())
+                                    + ")")
+               : branches.getFirst()
+                         .get(position)
+                         .nullability();
+    }
+
+    private static String proofOf(Nullability verdict) {
+        return verdict instanceof Nullability.NonNull proven
+               ? proven.proof()
+               : "unproven";
     }
 
     /// The CTEs of this statement, each analysed with the ones before it visible; a CTE is registered as unresolved
@@ -449,7 +464,7 @@ public final class OutputNullability {
             if (!verdict.isNonNull()) return verdict;
         }
 
-        return Nullability.NON_NULL;
+        return Nullability.nonNull("every VALUES row is proven non-null in this position");
     }
 
     /// The name the query gives an output: its alias or plain column name, else the label PostgreSQL derives for
@@ -572,7 +587,7 @@ public final class OutputNullability {
         return switch (node.rule()) {
             case "ColRef" -> columnRef(node, scope);
             case "Literal" -> literal(node);
-            case "TypedLiteral" -> Nullability.NON_NULL;
+            case "TypedLiteral" -> Nullability.nonNull("a typed literal is never NULL");
             case "CoalesceExpr" -> coalesce(node, scope);
             case "CastExpr" -> operand(node.child("Expr"), scope);
             case "TypeCastExpr" -> operand(node.firstChild(), scope);
@@ -583,7 +598,7 @@ public final class OutputNullability {
                                                      : "CASE without ELSE yields NULL when no WHEN matches");
             case "NullIfExpr" -> Nullability.mayBeNull("NULLIF yields NULL when its arguments are equal");
             case "SubqueryExpr" -> scalarSubquery(node);
-            case "ExistsExpr" -> Nullability.NON_NULL;
+            case "ExistsExpr" -> Nullability.nonNull("EXISTS (..) always yields true or false");
             case "NotExpr" -> negation(node, scope);
             default -> transparentOrUnproven(node, scope);
         };
@@ -594,7 +609,7 @@ public final class OutputNullability {
         var negatesExists = node.child("NotExpr").flatMap(inner -> chainTo(inner, "ExistsExpr")).isPresent();
 
         return negatesExists
-               ? Nullability.NON_NULL
+               ? Nullability.nonNull("NOT EXISTS (..) always yields true or false")
                : transparentOrUnproven(node, scope);
     }
 
@@ -609,7 +624,7 @@ public final class OutputNullability {
                                     .isPresent();
 
         return alwaysOneRow
-               ? Nullability.NON_NULL
+               ? Nullability.nonNull("an ungrouped count(..) scalar subquery always returns exactly one row")
                : Nullability.mayBeNull("a scalar subquery yields NULL when it returns no row");
     }
 
@@ -682,7 +697,7 @@ public final class OutputNullability {
                       .filter(text -> text.equalsIgnoreCase("null"))
                       .isPresent()
                ? Nullability.mayBeNull("the NULL literal")
-               : Nullability.NON_NULL;
+               : Nullability.nonNull("a non-NULL literal");
     }
 
     /// `COALESCE` is non-null only when its LAST argument is proven so.
@@ -693,7 +708,7 @@ public final class OutputNullability {
         if (last.isEmpty()) return Nullability.mayBeNull("COALESCE without a last argument");
 
         return switch (evaluate(last.unwrap(), scope)) {
-            case Nullability.NonNull _ -> Nullability.NON_NULL;
+            case Nullability.NonNull proven -> Nullability.nonNull("COALESCE whose last argument is proven non-null (" + proven.proof() + ")");
             case Nullability.MayBeNull nullable -> Nullability.mayBeNull("COALESCE whose last argument may be NULL (" + nullable.reason() + ")");
         };
     }
@@ -708,7 +723,7 @@ public final class OutputNullability {
     private static Nullability functionCall(CstNavigator call) {
         var name = functionName(call).or("");
 
-        if (name.equals("count")) return Nullability.NON_NULL;
+        if (name.equals("count")) return Nullability.nonNull("count(..) never yields NULL");
 
         return Nullability.mayBeNull(AGGREGATES.contains(name)
                                      ? name + "() yields NULL over an empty group, or when every input is NULL"
@@ -757,7 +772,7 @@ public final class OutputNullability {
                        .findFirst()
                        .orElse(verdicts.isEmpty()
                                ? Nullability.mayBeNull("column '" + column + "' cannot be resolved")
-                               : Nullability.NON_NULL);
+                               : verdicts.getFirst());
     }
 
     private static Nullability relationColumn(Relation relation, String column, Scope scope) {
@@ -782,27 +797,36 @@ public final class OutputNullability {
                                              .map(Output::nullability)
                                              .filter(verdict -> !verdict.isNonNull())
                                              .findFirst()
-                                             .orElse(outs.stream()
-                                                         .anyMatch(out -> out.name()
-                                                                             .map(column::equals)
-                                                                             .or(false))
-                                                     ? Nullability.NON_NULL
-                                                     : Nullability.mayBeNull("column '" + label + "' cannot be resolved")))
+                                             .orElse(derivedProof(outs, column, label)))
                             .or(Nullability.mayBeNull("column '" + label
                                                      + "' comes from a derived table, CTE or function"));
 
         return overlay(relation, found, column, scope);
     }
 
+    /// The first output of `outs` named `column` - all of them are proven when this is reached - else unresolved.
+    private static Nullability derivedProof(List<Output> outs, String column, String label) {
+        return outs.stream()
+                   .filter(out -> out.name()
+                                     .map(column::equals)
+                                     .or(false))
+                   .map(Output::nullability)
+                   .findFirst()
+                   .orElse(Nullability.mayBeNull("column '" + label + "' cannot be resolved"));
+    }
+
     private static Nullability columnVerdict(Relation relation, Column column, Scope scope) {
         var label = relation.name() + "." + column.name();
-        var positional = overlay(relation, Nullability.NON_NULL, column.name(), scope);
+        var own = Nullability.nonNull(column.nullable()
+                                      ? whereProof(label)
+                                      : "column '" + label + "' is a NOT NULL column");
+        var positional = overlay(relation, own, column.name(), scope);
 
         if (!positional.isNonNull()) return positional;
 
         return column.nullable() && !scope.proves(relation.name(), column.name())
                ? Nullability.mayBeNull("column '" + label + "' is nullable")
-               : Nullability.NON_NULL;
+               : positional;
     }
 
     /// What the position of the relation adds to a column's own verdict: the nullable side of an outer join and the
@@ -824,7 +848,14 @@ public final class OutputNullability {
         return scope.subtotals()
                ? Nullability.mayBeNull("column '" + label
                                       + "' is NULL in the subtotal rows of ROLLUP, CUBE or GROUPING SETS")
-               : Nullability.NON_NULL;
+               : own.isNonNull() && relation.nullableSide()
+                                            .isEmpty()
+                 ? own
+                 : Nullability.nonNull(whereProof(label));
+    }
+
+    private static String whereProof(String label) {
+        return "a top-level WHERE conjunct rejects NULL for column '" + label + "'";
     }
 
     // --- columns proven by the WHERE of the same SELECT (rule C, #2889) ---

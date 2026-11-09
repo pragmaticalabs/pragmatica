@@ -1499,6 +1499,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
             return;
         }
         if (field.typeName().startsWith(OPTION_TYPE + "<")) {
+            reportIfProven(execElement, methodName, field, named);
             return;
         }
         if (named.isEmpty()) {
@@ -1510,6 +1511,25 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
             return;
         }
         reportIfNullable(execElement, methodName, named.getFirst(), "field '" + field.name() + "'");
+    }
+
+    /// An `Option` field whose named output is PROVEN non-null fails the build (#2962): declared types match proven
+    /// nullability in both directions. An output that is not proven, or that no named output covers, stays accepted.
+    private void reportIfProven(ExecutableElement execElement,
+                                String methodName,
+                                TypeMirrorResolver.FieldInfo field,
+                                List<OutputNullability.Output> named) {
+        if (named.size() == 1 && named.getFirst().nullability() instanceof OutputNullability.Nullability.NonNull proven) {
+            var typeName = field.typeName();
+            var plainType = typeName.substring(OPTION_TYPE.length() + 1, typeName.length() - 1);
+
+            error(ProcessorError.provenNonNullToOption(methodName,
+                                                       named.getFirst().name().or("(unnamed output)"),
+                                                       field.name(),
+                                                       proven.proof(),
+                                                       plainType),
+                  execElement);
+        }
     }
 
     private void reportIfNullable(ExecutableElement execElement,

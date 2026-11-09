@@ -87,7 +87,7 @@ class OutputNullabilityTest {
     })
     void nullableForm_isMayBeNull(String sql, String output, String cause) {
         if ("NOT_USED".equals(cause)) {
-            assertThat(verdict(sql, output)).isEqualTo(Nullability.NON_NULL);
+            assertThat(verdict(sql, output)).isInstanceOf(Nullability.NonNull.class);
             return;
         }
 
@@ -124,7 +124,7 @@ class OutputNullabilityTest {
         "DELETE FROM t RETURNING name AS x"
     })
     void provenForm_isNonNull(String sql) {
-        assertThat(verdict(sql, "x")).isEqualTo(Nullability.NON_NULL);
+        assertThat(verdict(sql, "x")).isInstanceOf(Nullability.NonNull.class);
     }
 
     @Test
@@ -188,7 +188,7 @@ class OutputNullabilityTest {
     void castOfNullableColumn_staysNullable_castOfNonNull_staysNonNull() {
         assertThat(verdict("SELECT note::text AS x FROM t", "x")).isInstanceOf(Nullability.MayBeNull.class);
         assertThat(verdict("SELECT CAST(note AS text) AS x FROM t", "x")).isInstanceOf(Nullability.MayBeNull.class);
-        assertThat(verdict("SELECT qty::text AS x FROM t", "x")).isEqualTo(Nullability.NON_NULL);
+        assertThat(verdict("SELECT qty::text AS x FROM t", "x")).isInstanceOf(Nullability.NonNull.class);
     }
 
     @Test
@@ -271,9 +271,9 @@ class OutputNullabilityTest {
     @Test
     void cteSeesEarlierCtes_andNestedQueriesSeeOuterCtes() {
         assertThat(verdict("WITH a AS (SELECT id AS x FROM t), b AS (SELECT x FROM a) SELECT x AS y FROM b", "y"))
-            .isEqualTo(Nullability.NON_NULL);
+            .isInstanceOf(Nullability.NonNull.class);
         assertThat(verdict("WITH c AS (SELECT id AS x FROM t) SELECT y FROM (SELECT x AS y FROM c) d", "y"))
-            .isEqualTo(Nullability.NON_NULL);
+            .isInstanceOf(Nullability.NonNull.class);
     }
 
     @Test
@@ -298,7 +298,7 @@ class OutputNullabilityTest {
         assertThat(verdict("SELECT d.x AS y FROM (SELECT id AS x, note AS x FROM t) d", "y")).isInstanceOf(Nullability.MayBeNull.class);
         assertThat(verdict("SELECT d.id AS y FROM t LEFT JOIN (SELECT id FROM u) d ON d.id = t.id", "y"))
             .isInstanceOf(Nullability.MayBeNull.class);
-        assertThat(verdict("SELECT d.id AS y FROM t JOIN (SELECT id FROM u) d ON d.id = t.id", "y")).isEqualTo(Nullability.NON_NULL);
+        assertThat(verdict("SELECT d.id AS y FROM t JOIN (SELECT id FROM u) d ON d.id = t.id", "y")).isInstanceOf(Nullability.NonNull.class);
     }
 
     @Test
@@ -343,7 +343,7 @@ class OutputNullabilityTest {
         "WITH c AS (SELECT note AS x FROM t WHERE note IS NOT NULL) SELECT x AS y FROM c"
     })
     void rejectingPredicateOnBareColumn_provesTheColumn(String sql) {
-        assertThat(verdict(sql, sql.contains(" AS y ") ? "y" : "x")).isEqualTo(Nullability.NON_NULL);
+        assertThat(verdict(sql, sql.contains(" AS y ") ? "y" : "x")).isInstanceOf(Nullability.NonNull.class);
     }
 
     @ParameterizedTest(name = "{0}")
@@ -415,7 +415,7 @@ class OutputNullabilityTest {
         "SELECT (SELECT count(*) AS n FROM u) AS x FROM t"
     })
     void alwaysOneValue_isProvenNonNull(String sql) {
-        assertThat(verdict(sql, "x")).isEqualTo(Nullability.NON_NULL);
+        assertThat(verdict(sql, "x")).isInstanceOf(Nullability.NonNull.class);
     }
 
     @ParameterizedTest(name = "{0}")
@@ -446,7 +446,7 @@ class OutputNullabilityTest {
     void leftJoinWherePredicate_provesOnlyThatColumn() {
         var sql = "SELECT u.label AS a, u.t_id AS b, u.id AS c FROM t LEFT JOIN u ON u.t_id = t.id WHERE u.label IS NOT NULL";
 
-        assertThat(verdict(sql, "a")).isEqualTo(Nullability.NON_NULL);
+        assertThat(verdict(sql, "a")).isInstanceOf(Nullability.NonNull.class);
         assertThat(verdict(sql, "b")).isInstanceOfSatisfying(Nullability.MayBeNull.class,
                                                               n -> assertThat(n.reason()).contains("nullable side of a LEFT JOIN"));
         assertThat(verdict(sql, "c")).isInstanceOf(Nullability.MayBeNull.class);
@@ -466,6 +466,34 @@ class OutputNullabilityTest {
     @Test
     void wherePredicateOnABranch_doesNotProveTheOtherBranch() {
         assertThat(verdict("SELECT note AS x FROM t WHERE note IS NOT NULL UNION SELECT note FROM t WHERE note IS NOT NULL", "x"))
-            .isEqualTo(Nullability.NON_NULL);
+            .isInstanceOf(Nullability.NonNull.class);
+    }
+
+    /// #2962: a proven output names the rule of the proven set that made it so.
+    @ParameterizedTest(name = "{0} -> {1}")
+    @CsvSource(delimiter = '|', value = {
+        "SELECT qty AS x FROM t | column 't.qty' is a NOT NULL column",
+        "SELECT note AS x FROM t WHERE note IS NOT NULL | a top-level WHERE conjunct rejects NULL for column 't.note'",
+        "SELECT EXISTS (SELECT 1 FROM u) AS x FROM t | EXISTS (..) always yields true or false",
+        "SELECT NOT EXISTS (SELECT 1 FROM u) AS x FROM t | NOT EXISTS (..) always yields true or false",
+        "SELECT (SELECT count(*) FROM u) AS x FROM t | ungrouped count(..) scalar subquery",
+        "SELECT count(*) AS x FROM t | count(..) never yields NULL",
+        "SELECT 1 AS x FROM t | a non-NULL literal",
+        "SELECT DATE '2020-01-01' AS x FROM t | a typed literal is never NULL",
+        "SELECT COALESCE(note, 'n') AS x FROM t | COALESCE whose last argument is proven non-null (a non-NULL literal)",
+        "SELECT CAST(qty AS text) AS x FROM t | column 't.qty' is a NOT NULL column",
+        "SELECT name AS x FROM t UNION ALL SELECT name FROM t | every set operation branch is proven non-null",
+        "SELECT x FROM (SELECT qty AS x FROM t) d | column 't.qty' is a NOT NULL column",
+        "SELECT u.id AS x FROM t LEFT JOIN u ON u.t_id = t.id WHERE u.id > 0 | a top-level WHERE conjunct rejects NULL for column 'u.id'"
+    })
+    void provenOutput_namesItsProofRule(String sql, String proof) {
+        assertThat(verdict(sql, "x")).isInstanceOfSatisfying(Nullability.NonNull.class,
+                                                              proven -> assertThat(proven.proof()).contains(proof));
+    }
+
+    @Test
+    void valuesColumn_namesItsProofRule() {
+        assertThat(verdict("VALUES (1), (2)", "column1")).isInstanceOfSatisfying(Nullability.NonNull.class,
+                                                                                  proven -> assertThat(proven.proof()).contains("every VALUES row is proven non-null"));
     }
 }
