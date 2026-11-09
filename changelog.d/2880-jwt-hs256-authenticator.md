@@ -13,4 +13,14 @@
 - **Terra: custom authenticator through `ServiceLoader`.** `http.security_mode = "custom"` plus
   `http.authenticator = "<name>"` selects an installed `HttpAuthenticatorFactory`; no match or two factories of one name
   refuse the launch naming them.
+- **`nbf` and `iat` are enforced in every JWT mode** (pre-existing gap, closed with #2880): a token whose `nbf` or
+  `iat` lies in the future beyond `clock_skew_seconds` is refused, and a non-numeric `exp`/`nbf`/`iat` is a refusal, not
+  an exception. An explicit empty or blank `alg` is refused in every mode (a header with no `alg` keeps its historical
+  RS256 reading in JWKS mode).
+- **Secrets**: a blank (empty or whitespace-only) HS256 secret is refused like a short one, on Aether and Terra; the
+  text is used as written, never trimmed. Terra README warns that `jwt.secret` in `terra.toml` is plaintext on disk
+  and recommends `TERRA_JWT__SECRET`.
+- **Authenticator SPI fails closed.** A factory whose `name()` or `authenticator(...)` throws or returns nothing
+  refuses the launch naming the provider class; an authenticator that throws per request answers HTTP 500 with a
+  generic body (no message, no stack) and an ERROR log naming the provider.
 - Not included: an HS256 signer for login (follow-up #2895); the 401/403 mapping is unchanged.

@@ -174,11 +174,12 @@ accepts are `[app-http] auth_schemes` (default `["Bearer"]`), matched case-insen
 mode picks the algorithm, never the token header: an HS256-configured node refuses a token whose header says anything
 but `HS256` (RS256, `none`, ...), and a JWKS-configured node refuses an `HS256` token, so a public key cannot be
 replayed as an HMAC key. The secret comes from `AETHER_JWT_SECRET` (or the file `AETHER_JWT_SECRET_FILE` names), never
-from the TOML; it must be at least 32 bytes (UTF-8). A missing, empty or shorter secret, or a `jwks_url` beside HS256,
+from the TOML; it must be at least 32 bytes (UTF-8). A missing, blank (empty or whitespace-only; the text is never trimmed) or shorter secret, or a `jwks_url` beside HS256,
 refuses the node's config load naming the setting; it is never replaced by a deny-all fallback. Cluster-bootstrap
 pre-flight cannot see the node's environment, so the secret check happens at the node's own load
 [verified: `aether/aether-config/src/test/java/org/pragmatica/aether/config/ConfigLoaderHs256Test.java`,
 `aether/http-security/src/test/java/org/pragmatica/aether/http/security/JwtHs256ValidatorTest.java`].
+In every JWT mode `nbf` and `iat` are enforced beyond `clock_skew_seconds`, and an explicit empty or blank `alg` is refused.
 
 An operator can explicitly set `security_mode = "none"` to disable authentication — an explicit
 setting always overrides the default. This is appropriate only for a single-node local/dev
