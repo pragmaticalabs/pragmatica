@@ -165,6 +165,38 @@ class KvBackupStopFlushRaceTest {
         assertThat(elapsedMs).isBetween(2_900L, 8_000L);
     }
 
+    /// A stop that reaches a worker mid-pass, with nothing to interrupt it (the interrupt can be lost or late), still ends the writing: the pass in
+    /// flight, held in its commit while the stop is requested, pushes nothing once released (#2924: a push 391 ms after `stopFlushed` returned).
+    @Test
+    void aPassInFlightAtTheStop_pushesNothing_evenWhenTheWorkerIsNotInterrupted() throws Exception {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var harness = uninterrupted(remote, System::currentTimeMillis);
+        var node = temp.resolve("node");
+        var held = temp.resolve("commit.held");
+        var release = temp.resolve("commit.release");
+        var stamps = temp.resolve("push.stamps");
+
+        write(node.resolve(".git").resolve("hooks").resolve("pre-commit"),
+              "#!/bin/sh\ntouch '" + held + "'\nwhile [ ! -f '" + release + "' ]; do sleep 0.05; done\nexit 0\n");
+        harness.service().stopFlushed(TimeSpan.timeSpan(120).seconds());
+        awaitFile(held);
+        harness.service().stop();
+        Files.createFile(release);
+        var ended = harness.done().await(20, TimeUnit.SECONDS);
+
+        harness.executor().shutdownNow();
+        assertThat(ended).as("control: the pass ended").isTrue();
+        assertThat(Files.exists(stamps) ? Files.readString(stamps) : "").as("no push started after the stop").isEmpty();
+    }
+
+    private static void awaitFile(Path file) throws InterruptedException {
+        for (var attempt = 0; attempt < 400 && !Files.exists(file); attempt++) {
+            Thread.sleep(50);
+        }
+
+        assertThat(file).as("control: the pass was in flight at the stop").exists();
+    }
+
     /// The stop alone ends the loop too, whatever the deadline says: `stop()` is what the caller's timeout does.
     @Test
     void reDecide_endsAtTheStop_whenTheDeadlineIsStillFar() throws Exception {
