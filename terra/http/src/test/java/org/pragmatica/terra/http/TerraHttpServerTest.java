@@ -86,6 +86,48 @@ class TerraHttpServerTest {
         } finally { close(host); }
     }
 
+    /// #2926: 401 for every unauthenticated request, with the RFC 6750 challenge; 403 (no challenge) only for a role.
+    @Test void serve_apiKeyRefusals_challengeOn401_andNoneOn403() throws Exception {
+        var routes = List.<Route<?>>of(
+            Route.<String>get("/private").withoutParameters().to(_ -> Promise.success("ok")).withSecurity(SecurityPolicy.unspecified()).asText(),
+            Route.<String>get("/admin").withoutParameters().to(_ -> Promise.success("admin")).withSecurity(SecurityPolicy.roleRequired("admin")).asText());
+        var host = start(routes, HttpAuthenticator.apiKeyValidator(KEYS), new AtomicInteger());
+        try (var client = HttpClient.newHttpClient()) {
+            var missing = get(client, host, "/private");
+            assertThat(missing.statusCode()).isEqualTo(401);
+            assertThat(missing.headers().firstValue("WWW-Authenticate")).contains("ApiKey realm=\"Terra\"");
+            var invalid = get(client, host, "/private", "X-API-Key", "bad");
+            assertThat(invalid.statusCode()).isEqualTo(401);
+            assertThat(invalid.headers().firstValue("WWW-Authenticate")).contains("ApiKey realm=\"Terra\", error=\"invalid_token\"");
+            assertThat(invalid.body()).doesNotContain("Invalid API key").contains("Invalid credentials");
+            var empty = get(client, host, "/private", "X-API-Key", "");
+            assertThat(empty.statusCode()).isEqualTo(401);
+            assertThat(empty.headers().firstValue("WWW-Authenticate")).contains("ApiKey realm=\"Terra\", error=\"invalid_token\"");
+            var forbidden = get(client, host, "/admin", "X-API-Key", "reader-secret");
+            assertThat(forbidden.statusCode()).isEqualTo(403);
+            assertThat(forbidden.headers().firstValue("WWW-Authenticate")).isEmpty();
+        } finally { close(host); }
+    }
+
+    @Test void serve_jwtRefusals_challengeNamesTheFirstConfiguredScheme() throws Exception {
+        var jwt = org.pragmatica.aether.config.JwtConfig.jwtConfig("http://127.0.0.1:1/keys", org.pragmatica.lang.Option.<String>empty(),
+            org.pragmatica.lang.Option.<String>empty(), "role", 3600, 30, List.of("Token", "Bearer")).unwrap();
+        var route = Route.<String>get("/jwt").withoutParameters().to(_ -> Promise.success("ok")).withSecurity(SecurityPolicy.roleRequired("admin")).asText();
+        var host = start(List.of(route), HttpAuthenticator.jwtValidator(jwt), new AtomicInteger());
+        try (var client = HttpClient.newHttpClient()) {
+            var missing = get(client, host, "/jwt");
+            assertThat(missing.statusCode()).isEqualTo(401);
+            assertThat(missing.headers().firstValue("WWW-Authenticate")).contains("Token realm=\"Terra\"");
+            var malformed = get(client, host, "/jwt", "Authorization", "Token not-a-jwt");
+            assertThat(malformed.statusCode()).isEqualTo(401);
+            assertThat(malformed.headers().firstValue("WWW-Authenticate")).contains("Token realm=\"Terra\", error=\"invalid_token\"");
+            var forged = get(client, host, "/jwt", "Authorization", "Bearer a.b.c");
+            assertThat(forged.statusCode()).isEqualTo(401);
+            assertThat(forged.headers().firstValue("WWW-Authenticate")).contains("Token realm=\"Terra\", error=\"invalid_token\"");
+            assertThat(forged.body()).doesNotContain("Base64").doesNotContain("Signature");
+        } finally { close(host); }
+    }
+
     @Test void serve_headerVersions_authorizesSelectedVersionAndPreservesLifecycleHeaders() throws Exception {
         var routes = List.<Route<?>>of(
             Route.<String>get("/items").withoutParameters().to(_ -> Promise.success("v1")).versioned(1).withSecurity(SecurityPolicy.publicRoute()).asText(),
@@ -192,6 +234,22 @@ class TerraHttpServerTest {
         var host = start(List.of(route), HttpAuthenticator.denyUnlessPublicValidator(), new AtomicInteger());
         try (var client = HttpClient.newHttpClient()) {
             assertThat(get(client, host, "/defect").statusCode()).isEqualTo(500);
+        } finally { close(host); }
+    }
+
+    /// #2926 (CTO ruling): an unreachable JWKS is the server failing -- 503 and no challenge, not 500 and not 401.
+    @Test void serve_jwtWithUnreachableJwks_is503_withoutAChallenge() throws Exception {
+        var jwt = org.pragmatica.aether.config.JwtConfig.jwtConfig("http://127.0.0.1:1/keys").unwrap();
+        var route = Route.<String>get("/jwt").withoutParameters().to(_ -> Promise.success("ok")).withSecurity(SecurityPolicy.roleRequired("admin")).asText();
+        var host = start(List.of(route), HttpAuthenticator.jwtValidator(jwt), new AtomicInteger());
+        var encoder = java.util.Base64.getUrlEncoder().withoutPadding();
+        var utf8 = java.nio.charset.StandardCharsets.UTF_8;
+        var token = encoder.encodeToString("{\"alg\":\"RS256\",\"kid\":\"k1\"}".getBytes(utf8)) + "."
+            + encoder.encodeToString("{\"exp\":4102444800}".getBytes(utf8)) + "." + encoder.encodeToString(new byte[] {1, 2, 3});
+        try (var client = HttpClient.newHttpClient()) {
+            var response = get(client, host, "/jwt", "Authorization", "Bearer " + token);
+            assertThat(response.statusCode()).isEqualTo(503);
+            assertThat(response.headers().firstValue("WWW-Authenticate")).isEmpty();
         } finally { close(host); }
     }
 

@@ -1692,7 +1692,7 @@ class AppHttpServerAdapter implements AppHttpServer {
         var statusAndMessage = mapSecurityError(cause);
 
         recordSecurityDenial(cause, path, requestId, method);
-        maybeAddAuthenticateHeader(response, statusAndMessage.status());
+        maybeAddAuthenticateHeader(response, statusAndMessage.status(), cause);
         sendProblem(response, statusAndMessage.status(), statusAndMessage.clientMessage(), path, requestId);
     }
 
@@ -1703,9 +1703,9 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     @Contract
-    private void maybeAddAuthenticateHeader(ResponseWriter response, HttpStatus status) {
+    private void maybeAddAuthenticateHeader(ResponseWriter response, HttpStatus status, Cause cause) {
         if (status == HttpStatus.UNAUTHORIZED) {
-            addAuthenticateHeader(response);
+            addAuthenticateHeader(response, cause);
         }
     }
 
@@ -1721,18 +1721,23 @@ class AppHttpServerAdapter implements AppHttpServer {
         };
     }
 
-    private record SecurityStatusMessage(HttpStatus status, String clientMessage) {}
+    record SecurityStatusMessage(HttpStatus status, String clientMessage) {}
 
-    private static SecurityStatusMessage mapSecurityError(Cause cause) {
+    /// #2926: package-visible so the status of every [SecurityError] case can be asserted without the HTTP pipeline.
+    /// 503 with no challenge when the key fetch itself failed (the server, not the credential, is at fault), 401 for every
+    /// authentication failure (missing, invalid, expired, wrong issuer/audience, unknown key, bad
+    /// signature), 403 only for an authenticated caller lacking a role; the client text never says which check failed.
+    static SecurityStatusMessage mapSecurityError(Cause cause) {
         return switch (cause) {
             case SecurityError.MissingCredentials mc -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED, mc.message());
             case SecurityError.TokenExpired _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED, "Token expired");
-            case SecurityError.SignatureInvalid _, SecurityError.IssuerMismatch _, SecurityError.AudienceMismatch _, SecurityError.KeyNotFound _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN,
+            case SecurityError.SignatureInvalid _, SecurityError.IssuerMismatch _, SecurityError.AudienceMismatch _, SecurityError.KeyNotFound _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED,
                                                                                                                                                                               "Invalid token");
-            case SecurityError.InvalidCredentials _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN,
+            case SecurityError.InvalidCredentials _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED,
                                                                                  "Invalid credentials");
-            case SecurityError.InsufficientRole _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN, cause.message());
-            case SecurityError.JwksFetchFailed _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED,
+            case SecurityError.InsufficientRole _, SecurityError.AccessDenied _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN,
+                                                                                                             cause.message());
+            case SecurityError.JwksFetchFailed _ -> new SecurityStatusMessage(HttpStatus.SERVICE_UNAVAILABLE,
                                                                               "Authentication temporarily unavailable");
             default -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED, "Authentication failed");
         };
@@ -1740,17 +1745,22 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     /// #2156: the JWT challenge names the FIRST configured `auth_schemes` entry. JWT mode without a `JwtConfig` is
     /// refused at config load (#909); the default scheme only satisfies the type.
-    private String jwtChallenge() {
-        return config.jwtConfig()
-                     .map(JwtConfig::challengeScheme)
-                     .or(AuthSchemes.DEFAULT.getFirst())
-             + " realm=\"Aether\"";
+    private String jwtChallenge(Cause cause) {
+        return SecurityError.challenge(config.jwtConfig()
+                                             .map(JwtConfig::challengeScheme)
+                                             .or(AuthSchemes.DEFAULT.getFirst()),
+                                       "Aether",
+                                       cause);
     }
 
-    private void addAuthenticateHeader(ResponseWriter response) {
+    private static String apiKeyChallenge(Cause cause) {
+        return SecurityError.challenge("ApiKey", "Aether", cause);
+    }
+
+    private void addAuthenticateHeader(ResponseWriter response, Cause cause) {
         switch (config.securityMode()) {
-            case JWT -> response.header("WWW-Authenticate", jwtChallenge());
-            case API_KEY -> response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"");
+            case JWT -> response.header("WWW-Authenticate", jwtChallenge(cause));
+            case API_KEY -> response.header("WWW-Authenticate", apiKeyChallenge(cause));
             case NONE -> {}
         }
     }
@@ -2246,22 +2256,22 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                          request,
                                                          ser,
                                                          HttpResponseData.httpResponseData(status.code(),
-                                                                                           refusalHeaders(status),
+                                                                                           refusalHeaders(status, cause),
                                                                                            json.getBytes(StandardCharsets.UTF_8))))
                    .onFailure(serializationFailure -> sendForwardError(network,
                                                                        request,
                                                                        "Forwarded request refused: " + statusAndMessage.clientMessage()));
     }
 
-    private Map<String, String> refusalHeaders(HttpStatus status) {
+    private Map<String, String> refusalHeaders(HttpStatus status, Cause cause) {
         var contentType = Map.entry("Content-Type", "application/problem+json");
 
         return switch (config.securityMode()) {
             case JWT -> status == HttpStatus.UNAUTHORIZED
-                        ? Map.ofEntries(contentType, Map.entry("WWW-Authenticate", jwtChallenge()))
+                        ? Map.ofEntries(contentType, Map.entry("WWW-Authenticate", jwtChallenge(cause)))
                         : Map.ofEntries(contentType);
             case API_KEY -> status == HttpStatus.UNAUTHORIZED
-                            ? Map.ofEntries(contentType, Map.entry("WWW-Authenticate", "ApiKey realm=\"Aether\""))
+                            ? Map.ofEntries(contentType, Map.entry("WWW-Authenticate", apiKeyChallenge(cause)))
                             : Map.ofEntries(contentType);
             case NONE -> Map.ofEntries(contentType);
         };

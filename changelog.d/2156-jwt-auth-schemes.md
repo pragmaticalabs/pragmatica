@@ -7,7 +7,7 @@
   `terra/launcher/src/test/java/org/pragmatica/terra/launcher/LaunchHttpTest.java`].
 - **Aether's `WWW-Authenticate` challenge names the first configured scheme**, on direct and on forwarded refusals
   [verified: `aether/node/src/test/java/org/pragmatica/aether/http/AppHttpServerSecurityGridTest.java`,
-  `aether/node/src/test/java/org/pragmatica/aether/http/AppHttpServerForwardReauthorizationTest.java`]. Terra sends no
+  `aether/node/src/test/java/org/pragmatica/aether/http/AppHttpServerForwardReauthorizationTest.java`].
   challenge header, before or after this change.
 - **An empty list, a scheme named twice (case-insensitively) or an entry that is not an auth-scheme token refuses the
   config load** (Aether) or the launch (Terra); it is never replaced by the default. A blank entry such as `["Bearer", ""]` is refused in both runtimes. One rule, `AuthSchemes`, serves both

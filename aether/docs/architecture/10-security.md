@@ -170,6 +170,11 @@ accepts are `[app-http] auth_schemes` (default `["Bearer"]`), matched case-insen
 [verified: `aether/aether-config/src/test/java/org/pragmatica/aether/config/ConfigLoaderAuthSchemesTest.java`,
 `aether/node/src/test/java/org/pragmatica/aether/http/AppHttpServerSecurityGridTest.java`].
 
+A refused credential (malformed, empty, bad signature, expired, wrong issuer/audience, unknown key) answers `401` with
+`WWW-Authenticate: <scheme> realm="Aether", error="invalid_token"` (RFC 6750 §3.1); an absent credential answers `401`
+with the challenge and no `error`; `403` is reserved for an authenticated caller lacking a role and carries no challenge
+(#2926) [verified: `aether/node/src/test/java/org/pragmatica/aether/http/AppHttpServerSecurityGridTest.java`].
+
 An operator can explicitly set `security_mode = "none"` to disable authentication — an explicit
 setting always overrides the default. This is appropriate only for a single-node local/dev
 instance, never for a network-reachable deployment.

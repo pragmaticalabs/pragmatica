@@ -48,6 +48,11 @@ class ApiKeySecurityValidator implements HttpAuthenticator {
     }
 
     @Override
+    public Option<String> challengeScheme() {
+        return Option.some("ApiKey");
+    }
+
+    @Override
     public Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy) {
         return switch (policy) {
             case SecurityPolicy.Public() -> Result.success(SecurityContext.securityContext());

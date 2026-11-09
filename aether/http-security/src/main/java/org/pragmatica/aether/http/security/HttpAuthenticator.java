@@ -11,6 +11,7 @@ import org.pragmatica.aether.config.JwtConfig;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -20,6 +21,11 @@ public interface HttpAuthenticator {
     /// Release authentication resources after accepted requests have drained.
     default Promise<Unit> close() {
         return Promise.unitPromise();
+    }
+
+    /// The scheme a `WWW-Authenticate` challenge names for a refused request (#2926); none means no challenge is sent.
+    default Option<String> challengeScheme() {
+        return Option.none();
     }
 
     Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy);

@@ -307,7 +307,7 @@ class ApiKeyFullRestartForgeTest {
     }
 
     /// The acceptance assertion: `GET /api/v1/cluster/keys` on the NAMED node, presenting only the minted
-    /// key. 200 means the node's KV-store validator found an ACTIVE record whose hash matches; 403 is
+    /// key. 200 means the node's KV-store validator found an ACTIVE record whose hash matches; 401 is
     /// the ticket's signature. Polled briefly: a node that has just activated may still be replaying.
     private void assertAccepted(String plaintext, String... nodeIds) {
         for (var nodeId : nodeIds) {
@@ -330,7 +330,7 @@ class ApiKeyFullRestartForgeTest {
                  .untilAsserted(() -> assertThat(statusWithKey(nodeId, plaintext)).as("%s presented on %s after a fresh restart",
                                                                                       plaintext,
                                                                                       nodeId)
-                                                .isEqualTo(403));
+                                                .isEqualTo(401));
         }
     }
 
