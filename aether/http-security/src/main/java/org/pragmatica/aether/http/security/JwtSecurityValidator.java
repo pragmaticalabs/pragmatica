@@ -107,24 +107,66 @@ class JwtSecurityValidator implements HttpAuthenticator {
     }
 
     private Result<Map<String, Object>> validateClaims(Map<String, Object> payload) {
-        return validateExpiration(payload).flatMap(this::validateIssuer)
+        return validateExpiration(payload).flatMap(this::validateNotBefore)
+                                 .flatMap(this::validateIssuedAt)
+                                 .flatMap(this::validateIssuer)
                                  .flatMap(this::validateAudience);
     }
 
     private Result<Map<String, Object>> validateExpiration(Map<String, Object> payload) {
         return Option.option(payload.get("exp"))
                      .toResult(new SecurityError.TokenExpired("Missing exp claim"))
-                     .flatMap(exp -> checkNotExpired(exp, payload));
+                     .flatMap(exp -> numericDate("exp", exp))
+                     .flatMap(expSeconds -> checkNotExpired(expSeconds, payload));
     }
 
-    private Result<Map<String, Object>> checkNotExpired(Object exp, Map<String, Object> payload) {
-        var expSeconds = tolong(exp);
+    private Result<Map<String, Object>> checkNotExpired(long expSeconds, Map<String, Object> payload) {
         var now = System.currentTimeMillis() / 1000;
         var skew = config.clockSkewSeconds();
 
         return expSeconds + skew > now
                ? success(payload)
                : new SecurityError.TokenExpired("Token expired").result();
+    }
+
+    /// `nbf` (RFC 7519 section 4.1.5) is optional, and enforced in every mode: a token not yet valid, beyond the same
+    /// clock-skew allowance `exp` gets, is refused. The test is `nbf > now + skew`, so no subtraction can overflow.
+    private Result<Map<String, Object>> validateNotBefore(Map<String, Object> payload) {
+        return optionalNumericDate("nbf", payload).flatMap(nbf -> nbf.map(seconds -> checkNotBefore(seconds, payload))
+                                                                     .or(success(payload)));
+    }
+
+    private Result<Map<String, Object>> checkNotBefore(long nbfSeconds, Map<String, Object> payload) {
+        return nbfSeconds > System.currentTimeMillis() / 1000 + config.clockSkewSeconds()
+               ? new SecurityError.TokenNotYetValid("Token is not valid yet").result()
+               : success(payload);
+    }
+
+    /// `iat` (RFC 7519 section 4.1.6) is optional, and enforced in every mode: a token issued in the future, beyond the
+    /// clock-skew allowance, is refused.
+    private Result<Map<String, Object>> validateIssuedAt(Map<String, Object> payload) {
+        return optionalNumericDate("iat", payload).flatMap(iat -> iat.map(seconds -> checkIssuedAt(seconds, payload))
+                                                                     .or(success(payload)));
+    }
+
+    private Result<Map<String, Object>> checkIssuedAt(long iatSeconds, Map<String, Object> payload) {
+        return iatSeconds > System.currentTimeMillis() / 1000 + config.clockSkewSeconds()
+               ? new SecurityError.InvalidCredentials("Token was issued in the future").result()
+               : success(payload);
+    }
+
+    private static Result<Option<Long>> optionalNumericDate(String claim, Map<String, Object> payload) {
+        return Option.option(payload.get(claim))
+                     .map(value -> numericDate(claim, value).map(Option::some))
+                     .or(success(Option.<Long> none()));
+    }
+
+    /// A NumericDate claim as seconds. A value that is not a number is a refusal naming the claim, never an exception.
+    private static Result<Long> numericDate(String claim, Object value) {
+        return value instanceof Number number
+               ? success(number.longValue())
+               : Result.lift(_ -> new SecurityError.InvalidCredentials("Claim " + claim + " is not a number"),
+                             () -> Long.parseLong(String.valueOf(value)));
     }
 
     private Result<Map<String, Object>> validateIssuer(Map<String, Object> payload) {
@@ -277,13 +319,5 @@ class JwtSecurityValidator implements HttpAuthenticator {
     /// Only the FIRST value of a header counts: a later value must never be promoted to the credential.
     private static Option<String> firstValue(List<String> values) {
         return Option.from(values.stream().findFirst());
-    }
-
-    private static long tolong(Object value) {
-        if (value instanceof Number n) {
-            return n.longValue();
-        }
-
-        return Long.parseLong(String.valueOf(value));
     }
 }

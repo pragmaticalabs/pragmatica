@@ -35,6 +35,8 @@ public sealed interface SecurityError extends Cause, HttpStatusAware {
 
     record TokenExpired(String message) implements SecurityError {}
 
+    record TokenNotYetValid(String message) implements SecurityError {}
+
     record SignatureInvalid(String message) implements SecurityError {}
 
     record IssuerMismatch(String message) implements SecurityError {}
