@@ -382,6 +382,8 @@ class AppHttpServerForwardReauthorizationTest {
         assertThat(relayed.statusCode()).as("authorized admin forward: %s", body(relayed)).isEqualTo(200);
         assertThat(router.handleCount()).isEqualTo(1);
         assertThat(router.principalSeen()).as("the slice sees the forwarded caller's principal").isEqualTo("api-key:admin-caller");
+        assertThat(router.requestPrincipalSeen()).as("#2157: the router is handed the context THIS host validated, on the request")
+                                                .isEqualTo("api-key:admin-caller");
     }
 
     @Test
@@ -483,9 +485,16 @@ class AppHttpServerForwardReauthorizationTest {
             return principalSeen.get();
         }
 
+        private final java.util.concurrent.atomic.AtomicReference<String> requestPrincipalSeen = new java.util.concurrent.atomic.AtomicReference<>("");
+
+        String requestPrincipalSeen() {
+            return requestPrincipalSeen.get();
+        }
+
         @Override
         public Promise<HttpResponseData> handle(HttpRequestContext request) {
             handleCount.incrementAndGet();
+            requestPrincipalSeen.set(request.security().principal().value());
             principalSeen.set(org.pragmatica.aether.http.handler.security.SecurityContextHolder.currentContext()
                                                                                               .map(context -> context.principal()
                                                                                                                      .value())

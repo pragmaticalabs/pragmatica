@@ -195,6 +195,27 @@ class AppHttpServerRouteSecurityPolicyTest {
         assertThat(withKey.body()).contains("served-locally");
     }
 
+    /// #2157: a local route's router is handed the request carrying the context this node validated, so the generated
+    /// route passes the caller to the slice from the request rather than from the ambient holder. A public route served
+    /// without a credential carries the anonymous context.
+    @Test
+    void dispatch_handsTheRouterTheValidatedContext_onTheRequest() throws Exception {
+        startServerWithRoutePolicy(SecurityPolicy.authenticated());
+
+        var withKey = getWithApiKey("/local/thing", VALID_API_KEY);
+
+        assertThat(withKey.statusCode()).isEqualTo(200);
+        assertThat(withKey.body()).contains("\"principal\":\"api-key:")
+                                  .doesNotContain("\"principal\":\"anonymous\"");
+    }
+
+    @Test
+    void dispatch_publicRouteWithoutACredential_handsTheRouterTheAnonymousContext() throws Exception {
+        startServerWithRoutePolicy(SecurityPolicy.publicRoute());
+
+        assertThat(get("/local/thing").body()).contains("\"principal\":\"anonymous\"");
+    }
+
     @Test
     void dispatch_doesNotAdoptRemotePolicy_whenLocalRouteMatchedButUndeclared() throws Exception {
         // #866 review F2. Two slices with NESTED prefixes -- the examples/pricing-engine topology --
@@ -672,11 +693,14 @@ class AppHttpServerRouteSecurityPolicyTest {
         }
     }
 
-    /// Minimal SliceRouter stub returning a fixed 200; unversioned registry, identity observability.
+    /// Minimal SliceRouter stub returning 200 with the principal of the security context ON THE REQUEST it was handed
+    /// (#2157); unversioned registry, identity observability.
     private static final class StubSliceRouter implements SliceRouter {
         @Override
         public Promise<HttpResponseData> handle(HttpRequestContext request) {
-            return Promise.success(HttpResponseData.httpResponseData(200, "{\"result\":\"served-locally\"}"));
+            return Promise.success(HttpResponseData.httpResponseData(200,
+                                                                     "{\"result\":\"served-locally\",\"principal\":\""
+                                                                     + request.security().principal().value() + "\"}"));
         }
 
         @Override
