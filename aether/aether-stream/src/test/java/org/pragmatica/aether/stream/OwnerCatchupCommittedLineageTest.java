@@ -524,6 +524,65 @@ class OwnerCatchupCommittedLineageTest {
         assertThat(fixture.served().getLast()).isEqualTo(OTHER);
     }
 
+    /// #2954: progress restarts the count. The top source stalls two rounds, moves the head one event, then stalls again: the count is one,
+    /// not three, so the next replica is still not read.
+    @Test
+    void probePath_aSourceThatProgressedAfterStalling_startsItsStallCountOver() {
+        var fixture = fixture(true, equalReplicas());
+
+        pageCaps.put(SOURCE, 0L);
+        pageCaps.put(OTHER, 0L);
+        settled(fixture.backfill().backfill("s", 0));
+
+        var stalled = fixture.served().getFirst();
+
+        settled(fixture.backfill().backfill("s", 0));
+        pageCaps.put(stalled, 1L);
+        settled(fixture.backfill().backfill("s", 0));
+        pageCaps.put(stalled, 0L);
+
+        var again = settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(outcomeOf(again)).as("a count of one, below the bound").isEqualTo(BackfillError.General.INCOMPLETE_BACKFILL);
+        assertThat(fixture.served()).as("the next replica is never read").containsOnly(stalled).hasSize(4);
+    }
+
+    /// #2954: a source that reaches the target clears the partition's counts. After two stalled rounds the top source recovers and the owner
+    /// activates; when its tail then grows and it stalls once, the count is one: the run ends short (INCOMPLETE), not demoted.
+    @Test
+    void registryPath_aRoundThatReachesTheTarget_clearsTheStallCounts() {
+        var fixture = fixture(false, List.of(new Replica(SOURCE, 15L, List.of(ProvenanceEntry.provenanceEntry(E1, 0)))));
+
+        pageCaps.put(SOURCE, 0L);
+        settled(fixture.backfill().backfill("s", 0));
+        settled(fixture.backfill().backfill("s", 0));
+        pageCaps.remove(SOURCE);
+
+        assertThat(settled(fixture.backfill().backfill("s", 0)).isSuccess()).as("the recovered source reaches 15").isTrue();
+
+        fixture.registry().updateWatermark("s", 0, SOURCE, 25L, ReplicationState.CAUGHT_UP);
+        pageCaps.put(SOURCE, 0L);
+
+        var stalledAgain = settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(outcomeOf(stalledAgain)).as("one stalled round since the success").isEqualTo(BackfillError.General.INCOMPLETE_BACKFILL);
+    }
+
+    /// #2954: only a short run counts. A source that cannot be read three rounds running keeps its own failure, which is not a stall.
+    @Test
+    void probePath_aSourceThatCannotBeRead_isNotCountedAsStalled() {
+        var fixture = fixture(true, List.of(new Replica(SOURCE, 15L, List.of(ProvenanceEntry.provenanceEntry(E1, 0)))));
+
+        failReads.set(PartitionBackfill.MAX_STALLED_ROUNDS);
+
+        var last = LongStream.range(0, PartitionBackfill.MAX_STALLED_ROUNDS)
+                             .mapToObj(_ -> settled(fixture.backfill().backfill("s", 0)))
+                             .reduce((_, latest) -> latest)
+                             .orElseThrow();
+
+        assertThat(outcomeOf(last)).isEqualTo(BackfillError.General.NO_SOURCE_REPLICA);
+    }
+
     private static Object outcomeOf(Result<Long> result) {
         return result.fold(cause -> (Object) cause, value -> (Object) value);
     }

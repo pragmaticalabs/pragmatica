@@ -1789,17 +1789,13 @@ public final class PartitionBackfill {
                                     Result<Long> result) {
         var key = partitionKey(streamName, partition);
 
-        if (!current.getAsBoolean()) {
-            return result;
-        }
-
         if (result.isSuccess()) {
             stalledRounds.remove(key);
 
             return result;
         }
 
-        if (!result.fold(cause -> cause == INCOMPLETE_BACKFILL, _ -> false)) {
+        if (!result.fold(INCOMPLETE_BACKFILL::equals, _ -> false)) {
             return result;
         }
 
