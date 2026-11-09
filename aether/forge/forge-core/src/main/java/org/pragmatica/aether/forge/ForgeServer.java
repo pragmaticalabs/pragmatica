@@ -348,7 +348,10 @@ public final class ForgeServer {
     /// `apiKeyValidator({})` — both refuse gated routes, but the failure changes from
     /// NO_VALIDATOR_CONFIGURED to MISSING_API_KEY and the startup warning disappears. Gating on a
     /// non-empty key map keeps the no-credential path exactly as it was and changes behaviour only for
-    /// a run that actually supplies a credential.
+    /// a run that actually supplies a credential. `security_mode = "jwt"` is the other way to supply one (#2983): the
+    /// mode and its JWT config (HS256 secret or JWKS URL, schemes, issuer) go to every node with no key declared,
+    /// as on a production node. JWT mode does not give Forge's own calls a credential; set `[management] security_mode`
+    /// (`none`) or declare a key for the management plane.
     ///
     /// `ConfigLoader` resolves keys from `AETHER_API_KEYS` before any TOML, so a credential need never
     /// be written into committed config.
@@ -360,14 +363,21 @@ public final class ForgeServer {
     void applyAppHttpSecurity(EmberCluster clusterInstance, IntConsumer exit) {
         var appHttp = siblingAppConfig(exit).map(AetherConfig::appHttp);
 
-        appHttp.filter(config -> !config.apiKeys()
-                                        .isEmpty())
+        appHttp.filter(ForgeServer::declaresCredentials)
                .onPresent(config -> {
                               clusterInstance.withAppHttpSecurity(config.securityMode(),
-                                                                  config.apiKeys());
+                                                                  config.apiKeys(),
+                                                                  config.jwtConfig());
                               operatorApiKey.set(adminCapableKey(config));
                           });
         applyManagementSecurityMode(clusterInstance, appHttp, exit);
+    }
+
+    /// #2983 — what makes a sibling `[app-http]` a request for security: a declared API key, or `security_mode = "jwt"`. The
+    /// JWT mode is never a loader default, so naming it is the credential declaration; the api-key default is, hence the key test.
+    private static boolean declaresCredentials(AppHttpConfig config) {
+        return !config.apiKeys()
+                      .isEmpty() || config.securityMode() == SecurityMode.JWT;
     }
 
     /// #962 — `forge run` honours `[management] security_mode` from the sibling `aether.toml`, independently of the

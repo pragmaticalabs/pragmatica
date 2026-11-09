@@ -221,6 +221,45 @@ separate directories by default, but two launched from the *same* project resolv
 and are not distinguished by the owner marker, so the second must be given its own with
 `AETHER_FORGE_DATA=<dir>`. See [Data Directory](#data-directory).
 
+### Application HTTP security (aether.toml)
+
+Forge reads `[app-http]` and `[management]` from the `aether.toml` that sits next to the `--config` file and gives every
+embedded node the same settings a production node would get from it. A file that exists but does not load is refused
+(Forge exits 1); it is never replaced by defaults. Forge applies the section when it declares a credential: at least one API key,
+or `security_mode = "jwt"`. A section with neither leaves the nodes on Forge's open default, where only `public` routes answer.
+
+**API keys** (`security_mode = "api-key"`): declare `[app-http.api-keys.<key>]` entries (or `AETHER_API_KEYS`) and send the key
+in `X-API-Key`. Forge uses an ADMIN-roled key for its own calls to the nodes.
+
+**JWT** (`security_mode = "jwt"`): the nodes verify `Authorization` tokens as on a real cluster, with no API key required.
+
+```toml
+[app-http]
+enabled = true
+security_mode = "jwt"
+jwt_algorithm = "HS256"          # shared-secret mode; omit it and set jwks_url for JWKS (RS256/ES256)
+auth_schemes = ["Token"]         # default ["Bearer"]; the 401 challenge names the first
+
+[management]
+security_mode = "none"           # see below
+```
+
+- The HS256 secret comes from the environment, never from the file: `AETHER_JWT_SECRET` (or the file named by
+  `AETHER_JWT_SECRET_FILE`), at least 32 bytes. A missing or shorter secret refuses to start.
+- A valid token reaches the route; a forged, expired or malformed token answers `401` with
+  `WWW-Authenticate: Token realm="Aether", error="invalid_token"`; a missing token answers `401` without `error=`;
+  `public` routes need no token.
+- The management plane inherits the app mode when `[management] security_mode` is absent, and it authenticates with API keys
+  only. With JWT and no key declared, Forge's own calls to the nodes would be refused, so either set `[management]
+  security_mode = "none"` as above (local development only) or declare an API key as well; the key then serves the management
+  plane and Forge's own calls, while application routes still use the token.
+
+[verified: `ForgeServerSiblingConfigWiringTest#applyAppHttpSecurity_passesTheJwtConfigToTheNodes_withoutAnyApiKey` (the configuration
+reaches the nodes, no key declared), `ForgeServerSiblingConfigWiringTest#applyAppHttpSecurity_apiKeyMode_stillPassesKeysAndNoJwtConfig`
+(API-key behaviour unchanged), `ForgeServerSiblingConfigWiringTest#applyAppHttpSecurity_defaultModeWithoutKeys_armsNothing`, and
+`ForgeJwtAppHttpForgeTest` (a three-node cluster: valid token 200, forged and malformed token 401 with the `Token` challenge,
+missing token 401 without `error=`, public route open). The API-key plus JWT management-plane statement is [unverified: no test runs both together].]
+
 ### Auto-Healing
 
 Forge automatically maintains cluster size via the NodeProvider SPI. When a node fails or is killed, the CDM (Cluster Deployment Manager) detects the deficit and provisions replacements through the NodeProvider interface.

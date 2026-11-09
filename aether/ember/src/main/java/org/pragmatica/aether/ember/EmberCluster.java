@@ -60,6 +60,7 @@ import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.HttpProtocol;
+import org.pragmatica.aether.config.JwtConfig;
 import org.pragmatica.aether.config.SecurityMode;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.StreamingConfig;
@@ -205,6 +206,9 @@ public final class EmberCluster {
     private final AtomicReference<Option<SecurityMode>> managementSecurityMode = new AtomicReference<>(Option.empty());
 
     private final AtomicReference<Map<String, ApiKeyEntry>> appHttpApiKeys = new AtomicReference<>(Map.of());
+
+    /// The `[app-http]` JWT verification settings every node gets (#2983); empty unless [#withAppHttpSecurity] supplies them.
+    private final AtomicReference<Option<JwtConfig>> appHttpJwtConfig = new AtomicReference<>(Option.empty());
 
     /// TEST SEAM (streaming A-WAL) — opt-in writable, restart-stable per-node data dir. Defaults to
     /// [Option#none] (production + existing tests: nodes get an UNCREATABLE storage root, see
@@ -441,8 +445,17 @@ public final class EmberCluster {
     /// that never invoke this are byte-for-byte unchanged.
     @Contract
     public void withAppHttpSecurity(SecurityMode securityMode, Map<String, ApiKeyEntry> apiKeys) {
+        withAppHttpSecurity(securityMode, apiKeys, Option.empty());
+    }
+
+    /// As [#withAppHttpSecurity(SecurityMode, Map)], also handing every node the `[app-http]` JWT config (#2983), so
+    /// `security_mode = "jwt"` verifies tokens exactly as it does on a production node. Without it the nodes would run JWT
+    /// mode with no verifier and refuse every non-public route.
+    @Contract
+    public void withAppHttpSecurity(SecurityMode securityMode, Map<String, ApiKeyEntry> apiKeys, Option<JwtConfig> jwtConfig) {
         appHttpSecurityMode.set(securityMode);
         appHttpApiKeys.set(Map.copyOf(apiKeys));
+        appHttpJwtConfig.set(jwtConfig);
     }
 
     /// Give the Management API of EVERY node in this cluster its own security mode (#962), as `[management]
@@ -460,7 +473,7 @@ public final class EmberCluster {
                                            appHttpApiKeys.get(),
                                            AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE,
                                            appHttpSecurityMode.get(),
-                                           Option.empty(),
+                                           appHttpJwtConfig.get(),
                                            HttpProtocol.H1,
                                            apiVersioningDetection.get(),
                                            apiVersionHeaderName.get())
