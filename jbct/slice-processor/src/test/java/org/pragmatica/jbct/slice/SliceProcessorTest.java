@@ -861,10 +861,10 @@ class SliceProcessorTest {
                                             "Promise<String> merged(Note note);\n    Promise<String> plain(Note note);",
                                             List.of(record("Note", "String id, String text")));
 
-        assertThat(diagnostics).contains("Route 'merged' (PUT /notes/{id}): component 'id' of upload.Note")
-                               .contains("stays required in the JSON body")
-                               .contains("another route of the slice decodes the record without binding that component")
-                               .doesNotContain("Route 'plain'");
+        assertThat(diagnostics).contains("Route 'merged' (PUT /notes/{id}): component 'id' of upload.Note");
+        assertThat(diagnostics).contains("stays required in the JSON body");
+        assertThat(diagnostics).contains("another route of the slice decodes the record without binding that component");
+        assertThat(diagnostics).doesNotContain("Route 'plain'");
     }
 
     @Test
@@ -875,8 +875,8 @@ class SliceProcessorTest {
                                             "Promise<String> merged(Note note);\n    Promise<String> wrapped(Wrap wrap);",
                                             List.of(record("Note", "String id, String text"), record("Wrap", "Note note")));
 
-        assertThat(diagnostics).contains("Route 'merged' (PUT /notes/{id}): component 'id' of upload.Note")
-                               .contains("also a component of another type the slice decodes or answers");
+        assertThat(diagnostics).contains("Route 'merged' (PUT /notes/{id}): component 'id' of upload.Note");
+        assertThat(diagnostics).contains("also a component of another type the slice decodes or answers");
     }
 
     /// A response record that nests the request record is such a type too.
@@ -887,8 +887,8 @@ class SliceProcessorTest {
                                             "Promise<Wrap> merged(Note note);",
                                             List.of(record("Note", "String id, String text"), record("Wrap", "Note note")));
 
-        assertThat(diagnostics).contains("Route 'merged' (PUT /notes/{id}): component 'id' of upload.Note")
-                               .contains("also a component of another type the slice decodes or answers");
+        assertThat(diagnostics).contains("Route 'merged' (PUT /notes/{id}): component 'id' of upload.Note");
+        assertThat(diagnostics).contains("also a component of another type the slice decodes or answers");
     }
 
     /// Positive control for the three above: the same record on a merged route alone is relaxed, and draws no warning.
@@ -899,8 +899,8 @@ class SliceProcessorTest {
                                             "Promise<String> merged(Note note);",
                                             List.of(record("Note", "String id, String text")));
 
-        assertThat(diagnostics).contains("Generated routes: UploadService")
-                               .doesNotContain("stays required in the JSON body");
+        assertThat(diagnostics).contains("Generated routes: UploadService");
+        assertThat(diagnostics).doesNotContain("stays required in the JSON body");
     }
 
     private static JavaFileObject record(String name, String components) {
