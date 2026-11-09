@@ -190,6 +190,9 @@ Promise<Unit> createUser(CreateUserRequest request);
 - Nullable forms: outer-join sides, `max`/`min`/`sum`/`avg`/... over a possibly empty group, `CASE` without `ELSE`, `NULLIF`, empty scalar subquery, set operation with a nullable branch, anything unproven
 - `Option<T>` on a proven output → accepted, no warning
 - Scalar/`@Jsonb` single outputs are read non-nullably: `Promise<Option<T>>` does not permit a NULL value
+- Unaliased outputs use PostgreSQL's default label (function name, `case`, `coalesce`, `nullif`, cast/parenthesised column); an output with no certain name is checked against any field no named output covers
+- `SELECT *` over a derived table/CTE propagates each inner output's verdict; unresolvable columns are unproven; a `VALUES` branch is nullable if any row is
+- A repeated output name read by a record component → compilation error (ambiguous mapping)
 - CRUD-generated methods are out of scope
 
 ### Mixing Records and Direct Parameters

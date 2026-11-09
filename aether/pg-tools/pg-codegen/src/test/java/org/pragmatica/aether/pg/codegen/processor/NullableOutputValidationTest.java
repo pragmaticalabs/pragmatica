@@ -9,6 +9,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.TypeElement;
@@ -50,6 +51,19 @@ class NullableOutputValidationTest {
             nullable("coalesce with nullable last", "String status", "SELECT COALESCE('a', CAST(correlation_id AS text)) AS status FROM orders", "COALESCE whose last argument may be NULL"),
             nullable("unproven function", "String status", "SELECT lower(status) AS status FROM orders", "lower() is not proven"),
             nullable("set operation nullable branch", "String name", "SELECT name AS name FROM users UNION SELECT CAST(correlation_id AS text) FROM orders", "set operation branch 2"),
+            nullable("unaliased max", "BigDecimal max", "SELECT max(total) FROM orders", "max() yields NULL"),
+            nullable("unaliased sum", "BigDecimal sum", "SELECT sum(total) FROM orders", "sum() yields NULL"),
+            nullable("unaliased cast of nullable column", "String correlationId", "SELECT correlation_id::text FROM orders", "column 'orders.correlation_id' is nullable"),
+            nullable("unaliased CAST of nullable column", "String correlationId", "SELECT CAST(correlation_id AS text) FROM orders", "column 'orders.correlation_id' is nullable"),
+            nullable("unaliased lower on left join", "String lower", "SELECT lower(u.name) FROM orders o LEFT JOIN users u ON u.id = o.user_id", "lower() is not proven"),
+            nullable("unaliased coalesce nullable last", "String coalesce", "SELECT COALESCE('a', correlation_id::text) FROM orders", "COALESCE whose last argument may be NULL"),
+            nullable("unaliased nullif", "String nullif", "SELECT NULLIF(status, 'x') FROM orders", "NULLIF"),
+            nullable("unnamed nullable output, unmatched field", "String name", "SELECT status || 'x' FROM orders", "|| expression is not proven"),
+            nullable("star over derived table", "long id, UUID correlationId", "SELECT * FROM (SELECT id, correlation_id FROM orders) d", "column 'orders.correlation_id' is nullable"),
+            nullable("star over cte", "long id, UUID correlationId", "WITH c AS (SELECT id, correlation_id FROM orders) SELECT * FROM c", "column 'orders.correlation_id' is nullable"),
+            nullable("star over unresolvable derived table", "long a, UUID b", "SELECT * FROM (SELECT id, correlation_id FROM orders) d(a, b)", "cannot be listed"),
+            nullable("union with values null", "String name", "SELECT name FROM users UNION VALUES (NULL)", "set operation branch 2"),
+            nullable("union with null literal", "String name", "SELECT name FROM users UNION ALL SELECT NULL", "set operation branch 2"),
             nullable("returning nullable column", "UUID correlationId", "UPDATE orders SET status = 'x' WHERE id = 1 RETURNING correlation_id", "column 'orders.correlation_id' is nullable"));
     }
 
@@ -126,6 +140,29 @@ class NullableOutputValidationTest {
 
         assertThat(result.success()).as(result.diagnostics()).isTrue();
         assertThat(result.diagnostics()).doesNotContain("Method 'run'").doesNotContain(MAY_BE_NULL);
+    }
+
+    /// The same name twice in one select list is ambiguous for a name-based mapper, whatever the field type.
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"String", "Option<String>"})
+    void duplicateOutputName_mappedToRecordField_failsTheBuild(String fieldType) throws Exception {
+        var result = compile(repo("DuplicateRepo",
+                                  "record Row(" + fieldType + " name) {}",
+                                  "SELECT o.status AS name, u.name FROM orders o JOIN users u ON u.id = o.user_id",
+                                  "Promise<List<Row>> run()"));
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.diagnostics()).contains("Method 'run'").contains("output name 'name' appears 2 times").contains("field 'name'");
+    }
+
+    @Test
+    void duplicateOutputName_notReadByAnyField_isAccepted() throws Exception {
+        var result = compile(repo("UnreadDuplicateRepo",
+                                  "record Row(long id)  {}",
+                                  "SELECT o.id AS id, o.status AS name, u.name FROM orders o JOIN users u ON u.id = o.user_id",
+                                  "Promise<List<Row>> run()"));
+
+        assertThat(result.success()).as(result.diagnostics()).isTrue();
     }
 
     @Test

@@ -1455,8 +1455,9 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     /// computed per output expression from the parse tree (`OutputNullability`), never from column metadata alone.
     /// A record field is checked against the output of its name; a scalar or document method reads its single output
     /// through a non-nullable accessor, so a scalar is always checked, whatever the method's `Option` row wrapper.
-    /// An `Option` field on a provably non-null output is accepted without a warning. Skipped when the outputs
-    /// cannot be listed (parse failure, `VALUES`, `*` over a derived table).
+    /// An `Option` field on a provably non-null output is accepted without a warning. Skipped only when the text is
+    /// not exactly one analysable statement (parse failure); a `*` or output that cannot be listed or named is
+    /// treated as unproven, never skipped.
     private void validateOutputNullability(
     ExecutableElement execElement,
     String methodName,
@@ -1478,15 +1479,37 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
             return;
         }
         for (var field : extractReturnFields(execElement, resolved)) {
-            var columnName = NamingConvention.toSnakeCase(field.name());
-            if (field.typeName().startsWith(OPTION_TYPE + "<")) {
-                continue;
-            }
-            outputs.unwrap().stream()
-                   .filter(output -> output.name().map(columnName::equals).or(false))
+            validateFieldOutputs(execElement, methodName, field, outputs.unwrap());
+        }
+    }
+
+    /// One record field against the select list: a name that repeats is ambiguous, whatever the field's type; a
+    /// non-`Option` field must not read an output that may be NULL. An output the query leaves unnamed (or a `*`
+    /// whose columns are unknown) may be what the field reads when no named output has its name, so a field no
+    /// named output covers is checked against the unnamed outputs that are not proven.
+    private void validateFieldOutputs(
+    ExecutableElement execElement,
+    String methodName,
+    TypeMirrorResolver.FieldInfo field,
+    List<OutputNullability.Output> outputs) {
+        var columnName = NamingConvention.toSnakeCase(field.name());
+        var named = outputs.stream().filter(output -> output.name().map(columnName::equals).or(false)).toList();
+        if (named.size() > 1) {
+            error(ProcessorError.ambiguousOutputName(methodName, columnName, named.size(), field.name()), execElement);
+            return;
+        }
+        if (field.typeName().startsWith(OPTION_TYPE + "<")) {
+            return;
+        }
+        if (named.isEmpty()) {
+            outputs.stream()
+                   .filter(output -> output.name().isEmpty())
+                   .filter(output -> !output.nullability().isNonNull())
                    .findFirst()
                    .ifPresent(output -> reportIfNullable(execElement, methodName, output, "field '" + field.name() + "'"));
+            return;
         }
+        reportIfNullable(execElement, methodName, named.getFirst(), "field '" + field.name() + "'");
     }
 
     private void reportIfNullable(ExecutableElement execElement,
@@ -1495,7 +1518,7 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                   String target) {
         if (output.nullability() instanceof OutputNullability.Nullability.MayBeNull nullable) {
             error(ProcessorError.nullableOutputToNonOption(methodName,
-                                                           output.name().or("?"),
+                                                           output.name().or("(unnamed output)"),
                                                            target,
                                                            nullable.reason(),
                                                            target.startsWith("field")),

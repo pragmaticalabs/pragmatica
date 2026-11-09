@@ -257,7 +257,11 @@ through `NULLIF`, from an empty scalar subquery, or in a set operation with a nu
 argument is proven, and a cast, sign or parentheses over such an expression. `Option<T>` on a proven output is
 accepted without a warning. A scalar or `@Jsonb` single-output method reads its value through a non-nullable accessor,
 so `Promise<Option<T>>` (row optional) does not make a NULL value acceptable; use `COALESCE`. CRUD-generated methods
-are not analysed.
+are not analysed. An unaliased output is matched under the name PostgreSQL gives it (`max(total)` is `max`,
+`col::text` is `col`), and an output with no certain name is treated as possibly read by any field no named output
+covers. `SELECT *` over a derived table or CTE carries each inner output's nullability; when the columns cannot be
+listed, every field is unproven. A name that appears twice in the select list and is read by a record component is
+a build error (alias the outputs distinctly).
 
 ## JSON Documents (`json` / `jsonb`)
 

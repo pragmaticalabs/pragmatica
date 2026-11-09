@@ -4,7 +4,9 @@
 package org.pragmatica.aether.pg.schema.validator;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.pragmatica.aether.pg.parser.PostgresParser.CstNode;
@@ -27,8 +29,11 @@ import org.pragmatica.lang.Option;
 /// cast, a sign and parentheses keep the verdict of their operand. Everything else is [Nullability.MayBeNull], with
 /// the reason that names why — an unproven form is reported, not guessed non-null.
 ///
-/// Schema facts come from the supplied [Schema]; a relation the schema does not know (a derived table, a CTE, a
-/// function) proves nothing.
+/// Schema facts come from the supplied [Schema]; a relation the schema does not know proves nothing. A derived table
+/// or CTE contributes its own analysed outputs; when those cannot be listed, everything read from it is unproven.
+/// An output the query leaves unnamed gets PostgreSQL's default label when the form is certain (a function name,
+/// `case`, `coalesce`, `nullif`, a cast or parenthesised column), else it stays unnamed - the caller then treats an
+/// unmatched field as possibly reading it.
 public final class OutputNullability {
     private OutputNullability() {}
 
@@ -72,15 +77,32 @@ public final class OutputNullability {
 
     /// A relation visible to the output expressions. `table` is empty for a derived table, a CTE, a function or a
     /// table the schema does not know; `nullableSide` names the outer join that null-extends it, if any.
-    private record Relation(String name, Option<Table> table, Option<String> nullableSide) {
+    private record Relation(String name,
+                            Option<Table> table,
+                            Option<List<Output>> derived,
+                            Option<String> nullableSide) {
         Relation nullExtended(String join) {
             return new Relation(name,
                                 table,
+                                derived,
                                 nullableSide.isPresent()
                                 ? nullableSide
                                 : Option.present(join));
         }
+
+        boolean resolved() {
+            return table.isPresent() || derived.isPresent();
+        }
+
+        boolean hasColumn(String column) {
+            return table.map(found -> found.column(column).isPresent())
+                        .or(derived.map(outs -> outs.stream().anyMatch(out -> out.name().map(column::equals).or(false)))
+                                   .or(false));
+        }
     }
+
+    /// A CTE or derived table whose outputs cannot be listed.
+    private static final Option<List<Output>> UNRESOLVED = Option.empty();
 
     /// The relations of one statement or branch, and whether a subtotal row can null its grouped columns.
     private record Scope(List<Relation> relations, boolean subtotals) {}
@@ -96,7 +118,13 @@ public final class OutputNullability {
     }
 
     private static Option<List<Output>> analyzeBody(CstNavigator body, Schema schema) {
-        var ctes = cteNames(body);
+        return analyzeBody(body, Map.of(), schema);
+    }
+
+    private static Option<List<Output>> analyzeBody(CstNavigator body,
+                                                    Map<String, Option<List<Output>>> outer,
+                                                    Schema schema) {
+        var ctes = cteOutputs(body, outer, schema);
         var returning = body.child("ReturningClause");
 
         if (returning.isPresent()) {
@@ -106,7 +134,7 @@ public final class OutputNullability {
         return branchOutputs(QueryValidator.ownedSelectCores(body), ctes, schema);
     }
 
-    private static Option<List<Output>> branchOutputs(List<CstNavigator> cores, List<String> ctes, Schema schema) {
+    private static Option<List<Output>> branchOutputs(List<CstNavigator> cores, Map<String, Option<List<Output>>> ctes, Schema schema) {
         var branches = new ArrayList<List<Output>>();
 
         for (var core : cores) {
@@ -127,7 +155,7 @@ public final class OutputNullability {
         var merged = new ArrayList<Output>();
 
         for (var branch : branches) {
-            if (branch.size() != first.size()) return Option.empty();
+            if (branch.size() != first.size()) return Option.present(allUnproven(first, "set operation branches differ in width"));
         }
 
         for (int position = 0; position < first.size(); position++) {
@@ -136,6 +164,10 @@ public final class OutputNullability {
         }
 
         return Option.present(merged);
+    }
+
+    private static List<Output> allUnproven(List<Output> shape, String reason) {
+        return shape.stream().map(out -> new Output(out.name(), Nullability.mayBeNull(reason))).toList();
     }
 
     private static Nullability mergedVerdict(List<List<Output>> branches, int position) {
@@ -152,19 +184,38 @@ public final class OutputNullability {
         return Nullability.NON_NULL;
     }
 
-    private static List<String> cteNames(CstNavigator body) {
-        var names = new ArrayList<String>();
+    /// The CTEs of this statement, each analysed with the ones before it visible; a CTE is registered as unresolved
+    /// before its own body is analysed, so a recursive reference (or a name shadowing a table) is never trusted.
+    private static Map<String, Option<List<Output>>> cteOutputs(CstNavigator body,
+                                                                Map<String, Option<List<Output>>> outer,
+                                                                Schema schema) {
+        var known = new LinkedHashMap<>(outer);
 
         body.child("WithClause")
-            .onPresent(with -> with.findAll("CteDef")
-                                   .forEach(def -> def.child("ColId")
-                                                      .onPresent(id -> names.add(CstExtractor.extractIdentifier(id).normalized()))));
+            .onPresent(with -> with.findAll("CteDef").forEach(def -> registerCte(def, known, schema)));
 
-        return names;
+        return known;
+    }
+
+    private static void registerCte(CstNavigator def, Map<String, Option<List<Output>>> known, Schema schema) {
+        def.child("ColId")
+           .map(id -> CstExtractor.extractIdentifier(id).normalized())
+           .onPresent(name -> known.put(name, UNRESOLVED));
+        def.child("ColId")
+           .map(id -> CstExtractor.extractIdentifier(id).normalized())
+           .onPresent(name -> known.put(name, cteBody(def, known, schema)));
+    }
+
+    private static Option<List<Output>> cteBody(CstNavigator def, Map<String, Option<List<Output>>> known, Schema schema) {
+        if (def.child("ColumnList").isPresent()) return UNRESOLVED;
+
+        return def.child("DmlStatement")
+                  .flatMap(CstNavigator::firstChild)
+                  .flatMap(body -> analyzeBody(body, known, schema));
     }
 
     // --- scopes ---
-    private static Scope coreScope(CstNavigator core, List<String> ctes, Schema schema) {
+    private static Scope coreScope(CstNavigator core, Map<String, Option<List<Output>>> ctes, Schema schema) {
         var relations = new ArrayList<Relation>();
 
         core.child("FromClause").onPresent(from -> relations.addAll(fromList(from, ctes, schema)));
@@ -180,7 +231,7 @@ public final class OutputNullability {
     }
 
     /// The target of an `INSERT`/`UPDATE`/`DELETE` plus its `FROM`/`USING` relations, for its `RETURNING` list.
-    private static Scope statementScope(CstNavigator stmt, List<String> ctes, Schema schema) {
+    private static Scope statementScope(CstNavigator stmt, Map<String, Option<List<Output>>> ctes, Schema schema) {
         var relations = new ArrayList<Relation>();
 
         stmt.child("QualifiedName")
@@ -194,7 +245,7 @@ public final class OutputNullability {
         return new Scope(relations, false);
     }
 
-    private static List<Relation> fromList(CstNavigator owner, List<String> ctes, Schema schema) {
+    private static List<Relation> fromList(CstNavigator owner, Map<String, Option<List<Output>>> ctes, Schema schema) {
         var relations = new ArrayList<Relation>();
 
         owner.findAll("FromList")
@@ -208,7 +259,7 @@ public final class OutputNullability {
 
     /// `TableRef <- TableRefBase JoinClause*` (and `JoinExpr`, which nests a `TableRef`): joins fold left, so a
     /// `RIGHT`/`FULL` join null-extends everything accumulated so far and a `LEFT`/`FULL` join the relation it adds.
-    private static List<Relation> tableRef(CstNavigator ref, List<String> ctes, Schema schema) {
+    private static List<Relation> tableRef(CstNavigator ref, Map<String, Option<List<Output>>> ctes, Schema schema) {
         var relations = new ArrayList<Relation>();
 
         ref.firstChild().onPresent(first -> relations.addAll(refBase(first, ctes, schema)));
@@ -244,7 +295,7 @@ public final class OutputNullability {
                : "INNER JOIN";
     }
 
-    private static List<Relation> refBase(CstNavigator base, List<String> ctes, Schema schema) {
+    private static List<Relation> refBase(CstNavigator base, Map<String, Option<List<Output>>> ctes, Schema schema) {
         var inner = base.firstChild();
 
         if (inner.isEmpty()) return List.of();
@@ -257,22 +308,28 @@ public final class OutputNullability {
                                                                                                 ctes,
                                                                                                 schema))).or(List.of());
             case "JoinExpr" -> tableRef(node, ctes, schema);
-            default -> List.of(derivedRelation(node));
+            default -> List.of(derivedRelation(node, ctes, schema));
         };
     }
 
     private static Relation baseRelation(CstNavigator qualifiedName,
                                          Option<CstNavigator> alias,
-                                         List<String> ctes,
+                                         Map<String, Option<List<Output>>> ctes,
                                          Schema schema) {
         var written = CstExtractor.extractQualifiedName(qualifiedName).normalized();
         var bare = written.substring(written.lastIndexOf('.') + 1);
         var name = alias.flatMap(QueryValidator::aliasName).or(bare);
-        var table = ctes.contains(written)
+        var cte = ctes.get(written);
+        var table = cte != null
                     ? Option.<Table> empty()
                     : resolve(schema, written);
 
-        return new Relation(name, table, Option.empty());
+        return new Relation(name,
+                            table,
+                            cte != null
+                            ? cte
+                            : UNRESOLVED,
+                            Option.empty());
     }
 
     private static Option<Table> resolve(Schema schema, String name) {
@@ -283,7 +340,7 @@ public final class OutputNullability {
                : schema.table("public." + name);
     }
 
-    private static Relation derivedRelation(CstNavigator node) {
+    private static Relation derivedRelation(CstNavigator node, Map<String, Option<List<Output>>> ctes, Schema schema) {
         var name = node.child("Alias")
                        .flatMap(QueryValidator::aliasName)
                        .or(node.child("FuncTableRef")
@@ -291,12 +348,26 @@ public final class OutputNullability {
                                .flatMap(QueryValidator::aliasName)
                                .or(""));
 
-        return new Relation(name, Option.empty(), Option.empty());
+        return new Relation(name, Option.empty(), derivedOutputs(node, ctes, schema), Option.empty());
+    }
+
+    /// The outputs of a `(SELECT ..) alias` derived table; unresolved for an alias with a column list, a function
+    /// or any other form.
+    private static Option<List<Output>> derivedOutputs(CstNavigator node, Map<String, Option<List<Output>>> ctes, Schema schema) {
+        if (!node.rule().equals("SubqueryRef") && !node.rule().equals("LateralRef")) return UNRESOLVED;
+
+        if (node.child("Alias").flatMap(alias -> alias.child("ColumnList")).isPresent()) return UNRESOLVED;
+
+        return node.child("SelectStmt").flatMap(select -> analyzeBody(select, ctes, schema));
     }
 
     // --- output lists ---
     /// The outputs of a `SelectCore` or `ReturningClause`; absent when a target cannot be listed.
     private static Option<List<Output>> outputs(CstNavigator owner, Scope scope, Schema schema) {
+        var values = owner.child("ValuesClause");
+
+        if (values.isPresent()) return valuesOutputs(values.unwrap(), scope);
+
         var list = owner.child("TargetList");
 
         if (list.isEmpty()) return Option.empty();
@@ -304,11 +375,7 @@ public final class OutputNullability {
         var result = new ArrayList<Output>();
 
         for (var target : list.unwrap().allChildren("TargetElem")) {
-            var produced = targetOutputs(target, scope);
-
-            if (produced.isEmpty()) return Option.empty();
-
-            result.addAll(produced.unwrap());
+            result.addAll(targetOutputs(target, scope));
         }
 
         return result.isEmpty()
@@ -316,7 +383,7 @@ public final class OutputNullability {
                : Option.present(result);
     }
 
-    private static Option<List<Output>> targetOutputs(CstNavigator target, Scope scope) {
+    private static List<Output> targetOutputs(CstNavigator target, Scope scope) {
         var star = starQualifier(target);
 
         if (star.isPresent()) return expandStar(star.unwrap().qualifier(),
@@ -326,7 +393,70 @@ public final class OutputNullability {
                             .map(expr -> evaluate(expr, scope))
                             .or(Nullability.mayBeNull("the output expression cannot be analysed"));
 
-        return Option.present(List.of(new Output(QueryValidator.outputColumnName(target), verdict)));
+        return List.of(new Output(outputLabel(target), verdict));
+    }
+
+    /// `VALUES (..), (..)`: PostgreSQL names the columns `column1`, `column2`, ..; a position is non-null only when
+    /// every row proves it. Rows of different width, or a `DEFAULT`, leave the position unproven.
+    private static Option<List<Output>> valuesOutputs(CstNavigator values, Scope scope) {
+        var rows = values.findAll("ExprOrDefaultList");
+
+        if (rows.isEmpty()) return Option.empty();
+
+        var width = rows.getFirst().allChildren("ExprOrDefault").size();
+        var result = new ArrayList<Output>();
+
+        for (int position = 0; position < width; position++) {
+            result.add(new Output(Option.present("column" + (position + 1)),
+                                  valuesVerdict(rows, position, scope)));
+        }
+
+        return Option.present(result);
+    }
+
+    private static Nullability valuesVerdict(List<CstNavigator> rows, int position, Scope scope) {
+        for (var row : rows) {
+            var cells = row.allChildren("ExprOrDefault");
+            var verdict = position < cells.size()
+                          ? cells.get(position).child("Expr").map(expr -> evaluate(expr, scope)).or(Nullability.mayBeNull("a DEFAULT value"))
+                          : Nullability.mayBeNull("VALUES rows differ in width");
+
+            if (!verdict.isNonNull()) return verdict;
+        }
+
+        return Nullability.NON_NULL;
+    }
+
+    /// The name the query gives an output: its alias or plain column name, else the label PostgreSQL derives for
+    /// the forms where that is certain. Anything else stays unnamed (PostgreSQL's `?column?`).
+    private static Option<String> outputLabel(CstNavigator target) {
+        var named = QueryValidator.outputColumnName(target);
+
+        return named.isPresent()
+               ? named
+               : target.child("Expr").flatMap(OutputNullability::expressionLabel);
+    }
+
+    private static Option<String> expressionLabel(CstNavigator node) {
+        return switch (node.rule()) {
+            case "FuncCall" -> functionName(node);
+            case "CaseExpr" -> Option.present("case");
+            case "CoalesceExpr" -> Option.present("coalesce");
+            case "NullIfExpr" -> Option.present("nullif");
+            case "ColRef" -> node.child("QualifiedName").flatMap(OutputNullability::lastQualifier);
+            case "CastExpr" -> node.child("Expr").flatMap(OutputNullability::expressionLabel);
+            case "TypeCastExpr" -> node.firstChild().flatMap(OutputNullability::expressionLabel);
+            case "PrimaryExpr" -> isParenthesised(node)
+                                  ? node.child("Expr").flatMap(OutputNullability::expressionLabel)
+                                  : singleChildLabel(node);
+            default -> singleChildLabel(node);
+        };
+    }
+
+    private static Option<String> singleChildLabel(CstNavigator node) {
+        return node.children().size() == 1
+               ? node.firstChild().flatMap(OutputNullability::expressionLabel)
+               : Option.empty();
     }
 
     /// A star output target: `qualifier` is empty for a bare `*` and the relation name for `q.*`.
@@ -364,7 +494,10 @@ public final class OutputNullability {
         return Option.from(parts.stream().reduce((_, tail) -> tail)).map(last -> last.normalized());
     }
 
-    private static Option<List<Output>> expandStar(Option<String> qualifier, Scope scope) {
+    /// `*` or `q.*`: the columns of every matching relation. A relation whose columns are unknown, or a qualifier
+    /// that matches nothing, contributes one unnamed output that is not proven - so a field the named outputs do
+    /// not cover is checked against it.
+    private static List<Output> expandStar(Option<String> qualifier, Scope scope) {
         var outputs = new ArrayList<Output>();
         var matched = false;
 
@@ -372,17 +505,35 @@ public final class OutputNullability {
             if (qualifier.isPresent() && !qualifier.unwrap().equals(relation.name())) continue;
 
             matched = true;
-            if (relation.table().isEmpty()) return Option.empty();
-
-            for (var column : relation.table().unwrap().columns()) {
-                outputs.add(new Output(Option.present(column.name()),
-                                       columnVerdict(relation, column, scope)));
-            }
+            outputs.addAll(relationOutputs(relation, scope));
         }
 
-        return matched
-               ? Option.present(outputs)
-               : Option.empty();
+        if (!matched) outputs.add(unresolvedStar("no relation matches the '*'"));
+
+        return outputs;
+    }
+
+    private static Output unresolvedStar(String why) {
+        return new Output(Option.empty(), Nullability.mayBeNull(why));
+    }
+
+    private static List<Output> relationOutputs(Relation relation, Scope scope) {
+        if (relation.table().isPresent()) {
+            return relation.table()
+                           .unwrap()
+                           .columns()
+                           .stream()
+                           .map(column -> new Output(Option.present(column.name()),
+                                                     columnVerdict(relation, column, scope)))
+                           .toList();
+        }
+
+        return relation.derived()
+                       .map(outs -> outs.stream()
+                                        .map(out -> new Output(out.name(),
+                                                               overlay(relation, out.nullability(), out.name().or("?"), scope)))
+                                        .toList())
+                       .or(List.of(unresolvedStar("columns of '" + relation.name() + "' cannot be listed")));
     }
 
     // --- expressions ---
@@ -477,12 +628,15 @@ public final class OutputNullability {
         };
     }
 
+    private static Option<String> functionName(CstNavigator call) {
+        return call.child("FuncName")
+                   .flatMap(func -> func.child("QualifiedName"))
+                   .flatMap(qualified -> lastQualifier(qualified))
+                   .map(String::toLowerCase);
+    }
+
     private static Nullability functionCall(CstNavigator call) {
-        var name = call.child("FuncName")
-                       .flatMap(func -> func.child("QualifiedName"))
-                       .flatMap(qualified -> lastQualifier(qualified))
-                       .map(String::toLowerCase)
-                       .or("");
+        var name = functionName(call).or("");
 
         if (name.equals("count")) return Nullability.NON_NULL;
 
@@ -518,17 +672,13 @@ public final class OutputNullability {
     }
 
     private static Nullability bareColumn(String column, Scope scope) {
-        if (scope.relations().stream().anyMatch(relation -> relation.table()
-                                                                    .isEmpty())) {
+        if (scope.relations().stream().anyMatch(relation -> !relation.resolved())) {
             return Nullability.mayBeNull("column '" + column + "' may come from a derived table, CTE or function");
         }
 
         var verdicts = scope.relations()
                             .stream()
-                            .filter(relation -> relation.table()
-                                                        .unwrap()
-                                                        .column(column)
-                                                        .isPresent())
+                            .filter(relation -> relation.hasColumn(column))
                             .map(relation -> relationColumn(relation, column, scope))
                             .toList();
 
@@ -541,11 +691,7 @@ public final class OutputNullability {
     }
 
     private static Nullability relationColumn(Relation relation, String column, Scope scope) {
-        if (relation.table().isEmpty()) {
-            return Nullability.mayBeNull("column '" + relation.name()
-                                        + "." + column
-                                        + "' comes from a derived table, CTE or function");
-        }
+        if (relation.table().isEmpty()) return derivedColumn(relation, column, scope);
 
         return relation.table()
                        .unwrap()
@@ -554,8 +700,41 @@ public final class OutputNullability {
                        .or(Nullability.mayBeNull("column '" + relation.name() + "." + column + "' cannot be resolved"));
     }
 
+    /// A column of a derived table or CTE: the verdict of the derived output of that name (the worst when the name
+    /// repeats), unproven when the outputs cannot be listed or hold no such name.
+    private static Nullability derivedColumn(Relation relation, String column, Scope scope) {
+        var label = relation.name() + "." + column;
+        var found = relation.derived()
+                            .map(outs -> outs.stream()
+                                             .filter(out -> out.name().map(column::equals).or(false))
+                                             .map(Output::nullability)
+                                             .filter(verdict -> !verdict.isNonNull())
+                                             .findFirst()
+                                             .orElse(outs.stream().anyMatch(out -> out.name().map(column::equals).or(false))
+                                                     ? Nullability.NON_NULL
+                                                     : Nullability.mayBeNull("column '" + label + "' cannot be resolved")))
+                            .or(Nullability.mayBeNull("column '" + label + "' comes from a derived table, CTE or function"));
+
+        return overlay(relation, found, column, scope);
+    }
+
     private static Nullability columnVerdict(Relation relation, Column column, Scope scope) {
         var label = relation.name() + "." + column.name();
+        var positional = overlay(relation, Nullability.NON_NULL, column.name(), scope);
+
+        if (!positional.isNonNull()) return positional;
+
+        return column.nullable()
+               ? Nullability.mayBeNull("column '" + label + "' is nullable")
+               : Nullability.NON_NULL;
+    }
+
+    /// What the position of the relation adds to a column's own verdict: the nullable side of an outer join and the
+    /// subtotal rows of `ROLLUP`/`CUBE`/`GROUPING SETS` make even a proven column NULL.
+    private static Nullability overlay(Relation relation, Nullability own, String column, Scope scope) {
+        var label = relation.name() + "." + column;
+
+        if (!own.isNonNull()) return own;
 
         if (relation.nullableSide().isPresent()) {
             return Nullability.mayBeNull("column '" + label
@@ -563,13 +742,9 @@ public final class OutputNullability {
                                                                                       .unwrap());
         }
 
-        if (scope.subtotals()) {
-            return Nullability.mayBeNull("column '" + label
-                                        + "' is NULL in the subtotal rows of ROLLUP, CUBE or GROUPING SETS");
-        }
-
-        return column.nullable()
-               ? Nullability.mayBeNull("column '" + label + "' is nullable")
-               : Nullability.NON_NULL;
+        return scope.subtotals()
+               ? Nullability.mayBeNull("column '" + label
+                                      + "' is NULL in the subtotal rows of ROLLUP, CUBE or GROUPING SETS")
+               : own;
     }
 }

@@ -70,7 +70,13 @@ class OutputNullabilityTest {
         "SELECT CAST(note AS text) AS x FROM t | x | column 't.note' is nullable",
         "SELECT qty AS x FROM t GROUP BY GROUPING SETS ((qty), ()) | x | subtotal rows",
         "SELECT lower(name) AS x FROM t | x | lower() is not proven",
-        "SELECT x FROM (SELECT 1 AS x) d | x | derived table",
+        "SELECT x AS y FROM (SELECT 1 AS x) d(c) | y | derived table",
+        "SELECT d.x AS y FROM (SELECT note AS x FROM t) d | y | column 't.note' is nullable",
+        "SELECT x AS y FROM (SELECT max(qty) AS x FROM t) d | y | max() yields NULL",
+        "WITH c AS (SELECT note AS x FROM t) SELECT x AS y FROM c | y | column 't.note' is nullable",
+        "SELECT name AS x FROM t UNION VALUES (NULL) | x | NULL literal",
+        "SELECT name AS x FROM t UNION ALL SELECT NULL | x | NULL literal",
+        "SELECT x FROM (SELECT t.id AS x FROM u LEFT JOIN t ON u.t_id = t.id) d | x | nullable side of a LEFT JOIN",
         "SELECT t.id AS x FROM t, missing m | x | NOT_USED",
         "SELECT qty AS x FROM t GROUP BY ROLLUP (qty) | x | subtotal rows",
         "SELECT qty AS x FROM t GROUP BY CUBE (qty) | x | subtotal rows",
@@ -152,13 +158,98 @@ class OutputNullabilityTest {
             .isInstanceOf(Nullability.MayBeNull.class);
     }
 
+    /// Unaliased compound outputs get PostgreSQL's default label, so a field of that name is checked (#2889 round 2).
+    @ParameterizedTest(name = "{0} -> {1}")
+    @CsvSource(delimiter = '|', value = {
+        "SELECT max(qty) FROM t | max",
+        "SELECT lower(name) FROM t | lower",
+        "SELECT sum(qty) OVER () FROM t | sum",
+        "SELECT note::text FROM t | note",
+        "SELECT CAST(note AS text) FROM t | note",
+        "SELECT (note) FROM t | note",
+        "SELECT max(qty)::text FROM t | max",
+        "SELECT CASE WHEN qty > 1 THEN 1 END FROM t | case",
+        "SELECT COALESCE(note, name) FROM t | coalesce",
+        "SELECT NULLIF(qty, 1) FROM t | nullif",
+        "SELECT t.note FROM t | note"
+    })
+    void unaliasedOutput_getsPostgresDefaultLabel(String sql, String label) {
+        assertThat(outputs(sql).getFirst().name()).isEqualTo(org.pragmatica.lang.Option.present(label));
+    }
+
     @Test
-    void unlistableOutputs_areAbsent() {
-        assertThat(OutputNullability.analyze(CstNavigator.wrap(parser.parseCst("VALUES (1)").unwrap()).unwrap(), schema).isEmpty())
-            .isTrue();
-        assertThat(OutputNullability.analyze(CstNavigator.wrap(parser.parseCst("SELECT * FROM (SELECT 1) d").unwrap()).unwrap(), schema).isEmpty())
-            .isTrue();
-        assertThat(OutputNullability.analyze(CstNavigator.wrap(parser.parseCst("SELECT id FROM t UNION SELECT id, name FROM t").unwrap()).unwrap(), schema).isEmpty())
-            .isTrue();
+    void unaliasedCompoundOutput_isCheckedLikeTheAliasedOne() {
+        assertThat(verdict("SELECT max(qty) FROM t", "max")).isInstanceOf(Nullability.MayBeNull.class);
+        assertThat(verdict("SELECT note::text FROM t", "note")).isInstanceOf(Nullability.MayBeNull.class);
+        assertThat(verdict("SELECT max(qty) AS max FROM t", "max")).isInstanceOf(Nullability.MayBeNull.class);
+    }
+
+    @Test
+    void castOfNullableColumn_staysNullable_castOfNonNull_staysNonNull() {
+        assertThat(verdict("SELECT note::text AS x FROM t", "x")).isInstanceOf(Nullability.MayBeNull.class);
+        assertThat(verdict("SELECT CAST(note AS text) AS x FROM t", "x")).isInstanceOf(Nullability.MayBeNull.class);
+        assertThat(verdict("SELECT qty::text AS x FROM t", "x")).isEqualTo(Nullability.NON_NULL);
+    }
+
+    @Test
+    void operatorOutput_staysUnnamed() {
+        assertThat(outputs("SELECT qty + 1 FROM t").getFirst().name().isEmpty()).isTrue();
+    }
+
+    @Test
+    void starOverDerivedTable_propagatesEachOutputsNullability() {
+        var result = outputs("SELECT * FROM (SELECT id, note FROM t) d");
+
+        assertThat(result.stream().map(o -> o.name().unwrap()).toList()).containsExactly("id", "note");
+        assertThat(result.stream().map(o -> o.nullability().isNonNull()).toList()).containsExactly(true, false);
+    }
+
+    @Test
+    void starOverCte_propagatesEachOutputsNullability() {
+        var result = outputs("WITH c AS (SELECT id, note FROM t) SELECT * FROM c");
+
+        assertThat(result.stream().map(o -> o.nullability().isNonNull()).toList()).containsExactly(true, false);
+    }
+
+    @Test
+    void starOverDerivedTableOnTheNullableSide_isNullExtended() {
+        var result = outputs("SELECT d.* FROM t LEFT JOIN (SELECT id FROM u) d ON d.id = t.id");
+
+        assertThat(result).hasSize(1);
+        assertThat(result.getFirst().nullability().isNonNull()).isFalse();
+    }
+
+    @Test
+    void starOverUnresolvableRelation_isOneUnnamedUnprovenOutput() {
+        var derivedWithColumnList = outputs("SELECT * FROM (SELECT id FROM t) d(a)");
+        var function = outputs("SELECT * FROM generate_series(1, 2) g");
+
+        assertThat(derivedWithColumnList).hasSize(1);
+        assertThat(derivedWithColumnList.getFirst().name().isEmpty()).isTrue();
+        assertThat(derivedWithColumnList.getFirst().nullability().isNonNull()).isFalse();
+        assertThat(function).hasSize(1);
+        assertThat(function.getFirst().nullability().isNonNull()).isFalse();
+    }
+
+    @Test
+    void valuesBranch_isAnalysedPerPosition() {
+        assertThat(outputs("VALUES (1, NULL), (2, 3)").stream().map(o -> o.nullability().isNonNull()).toList())
+            .containsExactly(true, false);
+        assertThat(outputs("VALUES (1), (NULL)").getFirst().nullability().isNonNull()).isFalse();
+        assertThat(outputs("VALUES (1)").getFirst().name()).isEqualTo(org.pragmatica.lang.Option.present("column1"));
+    }
+
+    @Test
+    void setOperationBranchesOfDifferentWidth_areAllUnproven() {
+        var result = outputs("SELECT id, name FROM t UNION SELECT id FROM t");
+
+        assertThat(result.stream().map(o -> o.name().unwrap()).toList()).containsExactly("id", "name");
+        assertThat(result.stream().noneMatch(o -> o.nullability().isNonNull())).isTrue();
+    }
+
+    @Test
+    void recursiveCte_isNotTrusted() {
+        assertThat(verdict("WITH RECURSIVE t(id) AS (SELECT 1 UNION ALL SELECT id + 1 FROM t) SELECT id AS x FROM t", "x"))
+            .isInstanceOf(Nullability.MayBeNull.class);
     }
 }

@@ -112,6 +112,15 @@ public final class ProcessorError {
                                                                                                : ".");
     }
 
+    public static String ambiguousOutputName(String method, String output, int count, String field) {
+        return PREFIX
+             + "Method '" + method
+             + "': output name '" + output
+             + "' appears " + count
+             + " times in the select list, so field '" + field
+             + "' cannot be mapped unambiguously. Fix: give each output a distinct alias.";
+    }
+
     public static String analysisFailed(String method, String sql, String detail) {
         return PREFIX + "Method '" + method + "' could not be analysed (" + detail + "); SQL: " + sql;
     }
