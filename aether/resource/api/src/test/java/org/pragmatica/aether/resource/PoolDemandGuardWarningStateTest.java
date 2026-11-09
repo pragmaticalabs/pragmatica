@@ -128,6 +128,69 @@ class PoolDemandGuardWarningStateTest {
                            .isEqualTo(OperatorWarningCode.DATASOURCE_DEMAND_WITHIN_SERVER_LIMIT);
     }
 
+    /// The same pause, with a pool close as the interleaved recovery: `closed` must hold the guard's lock too, or the close
+    /// clears the warning in the middle of the raise and the raise then publishes a warning nothing can clear.
+    @Test
+    void closeInterleavedWithRaise_endsCleared() throws Exception {
+        var inRaise = new CountDownLatch(1);
+        var closedPool = new CountDownLatch(1);
+        var reads = new AtomicInteger();
+        var guard = guardWith(() -> pausedOnFirstRead(reads, inRaise, closedPool));
+
+        open(guard, "p1", CONFIGURED, 60);
+        open(guard, "p2", CONFIGURED, 60);
+        var raising = new Thread(() -> guard.answered(CONFIGURED, answer(100, "db.local")));
+        var closing = new Thread(() -> closeAfter(guard, inRaise, closedPool));
+
+        raising.start();
+        closing.start();
+        raising.join(TIMEOUT.duration().toMillis());
+        closing.join(TIMEOUT.duration().toMillis());
+
+        assertThat(codes()).as("raise then close: the warning must end cleared")
+                           .last()
+                           .isEqualTo(OperatorWarningCode.DATASOURCE_DEMAND_WITHIN_SERVER_LIMIT);
+    }
+
+    /// A refusal interleaved with an answer on another thread: `refused` must hold the guard's lock, or the answer
+    /// clears the refusal in the middle of the raise and the raise then publishes a refusal nothing can clear.
+    @Test
+    void refusalInterleavedWithAnswer_endsAccepting() throws Exception {
+        var inRaise = new CountDownLatch(1);
+        var answered = new CountDownLatch(1);
+        var reads = new AtomicInteger();
+        var guard = guardWith(() -> pausedOnFirstRead(reads, inRaise, answered));
+
+        open(guard, "p1", CONFIGURED, 10);
+        var refusing = new Thread(() -> guard.refused(CONFIGURED, serverFull()));
+        var answering = new Thread(() -> answerAfter(guard, inRaise, answered));
+
+        refusing.start();
+        answering.start();
+        refusing.join(TIMEOUT.duration().toMillis());
+        answering.join(TIMEOUT.duration().toMillis());
+
+        assertThat(codes()).as("refusal then answer: the refusal must end cleared")
+                           .last()
+                           .isEqualTo(OperatorWarningCode.DATASOURCE_SERVER_ACCEPTING_CONNECTIONS);
+    }
+
+    private static DatabaseConnectorError serverFull() {
+        return DatabaseConnectorError.connectionFailed("too many clients", Option.none(), Option.some("53300"));
+    }
+
+    private static void closeAfter(PoolDemandGuard guard, CountDownLatch inRaise, CountDownLatch closedPool) {
+        await(inRaise, 5000);
+        guard.closed("p2");
+        closedPool.countDown();
+    }
+
+    private static void answerAfter(PoolDemandGuard guard, CountDownLatch inRaise, CountDownLatch answered) {
+        await(inRaise, 5000);
+        guard.answered(CONFIGURED, answer(1000, "db.local"));
+        answered.countDown();
+    }
+
     private OperatorWarningSink pausedOnFirstRead(AtomicInteger reads, CountDownLatch inRaise, CountDownLatch recovered) {
         if (reads.incrementAndGet() == 1) {
             inRaise.countDown();

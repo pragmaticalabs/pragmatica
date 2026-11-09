@@ -25,7 +25,8 @@ import static org.pragmatica.aether.resource.SharedPoolFixtures.TIMEOUT;
 /// `compute` returned, before its closed re-check.
 class SharedPoolsAdmissionRaceTest {
     private static final class SeamMap extends ConcurrentHashMap<Object, Object> {
-        private final AtomicBoolean fired = new AtomicBoolean();
+        private final AtomicInteger calls = new AtomicInteger();
+        private volatile int fireAt = 1;
         private volatile Runnable hook = () -> {};
 
         @Override
@@ -33,7 +34,7 @@ class SharedPoolsAdmissionRaceTest {
         public Object compute(Object key, BiFunction f) {
             var result = super.compute(key, f);
 
-            if (fired.compareAndSet(false, true)) {
+            if (calls.incrementAndGet() == fireAt) {
                 hook.run();
             }
 
@@ -105,6 +106,22 @@ class SharedPoolsAdmissionRaceTest {
         installSeam(pools::closeAll);
 
         assertRefusedAndNothingLeaked(acquire("slice-a"));
+    }
+
+    /// The joiner drains the entry its creator opened and is then the only closer: `closeAll` finds nothing left, so the
+    /// joiner's own close of the departed pool is the one that releases it, exactly once.
+    @Test
+    void joinerThatDrainsTheCreatorsEntry_closesThePoolExactlyOnce() throws Exception {
+        seam.fireAt = 2;
+        installSeam(this::raiseFlag);
+
+        var created = acquire("slice-a").await(TIMEOUT);
+        var joined = acquire("slice-b").await(TIMEOUT);
+
+        pools.closeAll();
+        assertThat(created.isSuccess()).as("the creator was admitted before the flag, got %s", created).isTrue();
+        assertThat(joined.isFailure()).as("the joiner must fail, got %s", joined).isTrue();
+        assertThat(closes.get()).as("the pool the creator opened must be closed exactly once").isEqualTo(1);
     }
 
     @Test
