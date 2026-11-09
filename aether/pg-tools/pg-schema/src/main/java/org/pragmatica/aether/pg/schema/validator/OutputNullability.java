@@ -200,8 +200,13 @@ public final class OutputNullability {
         }
 
         return branches.size() > 1
-               ? Nullability.nonNull("every set operation branch is proven non-null (" + proofOf(branches.getFirst().get(position).nullability()) + ")")
-               : branches.getFirst().get(position).nullability();
+               ? Nullability.nonNull("every set operation branch is proven non-null (" + proofOf(branches.getFirst()
+                                                                                                         .get(position)
+                                                                                                         .nullability())
+                                    + ")")
+               : branches.getFirst()
+                         .get(position)
+                         .nullability();
     }
 
     private static String proofOf(Nullability verdict) {
@@ -843,7 +848,8 @@ public final class OutputNullability {
         return scope.subtotals()
                ? Nullability.mayBeNull("column '" + label
                                       + "' is NULL in the subtotal rows of ROLLUP, CUBE or GROUPING SETS")
-               : own.isNonNull() && relation.nullableSide().isEmpty()
+               : own.isNonNull() && relation.nullableSide()
+                                            .isEmpty()
                  ? own
                  : Nullability.nonNull(whereProof(label));
     }
