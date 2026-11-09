@@ -12,7 +12,10 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 
 /// The git processes of one backup repository, and the one place that starts and ends them (#2924).
@@ -28,22 +31,18 @@ import org.pragmatica.lang.Contract;
 /// returns `true`. A fork already inside the kernel when the stop lands completes first, so the repeated read sees its child; a process that
 /// detached itself from the tree (a hook that double-forks a daemon) is outside it, and no parent-child walk can find it.
 final class GitProcesses {
+    private static final Cause STOPPED = Causes.cause("the backup repository is stopped: no git is started");
+
     private final Object lock = new Object();
     private final Set<Process> live = new HashSet<>();
     private boolean closed;
 
     /// Start `builder`'s command and register it, unless the repository is closed.
-    Process start(ProcessBuilder builder) throws IOException {
+    Result<Process> start(ProcessBuilder builder) {
         synchronized (lock) {
-            if (closed) {
-                throw new IOException("the backup repository is stopped: no git is started");
-            }
-
-            var process = builder.start();
-
-            live.add(process);
-
-            return process;
+            return closed
+                   ? STOPPED.result()
+                   : Result.lift(GitBackupRepository::unavailable, builder::start).onSuccess(live::add);
         }
     }
 

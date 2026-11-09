@@ -10,7 +10,6 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// The process registry behind the stop (#2924): nothing starts once closed, and a kill ends the whole tree, including children forked while the kill
 /// was being decided.
@@ -20,12 +19,13 @@ class GitProcessesTest {
     @Test
     void start_isRefused_afterClose() throws IOException {
         var processes = new GitProcesses();
-        var running = processes.start(new ProcessBuilder("sleep", "30"));
+        var running = processes.start(new ProcessBuilder("sleep", "30")).unwrap();
         var inFlight = processes.close();
 
         assertThat(inFlight).containsExactly(running);
-        assertThatThrownBy(() -> processes.start(new ProcessBuilder("sleep", "30"))).isInstanceOf(IOException.class)
-                                                                                    .hasMessageContaining("stopped");
+        processes.start(new ProcessBuilder("sleep", "30"))
+                 .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("a closed repository started a git"))
+                 .onFailure(cause -> assertThat(cause.message()).contains("stopped"));
         assertThat(GitProcesses.kill(inFlight, 10_000)).isTrue();
         assertThat(running.isAlive()).isFalse();
     }
@@ -33,7 +33,7 @@ class GitProcessesTest {
     @Test
     void finished_removesTheProcessFromTheInFlightSet() throws IOException {
         var processes = new GitProcesses();
-        var running = processes.start(new ProcessBuilder("sleep", "30"));
+        var running = processes.start(new ProcessBuilder("sleep", "30")).unwrap();
 
         processes.finished(running);
         var inFlight = processes.close();

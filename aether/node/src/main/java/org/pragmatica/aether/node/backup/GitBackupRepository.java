@@ -337,9 +337,8 @@ public record GitBackupRepository(Path dir,
     }
 
     private Result<GitResult> run(List<String> args) {
-        return Result.lift(GitBackupRepository::unavailable,
-                           () -> processes.start(processBuilder(args)))
-                     .flatMap(this::collect);
+        return processes.start(processBuilder(args))
+                        .flatMap(this::collect);
     }
 
     private ProcessBuilder processBuilder(List<String> args) {
@@ -423,7 +422,7 @@ public record GitBackupRepository(Path dir,
                          .or("ssh") + " -o BatchMode=yes";
     }
 
-    private static BackupRepositoryError unavailable(Throwable cause) {
+    static BackupRepositoryError unavailable(Throwable cause) {
         return BackupRepositoryError.GitUnavailable.FACTORY.apply(Causes.fromThrowable(cause));
     }
 
