@@ -763,10 +763,11 @@ public sealed interface StreamAssembly {
                                                                                                                                                                            streamPartitionBackfill,
                                                                                                                                                                            streamName,
                                                                                                                                                                            partition)),
-                                                                                   (List<PartitionKey> reconciled) -> driveStreamOwnership(streamOwnershipWriter,
-                                                                                                                                           clusterCommandApplier,
-                                                                                                                                           streamOwnershipRetry,
-                                                                                                                                           reconciled));
+                                                                                   (List<PartitionKey> reconciled) -> reconcilePassComplete(streamPartitionBackfill,
+                                                                                                                                            streamOwnershipWriter,
+                                                                                                                                            clusterCommandApplier,
+                                                                                                                                            streamOwnershipRetry,
+                                                                                                                                            reconciled));
         // B5b: bind the owner-gate ref so ClusterEventAggregator.emit can consult isOwner(...) for
         // (system:cluster-events:1.0.0, partition 0). isOwner is computed from the live HRW placement
         // against the current topology, independent of reconcile, so it is correct as soon as members
@@ -912,6 +913,8 @@ public sealed interface StreamAssembly {
         // #2080: its cold-start contest proceeds past unreachable co-replicas only for a node the COMMITTED in-sync set names, and
         // reports that escape the way the gate does.
         bindPromotionAlarm(streamPartitionBackfill, operatorWarningSink, kvStore, streamingConfig.promotionEscapeAfter());
+        // #2960: the all-stalled warning is raised only for a stream that exists, so one destroyed under an in-flight round leaves no report.
+        streamPartitionBackfill.streamExists(streamPartitionManager::streamExists);
         streamPartitionManager.ownerServeGate(ownerActivation::admit);
         // #1730 phase 2: the gate's relaxation for a divergent peer respects the candidate's durable sealed floor, and a peer it
         // leaves out loses the row this registry kept for it from an earlier tenure.
@@ -1542,6 +1545,8 @@ public sealed interface StreamAssembly {
     /// introduced.
     @Contract
     private static void redriveIncompleteBackfills(PartitionBackfill backfill, Executor backfillExecutor) {
+        // #2960: the level trigger of the all-stalled warning also runs on every tick, so a report no pass or round revisits ends within one tick.
+        backfillExecutor.execute(backfill::reconcileStalled);
         backfill.redriveCandidates()
                 .forEach(key -> backfillExecutor.execute(() -> backfill.backfill(key.streamName(),
                                                                                  key.partition())));
@@ -1777,6 +1782,18 @@ public sealed interface StreamAssembly {
               .onSuccess(_ -> applyStreamOwnershipBatch(applier,
                                                         retry,
                                                         writer.writeOwnershipChanges(EntityOwnershipReconciler.withoutEntityArcs(reconciled))));
+    }
+
+    /// A finished reconcile pass (#2960): the replica set and the ownership may have moved, so the open all-stalled warnings are re-derived
+    /// from the live state first ([PartitionBackfill#reconcileStalled]), then the pass's ownership changes are driven.
+    @Contract
+    static void reconcilePassComplete(PartitionBackfill backfill,
+                                      StreamPartitionOwnershipWriter writer,
+                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                      StreamOwnershipRetry retry,
+                                      List<PartitionKey> reconciled) {
+        backfill.reconcileStalled();
+        driveStreamOwnership(writer, applier, retry, reconciled);
     }
 
     /// Apply the reconcile pass's ownership-change Puts as ONE consensus batch. An empty batch (a

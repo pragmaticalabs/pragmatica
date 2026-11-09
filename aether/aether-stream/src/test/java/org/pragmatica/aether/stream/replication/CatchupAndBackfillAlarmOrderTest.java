@@ -288,6 +288,34 @@ class CatchupAndBackfillAlarmOrderTest {
         assertThat(resolved).as("the other stream's report was still open").hasSize(3);
     }
 
+    /// #2960: a destroyed stream's reports are matched by exact name: destroying `a` leaves `ab` open. Mutation: the name filter in
+    /// `clearStalledOf` as a prefix match turns this red.
+    @Test
+    void backfill_clearStalledOf_doesNotResolveAStreamWhoseNameStartsWithIt() throws Exception {
+        var raised = new CopyOnWriteArrayList<OwnerActivation.ActivationBlock>();
+        var resolved = new CopyOnWriteArrayList<OwnerActivation.ActivationBlock>();
+        var backfill = backfillRecordingBlocks(raised, resolved);
+
+        backfill.raiseStalled("a", 1);
+        backfill.raiseStalled("ab", 1);
+        backfill.clearStalledOf("a");
+
+        assertThat(resolved).containsExactly(new OwnerActivation.ActivationBlock.CatchupStalled("a", 1, PartitionBackfill.MAX_STALLED_ROUNDS));
+    }
+
+    /// #2960: nothing is raised for a stream that no longer exists. Mutation: dropping the existence check in `raiseStalled` turns this red.
+    @Test
+    void backfill_aDestroyedStream_raisesNoAllStalledBlock() throws Exception {
+        var raised = new CopyOnWriteArrayList<OwnerActivation.ActivationBlock>();
+        var backfill = backfillRecordingBlocks(raised, new CopyOnWriteArrayList<>());
+
+        backfill.streamExists(name -> !name.equals(STREAM));
+        backfill.raiseStalled(STREAM, 1);
+        backfill.raiseStalled("other", 1);
+
+        assertThat(raised).extracting(OwnerActivation.ActivationBlock::streamName).containsExactly("other");
+    }
+
     private PartitionBackfill backfillRecordingBlocks(List<OwnerActivation.ActivationBlock> raised, List<OwnerActivation.ActivationBlock> resolved) {
         var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
 

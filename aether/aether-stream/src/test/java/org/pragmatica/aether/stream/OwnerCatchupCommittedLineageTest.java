@@ -75,6 +75,9 @@ class OwnerCatchupCommittedLineageTest {
     private final Set<NodeId> unanswered = ConcurrentHashMap.newKeySet();
     private final Set<NodeId> oversized = ConcurrentHashMap.newKeySet();
     private final Map<NodeId, Long> pageCaps = new ConcurrentHashMap<>();
+    private final AtomicBoolean streamAlive = new AtomicBoolean(true);
+    private volatile CommittedStreamOwnerSource committedOwners = CommittedStreamOwnerSource.none();
+    private volatile Promise<org.pragmatica.lang.Unit> probeGate;
 
     @BeforeEach
     void startTheActivatingOwner() {
@@ -823,6 +826,209 @@ class OwnerCatchupCommittedLineageTest {
         assertThat(alarm.resolved()).containsExactlyElementsOf(alarm.raised());
     }
 
+    /// The warnings raised and not yet resolved.
+    private static List<OwnerActivation.ActivationBlock> openWarnings(RecordingAlarm alarm) {
+        var open = new java.util.ArrayList<>(alarm.raised());
+
+        alarm.resolved().forEach(open::remove);
+
+        return open;
+    }
+
+    private void stallPartition(Replicas fixture, int partition) {
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS).forEach(_ -> settled(fixture.backfill().backfill("s", partition)));
+    }
+
+    /// #2960 F1 (verifier probe P1, RED at bcc2102db6): this node is removed from the partition's replica set (ReplicaSetController) after the
+    /// warning was raised, so no redrive visits the partition again. The next backfill round of ANY partition re-derives the open warnings.
+    @Test
+    void probePath_selfLeavingTheReplicaSet_afterAllStalled_resolvesTheWarning_onTheNextRoundAnywhere() {
+        var fixture = fixture(true, singleReplica());
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        stallPartition(fixture, 0);
+        assertThat(alarm.raised()).hasSize(1);
+        assertThat(fixture.backfill().redriveCandidates()).as("control: while self is registered the partition is revisited").hasSize(1);
+
+        fixture.registry().unregisterReplica("s", 0, SELF);
+
+        assertThat(fixture.backfill().redriveCandidates()).as("nothing will ever revisit the partition").isEmpty();
+        assertThat(openWarnings(alarm)).as("control: still open until a trigger runs").hasSize(1);
+
+        settled(fixture.backfill().backfill("s", 1));
+
+        assertThat(openWarnings(alarm)).as("a partition self no longer replicates holds no warning").isEmpty();
+    }
+
+    /// #2960: the reconcile pass and the redrive tick call [PartitionBackfill#reconcileStalled] with no round at all; the same removal resolves.
+    @Test
+    void reconcileStalled_afterSelfLeavesTheReplicaSet_resolvesTheWarning() {
+        var fixture = fixture(true, singleReplica());
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        stallPartition(fixture, 0);
+        fixture.registry().unregisterReplica("s", 0, SELF);
+        fixture.backfill().reconcileStalled();
+
+        assertThat(alarm.raised()).hasSize(1);
+        assertThat(openWarnings(alarm)).isEmpty();
+    }
+
+    /// #2960: the level trigger resolves nothing while the state still holds (positive control for every resolve test here: a predicate that is
+    /// always false would pass them all).
+    @Test
+    void reconcileStalled_whileTheStateStillHolds_resolvesNothing() {
+        var fixture = fixture(true, singleReplica());
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        stallPartition(fixture, 0);
+        fixture.backfill().reconcileStalled();
+        settled(fixture.backfill().backfill("s", 1));
+
+        assertThat(alarm.raised()).hasSize(1);
+        assertThat(alarm.resolved()).isEmpty();
+    }
+
+    /// #2960: ownership moved to another node (the committed record names it): this node no longer catches up as owner, so the warning ends
+    /// without a round.
+    @Test
+    void reconcileStalled_afterOwnershipMovesAway_resolvesTheWarning() {
+        var fixture = fixture(false, singleReplica());
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        stallPartition(fixture, 0);
+        committedOwners = (_, _) -> Option.some(new CommittedStreamOwnerSource.CommittedOwner(SOURCE, E1));
+        fixture.backfill().reconcileStalled();
+
+        assertThat(alarm.raised()).hasSize(1);
+        assertThat(openWarnings(alarm)).isEmpty();
+    }
+
+    /// #2960: a quarantine ends the state with no round at all.
+    @Test
+    void reconcileStalled_afterAQuarantine_resolvesTheWarning() {
+        var quarantine = new FlagQuarantine();
+        var fixture = fixture(false, singleReplica(), owner.alignedRecovery(), quarantine);
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        stallPartition(fixture, 0);
+        quarantine.on();
+        fixture.backfill().reconcileStalled();
+
+        assertThat(alarm.raised()).hasSize(1);
+        assertThat(openWarnings(alarm)).isEmpty();
+    }
+
+    /// #2960: a destroyed stream ends the state with no round at all.
+    @Test
+    void reconcileStalled_afterTheStreamIsDestroyed_resolvesTheWarning() {
+        var fixture = fixture(false, singleReplica());
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        stallPartition(fixture, 0);
+        streamAlive.set(false);
+        fixture.backfill().reconcileStalled();
+
+        assertThat(alarm.raised()).hasSize(1);
+        assertThat(openWarnings(alarm)).isEmpty();
+    }
+
+    /// #2960 F2 (verifier probe P2, RED at bcc2102db6): the stream is destroyed while the round that ends all-stalled is in flight. The raise
+    /// is refused for a stream that no longer exists, so no warning is ever open for it: there is no zombie to bound.
+    @Test
+    void probe_streamDestroyedWhileTheStallingRoundIsInFlight_raisesNothing() {
+        var fixture = fixture(true, singleReplica());
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS - 1).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+        assertThat(alarm.raised()).as("control: not yet raised after MAX-1 rounds").isEmpty();
+
+        probeGate = Promise.promise();
+        var inFlight = fixture.backfill().backfill("s", 0);
+
+        assertThat(inFlight.isResolved()).as("control: the round is held in its source read").isFalse();
+        streamAlive.set(false);
+        fixture.backfill().clearStalledOf("s");
+        probeGate.resolve(Result.unitResult());
+
+        var late = settled(inFlight);
+
+        probeGate = null;
+
+        assertThat(outcomeOf(late)).as("control: the late round did reach the all-stalled state").isEqualTo(BackfillError.General.SOURCE_STALLED);
+        assertThat(openWarnings(alarm)).as("no zombie for a destroyed stream").isEmpty();
+        assertThat(alarm.raised()).as("the raise was refused, not raised and resolved").isEmpty();
+    }
+
+    /// #2960: a gate catch-up that FAILS leaves the partition all-stalled, so its warning stays open.
+    @Test
+    void registryPath_aFailedGateCatchUpAfterAllStalled_keepsTheWarning() {
+        var fixture = fixture(false, singleReplica());
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        stallPartition(fixture, 0);
+        assertThat(alarm.raised()).hasSize(1);
+
+        var failed = settled(fixture.backfill().catchUpOwnerFrom("s", 0, SOURCE, 15L));
+
+        assertThat(failed.isFailure()).as("control: the source still answers short: %s", failed).isTrue();
+        assertThat(alarm.resolved()).as("a failed catch-up ends nothing").isEmpty();
+    }
+
+    /// #2960: a quarantine of one partition resolves that partition's warning only; another partition's stays open.
+    @Test
+    void registryPath_aQuarantineOfOnePartition_resolvesOnlyItsOwnWarning() {
+        var quarantine = new PartitionQuarantine(0);
+        var fixture = fixture(false, singleReplica(), owner.alignedRecovery(), quarantine);
+        var alarm = recordingAlarm(fixture);
+
+        fixture.registry().registerReplica("s", 1, SELF);
+        fixture.registry().registerReplica("s", 1, SOURCE);
+        fixture.registry().updateWatermark("s", 1, SOURCE, 15L, ReplicationState.CAUGHT_UP);
+        pageCaps.put(SOURCE, 0L);
+        stallPartition(fixture, 0);
+        stallPartition(fixture, 1);
+        assertThat(alarm.raised()).as("control: both partitions are all-stalled").hasSize(2);
+
+        quarantine.on();
+        settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(alarm.resolved()).as("only partition 0's warning").hasSize(1);
+        assertThat(openWarnings(alarm)).singleElement().extracting(OwnerActivation.ActivationBlock::partition).isEqualTo(1);
+    }
+
+    /// Quarantines one partition once switched on.
+    private static final class PartitionQuarantine implements QuarantineView {
+        private final AtomicBoolean on = new AtomicBoolean();
+        private final int partition;
+
+        PartitionQuarantine(int partition) {
+            this.partition = partition;
+        }
+
+        void on() {
+            on.set(true);
+        }
+
+        @Override
+        public Option<Long> quarantinedAt(String streamName, int partition) {
+            return on.get() && partition == this.partition ? Option.some(5L) : Option.none();
+        }
+
+        @Override
+        public <T> Option<T> unlessQuarantined(String streamName, int partition, Supplier<T> promotion) {
+            return on.get() && partition == this.partition ? Option.none() : Option.some(promotion.get());
+        }
+    }
+
     /// Quarantines the partition once switched on.
     private static final class FlagQuarantine implements QuarantineView {
         private final AtomicBoolean on = new AtomicBoolean();
@@ -945,9 +1151,11 @@ class OwnerCatchupCommittedLineageTest {
                                                            SELF,
                                                            TimeSpan.timeSpan(Long.MAX_VALUE).nanos(),
                                                            () -> List.of(SELF),
-                                                           CommittedStreamOwnerSource.none(),
+                                                           (stream, partition) -> committedOwners.committedOwner(stream, partition),
                                                            ReplicationReceiveHandler.NO_DURABILITY_BARRIER,
                                                            quarantine);
+
+        backfill.streamExists(_ -> streamAlive.get());
 
         return new Replicas(registry, backfill, served);
     }
@@ -975,6 +1183,12 @@ class OwnerCatchupCommittedLineageTest {
     }
 
     private Promise<CatchupResponse> serve(Replica replica, CatchupRequest request, List<NodeId> served) {
+        var gate = probeGate;
+
+        return gate == null ? serveNow(replica, request, served) : gate.flatMap(_ -> serveNow(replica, request, served));
+    }
+
+    private Promise<CatchupResponse> serveNow(Replica replica, CatchupRequest request, List<NodeId> served) {
         served.add(replica.node());
 
         if (failReads.getAndDecrement() > 0) {

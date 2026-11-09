@@ -12,7 +12,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import org.pragmatica.consensus.NodeId;
@@ -172,6 +174,9 @@ public final class PartitionBackfill {
     /// #1555 sticky ownership owner source; default: no committed owner, pure HRW (see [#hrwOwner]).
     private volatile OwnerResolver ownerResolver = (_, _) -> Option.none();
     private volatile OwnerActivation.BlockAlarm blockAlarm = _ -> Unit.unit();
+    /// #2960: whether a stream still exists on this node; read under [#oversizedOrder] by [#raiseStalled] and [#reconcileStalled], so a
+    /// destroyed stream raises nothing. Default: every stream exists (until wired).
+    private volatile Predicate<String> streamExists = _ -> true;
     /// Whether a node is named in a partition's COMMITTED in-sync set (#2080); default: never, so no escape (see [#committedIsr]).
     private volatile CommittedIsr committedIsr = (_, _, _) -> false;
     /// How long a co-replica must stay unreachable before an ISR-named candidate goes ahead without it (#2080, `[streaming]
@@ -337,6 +342,7 @@ public final class PartitionBackfill {
         this.inFlight = shared.inFlight;
         this.ownerResolver = shared.ownerResolver;
         this.blockAlarm = shared.blockAlarm;
+        this.streamExists = shared.streamExists;
         this.reportedOversized = shared.reportedOversized;
         this.oversizedOrder = shared.oversizedOrder;
         this.current = current;
@@ -877,6 +883,7 @@ public final class PartitionBackfill {
     }
 
     private Promise<Long> runBackfill(String streamName, int partition, boolean mayRepair) {
+        reconcileStalled();
         var replicas = registry.replicasFor(streamName, partition);
 
         if (isQuarantined(streamName, partition)) {
@@ -1694,6 +1701,13 @@ public final class PartitionBackfill {
         this.blockAlarm = alarm;
     }
 
+    /// Late-bind where a stream's existence is read (#2960): the all-stalled warning is raised only for a stream that exists, and
+    /// [#reconcileStalled] resolves it for one that does not. Set once at wiring.
+    @Contract
+    public void streamExists(Predicate<String> exists) {
+        this.streamExists = exists;
+    }
+
     /// Whether `node` is named in the COMMITTED in-sync set of `(stream, partition)` (`isrVersion > 0` and the set contains it).
     @FunctionalInterface
     public interface CommittedIsr {
@@ -1807,12 +1821,18 @@ public final class PartitionBackfill {
         var block = new OwnerActivation.ActivationBlock.CatchupStalled(streamName, partition, MAX_STALLED_ROUNDS);
         // `current` is read INSIDE the monitor, as in [#oversizedPeer]: a superseded flight must not raise after its successor's clear.
         synchronized (oversizedOrder) {
-            if (current.getAsBoolean() && !block.equals(reportedStalled.put(partitionKey(streamName, partition), block))) {
+            if (mayRaiseStalled(streamName) && !block.equals(reportedStalled.put(partitionKey(streamName, partition),
+                                                                                 block))) {
                 blockAlarm.raise(block);
             }
         }
 
         return Unit.unit();
+    }
+
+    /// Inside the monitor: the flight is the current one and the stream still exists (#2960 F2), so a destroyed stream is never given a report.
+    private boolean mayRaiseStalled(String streamName) {
+        return current.getAsBoolean() && streamExists.test(streamName);
     }
 
     /// The all-stalled state no longer holds (#2960): a source advanced the owner, the round activated it, no source answered ahead of it any more, or this node is no longer the partition's owner.
@@ -1825,6 +1845,55 @@ public final class PartitionBackfill {
         }
 
         return Unit.unit();
+    }
+
+    /// Level trigger of the all-stalled warning (#2960). The guarantee: after a call returns, no open report is for a partition that is not
+    /// all-stalled NOW and held by this node, whatever route took it out of that state. A report stays open only while the stream exists, this
+    /// node is still a registered replica of the partition and its owner, the partition is not quarantined, and some source's stall counter is
+    /// at [#MAX_STALLED_ROUNDS]. Mechanism: every open report is re-derived from live state, so no exit has to be enumerated. Run on every
+    /// backfill round, every reconcile pass of the replica set (ownership and membership changes) and every redrive tick; raising stays
+    /// idempotent and dedup'd. A raise racing a replica-set removal can outlive the removal until the next of those, at most one redrive tick.
+    /// The ownership and quarantine reads happen before the monitor, which stays a leaf: a flip between them and the monitor costs at worst a
+    /// resolve that the next stalled round raises again, never a report left open.
+    public Unit reconcileStalled() {
+        var notHeld = reportedStalled.keySet().stream().filter(this::isNotHeldAsOwner).collect(Collectors.toSet());
+
+        synchronized (oversizedOrder) {
+            reportedStalled.keySet()
+                           .stream()
+                           .filter(key -> notHeld.contains(key) || !isStalledNow(key))
+                           .toList()
+                           .forEach(key -> clearStalled(key.streamName(),
+                                                        key.partition()));
+        }
+
+        return Unit.unit();
+    }
+
+    private boolean isNotHeldAsOwner(PartitionKey key) {
+        return isQuarantined(key.streamName(), key.partition()) || !isSelfOwner(key.streamName(), key.partition());
+    }
+
+    private boolean isStalledNow(PartitionKey key) {
+        return streamExists.test(key.streamName())
+               && isSelfReplica(key)
+               && hasStalledSource(key);
+    }
+
+    private boolean isSelfReplica(PartitionKey key) {
+        return registry.replicasFor(key.streamName(),
+                                    key.partition())
+                       .stream()
+                       .anyMatch(descriptor -> descriptor.nodeId()
+                                                         .equals(self));
+    }
+
+    private boolean hasStalledSource(PartitionKey key) {
+        return Option.option(stalledRounds.get(key))
+                     .map(rounds -> rounds.values()
+                                          .stream()
+                                          .anyMatch(count -> count >= MAX_STALLED_ROUNDS))
+                     .or(false);
     }
 
     /// The stream was destroyed (#2960): no partition of it can end its all-stalled state by a later round, so each open report is resolved.
