@@ -4,11 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http;
 
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.storage.Anchor;
 import org.pragmatica.storage.AnchorName;
 import org.pragmatica.storage.BlockId;
@@ -28,6 +31,7 @@ import org.pragmatica.storage.TierLevel;
 final class DelayedDeleteTier implements StorageTier {
     private final StorageTier delegate;
     private final AtomicLong delayMillis = new AtomicLong();
+    private final AtomicBoolean failDeletes = new AtomicBoolean();
 
     DelayedDeleteTier(StorageTier delegate) {
         this.delegate = delegate;
@@ -35,6 +39,11 @@ final class DelayedDeleteTier implements StorageTier {
 
     void delayBy(long millis) {
         delayMillis.set(millis);
+    }
+
+    /// Once armed, every delete ends in a failure after the delay instead of removing the block (#2921).
+    void failDeletes() {
+        failDeletes.set(true);
     }
 
     @Override
@@ -56,7 +65,13 @@ final class DelayedDeleteTier implements StorageTier {
 
     private void deleteAfter(long delay, BlockId id, Promise<Unit> promise) {
         sleep(delay);
-        delegate.delete(id).onResult(promise::resolve);
+        deleteOutcome(id).onResult(promise::resolve);
+    }
+
+    private Promise<Unit> deleteOutcome(BlockId id) {
+        return failDeletes.get()
+               ? Causes.cause("the delete failed").promise()
+               : delegate.delete(id);
     }
 
     private static void sleep(long millis) {
