@@ -302,9 +302,9 @@ class EmberCheckpointReclaimTest {
         var leaderNode = nodes.stream().filter(node -> node.self().id().equals(leader)).findFirst().orElseThrow();
 
         assertThat(leaderNode.clusterTopologyManager()
-                             .map(ctm -> ctm.setAutoHealEnabled(false, "NT-63 arm b").await(SAVE_BOUND).isSuccess())
-                             .or(false)).as("auto-heal is disabled for arm b's cluster")
-                                        .isTrue();
+                             .map(ctm -> ctm.setAutoHealEnabled(false, "NT-63 arm b").await(SAVE_BOUND).fold(Cause::message, _ -> "disabled"))
+                             .or("no cluster topology manager")).as("auto-heal is disabled for arm b's cluster")
+                                                                .isEqualTo("disabled");
         awaitCondition("every node reads auto-heal disabled", REPLICATION_BUDGET_MS, () -> nodes.stream().allMatch(EmberCheckpointReclaimTest::autoHealDisabled));
     }
 
