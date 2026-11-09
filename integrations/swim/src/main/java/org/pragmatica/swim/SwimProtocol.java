@@ -3296,8 +3296,7 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     /// Only a voter's quorum loss excludes: an `observer` report (passive by role) reads as no loss (#2936 ruling).
     private static boolean reportsQuorumLoss(Map<String, String> labels) {
-        return QuorumReport.LOST.wireValue()
-                                .equals(Option.option(labels.get(LABEL_QUORUM)));
+        return QuorumReport.LOST.wireValue().equals(Option.option(labels.get(LABEL_QUORUM)));
     }
 
     private static Map<String, String> gossipLabels(Map<String, String> labels) {
@@ -3810,9 +3809,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     public Unit reportSelfQuorum(QuorumReport report) {
         synchronized (selfQuorumReportLock) {
             var next = withQuorumReport(selfLabels,
-                                        report.wireValue()
-                                              .map(value -> Map.of(LABEL_QUORUM, value))
-                                              .or(Map.of()));
+                                        report.wireValue().map(value -> Map.of(LABEL_QUORUM, value)).or(Map.of()));
 
             if (next.equals(selfLabels)) {
                 return Unit.unit();

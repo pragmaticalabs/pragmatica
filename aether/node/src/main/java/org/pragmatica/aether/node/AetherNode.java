@@ -4458,7 +4458,7 @@ public interface AetherNode extends ManageableNode {
     static void routeQuorumDisappearedToDrain(ClusterStateNotification notification,
                                               AtomicReference<QuorumLossDetector> quorumLossDetectorRef) {
         Option.option(quorumLossDetectorRef.get()).onPresent(detector -> detector.onConsensusEdge(notification.state() != ClusterStateNotification.State.PASSIVE,
-                                                                                                 consensusRole(notification)));
+                                                                                                  consensusRole(notification)));
     }
 
     private static QuorumLossDetector.ConsensusRole consensusRole(ClusterStateNotification notification) {

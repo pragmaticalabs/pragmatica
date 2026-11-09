@@ -17,6 +17,7 @@ package org.pragmatica.swim;
 
 import org.pragmatica.lang.Option;
 
+
 /// A node's own report of its relation to the quorum, gossiped on its SWIM self-ALIVE (#2936).
 ///
 /// The report separates ROLE from quorum LOSS, so peers never conflate them (CTO ruling on PR #2940): the exclusion
@@ -30,13 +31,10 @@ public enum QuorumReport {
     HELD(Option.none()),
     LOST(Option.some("lost")),
     OBSERVER(Option.some("observer"));
-
     private final Option<String> wireValue;
-
     QuorumReport(Option<String> wireValue) {
         this.wireValue = wireValue;
     }
-
     /// The gossiped label value; none for [#HELD], which travels as the label's absence.
     public Option<String> wireValue() {
         return wireValue;

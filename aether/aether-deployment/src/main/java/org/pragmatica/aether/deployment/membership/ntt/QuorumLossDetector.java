@@ -286,7 +286,6 @@ public final class QuorumLossDetector {
         VOTER,
         OBSERVER,
         UNCHANGED;
-
         boolean observerAfter(boolean observerBefore) {
             return switch (this) {
                 case VOTER -> false;
@@ -425,7 +424,9 @@ public final class QuorumLossDetector {
         var report = currentReport();
 
         if (report != reported) {
-            log.info("Quorum report (#2936): {} -> {}", reported, report);
+            log.info("Quorum report (#2936): {} -> {}",
+                     reported,
+                     report);
             reported = report;
             reportListener.accept(report);
         }
