@@ -202,6 +202,11 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     /// reports a confirmation factor of 0 here; [StreamPartitionManager#publishForwarded] then materializes it from the
     /// committed config and checks THAT config's floor before appending (#1290 review M1), so the refusal
     /// is clean on that path too.
+    ///
+    /// #2952: this runs on the transport's event loop, and nothing it calls waits there for a commit or an fsync: the
+    /// lazy materialization's bounded commit wait and the owner append's group-commit fsync resolve the promise this
+    /// handler answers from, so a second forward is served while the first one's commit is still in flight. The append
+    /// itself (ordered section, WAL frame write) still runs on the calling thread.
     @Contract
     @Override
     @SuppressWarnings("JBCT-RET-01")
@@ -212,7 +217,6 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                           request.timestamp(),
                                           partitionManager.confirmationFactorFor(request.streamName()) - 1,
                                           request.systemWriter())
-                        .async()
                         .flatMap(offset -> awaitMinSync(request, offset))
                         .onSuccess(offset -> sendSuccessResponse(request, offset))
                         .onFailure(cause -> sendPublishFailure(request, cause));

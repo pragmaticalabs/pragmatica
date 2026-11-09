@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.ember;
 
+import java.lang.reflect.Method;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -12,10 +13,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
 import org.junit.jupiter.api.AfterEach;
@@ -30,15 +33,19 @@ import org.pragmatica.aether.node.NodeCodecs;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.quic.QuicClusterNetwork;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Lazy;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.storage.AppendLog;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
@@ -138,6 +145,91 @@ class EmberFirstPublishRefusedCatchupTest {
 
         for (var i = 1; i < 5; i++) {
             assertThat(governorVerdict(publishRetryingRefusal(governor, "first-" + i))).as("publish first-%d", i).startsWith("2");
+        }
+    }
+
+    /// #2952 (CI run 42564693417): the owner's and a replica's KV dispatchers were held ~670 ms by a WAL-root walk (the startup
+    /// snapshot of the stream lives, taken while another stream's life was adopted), so the owner had not applied this stream's
+    /// config when the first publish was forwarded to it. The owner then took the publish auto-create path and parked its
+    /// forward-handling thread in the 2 s config-commit wait; with CI load on top, the entry's 2.5 s forward hop expired first:
+    /// 503 "outcome unknown". Here every node except the leader walks its WAL root [#SLOW_WALK_MS] slowly on its next adoption
+    /// (the decoy's, created just before this stream, as in CI). Since #2952 the walk runs off the dispatcher, the config applies
+    /// on time, and the first publish is answered well inside [#FIRST_PUBLISH_BOUND_MS]; before, it took ~2.2 s at any walk length.
+    @Test
+    @Timeout(600)
+    void firstPublish_toANewCf2Stream_isAnsweredPromptly_whenTheNonLeadersWalkTheWalRootSlowly() {
+        cluster = EmberTestPorts.startedCluster(PORTS, this::threeNodes, START_BOUND);
+        awaitLeader();
+        var leader = cluster.status().leaderId();
+        var refusedBy = ConcurrentHashMap.<String>newKeySet();
+
+        cluster.allNodes().forEach(node -> refuseFirstCatchupRead(node, refusedBy, managementReplies));
+        cluster.allNodes().stream().filter(node -> !node.self().id().equals(leader)).forEach(EmberFirstPublishRefusedCatchupTest::slowWalRootWalk);
+
+        assertThat(post(leaderPort(), "/api/v1/streams/" + NAMESPACE + "/decoy0/" + VERSION, "{\"partitions\":1}"))
+            .as("create decoy0, whose adoption runs the slow walk")
+            .startsWith("2");
+        assertThat(post(leaderPort(), "/api/v1/streams/" + NAMESPACE + "/" + NAME + "/" + VERSION, "{\"partitions\":1}"))
+            .as("create %s", NAME)
+            .startsWith("2");
+        var owner = awaitFullIsr().owner().id();
+        var governor = streamingGovernor();
+        var startedAt = System.nanoTime();
+        var response = publishRetryingRefusal(governor, "first-0");
+        var elapsedMs = (System.nanoTime() - startedAt) / 1_000_000L;
+
+        System.out.printf("SLOW-WALK stream=%s leader=%s owner=%s governor=%s entry=%s refusedBy=%s slowWalks=%d firstPublishMs=%d -> %s%n",
+                          ENGINE_KEY, leader, owner, governor, entryNode(governor).id(), refusedBy, SLOW_WALKS.get(), elapsedMs,
+                          response.lines().findFirst().orElse(""));
+        assertThat(SLOW_WALKS.get()).as("control: the non-leaders walked their WAL roots slowly").isGreaterThanOrEqualTo(2);
+        assertThat(governorVerdict(response)).as("the first publish is acknowledged, not 503 outcome unknown").startsWith("2");
+        assertThat(elapsedMs).as("the first publish is answered without waiting out the owner's 2 s config-commit wait").isLessThan(FIRST_PUBLISH_BOUND_MS);
+    }
+
+    private static final long SLOW_WALK_MS = 700L;
+    private static final long FIRST_PUBLISH_BOUND_MS = 1_500L;
+    private static final AtomicInteger SLOW_WALKS = new AtomicInteger();
+
+    /// Swaps the node's WAL opener for one whose listing takes [#SLOW_WALK_MS], and resets the startup snapshot so the next
+    /// adoption takes it again, through the same `scanWalDirectories` production runs.
+    @SuppressWarnings({"JBCT-EX-01", "unchecked"})
+    private static void slowWalRootWalk(AetherNode node) {
+        try {
+            var manager = node.streamPartitionManager();
+            var logsField = StreamPartitionManager.class.getDeclaredField("logs");
+            var snapshotField = StreamPartitionManager.class.getDeclaredField("walDirectoriesAtStart");
+            var scan = StreamPartitionManager.class.getDeclaredMethod("scanWalDirectories");
+
+            logsField.setAccessible(true);
+            snapshotField.setAccessible(true);
+            scan.setAccessible(true);
+            var logs = (Option<AppendLog.Opener>) logsField.get(manager);
+
+            assertThat(logs.isPresent()).as("fixture: the node has a stream WAL").isTrue();
+            logsField.set(manager, logs.map(EmberFirstPublishRefusedCatchupTest::slowListing));
+            snapshotField.set(manager, Lazy.lazy(() -> invokeScan(scan, manager)));
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("StreamPartitionManager seam moved: " + e, e);
+        }
+    }
+
+    private static AppendLog.Opener slowListing(AppendLog.Opener opener) {
+        return AppendLog.Opener.opener(opener::open, opener::inspect, () -> listSlowly(opener));
+    }
+
+    private static Result<List<String>> listSlowly(AppendLog.Opener opener) {
+        SLOW_WALKS.incrementAndGet();
+        sleepQuietly(SLOW_WALK_MS);
+
+        return opener.listLogs();
+    }
+
+    @SuppressWarnings({"JBCT-EX-01", "unchecked"})
+    private static List<String> invokeScan(Method scan, StreamPartitionManager manager) {
+        try {
+            return (List<String>) scan.invoke(manager);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError(e);
         }
     }
 

@@ -81,7 +81,7 @@ class SystemStreamForwardedWriteTest {
     void ownerAppend_withoutTheSystemMark_isRefused_singleAndBatch() {
         var single = manager.publishLocalAtFloor(SYSTEM, 0, PAYLOAD, 1L, 0);
         var batch = manager.publishLocalBatchAtFloor(SYSTEM, 0, List.of(PAYLOAD), 1L, 0);
-        var forwarded = manager.publishForwarded(SYSTEM, 0, PAYLOAD, 1L, 0);
+        var forwarded = manager.publishForwarded(SYSTEM, 0, PAYLOAD, 1L, 0).await();
 
         for (var result : List.of(single, batch, forwarded)) {
             assertThat(result.isFailure()).as("result=%s", result).isTrue();
