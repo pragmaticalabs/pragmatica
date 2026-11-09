@@ -91,9 +91,9 @@ public class PatchDeserializer extends ValueDeserializer<Patch<?>> {
 
     /// Whether the property's member belongs to a record.
     static boolean isRecordMember(BeanProperty property) {
-        return option(property.getMember()).map(member -> member.getDeclaringClass()
-                                                                .isRecord())
-                     .or(false);
+        return option(property.getMember()).filter(member -> member.getDeclaringClass()
+                                                                   .isRecord())
+                     .isPresent();
     }
 
     /// The refusal message: [#POSITION], naming the property and its owning type when there is one (the whole

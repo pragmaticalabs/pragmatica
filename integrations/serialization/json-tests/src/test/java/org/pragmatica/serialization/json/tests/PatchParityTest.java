@@ -252,6 +252,14 @@ class PatchParityTest {
         assertRefused(VALUE_OBJECTS.writeAsString(value));
     }
 
+    // A Patch met only at write time, behind an Object-typed member, is refused naming that member.
+    @Test
+    void jackson_patchBehindAnObjectMember_refusalNamesTheMember() {
+        var message = failureMessage(VALUE_OBJECTS.writeAsString(new ObjectMember(Patch.nullValue())));
+
+        assertTrue(message.contains(POSITION + ": property 'x' of " + ObjectMember.class.getName()), message);
+    }
+
     @Test
     void jackson_patchInContainersDeep_refusedOnRead() {
         assertRefused(VALUE_OBJECTS.readBytes(bytes("{\"x\":null}"), ListOfListOfPatch.class));

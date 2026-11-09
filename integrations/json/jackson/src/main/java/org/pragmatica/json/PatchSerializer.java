@@ -84,9 +84,9 @@ public class PatchSerializer extends ValueSerializer<Patch<?>> {
     // A field or a getter of a plain class, or an extra getter of a record, is no component: refused as on read.
     private static boolean isComponentOfItsRecord(BeanProperty property) {
         return option(property.getMember()).filter(_ -> PatchDeserializer.isRecordMember(property))
-                     .map(member -> isComponentName(member.getDeclaringClass(),
-                                                    member.getName()))
-                     .or(false);
+                     .filter(member -> isComponentName(member.getDeclaringClass(),
+                                                       member.getName()))
+                     .isPresent();
     }
 
     private static boolean isComponentName(Class<?> owner, String name) {
