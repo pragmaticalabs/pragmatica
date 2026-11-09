@@ -13,12 +13,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.pragmatica.aether.resource.SpiResourceProvider.Provisioned;
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Promise.promise;
+
 
 /// The node's shared pools (#2973): one entry per share key, holding the pool and its holders in ONE value.
 ///
@@ -54,6 +57,7 @@ final class SharedPools {
         }
 
         /// The entry without `scope`, or `null` when no holder would remain (`compute` removes the key then).
+        @NullReturn
         SharedEntry without(String scope) {
             var next = new HashMap<>(holders);
 
@@ -105,7 +109,6 @@ final class SharedPools {
         var admission = new Admission();
 
         entries.compute(key, (_, current) -> admit(current, scope, label, admission));
-
         if (admission.refused) {
             return ResourceProvisioningError.ProviderClosed.INSTANCE.promise();
         }
@@ -122,7 +125,6 @@ final class SharedPools {
                        : evicting;
 
         logAdmission(admission, label, scope);
-
         if (admission.created) {
             provision.apply()
                      .onSuccess(_ -> LOG.log(System.Logger.Level.INFO, "opened shared pool {0} for {1}", label, scope))
@@ -132,6 +134,9 @@ final class SharedPools {
         return attached.flatMap(_ -> slot);
     }
 
+    /// The `compute` mapping function: refuses after node stop (keeping whatever is there, absent included), inserts
+    /// the entry when absent, otherwise joins it.
+    @NullReturn
     private SharedEntry admit(SharedEntry current, String scope, String label, Admission admission) {
         if (closed.get()) {
             admission.refused = true;
@@ -139,27 +144,30 @@ final class SharedPools {
             return current;
         }
 
-        if (current == null) {
-            var slot = Promise.promise();
+        return option(current).fold(() -> inserted(scope, label, admission),
+                                    present -> joined(present, scope, admission));
+    }
 
-            admission.created = true;
-            admission.newHolder = true;
-            admission.slot = slot;
-            admission.entry = new SharedEntry(Promise.promise(), Map.of(scope, slot), label);
+    private static SharedEntry inserted(String scope, String label, Admission admission) {
+        var slot = promise();
 
-            return admission.entry;
-        }
+        admission.created = true;
+        admission.newHolder = true;
+        admission.slot = slot;
+        admission.entry = new SharedEntry(promise(), Map.of(scope, slot), label);
 
-        if (current.holders()
-                   .containsKey(scope)) {
-            admission.slot = current.holders()
-                                    .get(scope);
+        return admission.entry;
+    }
+
+    private static SharedEntry joined(SharedEntry current, String scope, Admission admission) {
+        if (current.holders().containsKey(scope)) {
+            admission.slot = current.holders().get(scope);
             admission.entry = current;
 
             return current;
         }
 
-        var slot = Promise.promise();
+        var slot = promise();
 
         admission.newHolder = true;
         admission.slot = slot;
@@ -183,11 +191,16 @@ final class SharedPools {
     /// A failed pool was never opened, so it has nothing to close. Its holders all receive the failure, and the next
     /// acquire opens a fresh pool. Conditional on identity, so it can never evict a newer entry.
     private Unit evictFailed(Object key, Promise<Provisioned<?>> failed) {
-        entries.compute(key, (_, current) -> current != null && current.pool() == failed
-                                             ? null
-                                             : current);
+        entries.compute(key, (_, current) -> unlessFailed(current, failed));
 
         return Unit.unit();
+    }
+
+    /// `null` (the `compute` contract for "remove") when `current` holds the failed pool; otherwise `current` unchanged.
+    @NullReturn
+    private static SharedEntry unlessFailed(SharedEntry current, Promise<Provisioned<?>> failed) {
+        return option(current).filter(entry -> entry.pool() != failed)
+                     .or((SharedEntry) null);
     }
 
     /// Removes `scope` as a holder of `key`; closes the pool when this removed the last holder. Idempotent: a scope that
@@ -200,19 +213,23 @@ final class SharedPools {
         return closeIfCaptured(departure, scope);
     }
 
+    /// The `compute` mapping function of a release: an absent key or a scope that is not a holder is left as it is.
+    @NullReturn
     private static SharedEntry depart(SharedEntry current, String scope, Departure departure) {
-        if (current == null || !current.holders()
-                                       .containsKey(scope)) {
-            return current;
-        }
+        return option(current).filter(entry -> entry.holders()
+                                                    .containsKey(scope))
+                     .fold(() -> current,
+                           entry -> leave(entry, scope, departure));
+    }
 
+    /// The entry without `scope`, or `null` (remove) when `scope` was the last holder; the removed entry is captured.
+    @NullReturn
+    private static SharedEntry leave(SharedEntry current, String scope, Departure departure) {
         var next = current.without(scope);
 
         departure.wasHolder = true;
-        departure.remaining = current.holders()
-                                     .size() - 1;
-
-        if (next == null) {
+        departure.remaining = current.holders().size() - 1;
+        if (current.holders().size() == 1) {
             departure.removed = current;
         }
 
@@ -221,7 +238,7 @@ final class SharedPools {
 
     private Promise<Unit> closeIfCaptured(Departure departure, String scope) {
         return option(departure.removed).map(this::close)
-                                        .or(() -> logDeparture(departure, scope));
+                     .or(() -> logDeparture(departure, scope));
     }
 
     private Promise<Unit> logDeparture(Departure departure, String scope) {
@@ -236,7 +253,9 @@ final class SharedPools {
     private Promise<Unit> close(SharedEntry entry) {
         return entry.pool()
                     .flatMap(closer)
-                    .onSuccess(_ -> LOG.log(System.Logger.Level.INFO, "closed shared pool {0}", entry.label()));
+                    .onSuccess(_ -> LOG.log(System.Logger.Level.INFO,
+                                            "closed shared pool {0}",
+                                            entry.label()));
     }
 
     /// Releases `scope` from every pool it holds.
@@ -244,9 +263,7 @@ final class SharedPools {
         var releases = new ArrayList<Promise<Unit>>();
 
         for (var entry : List.copyOf(entries.entrySet())) {
-            if (entry.getValue()
-                     .holders()
-                     .containsKey(scope)) {
+            if (entry.getValue().holders().containsKey(scope)) {
                 releases.add(release(entry.getKey(), scope));
             }
         }
@@ -259,7 +276,6 @@ final class SharedPools {
     /// release, never a plain `remove(key)`.
     List<Promise<Unit>> closeAll() {
         closed.set(true);
-
         var closes = new ArrayList<Promise<Unit>>();
 
         while (!entries.isEmpty()) {
@@ -274,6 +290,8 @@ final class SharedPools {
         return closes;
     }
 
+    /// The drain's `compute` mapping function: captures the entry and removes it (`null` is the `compute` contract).
+    @NullReturn
     private static SharedEntry drain(SharedEntry current, Departure departure) {
         departure.removed = current;
 
@@ -296,8 +314,7 @@ final class SharedPools {
                     "{0} joined shared pool {1} (holders={2})",
                     scope,
                     label,
-                    admission.entry.holders()
-                                   .size());
+                    admission.entry.holders().size());
         }
 
         return Unit.unit();

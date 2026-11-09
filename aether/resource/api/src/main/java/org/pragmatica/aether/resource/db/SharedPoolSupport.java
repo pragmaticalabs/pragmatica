@@ -14,7 +14,9 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
+
 
 /// What the seven SQL factories share as [org.pragmatica.aether.resource.NodeShareable]s (#2973): the pool's demand on
 /// its server and the PostgreSQL limit probe the node's guard runs after a pool opens.
@@ -23,30 +25,31 @@ public sealed interface SharedPoolSupport {
     /// exists from PostgreSQL 16; `missing_ok` keeps the query valid before it. A unix-socket session has no address, so
     /// it answers an empty string and port 0.
     String PROBE_SQL = "SELECT current_setting('max_connections')::int"
-                       + " - current_setting('superuser_reserved_connections')::int"
-                       + " - coalesce(nullif(current_setting('reserved_connections', true), '')::int, 0) AS available,"
-                       + " coalesce(host(inet_server_addr()), '') AS addr, coalesce(inet_server_port(), 0) AS port";
+                     + " - current_setting('superuser_reserved_connections')::int"
+                     + " - coalesce(nullif(current_setting('reserved_connections', true), '')::int, 0) AS available,"
+                     + " coalesce(host(inet_server_addr()), '') AS addr, coalesce(inet_server_port(), 0) AS port";
 
     /// `warm` is the transport's real warm-up (what it opens at provisioning), `max` its `max_connections`.
-    static PoolDemand poolDemand(DatabaseConnectorConfig config, DatabaseConnectorConfig.Transport transport, int warm) {
+    static PoolDemand poolDemand(DatabaseConnectorConfig config,
+                                 DatabaseConnectorConfig.Transport transport,
+                                 int warm) {
         return PoolDemand.poolDemand(warm,
-                                     config.poolConfig()
-                                           .maxConnections(),
-                                     ServerId.serverId(config.effectiveType(transport)
-                                                             .name(),
+                                     config.poolConfig().maxConnections(),
+                                     ServerId.serverId(config.effectiveType(transport).name(),
                                                        config.effectiveHost(transport),
                                                        config.effectivePort(transport)),
-                                     TimeSpan.fromDuration(config.poolConfig()
-                                                                 .connectionTimeout()
-                                                                 .duration()),
+                                     TimeSpan.fromDuration(config.poolConfig().connectionTimeout().duration()),
                                      endpointLabel(config, transport));
     }
 
     /// `<host>:<port>/<db> (<user>)`: never a password, never a URL that could carry one.
     private static String endpointLabel(DatabaseConnectorConfig config, DatabaseConnectorConfig.Transport transport) {
-        return config.effectiveHost(transport) + ":" + config.effectivePort(transport) + "/"
-               + config.effectiveDatabase(transport) + " (" + config.effectiveUsername(transport)
-                                                                    .or("") + ")";
+        return config.effectiveHost(transport)
+             + ":" + config.effectivePort(transport)
+             + "/" + config.effectiveDatabase(transport)
+             + " (" + config.effectiveUsername(transport)
+                            .or("")
+             + ")";
     }
 
     /// The probe through a [SqlConnector], for PostgreSQL only: other server types have no comparable limit query.
@@ -70,8 +73,7 @@ public sealed interface SharedPoolSupport {
     /// Builds the answer from the probe's three columns; an empty address (a unix socket) is `none()`.
     static ServerProbe serverProbe(int available, String addr, int port) {
         return ServerProbe.serverProbe(available,
-                                       Option.option(addr)
-                                             .filter(value -> !value.isEmpty()),
+                                       option(addr).filter(value -> !value.isEmpty()),
                                        port);
     }
 
@@ -85,7 +87,6 @@ public sealed interface SharedPoolSupport {
         var previous = thread.getContextClassLoader();
 
         thread.setContextClassLoader(owner.getClassLoader());
-
         try {
             return body.get();
         } finally {

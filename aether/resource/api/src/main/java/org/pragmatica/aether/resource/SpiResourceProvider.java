@@ -62,12 +62,10 @@ public final class SpiResourceProvider implements ResourceProvider {
     private final Map<CacheKey, Promise<Provisioned<?>>> promiseCache;
     private final Map<Class<?>, Object> runtimeExtensions;
     private final Fn2<Result<?>, String, Class<?>> configLoader;
-
     /// The [NodeShareable] factories that passed the registration check (D3.3), by identity. A marker that declares
     /// `provision(C, ProvisioningContext)` or `sectionBinder()` is demoted: it stays a per-slice factory.
     private final Set<ResourceFactory<?, ?>> shareable;
     private final List<Class<?>> demoted;
-
     /// The node's shared pools (#2973). A separate map from `promiseCache` by design: an entry here is keyed by the pool's
     /// share key, holds its holders in the same value, and every transition is one per-key `compute` (see [SharedPools]).
     private final SharedPools sharedPools;
@@ -129,9 +127,7 @@ public final class SpiResourceProvider implements ResourceProvider {
     private static boolean declaresContextAccess(Class<?> type) {
         return Option.option(type)
                      .filter(current -> current != Object.class)
-                     .map(current -> Arrays.stream(current.getDeclaredMethods())
-                                           .anyMatch(SpiResourceProvider::isContextAccess)
-                                     || declaresContextAccess(current.getSuperclass()))
+                     .map(current -> Arrays.stream(current.getDeclaredMethods()).anyMatch(SpiResourceProvider::isContextAccess) || declaresContextAccess(current.getSuperclass()))
                      .or(false);
     }
 
@@ -141,8 +137,9 @@ public final class SpiResourceProvider implements ResourceProvider {
 
     private static boolean isContextProvision(Method method) {
         return method.getName()
-                     .equals("provision") && method.getParameterCount() == 2
-               && method.getParameterTypes()[1] == ProvisioningContext.class;
+                     .equals("provision")
+               && method.getParameterCount() == 2
+               && method.getParameterTypes() [1] == ProvisioningContext.class;
     }
 
     private static boolean isSectionBinder(Method method) {
@@ -151,10 +148,10 @@ public final class SpiResourceProvider implements ResourceProvider {
     }
 
     private static Unit warnDemoted(Class<?> type) {
-        System.getLogger(SpiResourceProvider.class.getName())
-              .log(System.Logger.Level.WARNING,
-                   type.getName() + " is marked NodeShareable but declares provision(C, ProvisioningContext) or"
-                   + " sectionBinder(), so its output may depend on the slice: it is treated as a per-slice factory");
+        System.getLogger(SpiResourceProvider.class.getName()).log(System.Logger.Level.WARNING,
+                                                                  type.getName()
+                                                                 + " is marked NodeShareable but declares provision(C, ProvisioningContext) or"
+                                                                 + " sectionBinder(), so its output may depend on the slice: it is treated as a per-slice factory");
 
         return Unit.unit();
     }
@@ -166,7 +163,7 @@ public final class SpiResourceProvider implements ResourceProvider {
 
     private OperatorWarningSink operatorWarningSink() {
         return option(runtimeExtensions.get(OperatorWarningSink.class)).map(OperatorWarningSink.class::cast)
-                                                                      .or(OperatorWarningSink::logOnly);
+                     .or(OperatorWarningSink::logOnly);
     }
 
     private static List<ResourceFactory<?, ?>> discoverFactories() {
@@ -281,10 +278,10 @@ public final class SpiResourceProvider implements ResourceProvider {
 
         return contextOpt.filter(_ -> !UNATTRIBUTED_SCOPE.equals(scope))
                          .flatMap(context -> shareableList(resourceType).map(list -> provideBound(list,
-                                                                                                   resourceType,
-                                                                                                   configSection,
-                                                                                                   context,
-                                                                                                   scope)))
+                                                                                                  resourceType,
+                                                                                                  configSection,
+                                                                                                  context,
+                                                                                                  scope)))
                          .or(() -> provideCached(resourceType, configSection, contextOpt, scope));
     }
 
@@ -373,10 +370,10 @@ public final class SpiResourceProvider implements ResourceProvider {
                                                                                                                  resourceType,
                                                                                                                  configSection,
                                                                                                                  context),
-                                                                                            configSection + "@"
-                                                                                            + shared.demand(config)
-                                                                                                    .endpoint())))
-                                   .or(() -> provideSlicePool(factory, config, resourceType, configSection, context, scope));
+                                                                                            configSection
+                                                                                           + "@" + shared.demand(config)
+                                                                                                         .endpoint())))
+                          .or(() -> provideSlicePool(factory, config, resourceType, configSection, context, scope));
     }
 
     @SuppressWarnings("unchecked")
@@ -411,19 +408,14 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// Provision through `factory` with the bound `config`. A pool of a marked factory registers with the demand guard
     /// once it has opened, and the guard's probe runs detached from this path.
     private <T, C> Promise<Provisioned<?>> provisionBound(ResourceFactory<T, C> factory,
-                                                         C config,
-                                                         Class<T> resourceType,
-                                                         String configSection,
-                                                         Option<ProvisioningContext> context) {
+                                                          C config,
+                                                          Class<T> resourceType,
+                                                          String configSection,
+                                                          Option<ProvisioningContext> context) {
         return invokeProvision(factory, config, context).<Provisioned<?>> map(resource -> Provisioned.provisioned(resource,
                                                                                                                   factory))
-                                                       .mapError(cause -> classifyProvisionFailure(resourceType,
-                                                                                                   configSection,
-                                                                                                   cause))
-                                                       .withSuccess(provisioned -> guardOpened(provisioned,
-                                                                                               factory,
-                                                                                               config,
-                                                                                               configSection));
+                              .mapError(cause -> classifyProvisionFailure(resourceType, configSection, cause))
+                              .withSuccess(provisioned -> guardOpened(provisioned, factory, config, configSection));
     }
 
     @SuppressWarnings("unchecked")
@@ -435,9 +427,8 @@ public final class SpiResourceProvider implements ResourceProvider {
                                                                (T) provisioned.resource(),
                                                                shared,
                                                                shared.demand(config),
-                                                               configSection + "@" + shared.demand(config)
-                                                                                           .endpoint()))
-                                   .or(Unit.unit());
+                                                               configSection + "@" + shared.demand(config).endpoint()))
+                          .or(Unit.unit());
     }
 
     /// The slice a provisioning call belongs to, or [#UNATTRIBUTED_SCOPE] when the caller supplied
@@ -635,7 +626,7 @@ public final class SpiResourceProvider implements ResourceProvider {
 
             if (typed.supports(config)) {
                 return invokeProvision(typed, config, contextOpt).<Provisioned<?>> map(resource -> Provisioned.provisioned(resource,
-                                                                                                                                    typed))
+                                                                                                                           typed))
                                       .mapError(cause -> classifyProvisionFailure(resourceType, configSection, cause));
             }
         }

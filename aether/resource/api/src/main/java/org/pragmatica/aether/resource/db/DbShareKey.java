@@ -10,6 +10,7 @@ import org.pragmatica.lang.Option;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
+
 /// The identity of a shared SQL pool (#2973): the inputs a DB factory's `provision` reads, as EFFECTIVE values.
 ///
 /// - `factoryClass` and `resourceType`: one pool per connector type, so `SqlConnector`, `PgSqlConnector` and jOOQ over one
@@ -67,8 +68,7 @@ public record DbShareKey(Class<?> factoryClass,
         return switch (transport) {
             case JDBC -> config.effectiveJdbcUrl();
             case R2DBC -> config.effectiveR2dbcUrl();
-            case ASYNC -> config.effectiveHost(transport) + ":" + config.effectivePort(transport) + "/"
-                          + config.effectiveDatabase(transport);
+            case ASYNC -> config.effectiveHost(transport) + ":" + config.effectivePort(transport) + "/" + config.effectiveDatabase(transport);
         };
     }
 

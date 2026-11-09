@@ -9,6 +9,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
+
 /// Marks a [ResourceFactory] whose resource one node may share between slices (#2973): SQL datasource pools.
 ///
 /// **What the marker claims.** The factory's output depends only on `C`. It reads no `ProvisioningContext` extension
@@ -29,14 +30,11 @@ public interface NodeShareable<T, C> {
     /// `provision` reads, so an absent default and the same default written explicitly give one key, and any input that
     /// changes the connection gives another. `none()` keeps the resource per slice (`pool_scope = "slice"`).
     Option<Object> shareKey(C config);
-
     /// The handle one holder receives. Its `stop()` and `close()` invoke `release` on the first call only and succeed
     /// without effect on every later call; after the release, every operation fails instead of reaching `pool`.
     T view(T pool, Fn0<Promise<Unit>> release);
-
     /// What a pool built from `config` asks of its server, for the node's connection-demand guard.
     PoolDemand demand(C config);
-
     /// A query reporting how many non-superuser connections `pool`'s server allows, or `none()` when the guard does not
     /// apply to this server type.
     Option<Promise<ServerProbe>> probe(T pool);
@@ -57,7 +55,11 @@ public interface NodeShareable<T, C> {
     /// runs bounded by `probeTimeout` (the pool's connection timeout). `endpoint` labels the pool in logs and never
     /// carries a secret.
     record PoolDemand(int warm, int max, ServerId configured, TimeSpan probeTimeout, String endpoint) {
-        public static PoolDemand poolDemand(int warm, int max, ServerId configured, TimeSpan probeTimeout, String endpoint) {
+        public static PoolDemand poolDemand(int warm,
+                                            int max,
+                                            ServerId configured,
+                                            TimeSpan probeTimeout,
+                                            String endpoint) {
             return new PoolDemand(warm, max, configured, probeTimeout, endpoint);
         }
     }

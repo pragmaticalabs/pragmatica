@@ -13,13 +13,13 @@ import org.jooq.Record;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
+
 /// The demand guard's PostgreSQL limit probe through a [JooqConnector] (#2973): [SharedPoolSupport#PROBE_SQL] as a plain
 /// jOOQ result query.
 public sealed interface JooqSharedPoolSupport {
     static Option<Promise<ServerProbe>> probe(JooqConnector connector) {
         return SharedPoolSupport.isPostgres(connector)
-               ? some(connector.fetchOne(connector.dsl()
-                                                  .resultQuery(SharedPoolSupport.PROBE_SQL))
+               ? some(connector.fetchOne(connector.dsl().resultQuery(SharedPoolSupport.PROBE_SQL))
                                .map(JooqSharedPoolSupport::serverProbe))
                : none();
     }

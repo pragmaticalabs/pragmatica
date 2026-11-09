@@ -19,6 +19,7 @@ import org.jooq.Query;
 import org.jooq.Record;
 import org.jooq.ResultQuery;
 
+
 /// One slice's handle on a node-shared [JooqConnector] pool (#2973).
 ///
 /// `stop()` and `close()` are both declared here, never inherited: the first call releases THIS holder only (the pool

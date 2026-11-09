@@ -68,7 +68,9 @@ public final class R2dbcSqlConnectorFactory implements ResourceFactory<SqlConnec
     /// The warm-up is the transport's real one: the pool opens `min_connections` at provisioning.
     @Override
     public PoolDemand demand(DatabaseConnectorConfig config) {
-        return SharedPoolSupport.poolDemand(config, DatabaseConnectorConfig.Transport.R2DBC, config.poolConfig().minConnections());
+        return SharedPoolSupport.poolDemand(config,
+                                            DatabaseConnectorConfig.Transport.R2DBC,
+                                            config.poolConfig().minConnections());
     }
 
     @Override

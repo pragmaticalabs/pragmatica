@@ -19,10 +19,12 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.utility.warning.OperatorWarnings;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.option;
+
 
 /// The node's datasource connection-demand guard (#2973 §6): after each pool of a [NodeShareable] factory opens, shared
 /// or per-slice, it compares what this node's pools ask of that server with what the server allows. It WARNs and never
@@ -45,14 +47,15 @@ import static org.pragmatica.lang.Option.option;
 final class PoolDemandGuard {
     private static final Logger LOG = LoggerFactory.getLogger(PoolDemandGuard.class);
     private static final String SERVER_FULL_SQLSTATE = "53300";
+
     private static final String TEMPLATE = "Datasource pool demand exceeds what PostgreSQL {} allows {}: this node's pools"
-                                           + " open {} connections at warm-up and up to {} under load across {} pools {};"
-                                           + " the server allows {} non-superuser connections for ALL its clients,"
-                                           + " including other nodes. Pools only: listeners and pinned sessions are not"
-                                           + " counted. Size max_connections (per node per datasource) for this node's peak"
-                                           + " concurrent DB work, keep pools shared (pool_scope = \"node\", the default),"
-                                           + " or raise the server limit. If a connection pooler sits in front, compare"
-                                           + " against its limits instead.";
+                                         + " open {} connections at warm-up and up to {} under load across {} pools {};"
+                                         + " the server allows {} non-superuser connections for ALL its clients,"
+                                         + " including other nodes. Pools only: listeners and pinned sessions are not"
+                                         + " counted. Size max_connections (per node per datasource) for this node's peak"
+                                         + " concurrent DB work, keep pools shared (pool_scope = \"node\", the default),"
+                                         + " or raise the server limit. If a connection pooler sits in front, compare"
+                                         + " against its limits instead.";
 
     /// One open pool: its configured server, its demand and its log label.
     record Registered(ServerId configured, int warm, int max, String label) {}
@@ -76,11 +79,13 @@ final class PoolDemandGuard {
 
     /// Registers the pool `poolId` that just opened and starts its probe, detached.
     <T> Unit opened(Object poolId, T pool, NodeShareable<T, ?> shareable, PoolDemand demand, String label) {
-        pools.put(poolId, new Registered(demand.configured(), demand.warm(), demand.max(), label));
+        pools.put(poolId,
+                  new Registered(demand.configured(), demand.warm(), demand.max(), label));
 
         return shareable.probe(pool)
                         .fold(() -> skipped(label),
-                              probe -> probed(probe.timeout(demand.probeTimeout()), demand.configured()));
+                              probe -> probed(probe.timeout(demand.probeTimeout()),
+                                              demand.configured()));
     }
 
     /// The close funnel's deregistration; a pool that never registered (a failed open) has nothing to remove.
@@ -97,8 +102,7 @@ final class PoolDemandGuard {
     }
 
     private Unit probed(Promise<ServerProbe> probe, ServerId configured) {
-        probe.onSuccess(answer -> answered(configured, answer))
-             .onFailure(cause -> refused(configured, cause));
+        probe.onSuccess(answer -> answered(configured, answer)).onFailure(cause -> refused(configured, cause));
 
         return Unit.unit();
     }
@@ -106,7 +110,9 @@ final class PoolDemandGuard {
     /// Records the answer, then evaluates the answered server's sums.
     Unit answered(ServerId configured, ServerProbe answer) {
         var server = answer.addr()
-                           .map(addr -> ServerId.serverId(configured.type(), addr, answer.port()))
+                           .map(addr -> ServerId.serverId(configured.type(),
+                                                          addr,
+                                                          answer.port()))
                            .or(configured);
 
         aliases.put(configured, server);
@@ -147,8 +153,7 @@ final class PoolDemandGuard {
 
     private Unit raiseRefused(ServerId configured) {
         var server = option(aliases.get(configured)).or(configured);
-        var limit = option(lastAvailable.get(server)).map(Object::toString)
-                                                     .or("unknown");
+        var limit = option(lastAvailable.get(server)).map(Object::toString).or("unknown");
 
         return raise(OperatorWarningCode.DATASOURCE_SERVER_REFUSED_CONNECTION,
                      server,
@@ -170,22 +175,12 @@ final class PoolDemandGuard {
     }
 
     private Demand demandOn(ServerId server) {
-        var onServer = pools.values()
-                            .stream()
-                            .filter(registered -> serverOf(registered).equals(server))
-                            .toList();
+        var onServer = pools.values().stream().filter(registered -> serverOf(registered).equals(server)).toList();
 
-        return new Demand(onServer.stream()
-                                  .mapToInt(Registered::warm)
-                                  .sum(),
-                          onServer.stream()
-                                  .mapToInt(Registered::max)
-                                  .sum(),
+        return new Demand(onServer.stream().mapToInt(Registered::warm).sum(),
+                          onServer.stream().mapToInt(Registered::max).sum(),
                           onServer.size(),
-                          onServer.stream()
-                                  .map(Registered::label)
-                                  .sorted()
-                                  .toList());
+                          onServer.stream().map(Registered::label).sorted().toList());
     }
 
     private ServerId serverOf(Registered registered) {

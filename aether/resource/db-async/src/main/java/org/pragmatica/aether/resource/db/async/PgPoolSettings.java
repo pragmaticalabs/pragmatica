@@ -89,8 +89,7 @@ final class PgPoolSettings {
         return cause instanceof SqlError.ServerError error
                ? DatabaseConnectorError.connectionFailed(error.message(),
                                                          Option.none(),
-                                                         Option.some(error.response()
-                                                                          .code()))
+                                                         Option.some(error.response().code()))
                : cause;
     }
 
