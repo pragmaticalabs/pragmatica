@@ -1072,6 +1072,53 @@ The `override_policy` controls what operators can change at deploy time via blue
 See the [Management API reference](../reference/management-api.md#security-overrides)
 for full details on operator security overrides.
 
+## Injected Parameters
+
+A slice method that is served over HTTP can ask the route for values taken from the request itself, by
+declaring a parameter of one of these types. The route supplies it; it is never bound from the path, query or
+body, and it does not count as the method's request record.
+
+| Parameter type | Supplied value |
+|---|---|
+| `Principal` (`org.pragmatica.aether.http.handler.security`) | the authenticated caller |
+| `SecurityContext` (same package) | the caller's full security context |
+| `RequestHeaders` (`org.pragmatica.aether.http.handler`) | the headers of the request that reached the route |
+
+```java
+@Slice
+public interface UrlShortener {
+    // Path/query/body bound into the record; headers supplied by the route.
+    Promise<ShortUrl> resolve(RequestHeaders headers, ResolveRequest request);
+}
+```
+
+```java
+private Promise<ShortUrl> traced(RequestHeaders headers, ResolveRequest request) {
+    var traceId = headers.first("x-trace-id").or("none");   // Option<String>
+    var accepts = headers.all("accept");                    // List<String>, every value in arrival order
+    ...
+}
+```
+
+- `first(name)` answers an `Option<String>`: empty when the request did not carry the header.
+  `all(name)` answers every value of a repeated header, in arrival order, and an empty list when absent.
+- A comma-joined header value is kept as ONE value and is never split: `Accept: a/1, b/2` is the single value
+  `a/1, b/2`. `all(name)` returns repeated header lines as separate entries, in order.
+- `toString()` keeps the names and prints `<redacted>` for the values of `Authorization`, `Proxy-Authorization`,
+  `Cookie` and `Set-Cookie`, so logging a `RequestHeaders` does not leak credentials. The accessors still return the
+  real values.
+- Names are case-insensitive (RFC 9110 section 5.1); `X-Trace-Id` and `x-trace-id` are the same header.
+  `RequestHeaders` is immutable.
+- The parameter may stand anywhere in the parameter list and may be combined with `Principal` /
+  `SecurityContext`. With any injected parameter the method takes at most one other parameter, its request
+  record; the build refuses a method with two or more.
+- The same declaration works on Aether and on Terra: both serve a slice through the same generated routes.
+- **Headers exist at the HTTP edge only.** The route hands them to the method directly from the request it is
+  serving. Nothing carries them across a slice-to-slice call: when another slice calls a method that declares
+  `RequestHeaders`, that caller supplies the `RequestHeaders` argument like any other, and nothing is added on its
+  behalf. A slice that must pass the headers on does so explicitly. A `null` `RequestHeaders` argument on such a
+  call is sent as empty headers by the generated proxy rather than failing.
+
 ## Securing Your Endpoints
 
 The app HTTP server defaults to `api-key` mode when `security_mode` is omitted from `aether.toml`

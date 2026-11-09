@@ -3,6 +3,7 @@ prefix = "/api/seats"
 [routes]
 getSeat = "GET /{seatId}"
 findSeat = "GET /find?seat"
+getSeatWithHeaders = "GET /with-headers/{seatId}"
 
 [errors]
 default = 500

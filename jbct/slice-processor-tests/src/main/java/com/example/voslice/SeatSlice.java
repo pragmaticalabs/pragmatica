@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package com.example.voslice;
 
+import org.pragmatica.aether.http.handler.RequestHeaders;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Promise;
 
@@ -16,6 +17,8 @@ public interface SeatSlice {
     Promise<SeatResponse> getSeat(GetSeatRequest request);
     // Query param bound to a value object: GET /api/seats/find?seat
     Promise<SeatResponse> findSeat(FindSeatRequest request);
+    // Value-object path param beside RequestHeaders (#2879): GET /api/seats/with-headers/{seatId}
+    Promise<SeatResponse> getSeatWithHeaders(RequestHeaders headers, GetSeatRequest request);
 
     static SeatSlice seatSlice() {
         return new SeatSlice() {
@@ -31,6 +34,12 @@ public interface SeatSlice {
                                               .map(id -> new SeatResponse(id.value().toString(),
                                                                           "found"))
                                               .or(new SeatResponse("none", "absent")));
+            }
+
+            @Override
+            public Promise<SeatResponse> getSeatWithHeaders(RequestHeaders headers, GetSeatRequest request) {
+                return Promise.success(new SeatResponse(request.seatId().value().toString(),
+                                                        headers.first("x-probe").or("none")));
             }
         };
     }

@@ -134,6 +134,7 @@ SHAPE org.pragmatica.aether.http.handler.FileHandle (field:java.lang.String,file
 SHAPE org.pragmatica.aether.http.handler.HttpRequestContext (path:java.lang.String,method:java.lang.String,queryParams:java.util.Map<java.lang.String, java.util.List<java.lang.String>>,headers:java.util.Map<java.lang.String, java.util.List<java.lang.String>>,body:byte[],trailers:java.util.Map<java.lang.String, java.util.List<java.lang.String>>,requestId:java.lang.String,security:org.pragmatica.aether.http.handler.security.SecurityContext,upload:org.pragmatica.lang.Option<org.pragmatica.aether.http.handler.UploadHandle>)
 SHAPE org.pragmatica.aether.http.handler.HttpResponseData (statusCode:int,headers:java.util.Map<java.lang.String, java.lang.String>,body:byte[])
 SHAPE org.pragmatica.aether.http.handler.ObjectHandle (namespace:java.lang.String,id:java.lang.String,manifest:java.lang.String,size:long,digest:java.lang.String)
+SHAPE org.pragmatica.aether.http.handler.RequestHeaders (fields:java.util.Map<java.lang.String, java.util.List<java.lang.String>>)
 SHAPE org.pragmatica.aether.http.handler.UploadHandle (files:java.util.List<org.pragmatica.aether.http.handler.FileHandle>,fields:java.util.Map<java.lang.String, java.util.List<java.lang.String>>)
 SHAPE org.pragmatica.aether.http.handler.security.Principal (value:java.lang.String)
 SHAPE org.pragmatica.aether.http.handler.security.Role (value:java.lang.String)
@@ -566,6 +567,7 @@ TAG  org.pragmatica.aether.http.handler.FileHandle 2891
 TAG  org.pragmatica.aether.http.handler.HttpRequestContext 515
 TAG  org.pragmatica.aether.http.handler.HttpResponseData 516
 TAG  org.pragmatica.aether.http.handler.ObjectHandle 2890
+TAG  org.pragmatica.aether.http.handler.RequestHeaders 523
 TAG  org.pragmatica.aether.http.handler.UploadHandle 2892
 TAG  org.pragmatica.aether.http.handler.security.AuthorizationRole 517
 TAG  org.pragmatica.aether.http.handler.security.Principal 518

@@ -56,6 +56,7 @@ public record MethodModel(String name,
     private static final String RATE_GUARD_TYPE = "org.pragmatica.aether.slice.RateGuard";
     private static final String PRINCIPAL_TYPE = "org.pragmatica.aether.http.handler.security.Principal";
     private static final String SECURITY_CONTEXT_TYPE = "org.pragmatica.aether.http.handler.security.SecurityContext";
+    public static final String REQUEST_HEADERS_TYPE = "org.pragmatica.aether.http.handler.RequestHeaders";
 
     public MethodModel {
         interceptors = List.copyOf(interceptors);
@@ -149,6 +150,13 @@ public record MethodModel(String name,
         return hasReactiveOfCategory("config-update");
     }
 
+    /// THE injected-parameter predicate (#2879): a parameter of one of these types is supplied by the generated route
+    /// from the request that reached it, not bound from the request's path, query or body. Every question of the form
+    /// "is this a business parameter?" is answered here, so a new injectable type is added in one place.
+    public static boolean isInjectedParam(MethodParameterInfo param) {
+        return isSecurityParam(param) || isRequestHeadersParam(param);
+    }
+
     /// Check if a parameter is a security injection type (Principal or SecurityContext).
     public static boolean isSecurityParam(MethodParameterInfo param) {
         var typeName = param.type().toString();
@@ -170,16 +178,35 @@ public record MethodModel(String name,
                     .equals(SECURITY_CONTEXT_TYPE);
     }
 
-    /// Check if this method has any security injection parameters.
+    /// Check if parameter is RequestHeaders type.
+    public static boolean isRequestHeadersParam(MethodParameterInfo param) {
+        return param.type()
+                    .toString()
+                    .equals(REQUEST_HEADERS_TYPE);
+    }
+
+    /// Check if this method has any security injection parameters (Principal or SecurityContext).
     public boolean hasSecurityParams() {
         return parameters.stream()
                          .anyMatch(MethodModel::isSecurityParam);
     }
 
-    /// Get only the business parameters (excluding Principal/SecurityContext).
+    /// Check if this method takes RequestHeaders.
+    public boolean hasRequestHeaders() {
+        return parameters.stream()
+                         .anyMatch(MethodModel::isRequestHeadersParam);
+    }
+
+    /// Check if this method has any injected parameter (see [#isInjectedParam]).
+    public boolean hasInjectedParams() {
+        return parameters.stream()
+                         .anyMatch(MethodModel::isInjectedParam);
+    }
+
+    /// Get only the business parameters (excluding every injected parameter).
     public List<MethodParameterInfo> businessParameters() {
         return parameters.stream()
-                         .filter(p -> !isSecurityParam(p))
+                         .filter(p -> !isInjectedParam(p))
                          .toList();
     }
 
@@ -198,7 +225,7 @@ public record MethodModel(String name,
 
         throw new IllegalStateException("businessParameterType() requires exactly one business parameter on '" + name
                                        + "' but found " + biz.size()
-                                       + " (a security-injecting slice method must take a single request record)");
+                                       + " (an injecting slice method must take a single request record)");
     }
 
     /// Returns true if the method parameter is List<T> (batch stream consumer).
@@ -433,8 +460,8 @@ public record MethodModel(String name,
                     .anyMatch(mirror -> isAnnotationType(mirror, KEY_ANNOTATION));
     }
 
-    /// Enforces the exactly-one-request-record rule for security-injecting methods.
-    /// A method that injects Principal/SecurityContext may carry at most one business
+    /// Enforces the exactly-one-request-record rule for injecting methods.
+    /// A method that injects Principal/SecurityContext/RequestHeaders may carry at most one business
     /// parameter (the request record) so the route generator can bind a single value.
     /// Non-security methods keep full multi-parameter support (a request record is
     /// synthesized for them). Attributed to the owning slice + method for a located
@@ -442,13 +469,13 @@ public record MethodModel(String name,
     private static Result<Unit> validateBusinessParamCount(ExecutableElement method,
                                                            List<MethodParameterInfo> paramInfos,
                                                            String methodName) {
-        var securityCount = paramInfos.stream().filter(MethodModel::isSecurityParam).count();
+        var injectedCount = paramInfos.stream().filter(MethodModel::isInjectedParam).count();
 
-        if (securityCount == 0) {
+        if (injectedCount == 0) {
             return Result.unitResult();
         }
 
-        var businessCount = paramInfos.stream().filter(p -> !isSecurityParam(p)).count();
+        var businessCount = paramInfos.stream().filter(p -> !isInjectedParam(p)).count();
 
         if (businessCount <= 1) {
             return Result.unitResult();
@@ -459,7 +486,7 @@ public record MethodModel(String name,
         return Causes.cause("A slice method takes exactly one request record; found " + businessCount
                            + " business parameters on " + sliceName
                            + "." + methodName
-                           + " (which also injects Principal/SecurityContext). Group the business parameters"
+                           + " (which also injects Principal/SecurityContext/RequestHeaders). Group the business parameters"
                            + " into a single request record.").result();
     }
 
