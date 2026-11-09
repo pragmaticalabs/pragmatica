@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -78,8 +79,12 @@ public sealed interface ClusterInput {
     record WitnessStale() implements ClusterInput {}
 
     /// The committed mirror read by `Rebuild`: every entry the FSM indexes, the read seams and the admissions
-    /// membership knows, and the committed leader.
-    record Snapshot(List<KvPut> entries, Seams seams, Map<NodeId, Admission> admissions, Option<LeaderValue> leader) {
+    /// membership knows, the committed leader, and local membership's current DEAD set (C17r).
+    record Snapshot(List<KvPut> entries,
+                    Seams seams,
+                    Map<NodeId, Admission> admissions,
+                    Option<LeaderValue> leader,
+                    DeadSet dead) {
         public Snapshot {
             entries = List.copyOf(entries);
             admissions = Map.copyOf(admissions);
@@ -88,8 +93,24 @@ public sealed interface ClusterInput {
         public static Snapshot snapshot(List<KvPut> entries,
                                         Seams seams,
                                         Map<NodeId, Admission> admissions,
-                                        Option<LeaderValue> leader) {
-            return new Snapshot(entries, seams, admissions, leader);
+                                        Option<LeaderValue> leader,
+                                        DeadSet dead) {
+            return new Snapshot(entries, seams, admissions, leader, dead);
+        }
+    }
+
+    /// C17r (#2937): local membership's current DEAD set when `Rebuild` is read, a verdict membership reached and has not
+    /// re-admitted, split by class: a core's removal input is `NodeRemoved`, a worker's `WorkerLeave`.
+    record DeadSet(Set<NodeId> cores, Set<NodeId> workers) {
+        public static final DeadSet NONE = new DeadSet(Set.of(), Set.of());
+
+        public DeadSet {
+            cores = Set.copyOf(cores);
+            workers = Set.copyOf(workers);
+        }
+
+        public static DeadSet deadSet(Set<NodeId> cores, Set<NodeId> workers) {
+            return new DeadSet(cores, workers);
         }
     }
 

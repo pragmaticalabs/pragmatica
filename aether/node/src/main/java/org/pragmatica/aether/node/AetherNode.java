@@ -58,6 +58,7 @@ import org.pragmatica.aether.node.deployment.AdmissionSeam;
 import org.pragmatica.aether.node.deployment.DeploymentWiring;
 import org.pragmatica.aether.node.deployment.EffectTranslator;
 import org.pragmatica.aether.node.deployment.Fsm2System;
+import org.pragmatica.aether.node.deployment.MembershipInputs;
 import org.pragmatica.aether.node.deployment.SeamPoller;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.TerminationRetirement;
@@ -2650,6 +2651,10 @@ public interface AetherNode extends ManageableNode {
         Function<NodeId, Option<String>> cdmMemberSourceSupplier = nodeId -> Option.option(membershipFsmRef.get())
                                                                                    .flatMap(fsm -> fsm.memberDescriptor(nodeId))
                                                                                    .map(MemberDescriptor::source);
+        // #2937: local membership's DEAD set, through the same shared membershipFsmRef; empty until the FSM is installed.
+        Supplier<Map<NodeId, MemberDescriptor>> cdmDeadMembersSupplier = () -> Option.option(membershipFsmRef.get())
+                                                                                     .map(MembershipFsm::deadMembers)
+                                                                                     .or(Map.of());
         var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(config.self(),
                                                                                          clusterNode,
                                                                                          kvStore,
@@ -2667,7 +2672,8 @@ public interface AetherNode extends ManageableNode {
                                                                                          stableCdmDrainingNodesSupplier,
                                                                                          cdmMemberSourceSupplier,
                                                                                          config.deploymentDefaults()
-                                                                                               .communitySizing());
+                                                                                               .communitySizing(),
+                                                                                         cdmDeadMembersSupplier);
         var loadBalancerManager = config.environment()
                                         .flatMap(EnvironmentIntegration::loadBalancer)
                                         .map(provider -> LoadBalancerManager.loadBalancerManager(config.self(),
@@ -3764,6 +3770,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                  .keySet(),
                                                                                                               admissionSeam::tokenOf),
                                                                                        admissionSeam,
+                                                                                       () -> MembershipInputs.deadSet(membershipFsm.deadMembers()),
                                                                                        deploymentWiring.guard(),
                                                                                        FsmTimers.sharedScheduler(),
                                                                                        configuredWorker(config))));

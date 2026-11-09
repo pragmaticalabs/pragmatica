@@ -71,6 +71,8 @@ final class ClusterRig implements AutoCloseable {
     volatile Seams supplied;
     /// The seams the model held at the end of its last `Rebuild` step.
     volatile Seams atRebuild;
+    /// The DEAD set the next `Rebuild` reads from local membership; the default is empty.
+    volatile ClusterInput.DeadSet dead = ClusterInput.DeadSet.NONE;
     /// The next snapshot read fails once: the `Rebuild` of that activation is lost, and the FSM rests in `Rebuilding`.
     volatile boolean failNextSnapshot;
 
@@ -89,6 +91,7 @@ final class ClusterRig implements AutoCloseable {
                                                                                                   KvSnapshotter.kvSnapshotter(store),
                                                                                                   this::seams,
                                                                                                   Map::of,
+                                                                                                  () -> dead,
                                                                                                   clock,
                                                                                                   sunk::add,
                                                                                                   this::stepped),

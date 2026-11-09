@@ -11,11 +11,13 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Blueprint;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Deactivate;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.ActivationDirectivePutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.MembershipDecisionReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerJoinReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerLeaveReceived;
+import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
@@ -67,6 +69,7 @@ import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
@@ -849,6 +852,128 @@ class ClusterDeploymentStateWorkerRemovalTest {
             assertThat(kvStore.get(sliceKey))
                     .as("#850: %s must not remove a LIVE worker's SliceNodeKey", sweep)
                     .isNotEqualTo(Option.empty());
+        }
+    }
+
+    /// #2937 (deployment-fsm-spec C17r, legacy parity): a removal input delivered while Dormant is dropped, so activation
+    /// handles the removal of every id in local membership's current DEAD set: `NodeRemoved` for a core, `WorkerLeave` for a
+    /// worker. The legacy removal has no R-4.3.0 fence, so its fence arm does not apply; a re-admitted node is not DEAD. The core
+    /// arms keep the node in the counted set and every row under a committed target, so the stale and orphaned-slice sweeps,
+    /// which would remove such rows on their own, cannot stand in for the synthesised removal.
+    @Nested
+    class DeadSetAtActivation {
+        private final Map<NodeId, MemberDescriptor> dead = new ConcurrentHashMap<>();
+
+        private void deactivateWithDeadSupplier() {
+            activeState().ctx().setDeadMembersSupplier(() -> Map.copyOf(dead));
+            harness.dispatch(new Deactivate());
+        }
+
+        /// The node's ACTIVE row for ARTIFACT, under a committed target, so the orphaned-slice sweep (no committed target) cannot
+        /// remove it on its own and stand in for the synthesised removal.
+        private void footprint(NodeArtifactKey artifactKey) {
+            kvStore.put(SliceTargetKey.sliceTargetKey(ARTIFACT.base()), SliceTargetValue.sliceTargetValue(ARTIFACT.version(), 1));
+            kvStore.put(artifactKey, NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
+        }
+
+        private static MemberDescriptor withRole(String role) {
+            return new MemberDescriptor(Option.none(), role, "", "");
+        }
+
+        // Red when: a core DEAD as a follower (NodeRemoved dropped while Dormant) keeps its footprint after activation.
+        @Test
+        void activation_coreDeadAsFollower_removesItsFootprint() {
+            var artifactKey = NodeArtifactKey.nodeArtifactKey(CORE_1, ARTIFACT);
+
+            countedCores.add(CORE_1);
+            footprint(artifactKey);
+            deactivateWithDeadSupplier();
+            harness.dispatch(new MembershipDecisionReceived(MembershipDecision.nodeRemoved(CORE_1, List.of())));
+            assertThat(kvStore.get(artifactKey).isPresent()).as("precondition: dropped while Dormant").isTrue();
+            dead.put(CORE_1, withRole("core"));
+
+            harness.dispatch(new Activate());
+
+            assertThat(kvStore.get(artifactKey)).isEqualTo(Option.empty());
+        }
+
+        // Red when: activation with an empty DEAD set removes a footprint (the synthesis must come from the DEAD set alone).
+        @Test
+        void activation_noDeadMember_keepsTheFootprint() {
+            var artifactKey = NodeArtifactKey.nodeArtifactKey(CORE_1, ARTIFACT);
+
+            countedCores.add(CORE_1);
+            footprint(artifactKey);
+            deactivateWithDeadSupplier();
+            harness.dispatch(new MembershipDecisionReceived(MembershipDecision.nodeRemoved(CORE_1, List.of())));
+
+            harness.dispatch(new Activate());
+
+            assertThat(kvStore.get(artifactKey).isPresent()).isTrue();
+        }
+
+        // Red when: a worker DEAD as a follower keeps its allocation-pool slot or its footprint after activation.
+        @Test
+        void activation_workerDeadAsFollower_leavesThePoolAndRemovesItsFootprint() {
+            joinWorker(WORKER_1);
+            var artifactKey = NodeArtifactKey.nodeArtifactKey(WORKER_1, ARTIFACT);
+
+            kvStore.put(ActivationDirectiveKey.activationDirectiveKey(WORKER_1), ActivationDirectiveValue.worker(COMMUNITY_ID, ""));
+            footprint(artifactKey);
+            deactivateWithDeadSupplier();
+            dead.put(WORKER_1, withRole("worker"));
+
+            harness.dispatch(new Activate());
+
+            assertThat(activeState().workerNodes()).doesNotContain(WORKER_1);
+            assertThat(kvStore.get(artifactKey)).isEqualTo(Option.empty());
+        }
+
+        // NT-169 (draft 8.1a residue guard, legacy arm)
+        // Red when: a DEAD id with no residue (no departure record, no directive, no NodeArtifactKey) gets any write from an
+        // activation, over two successive activations (a ghost id would otherwise be re-removed on every election).
+        @Test
+        void activation_ghostDeadIdWithNoResidue_writesNothingForIt() {
+            deactivateWithDeadSupplier();
+            dead.put(CORE_2, withRole("core"));
+            cluster.commands.clear();
+
+            harness.dispatch(new Activate());
+            harness.dispatch(new Deactivate());
+            harness.dispatch(new Activate());
+
+            assertThat(cluster.commands.stream()
+                                       .filter(command -> touches(command, CORE_2))
+                                       .toList()).isEmpty();
+        }
+
+        // NT-169 (positive control: directive only)
+        // Red when: a DEAD id whose only residue is its activation directive keeps it after activation.
+        @Test
+        void activation_deadWithOnlyADirective_removesTheDirective() {
+            var directiveKey = ActivationDirectiveKey.activationDirectiveKey(CORE_2);
+
+            countedCores.add(CORE_2);
+            kvStore.put(directiveKey, ActivationDirectiveValue.core());
+            deactivateWithDeadSupplier();
+            dead.put(CORE_2, withRole("core"));
+
+            harness.dispatch(new Activate());
+
+            assertThat(kvStore.get(directiveKey)).isEqualTo(Option.empty());
+        }
+
+        private static boolean touches(KVCommand<AetherKey> command, NodeId node) {
+            return mentions(command.key(), node)
+                   || command instanceof KVCommand.LeaderTransaction<AetherKey, ?> transaction
+                      && transaction.mutations()
+                                    .stream()
+                                    .anyMatch(mutation -> mentions(mutation.key(), node));
+        }
+
+        private static boolean mentions(AetherKey key, NodeId node) {
+            return key.asString()
+                      .contains(node.id());
         }
     }
 

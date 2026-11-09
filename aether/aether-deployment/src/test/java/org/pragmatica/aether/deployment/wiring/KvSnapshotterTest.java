@@ -42,6 +42,7 @@ import static org.pragmatica.aether.deployment.wiring.WiringFixtures.*;
 /// registry's at snapshot time) of the phase-3 design 9.2, and MT-10a.
 class KvSnapshotterTest {
     private static final NodeId PEER = NodeId.nodeId("core-2").unwrap();
+    private static final ClusterInput.DeadSet DEAD = ClusterInput.DeadSet.deadSet(Set.of(PEER), Set.of());
 
     /// The key families `F2/Indexer` dispatches on, as of this commit. The test below reads `Indexer.java` and fails when the two differ,
     /// so a family added to the Indexer is a decision here, not a silent omission from a snapshot filter.
@@ -145,7 +146,7 @@ class KvSnapshotterTest {
         var cut = snapshotter.clusterSnapshot(() -> {
             reads.incrementAndGet();
             return seams;
-        }, () -> Map.of(PEER, Admission.UNKNOWN));
+        }, () -> Map.of(PEER, Admission.UNKNOWN), () -> DEAD);
         var snapshot = cut.snapshot();
 
         assertThat(snapshot.entries()).extracting(ClusterInput.KvPut::key)
@@ -158,6 +159,7 @@ class KvSnapshotterTest {
         assertThat(snapshot.entries()).extracting(entry -> entry.key().toString()).isSorted();
         assertThat(snapshot.leader()).isEqualTo(Option.some(LEADER));
         assertThat(snapshot.seams()).isSameAs(seams);
+        assertThat(snapshot.dead()).as("C17r: the DEAD set read now rides in the snapshot").isEqualTo(DEAD);
         assertThat(snapshot.admissions()).containsOnlyKeys(PEER);
         assertThat(reads.get()).isEqualTo(1);
         assertThat(cut.revision()).isEqualTo(applier.slot());
@@ -179,7 +181,7 @@ class KvSnapshotterTest {
         assertThat(cases).as("the key families Indexer.indexPut dispatches on").isEqualTo(INDEXED_KEY_FAMILIES);
 
         seed();
-        var kept = snapshotter.clusterSnapshot(() -> Seams.UNWIRED, Map::of).snapshot().entries().stream().map(entry -> entry.key().getClass().getSimpleName()).collect(java.util.stream.Collectors.toSet());
+        var kept = snapshotter.clusterSnapshot(() -> Seams.UNWIRED, Map::of, () -> ClusterInput.DeadSet.NONE).snapshot().entries().stream().map(entry -> entry.key().getClass().getSimpleName()).collect(java.util.stream.Collectors.toSet());
 
         assertThat(kept).contains("SliceTargetKey", "VersionRoutingKey", "SliceDesiredKey", "SliceObservedKey");
     }

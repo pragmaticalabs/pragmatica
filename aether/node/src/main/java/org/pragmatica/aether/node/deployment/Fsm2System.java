@@ -90,6 +90,7 @@ public final class Fsm2System {
                                 EffectTranslator.Targets translator,
                                 SeamPoller.Sources seamSources,
                                 AdmissionSeam admissions,
+                                Supplier<ClusterInput.DeadSet> dead,
                                 EngineMarkerGuard guard,
                                 FsmTimers.TimerService clock,
                                 boolean worker) {}
@@ -283,6 +284,7 @@ public final class Fsm2System {
                                                                                                          .admissions(c.seamSources()
                                                                                                                       .members()
                                                                                                                       .get()),
+                                                                                                  c.dead(),
                                                                                                   c.clock(),
                                                                                                   translator.clusterSink(),
                                                                                                   translator.stepObserver()),

@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm;
 
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -16,6 +17,7 @@ import org.pragmatica.aether.config.CommunitySizing;
 import org.pragmatica.aether.deployment.cluster.CommunityPolicyView;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm.write.FsmWriter;
+import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -89,6 +91,9 @@ public final class ClusterDeploymentContext {
     private static final Supplier<Set<NodeId>> UNWIRED_MARKER = Set::of;
 
     private volatile Supplier<Set<NodeId>> localAliveMembersSupplier = UNWIRED_MARKER;
+    /// #2937 (C17r legacy parity): local membership's current DEAD set, read at activation. Unwired it is empty, so activation
+    /// synthesises no removal, as before.
+    private volatile Supplier<Map<NodeId, MemberDescriptor>> deadMembersSupplier = Map::of;
     private final ClusterDeploymentState dormant;
     private final ClusterDeploymentState stopped;
 
@@ -431,6 +436,17 @@ public final class ClusterDeploymentContext {
     @Contract
     public void setLocalAliveMembersSupplier(Supplier<Set<NodeId>> supplier) {
         localAliveMembersSupplier = supplier;
+    }
+
+    /// #2937: local membership's current DEAD set (`MembershipFsm.deadMembers()`), read once per activation.
+    public Supplier<Map<NodeId, MemberDescriptor>> deadMembersSupplier() {
+        return deadMembersSupplier;
+    }
+
+    /// Inject the DEAD-set supplier (#2937).
+    @Contract
+    public void setDeadMembersSupplier(Supplier<Map<NodeId, MemberDescriptor>> supplier) {
+        deadMembersSupplier = supplier;
     }
 
     public Set<NodeId> seedNodes() {

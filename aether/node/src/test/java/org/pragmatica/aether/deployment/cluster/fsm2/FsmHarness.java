@@ -76,6 +76,8 @@ final class FsmHarness {
     long order;
     int inputs;
     Seams seams = Seams.UNWIRED;
+    /// Local membership's DEAD set as the next `Rebuild` reads it (C17r).
+    ClusterInput.DeadSet dead = ClusterInput.DeadSet.NONE;
     SettlePolicy policy = SettlePolicy.APPLY;
     ClusterState state = ClusterState.initial();
     boolean notifying = true;
@@ -201,7 +203,7 @@ final class FsmHarness {
         entries.sort(Comparator.comparing(entry -> entry.key()
                                                         .toString()));
 
-        return ClusterInput.Snapshot.snapshot(entries, seams, admissions, committedLeader());
+        return ClusterInput.Snapshot.snapshot(entries, seams, admissions, committedLeader(), dead);
     }
 
     /// Deliver one input and run the mailbox until it is empty.
