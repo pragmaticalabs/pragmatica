@@ -306,4 +306,106 @@ class OutputNullabilityTest {
         assertThat(verdict("SELECT d.x AS y FROM t LEFT JOIN (SELECT max(t_id) AS x FROM u GROUP BY id) d ON true", "y"))
             .isInstanceOfSatisfying(Nullability.MayBeNull.class, n -> assertThat(n.reason()).contains("max() yields NULL"));
     }
+
+    /// Rule C (#2889, know 24474f6010): a NULL-rejecting predicate on a bare column, as a top-level AND conjunct of
+    /// the WHERE of the same SELECT, proves that column non-null.
+    @ParameterizedTest(name = "{0}")
+    @CsvSource(delimiter = '|', value = {
+        "SELECT note AS x FROM t WHERE note IS NOT NULL",
+        "SELECT note AS x FROM t WHERE note NOTNULL",
+        "SELECT note AS x FROM t WHERE note = 'a'",
+        "SELECT note AS x FROM t WHERE note <> 'a'",
+        "SELECT note AS x FROM t WHERE note != 'a'",
+        "SELECT note AS x FROM t WHERE note < 'a'",
+        "SELECT note AS x FROM t WHERE note > 'a'",
+        "SELECT note AS x FROM t WHERE note <= 'a'",
+        "SELECT note AS x FROM t WHERE note >= 'a'",
+        "SELECT note AS x FROM t WHERE note BETWEEN 'a' AND 'z'",
+        "SELECT note AS x FROM t WHERE note LIKE 'a%'",
+        "SELECT note AS x FROM t WHERE note ILIKE 'a%'",
+        "SELECT note AS x FROM t WHERE note IN ('a', 'b')",
+        "SELECT note AS x FROM t WHERE note IN (SELECT name FROM t)",
+        "SELECT t.note AS x FROM t WHERE t.note IS NOT NULL",
+        "SELECT note AS x FROM t WHERE t.note IS NOT NULL",
+        "SELECT t.note AS x FROM t WHERE note IS NOT NULL",
+        "SELECT note AS x FROM t WHERE 'a' = note",
+        "SELECT note AS x FROM t WHERE qty > 1 AND note IS NOT NULL",
+        "SELECT note AS x FROM t WHERE note IS NOT NULL AND qty > 1 AND name = 'a'",
+        "SELECT note AS x FROM t WHERE (note IS NOT NULL AND qty > 1)",
+        "SELECT note AS x FROM t WHERE qty > 1 AND (name = 'a' AND note IS NOT NULL)",
+        "SELECT u.label AS x FROM t LEFT JOIN u ON u.t_id = t.id WHERE u.label IS NOT NULL",
+        "SELECT label AS x FROM t LEFT JOIN u ON u.t_id = t.id WHERE label = 'a'",
+        "SELECT u.id AS x FROM t LEFT JOIN u ON u.t_id = t.id WHERE u.id IS NOT NULL",
+        "SELECT t.note AS x FROM u RIGHT JOIN t ON u.t_id = t.id WHERE t.note IS NOT NULL",
+        "SELECT d.x AS y FROM (SELECT note AS x FROM t) d WHERE d.x IS NOT NULL",
+        "SELECT x AS y FROM (SELECT note AS x FROM t) d WHERE x IS NOT NULL",
+        "SELECT x AS y FROM (SELECT note AS x FROM t WHERE note IS NOT NULL) d",
+        "WITH c AS (SELECT note AS x FROM t WHERE note IS NOT NULL) SELECT x AS y FROM c"
+    })
+    void rejectingPredicateOnBareColumn_provesTheColumn(String sql) {
+        assertThat(verdict(sql, sql.contains(" AS y ") ? "y" : "x")).isEqualTo(Nullability.NON_NULL);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @CsvSource(delimiter = '|', value = {
+        "SELECT note AS x FROM t WHERE note IS NOT NULL OR qty > 1",
+        "SELECT note AS x FROM t WHERE qty > 1 OR note IS NOT NULL",
+        "SELECT note AS x FROM t WHERE (note IS NOT NULL OR qty > 1) AND qty > 0",
+        "SELECT note AS x FROM t WHERE NOT note IS NULL",
+        "SELECT note AS x FROM t WHERE NOT (note IS NOT NULL)",
+        "SELECT note AS x FROM t WHERE NOT (note IS NOT NULL AND qty > 1)",
+        "SELECT note AS x FROM t WHERE note NOT IN ('a')",
+        "SELECT note AS x FROM t WHERE note NOT LIKE 'a%'",
+        "SELECT note AS x FROM t WHERE note NOT BETWEEN 'a' AND 'z'",
+        "SELECT note AS x FROM t WHERE EXISTS (SELECT 1 FROM u WHERE t.note IS NOT NULL)",
+        "SELECT note AS x FROM t WHERE qty IN (SELECT t2.qty FROM t t2 WHERE t2.note IS NOT NULL)",
+        "SELECT (SELECT u.label FROM u WHERE u.label IS NOT NULL LIMIT 1) AS x FROM t",
+        "SELECT note AS x FROM t GROUP BY note HAVING note IS NOT NULL",
+        "SELECT u.label AS x FROM t JOIN u ON u.label IS NOT NULL",
+        "SELECT u.label AS x FROM t LEFT JOIN u ON u.t_id = t.id AND u.label IS NOT NULL",
+        "SELECT u.id AS x FROM t LEFT JOIN u ON u.t_id = t.id AND u.id IS NOT NULL",
+        "SELECT note AS x FROM t WHERE lower(note) = 'a'",
+        "SELECT note AS x FROM t WHERE note::text = 'a'",
+        "SELECT note AS x FROM t WHERE coalesce(note, '') = ''",
+        "SELECT note AS x FROM t WHERE (note) IS NOT NULL",
+        "SELECT note AS x FROM t WHERE note || 'a' IS NOT NULL",
+        "SELECT note AS x FROM t WHERE note IS NULL",
+        "SELECT note AS x FROM t WHERE note IS DISTINCT FROM 'a'",
+        "SELECT note AS x FROM t WHERE note IS TRUE",
+        "SELECT note AS x FROM t WHERE qty > 1",
+        "SELECT t.note AS x FROM t, missing m WHERE note IS NOT NULL",
+        "SELECT note AS x FROM t WHERE note IS NOT NULL GROUP BY ROLLUP (note)",
+        "UPDATE t SET qty = 1 WHERE note IS NOT NULL RETURNING note AS x",
+        "SELECT note AS x FROM t WHERE note IS NOT NULL UNION SELECT note FROM t"
+    })
+    void predicateOutsideRuleC_provesNothing(String sql) {
+        assertThat(verdict(sql, "x")).isInstanceOf(Nullability.MayBeNull.class);
+    }
+
+    @Test
+    void leftJoinWherePredicate_provesOnlyThatColumn() {
+        var sql = "SELECT u.label AS a, u.t_id AS b, u.id AS c FROM t LEFT JOIN u ON u.t_id = t.id WHERE u.label IS NOT NULL";
+
+        assertThat(verdict(sql, "a")).isEqualTo(Nullability.NON_NULL);
+        assertThat(verdict(sql, "b")).isInstanceOfSatisfying(Nullability.MayBeNull.class,
+                                                              n -> assertThat(n.reason()).contains("nullable side of a LEFT JOIN"));
+        assertThat(verdict(sql, "c")).isInstanceOf(Nullability.MayBeNull.class);
+    }
+
+    @Test
+    void wherePredicate_provesOnlyItsOwnColumn() {
+        var result = outputs("SELECT * FROM u WHERE label IS NOT NULL");
+
+        assertThat(result.stream().map(o -> o.nullability().isNonNull()).toList()).containsExactly(true, true, true);
+        assertThat(outputs("SELECT note AS a, id AS b FROM t WHERE note IS NOT NULL").stream()
+                                                                                    .map(o -> o.nullability().isNonNull())
+                                                                                    .toList()).containsExactly(true, true);
+        assertThat(verdict("SELECT note AS a FROM t WHERE name IS NOT NULL", "a")).isInstanceOf(Nullability.MayBeNull.class);
+    }
+
+    @Test
+    void wherePredicateOnABranch_doesNotProveTheOtherBranch() {
+        assertThat(verdict("SELECT note AS x FROM t WHERE note IS NOT NULL UNION SELECT note FROM t WHERE note IS NOT NULL", "x"))
+            .isEqualTo(Nullability.NON_NULL);
+    }
 }

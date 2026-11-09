@@ -4,6 +4,7 @@
 package org.pragmatica.aether.pg.schema.validator;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -108,8 +109,13 @@ public final class OutputNullability {
     /// A CTE or derived table whose outputs cannot be listed.
     private static final Option<List<Output>> UNRESOLVED = Option.empty();
 
-    /// The relations of one statement or branch, and whether a subtotal row can null its grouped columns.
-    private record Scope(List<Relation> relations, boolean subtotals) {}
+    /// The relations of one statement or branch, whether a subtotal row can null its grouped columns, and the
+    /// `relation.column` keys its own `WHERE` proves non-null (rule C of #2889).
+    private record Scope(List<Relation> relations, boolean subtotals, Set<String> proven) {
+        boolean proves(String relation, String column) {
+            return proven.contains(relation + "." + column);
+        }
+    }
 
     /// The nullability of every output of the query's single statement: the `RETURNING` list of an
     /// `INSERT`/`UPDATE`/`DELETE`, the target list of a `SELECT`, or - for a set operation - the first branch's names
@@ -234,7 +240,7 @@ public final class OutputNullability {
 
         core.child("FromClause").onPresent(from -> relations.addAll(fromList(from, ctes, schema)));
 
-        return new Scope(relations, hasSubtotals(core));
+        return new Scope(relations, hasSubtotals(core), whereProven(core, relations));
     }
 
     private static boolean hasSubtotals(CstNavigator core) {
@@ -256,7 +262,7 @@ public final class OutputNullability {
         stmt.child("FromClause").onPresent(from -> relations.addAll(fromList(from, ctes, schema)));
         stmt.child("UsingClauseDelete").onPresent(using -> relations.addAll(fromList(using, ctes, schema)));
 
-        return new Scope(relations, false);
+        return new Scope(relations, false, Set.of());
     }
 
     private static List<Relation> fromList(CstNavigator owner, Map<String, Option<List<Output>>> ctes, Schema schema) {
@@ -755,19 +761,22 @@ public final class OutputNullability {
 
         if (!positional.isNonNull()) return positional;
 
-        return column.nullable()
+        return column.nullable() && !scope.proves(relation.name(), column.name())
                ? Nullability.mayBeNull("column '" + label + "' is nullable")
                : Nullability.NON_NULL;
     }
 
     /// What the position of the relation adds to a column's own verdict: the nullable side of an outer join and the
-    /// subtotal rows of `ROLLUP`/`CUBE`/`GROUPING SETS` make even a proven column NULL.
+    /// subtotal rows of `ROLLUP`/`CUBE`/`GROUPING SETS` make even a proven column NULL. A column the `WHERE` of the
+    /// same `SELECT` proves non-null is proven whatever its own verdict or outer-join side - but the subtotal rows,
+    /// produced after the `WHERE`, still null it.
     private static Nullability overlay(Relation relation, Nullability own, String column, Scope scope) {
         var label = relation.name() + "." + column;
+        var proven = scope.proves(relation.name(), column);
 
-        if (!own.isNonNull()) return own;
+        if (!own.isNonNull() && !proven) return own;
 
-        if (relation.nullableSide().isPresent()) {
+        if (relation.nullableSide().isPresent() && !proven) {
             return Nullability.mayBeNull("column '" + label
                                         + "' is on the nullable side of a " + relation.nullableSide()
                                                                                       .unwrap());
@@ -776,6 +785,117 @@ public final class OutputNullability {
         return scope.subtotals()
                ? Nullability.mayBeNull("column '" + label
                                       + "' is NULL in the subtotal rows of ROLLUP, CUBE or GROUPING SETS")
-               : own;
+               : Nullability.NON_NULL;
+    }
+
+    // --- columns proven by the WHERE of the same SELECT (rule C, #2889) ---
+    /// The `relation.column` keys that a NULL-rejecting predicate proves non-null: a bare column in a top-level `AND`
+    /// conjunct of the `WHERE` - `IS NOT NULL`, a comparison, `BETWEEN`, `LIKE`/`ILIKE` or `IN (..)`. A conjunct under
+    /// `OR` or `NOT`, a negated form, a predicate on an expression, a subquery, `HAVING` and join `ON` prove nothing.
+    private static Set<String> whereProven(CstNavigator core, List<Relation> relations) {
+        var refs = new ArrayList<CstNavigator>();
+
+        core.child("WhereClause").flatMap(where -> where.child("Expr")).onPresent(expr -> collectConjuncts(expr, refs));
+        var keys = new HashSet<String>();
+
+        refs.forEach(ref -> provenKey(ref, relations).onPresent(keys::add));
+
+        return keys;
+    }
+
+    private static void collectConjuncts(CstNavigator expr, List<CstNavigator> refs) {
+        chainTo(expr, "AndExpr").onPresent(and -> and.allChildren("NotExpr")
+                                                     .forEach(conjunct -> collectConjunct(conjunct, refs)));
+    }
+
+    private static void collectConjunct(CstNavigator conjunct, List<CstNavigator> refs) {
+        if (conjunct.has("NotKW")) return;
+
+        conjunct.child("CompareExpr").onPresent(compare -> collectCompare(compare, refs));
+    }
+
+    private static void collectCompare(CstNavigator compare, List<CstNavigator> refs) {
+        var operands = compare.allChildren("IsExpr");
+
+        if (operands.isEmpty()) return;
+
+        if (compare.children().size() == 1) {
+            collectLone(operands.getFirst(), refs);
+
+            return;
+        }
+
+        if (compare.has("NotKW")) return;
+        // the comparison operator is an inline literal with no node of its own; only it gives CompareExpr a 2nd IsExpr
+        if (operands.size() == 2) {
+            operands.forEach(operand -> bareColumnOperand(operand).onPresent(refs::add));
+
+            return;
+        }
+
+        if (compare.has("InExpr") || compare.has("BetweenExpr") || compare.has("LikeExpr")) {
+            bareColumnOperand(operands.getFirst()).onPresent(refs::add);
+        }
+    }
+
+    /// A comparison-free operand: `col IS NOT NULL` / `col NOTNULL` proves `col`, `( .. AND .. )` is its own
+    /// conjunction, anything else proves nothing.
+    private static void collectLone(CstNavigator operand, List<CstNavigator> refs) {
+        var clause = operand.child("IsClause");
+
+        if (clause.isPresent()) {
+            if (isNotNull(clause.unwrap())) {
+                operand.child("AddExpr").flatMap(add -> chainTo(add, "ColRef")).onPresent(refs::add);
+            }
+
+            return;
+        }
+
+        chainTo(operand, "PrimaryExpr").filter(OutputNullability::isParenthesised)
+               .flatMap(primary -> primary.child("Expr"))
+               .onPresent(inner -> collectConjuncts(inner, refs));
+    }
+
+    private static boolean isNotNull(CstNavigator clause) {
+        return clause.has("NotnullKW") || (clause.has("NotKW") && (clause.has("NullKW") || clause.has("NullConstraint")));
+    }
+
+    private static Option<CstNavigator> bareColumnOperand(CstNavigator operand) {
+        return operand.has("IsClause")
+               ? Option.empty()
+               : chainTo(operand, "ColRef");
+    }
+
+    /// Descends through single-child rules until `rule`; absent when a rule on the way has more than one child.
+    private static Option<CstNavigator> chainTo(CstNavigator node, String rule) {
+        if (node.rule().equals(rule)) return Option.present(node);
+
+        return node.children()
+                   .size() == 1
+               ? node.firstChild()
+                     .flatMap(child -> chainTo(child, rule))
+               : Option.empty();
+    }
+
+    private static Option<String> provenKey(CstNavigator ref, List<Relation> relations) {
+        var parts = ref.child("QualifiedName")
+                       .map(name -> CstExtractor.extractQualifiedName(name).parts())
+                       .or(List.of());
+
+        if (parts.isEmpty()) return Option.empty();
+
+        var column = parts.getLast().normalized();
+
+        if (parts.size() >= 2) {
+            return Option.present(parts.get(parts.size() - 2).normalized() + "." + column);
+        }
+
+        if (relations.stream().anyMatch(relation -> !relation.resolved())) return Option.empty();
+
+        var owners = relations.stream().filter(relation -> relation.hasColumn(column)).toList();
+
+        return owners.size() == 1
+               ? Option.present(owners.getFirst().name() + "." + column)
+               : Option.empty();
     }
 }

@@ -254,7 +254,12 @@ component). Nullability is computed per output expression, never from the column
 NULL on the nullable side of an outer join, in `max`/`min`/`sum`/`avg` over an empty group, in a `CASE` without `ELSE`,
 through `NULLIF`, from an empty scalar subquery, or in a set operation with a nullable branch. Proven non-null: a
 `NOT NULL` column of the `FROM` root or of an inner-joined table, `count(..)`, a literal, `COALESCE` whose last
-argument is proven, and a cast, sign or parentheses over such an expression. `Option<T>` on a proven output is
+argument is proven, and a cast, sign or parentheses over such an expression. A NULL-rejecting predicate on a bare
+column proves that column too (`col IS NOT NULL`, `=`, `<>`, `<`, `>`, `<=`, `>=`, `BETWEEN`, `LIKE`/`ILIKE`, `IN (..)`),
+but only as a top-level `AND` conjunct of the `WHERE` of the same `SELECT`: not under `OR` or `NOT`, not inside a
+subquery, not in `HAVING`, not in an outer join's `ON`, and a predicate on an expression (`lower(col) = ..`,
+`col::text = ..`) proves nothing. It proves only that column, and a `WHERE` predicate on a column of the nullable side of a
+`LEFT JOIN` proves that column (the other columns of that side stay unproven). `Option<T>` on a proven output is
 accepted without a warning. A scalar or `@Jsonb` single-output method reads its value through a non-nullable accessor,
 so `Promise<Option<T>>` (row optional) does not make a NULL value acceptable; use `COALESCE`. CRUD-generated methods
 are not analysed. An unaliased output is matched under the name PostgreSQL gives it (`max(total)` is `max`,

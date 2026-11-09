@@ -64,6 +64,12 @@ class NullableOutputValidationTest {
             nullable("star over unresolvable derived table", "long a, UUID b", "SELECT * FROM (SELECT id, correlation_id FROM orders) d(a, b)", "cannot be listed"),
             nullable("union with values null", "String name", "SELECT name FROM users UNION VALUES (NULL)", "set operation branch 2"),
             nullable("union with null literal", "String name", "SELECT name FROM users UNION ALL SELECT NULL", "set operation branch 2"),
+            nullable("where under or", "UUID correlationId", "SELECT correlation_id FROM orders WHERE correlation_id IS NOT NULL OR id > 1", "column 'orders.correlation_id' is nullable"),
+            nullable("where under not", "UUID correlationId", "SELECT correlation_id FROM orders WHERE NOT correlation_id IS NULL", "column 'orders.correlation_id' is nullable"),
+            nullable("where on expression", "UUID correlationId", "SELECT correlation_id FROM orders WHERE correlation_id::text = 'x'", "column 'orders.correlation_id' is nullable"),
+            nullable("having only", "UUID correlationId", "SELECT correlation_id FROM orders GROUP BY correlation_id HAVING correlation_id IS NOT NULL", "column 'orders.correlation_id' is nullable"),
+            nullable("left join on only", "String name", "SELECT u.name AS name FROM orders o LEFT JOIN users u ON u.id = o.user_id AND u.name IS NOT NULL", "nullable side of a LEFT JOIN"),
+            nullable("where proves one column of the left join side only", "String email", "SELECT u.email AS email FROM orders o LEFT JOIN users u ON u.id = o.user_id WHERE u.name IS NOT NULL", "nullable side of a LEFT JOIN"),
             nullable("returning nullable column", "UUID correlationId", "UPDATE orders SET status = 'x' WHERE id = 1 RETURNING correlation_id", "column 'orders.correlation_id' is nullable"));
     }
 
@@ -105,7 +111,10 @@ class NullableOutputValidationTest {
             Arguments.of("literal", "long one, String s", "SELECT 1 AS one, 'x' AS s FROM orders"),
             Arguments.of("coalesce with literal last", "BigDecimal total", "SELECT COALESCE(max(total), 0) AS total FROM orders"),
             Arguments.of("cast of not null", "String status", "SELECT CAST(user_id AS text) AS status FROM orders"),
-            Arguments.of("returning not null", "long id", "UPDATE orders SET status = 'x' WHERE id = 1 RETURNING id"));
+            Arguments.of("returning not null", "long id", "UPDATE orders SET status = 'x' WHERE id = 1 RETURNING id"),
+            Arguments.of("where is not null proves nullable column", "UUID correlationId", "SELECT correlation_id FROM orders WHERE correlation_id IS NOT NULL"),
+            Arguments.of("where comparison among conjuncts", "UUID correlationId, long id", "SELECT correlation_id, id FROM orders WHERE id > 1 AND correlation_id = '00000000-0000-0000-0000-000000000000'"),
+            Arguments.of("where proves left join side column", "String name", "SELECT u.name AS name FROM orders o LEFT JOIN users u ON u.id = o.user_id WHERE u.name LIKE 'a%'"));
     }
 
     @ParameterizedTest(name = "{0}")
