@@ -111,7 +111,7 @@ public sealed interface SliceTargetFence {
             public String message() {
                 return "Slice-target write " + write
                      + " was refused " + submissions
-                     + " times by concurrent changes to the target or its blueprint and was NOT written";
+                     + " times by concurrent changes to the target or its blueprint and was NOT written; retry the request";
             }
         }
     }

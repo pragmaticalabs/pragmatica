@@ -114,6 +114,7 @@ class UnconfirmedMarkRoutesTest {
         assertThat(statusOf(new UnconfirmedClearRefusal.NotMarked(new NodeId("core-old")))).isEqualTo(HttpStatus.NOT_FOUND);
         assertThat(statusOf(new UnconfirmedClearRefusal.NodeLive(new NodeId("core-old")))).isEqualTo(HttpStatus.CONFLICT);
         assertThat(statusOf(new UnconfirmedClearRefusal.Changed(new NodeId("core-old")))).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(statusOf(new UnconfirmedClearRefusal.Conflicted(new NodeId("core-old")))).isEqualTo(HttpStatus.CONFLICT);
         assertThat(statusOf(new UnconfirmedClearRefusal.NotActive())).isEqualTo(HttpStatus.CONFLICT);
         assertThat(statusOf(new UnconfirmedClearRefusal.InstanceStillListed(new NodeId("core-old"), "i-1", "RUNNING"))).isEqualTo(HttpStatus.CONFLICT);
         assertThat(statusOf(new UnconfirmedClearRefusal.ProviderUnreachable(new NodeId("core-old"), "down"))).isEqualTo(HttpStatus.CONFLICT);
