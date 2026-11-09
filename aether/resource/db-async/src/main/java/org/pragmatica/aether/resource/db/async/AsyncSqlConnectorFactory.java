@@ -66,7 +66,8 @@ public final class AsyncSqlConnectorFactory implements ResourceFactory<SqlConnec
 
     @Override
     public Option<Promise<ServerProbe>> probe(SqlConnector pool) {
-        return SharedPoolSupport.probe(pool);
+        return SharedPoolSupport.probe(pool)
+                                .map(probe -> probe.mapError(PgPoolSettings::typedProbeFailure));
     }
 
     private static PgPoolSettings.Assembled<SqlConnector> assemble(DatabaseConnectorConfig config) {

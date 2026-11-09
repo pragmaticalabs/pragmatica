@@ -66,7 +66,8 @@ public final class PgSqlConnectorFactory implements ResourceFactory<PgSqlConnect
 
     @Override
     public Option<Promise<ServerProbe>> probe(PgSqlConnector pool) {
-        return SharedPoolSupport.probe(pool);
+        return SharedPoolSupport.probe(pool)
+                                .map(probe -> probe.mapError(PgPoolSettings::typedProbeFailure));
     }
 
     private static PgPoolSettings.Assembled<PgSqlConnector> assemble(DatabaseConnectorConfig config) {
