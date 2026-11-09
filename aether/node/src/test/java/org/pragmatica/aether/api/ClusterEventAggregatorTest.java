@@ -2962,6 +2962,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
                 OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE,
                 OperatorWarningCode.STREAM_OWNER_LINEAGE_REFUSED,
+                OperatorWarningCode.STREAM_OWNER_CATCHUP_STALLED,
                 OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_REFUSED,
                 OperatorWarningCode.STREAM_CATCHUP_SOURCE_NOT_ANSWERING,
                 OperatorWarningCode.HTTP_TLS_ROTATION_REFUSED,
