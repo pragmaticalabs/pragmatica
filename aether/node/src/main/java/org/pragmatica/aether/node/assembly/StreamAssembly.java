@@ -1446,7 +1446,10 @@ public sealed interface StreamAssembly {
         // #2599: the ack of a batch the gate held back is sent once a compare verifies the copy, not left to a later batch.
         streamPartitionManager.onEpochVerified(streamReplicationReceiveHandler::releaseDeferredAck);
         // #2599: a removed stream's deferred acks go with it, so none is released into a stream recreated under its name.
-        streamPartitionManager.onStreamRemoved(streamReplicationReceiveHandler::forgetDeferredAcks);
+        // #2960: its open all-stalled warning is resolved with it, since no later round of a destroyed stream can end it.
+        streamPartitionManager.onStreamRemoved(streamName -> forgetRemovedStream(streamReplicationReceiveHandler,
+                                                                                 streamPartitionBackfill,
+                                                                                 streamName));
         // #2599 G3: a backfill's ack goes out in the receive handler's per-partition section, settling a deferred ack it covers.
         streamPartitionBackfill.backfillAckSink(streamReplicationReceiveHandler::ackBackfill);
         // #2087: a replica serves a consumer read only up to the owner's reported visible position.
@@ -1928,6 +1931,15 @@ public sealed interface StreamAssembly {
                                      + "@" + System.currentTimeMillis(),
                                       "{}",
                                       escape.message());
+    }
+
+    /// What a removed stream leaves behind on this node: the acks its partitions deferred, and the all-stalled warning (#2960) its owner catch-up raised.
+    static Unit forgetRemovedStream(ReplicationReceiveHandler receiveHandler,
+                                    PartitionBackfill backfill,
+                                    String streamName) {
+        receiveHandler.forgetDeferredAcks(streamName);
+
+        return backfill.clearStalledOf(streamName);
     }
 
     /// What the promoted owner's backfill and its cold-start contest need from the node (#1937, #2080): where its blocks and escapes

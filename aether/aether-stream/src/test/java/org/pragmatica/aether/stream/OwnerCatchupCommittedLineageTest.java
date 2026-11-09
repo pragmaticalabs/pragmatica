@@ -801,8 +801,8 @@ class OwnerCatchupCommittedLineageTest {
         oversized.add(SOURCE);
         settled(fixture.backfill().backfill("s", 0));
 
-        assertThat(alarm.resolved()).containsExactlyElementsOf(alarm.raised());
         assertThat(alarm.raised()).as("the oversized block took its place").hasSize(2);
+        assertThat(alarm.resolved()).as("only the stalled block is resolved").containsExactly(alarm.raised().getFirst());
     }
 
     /// #2960: the state ends when the promotion gate's own catch-up reaches the target and activates the owner (it does not pass through the

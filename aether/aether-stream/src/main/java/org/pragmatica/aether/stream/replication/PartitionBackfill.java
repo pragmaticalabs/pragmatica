@@ -881,6 +881,7 @@ public final class PartitionBackfill {
 
         if (isQuarantined(streamName, partition)) {
             clearOversized(streamName, partition);
+            clearStalled(streamName, partition);
 
             return mayRepair && repairable(streamName, partition)
                    ? repairThenRun(streamName, partition)
@@ -1826,6 +1827,22 @@ public final class PartitionBackfill {
         return Unit.unit();
     }
 
+    /// The stream was destroyed (#2960): no partition of it can end its all-stalled state by a later round, so each open report is resolved.
+    /// Called from the stream-removed listener; a stream recreated under the same name starts with no report.
+    public Unit clearStalledOf(String streamName) {
+        synchronized (oversizedOrder) {
+            reportedStalled.keySet()
+                           .stream()
+                           .filter(key -> key.streamName()
+                                             .equals(streamName))
+                           .toList()
+                           .forEach(key -> clearStalled(key.streamName(),
+                                                        key.partition()));
+        }
+
+        return Unit.unit();
+    }
+
     private Result<Long> trackStall(String streamName,
                                     int partition,
                                     NodeId source,
@@ -1894,7 +1911,7 @@ public final class PartitionBackfill {
                                         source,
                                         sourceTail,
                                         selfWatermark.localWatermark(streamName, partition),
-                                        NO_OTHER_SURVIVOR);
+                                        NO_OTHER_SURVIVOR).onSuccess(_ -> clearStalled(streamName, partition));
     }
 
     /// The surviving NON-SELF replica holding the highest `confirmedOffset`, but only when it is STRICTLY
@@ -2121,6 +2138,7 @@ public final class PartitionBackfill {
 
         if (blind.isEmpty()) {
             clearOversized(streamName, partition);
+            clearStalled(streamName, partition);
 
             return ownerSelfPromote(streamName, partition);
         }
@@ -2191,6 +2209,8 @@ public final class PartitionBackfill {
         var oversizedAt = oversizedIndex(results);
 
         if (oversizedAt >= 0) {
+            clearStalled(streamName, partition);
+
             return oversizedPeer(streamName,
                                  partition,
                                  peers.get(oversizedAt),
