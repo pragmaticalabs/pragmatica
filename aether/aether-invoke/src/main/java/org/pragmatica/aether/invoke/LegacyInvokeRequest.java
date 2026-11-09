@@ -21,6 +21,7 @@ import io.netty.buffer.ByteBuf;
 
 import static org.pragmatica.lang.Option.none;
 
+
 /// The wire shape of [InvokeRequest] before it gained `caller` (#2157): ten components, under tag 642.
 ///
 /// Records are encoded as a positional concatenation with no field count, so a reader of the new shape cannot read the old
@@ -43,7 +44,6 @@ public record LegacyInvokeRequest(NodeId sender,
                                   int hops,
                                   boolean sampled) {
     public static final int TAG = SliceCodec.deterministicTag("org.pragmatica.aether.invoke.LegacyInvokeRequest");
-
     public static final TypeCodec<LegacyInvokeRequest> CODEC = codec();
 
     /// Raw on purpose: the registry keys the codec by this class and by tag 642, and the reader answers the type the old bytes
