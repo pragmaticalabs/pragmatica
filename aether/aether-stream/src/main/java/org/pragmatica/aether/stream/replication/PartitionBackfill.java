@@ -39,6 +39,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.aether.stream.replication.BackfillError.General.FLIGHT_TIMED_OUT;
 import static org.pragmatica.aether.stream.replication.BackfillError.General.INCOMPLETE_BACKFILL;
+import static org.pragmatica.aether.stream.replication.BackfillError.General.SOURCE_STALLED;
 import static org.pragmatica.aether.stream.replication.BackfillError.General.MALFORMED_RESPONSE;
 import static org.pragmatica.aether.stream.replication.BackfillError.General.NOT_HIGHEST_WATERMARK;
 import static org.pragmatica.aether.stream.replication.BackfillError.General.NO_SOURCE_REPLICA;
@@ -121,6 +122,9 @@ public final class PartitionBackfill {
     private static final long TAIL_VERIFY_WINDOW = 1024L;
     /// The promotion gate's own catch-up ([#catchUpOwnerFrom]) weighs no other survivor: it would probe the same source again.
     private static final LongSupplier NO_OTHER_SURVIVOR = () -> - 1L;
+    /// #2954: consecutive owner catch-up rounds a source may answer INCOMPLETE without the owner's head advancing before the round falls
+    /// back to the next-ranked source.
+    public static final int MAX_STALLED_ROUNDS = 3;
 
     private final ReplicaRegistry registry;
     private final AlignedRecovery partitionRecovery;
@@ -205,6 +209,10 @@ public final class PartitionBackfill {
     /// only while the replica's tail is the one observed ([Lineage#rawTail]); a larger tail is new data and is re-read. Shared by
     /// the per-run views.
     private final ConcurrentHashMap<PartitionKey, ConcurrentHashMap<NodeId, Lineage>> committedLineageEnds;
+    /// #2954: per partition and source replica, the consecutive owner catch-up rounds in which the source answered INCOMPLETE and the
+    /// owner's head did not advance. Cleared for the source when it makes progress, and for the partition when any source reaches the
+    /// target. Shared by the per-run views.
+    private final ConcurrentHashMap<PartitionKey, ConcurrentHashMap<NodeId, Integer>> stalledRounds;
 
     /// A source replica's committed-lineage end `end`, observed while its raw tail was `rawTail`.
     private record Lineage(long rawTail, long end) {}
@@ -286,6 +294,7 @@ public final class PartitionBackfill {
         this.unreachableSinceMs = new ConcurrentHashMap<>();
         this.reverifiedAtOffset = new ConcurrentHashMap<>();
         this.committedLineageEnds = new ConcurrentHashMap<>();
+        this.stalledRounds = new ConcurrentHashMap<>();
         this.lastReverifyMs = new ConcurrentHashMap<>();
         this.inFlight = new ConcurrentHashMap<>();
         this.reportedOversized = new ConcurrentHashMap<>();
@@ -318,6 +327,7 @@ public final class PartitionBackfill {
         this.promotionEscapeAfter = shared.promotionEscapeAfter;
         this.reverifiedAtOffset = shared.reverifiedAtOffset;
         this.committedLineageEnds = shared.committedLineageEnds;
+        this.stalledRounds = shared.stalledRounds;
         this.lastReverifyMs = shared.lastReverifyMs;
         this.inFlight = shared.inFlight;
         this.ownerResolver = shared.ownerResolver;
@@ -1725,10 +1735,14 @@ public final class PartitionBackfill {
         clearOversized(streamName, partition);
 
         return inRankOrder(ahead.stream()
-                                .<Supplier<Promise<Long>>> map(survivor -> () -> catchupOwnerFromSurvivor(streamName,
-                                                                                                          partition,
-                                                                                                          survivor,
-                                                                                                          localWatermark))
+                                .<Supplier<Promise<Long>>> map(survivor -> () -> demoteStalled(streamName,
+                                                                                               partition,
+                                                                                               survivor.nodeId(),
+                                                                                               localWatermark,
+                                                                                               () -> catchupOwnerFromSurvivor(streamName,
+                                                                                                                              partition,
+                                                                                                                              survivor,
+                                                                                                                              localWatermark)))
                                 .toList());
     }
 
@@ -1736,7 +1750,8 @@ public final class PartitionBackfill {
     /// owner falls back to the NEXT-ranked source by committed-lineage end, each tried once per round. Every attempt keeps its own target
     /// rule (its lineage end, raised to the best other end), so a fallback never activates the owner below a replica that holds more of
     /// the committed lineage. A source that WAS read but whose run stayed short of the target ([BackfillError.General#INCOMPLETE_BACKFILL])
-    /// is the target rule holding the owner back, not an unreadable source: no fallback. The guarantee: a round activates only through a
+    /// is the target rule holding the owner back, not an unreadable source: no fallback, until it has stalled for [#MAX_STALLED_ROUNDS]
+    /// rounds without progress ([#demoteStalled], #2954). The guarantee: a round activates only through a
     /// source whose read succeeded and reached the target; when every source fails the last failure propagates, self stays SYNCING and the
     /// redrive retries (a failed source is read again only in a later round, after the others were tried). Mechanism: a lazy chain over the
     /// ranked attempts, each started only after the previous one failed.
@@ -1745,6 +1760,70 @@ public final class PartitionBackfill {
                        .reduce(NO_SOURCE_REPLICA.<Long> promise(),
                                PartitionBackfill::unlessShort,
                                (first, _) -> first);
+    }
+
+    /// #2954 (CTO ruling, FER): a source that keeps answering INCOMPLETE (a short page, no lineage hold) without the owner's head advancing
+    /// would be retried forever, since [#inRankOrder] never falls back on a short run. After [#MAX_STALLED_ROUNDS] such consecutive rounds
+    /// the source's INCOMPLETE is replaced by [BackfillError.General#SOURCE_STALLED], which the chain treats like a failed read: the round
+    /// falls back to the next-ranked source, each keeping its own target rule, so the owner is never activated below the demoted source's
+    /// end. A source that makes progress (the head advanced) is kept, and its count restarts. The guarantee: a stalled source costs at most
+    /// [#MAX_STALLED_ROUNDS] rounds before another replica is read; with no other replica the failure propagates and self stays SYNCING.
+    /// Mechanism: a per-partition, per-source counter updated before the result reaches the chain.
+    private Promise<Long> demoteStalled(String streamName,
+                                        int partition,
+                                        NodeId source,
+                                        long localWatermark,
+                                        Supplier<Promise<Long>> attempt) {
+        var settled = Promise.<Long> promise();
+
+        attempt.get()
+               .onResult(result -> settled.resolve(trackStall(streamName, partition, source, localWatermark, result)));
+
+        return settled;
+    }
+
+    private Result<Long> trackStall(String streamName,
+                                    int partition,
+                                    NodeId source,
+                                    long localWatermark,
+                                    Result<Long> result) {
+        var key = partitionKey(streamName, partition);
+
+        if (!current.getAsBoolean()) {
+            return result;
+        }
+
+        if (result.isSuccess()) {
+            stalledRounds.remove(key);
+
+            return result;
+        }
+
+        if (!result.fold(cause -> cause == INCOMPLETE_BACKFILL, _ -> false)) {
+            return result;
+        }
+
+        var rounds = stalledRounds.computeIfAbsent(key, _ -> new ConcurrentHashMap<>());
+
+        if (selfWatermark.localWatermark(streamName, partition) > localWatermark) {
+            rounds.remove(source);
+
+            return result;
+        }
+
+        return rounds.merge(source, 1, Integer::sum) >= MAX_STALLED_ROUNDS
+               ? stalled(streamName, partition, source)
+               : result;
+    }
+
+    private static Result<Long> stalled(String streamName, int partition, NodeId source) {
+        log.warn("Backfill {}[{}]: source {} answered short without progress for {} rounds — falling back to the next-ranked source",
+                 streamName,
+                 partition,
+                 source,
+                 MAX_STALLED_ROUNDS);
+
+        return SOURCE_STALLED.result();
     }
 
     private static Promise<Long> unlessShort(Promise<Long> previous, Supplier<Promise<Long>> next) {
@@ -2050,14 +2129,18 @@ public final class PartitionBackfill {
                                         .boxed()
                                         .filter(i -> ends.get(i) > localWatermark)
                                         .sorted(Comparator.comparingLong((Integer i) -> ends.get(i)).reversed())
-                                        .<Supplier<Promise<Long>>> map(i -> () -> catchupOwnerFromSurvivor(streamName,
-                                                                                                           partition,
-                                                                                                           peers.get(i),
-                                                                                                           results.get(i)
-                                                                                                                  .or(-1L),
-                                                                                                           localWatermark,
-                                                                                                           () -> othersMax(ends,
-                                                                                                                           i)))
+                                        .<Supplier<Promise<Long>>> map(i -> () -> demoteStalled(streamName,
+                                                                                                partition,
+                                                                                                peers.get(i),
+                                                                                                localWatermark,
+                                                                                                () -> catchupOwnerFromSurvivor(streamName,
+                                                                                                                               partition,
+                                                                                                                               peers.get(i),
+                                                                                                                               results.get(i)
+                                                                                                                                      .or(-1L),
+                                                                                                                               localWatermark,
+                                                                                                                               () -> othersMax(ends,
+                                                                                                                                               i))))
                                         .toList());
         }
 

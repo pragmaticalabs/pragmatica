@@ -6,10 +6,12 @@ package org.pragmatica.aether.stream;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
 import org.junit.jupiter.api.AfterEach;
@@ -34,6 +36,8 @@ import org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupRespon
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -57,6 +61,7 @@ class OwnerCatchupCommittedLineageTest {
     private static final Epoch E3 = Epoch.epoch(0, 3, 0);
     private static final Epoch E4 = Epoch.epoch(0, 4, 0);
     private static final long SOURCE_TAIL = 12L;
+    private static final TimeSpan SETTLE_BOUND = TimeSpan.timeSpan(20).seconds();
 
     @TempDir
     Path walDir;
@@ -64,6 +69,7 @@ class OwnerCatchupCommittedLineageTest {
     private StreamPartitionManager owner;
     private final AtomicInteger failReads = new AtomicInteger();
     private final Set<NodeId> unanswered = ConcurrentHashMap.newKeySet();
+    private final Map<NodeId, Long> pageCaps = new ConcurrentHashMap<>();
 
     @BeforeEach
     void startTheActivatingOwner() {
@@ -95,12 +101,12 @@ class OwnerCatchupCommittedLineageTest {
     @Test
     void redrive_ofAnOwnerBehindADisownedTail_secondRound_readsTheReplicaHoldingTheCommittedLineage_andActivates() {
         var fixture = disownedTailFixture();
-        var first = fixture.backfill().backfill("s", 0).await();
+        var first = settled(fixture.backfill().backfill("s", 0));
 
         assertThat(first.isFailure()).as("short of R2's lineage: not activated").isTrue();
         assertThat(head()).as("R1 installed through its lineage end").isEqualTo(10L);
 
-        var second = fixture.backfill().backfill("s", 0).await();
+        var second = settled(fixture.backfill().backfill("s", 0));
 
         assertThat(second.isSuccess()).as("second redrive activates: %s", second).isTrue();
         assertThat(head()).isEqualTo(15L);
@@ -113,8 +119,8 @@ class OwnerCatchupCommittedLineageTest {
     void redrive_afterActivationAtTheCommittedLineage_doesNotListThePartitionAgain_forADisownedRawTail() {
         var fixture = disownedTailFixture();
 
-        fixture.backfill().backfill("s", 0).await();
-        fixture.backfill().backfill("s", 0).await().onFailure(cause -> fail(cause.message()));
+        settled(fixture.backfill().backfill("s", 0));
+        settled(fixture.backfill().backfill("s", 0)).onFailure(cause -> fail(cause.message()));
 
         assertThat(fixture.backfill().redriveCandidates()).as("no survivor is ahead of the committed lineage").isEmpty();
     }
@@ -125,7 +131,7 @@ class OwnerCatchupCommittedLineageTest {
     void redrive_ofTheOnlyReplica_holdingADisownedTail_activatesAtItsLineageEnd_andIsNotListedAgain() {
         var fixture = disownedTailFixture(false);
 
-        var outcome = fixture.backfill().backfill("s", 0).await();
+        var outcome = settled(fixture.backfill().backfill("s", 0));
 
         assertThat(outcome.isSuccess()).as("first run: %s", outcome).isTrue();
         assertThat(head()).isEqualTo(10L);
@@ -138,9 +144,9 @@ class OwnerCatchupCommittedLineageTest {
     void redrive_ofAReplicaWhoseTailGrewPastTheObservedOne_readsItAgain() {
         var fixture = disownedTailFixture();
 
-        fixture.backfill().backfill("s", 0).await();
+        settled(fixture.backfill().backfill("s", 0));
         fixture.registry().updateWatermark("s", 0, SOURCE, 25L, ReplicationState.CAUGHT_UP);
-        fixture.backfill().backfill("s", 0).await();
+        settled(fixture.backfill().backfill("s", 0));
 
         assertThat(fixture.served()).as("R1 again, not R2").containsExactly(SOURCE, SOURCE);
     }
@@ -151,7 +157,7 @@ class OwnerCatchupCommittedLineageTest {
     void catchUpOwnerFrom_withAnotherReplicaAheadOfTheLineageEnd_activatesAtTheSourcesLineageEnd() {
         var fixture = disownedTailFixture();
 
-        var outcome = fixture.backfill().catchUpOwnerFrom("s", 0, SOURCE, 20L).await();
+        var outcome = settled(fixture.backfill().catchUpOwnerFrom("s", 0, SOURCE, 20L));
 
         assertThat(outcome.isSuccess()).as("gate path: %s", outcome).isTrue();
         assertThat(head()).isEqualTo(10L);
@@ -170,12 +176,12 @@ class OwnerCatchupCommittedLineageTest {
                               List.of(new Replica(SOURCE, 20L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))),
                                       new Replica(OTHER, 15L, List.of(ProvenanceEntry.provenanceEntry(E1, 0),
                                                                       ProvenanceEntry.provenanceEntry(E3, 11)))));
-        var first = fixture.backfill().backfill("s", 0).await();
+        var first = settled(fixture.backfill().backfill("s", 0));
 
         assertThat(first.isFailure()).as("short of R2's probed lineage: not activated: %s", first).isTrue();
         assertThat(head()).as("R1 installed through its lineage end").isEqualTo(10L);
 
-        var second = fixture.backfill().backfill("s", 0).await();
+        var second = settled(fixture.backfill().backfill("s", 0));
 
         assertThat(second.isSuccess()).as("second redrive activates: %s", second).isTrue();
         assertThat(head()).as("R2's committed 11..15 installed").isEqualTo(15L);
@@ -194,12 +200,12 @@ class OwnerCatchupCommittedLineageTest {
                               List.of(new Replica(SOURCE, 30L, List.of(ProvenanceEntry.provenanceEntry(E1, 0),
                                                                        ProvenanceEntry.provenanceEntry(E3, 9))),
                                       new Replica(OTHER, 25L, List.of(ProvenanceEntry.provenanceEntry(E1, 0)))));
-        var first = fixture.backfill().backfill("s", 0).await();
+        var first = settled(fixture.backfill().backfill("s", 0));
 
         assertThat(first.isFailure()).as("short of R2's probed 25: %s", first).isTrue();
         assertThat(head()).isEqualTo(12L);
 
-        var second = fixture.backfill().backfill("s", 0).await();
+        var second = settled(fixture.backfill().backfill("s", 0));
 
         assertThat(second.isSuccess()).as("R1's learned end 12 is the maximum: %s", second).isTrue();
         assertThat(head()).isEqualTo(12L);
@@ -213,7 +219,7 @@ class OwnerCatchupCommittedLineageTest {
         owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
 
         var fixture = fixture(true, List.of(new Replica(SOURCE, 20L, List.of(ProvenanceEntry.provenanceEntry(E1, 0)))));
-        var first = fixture.backfill().backfill("s", 0).await();
+        var first = settled(fixture.backfill().backfill("s", 0));
 
         assertThat(first.isSuccess()).as("first run: %s", first).isTrue();
         assertThat(head()).isEqualTo(10L);
@@ -231,14 +237,26 @@ class OwnerCatchupCommittedLineageTest {
                               List.of(new Replica(SOURCE, 20L, List.of(ProvenanceEntry.provenanceEntry(E1, 0)))),
                               failingFirstApply(owner.alignedRecovery()));
 
-        assertThat(fixture.backfill().backfill("s", 0).await().isFailure()).as("first apply fails").isTrue();
-        assertThat(fixture.backfill().backfill("s", 0).await().isSuccess()).isTrue();
+        assertThat(settled(fixture.backfill().backfill("s", 0)).isFailure()).as("first apply fails").isTrue();
+        assertThat(settled(fixture.backfill().backfill("s", 0)).isSuccess()).isTrue();
         assertThat(head()).isEqualTo(10L);
 
         fixture.registry().updateWatermark("s", 0, SOURCE, 20L, ReplicationState.CAUGHT_UP);
 
         assertThat(fixture.served()).containsExactly(SOURCE, SOURCE);
         assertThat(fixture.backfill().redriveCandidates()).as("R1's raw 20 is capped at 10").isEmpty();
+    }
+
+    /// #2954: every wait in this class is bounded, so a catch-up that never settles (a regression in the fallback chain) fails with an
+    /// assertion naming the hang instead of hanging the suite until the surefire timeout.
+    private static <T> Result<T> settled(Promise<T> promise) {
+        var result = promise.await(SETTLE_BOUND);
+
+        if (result.fold(cause -> cause instanceof CoreError.Timeout, _ -> false)) {
+            fail("catch-up did not settle within " + SETTLE_BOUND);
+        }
+
+        return result;
     }
 
     private static AlignedRecovery failingFirstApply(AlignedRecovery real) {
@@ -268,11 +286,11 @@ class OwnerCatchupCommittedLineageTest {
                                                                       ProvenanceEntry.provenanceEntry(E3, 11),
                                                                       ProvenanceEntry.provenanceEntry(E4, 14)))));
 
-        assertThat(fixture.backfill().backfill("s", 0).await().isFailure()).isTrue();
+        assertThat(settled(fixture.backfill().backfill("s", 0)).isFailure()).isTrue();
         assertThat(head()).isEqualTo(10L);
-        assertThat(fixture.backfill().backfill("s", 0).await().isFailure()).isTrue();
+        assertThat(settled(fixture.backfill().backfill("s", 0)).isFailure()).isTrue();
         assertThat(head()).isEqualTo(13L);
-        assertThat(fixture.backfill().backfill("s", 0).await().isSuccess()).isTrue();
+        assertThat(settled(fixture.backfill().backfill("s", 0)).isSuccess()).isTrue();
         assertThat(head()).isEqualTo(18L);
         assertThat(fixture.served()).containsExactly(SOURCE, OTHER, THIRD);
         assertThat(fixture.backfill().redriveCandidates()).isEmpty();
@@ -290,12 +308,12 @@ class OwnerCatchupCommittedLineageTest {
                                       new Replica(OTHER, 25L, List.of(ProvenanceEntry.provenanceEntry(E1, 0),
                                                                       ProvenanceEntry.provenanceEntry(E4, 13))),
                                       new Replica(THIRD, 10L, List.of(ProvenanceEntry.provenanceEntry(E1, 0)))));
-        var first = fixture.backfill().backfill("s", 0).await();
+        var first = settled(fixture.backfill().backfill("s", 0));
 
         assertThat(first.isFailure()).as("short of R2's probed 25, not activated at R1's 12: %s", first).isTrue();
         assertThat(head()).isEqualTo(12L);
 
-        var second = fixture.backfill().backfill("s", 0).await();
+        var second = settled(fixture.backfill().backfill("s", 0));
 
         assertThat(second.isSuccess()).as("second redrive reads R2: %s", second).isTrue();
         assertThat(head()).isEqualTo(25L);
@@ -313,10 +331,10 @@ class OwnerCatchupCommittedLineageTest {
                               List.of(new Replica(SOURCE, 25L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))),
                                       new Replica(OTHER, 30L, List.of(ProvenanceEntry.provenanceEntry(E1, 0)))));
 
-        assertThat(fixture.backfill().backfill("s", 0).await().isFailure()).as("held short of R1's 25").isTrue();
+        assertThat(settled(fixture.backfill().backfill("s", 0)).isFailure()).as("held short of R1's 25").isTrue();
         assertThat(head()).isEqualTo(12L);
 
-        var second = fixture.backfill().backfill("s", 0).await();
+        var second = settled(fixture.backfill().backfill("s", 0));
 
         assertThat(second.isSuccess()).as("R2's learned end 12 is the best other end: %s", second).isTrue();
         assertThat(head()).isEqualTo(12L);
@@ -331,7 +349,7 @@ class OwnerCatchupCommittedLineageTest {
 
         failReads.set(1);
 
-        var result = fixture.backfill().backfill("s", 0).await();
+        var result = settled(fixture.backfill().backfill("s", 0));
 
         assertThat(result.isSuccess()).as("second source reached the target: %s", result).isTrue();
         assertThat(head()).isEqualTo(15L);
@@ -345,7 +363,7 @@ class OwnerCatchupCommittedLineageTest {
 
         failReads.set(1);
 
-        var result = fixture.backfill().backfill("s", 0).await();
+        var result = settled(fixture.backfill().backfill("s", 0));
 
         assertThat(result.isSuccess()).as("second source reached the target: %s", result).isTrue();
         assertThat(head()).isEqualTo(15L);
@@ -360,13 +378,13 @@ class OwnerCatchupCommittedLineageTest {
 
         failReads.set(2);
 
-        var first = fixture.backfill().backfill("s", 0).await();
+        var first = settled(fixture.backfill().backfill("s", 0));
 
         assertThat(first.isFailure()).as("no source readable: %s", first).isTrue();
         assertThat(head()).as("nothing installed").isEqualTo(-1L);
         assertThat(fixture.served()).hasSize(2).doesNotHaveDuplicates();
 
-        var second = fixture.backfill().backfill("s", 0).await();
+        var second = settled(fixture.backfill().backfill("s", 0));
 
         assertThat(second.isSuccess()).as("next round: %s", second).isTrue();
         assertThat(head()).isEqualTo(15L);
@@ -382,7 +400,7 @@ class OwnerCatchupCommittedLineageTest {
 
         failReads.set(1);
 
-        var result = fixture.backfill().backfill("s", 0).await();
+        var result = settled(fixture.backfill().backfill("s", 0));
 
         assertThat(result.isFailure()).as("short of the unreadable source's 20: %s", result).isTrue();
         assertThat(head()).as("the readable replica's records are installed").isEqualTo(15L);
@@ -400,7 +418,7 @@ class OwnerCatchupCommittedLineageTest {
         unanswered.add(OTHER);
         failReads.set(1);
 
-        var result = fixture.backfill().backfill("s", 0).await();
+        var result = settled(fixture.backfill().backfill("s", 0));
 
         assertThat(result.isFailure()).as("the only answering source is unreadable: %s", result).isTrue();
         assertThat(fixture.served()).containsExactly(SOURCE);
@@ -411,7 +429,7 @@ class OwnerCatchupCommittedLineageTest {
     @Test
     void probePath_whenTheTopRankedSourceIsRead_noOtherSourceIsReadInTheRound() {
         var fixture = fixture(true, equalReplicas());
-        var result = fixture.backfill().backfill("s", 0).await();
+        var result = settled(fixture.backfill().backfill("s", 0));
 
         assertThat(result.isSuccess()).as("%s", result).isTrue();
         assertThat(head()).isEqualTo(15L);
@@ -422,11 +440,92 @@ class OwnerCatchupCommittedLineageTest {
     @Test
     void registryPath_whenTheTopRankedSourceIsRead_noOtherSourceIsReadInTheRound() {
         var fixture = fixture(false, equalReplicas());
-        var result = fixture.backfill().backfill("s", 0).await();
+        var result = settled(fixture.backfill().backfill("s", 0));
 
         assertThat(result.isSuccess()).as("%s", result).isTrue();
         assertThat(head()).isEqualTo(15L);
         assertThat(fixture.served()).hasSize(1);
+    }
+
+    /// #2954 (CTO ruling), probe path: the top-ranked source answers a short page (empty, no lineage hold) every round and the owner's head
+    /// does not move. It is read for [PartitionBackfill#MAX_STALLED_ROUNDS] rounds, then demoted: the same round falls back to the next-ranked
+    /// replica, which holds the same end, and the owner reaches 15 from it. At the previous head the stalled source was retried forever.
+    @Test
+    void probePath_aSourceAnsweringShortWithoutProgress_isDemotedAfterTheBound_andTheOwnerReachesTheTargetFromTheNextReplica() {
+        var fixture = fixture(true, equalReplicas());
+
+        assertStalledSourceIsDemoted(fixture);
+    }
+
+    /// Same, registry path.
+    @Test
+    void registryPath_aSourceAnsweringShortWithoutProgress_isDemotedAfterTheBound_andTheOwnerReachesTheTargetFromTheNextReplica() {
+        var fixture = fixture(false, equalReplicas());
+
+        assertStalledSourceIsDemoted(fixture);
+    }
+
+    private void assertStalledSourceIsDemoted(Replicas fixture) {
+        pageCaps.put(SOURCE, 0L);
+        pageCaps.put(OTHER, 0L);
+
+        var first = settled(fixture.backfill().backfill("s", 0));
+        var stalled = fixture.served().getFirst();
+        var next = stalled.equals(SOURCE) ? OTHER : SOURCE;
+
+        pageCaps.remove(next);
+
+        var second = settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(outcomeOf(first)).as("round 1 short").isEqualTo(BackfillError.General.INCOMPLETE_BACKFILL);
+        assertThat(outcomeOf(second)).as("round 2 short, below the bound").isEqualTo(BackfillError.General.INCOMPLETE_BACKFILL);
+        assertThat(fixture.served()).as("only the stalled source is read below the bound").containsExactly(stalled, stalled);
+
+        var third = settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(third.isSuccess()).as("round 3 demotes the stalled source and reaches the target from the next: %s", third).isTrue();
+        assertThat(head()).isEqualTo(15L);
+        assertThat(fixture.served()).containsExactly(stalled, stalled, stalled, next);
+    }
+
+    /// #2954: a source whose pages move the owner's head is kept, however many rounds it takes: the next replica is never read.
+    @Test
+    void probePath_aSourceAnsweringShortWithProgress_isKept_andTheNextReplicaIsNeverRead() {
+        var fixture = fixture(true, equalReplicas());
+
+        pageCaps.put(SOURCE, 1L);
+        pageCaps.put(OTHER, 1L);
+
+        var rounds = LongStream.range(0, 2L * PartitionBackfill.MAX_STALLED_ROUNDS)
+                               .mapToObj(_ -> settled(fixture.backfill().backfill("s", 0)))
+                               .toList();
+        var stalled = fixture.served().getFirst();
+
+        assertThat(rounds).allSatisfy(round -> assertThat(outcomeOf(round)).isEqualTo(BackfillError.General.INCOMPLETE_BACKFILL));
+        assertThat(head()).as("one event per round").isEqualTo(2L * PartitionBackfill.MAX_STALLED_ROUNDS - 1);
+        assertThat(fixture.served()).as("never demoted: %s alone", stalled).containsOnly(stalled).hasSize(2 * PartitionBackfill.MAX_STALLED_ROUNDS);
+    }
+
+    /// #2954, never below the target: the stalled top source holds MORE (raw 20) than the replica it falls back to (15). The fallback is read
+    /// and installed, but the owner is not activated short of the stalled source's end.
+    @Test
+    void probePath_afterDemotingAStalledSource_theFallbackStillHoldsTheOwnerToTheStalledSourcesEnd() {
+        var fixture = fixture(true,
+                              List.of(new Replica(SOURCE, 20L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))),
+                                      new Replica(OTHER, 15L, List.of(ProvenanceEntry.provenanceEntry(E1, 0)))));
+
+        pageCaps.put(SOURCE, 0L);
+        IntStream.range(0, PartitionBackfill.MAX_STALLED_ROUNDS - 1).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+
+        var demoting = settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(demoting.isFailure()).as("short of the stalled source's 20: %s", demoting).isTrue();
+        assertThat(head()).as("the fallback's records are installed").isEqualTo(15L);
+        assertThat(fixture.served().getLast()).isEqualTo(OTHER);
+    }
+
+    private static Object outcomeOf(Result<Long> result) {
+        return result.fold(cause -> (Object) cause, value -> (Object) value);
     }
 
     private static List<Replica> equalReplicas() {
@@ -486,7 +585,9 @@ class OwnerCatchupCommittedLineageTest {
             return BackfillError.General.NO_SOURCE_REPLICA.promise();
         }
 
-        return Promise.success(served(request.fromOffset(), replica.tail(), replica.node(), replica.history()));
+        var last = Math.min(replica.tail(), request.fromOffset() + pageCaps.getOrDefault(replica.node(), Long.MAX_VALUE - request.fromOffset()) - 1);
+
+        return Promise.success(served(request.fromOffset(), last, replica.node(), replica.history()));
     }
 
     private record DisownedTail(ReplicaRegistry registry, PartitionBackfill backfill, List<NodeId> served) {}
@@ -650,7 +751,7 @@ class OwnerCatchupCommittedLineageTest {
                                                            (_, request) -> Promise.success(served(request.fromOffset(), 8L, SOURCE, List.of(ProvenanceEntry.provenanceEntry(E1, 0)))),
                                                            SELF);
 
-        var outcome = backfill.catchUpOwnerFrom("s", 0, SOURCE, SOURCE_TAIL).await();
+        var outcome = settled(backfill.catchUpOwnerFrom("s", 0, SOURCE, SOURCE_TAIL));
 
         assertThat(outcome.isFailure()).as("run reached 8 of 12: %s", outcome).isTrue();
         assertThat(head()).isEqualTo(8L);
@@ -671,8 +772,7 @@ class OwnerCatchupCommittedLineageTest {
                                                            (_, request) -> Promise.success(served(request.fromOffset(), history)),
                                                            SELF);
 
-        return backfill.catchUpOwnerFrom("s", 0, SOURCE, SOURCE_TAIL)
-                       .await()
+        return settled(backfill.catchUpOwnerFrom("s", 0, SOURCE, SOURCE_TAIL))
                        .fold(cause -> Option.<Object>some(cause), _ -> Option.<Object>none());
     }
 
