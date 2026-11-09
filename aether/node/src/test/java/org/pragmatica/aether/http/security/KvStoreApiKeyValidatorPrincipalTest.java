@@ -135,6 +135,38 @@ class KvStoreApiKeyValidatorPrincipalTest {
         }
     }
 
+    /// #2946: an optional-authentication route through the KV-backed validator. No key is anonymous; a presented
+    /// key is held to the full check, so a wrong key is refused and a registered one authenticates.
+    @Nested
+    class OptionalAuthentication {
+        @Test
+        void validate_optional_noKey_servedAnonymously() {
+            registerKey(AuthorizationRole.ADMIN);
+
+            var outcome = validator().validate(HttpRequestContext.httpRequestContext("/api/v1/feed", "GET", Map.<String, List<String>> of(), Map.of(), "req-2946"),
+                                               SecurityPolicy.optional());
+
+            assertThat(outcome.isSuccess()).isTrue();
+            outcome.onSuccess(context -> assertThat(context.isAuthenticated()).isFalse());
+        }
+
+        @Test
+        void validate_optional_wrongKey_refused() {
+            registerKey(AuthorizationRole.ADMIN);
+
+            assertThat(validator().validate(request("not-the-key"), SecurityPolicy.optional()).isFailure()).isTrue();
+        }
+
+        @Test
+        void validate_optional_registeredKey_authenticates() {
+            registerKey(AuthorizationRole.ADMIN);
+
+            validator().validate(request(PLAINTEXT), SecurityPolicy.optional())
+                       .onFailure(cause -> Assertions.fail("the registered key must authenticate: " + cause.message()))
+                       .onSuccess(context -> assertThat(context.principal().value()).isEqualTo("api-key:" + KEY_ID));
+        }
+    }
+
     private void registerKey(AuthorizationRole authorizationRole) {
         var keyValue = ApiKeyValue.apiKeyValue(KEY_ID,
                                                KvStoreApiKeyValidator.hashKey(PLAINTEXT),

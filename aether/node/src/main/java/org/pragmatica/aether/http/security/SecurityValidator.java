@@ -59,11 +59,21 @@ public interface SecurityValidator {
                                                             Set.of(Role.ADMIN, Role.SERVICE),
                                                             Map.of());
 
-        return (_, _) -> Result.success(systemContext);
+        return (_, policy) -> Result.success(permitAllContext(policy, systemContext));
     }
 
-    /// The safe "no credentials are configured" validator: public routes pass with an EMPTY context,
-    /// everything else is refused with [SecurityError#NO_VALIDATOR_CONFIGURED] (#573).
+    /// #2946: an optional-authentication route is served an EMPTY context under `security_mode = "none"` -- the slice
+    /// must not mistake the unconditional system grant for a signed-in caller to personalise for.
+    private static SecurityContext permitAllContext(SecurityPolicy policy, SecurityContext systemContext) {
+        return switch (policy) {
+            case SecurityPolicy.OptionalAuth() -> SecurityContext.securityContext();
+            default -> systemContext;
+        };
+    }
+
+    /// The safe "no credentials are configured" validator: public routes pass with an EMPTY context, as do
+    /// optional-authentication routes (#2946: there is no credential store to check a presented credential against, and
+    /// the anonymous context grants nothing), everything else is refused with [SecurityError#NO_VALIDATOR_CONFIGURED] (#573).
     ///
     /// Installed by the app-HTTP plane's `SecurityMode.NONE` arm. The management plane does NOT use it: under
     /// `security_mode = "none"` that plane never consults a validator and is fully open (#1121).
@@ -77,7 +87,7 @@ public interface SecurityValidator {
     /// them.
     static SecurityValidator denyUnlessPublicValidator() {
         return (_, policy) -> switch (policy) {
-            case SecurityPolicy.Public() -> Result.success(SecurityContext.securityContext());
+            case SecurityPolicy.Public(), SecurityPolicy.OptionalAuth() -> Result.success(SecurityContext.securityContext());
             default -> SecurityError.NO_VALIDATOR_CONFIGURED.result();
         };
     }

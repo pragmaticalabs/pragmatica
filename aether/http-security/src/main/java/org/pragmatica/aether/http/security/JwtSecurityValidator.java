@@ -71,6 +71,7 @@ class JwtSecurityValidator implements HttpAuthenticator {
     public Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy) {
         return switch (policy) {
             case SecurityPolicy.Public() -> success(SecurityContext.securityContext());
+            case SecurityPolicy.OptionalAuth() -> validateBearerTokenIfPresented(request);
             case SecurityPolicy.BearerTokenRequired() -> validateBearerToken(request);
             case SecurityPolicy.Authenticated() -> validateBearerToken(request);
             case SecurityPolicy.RoleRequired _ -> validateBearerToken(request);
@@ -83,6 +84,27 @@ class JwtSecurityValidator implements HttpAuthenticator {
     private Result<SecurityContext> validateBearerToken(HttpRequestContext request) {
         return extractToken(request.headers()).toResult(SecurityError.MISSING_BEARER_TOKEN)
                            .flatMap(this::validateToken);
+    }
+
+    /// #2946: only an ABSENT `Authorization` header is anonymous. A present header is a credential attempt: one that
+    /// yields no token (bare scheme, empty value, unknown scheme) is refused as malformed (401 `invalid_token`), and
+    /// one that yields a token is held to the full validation, so nothing is downgraded to anonymous.
+    private Result<SecurityContext> validateBearerTokenIfPresented(HttpRequestContext request) {
+        return Option.some(request.headers())
+                     .filter(JwtSecurityValidator::hasAuthorizationHeader)
+                     .map(this::validatePresentedCredential)
+                     .or(() -> success(SecurityContext.securityContext()));
+    }
+
+    private Result<SecurityContext> validatePresentedCredential(Map<String, List<String>> headers) {
+        return extractToken(headers).toResult(SecurityError.MALFORMED_TOKEN)
+                           .flatMap(this::validateToken);
+    }
+
+    private static boolean hasAuthorizationHeader(Map<String, List<String>> headers) {
+        return headers.keySet()
+                      .stream()
+                      .anyMatch("authorization"::equalsIgnoreCase);
     }
 
     private Result<SecurityContext> validateToken(String token) {

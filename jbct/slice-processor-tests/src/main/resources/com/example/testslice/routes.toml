@@ -3,7 +3,7 @@ prefix = "/api/v1/test"
 [routes]
 create = "POST /"
 getById = "GET /{id:Long}"
-getItem = "GET /orders/{orderId:Long}/items/{itemId:Long}"
+getItem = { route = "GET /orders/{orderId:Long}/items/{itemId:Long}", security = "optional" }
 getItemImage = { route = "GET /items/{id:Long}/image", produces = "application/octet-stream" }
 search = "GET /search?query&limit:Integer&offset:Integer"
 update = "PUT /{id:Long}"

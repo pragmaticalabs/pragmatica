@@ -1161,6 +1161,7 @@ public class RouteSourceGenerator {
 
         return switch (level) {
             case RouteSecurityLevel.Public _ -> "SecurityPolicy.publicRoute()";
+            case RouteSecurityLevel.OptionalAuth _ -> "SecurityPolicy.optional()";
             case RouteSecurityLevel.Authenticated _ -> "SecurityPolicy.authenticated()";
             case RouteSecurityLevel.Role(var name) -> "SecurityPolicy.roleRequired(\"" + escapeJavaString(name) + "\")";
             case RouteSecurityLevel.Unspecified _ -> "SecurityPolicy.unspecified()";

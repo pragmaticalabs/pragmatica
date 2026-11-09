@@ -862,7 +862,7 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                       .equals(right.spacerSlots());
     }
 
-    /// Strictest by strength, with `UNSPECIFIED` ("inherit the global mode", at least public) just above `PUBLIC`;
+    /// Strictest by strength, with `UNSPECIFIED` ("inherit the global mode", at least public) just above `PUBLIC` and `OPTIONAL` (#2946);
     /// equal strengths are ordered by the canonical string so the answer is the same on every node.
     private static Option<SecurityPolicy> strictest(List<SecurityPolicy> policies) {
         return Option.from(policies.stream()
@@ -872,8 +872,9 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     private static int strictness(SecurityPolicy policy) {
         return switch (policy) {
             case SecurityPolicy.Public _ -> 0;
-            case SecurityPolicy.Unspecified _ -> 1;
-            default -> policy.strength() + 2;
+            case SecurityPolicy.OptionalAuth _ -> 1;
+            case SecurityPolicy.Unspecified _ -> 2;
+            default -> policy.strength() + 3;
         };
     }
 

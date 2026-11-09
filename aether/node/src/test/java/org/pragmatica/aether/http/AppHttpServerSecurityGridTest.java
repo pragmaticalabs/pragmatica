@@ -49,8 +49,8 @@ import static org.pragmatica.lang.Unit.unit;
 /// real `HttpClient`, one anonymous `GET` per cell.
 ///
 /// Five server configurations (`none`, `api-key` WITH keys, `api-key` WITHOUT keys, `jwt` WITHOUT
-/// `jwks_url`, `jwt` WITH it) times six effective policies (`public`, `authenticated`, `role:admin`,
-/// `unspecified`, `api_key`, `bearer_token`). The expected status per cell is written down as a
+/// `jwks_url`, `jwt` WITH it) times seven effective policies (`public`, `optional` (#2946: an anonymous caller is
+/// served under every configuration), `authenticated`, `role:admin`, `unspecified`, `api_key`, `bearer_token`). The expected status per cell is written down as a
 /// literal table, not derived from the code under test, so a change to any cell is a change to this
 /// file. These five are every behaviourally distinct configuration: `buildSecurityValidator` reads
 /// `jwtConfig` only under `JWT` and `apiKeys` only under `API_KEY`, and the request path reads the
@@ -118,6 +118,7 @@ class AppHttpServerSecurityGridTest {
     /// operator override can produce.
     enum Policy {
         PUBLIC(SecurityPolicy.publicRoute()),
+        OPTIONAL(SecurityPolicy.optional()),
         AUTHENTICATED(SecurityPolicy.authenticated()),
         ROLE_ADMIN(SecurityPolicy.roleRequired("admin")),
         UNSPECIFIED(SecurityPolicy.unspecified()),
@@ -145,30 +146,35 @@ class AppHttpServerSecurityGridTest {
     /// `api-key` with keys: the header is checked before the key map is consulted. No configuration
     /// serves anything but `public` anonymously.
     static final List<Cell> GRID = List.of(new Cell(Setup.NONE, Policy.PUBLIC, 200),
+                                           new Cell(Setup.NONE, Policy.OPTIONAL, 200),
                                            new Cell(Setup.NONE, Policy.AUTHENTICATED, 401),
                                            new Cell(Setup.NONE, Policy.ROLE_ADMIN, 401),
                                            new Cell(Setup.NONE, Policy.UNSPECIFIED, 200),
                                            new Cell(Setup.NONE, Policy.API_KEY, 401),
                                            new Cell(Setup.NONE, Policy.BEARER_TOKEN, 401),
                                            new Cell(Setup.API_KEY, Policy.PUBLIC, 200),
+                                           new Cell(Setup.API_KEY, Policy.OPTIONAL, 200),
                                            new Cell(Setup.API_KEY, Policy.AUTHENTICATED, 401),
                                            new Cell(Setup.API_KEY, Policy.ROLE_ADMIN, 401),
                                            new Cell(Setup.API_KEY, Policy.UNSPECIFIED, 401),
                                            new Cell(Setup.API_KEY, Policy.API_KEY, 401),
                                            new Cell(Setup.API_KEY, Policy.BEARER_TOKEN, 401),
                                            new Cell(Setup.API_KEY_WITHOUT_KEYS, Policy.PUBLIC, 200),
+                                           new Cell(Setup.API_KEY_WITHOUT_KEYS, Policy.OPTIONAL, 200),
                                            new Cell(Setup.API_KEY_WITHOUT_KEYS, Policy.AUTHENTICATED, 401),
                                            new Cell(Setup.API_KEY_WITHOUT_KEYS, Policy.ROLE_ADMIN, 401),
                                            new Cell(Setup.API_KEY_WITHOUT_KEYS, Policy.UNSPECIFIED, 401),
                                            new Cell(Setup.API_KEY_WITHOUT_KEYS, Policy.API_KEY, 401),
                                            new Cell(Setup.API_KEY_WITHOUT_KEYS, Policy.BEARER_TOKEN, 401),
                                            new Cell(Setup.JWT_WITHOUT_CONFIG, Policy.PUBLIC, 200),
+                                           new Cell(Setup.JWT_WITHOUT_CONFIG, Policy.OPTIONAL, 200),
                                            new Cell(Setup.JWT_WITHOUT_CONFIG, Policy.AUTHENTICATED, 401),
                                            new Cell(Setup.JWT_WITHOUT_CONFIG, Policy.ROLE_ADMIN, 401),
                                            new Cell(Setup.JWT_WITHOUT_CONFIG, Policy.UNSPECIFIED, 401),
                                            new Cell(Setup.JWT_WITHOUT_CONFIG, Policy.API_KEY, 401),
                                            new Cell(Setup.JWT_WITHOUT_CONFIG, Policy.BEARER_TOKEN, 401),
                                            new Cell(Setup.JWT_WITH_CONFIG, Policy.PUBLIC, 200),
+                                           new Cell(Setup.JWT_WITH_CONFIG, Policy.OPTIONAL, 200),
                                            new Cell(Setup.JWT_WITH_CONFIG, Policy.AUTHENTICATED, 401),
                                            new Cell(Setup.JWT_WITH_CONFIG, Policy.ROLE_ADMIN, 401),
                                            new Cell(Setup.JWT_WITH_CONFIG, Policy.UNSPECIFIED, 401),

@@ -23,6 +23,21 @@ class RouteSecurityLevelTest {
         }
 
         @Test
+        void parse_returnsOptional_forOptionalString() {
+            var result = RouteSecurityLevel.parse("optional");
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(level -> assertThat(level).isEqualTo(RouteSecurityLevel.OPTIONAL));
+        }
+
+        @Test
+        void parse_returnsOptional_caseInsensitively() {
+            RouteSecurityLevel.parse(" Optional ")
+                              .onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()))
+                              .onSuccess(level -> assertThat(level).isEqualTo(RouteSecurityLevel.OPTIONAL));
+        }
+
+        @Test
         void parse_returnsAuthenticated_forAuthenticatedString() {
             var result = RouteSecurityLevel.parse("authenticated");
 
@@ -130,12 +145,20 @@ class RouteSecurityLevelTest {
 
         @Test
         void strength_authenticatedIsMiddle() {
-            assertThat(RouteSecurityLevel.AUTHENTICATED.strength()).isEqualTo(1);
+            assertThat(RouteSecurityLevel.AUTHENTICATED.strength()).isEqualTo(2);
         }
 
         @Test
         void strength_roleIsHighest() {
-            assertThat(new RouteSecurityLevel.Role("admin").strength()).isEqualTo(2);
+            assertThat(new RouteSecurityLevel.Role("admin").strength()).isEqualTo(3);
+        }
+
+        @Test
+        void strength_optionalIsBetweenPublicAndAuthenticated() {
+            assertThat(RouteSecurityLevel.OPTIONAL.isAtLeastAsStrongAs(RouteSecurityLevel.PUBLIC)).isTrue();
+            assertThat(RouteSecurityLevel.AUTHENTICATED.isAtLeastAsStrongAs(RouteSecurityLevel.OPTIONAL)).isTrue();
+            assertThat(RouteSecurityLevel.PUBLIC.isAtLeastAsStrongAs(RouteSecurityLevel.OPTIONAL)).isFalse();
+            assertThat(RouteSecurityLevel.OPTIONAL.isAtLeastAsStrongAs(RouteSecurityLevel.AUTHENTICATED)).isFalse();
         }
 
         @Test
@@ -167,6 +190,11 @@ class RouteSecurityLevelTest {
         @Test
         void toConfigString_returnsPublic() {
             assertThat(RouteSecurityLevel.PUBLIC.toConfigString()).isEqualTo("public");
+        }
+
+        @Test
+        void toConfigString_returnsOptional() {
+            assertThat(RouteSecurityLevel.OPTIONAL.toConfigString()).isEqualTo("optional");
         }
 
         @Test

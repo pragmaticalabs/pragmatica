@@ -175,6 +175,30 @@ class SecurityValueObjectsTest {
         }
 
         @Test
+        void optional_factory_roundTripsThroughItsWireForm() {
+            var policy = SecurityPolicy.optional();
+
+            assertThat(policy).isInstanceOf(SecurityPolicy.OptionalAuth.class);
+            assertThat(policy.asString()).isEqualTo("OPTIONAL");
+            assertThat(SecurityPolicy.fromString("OPTIONAL")).isInstanceOf(SecurityPolicy.OptionalAuth.class);
+            assertThat(SecurityPolicy.fromBlueprintString(" Optional ")).isInstanceOf(SecurityPolicy.OptionalAuth.class);
+        }
+
+        @Test
+        void optional_strengthSitsBetweenPublicAndAuthenticated() {
+            assertThat(SecurityPolicy.optional().strength()).isGreaterThan(SecurityPolicy.publicRoute().strength())
+                                                            .isLessThan(SecurityPolicy.authenticated().strength());
+        }
+
+        @Test
+        void optional_canAccess_allowsAnonymousAndAuthenticatedContexts() {
+            var authenticated = SecurityContext.securityContext("alice", Set.of(), Map.of()).unwrap();
+
+            assertThat(SecurityPolicy.optional().canAccess(SecurityContext.securityContext())).isEqualTo(Access.ALLOW);
+            assertThat(SecurityPolicy.optional().canAccess(authenticated)).isEqualTo(Access.ALLOW);
+        }
+
+        @Test
         void apiKeyRequired_factory() {
             var policy = SecurityPolicy.apiKeyRequired();
             assertThat(policy).isInstanceOf(SecurityPolicy.ApiKeyRequired.class);
