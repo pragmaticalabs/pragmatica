@@ -1368,12 +1368,13 @@ public class FactoryClassGenerator {
         var paramList = method.params.stream()
                                      .map(p -> importTracker.use(p.type()) + " " + p.name())
                                      .collect(Collectors.joining(", "));
+        // takesCaller() guarantees the parameter; were it absent, `callerIdentity(null)` is "no identity", never a grant.
         var contextParam = method.params.stream()
                                         .filter(p -> p.type()
                                                       .equals(MethodModel.SECURITY_CONTEXT_TYPE))
+                                        .map(ProxyParamInfo::name)
                                         .findFirst()
-                                        .orElseThrow()
-                                        .name();
+                                        .orElse("null");
         var identity = importTracker.use(MethodModel.SECURITY_CONTEXT_TYPE) + ".callerIdentity(" + contextParam + ")";
 
         out.println("            public Promise<" + respType + "> " + method.name + "(" + paramList + ") {");
