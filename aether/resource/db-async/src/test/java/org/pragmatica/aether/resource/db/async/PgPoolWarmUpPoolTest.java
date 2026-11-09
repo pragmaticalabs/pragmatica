@@ -120,6 +120,38 @@ class PgPoolWarmUpPoolTest {
         assertThat(connects.get()).as("no session beyond the two hung opens was possible").isEqualTo(2);
     }
 
+    // The Conduit bench shape: a fixed pool, min_connections == max_connections == 32, with the first 8 opens hanging.
+    // After the warm-up bound requests are served from the 24 sessions that opened; once the hung opens answer the pool
+    // holds exactly 32 sessions (all 32 can be checked out at once), never more, and the 33rd request waits.
+    @Test
+    void warmUp_atFixedPool32_servesRequests_andReachesAllWarmSessions_withoutExceedingMax() {
+        var pool = pool(8, 32);
+
+        assertThat(PgPoolSettings.warmUp(pool, 32, BOUND).await(GUARD).isSuccess()).isTrue();
+
+        var early = pool.getConnection().await(GUARD);
+
+        assertThat(early.isSuccess()).as("a request after the warm-up bound is served with 8 opens still hung").isTrue();
+        early.onSuccess(Connection::close);
+        hungAnswers.forEach(answer -> answer.succeed(Authentication.OK));
+
+        var held = new ArrayList<Promise<Connection>>();
+
+        for (var i = 0; i < 32; i++) {
+            held.add(pool.getConnection());
+        }
+        for (var request : held) {
+            assertThat(request.await(GUARD).isSuccess()).as("all 32 sessions are available").isTrue();
+        }
+
+        var beyondMax = pool.getConnection();
+
+        assertThat(beyondMax.isResolved()).as("the 33rd request waits: max is not exceeded").isFalse();
+        assertThat(connects.get()).as("exactly max sessions were ever opened").isEqualTo(32);
+        held.getFirst().await(GUARD).onSuccess(Connection::close);
+        assertThat(beyondMax.await(GUARD).isSuccess()).as("a released session serves the waiting request").isTrue();
+    }
+
     private static final class BuilderWithProperties extends NettyConnectibleBuilder {
         ConnectibleBuilder.ConnectibleConfiguration configuration() {
             return properties;
