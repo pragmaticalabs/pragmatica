@@ -191,6 +191,17 @@ class NullableOutputValidationTest {
             .doesNotContain(MAY_BE_NULL);
     }
 
+    /// The fix hint names the plain element type of the `Option`.
+    @Test
+    void provenNonNullOutput_onOptionField_namesThePlainTypeInTheFix() throws Exception {
+        var result = compile(repo("PlainTypeRepo", "record Row(Option<String> status)  {}", "SELECT status FROM orders", "Promise<List<Row>> run()"));
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.diagnostics())
+            .contains("field 'status' is declared Option<java.lang.String>")
+            .contains("declare the field as the plain type java.lang.String.");
+    }
+
     /// Control: the proof is per output - an unproven `Option` field beside a proven plain field compiles.
     @Test
     void unprovenOutput_onOptionField_besideProvenPlainField_isAccepted() throws Exception {
