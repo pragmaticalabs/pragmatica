@@ -133,6 +133,16 @@ class SwimQuorumReportTest {
     }
 
     @Test
+    void relayedUpdate_carriesThePeersReport() {
+        gossip(update(MemberState.ALIVE, 2L, CORE_LOST));
+
+        assertThat(relayedPeerUpdates())
+            .as("a node that missed the subject's own update learns the report from any relay")
+            .isNotEmpty()
+            .allSatisfy(relayed -> assertThat(relayed.labels()).containsEntry("quorum", "lost"));
+    }
+
+    @Test
     void selfReport_bumpsIncarnationOncePerChange_andRidesTheSelfAlive() {
         announceSelf();
 
@@ -178,6 +188,18 @@ class SwimQuorumReportTest {
                            .filter(healthy -> healthy.peer().equals(PEER))
                            .map(SwimObservation.HealthyObserved::incarnation)
                            .toList();
+    }
+
+    private List<MembershipUpdate> relayedPeerUpdates() {
+        protocol.onMessage(GOSSIPER_ADDR, new Ping(GOSSIPER, ++sequence, List.of()));
+
+        return transport.sentMessages.stream()
+                                     .map(SentMessage::message)
+                                     .filter(Ack.class::isInstance)
+                                     .map(Ack.class::cast)
+                                     .flatMap(ack -> ack.piggyback().stream())
+                                     .filter(update -> update.nodeId().equals(PEER))
+                                     .toList();
     }
 
     private MembershipUpdate lastSelfAdvertised() {
