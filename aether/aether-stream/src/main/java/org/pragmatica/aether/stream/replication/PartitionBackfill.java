@@ -12,7 +12,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import org.pragmatica.consensus.NodeId;
@@ -172,6 +174,9 @@ public final class PartitionBackfill {
     /// #1555 sticky ownership owner source; default: no committed owner, pure HRW (see [#hrwOwner]).
     private volatile OwnerResolver ownerResolver = (_, _) -> Option.none();
     private volatile OwnerActivation.BlockAlarm blockAlarm = _ -> Unit.unit();
+    /// #2960: whether a stream still exists on this node; read under [#oversizedOrder] by [#raiseStalled] and [#reconcileStalled], so a
+    /// destroyed stream raises nothing. Default: every stream exists (until wired).
+    private volatile Predicate<String> streamExists = _ -> true;
     /// Whether a node is named in a partition's COMMITTED in-sync set (#2080); default: never, so no escape (see [#committedIsr]).
     private volatile CommittedIsr committedIsr = (_, _, _) -> false;
     /// How long a co-replica must stay unreachable before an ISR-named candidate goes ahead without it (#2080, `[streaming]
@@ -187,6 +192,9 @@ public final class PartitionBackfill {
 
     /// The oversized-peer block last reported per partition, so a redrive of the same condition is silent (#1937).
     private final ConcurrentHashMap<PartitionKey, OwnerActivation.ActivationBlock> reportedOversized;
+    /// #2960: the all-stalled block last reported per partition, so the terminal state of an owner catch-up (every source demoted) raises
+    /// once and a redrive of it is silent. Recorded, raised, removed and resolved under [#oversizedOrder], like [#reportedOversized].
+    private final ConcurrentHashMap<PartitionKey, OwnerActivation.ActivationBlock> reportedStalled;
 
     /// Raise-before-resolve (#2004) for [#reportedOversized]: recording the block and raising it, and removing it and resolving it, each
     /// happen under this monitor, so a clear that lands while a raise is in flight waits for it and delivers [raise, resolve], never
@@ -295,6 +303,7 @@ public final class PartitionBackfill {
         this.reverifiedAtOffset = new ConcurrentHashMap<>();
         this.committedLineageEnds = new ConcurrentHashMap<>();
         this.stalledRounds = new ConcurrentHashMap<>();
+        this.reportedStalled = new ConcurrentHashMap<>();
         this.lastReverifyMs = new ConcurrentHashMap<>();
         this.inFlight = new ConcurrentHashMap<>();
         this.reportedOversized = new ConcurrentHashMap<>();
@@ -328,10 +337,12 @@ public final class PartitionBackfill {
         this.reverifiedAtOffset = shared.reverifiedAtOffset;
         this.committedLineageEnds = shared.committedLineageEnds;
         this.stalledRounds = shared.stalledRounds;
+        this.reportedStalled = shared.reportedStalled;
         this.lastReverifyMs = shared.lastReverifyMs;
         this.inFlight = shared.inFlight;
         this.ownerResolver = shared.ownerResolver;
         this.blockAlarm = shared.blockAlarm;
+        this.streamExists = shared.streamExists;
         this.reportedOversized = shared.reportedOversized;
         this.oversizedOrder = shared.oversizedOrder;
         this.current = current;
@@ -872,10 +883,12 @@ public final class PartitionBackfill {
     }
 
     private Promise<Long> runBackfill(String streamName, int partition, boolean mayRepair) {
+        reconcileStalled();
         var replicas = registry.replicasFor(streamName, partition);
 
         if (isQuarantined(streamName, partition)) {
             clearOversized(streamName, partition);
+            clearStalled(streamName, partition);
 
             return mayRepair && repairable(streamName, partition)
                    ? repairThenRun(streamName, partition)
@@ -887,6 +900,7 @@ public final class PartitionBackfill {
         }
 
         clearOversized(streamName, partition);
+        clearStalled(streamName, partition);
 
         return hrwOwner(streamName, partition).filter(owner -> !owner.equals(self))
                        .fold(() -> backfillViaRegistryOrColdStart(streamName, partition, replicas),
@@ -1687,6 +1701,13 @@ public final class PartitionBackfill {
         this.blockAlarm = alarm;
     }
 
+    /// Late-bind where a stream's existence is read (#2960): the all-stalled warning is raised only for a stream that exists, and
+    /// [#reconcileStalled] resolves it for one that does not. Set once at wiring.
+    @Contract
+    public void streamExists(Predicate<String> exists) {
+        this.streamExists = exists;
+    }
+
     /// Whether `node` is named in the COMMITTED in-sync set of `(stream, partition)` (`isrVersion > 0` and the set contains it).
     @FunctionalInterface
     public interface CommittedIsr {
@@ -1734,16 +1755,18 @@ public final class PartitionBackfill {
 
         clearOversized(streamName, partition);
 
-        return inRankOrder(ahead.stream()
-                                .<Supplier<Promise<Long>>> map(survivor -> () -> demoteStalled(streamName,
-                                                                                               partition,
-                                                                                               survivor.nodeId(),
-                                                                                               localWatermark,
-                                                                                               () -> catchupOwnerFromSurvivor(streamName,
-                                                                                                                              partition,
-                                                                                                                              survivor,
-                                                                                                                              localWatermark)))
-                                .toList());
+        return rankedCatchup(streamName,
+                             partition,
+                             ahead.stream()
+                                  .<Supplier<Promise<Long>>> map(survivor -> () -> demoteStalled(streamName,
+                                                                                                 partition,
+                                                                                                 survivor.nodeId(),
+                                                                                                 localWatermark,
+                                                                                                 () -> catchupOwnerFromSurvivor(streamName,
+                                                                                                                                partition,
+                                                                                                                                survivor,
+                                                                                                                                localWatermark)))
+                                  .toList());
     }
 
     /// I-27 (#1759, CTO ruling 2026-11-09, FER): the catch-up of the top-ranked source failed (unreadable, damaged, unreachable), so the
@@ -1774,12 +1797,119 @@ public final class PartitionBackfill {
                                         NodeId source,
                                         long localWatermark,
                                         Supplier<Promise<Long>> attempt) {
-        var settled = Promise.<Long> promise();
+        return attempt.get()
+                      .replaceResult(result -> trackStall(streamName, partition, source, localWatermark, result));
+    }
 
-        attempt.get()
-               .onResult(result -> settled.resolve(trackStall(streamName, partition, source, localWatermark, result)));
+    /// [#inRankOrder], then the all-stalled signal (#2960): a round whose LAST failure is [BackfillError.General#SOURCE_STALLED] has run out of
+    /// sources, since each earlier one failed or was demoted before the chain reached it. The guarantee: that terminal state raises the
+    /// operator warning once per episode and never activates the owner; progress or activation clears it ([#clearStalled]).
+    /// Mechanism: a transform on the chain's final result, under the dedup of [#reportedStalled].
+    private Promise<Long> rankedCatchup(String streamName, int partition, List<Supplier<Promise<Long>>> attempts) {
+        return inRankOrder(attempts).replaceResult(result -> reportIfAllStalled(streamName, partition, result));
+    }
 
-        return settled;
+    private Result<Long> reportIfAllStalled(String streamName, int partition, Result<Long> result) {
+        if (result.fold(SOURCE_STALLED::equals, _ -> false)) {
+            raiseStalled(streamName, partition);
+        }
+
+        return result;
+    }
+
+    Unit raiseStalled(String streamName, int partition) {
+        var block = new OwnerActivation.ActivationBlock.CatchupStalled(streamName, partition, MAX_STALLED_ROUNDS);
+        // `current` is read INSIDE the monitor, as in [#oversizedPeer]: a superseded flight must not raise after its successor's clear.
+        synchronized (oversizedOrder) {
+            if (mayRaiseStalled(streamName) && !block.equals(reportedStalled.put(partitionKey(streamName, partition),
+                                                                                 block))) {
+                blockAlarm.raise(block);
+            }
+        }
+
+        return Unit.unit();
+    }
+
+    /// Inside the monitor: the flight is the current one and the stream still exists (#2960 F2), so a destroyed stream is never given a report.
+    private boolean mayRaiseStalled(String streamName) {
+        return current.getAsBoolean() && streamExists.test(streamName);
+    }
+
+    /// The all-stalled state no longer holds (#2960): a source advanced the owner, the round activated it, no source answered ahead of it any more, or this node is no longer the partition's owner.
+    /// Forgetting the report lets the state raise again when it recurs; the alarm is told so the operator sees it end.
+    Unit clearStalled(String streamName, int partition) {
+        synchronized (oversizedOrder) {
+            if (current.getAsBoolean()) {
+                Option.option(reportedStalled.remove(partitionKey(streamName, partition))).onPresent(blockAlarm::resolved);
+            }
+        }
+
+        return Unit.unit();
+    }
+
+    /// Level trigger of the all-stalled warning (#2960). The guarantee: after a call returns, no open report is for a partition that is not
+    /// all-stalled NOW and held by this node, whatever route took it out of that state. A report stays open only while the stream exists, this
+    /// node is still a registered replica of the partition and its owner, the partition is not quarantined, and some source's stall counter is
+    /// at [#MAX_STALLED_ROUNDS]. Mechanism: every open report is re-derived from live state, so no exit has to be enumerated. Run on every
+    /// backfill round, every reconcile pass of the replica set (ownership and membership changes) and every redrive tick; raising stays
+    /// idempotent and dedup'd. A raise racing a replica-set removal can outlive the removal until the next of those, at most one redrive tick.
+    /// The ownership and quarantine reads happen before the monitor, which stays a leaf: a flip between them and the monitor costs at worst a
+    /// resolve that the next stalled round raises again, never a report left open.
+    public Unit reconcileStalled() {
+        var notHeld = reportedStalled.keySet().stream().filter(this::isNotHeldAsOwner).collect(Collectors.toSet());
+
+        synchronized (oversizedOrder) {
+            reportedStalled.keySet()
+                           .stream()
+                           .filter(key -> notHeld.contains(key) || !isStalledNow(key))
+                           .toList()
+                           .forEach(key -> clearStalled(key.streamName(),
+                                                        key.partition()));
+        }
+
+        return Unit.unit();
+    }
+
+    private boolean isNotHeldAsOwner(PartitionKey key) {
+        return isQuarantined(key.streamName(), key.partition()) || !isSelfOwner(key.streamName(), key.partition());
+    }
+
+    private boolean isStalledNow(PartitionKey key) {
+        return streamExists.test(key.streamName())
+               && isSelfReplica(key)
+               && hasStalledSource(key);
+    }
+
+    private boolean isSelfReplica(PartitionKey key) {
+        return registry.replicasFor(key.streamName(),
+                                    key.partition())
+                       .stream()
+                       .anyMatch(descriptor -> descriptor.nodeId()
+                                                         .equals(self));
+    }
+
+    private boolean hasStalledSource(PartitionKey key) {
+        return Option.option(stalledRounds.get(key))
+                     .map(rounds -> rounds.values()
+                                          .stream()
+                                          .anyMatch(count -> count >= MAX_STALLED_ROUNDS))
+                     .or(false);
+    }
+
+    /// The stream was destroyed (#2960): no partition of it can end its all-stalled state by a later round, so each open report is resolved.
+    /// Called from the stream-removed listener; a stream recreated under the same name starts with no report.
+    public Unit clearStalledOf(String streamName) {
+        synchronized (oversizedOrder) {
+            reportedStalled.keySet()
+                           .stream()
+                           .filter(key -> key.streamName()
+                                             .equals(streamName))
+                           .toList()
+                           .forEach(key -> clearStalled(key.streamName(),
+                                                        key.partition()));
+        }
+
+        return Unit.unit();
     }
 
     private Result<Long> trackStall(String streamName,
@@ -1791,6 +1921,7 @@ public final class PartitionBackfill {
 
         if (result.isSuccess()) {
             stalledRounds.remove(key);
+            clearStalled(streamName, partition);
 
             return result;
         }
@@ -1803,6 +1934,7 @@ public final class PartitionBackfill {
 
         if (selfWatermark.localWatermark(streamName, partition) > localWatermark) {
             rounds.remove(source);
+            clearStalled(streamName, partition);
 
             return result;
         }
@@ -1848,7 +1980,7 @@ public final class PartitionBackfill {
                                         source,
                                         sourceTail,
                                         selfWatermark.localWatermark(streamName, partition),
-                                        NO_OTHER_SURVIVOR);
+                                        NO_OTHER_SURVIVOR).onSuccess(_ -> clearStalled(streamName, partition));
     }
 
     /// The surviving NON-SELF replica holding the highest `confirmedOffset`, but only when it is STRICTLY
@@ -2075,6 +2207,7 @@ public final class PartitionBackfill {
 
         if (blind.isEmpty()) {
             clearOversized(streamName, partition);
+            clearStalled(streamName, partition);
 
             return ownerSelfPromote(streamName, partition);
         }
@@ -2120,29 +2253,33 @@ public final class PartitionBackfill {
         if (bestEnd > localWatermark) {
             clearOversized(streamName, partition);
 
-            return inRankOrder(IntStream.range(0,
-                                               ends.size())
-                                        .boxed()
-                                        .filter(i -> ends.get(i) > localWatermark)
-                                        .sorted(Comparator.comparingLong((Integer i) -> ends.get(i)).reversed())
-                                        .<Supplier<Promise<Long>>> map(i -> () -> demoteStalled(streamName,
-                                                                                                partition,
-                                                                                                peers.get(i),
-                                                                                                localWatermark,
-                                                                                                () -> catchupOwnerFromSurvivor(streamName,
-                                                                                                                               partition,
-                                                                                                                               peers.get(i),
-                                                                                                                               results.get(i)
-                                                                                                                                      .or(-1L),
-                                                                                                                               localWatermark,
-                                                                                                                               () -> othersMax(ends,
-                                                                                                                                               i))))
-                                        .toList());
+            return rankedCatchup(streamName,
+                                 partition,
+                                 IntStream.range(0,
+                                                 ends.size())
+                                          .boxed()
+                                          .filter(i -> ends.get(i) > localWatermark)
+                                          .sorted(Comparator.comparingLong((Integer i) -> ends.get(i)).reversed())
+                                          .<Supplier<Promise<Long>>> map(i -> () -> demoteStalled(streamName,
+                                                                                                  partition,
+                                                                                                  peers.get(i),
+                                                                                                  localWatermark,
+                                                                                                  () -> catchupOwnerFromSurvivor(streamName,
+                                                                                                                                 partition,
+                                                                                                                                 peers.get(i),
+                                                                                                                                 results.get(i)
+                                                                                                                                        .or(-1L),
+                                                                                                                                 localWatermark,
+                                                                                                                                 () -> othersMax(ends,
+                                                                                                                                                 i))))
+                                          .toList());
         }
 
         var oversizedAt = oversizedIndex(results);
 
         if (oversizedAt >= 0) {
+            clearStalled(streamName, partition);
+
             return oversizedPeer(streamName,
                                  partition,
                                  peers.get(oversizedAt),
@@ -2150,6 +2287,7 @@ public final class PartitionBackfill {
         }
 
         clearOversized(streamName, partition);
+        clearStalled(streamName, partition);
         if (results.stream().anyMatch(Result::isFailure)) {
             return escapeOwnerCatchup(streamName, partition, localWatermark, UNREACHABLE_REPLICA_BLOCKS_PROMOTION);
         }

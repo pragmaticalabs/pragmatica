@@ -132,7 +132,16 @@ class LivePlacementMembersWiringTest {
         assertThat(code).as("#2599: a compare's verification releases the ack the gate held back")
                         .containsOnlyOnce("streamPartitionManager.onEpochVerified(streamReplicationReceiveHandler::releaseDeferredAck);");
         assertThat(code).as("#2599: a removed stream's deferred acks are dropped with it")
-                        .containsOnlyOnce("streamPartitionManager.onStreamRemoved(streamReplicationReceiveHandler::forgetDeferredAcks);");
+                        .containsOnlyOnce("streamPartitionManager.onStreamRemoved(streamName->forgetRemovedStream(streamReplicationReceiveHandler,streamPartitionBackfill,streamName));");
+        assertThat(code).as("#2960: a removed stream drops its deferred acks and resolves its open all-stalled warning")
+                        .containsOnlyOnce("receiveHandler.forgetDeferredAcks(streamName);returnbackfill.clearStalledOf(streamName);");
+        assertThat(code).as("#2960: the all-stalled warning is raised only for a stream the manager still holds")
+                        .containsOnlyOnce("streamPartitionBackfill.streamExists(streamPartitionManager::streamExists);");
+        assertThat(code).as("#2960: a finished reconcile pass re-derives the open all-stalled warnings before it drives ownership")
+                        .containsOnlyOnce("(List<PartitionKey>reconciled)->reconcilePassComplete(streamPartitionBackfill,streamOwnershipWriter,clusterCommandApplier,streamOwnershipRetry,reconciled)")
+                        .containsOnlyOnce("backfill.reconcileStalled();driveStreamOwnership(writer,applier,retry,reconciled);");
+        assertThat(code).as("#2960: every redrive tick re-derives the open all-stalled warnings")
+                        .containsOnlyOnce("backfillExecutor.execute(backfill::reconcileStalled);");
         assertThat(code).as("#2599 G3: a backfill's ack goes out in the receive handler's per-partition section")
                         .containsOnlyOnce("streamPartitionBackfill.backfillAckSink(streamReplicationReceiveHandler::ackBackfill);");
         assertThat(code).containsOnlyOnce("streamReplicationManager.ownerEpochs(streamOwnerEpochSource);");

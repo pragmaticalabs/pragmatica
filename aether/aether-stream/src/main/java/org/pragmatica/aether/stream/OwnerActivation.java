@@ -391,6 +391,20 @@ public final class OwnerActivation {
             }
         }
 
+        /// #2960: every source the promoted owner could catch up from answered short without advancing it for `rounds` consecutive rounds
+        /// and was demoted (`PartitionBackfill.MAX_STALLED_ROUNDS`), so the round ends with no source left. The owner stays SYNCING and never
+        /// activates below the target (the rule is lossless); the redrive retries every tick. Reported once, cleared on progress or activation.
+        record CatchupStalled(String streamName, int partition, int rounds) implements ActivationBlock {
+            @Override
+            public String message() {
+                return ("Owner catch-up of %s[%d] cannot progress: every source answered short without advancing the owner for %d "
+                       + "consecutive rounds; the owner stays non-authoritative and never activates below the target, and the "
+                       + "redrive retries until a source holding the missing records answers in full").formatted(streamName,
+                                                                                                                 partition,
+                                                                                                                 rounds);
+            }
+        }
+
         /// `unreachable` have not answered the promotion probe for longer than `blockedLongerThan` and may hold a
         /// higher watermark; `responders` answered.
         record HoldersUnreachable(String streamName,

@@ -5622,6 +5622,12 @@ public final class StreamPartitionManager implements AutoCloseable {
         return resolvePartitionBuffer(streamName, partition).flatMap(buffer -> buffer.read(fromOffset, maxEvents));
     }
 
+    /// Whether the stream is present on this node (#2960): false once [#onStreamConfigRemove] has removed it, before it tells its
+    /// [StreamRemovedListener]. The all-stalled warning is raised only while this holds.
+    public boolean streamExists(String streamName) {
+        return streams.containsKey(streamName);
+    }
+
     /// Whether `nodeId` is a registered replica of `(streamName, partition)` in the SAME registry the
     /// replication manager sends to and counts acks from (#1235). Gates the appended-head catch-up read:
     /// a node outside the replica set gets a consumer read instead.
