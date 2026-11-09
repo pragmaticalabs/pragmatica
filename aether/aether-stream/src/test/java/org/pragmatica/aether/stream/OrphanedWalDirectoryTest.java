@@ -7,8 +7,13 @@ package org.pragmatica.aether.stream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 
 import org.pragmatica.aether.slice.RetentionPolicy;
@@ -19,6 +24,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 import org.pragmatica.storage.AppendLog;
 import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
@@ -193,7 +199,7 @@ class OrphanedWalDirectoryTest {
     @Test
     void anOrphan_isNotReleased_whenTheLogRootCannotBeListedAtTheNextAdoption() throws IOException {
         walDirectory(STREAM + "@" + ORPHANED_LIFE);
-        var listable = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var listable = new AtomicBoolean(true);
         var directory = AppendLog.Opener.directory(walDir);
         var opener = AppendLog.Opener.opener(directory::open,
                                              directory::inspect,
@@ -228,6 +234,135 @@ class OrphanedWalDirectoryTest {
         node.close();
 
         assertThat(warnings.getFirst().subject()).isEqualTo(STREAM + "@" + ORPHANED_LIFE);
+    }
+
+    /// #2952: the WAL-root walk runs off the thread applying the committed config (the KV dispatcher), so a slow walk holds no
+    /// KV apply: both Puts return while the walk is still blocked, and the orphan is raised once it completes.
+    @Test
+    void aSlowWalRootWalk_doesNotHoldTheConfigApply_andTheOrphanIsRaisedWhenItCompletes() throws Exception {
+        walDirectory(STREAM + "@" + ORPHANED_LIFE);
+        var walk = new CountDownLatch(1);
+        var node = managerOver(blockingListing(walk, List.of()));
+
+        node.operatorWarnings(sink());
+        var applies = CompletableFuture.runAsync(() -> applyTwoConfigs(node));
+
+        try {
+            assertThat(applies.get(5, TimeUnit.SECONDS)).as("both config Puts returned while the walk is blocked").isNull();
+            assertThat(warnings).as("control: nothing is raised before the walk completes").isEmpty();
+        } finally {
+            walk.countDown();
+        }
+        awaitWarnings(1);
+        quiesce();
+        node.close();
+
+        assertThat(warnings).extracting(OperatorWarning::subject).containsExactly(STREAM + "@" + ORPHANED_LIFE);
+    }
+
+    /// #2952: the reports run in adoption order after a late walk, as they ran inline before: the orphan raised for the first
+    /// adoption is released by the second, which adopts the orphaned life as the committed one.
+    @Test
+    void reportsQueuedBehindASlowWalk_runInAdoptionOrder() throws IOException {
+        walDirectory(STREAM + "@" + ORPHANED_LIFE);
+        var walk = new CountDownLatch(1);
+        var node = managerOver(blockingListing(walk, List.of()));
+
+        node.operatorWarnings(sink());
+        node.onStreamConfigPut(committed(config().withIncarnation(ADOPTED_LIFE)));
+        node.onStreamConfigRemove(new ValueRemove<>(new KVCommand.Remove<StreamConfigKey>(StreamConfigKey.streamConfigKey(STREAM)), Option.empty()));
+        node.onStreamConfigPut(committed(config().withIncarnation(ORPHANED_LIFE)));
+        walk.countDown();
+        awaitWarnings(2);
+        quiesce();
+        node.close();
+
+        assertThat(warnings).extracting(OperatorWarning::code)
+                            .containsExactly(OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED, OperatorWarningCode.STORAGE_STREAM_WAL_RELEASED);
+    }
+
+    /// #2952: the snapshot is taken after the first adoption, so it can list the directory of a life this process adopted; a later life
+    /// of the stream never reports this process's own earlier life as an orphan.
+    @Test
+    void aLifeThisProcessAdopted_isNeverReportedAsAnOrphan_whenTheSnapshotListsIt() throws IOException {
+        var node = managerOver(blockingListing(new CountDownLatch(0), List.of(STREAM + "@" + ADOPTED_LIFE + "/0")));
+
+        node.operatorWarnings(sink());
+        node.onStreamConfigPut(committed(config().withIncarnation(ADOPTED_LIFE)));
+        node.onStreamConfigRemove(new ValueRemove<>(new KVCommand.Remove<StreamConfigKey>(StreamConfigKey.streamConfigKey(STREAM)), Option.empty()));
+        node.onStreamConfigPut(committed(config().withIncarnation(ADOPTED_LIFE + 1)));
+        quiesce();
+        node.close();
+
+        assertThat(warnings).isEmpty();
+    }
+
+    /// #2952: a report that throws (here the first WAL-root listing) is logged, and the reports queued after it still run.
+    @Test
+    void aReportThatThrows_doesNotStopTheReportsQueuedAfterIt() throws IOException {
+        walDirectory(STREAM + "@" + ORPHANED_LIFE);
+        var firstListing = new AtomicBoolean(true);
+        var directory = AppendLog.Opener.directory(walDir);
+        var opener = AppendLog.Opener.opener(directory::open, directory::inspect, () -> throwingOnce(firstListing, directory));
+        var node = managerOver(opener);
+
+        node.operatorWarnings(sink());
+        node.onStreamConfigPut(committed(config().withIncarnation(ADOPTED_LIFE)));
+        quiesce();
+        node.onStreamConfigRemove(new ValueRemove<>(new KVCommand.Remove<StreamConfigKey>(StreamConfigKey.streamConfigKey(STREAM)), Option.empty()));
+        node.onStreamConfigPut(committed(config().withIncarnation(ADOPTED_LIFE + 1)));
+        awaitWarnings(1);
+        node.close();
+
+        assertThat(firstListing.get()).as("control: the first listing threw").isFalse();
+        assertThat(warnings).extracting(OperatorWarning::subject).containsExactly(STREAM + "@" + ORPHANED_LIFE);
+    }
+
+    private static Result<List<String>> throwingOnce(AtomicBoolean first, AppendLog.Opener directory) {
+        if (first.getAndSet(false)) {
+            throw new IllegalStateException("listing fails once");
+        }
+
+        return directory.listLogs();
+    }
+
+    private static void applyTwoConfigs(StreamPartitionManager node) {
+        node.onStreamConfigPut(committed(config().withIncarnation(ADOPTED_LIFE)));
+        node.onStreamConfigPut(committed("payments", config("payments").withIncarnation(ADOPTED_LIFE)));
+    }
+
+    /// The directory opener over `walDir`, whose listing waits for `walk` and adds `extra` log names to what is on disk.
+    private AppendLog.Opener blockingListing(CountDownLatch walk, List<String> extra) {
+        var directory = AppendLog.Opener.directory(walDir);
+
+        return AppendLog.Opener.opener(directory::open, directory::inspect, () -> listAfter(walk, directory, extra));
+    }
+
+    private static Result<List<String>> listAfter(CountDownLatch walk, AppendLog.Opener directory, List<String> extra) {
+        awaitLatch(walk);
+
+        return directory.listLogs()
+                        .map(names -> concat(names, extra));
+    }
+
+    private static List<String> concat(List<String> names, List<String> extra) {
+        var all = new ArrayList<>(names);
+
+        all.addAll(extra);
+
+        return all;
+    }
+
+    private static void awaitLatch(CountDownLatch latch) {
+        try {
+            latch.await(30, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private StreamPartitionManager managerOver(AppendLog.Opener opener) {
+        return streamPartitionManagerOverLogs(Long.MAX_VALUE, Option.some(opener), LastSealedOffsetSource.none());
     }
 
     private Path walDirectory(String name) throws IOException {
@@ -280,11 +415,19 @@ class OrphanedWalDirectoryTest {
     }
 
     private static StreamConfig config() {
-        return StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 600_000), "earliest");
+        return config(STREAM);
+    }
+
+    private static StreamConfig config(String stream) {
+        return StreamConfig.streamConfig(stream, 1, RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 600_000), "earliest");
     }
 
     private static ValuePut<StreamConfigKey, StreamConfigValue> committed(StreamConfig config) {
-        return new ValuePut<>(new KVCommand.Put<>(StreamConfigKey.streamConfigKey(STREAM), StreamConfigValue.streamConfigValue(config)),
+        return committed(STREAM, config);
+    }
+
+    private static ValuePut<StreamConfigKey, StreamConfigValue> committed(String stream, StreamConfig config) {
+        return new ValuePut<>(new KVCommand.Put<>(StreamConfigKey.streamConfigKey(stream), StreamConfigValue.streamConfigValue(config)),
                               Option.empty());
     }
 }

@@ -29,11 +29,15 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.storage.AppendLog;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -120,6 +124,55 @@ class V1866R4ProbeTest {
         replica.close();
 
         assertThat(acked.isSuccess()).as("control: %s", acked).isTrue();
+    }
+
+    /// #2952: the startup snapshot is taken off the KV dispatcher, after the first adoption, so it can list the WAL directory of this
+    /// node's own losing proposal. The proposal was this process's life: it is never reported as an orphan of the committed life.
+    @Test
+    void aLosingProposalListedByTheStartupSnapshot_isNotReportedAsAnOrphan() throws InterruptedException {
+        var c1 = new RecordingClusterNode();
+        var listedExtra = new AtomicReference<List<String>>(List.of());
+        var directory = AppendLog.Opener.directory(n1Wal);
+        var opener = AppendLog.Opener.opener(directory::open,
+                                             directory::inspect,
+                                             () -> directory.listLogs().map(names -> concat(names, listedExtra.get())));
+        var warnings = new CopyOnWriteArrayList<OperatorWarning>();
+        var replica = manager(c1, opener);
+
+        replica.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+        replica.createStream(config()); // proposal b, this node's own life
+        var b = c1.lastPut();
+        var a = new KVCommand.Put<StreamConfigKey, StreamConfigValue>(b.key(),
+                                                                      StreamConfigValue.streamConfigValue(b.value().config()
+                                                                                                           .withIncarnation(b.value().config().incarnation() + 1)));
+
+        listedExtra.set(List.of(STREAM + "@" + b.value().config().incarnation() + "/0"));
+        replica.onStreamConfigPut(committed(a));
+        Thread.sleep(500);
+        replica.close();
+
+        assertThat(warnings).as("the losing proposal b is this node's own life, never an orphan of a").isEmpty();
+    }
+
+    private static List<String> concat(List<String> names, List<String> extra) {
+        var all = new ArrayList<>(names);
+
+        all.addAll(extra);
+
+        return all;
+    }
+
+    private static StreamPartitionManager manager(RecordingClusterNode cluster, AppendLog.Opener opener) {
+        return streamPartitionManager(Long.MAX_VALUE,
+                                      EvictionListener.NOOP,
+                                      ReplicationManager.NONE,
+                                      cluster,
+                                      OwnershipEpochHighWater.ownershipEpochHighWater(emptyStore()),
+                                      StreamOwnerEpochSource.zero(),
+                                      CommittedEpochStarts.NONE,
+                                      Option.some(opener),
+                                      LastSealedOffsetSource.none(),
+                                      DurableSealedOffsetSource.none());
     }
 
     private static StreamPartitionManager manager(RecordingClusterNode cluster, Path walDir) {

@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream;
 
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.pragmatica.aether.slice.StreamConfig;
@@ -34,6 +35,12 @@ final class StreamEntries {
     private final Set<String> orphanedWalReported = ConcurrentHashMap.newKeySet();
     /// The lives announced as released: the startup snapshot still lists them, and must not announce them again.
     private final Set<String> releasedOrphans = ConcurrentHashMap.newKeySet();
+    /// #2952: the lives (`<stream>@<incarnation>`) this process proposed or adopted, so far. Their WAL directories are its own,
+    /// never an orphan, though the startup snapshot, taken off the KV dispatcher, can list one created while it ran.
+    private final Set<String> ownLives = ConcurrentHashMap.newKeySet();
+    /// #2952: the other-lives reports of the adoptions made so far, in adoption order, waiting for the one drainer that runs them
+    /// off the adopting (KV dispatcher) thread.
+    private final ConcurrentLinkedQueue<Runnable> lifeReports = new ConcurrentLinkedQueue<>();
     private final ConcurrentHashMap<String, PartitionState> partitionStates = new ConcurrentHashMap<>();
 
     private StreamEntries() {}
@@ -60,6 +67,14 @@ final class StreamEntries {
 
     Set<String> releasedOrphans() {
         return releasedOrphans;
+    }
+
+    Set<String> ownLives() {
+        return ownLives;
+    }
+
+    ConcurrentLinkedQueue<Runnable> lifeReports() {
+        return lifeReports;
     }
 
     /// The incarnation of the name's live life on this node: the local entry's, else the applied committed config's (know

@@ -314,8 +314,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final WalFailStop walAlarms = WalFailStop.walFailStop(this::walFailStopped, this::walWritable);
 
     /// Know 3b01e624f1: the WAL directories (`<stream>@<incarnation>`) under the log root as they were when the first stream life was adopted,
-    /// i.e. at startup, before this process created any. Read once: the directories of this process's own lives are not in it.
+    /// i.e. at startup. Read once, by the first life-reports drain ([#drainLifeReports]), never on the adopting thread (#2952: the walk held
+    /// the KV dispatcher ~670 ms). The drain starts right after the first adoption, so the walk can list a directory this process created
+    /// meanwhile: a report never names a life this process proposed or adopted up to the adoption it reports ([StreamEntries#ownLives]).
     private final Lazy<List<String>> walDirectoriesAtStart = Lazy.lazy(this::scanWalDirectories);
+
+    /// #2952: held by the one thread draining [StreamEntries#lifeReports], so the reports run one at a time, in adoption order.
+    private final AtomicBoolean lifeReportsDraining = new AtomicBoolean();
 
     private static final long DURABLE_WATERMARK_TTL_NANOS = 10_000_000_000L;
 
@@ -1430,9 +1435,20 @@ public final class StreamPartitionManager implements AutoCloseable {
     public void operatorWarnings(OperatorWarningSink sink) {
         this.operatorWarnings = sink;
         boundSeams.add(StreamSeam.OPERATOR_WARNINGS);
-        operatorWarningsBound = true;
-        entries.deferredReports().forEach(Runnable::run);
-        entries.deferredReports().clear();
+        bindAndTakeDeferredReports().forEach(Runnable::run);
+    }
+
+    /// #2952: a report can now be deferred from the life-reports drain while the sink is being bound; under the lock it is either
+    /// deferred before the bind (and taken here) or sees the bind (and runs at once), never lost between the two.
+    private List<Runnable> bindAndTakeDeferredReports() {
+        synchronized (entries.deferredReports()) {
+            operatorWarningsBound = true;
+            var deferred = List.copyOf(entries.deferredReports());
+
+            entries.deferredReports().clear();
+
+            return deferred;
+        }
     }
 
     /// Atomically reserve `bytes` against the shared pool. Returns true iff the reservation fit under
@@ -1607,7 +1623,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private Result<Unit> createFreshStream(StreamConfig requested, CommitMode commitMode) {
-        var config = withIncarnation(requested);
+        var config = ownLife(withIncarnation(requested));
 
         return checkReplicationMinimum(config).flatMap(_ -> checkRetentionCapacity(config))
                                       .flatMap(_ -> checkPartitionCaps(config))
@@ -3615,12 +3631,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                 deletePendingCut(pendingCutFile(appendLog));
             };
 
-            if (operatorWarningsBound) {
-                report.run();
-            } else {
-                entries.deferredReports()
-                       .add(report);
-            }
+            raiseOrDefer(report);
         }));
     }
 
@@ -6154,18 +6165,69 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Before a stream materializes: serve the life `config` names (#1278 review), so recovery anchors only at that
     /// life's sealed watermark and floor. Any other life of the name is announced, never reclaimed (#2452, [#reportOtherLives]).
     private Result<Unit> adoptIncarnation(StreamConfig config) {
-        return reportOtherLives(config,
+        return reportOtherLives(ownLife(config),
                                 streamFootprint.adopt(config.name(), config.incarnation()).await(FOOTPRINT_TIMEOUT));
     }
 
+    /// #2952: `config`'s life is this process's own from here on, before any WAL directory of it exists: the startup snapshot, which
+    /// can list a directory created while it is taken, never reports it as an orphan ([#raiseOrphanedLives]).
+    private StreamConfig ownLife(StreamConfig config) {
+        entries.ownLives()
+               .add(SegmentIndex.durableName(config.name(), config.incarnation()));
+
+        return config;
+    }
+
     /// Know 3b01e624f1, 6d0c58fd67: adoption deletes no other life of the name ([StreamFootprint#adopt]); each is announced instead.
+    ///
+    /// #2952: the announcing lists the WAL root (the startup snapshot on the first adoption, a fresh listing while an orphan is open), a
+    /// filesystem walk, so it never runs on the adopting thread, which is the KV dispatcher for a committed config: it is queued and
+    /// run by a drainer thread. Ordering, as when it ran inline: the reports run one at a time in adoption order, so a later
+    /// adoption's release sees every orphan an earlier one raised; the footprint adoption itself stays inline, before the life
+    /// materializes. What changes: the announcement follows the adoption instead of preceding its return, and the startup snapshot can
+    /// list directories this process created after the first adoption. A report leaves out the lives this process proposed or adopted up
+    /// to the adoption it reports, captured now; a later own life it still names (one created while the walk ran) is announced and then
+    /// released by the report of that life's own adoption, or of the stream's next one, which is queued behind it.
     private Result<Unit> reportOtherLives(StreamConfig config, Result<List<StreamFootprint.OtherLife>> adopted) {
         var others = adopted.or(List.of());
+        var ownLives = Set.copyOf(entries.ownLives());
 
-        raiseReleasedLives(config, others);
-        raiseOrphanedLives(config, others);
+        entries.lifeReports()
+               .add(() -> announceOtherLives(config, others, ownLives));
+        Thread.ofVirtual()
+              .name("stream-life-reports")
+              .start(this::drainLifeReports);
 
         return adopted.mapToUnit();
+    }
+
+    @Contract
+    private void announceOtherLives(StreamConfig config, List<StreamFootprint.OtherLife> others, Set<String> ownLives) {
+        raiseReleasedLives(config, others);
+        raiseOrphanedLives(config, others, ownLives);
+    }
+
+    /// #2952: one drainer at a time runs the queued reports in order. A report queued while another thread drains is taken by
+    /// that drainer, or by this loop once the flag is released: the queue is re-checked after every release.
+    @Contract
+    private void drainLifeReports() {
+        while (!entries.lifeReports()
+                      .isEmpty() && lifeReportsDraining.compareAndSet(false, true)) {
+            runQueuedLifeReports();
+            lifeReportsDraining.set(false);
+        }
+    }
+
+    /// Only the flag holder removes, so the queue is not empty at `remove`. A report that throws is logged and the rest still run.
+    @Contract
+    private void runQueuedLifeReports() {
+        while (!entries.lifeReports()
+                      .isEmpty()) {
+            Result.lift(entries.lifeReports()
+                               .remove()::run)
+                  .onFailure(cause -> log.warn("Stream life report failed: {}",
+                                               cause.message()));
+        }
     }
 
     /// A life of the name other than the one `config` adopts — a WAL directory `<stream>@<incarnation>` or sealed segments, or both — holds
@@ -6173,12 +6235,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// config mints a fresh one). It is never deleted, and never silent: raised once per life, naming the stream, both incarnations and the
     /// sealed-segment count.
     @Contract
-    private void raiseOrphanedLives(StreamConfig config, List<StreamFootprint.OtherLife> sealedLives) {
+    private void raiseOrphanedLives(StreamConfig config, List<StreamFootprint.OtherLife> sealedLives, Set<String> ownLives) {
         var sealed = sealedLives.stream()
                                 .collect(Collectors.toMap(StreamFootprint.OtherLife::incarnation,
                                                           StreamFootprint.OtherLife::sealedSegments));
         var walLives = walDirectoriesAtStart.get()
                                             .stream()
+                                            .filter(directory -> !ownLives.contains(directory))
                                             .filter(directory -> isOrphanedLifeOf(config, directory))
                                             .map(directory -> SegmentIndex.DurableName.parse(directory).incarnation())
                                             .toList();
@@ -6234,10 +6297,16 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     @Contract
     private void raiseOrDefer(Runnable report) {
-        if (operatorWarningsBound) {
+        if (!deferredUnlessBound(report)) {
             report.run();
-        } else {
-            entries.deferredReports().add(report);
+        }
+    }
+
+    /// True when `report` was deferred because the sink is not bound yet; under the lock [#bindAndTakeDeferredReports] binds under.
+    private boolean deferredUnlessBound(Runnable report) {
+        synchronized (entries.deferredReports()) {
+            return !operatorWarningsBound && entries.deferredReports()
+                                                    .add(report);
         }
     }
 
