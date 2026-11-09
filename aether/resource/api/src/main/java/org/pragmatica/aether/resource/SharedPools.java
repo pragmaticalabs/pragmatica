@@ -323,11 +323,12 @@ final class SharedPools {
         return closing.onResultRun(() -> pendingCloses.remove(closing));
     }
 
-    /// Releases `scope` from every pool it holds.
+    /// Releases `scope` from every pool it holds. The walk is over a table snapshot, not `List.copyOf`: that asks the
+    /// view `isEmpty()`, the map's striped count, and could return nothing while the scope still holds a pool.
     List<Promise<Unit>> releaseScope(String scope) {
         var releases = new ArrayList<Promise<Unit>>();
 
-        for (var entry : List.copyOf(entries.entrySet())) {
+        for (var entry : new ArrayList<>(entries.entrySet())) {
             if (entry.getValue().holders().containsKey(scope)) {
                 releases.add(release(entry.getKey(), scope));
             }

@@ -504,7 +504,7 @@ public final class SpiResourceProvider implements ResourceProvider {
     private Promise<Unit> releaseScope(String scope, List<Promise<Unit>> shared) {
         var closeFutures = new ArrayList<Promise<Unit>>(shared);
 
-        for (var entry : List.copyOf(promiseCache.entrySet())) {
+        for (var entry : new ArrayList<>(promiseCache.entrySet())) {
             var key = entry.getKey();
 
             if (!scope.equals(key.scope())) {

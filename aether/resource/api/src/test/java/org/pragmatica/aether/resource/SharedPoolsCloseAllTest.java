@@ -74,6 +74,23 @@ class SharedPoolsCloseAllTest {
     }
 
     @Test
+    void releaseScope_whenIsEmptyLiesOnce_stillReleasesTheScopesPool() throws Exception {
+        var pools = SharedPools.sharedPools(this::closePool);
+        var entries = SharedPools.class.getDeclaredField("entries");
+
+        acquire(pools, "slice-a").await(TIMEOUT);
+        entries.setAccessible(true);
+        var held = new LyingMap();
+
+        held.putAll((ConcurrentHashMap<?, ?>) entries.get(pools));
+        entries.set(pools, held);
+        pools.releaseScope("slice-a");
+
+        assertThat(closes.get()).as("the scope's pool must be released although isEmpty() lied").isEqualTo(1);
+        assertThat(pools.size()).isZero();
+    }
+
+    @Test
     void closeAll_includesAReleaseCloseStillPending() {
         var pools = SharedPools.sharedPools(this::deferClose);
 
