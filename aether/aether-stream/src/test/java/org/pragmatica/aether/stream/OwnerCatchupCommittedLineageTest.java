@@ -47,6 +47,7 @@ class OwnerCatchupCommittedLineageTest {
     private static final NodeId SELF = NodeId.randomNodeId();
     private static final NodeId SOURCE = NodeId.randomNodeId();
     private static final NodeId OTHER = NodeId.randomNodeId();
+    private static final NodeId THIRD = NodeId.randomNodeId();
     private static final Epoch E1 = Epoch.epoch(0, 1, 0);
     private static final Epoch E2 = Epoch.epoch(0, 2, 0);
     private static final Epoch E3 = Epoch.epoch(0, 3, 0);
@@ -148,6 +149,125 @@ class OwnerCatchupCommittedLineageTest {
 
         assertThat(outcome.isSuccess()).as("gate path: %s", outcome).isTrue();
         assertThat(head()).isEqualTo(10L);
+    }
+
+    /// P10 (CTO ruling 2026-11-09), the production probe path: both replicas' registry rows are blind (`-1`, as under
+    /// `WatermarkStore.NOOP`), so their tails are learned by probe. R1 (raw 20, lineage end 10) is probed highest and read first;
+    /// the owner installs through 10 and does NOT activate there, since R2 was probed at 15. The next redrive ranks R1 by its
+    /// learned lineage end, reads R2 and activates at 15. At the previous head the owner activated at 10 and R2's committed
+    /// 11..15 were never read.
+    @Test
+    void probePath_ofAnOwnerBehindADisownedTail_doesNotActivateBelowAnotherReplicasLineage_andRedrivesFromIt() {
+        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
+
+        var fixture = fixture(true,
+                              List.of(new Replica(SOURCE, 20L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))),
+                                      new Replica(OTHER, 15L, List.of(ProvenanceEntry.provenanceEntry(E1, 0),
+                                                                      ProvenanceEntry.provenanceEntry(E3, 11)))));
+        var first = fixture.backfill().backfill("s", 0).await();
+
+        assertThat(first.isFailure()).as("short of R2's probed lineage: not activated: %s", first).isTrue();
+        assertThat(head()).as("R1 installed through its lineage end").isEqualTo(10L);
+
+        var second = fixture.backfill().backfill("s", 0).await();
+
+        assertThat(second.isSuccess()).as("second redrive activates: %s", second).isTrue();
+        assertThat(head()).as("R2's committed 11..15 installed").isEqualTo(15L);
+        assertThat(fixture.served()).as("R1 once, then the replica holding the lineage").containsExactly(SOURCE, OTHER);
+        assertThat(fixture.backfill().redriveCandidates()).isEmpty();
+    }
+
+    /// P10, the other replicas are weighed by their committed-lineage end, never their raw tail: R1 (raw 30, lineage end 12 under
+    /// E4 @ 13) is read first and held to R2's probed 25; R2's page is then clipped at E3 @ 9 (its lineage ends at 8). Once both ends
+    /// are learned the best is R1's 12, which the owner already holds, so it activates at 12 instead of waiting forever on R1's raw 30.
+    @Test
+    void probePath_whenEveryReplicasLineageIsLearned_activatesAtTheMaximumLineageEnd_notAnotherReplicasRawTail() {
+        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 9L), new EpochStart(E4, 13L)));
+
+        var fixture = fixture(true,
+                              List.of(new Replica(SOURCE, 30L, List.of(ProvenanceEntry.provenanceEntry(E1, 0),
+                                                                       ProvenanceEntry.provenanceEntry(E3, 9))),
+                                      new Replica(OTHER, 25L, List.of(ProvenanceEntry.provenanceEntry(E1, 0)))));
+        var first = fixture.backfill().backfill("s", 0).await();
+
+        assertThat(first.isFailure()).as("short of R2's probed 25: %s", first).isTrue();
+        assertThat(head()).isEqualTo(12L);
+
+        var second = fixture.backfill().backfill("s", 0).await();
+
+        assertThat(second.isSuccess()).as("R1's learned end 12 is the maximum: %s", second).isTrue();
+        assertThat(head()).isEqualTo(12L);
+        assertThat(fixture.served()).containsExactly(SOURCE, OTHER);
+    }
+
+    /// P14, the registry path with two learned caps: raw tails 30 / 25 / 18, committed-lineage ends 10 / 13 / 18 (E3 @ 11, E4 @ 14).
+    /// Each redrive reads the replica with the highest lineage end still unknown, is held to the best other end, and the third
+    /// activates at 18; no survivor is then ahead.
+    @Test
+    void registryPath_threeReplicas_twoLearnedCaps_convergesToTheMaximumLineageEnd() {
+        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L), new EpochStart(E4, 14L)));
+
+        var fixture = fixture(false,
+                              List.of(new Replica(SOURCE, 30L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))),
+                                      new Replica(OTHER, 25L, List.of(ProvenanceEntry.provenanceEntry(E1, 0),
+                                                                      ProvenanceEntry.provenanceEntry(E3, 11))),
+                                      new Replica(THIRD, 18L, List.of(ProvenanceEntry.provenanceEntry(E1, 0),
+                                                                      ProvenanceEntry.provenanceEntry(E3, 11),
+                                                                      ProvenanceEntry.provenanceEntry(E4, 14)))));
+
+        assertThat(fixture.backfill().backfill("s", 0).await().isFailure()).isTrue();
+        assertThat(head()).isEqualTo(10L);
+        assertThat(fixture.backfill().backfill("s", 0).await().isFailure()).isTrue();
+        assertThat(head()).isEqualTo(13L);
+        assertThat(fixture.backfill().backfill("s", 0).await().isSuccess()).isTrue();
+        assertThat(head()).isEqualTo(18L);
+        assertThat(fixture.served()).containsExactly(SOURCE, OTHER, THIRD);
+        assertThat(fixture.backfill().redriveCandidates()).isEmpty();
+    }
+
+    private record Replica(NodeId node, long tail, List<ProvenanceEntry> history) {}
+
+    private record Replicas(PartitionBackfill backfill, List<NodeId> served) {}
+
+    /// The replicas serve their whole tail with their own history; `blind` leaves their registry rows at `-1` so the backfill
+    /// learns the tails by probe (the production path), otherwise the rows carry the tails.
+    private Replicas fixture(boolean blind, List<Replica> replicas) {
+        var registry = ReplicaRegistry.replicaRegistry();
+        var served = new CopyOnWriteArrayList<NodeId>();
+
+        registry.registerReplica("s", 0, SELF);
+        replicas.forEach(replica -> register(registry, replica, blind));
+
+        var backfill = PartitionBackfill.partitionBackfill(registry,
+                                                           owner.alignedRecovery(),
+                                                           (node, request) -> serve(replicaOf(replicas, node), request, served),
+                                                           ReplicationTransport.NOOP,
+                                                           (peer, _, _) -> Promise.success(replicaOf(replicas, peer).tail()),
+                                                           (_, _) -> head(),
+                                                           SELF,
+                                                           TimeSpan.timeSpan(Long.MAX_VALUE).nanos(),
+                                                           () -> List.of(SELF),
+                                                           CommittedStreamOwnerSource.none());
+
+        return new Replicas(backfill, served);
+    }
+
+    private static void register(ReplicaRegistry registry, Replica replica, boolean blind) {
+        registry.registerReplica("s", 0, replica.node());
+
+        if (!blind) {
+            registry.updateWatermark("s", 0, replica.node(), replica.tail(), ReplicationState.CAUGHT_UP);
+        }
+    }
+
+    private static Replica replicaOf(List<Replica> replicas, NodeId node) {
+        return replicas.stream().filter(replica -> replica.node().equals(node)).findFirst().orElseThrow();
+    }
+
+    private static Promise<CatchupResponse> serve(Replica replica, CatchupRequest request, List<NodeId> served) {
+        served.add(replica.node());
+
+        return Promise.success(served(request.fromOffset(), replica.tail(), replica.node(), replica.history()));
     }
 
     private record DisownedTail(ReplicaRegistry registry, PartitionBackfill backfill, List<NodeId> served) {}
