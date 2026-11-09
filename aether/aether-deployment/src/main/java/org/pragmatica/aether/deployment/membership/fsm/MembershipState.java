@@ -277,14 +277,18 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
 
     /// Rejoin fencing in DEAD: a `SwimHealthy(inc)` reopens the identity only when `inc` exceeds the
     /// incarnation this identity died at; otherwise the gossip is stale and is ignored.
+    ///
+    /// #2936: while the member itself reports quorum loss ([`MembershipContext#reportsQuorumLoss`]) a newer
+    /// incarnation does not reopen it either; the report's clearing arrives with a further incarnation bump, which
+    /// still exceeds the terminal incarnation and reopens it then.
     private static void rejoinIfNewer(MembershipContext ctx,
                                       Dead current,
                                       long incarnation,
                                       TransitionRequest<MembershipState, MembershipEvent> tx) {
-        if (incarnation > current.terminalIncarnation()) {
-            tx.transitionTo(ctx.observedRejoin(incarnation));
-        } else {
+        if (incarnation <= current.terminalIncarnation() || ctx.reportsQuorumLoss()) {
             tx.ignore();
+        } else {
+            tx.transitionTo(ctx.observedRejoin(incarnation));
         }
     }
 }

@@ -208,8 +208,7 @@ public sealed interface MembershipAssembly {
         // #2936: a node that cannot write to the quorum says so on its SWIM self-ALIVE, and every node reads its
         // peers' reports — a reporting peer stays out of the forward set and a refuted drain does not re-admit it.
         // Only a core publishes: a worker never writes to the quorum, its detector measures core visibility.
-        membershipFsm.setQuorumLossReport(swimHealthDetector::reportsQuorumLoss);
-        publishQuorumReport(config, quorumLossDetector, swimHealthDetector);
+        wireQuorumReports(configuredWorker(config), membershipFsm, quorumLossDetector, swimHealthDetector);
         metricsCollector.setMetricsProducerEligibility(membershipFsm::isTrackedAndNotDead);
         controlLoop.setMetricsProducerEligibility(membershipFsm::isTrackedAndNotDead);
 
@@ -220,11 +219,16 @@ public sealed interface MembershipAssembly {
                                         membershipFsm);
     }
 
+    /// #2936: the membership FSM reads every peer's SWIM quorum-loss report; a core also publishes its own report on
+    /// its SWIM self-ALIVE (a worker never writes to the quorum, so it publishes nothing).
     @Contract
-    private static void publishQuorumReport(AetherNodeConfig config,
-                                            QuorumLossDetector quorumLossDetector,
-                                            CoreSwimHealthDetector swimHealthDetector) {
-        if (!configuredWorker(config)) {
+    static void wireQuorumReports(boolean worker,
+                                  MembershipFsm membershipFsm,
+                                  QuorumLossDetector quorumLossDetector,
+                                  CoreSwimHealthDetector swimHealthDetector) {
+        membershipFsm.setQuorumLossReport(swimHealthDetector::reportsQuorumLoss);
+
+        if (!worker) {
             quorumLossDetector.setQuorumReportListener(swimHealthDetector::reportSelfQuorumLoss);
         }
     }

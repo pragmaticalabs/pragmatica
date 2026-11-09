@@ -5,8 +5,10 @@
 package org.pragmatica.aether.node.assembly;
 
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 
 import org.pragmatica.aether.api.LogLevelRegistry;
 import org.pragmatica.aether.api.ObservabilityBaseline;
@@ -414,12 +416,12 @@ public sealed interface SliceRuntimeAssembly {
         // FSM exists it degrades to identity (forward falls back to the connectedPeers-only behavior).
         var workerEndpointDirectory = org.pragmatica.aether.node.health.WorkerEndpointDirectory.workerEndpointDirectory();
         AccessibilityFilter accessibilityFilter = candidates -> Option.option(membershipFsmRef.get())
-                                                                      .map(fsm -> configuredWorker(config)
-                                                                                  ? workerEndpointDirectory.accessible(candidates,
-                                                                                                                       fsm,
-                                                                                                                       clusterNode.network()
-                                                                                                                                  .connectedPeers())
-                                                                                  : fsm.forwardableMembers(candidates))
+                                                                      .map(fsm -> accessibleCandidates(candidates,
+                                                                                                       fsm,
+                                                                                                       configuredWorker(config),
+                                                                                                       workerEndpointDirectory,
+                                                                                                       () -> clusterNode.network()
+                                                                                                                        .connectedPeers()))
                                                                       .or(candidates);
         // #275: the same narrowing for slice-to-slice invocation — a co-confirmed-DEAD node's endpoints
         // stay registered until the CDM's removal cleanup lands, and without this a new invocation
@@ -477,6 +479,19 @@ public sealed interface SliceRuntimeAssembly {
                               .mapToUnit();
             }
         };
+    }
+
+    /// The forward filter's narrowing (#2936): a core forwards only to [`MembershipFsm#forwardableMembers`] (reachable
+    /// minus peers reporting quorum loss); a worker narrows through its endpoint directory, which reads the same set.
+    /// The connected-peer set is read only on the worker path.
+    static List<NodeId> accessibleCandidates(List<NodeId> candidates,
+                                             MembershipFsm fsm,
+                                             boolean worker,
+                                             WorkerEndpointDirectory workerEndpointDirectory,
+                                             Supplier<Set<NodeId>> connectedPeers) {
+        return worker
+               ? workerEndpointDirectory.accessible(candidates, fsm, connectedPeers.get())
+               : fsm.forwardableMembers(candidates);
     }
 
     /// Resolve the cluster-level #198 route-mount mode (§7) from the app-HTTP config. Path mode is

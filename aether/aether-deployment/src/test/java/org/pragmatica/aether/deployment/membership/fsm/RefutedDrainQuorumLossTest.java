@@ -18,7 +18,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 /// #2936 — a node that cannot write to the quorum (it says so on its SWIM self-ALIVE) is not re-admitted
-/// DEPARTING→MEMBER by a refuted drain and does not pass the forward filter ([`MembershipFsm#forwardableMembers`]),
+/// DEPARTING→MEMBER by a refuted drain (nor reopened from DEAD by a newer incarnation) and does not pass the forward filter ([`MembershipFsm#forwardableMembers`]),
 /// while a healthy node with a briefly refuted drain is re-admitted, and a reporting node is re-admitted as soon as
 /// its report clears (bounded by its next strictly-newer `SwimHealthy`, which the clearing carries).
 ///
@@ -56,6 +56,8 @@ class RefutedDrainQuorumLossTest {
         reporting.add(SUSPECT);
         List.of(futureLeader, survivorThree, survivorFour).forEach(fsm -> fsm.onSwimHealthy(SUSPECT, 2L));
 
+        assertThat(futureLeader.memberStates()).as("a quorumless refutation does not reopen a DEAD identity")
+                                               .containsEntry(SUSPECT, "Dead");
         assertThat(survivorThree.memberStates()).as("refuted drain of a quorumless node: stays DEPARTING")
                                                 .containsEntry(SUSPECT, "Departing");
         assertThat(survivorFour.memberStates()).containsEntry(SUSPECT, "Departing");
@@ -114,11 +116,15 @@ class RefutedDrainQuorumLossTest {
                .untilAsserted(() -> assertThat(survivor.memberStates()).as("held DEPARTING is not a trap")
                                                                        .containsEntry(SUSPECT, "Dead"));
 
-        reporting.remove(SUSPECT);
         survivor.onSwimHealthy(SUSPECT, 3L);
+        assertThat(survivor.memberStates()).as("a quorumless refutation does not reopen the DEAD identity")
+                                           .containsEntry(SUSPECT, "Dead");
 
-        assertThat(survivor.memberStates()).as("the clearing bump reopens the identity")
-                                           .containsEntry(SUSPECT, "Observed");
+        reporting.remove(SUSPECT);
+        survivor.onSwimHealthy(SUSPECT, 4L);
+
+        assertThat(survivor.memberStates()).as("the clearing bump reopens the identity and re-admits it")
+                                           .containsEntry(SUSPECT, "Member");
         assertThat(survivor.forwardableMembers(List.of(SUSPECT))).containsExactly(SUSPECT);
     }
 

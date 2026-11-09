@@ -37,6 +37,7 @@ import java.net.InetSocketAddress;
 import java.net.SocketException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 
@@ -258,6 +259,59 @@ class CoreSwimHealthDetectorTest {
             try (var socket = new DatagramSocket(0)) {
                 return socket.getLocalPort();
             }
+        }
+    }
+
+    /// #2936: a quorum-loss report made before SWIM starts is kept and replayed onto the protocol `start()` creates,
+    /// and the detector reads a peer's report from the live protocol.
+    @Nested
+    class QuorumReport {
+        @Test
+        void reportSelfQuorumLoss_beforeStart_isReplayedOntoTheStartedProtocol() throws InterruptedException, SocketException {
+            var swimPort = ObservationListenerPreRegistration.freeUdpPort();
+            var self = NodeInfo.nodeInfo(SELF,
+                                         NodeAddress.nodeAddress("127.0.0.1", swimPort - CoreSwimHealthDetector.SWIM_PORT_OFFSET)
+                                                    .unwrap());
+            var peer = NodeInfo.nodeInfo(PEER_A, NodeAddress.nodeAddress("127.0.0.2", 9001).unwrap());
+            var topologyConfig = new TopologyConfig(SELF, 2, timeSpan(1).seconds(), timeSpan(10).seconds(),
+                                                    List.of(self, peer));
+            var freshDetector = CoreSwimHealthDetector.coreSwimHealthDetector(MessageRouter.mutable(), topologyConfig,
+                                                                              Mockito.mock(Serializer.class),
+                                                                              Mockito.mock(Deserializer.class));
+
+            freshDetector.reportSelfQuorumLoss(true);
+            try {
+                freshDetector.start(org.pragmatica.lang.Option.none(), GossipEncryptor.none())
+                             .await()
+                             .onFailure(cause -> fail("start() failed: " + cause.message()));
+                for (int i = 0; i < 50 && !(freshDetector.lifecycleState() instanceof SwimHealthState.Running); i++) {
+                    Thread.sleep(20);
+                }
+                assertThat(freshDetector.lifecycleState()).isInstanceOf(SwimHealthState.Running.class);
+                var protocol = ((SwimHealthState.Running) freshDetector.lifecycleState()).swim();
+
+                protocol.announceJoin(self, "replay", 1L, List.of());
+                freshDetector.reportSelfQuorumLoss(false);
+
+                assertThat(protocol.selfIncarnation())
+                    .as("the replayed report makes its clearing a change, advertised with one incarnation bump")
+                    .isEqualTo(2L);
+            } finally {
+                freshDetector.stop();
+            }
+        }
+
+        @Test
+        void reportsQuorumLoss_readsThePeersReportFromTheLiveProtocol() {
+            var protocol = ((SwimHealthState.Running) detector.lifecycleState()).swim();
+            var address = new InetSocketAddress("127.0.0.2", 9101);
+            var update = SwimMessage.MembershipUpdate.membershipUpdate(PEER_A, MemberState.ALIVE, 2L, address, 0L,
+                                                                       Map.of("quorum", "lost"));
+
+            assertThat(detector.reportsQuorumLoss(PEER_A)).isFalse();
+            protocol.onMessage(address, SwimMessage.Ack.ack(PEER_A, 1L, List.of(update)));
+
+            assertThat(detector.reportsQuorumLoss(PEER_A)).as("the peer's report, read through the live protocol").isTrue();
         }
     }
 }
