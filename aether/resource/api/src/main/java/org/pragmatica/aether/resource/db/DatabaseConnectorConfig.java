@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.db;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Properties;
 import java.util.regex.Matcher;
@@ -31,10 +32,45 @@ public record DatabaseConnectorConfig(Option<String> name,
                                       Map<String, String> properties,
                                       Option<String> jdbcUrl,
                                       Option<String> r2dbcUrl,
-                                      Option<String> asyncUrl) {
+                                      Option<String> asyncUrl,
+                                      Option<String> applicationName) {
+    /// PostgreSQL truncates `application_name` at `NAMEDATALEN - 1` bytes; a longer configured name is refused at load
+    /// rather than cut silently (#2948). Characters outside printable ASCII are accepted but reach the server as `?`
+    /// (the server would otherwise rewrite them to `\xNN`), so `pg_stat_activity` shows the `?` form; see the pg-async
+    /// connector's `PgPoolSettings`.
+    public static final int MAX_APPLICATION_NAME_BYTES = 63;
+
     private static final Pattern URL_PATTERN = Pattern.compile("(?:\\w+:)*(?://)?(?:[^@]+@)?([^/:]+)(?::(\\d+))?/(.+?)(?:\\?.*)?$");
 
     private static final Pattern CREDENTIALS_PATTERN = Pattern.compile("://([^:]+):([^@]+)@");
+
+    /// The record without an `application_name`: the pre-#2948 shape, kept so existing callers compile unchanged.
+    public DatabaseConnectorConfig(Option<String> name,
+                                   Option<DatabaseType> type,
+                                   Option<String> host,
+                                   Option<Integer> port,
+                                   Option<String> database,
+                                   Option<String> username,
+                                   Option<String> password,
+                                   PoolConfig poolConfig,
+                                   Map<String, String> properties,
+                                   Option<String> jdbcUrl,
+                                   Option<String> r2dbcUrl,
+                                   Option<String> asyncUrl) {
+        this(name,
+             type,
+             host,
+             port,
+             database,
+             username,
+             password,
+             poolConfig,
+             properties,
+             jdbcUrl,
+             r2dbcUrl,
+             asyncUrl,
+             none());
+    }
 
     public String effectiveName() {
         return name.orElse(() -> firstUrlDatabase(urlsFor(preferredTransport())))
@@ -55,6 +91,7 @@ public record DatabaseConnectorConfig(Option<String> name,
              + ", jdbcUrl=" + sanitizeUrl(jdbcUrl)
              + ", r2dbcUrl=" + sanitizeUrl(r2dbcUrl)
              + ", asyncUrl=" + sanitizeUrl(asyncUrl)
+             + ", applicationName=" + applicationName
              + "]";
     }
 
@@ -118,18 +155,68 @@ public record DatabaseConnectorConfig(Option<String> name,
                                                                           Option<String> jdbcUrl,
                                                                           Option<String> r2dbcUrl,
                                                                           Option<String> asyncUrl) {
-        return validateConfig(type, host, database, jdbcUrl, r2dbcUrl, asyncUrl).map(_ -> new DatabaseConnectorConfig(name,
-                                                                                                                      type,
-                                                                                                                      host,
-                                                                                                                      port,
-                                                                                                                      database,
-                                                                                                                      username,
-                                                                                                                      password,
-                                                                                                                      poolConfig,
-                                                                                                                      properties,
-                                                                                                                      jdbcUrl,
-                                                                                                                      r2dbcUrl,
-                                                                                                                      asyncUrl));
+        return databaseConnectorConfig(name,
+                                       type,
+                                       host,
+                                       port,
+                                       database,
+                                       username,
+                                       password,
+                                       poolConfig,
+                                       properties,
+                                       jdbcUrl,
+                                       r2dbcUrl,
+                                       asyncUrl,
+                                       none());
+    }
+
+    public static Result<DatabaseConnectorConfig> databaseConnectorConfig(Option<String> name,
+                                                                          Option<DatabaseType> type,
+                                                                          Option<String> host,
+                                                                          Option<Integer> port,
+                                                                          Option<String> database,
+                                                                          Option<String> username,
+                                                                          Option<String> password,
+                                                                          PoolConfig poolConfig,
+                                                                          Map<String, String> properties,
+                                                                          Option<String> jdbcUrl,
+                                                                          Option<String> r2dbcUrl,
+                                                                          Option<String> asyncUrl,
+                                                                          Option<String> applicationName) {
+        return validateConfig(type, host, database, jdbcUrl, r2dbcUrl, asyncUrl).flatMap(_ -> ensureApplicationName(applicationName))
+                             .map(_ -> new DatabaseConnectorConfig(name,
+                                                                   type,
+                                                                   host,
+                                                                   port,
+                                                                   database,
+                                                                   username,
+                                                                   password,
+                                                                   poolConfig,
+                                                                   properties,
+                                                                   jdbcUrl,
+                                                                   r2dbcUrl,
+                                                                   asyncUrl,
+                                                                   applicationName));
+    }
+
+    /// An absent name is valid (the connector derives one); a present one must be non-blank, free of NUL (the startup
+    /// message is NUL-terminated) and at most [#MAX_APPLICATION_NAME_BYTES] UTF-8 bytes.
+    private static Result<Unit> ensureApplicationName(Option<String> applicationName) {
+        return applicationName.map(DatabaseConnectorConfig::checkApplicationName)
+                              .or(Result.unitResult());
+    }
+
+    private static Result<Unit> checkApplicationName(String value) {
+        return value.isBlank()
+               ? cause("application_name must not be blank").result()
+               : checkApplicationNameShape(value);
+    }
+
+    private static Result<Unit> checkApplicationNameShape(String value) {
+        return value.indexOf('\0') >= 0 || value.getBytes(StandardCharsets.UTF_8).length > MAX_APPLICATION_NAME_BYTES
+               ? cause("application_name must be at most " + MAX_APPLICATION_NAME_BYTES
+                      + " UTF-8 bytes and contain no NUL character").result()
+               : Result.unitResult();
     }
 
     public static Result<DatabaseConnectorConfig> databaseConnectorConfig(String name,
@@ -493,6 +580,7 @@ public record DatabaseConnectorConfig(Option<String> name,
         private Option<String> jdbcUrl = none();
         private Option<String> r2dbcUrl = none();
         private Option<String> asyncUrl = none();
+        private Option<String> applicationName = none();
 
         private Builder() {}
 
@@ -568,6 +656,12 @@ public record DatabaseConnectorConfig(Option<String> name,
             return this;
         }
 
+        public Builder withApplicationName(String value) {
+            this.applicationName = option(value);
+
+            return this;
+        }
+
         public Result<DatabaseConnectorConfig> build() {
             return databaseConnectorConfig(name,
                                            type,
@@ -580,7 +674,8 @@ public record DatabaseConnectorConfig(Option<String> name,
                                            properties,
                                            jdbcUrl,
                                            r2dbcUrl,
-                                           asyncUrl);
+                                           asyncUrl,
+                                           applicationName);
         }
     }
 }

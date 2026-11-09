@@ -35,16 +35,18 @@ public final class AsyncSqlConnectorFactory implements ResourceFactory<SqlConnec
 
     @Override
     public Promise<SqlConnector> provision(DatabaseConnectorConfig config) {
-        return Promise.lift(DatabaseConnectorError::databaseFailure, () -> connector(config));
+        return Promise.lift(DatabaseConnectorError::databaseFailure, () -> assemble(config)).flatMap(assembled -> assembled.warmed(config.poolConfig()));
     }
 
-    private static SqlConnector connector(DatabaseConnectorConfig config) {
+    private static PgPoolSettings.Assembled<SqlConnector> assemble(DatabaseConnectorConfig config) {
         var builder = new NettyConnectibleBuilder();
 
         configureConnection(builder, config);
         configurePool(builder, config);
+        var pool = builder.pool();
 
-        return PgAsyncSqlConnector.pgAsyncSqlConnector(config, builder.pool(), builder.plain());
+        return new PgPoolSettings.Assembled<>(PgAsyncSqlConnector.pgAsyncSqlConnector(config, pool, builder.plain()),
+                                              pool);
     }
 
     private static void configureConnection(NettyConnectibleBuilder builder, DatabaseConnectorConfig config) {
@@ -54,6 +56,7 @@ public final class AsyncSqlConnectorFactory implements ResourceFactory<SqlConnec
         config.effectiveUsername(DatabaseConnectorConfig.Transport.ASYNC).onPresent(builder::username);
         config.effectivePassword(DatabaseConnectorConfig.Transport.ASYNC).onPresent(builder::password);
         builder.converters(JsonTextConverter.INSTANCE);
+        PgPoolSettings.configureSession(builder, config);
     }
 
     private static void configurePool(NettyConnectibleBuilder builder, DatabaseConnectorConfig config) {

@@ -5,11 +5,12 @@ package org.pragmatica.aether.resource.db;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.TimeSpan;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
-import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.utils.Causes.cause;
 
 
 public record PoolConfig(int minConnections,
@@ -31,14 +32,24 @@ public record PoolConfig(int minConnections,
                                                 Option<String> validationQuery,
                                                 TimeSpan leakDetectionTimeout,
                                                 int ioThreads) {
-        return success(new PoolConfig(minConnections,
-                                      maxConnections,
-                                      connectionTimeout,
-                                      idleTimeout,
-                                      maxLifetime,
-                                      validationQuery,
-                                      leakDetectionTimeout,
-                                      ioThreads));
+        return ensureBounds(minConnections, maxConnections).map(_ -> new PoolConfig(minConnections,
+                                                                                    maxConnections,
+                                                                                    connectionTimeout,
+                                                                                    idleTimeout,
+                                                                                    maxLifetime,
+                                                                                    validationQuery,
+                                                                                    leakDetectionTimeout,
+                                                                                    ioThreads));
+    }
+
+    /// `0 <= min_connections <= max_connections` and `max_connections >= 1` (#2948): a minimum above the maximum can
+    /// never be satisfied, so the configuration is refused at load.
+    private static Result<Unit> ensureBounds(int minConnections, int maxConnections) {
+        return maxConnections < 1 || minConnections < 0 || minConnections > maxConnections
+               ? cause("Invalid pool size: min_connections=" + minConnections
+                      + ", max_connections=" + maxConnections
+                      + " (require 0 <= min_connections <= max_connections and max_connections >= 1)").result()
+               : Result.unitResult();
     }
 
     public int effectiveIoThreads() {

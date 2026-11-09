@@ -76,6 +76,16 @@ public abstract class ConnectibleBuilder {
         return this;
     }
 
+    /**
+     * Sets the {@code application_name} sent in the startup message of every connection, so the sessions are
+     * identifiable in {@code pg_stat_activity}. Not set by default: the server then reports an empty name.
+     */
+    public ConnectibleBuilder applicationName(String applicationName) {
+        properties.applicationName = applicationName;
+
+        return this;
+    }
+
     public ConnectibleBuilder maxStatements(int maxStatements) {
         properties.maxStatements = maxStatements;
 
@@ -133,6 +143,7 @@ public abstract class ConnectibleBuilder {
         private String username;
         private String password;
         private String database;
+        private String applicationName;
         private int maxConnections = 20;
         private int maxStatements = 20;
         private DataConverter dataConverter;
@@ -162,6 +173,10 @@ public abstract class ConnectibleBuilder {
 
         public String database() {
             return database;
+        }
+
+        public String applicationName() {
+            return applicationName;
         }
 
         public int maxConnections() {

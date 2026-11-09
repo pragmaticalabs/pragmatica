@@ -24,10 +24,23 @@ public final class StartupMessage implements FrontendMessage {
 
     private final String username;
     private final String database;
+    private final String applicationName;
 
     public StartupMessage(String username, String database) {
+        this(username, database, null);
+    }
+
+    /**
+     * @param applicationName the {@code application_name} startup parameter, or {@code null} to send none
+     */
+    public StartupMessage(String username, String database, String applicationName) {
         this.username = username;
         this.database = database;
+        this.applicationName = applicationName;
+    }
+
+    public String getApplicationName() {
+        return applicationName;
     }
 
     public int getProtocol() {

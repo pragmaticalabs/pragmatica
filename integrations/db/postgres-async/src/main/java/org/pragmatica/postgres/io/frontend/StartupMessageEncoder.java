@@ -61,6 +61,11 @@ public class StartupMessageEncoder implements Encoder<StartupMessage> {
             IO.putCString(buffer, s, StandardCharsets.US_ASCII);
         }
 
+        if (msg.getApplicationName() != null) {
+            IO.putCString(buffer, "application_name", StandardCharsets.US_ASCII);
+            IO.putCString(buffer, msg.getApplicationName(), StandardCharsets.UTF_8);
+        }
+
         buffer.put((byte) 0);
         buffer.putInt(0, buffer.position());
     }
