@@ -453,6 +453,7 @@ public interface ClusterDeploymentManager {
                                                communitySizing);
 
         manager.setDeadMembersSupplier(deadMembersSupplier);
+
         return manager;
     }
 

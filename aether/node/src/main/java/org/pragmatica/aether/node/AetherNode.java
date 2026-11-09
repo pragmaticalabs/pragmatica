@@ -2653,8 +2653,8 @@ public interface AetherNode extends ManageableNode {
                                                                                    .map(MemberDescriptor::source);
         // #2937: local membership's DEAD set, through the same shared membershipFsmRef; empty until the FSM is installed.
         Supplier<Map<NodeId, MemberDescriptor>> cdmDeadMembersSupplier = () -> Option.option(membershipFsmRef.get())
-                                                                                      .map(MembershipFsm::deadMembers)
-                                                                                      .or(Map.of());
+                                                                                     .map(MembershipFsm::deadMembers)
+                                                                                     .or(Map.of());
         var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(config.self(),
                                                                                          clusterNode,
                                                                                          kvStore,
