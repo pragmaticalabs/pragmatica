@@ -5,8 +5,10 @@ package org.pragmatica.aether.resource;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -87,6 +89,9 @@ final class SharedPools {
 
     private final Map<Object, SharedEntry> entries = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
+    /// Every close in flight, whoever started it: `closeAll` must not report node stop done while a release that captured
+    /// its pool before the drain is still closing it. An entry leaves the set when its close completes.
+    private final Set<Promise<Unit>> pendingCloses = ConcurrentHashMap.newKeySet();
     private final Fn1<Promise<Unit>, Provisioned<?>> closer;
 
     private SharedPools(Fn1<Promise<Unit>, Provisioned<?>> closer) {
@@ -307,11 +312,15 @@ final class SharedPools {
 
     /// The shared-pool caller of the provider's one close funnel.
     private Promise<Unit> close(SharedEntry entry) {
-        return entry.pool()
-                    .flatMap(closer)
-                    .onSuccess(_ -> LOG.log(System.Logger.Level.INFO,
-                                            "closed shared pool {0}",
-                                            entry.label()));
+        var closing = entry.pool()
+                           .flatMap(closer)
+                           .onSuccess(_ -> LOG.log(System.Logger.Level.INFO,
+                                                   "closed shared pool {0}",
+                                                   entry.label()));
+
+        pendingCloses.add(closing);
+
+        return closing.onResultRun(() -> pendingCloses.remove(closing));
     }
 
     /// Releases `scope` from every pool it holds.
@@ -329,21 +338,29 @@ final class SharedPools {
 
     /// Node stop: refuse every later acquire, then drain. Only `compute`s already in flight can still insert once the
     /// flag is visible, and the loop catches them. Each pool closes exactly once: the drain uses the same capture as a
-    /// release, never a plain `remove(key)`.
+    /// release, never a plain `remove(key)`. The loop runs on key presence, never on `isEmpty()`: the map's count is a sum
+    /// of striped cells, not a snapshot, so a concurrent insert and remove of another key can make it read zero while a
+    /// held key is still present. The result also carries the closes a release started before the drain, still pending.
     List<Promise<Unit>> closeAll() {
         closed.set(true);
-        var closes = new ArrayList<Promise<Unit>>();
+        var closes = new LinkedHashSet<Promise<Unit>>();
 
-        while (!entries.isEmpty()) {
-            for (var key : List.copyOf(entries.keySet())) {
-                var departure = new Departure();
-
-                entries.compute(key, (_, current) -> drain(current, departure));
-                option(departure.removed).onPresent(removed -> closes.add(close(removed)));
-            }
+        for (var keys = List.copyOf(entries.keySet()); !keys.isEmpty(); keys = List.copyOf(entries.keySet())) {
+            drainKeys(keys, closes);
         }
 
-        return closes;
+        closes.addAll(pendingCloses);
+
+        return new ArrayList<>(closes);
+    }
+
+    private void drainKeys(List<Object> keys, Set<Promise<Unit>> closes) {
+        for (var key : keys) {
+            var departure = new Departure();
+
+            entries.compute(key, (_, current) -> drain(current, departure));
+            option(departure.removed).onPresent(removed -> closes.add(close(removed)));
+        }
     }
 
     /// The drain's `compute` mapping function: captures the entry and removes it (`null` is the `compute` contract).
