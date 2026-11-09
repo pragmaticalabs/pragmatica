@@ -120,7 +120,7 @@ public final class PartitionBackfill {
     /// (#1730 phase 2, the window the promotion gate compares as well).
     private static final long TAIL_VERIFY_WINDOW = 1024L;
     /// The promotion gate's own catch-up ([#catchUpOwnerFrom]) weighs no other survivor: it would probe the same source again.
-    private static final LongSupplier NO_OTHER_SURVIVOR = () -> -1L;
+    private static final LongSupplier NO_OTHER_SURVIVOR = () -> - 1L;
 
     private final ReplicaRegistry registry;
     private final AlignedRecovery partitionRecovery;
@@ -1873,9 +1873,7 @@ public final class PartitionBackfill {
         var bound = lineageBound(response);
         var end = bound.map(b -> Math.min(survivorTail, b - 1))
                        .onPresent(e -> rememberLineageEnd(streamName, partition, survivorNode, survivorTail, e));
-        var target = end.map(e -> Math.max(e,
-                                           othersEnd.getAsLong()))
-                        .or(survivorTail);
+        var target = end.map(e -> Math.max(e, othersEnd.getAsLong())).or(survivorTail);
 
         return applyAndPromote(streamName,
                                partition,
@@ -2018,8 +2016,7 @@ public final class PartitionBackfill {
             return catchupOwnerFromSurvivor(streamName,
                                             partition,
                                             peers.get(best),
-                                            results.get(best)
-                                                   .or(-1L),
+                                            results.get(best).or(-1L),
                                             localWatermark,
                                             () -> othersMax(ends, best));
         }
@@ -2112,16 +2109,21 @@ public final class PartitionBackfill {
     /// The committed-lineage end ([#lineageEnd]) of each probed peer (index-aligned with `results`, since
     /// {@link Promise#allOf} preserves order); an unreachable peer reads `-1`.
     private List<Long> probedEnds(String streamName, int partition, List<NodeId> peers, List<Result<Long>> results) {
-        return IntStream.range(0, peers.size())
+        return IntStream.range(0,
+                               peers.size())
                         .mapToObj(i -> results.get(i)
-                                              .map(tail -> lineageEnd(streamName, partition, peers.get(i), tail))
+                                              .map(tail -> lineageEnd(streamName,
+                                                                      partition,
+                                                                      peers.get(i),
+                                                                      tail))
                                               .or(-1L))
                         .toList();
     }
 
     /// The highest of `ends` other than the one at `source`, `-1` when there is none.
     private static long othersMax(List<Long> ends, int source) {
-        return IntStream.range(0, ends.size())
+        return IntStream.range(0,
+                               ends.size())
                         .filter(i -> i != source)
                         .mapToLong(ends::get)
                         .max()
