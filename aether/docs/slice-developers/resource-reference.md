@@ -653,7 +653,7 @@ max_connections = 5
 
 **A private pool for one slice (`pool_scope`, #2973):** by default the slices on a node share one pool per
 datasource; a slice that changes session state, or must not be starved by the others, keeps its own. `pool_scope`
-sits in the datasource section itself, never under `pool_config`:
+sits in the datasource section itself, never under `pool_config`. The spellings `pool-scope`, `poolScope` and `pool_config.pool_scope` fail the slice load with an error that names `pool_scope` (file-backed config layers only; environment and system-property layers are not checked, and other unknown keys in a datasource section are ignored) [verified: `PoolScopeRefusalTest`]:
 ```toml
 [database.reporting]
 name = "reporting"
