@@ -32,6 +32,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.stream.Collectors;
 
 import org.pragmatica.lang.Cause;
@@ -66,6 +67,11 @@ public final class JsonCodecGenerator {
     private final JsonTypeAnalyzer analyzer;
     private final List<TypeMirror> roots = new ArrayList<>();
     private final List<JsonType.ListOf> containerRoots = new ArrayList<>();
+
+    private static final String NESTED_REASON = "the record is also a component of another type the slice decodes or answers, and a codec shared with response decoding must not drop required fields";
+
+    private static final String OTHER_USE_REASON = "another route of the slice decodes the record without binding that component from the path or query";
+
     private final Map<String, Set<String>> requestBound = new HashMap<>();
     private final String packageName;
 
@@ -154,6 +160,35 @@ public final class JsonCodecGenerator {
                                                                              generatedBy,
                                                                              generatedFor,
                                                                              containerRoots);
+    }
+
+    /// The components of the record body root `type` that its route binds from the request (`bound`) but whose codec
+    /// still requires them in the body, each with the reason: the relaxation fell off because another use of the
+    /// record needs them (#2957). Asked after every root is added; empty for a relaxed record and for a type that
+    /// is not a record.
+    public Map<String, String> stillRequired(TypeMirror type, Set<String> bound) {
+        return analyzer.analyzeRoot(type)
+                       .filter(JsonType.RecordRef.class::isInstance)
+                       .map(JsonType.RecordRef.class::cast)
+                       .map(ref -> blockedComponents(qualifiedName(ref.element()),
+                                                     bound))
+                       .or(Map.of());
+    }
+
+    private Map<String, String> blockedComponents(String record, Set<String> bound) {
+        var blocked = new TreeMap<String, String>();
+        var relaxed = requestBoundComponents().getOrDefault(record, Set.of());
+        var reason = reachedAsNested(record)
+                     ? NESTED_REASON
+                     : OTHER_USE_REASON;
+
+        for (var component : analyzer.records().get(record).components()) {
+            if (bound.contains(component.name()) && !JsonCodecEmitter.isOptionalMember(component.type()) && !relaxed.contains(component.name())) {
+                blocked.put(component.name(), reason);
+            }
+        }
+
+        return blocked;
     }
 
     // A record body root remembers the components its route binds from the request, intersected with earlier uses.

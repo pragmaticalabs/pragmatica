@@ -302,12 +302,70 @@ public class RouteSourceGenerator {
             }
         }
 
+        warnStillRequired(json, routeConfig, methodMap, sliceElement);
         if (!json.hasCodecs()) {
             return Result.success(Option.none());
         }
 
         return json.write(holderName, "slice-processor " + BuildInfo.VERSION, sliceElement)
                    .map(_ -> Option.some(holderName));
+    }
+
+    // A merged route whose path- or query-bound component the holder's codec still requires in the body answers 400
+    // for a body without it: say so at build time, naming the route, the record, the component and the reason (#2957).
+    private void warnStillRequired(JsonCodecGenerator json,
+                                   RouteConfig routeConfig,
+                                   Map<String, MethodModel> methodMap,
+                                   TypeElement sliceElement) {
+        routeConfig.routes()
+                   .forEach((name, routeDsl) -> warnRoute(json,
+                                                          name,
+                                                          routeDsl,
+                                                          methodMap.get(name),
+                                                          sliceElement));
+    }
+
+    private void warnRoute(JsonCodecGenerator json,
+                           String name,
+                           RouteDsl routeDsl,
+                           MethodModel method,
+                           TypeElement sliceElement) {
+        if (method == null) {
+            return;
+        }
+
+        for (var root : jsonRoots(method, routeDsl)) {
+            if (root.body()) {
+                json.stillRequired(root.type(),
+                                   root.requestBound())
+                    .forEach((component, reason) -> warnComponent(name, routeDsl, root, component, reason, sliceElement));
+            }
+        }
+    }
+
+    private void warnComponent(String name,
+                               RouteDsl routeDsl,
+                               JsonRoot root,
+                               String component,
+                               String reason,
+                               TypeElement sliceElement) {
+        messager.printMessage(Diagnostic.Kind.WARNING,
+                              stillRequiredMessage(name, routeDsl, root, component, reason),
+                              sliceElement);
+    }
+
+    private static String stillRequiredMessage(String name,
+                                               RouteDsl routeDsl,
+                                               JsonRoot root,
+                                               String component,
+                                               String reason) {
+        return "Route '" + name
+             + "' (" + routeDsl.method()
+             + " " + routeDsl.pathTemplate()
+             + "): component '" + component
+             + "' of " + root.type()
+             + " is bound from the path or query but stays required in the JSON body, because " + reason
+             + ". A body without it is answered 400 'Missing required field'.";
     }
 
     // A body is decoded by its declared type, so a List/Set body gets a generated container codec; a response is

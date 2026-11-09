@@ -17,6 +17,7 @@ mapNote = "PUT /map-note/{id}"
 listedNote = "PUT /listed/{id}"
 listedNotes = "POST /listed"
 touch = "PUT /touch/{id}"
+wrapped = "PUT /wrapped/{id}"
 
 [errors]
 default = 500

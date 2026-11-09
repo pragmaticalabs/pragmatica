@@ -852,6 +852,62 @@ class SliceProcessorTest {
         assertThat(diagnostics).contains("upload/routes.toml.\n  Ambiguous explicit error mapping 'Beta'");
     }
 
+    /// #2957: a merged route whose path-bound component stays required in the body, because another route decodes the
+    /// record whole, is named at build time: route, record, component and why.
+    @Test
+    void mergedRoute_whoseComponentStaysRequiredBecauseOfAnotherRoute_warns(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "merged = \"PUT /notes/{id}\"\nplain = \"POST /notes\"",
+                                            "Promise<String> merged(Note note);\n    Promise<String> plain(Note note);",
+                                            List.of(record("Note", "String id, String text")));
+
+        assertThat(diagnostics).contains("Route 'merged' (PUT /notes/{id}): component 'id' of upload.Note")
+                               .contains("stays required in the JSON body")
+                               .contains("another route of the slice decodes the record without binding that component")
+                               .doesNotContain("Route 'plain'");
+    }
+
+    @Test
+    void mergedRoute_whoseComponentStaysRequiredBecauseOfNesting_warnsWithTheNestingReason(@TempDir Path classes)
+    throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "merged = \"PUT /notes/{id}\"\nwrapped = \"POST /wrapped\"",
+                                            "Promise<String> merged(Note note);\n    Promise<String> wrapped(Wrap wrap);",
+                                            List.of(record("Note", "String id, String text"), record("Wrap", "Note note")));
+
+        assertThat(diagnostics).contains("Route 'merged' (PUT /notes/{id}): component 'id' of upload.Note")
+                               .contains("also a component of another type the slice decodes or answers");
+    }
+
+    /// A response record that nests the request record is such a type too.
+    @Test
+    void mergedRoute_whoseRecordIsNestedInAResponse_warns(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "merged = \"PUT /notes/{id}\"",
+                                            "Promise<Wrap> merged(Note note);",
+                                            List.of(record("Note", "String id, String text"), record("Wrap", "Note note")));
+
+        assertThat(diagnostics).contains("Route 'merged' (PUT /notes/{id}): component 'id' of upload.Note")
+                               .contains("also a component of another type the slice decodes or answers");
+    }
+
+    /// Positive control for the three above: the same record on a merged route alone is relaxed, and draws no warning.
+    @Test
+    void mergedRoute_whoseComponentIsRelaxed_doesNotWarn(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "merged = \"PUT /notes/{id}\"",
+                                            "Promise<String> merged(Note note);",
+                                            List.of(record("Note", "String id, String text")));
+
+        assertThat(diagnostics).contains("Generated routes: UploadService")
+                               .doesNotContain("stays required in the JSON body");
+    }
+
+    private static JavaFileObject record(String name, String components) {
+        return JavaFileObjects.forSourceString("upload." + name,
+                                               "package upload;\n\npublic record " + name + "(" + components + ") {}\n");
+    }
+
     private String compileWithRoutes(Path classes, String route, String method) throws IOException {
         return compileWithRoutes(classes, route, method, List.of());
     }

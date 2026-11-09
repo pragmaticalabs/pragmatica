@@ -164,6 +164,17 @@ class GeneratedPathBodyRouteTest {
         assertThat(send("PUT", "/api/pathbody/touch/t1", "{\"text\":\"x\"}")).isEqualTo("200 {\"id\":\"t1\",\"text\":\"x\"}");
     }
 
+    // A request record that is a component of a RESPONSE record stays strict: the codec is shared with response
+    // decoding (clients, inter-slice calls), which must not silently drop required fields. Only a response ROOT leaves
+    // the relaxation alone (the test above).
+    @Test
+    void recordNestedInAResponseRecord_stillRequiresTheComponent() {
+        assertThat(send("PUT", "/api/pathbody/wrapped/w1", "{\"text\":\"x\"}")).startsWith("400 ")
+                                                                                 .contains("id");
+        assertThat(send("PUT", "/api/pathbody/wrapped/w1", "{\"id\":\"body\",\"text\":\"x\"}"))
+            .isEqualTo("200 {\"req\":{\"id\":\"w1\",\"text\":\"x\"}}");
+    }
+
     // An envelope body: `members` (which must include `inner` unless it is the probe) plus empty required containers,
     // unless `members` supplies them.
     private static String envelope(String members) {

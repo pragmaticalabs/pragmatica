@@ -31,6 +31,7 @@ public interface PathBodySlice {
     Promise<Echo> listedNote(ListedNote request);
     Promise<Echo> listedNotes(List<ListedNote> request);
     Promise<TouchNote> touch(TouchNote request);
+    Promise<Wrapped> wrapped(WrapReq request);
 
     static PathBodySlice pathBodySlice() {
         return new PathBodySlice() {
@@ -116,6 +117,11 @@ public interface PathBodySlice {
             @Override
             public Promise<TouchNote> touch(TouchNote request) {
                 return Promise.success(request);
+            }
+
+            @Override
+            public Promise<Wrapped> wrapped(WrapReq request) {
+                return Promise.success(new Wrapped(request));
             }
         };
     }

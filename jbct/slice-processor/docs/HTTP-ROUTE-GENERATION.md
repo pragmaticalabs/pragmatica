@@ -486,6 +486,26 @@ Route.<OrderItem>put("/api/v1/orders/{orderId}/items/{itemId}")
      .named("updateOrderItem").asJson()
 ```
 
+### Path-bound components of a JSON body record
+
+When a route merges path or query parameters with a JSON body into one request record (`PUT /articles/{slug}` with
+`record UpdateArticle(String slug, Changes article)`), the record's generated codec in `<Slice>RoutesJsonCodecs` does
+not require the components the route binds from the path or query, and skips a body member of the same name unread:
+the path or query value wins. A record with a validating factory is built from the merged value only.
+
+The relaxation applies only where every decode of the record in the slice agrees. The record stays strict (every
+component required, so the merged route still needs the member in its body) when:
+
+- another route of the slice decodes the record as a whole body without binding that component (the bound names are
+  intersected over all body uses of the record);
+- the record is a component of another record (also through `Option`, `Patch`, `List`, or a `Map` value) or the element
+  of a `List`/`Set` body, whether that other type is a request body or a response: one codec serves every decode of the
+  record, including response decoding by clients and inter-slice calls, which must not silently drop required fields.
+
+A record that is only a response ROOT of some route stays relaxed: an encode never reads the required set. When the
+relaxation does not apply to a bound component, the build emits a WARNING naming the route, the record, the component
+and the reason.
+
 ### No Parameters
 
 ```toml

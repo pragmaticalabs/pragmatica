@@ -456,7 +456,7 @@ final class JsonCodecEmitter {
     }
 
     // A member that may be missing: an `Option` reads it as empty, a `Patch` as `Absent`.
-    private static boolean isOptionalMember(JsonType type) {
+    static boolean isOptionalMember(JsonType type) {
         return type instanceof JsonType.OptionalOf || type instanceof JsonType.PatchOf;
     }
 
