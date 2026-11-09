@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.OwnerActivation;
 import org.pragmatica.aether.stream.OwnerPeerReads;
 import org.pragmatica.aether.stream.StreamPartitionManager;
@@ -286,6 +287,79 @@ class CatchupAndBackfillAlarmOrderTest {
         backfill.clearStalledOf("other");
 
         assertThat(resolved).as("the other stream's report was still open").hasSize(3);
+    }
+
+    /// #2960: a destroyed stream's reports are matched by exact name: destroying `a` leaves `ab` open. Mutation: the name filter in
+    /// `clearStalledOf` as a prefix match turns this red.
+    @Test
+    void backfill_clearStalledOf_doesNotResolveAStreamWhoseNameStartsWithIt() throws Exception {
+        var raised = new CopyOnWriteArrayList<OwnerActivation.ActivationBlock>();
+        var resolved = new CopyOnWriteArrayList<OwnerActivation.ActivationBlock>();
+        var backfill = backfillRecordingBlocks(raised, resolved);
+
+        backfill.raiseStalled("a", 1);
+        backfill.raiseStalled("ab", 1);
+        backfill.clearStalledOf("a");
+
+        assertThat(resolved).containsExactly(new OwnerActivation.ActivationBlock.CatchupStalled("a", 1, PartitionBackfill.MAX_STALLED_ROUNDS));
+    }
+
+    /// #2960: nothing is raised for a stream that no longer exists. Mutation: dropping the existence check in `raiseStalled` turns this red.
+    @Test
+    void backfill_aDestroyedStream_raisesNoAllStalledBlock() throws Exception {
+        var raised = new CopyOnWriteArrayList<OwnerActivation.ActivationBlock>();
+        var backfill = backfillRecordingBlocks(raised, new CopyOnWriteArrayList<>());
+
+        backfill.streamExists(name -> !name.equals(STREAM));
+        backfill.raiseStalled(STREAM, 1);
+        backfill.raiseStalled("other", 1);
+
+        assertThat(raised).extracting(OwnerActivation.ActivationBlock::streamName).containsExactly("other");
+    }
+
+    /// #2960: a report that no source's stall counter backs any more is resolved by the level trigger, while its stream exists and this node is
+    /// a registered replica and the owner. Mutation: dropping the stall-counter conjunct from the live-state test turns this red.
+    @Test
+    void backfill_reconcileStalled_resolvesAReportNoSourceStallsAnyMore() throws Exception {
+        var raised = new CopyOnWriteArrayList<OwnerActivation.ActivationBlock>();
+        var resolved = new CopyOnWriteArrayList<OwnerActivation.ActivationBlock>();
+        var registry = replicaRegistry();
+        var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
+
+        manager.createStream(StreamConfig.streamConfig(STREAM));
+        registry.registerReplica(STREAM, PARTITION, SELF);
+
+        var backfill = partitionBackfill(registry,
+                                         manager.alignedRecovery(),
+                                         CatchupTransport.NOOP,
+                                         ReplicationTransport.NOOP,
+                                         (_, _, _) -> ReplicationError.General.REPLICATION_TIMEOUT.promise(),
+                                         (_, _) -> 3L,
+                                         SELF,
+                                         TimeSpan.timeSpan(10).seconds(),
+                                         () -> List.of(SELF),
+                                         CommittedStreamOwnerSource.none());
+
+        backfill.blockAlarm(new OwnerActivation.BlockAlarm() {
+            @Override
+            public Unit raise(OwnerActivation.ActivationBlock block) {
+                raised.add(block);
+
+                return Unit.unit();
+            }
+
+            @Override
+            public Unit resolved(OwnerActivation.ActivationBlock block) {
+                resolved.add(block);
+
+                return Unit.unit();
+            }
+        });
+        backfill.raiseStalled(STREAM, PARTITION);
+        backfill.reconcileStalled();
+
+        assertThat(raised).hasSize(1);
+        assertThat(resolved).as("no stall counter backs the report").containsExactlyElementsOf(raised);
     }
 
     private PartitionBackfill backfillRecordingBlocks(List<OwnerActivation.ActivationBlock> raised, List<OwnerActivation.ActivationBlock> resolved) {
