@@ -9,10 +9,13 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.reflect.Proxy;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -68,22 +71,52 @@ class GitProcessesTest {
         assertThat(System.nanoTime() - started).as("the kill waited out its bound").isGreaterThanOrEqualTo(250_000_000L);
     }
 
+    /// A tree that grows with every read, as one the freeze cannot stop would, ends the freeze at the bound instead of reading forever.
+    @Test
+    @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void kill_givesUpTheFreeze_atTheBound_whenTheTreeNeverStopsGrowing() {
+        var started = System.nanoTime();
+
+        assertThat(GitProcesses.kill(List.of(processOf(undyingHandle(() -> Stream.of(undyingHandle(Stream::empty))))), 300)).isFalse();
+        assertThat(System.nanoTime() - started).as("the kill ended at its bound").isLessThan(20_000_000_000L);
+    }
+
+    /// An interrupt that lands while the kill waits for a death is not swallowed: the caller's thread still carries it, and the wait reports what it saw.
+    @Test
+    void awaitDead_keepsTheInterrupt_andReportsTheLiveMember() {
+        var handle = undyingHandle(Stream::empty);
+
+        Thread.currentThread().interrupt();
+        var dead = GitProcesses.awaitDead(Set.of(handle), System.nanoTime() + 20_000_000_000L);
+        var stillInterrupted = Thread.interrupted();
+
+        assertThat(dead).as("a member that is alive is not dead").isFalse();
+        assertThat(stillInterrupted).as("the interrupt flag survives the wait").isTrue();
+    }
+
     /// A process that no kill ends: its handle never exits and always reads alive. Its pid is beyond any kernel's range, so the freeze's `kill -STOP` reaches
     /// nothing.
     static Process undying() {
-        var handle = (ProcessHandle) Proxy.newProxyInstance(GitProcessesTest.class.getClassLoader(),
-                                                            new Class<?>[]{ProcessHandle.class},
-                                                            (proxy, method, args) -> switch (method.getName()) {
-                                                                case "pid" -> 2_000_000_000L;
-                                                                case "isAlive", "destroy", "destroyForcibly" -> true;
-                                                                case "onExit" -> new CompletableFuture<ProcessHandle>();
-                                                                case "descendants", "children" -> Stream.empty();
-                                                                case "hashCode" -> System.identityHashCode(proxy);
-                                                                case "equals" -> proxy == args[0];
-                                                                case "toString" -> "undying";
-                                                                default -> null;
-                                                            });
+        return processOf(undyingHandle(Stream::empty));
+    }
 
+    private static ProcessHandle undyingHandle(Supplier<Stream<ProcessHandle>> descendants) {
+        return (ProcessHandle) Proxy.newProxyInstance(GitProcessesTest.class.getClassLoader(),
+                                                      new Class<?>[]{ProcessHandle.class},
+                                                      (proxy, method, args) -> switch (method.getName()) {
+                                                          case "pid" -> 2_000_000_000L;
+                                                          case "isAlive", "destroy", "destroyForcibly" -> true;
+                                                          case "onExit" -> new CompletableFuture<ProcessHandle>();
+                                                          case "descendants" -> descendants.get();
+                                                          case "children" -> Stream.empty();
+                                                          case "hashCode" -> System.identityHashCode(proxy);
+                                                          case "equals" -> proxy == args[0];
+                                                          case "toString" -> "undying";
+                                                          default -> null;
+                                                      });
+    }
+
+    private static Process processOf(ProcessHandle handle) {
         return new Process() {
             @Override public OutputStream getOutputStream() { return OutputStream.nullOutputStream(); }
             @Override public InputStream getInputStream() { return InputStream.nullInputStream(); }

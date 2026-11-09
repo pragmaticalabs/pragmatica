@@ -94,10 +94,6 @@ final class GitProcesses {
         var command = new ArrayList<String>(List.of("sh", "-c", "kill -STOP \"$@\" 2>/dev/null", "sh"));
 
         tree.stream().filter(ProcessHandle::isAlive).forEach(handle -> command.add(Long.toString(handle.pid())));
-        if (command.size() == 4) {
-            return;
-        }
-
         try {
             new ProcessBuilder(command).redirectErrorStream(true).start().waitFor(5, TimeUnit.SECONDS);
         } catch (IOException ignored) {

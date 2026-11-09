@@ -573,8 +573,12 @@ class KvBackupStopFlushRaceTest {
 
         org.mockito.Mockito.doReturn(GitProcessesTest.undying()).when(neverEnds).start();
         harness.repository().processes().start(neverEnds).unwrap();
-        harness.service().stopWithin(500);
+        try (var log = org.pragmatica.testlogging.LogCapture.capture(KvBackupService.class, org.apache.logging.log4j.Level.WARN, false)) {
+            harness.service().stopWithin(500);
 
+            assertThat(log.entries()).as("the overrun is also logged at WARN, for the operator reading the log")
+                                     .anyMatch(entry -> entry.level() == org.apache.logging.log4j.Level.WARN && entry.message().contains("still alive"));
+        }
         assertThat(harness.warnings()).as("the stop's report (the killed push may add the flush's own failure, depending on which side wins the race)")
                                       .anyMatch(warning -> warning.code() == Code.BACKUP_STOP_FLUSH_FAILED && warning.detail().contains("still running"));
         harness.executor().shutdownNow();
