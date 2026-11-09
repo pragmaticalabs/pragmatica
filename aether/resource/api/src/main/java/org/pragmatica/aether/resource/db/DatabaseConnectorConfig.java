@@ -35,7 +35,9 @@ public record DatabaseConnectorConfig(Option<String> name,
                                       Option<String> asyncUrl,
                                       Option<String> applicationName) {
     /// PostgreSQL truncates `application_name` at `NAMEDATALEN - 1` bytes; a longer configured name is refused at load
-    /// rather than shown to the operator in a form that differs from what they wrote (#2948).
+    /// rather than cut silently (#2948). Characters outside printable ASCII are accepted but reach the server as `?`
+    /// (the server would otherwise rewrite them to `\xNN`), so `pg_stat_activity` shows the `?` form; see the pg-async
+    /// connector's `PgPoolSettings`.
     public static final int MAX_APPLICATION_NAME_BYTES = 63;
 
     private static final Pattern URL_PATTERN = Pattern.compile("(?:\\w+:)*(?://)?(?:[^@]+@)?([^/:]+)(?::(\\d+))?/(.+?)(?:\\?.*)?$");

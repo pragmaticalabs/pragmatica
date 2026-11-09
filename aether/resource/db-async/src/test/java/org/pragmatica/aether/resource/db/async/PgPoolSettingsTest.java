@@ -71,6 +71,38 @@ class PgPoolSettingsTest {
     }
 
     @Test
+    void applicationName_ignoresABlankNodeId_andFallsBackToTheDatasourceName() {
+        System.setProperty(PgPoolSettings.NODE_ID_PROPERTY, "  ");
+
+        assertThat(PgPoolSettings.applicationName(config("orders", null))).isEqualTo("aether-orders");
+    }
+
+    @Test
+    void applicationName_replacesNonPrintableAscii_withQuestionMarks() {
+        assertThat(PgPoolSettings.applicationName(config("orders", "a\tb\u00e9c\u65e5d\uD83D\uDE00e~ \u007f"))).isEqualTo("a?b?c?d?e~ ?");
+    }
+
+    @Test
+    void applicationName_multibyteConfiguredName_isSentAsExactlyOneQuestionMarkPerCodePoint() {
+        var name = PgPoolSettings.applicationName(config("orders", "\u65e5".repeat(21)));
+
+        assertThat(name).isEqualTo("?".repeat(21));
+    }
+
+    @Test
+    void applicationName_derivedFromANonAsciiDatasourceName_isPrintableAscii() {
+        assertThat(PgPoolSettings.applicationName(config("z\u00f3\u0142w", null))).isEqualTo("aether-z??w");
+    }
+
+    @Test
+    void applicationName_derivedMultibyteName_cutAtSixtyThreeCharacters_hasNoReplacementCharacter() {
+        var name = PgPoolSettings.applicationName(config("\u65e5".repeat(100), null));
+
+        assertThat(name).isEqualTo("aether-" + "?".repeat(56));
+        assertThat(name).hasSize(63);
+    }
+
+    @Test
     void configureSession_handsTheNameToTheDriver() {
         var builder = new InspectableBuilder();
 

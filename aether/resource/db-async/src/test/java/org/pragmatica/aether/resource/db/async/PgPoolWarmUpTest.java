@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.resource.db.PoolConfig;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
@@ -68,6 +69,38 @@ class PgPoolWarmUpTest {
         assertThat(result.isSuccess()).isTrue();
         assertThat(asked.get()).isEqualTo(3);
         assertThat(closed.get()).isEqualTo(3);
+    }
+
+    // M2: PoolConfig is a public record, so min > max can bypass the factory's refusal; the warm-up must not open more than max.
+    @Test
+    void warmed_opensNoMoreThanMaxConnections_evenWhenMinExceedsMax() {
+        var base = PoolConfig.poolConfigBuilder().build().unwrap();
+        var inverted = new PoolConfig(5,
+                                      2,
+                                      base.connectionTimeout(),
+                                      base.idleTimeout(),
+                                      base.maxLifetime(),
+                                      base.validationQuery(),
+                                      base.leakDetectionTimeout(),
+                                      base.ioThreads());
+        var answers = new ArrayList<Promise<Connection>>();
+
+        for (var i = 0; i < 5; i++) {
+            answers.add(Promise.success(connection()));
+        }
+
+        var result = new PgPoolSettings.Assembled<>("connector", pool(answers)).warmed(inverted).await(GUARD);
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(asked.get()).isEqualTo(2);
+        assertThat(closed.get()).isEqualTo(2);
+    }
+
+    @Test
+    void warmCount_isMinConnections_whenWithinMax() {
+        var base = PoolConfig.poolConfigBuilder().withMinConnections(3).withMaxConnections(7).build().unwrap();
+
+        assertThat(PgPoolSettings.warmCount(base)).isEqualTo(3);
     }
 
     @Test

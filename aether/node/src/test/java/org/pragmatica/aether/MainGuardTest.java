@@ -5,16 +5,22 @@
 
 package org.pragmatica.aether;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.stream.Collectors;
+
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.TlsConfig;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.fail;
 
 class MainGuardTest {
+    private static final String MAIN_SOURCE = "aether/node/src/main/java/org/pragmatica/aether/Main.java";
 
     @Nested
     class NodeIdGate {
@@ -30,6 +36,44 @@ class MainGuardTest {
             } finally {
                 restoreProperty("aether.node.id", saved);
             }
+        }
+
+        // The call site is not reachable from a unit test (Main.run needs a whole boot configuration), so it is pinned from
+        // the source, as MainFatalEscapeInstallTest pins the relay install: run() publishes the node id it just resolved,
+        // before it does anything that provisions a datasource. Mutation: delete the call (RED).
+        @Test
+        void run_publishesTheNodeId_rightAfterResolvingIt() throws Exception {
+            var code = runBody(Files.readString(repositoryRoot().resolve(MAIN_SOURCE)));
+            var resolved = code.indexOf("var nodeId = parseNodeId(aetherConfig);");
+            var published = code.indexOf("publishNodeId(nodeId);");
+            var nextStep = code.indexOf("var port = parsePort(aetherConfig);");
+
+            assertThat(resolved).as("control: run() resolves the node id").isNotNegative();
+            assertThat(published).as("run() publishes the resolved node id").isGreaterThan(resolved);
+            assertThat(published).as("published before the next boot step").isLessThan(nextStep);
+        }
+
+        private static String runBody(String source) {
+            var start = source.indexOf("private void run() {");
+
+            assertThat(start).as("control: Main has a run()").isNotNegative();
+
+            return source.substring(start)
+                         .lines()
+                         .map(line -> line.replaceFirst("//.*$", ""))
+                         .collect(Collectors.joining("\n"));
+        }
+
+        private static Path repositoryRoot() throws Exception {
+            var current = Path.of(MainGuardTest.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+
+            while (current != null && !Files.isRegularFile(current.resolve(MAIN_SOURCE))) {
+                current = current.getParent();
+            }
+
+            return current == null
+                   ? fail("repository root not found above the test's code source")
+                   : current;
         }
 
         private static void restoreProperty(String key, String saved) {

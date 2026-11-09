@@ -363,7 +363,7 @@ Transport is selected automatically by priority:
 | `jdbc_url` | `String` (optional) | none | Override JDBC URL (replaces host/port/database) |
 | `r2dbc_url` | `String` (optional) | none | Override R2DBC URL (replaces host/port/database) |
 | `async_url` | `String` (optional) | none | Override async URL — selects postgres-async transport (highest priority) |
-| `application_name` | `String` (optional) | `aether-<node id>` (else `aether-<datasource name>`) | PostgreSQL `application_name` of every session the postgres-async transport opens, visible in `pg_stat_activity`. Non-blank, at most 63 UTF-8 bytes, no NUL; an invalid value refuses the configuration at load. A derived default longer than 63 bytes is cut. Honoured by the postgres-async transport only (#2948) |
+| `application_name` | `String` (optional) | `aether-<node id>` (else `aether-<datasource name>`) | PostgreSQL `application_name` of every session the postgres-async transport opens, visible in `pg_stat_activity`. Non-blank, at most 63 UTF-8 bytes, no NUL; an invalid value refuses the configuration at load. Characters outside printable ASCII (`0x20`-`0x7E`: control characters, non-ASCII letters, emoji) are sent as `?` (one per code point), because PostgreSQL would otherwise rewrite them to `\xNN` in `pg_stat_activity`; a derived default longer than 63 characters is cut. Honoured by the postgres-async transport only (#2948) |
 | `properties.*` | `Map<String, String>` | empty | Additional driver-specific properties |
 
 **Overrides and precedence (#769):**

@@ -34,6 +34,14 @@ public class StartupMessageEncoderTest {
         assertTrue(text.contains("\0application_name\0bench-arm-a\0"), text);
     }
 
+    // The encoder is the byte-level authority: a name that is not ASCII must go out as its UTF-8 bytes, not as '?'.
+    @Test
+    public void write_encodesApplicationNameAsUtf8() {
+        var text = encoded(new StartupMessage("u", "d", "z\u00f3\u0142w-\u65e5"));
+
+        assertTrue(text.contains("\0application_name\0z\u00f3\u0142w-\u65e5\0"), text);
+    }
+
     @Test
     public void write_omitsApplicationName_whenNull() {
         assertFalse(encoded(new StartupMessage("u", "d")).contains("application_name"));
