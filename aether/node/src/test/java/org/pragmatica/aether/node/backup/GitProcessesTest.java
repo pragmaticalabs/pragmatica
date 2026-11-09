@@ -5,7 +5,12 @@
 package org.pragmatica.aether.node.backup;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.lang.reflect.Proxy;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
 
@@ -53,13 +58,41 @@ class GitProcessesTest {
         assertThat(children).noneMatch(ProcessHandle::isAlive);
     }
 
-    /// A bound that cannot be met is reported as not dead, so the stop can say so instead of claiming a clean stop.
+    /// A bound that cannot be met is reported as not dead, so the stop can say so instead of claiming a clean stop. The member here can never end, so the
+    /// outcome does not depend on how fast the host reaps a killed process (a real process killed under a bound of zero may already be gone).
     @Test
-    void kill_reportsFalse_whenTheBoundCannotBeMet() throws IOException {
-        var root = new ProcessBuilder("sleep", "30").start();
+    void kill_reportsFalse_whenTheBoundCannotBeMet() {
+        var started = System.nanoTime();
 
-        assertThat(GitProcesses.kill(List.of(root), 0)).isFalse();
-        root.destroyForcibly();
+        assertThat(GitProcesses.kill(List.of(undying()), 300)).isFalse();
+        assertThat(System.nanoTime() - started).as("the kill waited out its bound").isGreaterThanOrEqualTo(250_000_000L);
+    }
+
+    /// A process that no kill ends: its handle never exits and always reads alive. Its pid is beyond any kernel's range, so the freeze's `kill -STOP` reaches
+    /// nothing.
+    static Process undying() {
+        var handle = (ProcessHandle) Proxy.newProxyInstance(GitProcessesTest.class.getClassLoader(),
+                                                            new Class<?>[]{ProcessHandle.class},
+                                                            (proxy, method, args) -> switch (method.getName()) {
+                                                                case "pid" -> 2_000_000_000L;
+                                                                case "isAlive", "destroy", "destroyForcibly" -> true;
+                                                                case "onExit" -> new CompletableFuture<ProcessHandle>();
+                                                                case "descendants", "children" -> Stream.empty();
+                                                                case "hashCode" -> System.identityHashCode(proxy);
+                                                                case "equals" -> proxy == args[0];
+                                                                case "toString" -> "undying";
+                                                                default -> null;
+                                                            });
+
+        return new Process() {
+            @Override public OutputStream getOutputStream() { return OutputStream.nullOutputStream(); }
+            @Override public InputStream getInputStream() { return InputStream.nullInputStream(); }
+            @Override public InputStream getErrorStream() { return InputStream.nullInputStream(); }
+            @Override public int waitFor() { throw new UnsupportedOperationException(); }
+            @Override public int exitValue() { throw new IllegalThreadStateException("undying"); }
+            @Override public void destroy() {}
+            @Override public ProcessHandle toHandle() { return handle; }
+        };
     }
 
     /// A tree that keeps forking while it is being killed leaves no child behind: the freeze stops the forking before the kill decides what to kill. The

@@ -558,7 +558,8 @@ class KvBackupStopFlushRaceTest {
         assertThat(node.repository().halt()).isEmpty();
     }
 
-    /// A tree that is not dead within the bound is reported, not passed off as a clean stop: a bound of zero cannot be met.
+    /// A tree that is not dead within the bound is reported, not passed off as a clean stop. A member that can never end is registered beside the real
+    /// push, so the outcome does not depend on how fast the host reaps the killed push.
     @Test
     void stop_reportsATreeThatIsNotDeadWithinTheBound() throws Exception {
         var remote = bareRemote(temp.resolve("remote.git"));
@@ -568,7 +569,11 @@ class KvBackupStopFlushRaceTest {
         slowReceivePack(harness.repository(), started, temp);
         harness.service().stopFlushed(TimeSpan.timeSpan(120).seconds());
         awaitFile(started);
-        harness.service().stopWithin(0);
+        var neverEnds = org.mockito.Mockito.mock(ProcessBuilder.class);
+
+        org.mockito.Mockito.doReturn(GitProcessesTest.undying()).when(neverEnds).start();
+        harness.repository().processes().start(neverEnds).unwrap();
+        harness.service().stopWithin(500);
 
         assertThat(harness.warnings()).as("the stop's report (the killed push may add the flush's own failure, depending on which side wins the race)")
                                       .anyMatch(warning -> warning.code() == Code.BACKUP_STOP_FLUSH_FAILED && warning.detail().contains("still running"));
