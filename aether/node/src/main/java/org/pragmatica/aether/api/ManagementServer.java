@@ -285,7 +285,11 @@ class ManagementServerImpl implements ManagementServer {
     /// Below this much remaining wire budget a forwarded management request is refused instead of
     /// dispatched: the answer cannot reach the sender before its hop timeout fires.
     private static final TimeSpan RECEIVER_BUDGET_FLOOR = TimeSpan.timeSpan(50).millis();
+    /// Re-send window of a management reply whose request carried no budget (`Deadline.NO_BUDGET`): the request budget a
+    /// client's management call gets by default.
+    private static final TimeSpan UNBUDGETED_REPLY_WINDOW = TimeSpan.timeSpan(10).seconds();
 
+    private final ForwardReplyResender replyResender = ForwardReplyResender.forwardReplyResender();
     private final Consumer<NodeId> drainCommandSink;
     private final Supplier<Set<NodeId>> pendingDrainsSupplier;
     private final NodeLifecycleRoutes.SliceFloor sliceFloor;
@@ -2033,7 +2037,7 @@ class ManagementServerImpl implements ManagementServer {
                                                       payload,
                                                       Pipeline.MANAGEMENT);
 
-        network.send(request.sender(), forwardResponse);
+        sendManagementForwardReply(network, request, forwardResponse);
         log.trace("Sent management forward success response [{}]", request.requestId());
     }
 
@@ -2056,7 +2060,18 @@ class ManagementServerImpl implements ManagementServer {
                                                       errorMessage.getBytes(StandardCharsets.UTF_8),
                                                       Pipeline.MANAGEMENT);
 
-        network.send(request.sender(), forwardResponse);
+        sendManagementForwardReply(network, request, forwardResponse);
+    }
+
+    /// #2569 / #2583 P2: the reply is re-sent while the transport proves it did not write it (see [ForwardReplyResender]),
+    /// for as long as the requester can still be waiting. The window is the budget the request arrived with, measured from
+    /// this first reply send: it can only overstate what is left, and a reply that outlives its requester is ignored there.
+    private void sendManagementForwardReply(ClusterNetwork network, HttpForwardRequest request, HttpForwardResponse reply) {
+        replyResender.send(network::send,
+                           request.sender(),
+                           reply,
+                           Deadline.fromWireMillis(request.remainingMillis())
+                                   .bounded(UNBUDGETED_REPLY_WINDOW));
     }
 
     @SuppressWarnings("JBCT-PAT-01")
