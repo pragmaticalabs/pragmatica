@@ -1971,6 +1971,12 @@ public sealed interface StreamAssembly {
                                                                                                   partitionSubject(refused),
                                                                                                   "{}",
                                                                                                   refused.message());
+            case OwnerActivation.ActivationBlock.CatchupStalled stalled -> OperatorWarnings.raise(LOG,
+                                                                                                  sink,
+                                                                                                  OperatorWarningCode.STREAM_OWNER_CATCHUP_STALLED,
+                                                                                                  partitionSubject(stalled),
+                                                                                                  "{}",
+                                                                                                  stalled.message());
             default -> raiseOwnerPromotionBlock(block);
         };
     }
@@ -1995,6 +2001,12 @@ public sealed interface StreamAssembly {
                                                                                                   partitionSubject(refused),
                                                                                                   "Owner promotion of {} is no longer refused at its epoch-start commit.",
                                                                                                   partitionSubject(refused));
+            case OwnerActivation.ActivationBlock.CatchupStalled stalled -> OperatorWarnings.raise(LOG,
+                                                                                                  sink,
+                                                                                                  OperatorWarningCode.STREAM_OWNER_CATCHUP_PROGRESSING,
+                                                                                                  partitionSubject(stalled),
+                                                                                                  "Owner catch-up of {} is no longer stalled: its head advanced, it activated, or no source is ahead of it any more.",
+                                                                                                  partitionSubject(stalled));
             default -> Unit.unit();
         };
     }

@@ -583,6 +583,191 @@ class OwnerCatchupCommittedLineageTest {
         assertThat(outcomeOf(last)).isEqualTo(BackfillError.General.NO_SOURCE_REPLICA);
     }
 
+    /// #2960, the registry-path twin of `probePath_afterDemotingAStalledSource_theFallbackStillHoldsTheOwnerToTheStalledSourcesEnd`.
+    @Test
+    void registryPath_afterDemotingAStalledSource_theFallbackStillHoldsTheOwnerToTheStalledSourcesEnd() {
+        var fixture = fixture(false,
+                              List.of(new Replica(SOURCE, 20L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))),
+                                      new Replica(OTHER, 15L, List.of(ProvenanceEntry.provenanceEntry(E1, 0)))));
+
+        pageCaps.put(SOURCE, 0L);
+        IntStream.range(0, PartitionBackfill.MAX_STALLED_ROUNDS - 1).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+
+        var demoting = settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(demoting.isFailure()).as("short of the stalled source's 20: %s", demoting).isTrue();
+        assertThat(head()).as("the fallback's records are installed").isEqualTo(15L);
+        assertThat(fixture.served().getLast()).isEqualTo(OTHER);
+    }
+
+    /// #2960: a single stalled source with no other replica ends every later round as SOURCE_STALLED, never as activation; the owner stays
+    /// at its head and the operator is told once.
+    @Test
+    void probePath_aSingleStalledSource_endsSourceStalled_neverActivates_andRaisesOnce() {
+        assertSingleStalledSourceEndsStalled(fixture(true, singleReplica()));
+    }
+
+    @Test
+    void registryPath_aSingleStalledSource_endsSourceStalled_neverActivates_andRaisesOnce() {
+        assertSingleStalledSourceEndsStalled(fixture(false, singleReplica()));
+    }
+
+    private void assertSingleStalledSourceEndsStalled(Replicas fixture) {
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+
+        var rounds = IntStream.rangeClosed(1, 2 * PartitionBackfill.MAX_STALLED_ROUNDS)
+                              .mapToObj(_ -> settled(fixture.backfill().backfill("s", 0)))
+                              .toList();
+        var belowBound = rounds.subList(0, PartitionBackfill.MAX_STALLED_ROUNDS - 1);
+        var demoted = rounds.subList(PartitionBackfill.MAX_STALLED_ROUNDS - 1, rounds.size());
+
+        assertThat(belowBound).allSatisfy(round -> assertThat(outcomeOf(round)).isEqualTo(BackfillError.General.INCOMPLETE_BACKFILL));
+        assertThat(demoted).allSatisfy(round -> assertThat(outcomeOf(round)).isEqualTo(BackfillError.General.SOURCE_STALLED));
+        assertThat(head()).as("never activated, never advanced").isEqualTo(-1L);
+        assertThat(alarm.raised()).as("raised once, however many rounds end stalled")
+                                  .containsExactly(new OwnerActivation.ActivationBlock.CatchupStalled("s", 0, PartitionBackfill.MAX_STALLED_ROUNDS));
+        assertThat(alarm.resolved()).isEmpty();
+    }
+
+    /// #2960: with two sources both stalled the round ends in failure, never in activation, and the warning is raised only at the end
+    /// of the state (both demoted), not while one source is still being counted.
+    @Test
+    void probePath_twoStalledSources_endInFailure_neverActivate_andRaiseOnceAtTheEnd() {
+        assertTwoStalledSourcesEndInFailure(fixture(true, equalReplicas()));
+    }
+
+    @Test
+    void registryPath_twoStalledSources_endInFailure_neverActivate_andRaiseOnceAtTheEnd() {
+        assertTwoStalledSourcesEndInFailure(fixture(false, equalReplicas()));
+    }
+
+    private void assertTwoStalledSourcesEndInFailure(Replicas fixture) {
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        pageCaps.put(OTHER, 0L);
+
+        var raisedAfterEachRound = new java.util.ArrayList<Integer>();
+        var rounds = IntStream.rangeClosed(1, 9)
+                              .mapToObj(_ -> settled(fixture.backfill().backfill("s", 0)))
+                              .peek(_ -> raisedAfterEachRound.add(alarm.raised().size()))
+                              .toList();
+
+        assertThat(rounds).allSatisfy(round -> assertThat(round.isFailure()).isTrue());
+        assertThat(outcomeOf(rounds.getLast())).isEqualTo(BackfillError.General.SOURCE_STALLED);
+        assertThat(head()).as("never activated").isEqualTo(-1L);
+        assertThat(raisedAfterEachRound.getFirst()).as("not raised while the first source is only being counted").isZero();
+        assertThat(raisedAfterEachRound.getLast()).as("raised once, once both are demoted").isEqualTo(1);
+        assertThat(raisedAfterEachRound).as("never raised twice").isSorted().doesNotContain(2);
+        assertThat(fixture.backfill().redriveCandidates()).as("the redrive keeps the partition").isNotEmpty();
+    }
+
+    /// #2960: the state ends on progress. A source that advances the owner's head clears it, and the next stalled terminal state raises again.
+    @Test
+    void probePath_progressAfterAllStalled_resolvesTheWarning_andALaterStallRaisesAgain() {
+        var fixture = fixture(true, singleReplica());
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+        assertThat(alarm.raised()).hasSize(1);
+
+        pageCaps.put(SOURCE, 1L);
+
+        var progressed = settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(outcomeOf(progressed)).isEqualTo(BackfillError.General.INCOMPLETE_BACKFILL);
+        assertThat(alarm.resolved()).as("progress clears the state").hasSize(1);
+
+        pageCaps.put(SOURCE, 0L);
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+
+        assertThat(alarm.raised()).as("a recurrence raises again").hasSize(2);
+    }
+
+    /// #2960: the state ends on activation: the stalled source recovers, the owner reaches the target, and the warning is resolved.
+    @Test
+    void registryPath_activationAfterAllStalled_resolvesTheWarning() {
+        var fixture = fixture(false, singleReplica());
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+        pageCaps.remove(SOURCE);
+
+        var activated = settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(activated.isSuccess()).as("the recovered source reaches 15: %s", activated).isTrue();
+        assertThat(alarm.raised()).hasSize(1);
+        assertThat(alarm.resolved()).containsExactlyElementsOf(alarm.raised());
+    }
+
+    /// #2960: `demoteStalled` settles its promise even when the code that runs on the attempt's result throws (here the alarm's `resolved`,
+    /// reached through the stall bookkeeping): the round fails, it does not hang.
+    @Test
+    void probePath_aThrowingStallBookkeeping_failsTheRound_insteadOfLeavingItUnsettled() {
+        var fixture = fixture(true, singleReplica());
+        var alarm = recordingAlarm(fixture);
+
+        pageCaps.put(SOURCE, 0L);
+        IntStream.rangeClosed(1, PartitionBackfill.MAX_STALLED_ROUNDS).forEach(_ -> settled(fixture.backfill().backfill("s", 0)));
+        pageCaps.remove(SOURCE);
+        alarm.failOnResolve();
+
+        var round = settled(fixture.backfill().backfill("s", 0));
+
+        assertThat(round.isFailure()).as("settled as a failure: %s", round).isTrue();
+    }
+
+    private static RecordingAlarm recordingAlarm(Replicas fixture) {
+        var alarm = new RecordingAlarm();
+
+        fixture.backfill().blockAlarm(alarm);
+
+        return alarm;
+    }
+
+    private static final class RecordingAlarm implements OwnerActivation.BlockAlarm {
+        private final List<OwnerActivation.ActivationBlock> raised = new CopyOnWriteArrayList<>();
+        private final List<OwnerActivation.ActivationBlock> resolved = new CopyOnWriteArrayList<>();
+        private volatile boolean failOnResolve;
+
+        @Override
+        public org.pragmatica.lang.Unit raise(OwnerActivation.ActivationBlock block) {
+            raised.add(block);
+
+            return org.pragmatica.lang.Unit.unit();
+        }
+
+        @Override
+        public org.pragmatica.lang.Unit resolved(OwnerActivation.ActivationBlock block) {
+            resolved.add(block);
+            if (failOnResolve) {
+                throw new IllegalStateException("alarm sink failed");
+            }
+
+            return org.pragmatica.lang.Unit.unit();
+        }
+
+        void failOnResolve() {
+            failOnResolve = true;
+        }
+
+        List<OwnerActivation.ActivationBlock> raised() {
+            return raised;
+        }
+
+        List<OwnerActivation.ActivationBlock> resolved() {
+            return resolved;
+        }
+    }
+
+    private static List<Replica> singleReplica() {
+        return List.of(new Replica(SOURCE, 15L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))));
+    }
+
     private static Object outcomeOf(Result<Long> result) {
         return result.fold(cause -> (Object) cause, value -> (Object) value);
     }

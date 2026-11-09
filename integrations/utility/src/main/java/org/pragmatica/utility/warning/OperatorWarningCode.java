@@ -494,6 +494,18 @@ public enum OperatorWarningCode {
                                    "stream-replication",
                                    WarningLevel.INFO,
                                    STREAM_OWNER_LINEAGE_REFUSED),
+    /// A promoted owner's catch-up cannot progress (#2960): every source it could read for the partition answered short without
+    /// advancing the owner for three consecutive rounds, so the round ends demoted-source after demoted-source. The owner stays SYNCING and
+    /// never activates below the target; the redrive retries every tick and nothing else bounds it. CRITICAL: the partition has no
+    /// authoritative owner until a source holding the missing records answers in full or an operator acts. Raised once per episode,
+    /// not per tick; the message names the partition. Closed by [#STREAM_OWNER_CATCHUP_PROGRESSING].
+    STREAM_OWNER_CATCHUP_STALLED("stream-owner-catchup-stalled", "stream-replication", WarningLevel.CRITICAL),
+    /// The recovery of a [#STREAM_OWNER_CATCHUP_STALLED] (#2960), same subject: the owner's head advanced, the catch-up reached its target
+    /// and the owner activated, or this node no longer has an ahead source to catch up from (the message says which).
+    STREAM_OWNER_CATCHUP_PROGRESSING("stream-owner-catchup-progressing",
+                                     "stream-replication",
+                                     WarningLevel.INFO,
+                                     STREAM_OWNER_CATCHUP_STALLED),
     /// A node's HTTP listener refused a TLS certificate rotation because the new certificate bundle did not build into a TLS
     /// context (a malformed or mismatched certificate or key). The listener keeps serving the PREVIOUS certificate, which
     /// expires; nothing is replaced and nothing falls back to plain HTTP. Subject is the listener (`management`, `app-http`).
