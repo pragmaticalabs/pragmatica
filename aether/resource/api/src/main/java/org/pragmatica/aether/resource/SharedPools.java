@@ -88,6 +88,48 @@ final class SharedPools {
     private final Map<Object, SharedEntry> entries = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final Fn1<Promise<Unit>, Provisioned<?>> closer;
+    private volatile TraceSink trace;
+
+    /// Test-only trace hook for TLA+ trace validation (`tools/tla/trace.py`, spec `SharedPools`): `null` in production,
+    /// where no event is built and no lock is taken. When set, each atomic region runs and records its event under the
+    /// sink's monitor, taken inside any bin lock the region already holds (bin, then sink: the only order), so the
+    /// recorded sequence is a linearization of the regions. Event names are the spec's action names.
+    interface TraceSink {
+        void event(Object... event);
+    }
+
+    void traceTo(TraceSink sink) {
+        this.trace = sink;
+    }
+
+    private <R> R region(Fn0<R> body, Fn1<Object[], R> event) {
+        var sink = trace;
+
+        if (sink == null) {
+            return body.apply();
+        }
+        synchronized (sink) {
+            var result = body.apply();
+
+            sink.event(event.apply(result));
+
+            return result;
+        }
+    }
+
+    private Unit note(Object... event) {
+        return region(Unit::unit, _ -> event);
+    }
+
+    private static String outcome(Admission admission) {
+        return admission.refused
+               ? "refused"
+               : admission.created
+                 ? "insert"
+                 : admission.newHolder
+                   ? "add"
+                   : "join";
+    }
 
     private SharedPools(Fn1<Promise<Unit>, Provisioned<?>> closer) {
         this.closer = closer;
@@ -120,12 +162,15 @@ final class SharedPools {
                            String label) {
         var admission = new Admission();
 
-        entries.compute(key, (_, current) -> admit(current, scope, label, admission));
+        entries.compute(key,
+                        (_, current) -> region(() -> admit(current, scope, label, admission),
+                                               _ -> new Object[]{"Acq_Admit", scope, key, outcome(admission),
+                                                                 admission.created ? admission.entry.pool() : ""}));
         if (admission.refused) {
             return ResourceProvisioningError.ProviderClosed.INSTANCE.promise();
         }
 
-        drainIfClosedMeanwhile(key);
+        drainIfClosedMeanwhile(key, scope);
         var pool = admission.entry.pool();
         var slot = (Promise<T>) admission.slot;
         // The eviction is a DEPENDENT transform registered ahead of this holder's slot, so a caller observing the
@@ -142,9 +187,16 @@ final class SharedPools {
             // Contained: a factory that throws synchronously fails the pool (and is evicted) instead of leaving the
             // placeholder unresolved, which would wedge the key and every release waiting on it.
             Promise.unitPromise()
-                   .flatMap(_ -> provision.apply())
+                   .flatMap(_ -> {
+                       note("Acq_Provision", scope, key);
+
+                       return provision.apply();
+                   })
                    .onSuccess(_ -> LOG.log(System.Logger.Level.INFO, "opened shared pool {0} for {1}", label, scope))
-                   .onResult(pool::resolve);
+                   .onResult(result -> {
+                       note("Resolve", pool, result.isSuccess() ? "open" : "failed");
+                       pool.resolve(result);
+                   });
         }
 
         return attached.flatMap(_ -> slot);
@@ -272,6 +324,8 @@ final class SharedPools {
                                     NodeShareable<T, ?> shareable,
                                     Object key,
                                     String scope) {
+        note("Acq_Fill", scope, key, result.isSuccess() ? "view" : "failed");
+
         return slot.resolve(result.map(provisioned -> shareable.view((T) provisioned.resource(),
                                                                      () -> releaseSlot(key, scope, slot))));
     }
@@ -389,11 +443,14 @@ final class SharedPools {
     ///        /\ UNCHANGED <<closed, shared, inflight, closes, caVars, afterClosedHit, slotOf, nAcq, nPools, faults,
     ///                       staleHit, sliceCache, spc>>
     /// ```
-    private void drainIfClosedMeanwhile(Object key) {
-        if (closed.get()) {
+    private void drainIfClosedMeanwhile(Object key, String scope) {
+        if (region(closed::get, seen -> seen ? new Object[0] : new Object[]{"Acq_Post", scope, key, "nodrain"})) {
             var late = new Departure();
 
-            entries.compute(key, (_, current) -> drain(current, late));
+            entries.compute(key,
+                            (_, current) -> region(() -> drain(current, late),
+                                                   _ -> new Object[]{"Acq_Post", scope, key,
+                                                                     late.removed == null ? "nodrain" : "drained"}));
             option(late.removed).onPresent(this::close);
         }
     }
@@ -460,7 +517,11 @@ final class SharedPools {
     /// ```
     private Promise<Unit> close(SharedEntry entry) {
         return entry.pool()
-                    .flatMap(closer)
+                    .flatMap(provisioned -> {
+                        note("Close_Pool", entry.pool());
+
+                        return closer.apply(provisioned);
+                    })
                     .onSuccess(_ -> LOG.log(System.Logger.Level.INFO,
                                             "closed shared pool {0}",
                                             entry.label()));
@@ -505,19 +566,36 @@ final class SharedPools {
     ///                            slotSt, slotOf, nAcq, nPools, faults, staleHit, sliceCache, spc>>
     /// ```
     List<Promise<Unit>> closeAll() {
-        closed.set(true);
+        region(() -> {
+                   closed.set(true);
+
+                   return Unit.unit();
+               },
+               _ -> new Object[]{"CA_Flag"});
         var closes = new ArrayList<Promise<Unit>>();
 
-        while (!entries.isEmpty()) {
-            for (var key : List.copyOf(entries.keySet())) {
+        for (var pass = nextPass(); pass.isPresent(); pass = nextPass()) {
+            for (var key : pass.unwrap()) {
                 var departure = new Departure();
 
-                entries.compute(key, (_, current) -> drain(current, departure));
+                entries.compute(key,
+                                (_, current) -> region(() -> drain(current, departure),
+                                                       _ -> new Object[]{"CA_Drain", key,
+                                                                         departure.removed == null ? "empty" : "captured"}));
                 option(departure.removed).onPresent(removed -> closes.add(close(removed)));
             }
         }
 
         return closes;
+    }
+
+    /// One pass of closeAll's loop: none when `isEmpty()` reads true, else the key-set snapshot to drain.
+    private Option<List<Object>> nextPass() {
+        return region(() -> entries.isEmpty()
+                            ? Option.<List<Object>> none()
+                            : Option.some(List.copyOf(entries.keySet())),
+                      pass -> new Object[]{"CA_Check", pass.map(keys -> keys.isEmpty() ? "check" : "drain")
+                                                          .or("returned")});
     }
 
     /// The drain's `compute` mapping function: captures the entry and removes it (`null` is the `compute` contract).
