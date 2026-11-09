@@ -173,7 +173,7 @@ Promise<Unit> updateUser(long id, UpdateUserRequest request);
 | `Promise<List<T>>` | Zero or more rows |
 | `Promise<Unit>` | No result (DML) |
 | `Promise<Long>` | Scalar count (an expression such as `count(*)` needs an alias: `SELECT count(*) AS n FROM t`) |
-| `Promise<Boolean>` | Scalar boolean (an expression such as `EXISTS(..)` needs an alias: `SELECT COALESCE(EXISTS(..), false) AS found`; a bare `EXISTS(..)` is not proven non-null, see Nullable Columns) |
+| `Promise<Boolean>` | Scalar boolean (an expression such as `EXISTS(..)` needs an alias: `SELECT EXISTS(..) AS found`; see Nullable Columns) |
 
 ### Query Narrowing
 
@@ -253,9 +253,9 @@ build, naming the method, the output, the reason and the fix (`COALESCE(..., <de
 component). Nullability is computed per output expression, never from the column alone: a `NOT NULL` column is still
 NULL on the nullable side of an outer join, in `max`/`min`/`sum`/`avg` over an empty group, in a `CASE` without `ELSE`,
 through `NULLIF`, from an empty scalar subquery, or in a set operation with a nullable branch. Proven non-null: a
-`NOT NULL` column of the `FROM` root or of an inner-joined table, `count(..)`, a literal, `COALESCE` whose last
+`NOT NULL` column of the `FROM` root or of an inner-joined table, `count(..)`, a literal, `EXISTS (..)` and `NOT EXISTS (..)`, a scalar subquery that is a lone `count(..)` with no `GROUP BY`, `HAVING`, set operation, `LIMIT` or `OFFSET` (it always returns one row; a `max(..)` or grouped subquery stays nullable), `COALESCE` whose last
 argument is proven, and a cast, sign or parentheses over such an expression. A NULL-rejecting predicate on a bare
-column proves that column too (`col IS NOT NULL`, `=`, `<>`, `<`, `>`, `<=`, `>=`, `BETWEEN`, `LIKE`/`ILIKE`, `IN (..)`),
+column proves that column too (`col IS NOT NULL`, `=`, `<>`, `<`, `>`, `<=`, `>=`, `BETWEEN`, `LIKE`/`ILIKE`, `IN (..)`; a quantified `= ALL (..)`, `op ANY/SOME (..)` and `IS [NOT] DISTINCT FROM`, `IS [NOT] TRUE/FALSE/UNKNOWN` prove nothing),
 but only as a top-level `AND` conjunct of the `WHERE` of the same `SELECT`: not under `OR` or `NOT`, not inside a
 subquery, not in `HAVING`, not in an outer join's `ON`, and a predicate on an expression (`lower(col) = ..`,
 `col::text = ..`) proves nothing. It proves only that column, and a `WHERE` predicate on a column of the nullable side of a

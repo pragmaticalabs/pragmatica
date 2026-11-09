@@ -582,9 +582,49 @@ public final class OutputNullability {
                                                      ? "a CASE result is not proven non-null"
                                                      : "CASE without ELSE yields NULL when no WHEN matches");
             case "NullIfExpr" -> Nullability.mayBeNull("NULLIF yields NULL when its arguments are equal");
-            case "SubqueryExpr" -> Nullability.mayBeNull("a scalar subquery yields NULL when it returns no row");
+            case "SubqueryExpr" -> scalarSubquery(node);
+            case "ExistsExpr" -> Nullability.NON_NULL;
+            case "NotExpr" -> negation(node, scope);
             default -> transparentOrUnproven(node, scope);
         };
+    }
+
+    /// `NOT EXISTS (..)` is as non-null as `EXISTS (..)`; any other `NOT x` is left to the generic rule.
+    private static Nullability negation(CstNavigator node, Scope scope) {
+        var negatesExists = node.child("NotExpr").flatMap(inner -> chainTo(inner, "ExistsExpr")).isPresent();
+
+        return negatesExists
+               ? Nullability.NON_NULL
+               : transparentOrUnproven(node, scope);
+    }
+
+    /// A scalar subquery yields NULL when it returns no row - except one that always returns exactly one row: a lone
+    /// `count(..)` aggregate (no `OVER`) with no `GROUP BY`, `HAVING`, set operation, `LIMIT` or `OFFSET`.
+    private static Nullability scalarSubquery(CstNavigator subquery) {
+        var statement = subquery.child("SelectStmt");
+        var alwaysOneRow = statement.filter(stmt -> stmt.children()
+                                                        .size() == 1)
+                                    .flatMap(stmt -> stmt.child("SelectCore"))
+                                    .filter(core -> isUngroupedCount(core))
+                                    .isPresent();
+
+        return alwaysOneRow
+               ? Nullability.NON_NULL
+               : Nullability.mayBeNull("a scalar subquery yields NULL when it returns no row");
+    }
+
+    private static boolean isUngroupedCount(CstNavigator core) {
+        if (core.has("GroupByClause") || core.has("HavingClause")) return false;
+
+        var targets = core.child("TargetList").map(list -> list.allChildren("TargetElem")).or(List.of());
+
+        return targets.size() == 1 && targets.getFirst()
+                                             .child("Expr")
+                                             .flatMap(expr -> chainTo(expr, "FuncCall"))
+                                             .filter(call -> !call.has("OverClause"))
+                                             .flatMap(call -> functionName(call))
+                                             .filter("count"::equals)
+                                             .isPresent();
     }
 
     private static Nullability operand(Option<CstNavigator> operand, Scope scope) {
@@ -633,7 +673,6 @@ public final class OutputNullability {
             case "ConcatExpr" -> "a || expression is not proven non-null";
             case "CompareExpr", "IsExpr", "AndExpr", "OrExpr", "NotExpr" -> "a boolean expression is not proven non-null";
             case "PostfixExpr", "ArrayExpr" -> "a JSON, array or field access is not proven non-null";
-            case "ExistsExpr" -> "an EXISTS expression is not proven non-null";
             default -> "the " + node.rule() + " expression is not proven non-null";
         };
     }
@@ -827,6 +866,9 @@ public final class OutputNullability {
         if (compare.has("NotKW")) return;
         // the comparison operator is an inline literal with no node of its own; only it gives CompareExpr a 2nd IsExpr
         if (operands.size() == 2) {
+            // `= ALL (..)` over an empty set is true for a NULL row, so a quantified comparison proves nothing
+            if (operands.stream().anyMatch(operand -> chainTo(operand, "AnyAllExpr").isPresent())) return;
+
             operands.forEach(operand -> bareColumnOperand(operand).onPresent(refs::add));
 
             return;

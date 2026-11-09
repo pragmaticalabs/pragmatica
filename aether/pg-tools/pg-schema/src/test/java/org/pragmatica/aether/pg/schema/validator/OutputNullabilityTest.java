@@ -371,6 +371,21 @@ class OutputNullabilityTest {
         "SELECT note AS x FROM t WHERE note || 'a' IS NOT NULL",
         "SELECT note AS x FROM t WHERE note IS NULL",
         "SELECT note AS x FROM t WHERE note IS DISTINCT FROM 'a'",
+        "SELECT note AS x FROM t WHERE note IS DISTINCT FROM NULL",
+        "SELECT note AS x FROM t WHERE note IS NOT DISTINCT FROM 'a'",
+        "SELECT note AS x FROM t WHERE note IS NOT DISTINCT FROM NULL",
+        "SELECT note AS x FROM t WHERE note IS NOT DISTINCT FROM name",
+        "SELECT note AS x FROM t WHERE note IS NOT TRUE",
+        "SELECT note AS x FROM t WHERE note IS NOT FALSE",
+        "SELECT note AS x FROM t WHERE note IS NOT UNKNOWN",
+        "SELECT note AS x FROM t WHERE note = ALL (ARRAY['a'])",
+        "SELECT note AS x FROM t WHERE note <> ALL (ARRAY[]::text[])",
+        "SELECT note AS x FROM t WHERE note < ALL (SELECT name FROM t WHERE false)",
+        "SELECT note AS x FROM t WHERE note = ALL (SELECT name FROM t)",
+        "SELECT note AS x FROM t WHERE note = ANY (ARRAY['a'])",
+        "SELECT note AS x FROM t WHERE note <> ANY (SELECT name FROM t)",
+        "SELECT note AS x FROM t WHERE note > SOME (ARRAY['a'])",
+        "SELECT note AS x FROM t WHERE note >= SOME (SELECT name FROM t)",
         "SELECT note AS x FROM t WHERE note IS TRUE",
         "SELECT note AS x FROM t WHERE note IS NULL = true",
         "SELECT u.id AS x FROM u RIGHT JOIN t ON u.t_id = t.id WHERE id IS NOT NULL",
@@ -381,6 +396,49 @@ class OutputNullabilityTest {
         "SELECT note AS x FROM t WHERE note IS NOT NULL UNION SELECT note FROM t"
     })
     void predicateOutsideRuleC_provesNothing(String sql) {
+        assertThat(verdict(sql, "x")).isInstanceOf(Nullability.MayBeNull.class);
+    }
+
+    /// EXISTS and NOT EXISTS always yield true or false; a scalar subquery that is a lone ungrouped count(..) always
+    /// returns one row. Every other scalar subquery stays nullable (an empty one yields NULL).
+    @ParameterizedTest(name = "{0}")
+    @CsvSource(delimiter = '|', value = {
+        "SELECT EXISTS (SELECT 1 FROM u) AS x FROM t",
+        "SELECT NOT EXISTS (SELECT 1 FROM u WHERE u.t_id = t.id) AS x FROM t",
+        "SELECT exists (SELECT 1 FROM u WHERE u.t_id = t.id) AS x FROM t",
+        "SELECT (EXISTS (SELECT 1 FROM u)) AS x FROM t",
+        "SELECT (SELECT count(*) FROM u) AS x FROM t",
+        "SELECT (SELECT count(*) FROM u WHERE u.t_id = t.id) AS x FROM t",
+        "SELECT (SELECT count(label) FROM u WHERE u.t_id = t.id) AS x FROM t",
+        "SELECT (SELECT COUNT(DISTINCT label) FROM u) AS x FROM t",
+        "SELECT (SELECT count(*) FROM u WHERE false) AS x FROM t",
+        "SELECT (SELECT count(*) AS n FROM u) AS x FROM t"
+    })
+    void alwaysOneValue_isProvenNonNull(String sql) {
+        assertThat(verdict(sql, "x")).isEqualTo(Nullability.NON_NULL);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @CsvSource(delimiter = '|', value = {
+        "SELECT (SELECT count(*) FROM u GROUP BY t_id) AS x FROM t",
+        "SELECT (SELECT count(*) FROM u GROUP BY t_id HAVING count(*) > 1) AS x FROM t",
+        "SELECT (SELECT count(*) FROM u HAVING count(*) > 1) AS x FROM t",
+        "SELECT (SELECT count(*) FROM u LIMIT 0) AS x FROM t",
+        "SELECT (SELECT count(*) FROM u OFFSET 1) AS x FROM t",
+        "SELECT (SELECT count(*) FROM u UNION SELECT count(*) FROM u) AS x FROM t",
+        "SELECT (SELECT count(*) OVER () FROM u) AS x FROM t",
+        "SELECT (SELECT max(t_id) FROM u) AS x FROM t",
+        "SELECT (SELECT count(*), count(*) FROM u) AS x FROM t",
+        "SELECT (SELECT count(*) + 1 FROM u) AS x FROM t",
+        "SELECT (SELECT lower(label) FROM u) AS x FROM t",
+        "SELECT (SELECT t_id FROM u WHERE id = 1) AS x FROM t",
+        "SELECT (SELECT (SELECT count(*) FROM u)) AS x FROM t",
+        "SELECT (WITH c AS (SELECT 1) SELECT count(*) FROM u LIMIT 0) AS x FROM t",
+        "SELECT NOT note AS x FROM t",
+        "SELECT NOT (qty > 1) AS x FROM t",
+        "SELECT NOT NOT EXISTS (SELECT 1 FROM u) AS x FROM t"
+    })
+    void subqueryOrNegationOutsideTheProvenSet_staysNullable(String sql) {
         assertThat(verdict(sql, "x")).isInstanceOf(Nullability.MayBeNull.class);
     }
 
