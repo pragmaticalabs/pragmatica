@@ -16,7 +16,9 @@ import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.http.security.HttpAuthenticator;
 import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.terra.http.HttpAuthenticatorFactory;
 import org.pragmatica.testlogging.LogCapture;
 
@@ -86,6 +88,14 @@ class LaunchHttpAuthenticatorFailureTest {
     }
 
     @Test
+    void factoryReturningAFailure_refusesTheLaunch_asAnInvalidAuthenticator() {
+        launch(new FailingFactory()).onSuccess(_ -> fail("launch must be refused"))
+                                    .onFailure(cause -> assertThat(cause).isInstanceOf(TerraLaunchError.class)
+                                                                         .extracting(Cause::message)
+                                                                         .isEqualTo("Invalid authenticator: issuer is missing"));
+    }
+
+    @Test
     void authenticatorThrowingPerRequest_answersAGenericFailure_andLogsTheProvider() {
         var authenticator = launch(new ThrowingAuthenticatorFactory()).unwrap().authenticator().apply();
 
@@ -128,6 +138,11 @@ class LaunchHttpAuthenticatorFailureTest {
     private static final class ThrowingFactory implements HttpAuthenticatorFactory {
         @Override public String name() { return "bad"; }
         @Override public Result<HttpAuthenticator> authenticator(ConfigurationProvider settings) { throw new IllegalStateException(LEAK); }
+    }
+
+    private static final class FailingFactory implements HttpAuthenticatorFactory {
+        @Override public String name() { return "bad"; }
+        @Override public Result<HttpAuthenticator> authenticator(ConfigurationProvider settings) { return Causes.cause("issuer is missing").result(); }
     }
 
     private static final class NullResultFactory implements HttpAuthenticatorFactory {
