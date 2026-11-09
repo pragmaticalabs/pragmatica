@@ -93,6 +93,18 @@ class PrincipalPropagationTripwireTest {
                                          .contains("caller:" + Option.class.getName() + "<" + SecurityContext.class.getName() + ">");
     }
 
+    /// A request built by a factory that takes no caller (every invoke that is not made on a caller's behalf) carries no
+    /// identity, never a stand-in one.
+    @Test
+    void invokeRequest_factoriesWithoutACaller_carryNoIdentity() {
+        var payload = new byte[]{1};
+        var tenArg = InvokeRequest.invokeRequest(SENDER, "c", "r", ARTIFACT, METHOD, payload, true, 1, 0, false);
+        var sevenArg = InvokeRequest.invokeRequest(SENDER, "c", "r", ARTIFACT, METHOD, payload, true);
+
+        assertThat(tenArg.caller().isEmpty()).as("10-arg factory").isTrue();
+        assertThat(sevenArg.caller().isEmpty()).as("7-arg factory").isTrue();
+    }
+
     private static List<String> componentSignatures() {
         return Arrays.stream(InvokeRequest.class.getRecordComponents())
                      .map(component -> component.getName() + ":" + component.getGenericType().getTypeName())
