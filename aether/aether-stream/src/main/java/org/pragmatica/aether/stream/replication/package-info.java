@@ -5,7 +5,7 @@
 
 /// Stream partition replication: backfill, catch-up and owner activation.
 ///
-/// The TLA+ model `Stalled` (at bcc2102db6) of the owner catch-up's all-stalled warning ([PartitionBackfill]) lives in
+/// The TLA+ model `Stalled` (at 92ccde7f6c, level-triggered) of the owner catch-up's all-stalled warning ([PartitionBackfill]) lives in
 /// doc-comment fragments: this skeleton carries the state, the environment (cluster events raised by other components),
 /// `Init`, `Next`, fairness and the properties; each action sits on the code that implements it.
 /// `tools/tla/check.sh Stalled <variant> aether/aether-stream/src/main/java` extracts and checks it.
@@ -30,16 +30,19 @@
 ///     forget,      \* the stream-removed listener (clearStalledOf) is pending
 ///     env,         \* environment steps left
 ///     settled,     \* ghost: a reconcile call returned and nothing changed since
-///     early        \* ghost: a raise with fewer than MAX stalled rounds in this incarnation
+///     early,       \* ghost: a raise with fewer than MAX stalled rounds in this incarnation
+///     rec,         \* a reconcileStalled call (redrive tick, replica-set pass): "idle" | "apply"
+///     recNotHeld   \* its notHeld read, taken before the monitor
 ///
-/// vars == <<exists, replica, owner, quar, cnt, ep, reported, rpc, allStalled, forget, env, settled, early>>
+/// vars == <<exists, replica, owner, quar, cnt, ep, reported, rpc, allStalled, forget, env, settled, early, rec,
+///           recNotHeld>>
 /// live == <<exists, replica, owner, quar>>
 ///
 /// \* What backs the warning: the stream exists, self is a replica and the owner, not quarantined, stall >= MAX.
 /// Backed == exists /\ replica /\ owner /\ ~quar /\ cnt >= MAX
 ///
 /// \* -- Environment: cluster events from other components, each consuming one step of the budget --
-/// Ev(name) == name \in Env /\ env > 0 /\ env' = env - 1 /\ settled' = FALSE
+/// Ev(name) == name \in Env /\ env > 0 /\ env' = env - 1 /\ settled' = FALSE /\ UNCHANGED <<rec, recNotHeld>>
 ///
 /// Destroy == /\ Ev("destroy")
 ///            /\ exists
@@ -89,13 +92,16 @@
 ///         /\ env = EnvSteps
 ///         /\ settled = FALSE
 ///         /\ early = FALSE
+///         /\ rec = "idle"
+///         /\ recNotHeld = FALSE
 ///
 /// EnvNext == Destroy \/ Recreate \/ RemoveSelf \/ AddSelf \/ OwnerFlip \/ QuarFlip
-/// SysNext == R_Start \/ R_Read \/ R_Report \/ ClearStalledOf
+/// SysNext == R_Start \/ R_Read \/ R_Report \/ ClearStalledOf \/ Rec_Read \/ Rec_Apply
 /// Next == EnvNext \/ SysNext
 ///
-/// \* Redrive ticks keep starting rounds of a candidate; a started step completes; the listener runs.
-/// Fairness == WF_vars(R_Start) /\ WF_vars(R_Read) /\ WF_vars(R_Report) /\ WF_vars(ClearStalledOf)
+/// \* Redrive ticks keep starting rounds of a candidate and reconcile calls; a started step completes; the listener runs.
+/// Fairness == /\ WF_vars(R_Start) /\ WF_vars(R_Read) /\ WF_vars(R_Report) /\ WF_vars(ClearStalledOf)
+///             /\ WF_vars(Rec_Read) /\ WF_vars(Rec_Apply)
 ///
 /// Spec == Init /\ [][Next]_vars /\ Fairness
 ///
@@ -103,7 +109,7 @@
 /// \* An unbacked warning eventually clears (or becomes backed again).
 /// UnbackedClears == (reported /\ ~Backed) ~> (~reported \/ Backed)
 ///
-/// \* After a reconcile call returned, and nothing changed since, an open warning is backed (vacuous here: no reconcile).
+/// \* After a reconcile call returned, and nothing changed since, an open warning is backed.
 /// SettledIsBacked == settled /\ reported => Backed
 ///
 /// \* Exploratory: a raise needs MAX stalled rounds in this incarnation of the stream.
@@ -134,6 +140,11 @@
 /// ```tlacfg Stalled:liveowner
 /// CONSTANT Env = {"owner", "quar"}
 /// PROPERTY UnbackedClears
+/// ```
+///
+/// ```tlacfg Stalled:settled
+/// CONSTANT Env = {"destroy", "recreate", "remove", "add", "owner", "quar"}
+/// INVARIANT SettledIsBacked
 /// ```
 ///
 /// ```tlacfg Stalled:early

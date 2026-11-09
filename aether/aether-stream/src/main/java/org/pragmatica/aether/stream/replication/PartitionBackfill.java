@@ -886,15 +886,17 @@ public final class PartitionBackfill {
     /// runs the catch-up chain.
     ///
     /// ```tla Stalled:R_Start
-    /// \* A round of a redrive candidate (the stream exists and self is a registered replica).
+    /// \* A round of a redrive candidate (the stream exists and self is a registered replica). It first runs
+    /// \* reconcileStalled (here as one step; Rec_Read/Rec_Apply model its split reads), so an open report survives
+    /// \* only if Backed.
     /// R_Start == /\ rpc = "idle"
     ///            /\ exists /\ replica
     ///            /\ IF quar \/ ~owner
     ///               THEN /\ reported' = FALSE
     ///                    /\ UNCHANGED rpc
     ///               ELSE /\ rpc' = "read"
-    ///                    /\ UNCHANGED reported
-    ///            /\ UNCHANGED <<live, cnt, ep, allStalled, forget, env, settled, early>>
+    ///                    /\ reported' = (reported /\ Backed)
+    ///            /\ UNCHANGED <<live, cnt, ep, allStalled, forget, env, settled, early, rec, recNotHeld>>
     /// ```
     private Promise<Long> runBackfill(String streamName, int partition, boolean mayRepair) {
         reconcileStalled();
@@ -1834,15 +1836,16 @@ public final class PartitionBackfill {
     /// Raises the all-stalled warning once per episode, under [#oversizedOrder].
     ///
     /// ```tla Stalled:R_Report
-    /// \* reportIfAllStalled -> raiseStalled under the monitor: raises when the flight is current (one flight: always).
+    /// \* reportIfAllStalled -> raiseStalled under the monitor: mayRaiseStalled = the flight is current (one flight:
+    /// \* always) and the stream still exists.
     /// R_Report == /\ rpc = "report"
     ///             /\ rpc' = "idle"
-    ///             /\ IF allStalled
+    ///             /\ IF allStalled /\ exists
     ///                THEN /\ reported' = TRUE
     ///                     /\ early' = (early \/ (~reported /\ ep < MAX))
     ///                     /\ settled' = FALSE
     ///                ELSE UNCHANGED <<reported, early, settled>>
-    ///             /\ UNCHANGED <<live, cnt, ep, allStalled, forget, env>>
+    ///             /\ UNCHANGED <<live, cnt, ep, allStalled, forget, env, rec, recNotHeld>>
     /// ```
     Unit raiseStalled(String streamName, int partition) {
         var block = new OwnerActivation.ActivationBlock.CatchupStalled(streamName, partition, MAX_STALLED_ROUNDS);
@@ -1882,6 +1885,24 @@ public final class PartitionBackfill {
     /// idempotent and dedup'd. A raise racing a replica-set removal can outlive the removal until the next of those, at most one redrive tick.
     /// The ownership and quarantine reads happen before the monitor, which stays a leaf: a flip between them and the monitor costs at worst a
     /// resolve that the next stalled round raises again, never a report left open.
+    ///
+    /// ```tla Stalled:Rec_Read
+    /// \* Outside the monitor: the ownership and quarantine reads of the reports open now (notHeld).
+    /// Rec_Read == /\ rec = "idle"
+    ///             /\ rec' = "apply"
+    ///             /\ recNotHeld' = (reported /\ (quar \/ ~owner))
+    ///             /\ UNCHANGED <<live, cnt, ep, reported, rpc, allStalled, forget, env, settled, early>>
+    /// ```
+    ///
+    /// ```tla Stalled:Rec_Apply
+    /// \* Under the monitor: an open report that is notHeld, or not stalled now (stream, replica, counter), resolves.
+    /// Rec_Apply == /\ rec = "apply"
+    ///              /\ rec' = "idle"
+    ///              /\ recNotHeld' = FALSE
+    ///              /\ reported' = (reported /\ ~recNotHeld /\ exists /\ replica /\ cnt >= MAX)
+    ///              /\ settled' = TRUE
+    ///              /\ UNCHANGED <<live, cnt, ep, rpc, allStalled, forget, env, early>>
+    /// ```
     public Unit reconcileStalled() {
         var notHeld = reportedStalled.keySet().stream().filter(this::isNotHeldAsOwner).collect(Collectors.toSet());
 
@@ -1931,7 +1952,7 @@ public final class PartitionBackfill {
     /// ClearStalledOf == /\ forget
     ///                   /\ forget' = FALSE
     ///                   /\ reported' = FALSE
-    ///                   /\ UNCHANGED <<live, cnt, ep, rpc, allStalled, env, settled, early>>
+    ///                   /\ UNCHANGED <<live, cnt, ep, rpc, allStalled, env, settled, early, rec, recNotHeld>>
     /// ```
     public Unit clearStalledOf(String streamName) {
         synchronized (oversizedOrder) {
@@ -1967,7 +1988,7 @@ public final class PartitionBackfill {
     ///              \/ /\ reported' = FALSE
     ///                 /\ rpc' = "idle"
     ///                 /\ UNCHANGED <<cnt, ep, allStalled>>
-    ///           /\ UNCHANGED <<live, forget, env, settled, early>>
+    ///           /\ UNCHANGED <<live, forget, env, settled, early, rec, recNotHeld>>
     /// ```
     private Result<Long> trackStall(String streamName,
                                     int partition,
