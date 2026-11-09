@@ -95,8 +95,12 @@ public final class OutputNullability {
         }
 
         boolean hasColumn(String column) {
-            return table.map(found -> found.column(column).isPresent())
-                        .or(derived.map(outs -> outs.stream().anyMatch(out -> out.name().map(column::equals).or(false)))
+            return table.map(found -> found.column(column)
+                                           .isPresent())
+                        .or(derived.map(outs -> outs.stream()
+                                                    .anyMatch(out -> out.name()
+                                                                        .map(column::equals)
+                                                                        .or(false)))
                                    .or(false));
         }
     }
@@ -134,7 +138,9 @@ public final class OutputNullability {
         return branchOutputs(QueryValidator.ownedSelectCores(body), ctes, schema);
     }
 
-    private static Option<List<Output>> branchOutputs(List<CstNavigator> cores, Map<String, Option<List<Output>>> ctes, Schema schema) {
+    private static Option<List<Output>> branchOutputs(List<CstNavigator> cores,
+                                                      Map<String, Option<List<Output>>> ctes,
+                                                      Schema schema) {
         var branches = new ArrayList<List<Output>>();
 
         for (var core : cores) {
@@ -155,7 +161,8 @@ public final class OutputNullability {
         var merged = new ArrayList<Output>();
 
         for (var branch : branches) {
-            if (branch.size() != first.size()) return Option.present(allUnproven(first, "set operation branches differ in width"));
+            if (branch.size() != first.size()) return Option.present(allUnproven(first,
+                                                                                 "set operation branches differ in width"));
         }
 
         for (int position = 0; position < first.size(); position++) {
@@ -167,7 +174,10 @@ public final class OutputNullability {
     }
 
     private static List<Output> allUnproven(List<Output> shape, String reason) {
-        return shape.stream().map(out -> new Output(out.name(), Nullability.mayBeNull(reason))).toList();
+        return shape.stream()
+                    .map(out -> new Output(out.name(),
+                                           Nullability.mayBeNull(reason)))
+                    .toList();
     }
 
     private static Nullability mergedVerdict(List<List<Output>> branches, int position) {
@@ -192,7 +202,8 @@ public final class OutputNullability {
         var known = new LinkedHashMap<>(outer);
 
         body.child("WithClause")
-            .onPresent(with -> with.findAll("CteDef").forEach(def -> registerCte(def, known, schema)));
+            .onPresent(with -> with.findAll("CteDef")
+                                   .forEach(def -> registerCte(def, known, schema)));
 
         return known;
     }
@@ -203,10 +214,13 @@ public final class OutputNullability {
            .onPresent(name -> known.put(name, UNRESOLVED));
         def.child("ColId")
            .map(id -> CstExtractor.extractIdentifier(id).normalized())
-           .onPresent(name -> known.put(name, cteBody(def, known, schema)));
+           .onPresent(name -> known.put(name,
+                                        cteBody(def, known, schema)));
     }
 
-    private static Option<List<Output>> cteBody(CstNavigator def, Map<String, Option<List<Output>>> known, Schema schema) {
+    private static Option<List<Output>> cteBody(CstNavigator def,
+                                                Map<String, Option<List<Output>>> known,
+                                                Schema schema) {
         if (def.child("ColumnList").isPresent()) return UNRESOLVED;
 
         return def.child("DmlStatement")
@@ -353,12 +367,15 @@ public final class OutputNullability {
 
     /// The outputs of a `(SELECT ..) alias` derived table; unresolved for an alias with a column list, a function
     /// or any other form.
-    private static Option<List<Output>> derivedOutputs(CstNavigator node, Map<String, Option<List<Output>>> ctes, Schema schema) {
+    private static Option<List<Output>> derivedOutputs(CstNavigator node,
+                                                       Map<String, Option<List<Output>>> ctes,
+                                                       Schema schema) {
         if (!node.rule().equals("SubqueryRef") && !node.rule().equals("LateralRef")) return UNRESOLVED;
 
         if (node.child("Alias").flatMap(alias -> alias.child("ColumnList")).isPresent()) return UNRESOLVED;
 
-        return node.child("SelectStmt").flatMap(select -> analyzeBody(select, ctes, schema));
+        return node.child("SelectStmt")
+                   .flatMap(select -> analyzeBody(select, ctes, schema));
     }
 
     // --- output lists ---
@@ -407,8 +424,7 @@ public final class OutputNullability {
         var result = new ArrayList<Output>();
 
         for (int position = 0; position < width; position++) {
-            result.add(new Output(Option.present("column" + (position + 1)),
-                                  valuesVerdict(rows, position, scope)));
+            result.add(new Output(Option.present("column" + (position + 1)), valuesVerdict(rows, position, scope)));
         }
 
         return Option.present(result);
@@ -418,7 +434,10 @@ public final class OutputNullability {
         for (var row : rows) {
             var cells = row.allChildren("ExprOrDefault");
             var verdict = position < cells.size()
-                          ? cells.get(position).child("Expr").map(expr -> evaluate(expr, scope)).or(Nullability.mayBeNull("a DEFAULT value"))
+                          ? cells.get(position)
+                                 .child("Expr")
+                                 .map(expr -> evaluate(expr, scope))
+                                 .or(Nullability.mayBeNull("a DEFAULT value"))
                           : Nullability.mayBeNull("VALUES rows differ in width");
 
             if (!verdict.isNonNull()) return verdict;
@@ -434,7 +453,8 @@ public final class OutputNullability {
 
         return named.isPresent()
                ? named
-               : target.child("Expr").flatMap(OutputNullability::expressionLabel);
+               : target.child("Expr")
+                       .flatMap(OutputNullability::expressionLabel);
     }
 
     private static Option<String> expressionLabel(CstNavigator node) {
@@ -454,8 +474,10 @@ public final class OutputNullability {
     }
 
     private static Option<String> singleChildLabel(CstNavigator node) {
-        return node.children().size() == 1
-               ? node.firstChild().flatMap(OutputNullability::expressionLabel)
+        return node.children()
+                   .size() == 1
+               ? node.firstChild()
+                     .flatMap(OutputNullability::expressionLabel)
                : Option.empty();
     }
 
@@ -531,7 +553,10 @@ public final class OutputNullability {
         return relation.derived()
                        .map(outs -> outs.stream()
                                         .map(out -> new Output(out.name(),
-                                                               overlay(relation, out.nullability(), out.name().or("?"), scope)))
+                                                               overlay(relation,
+                                                                       out.nullability(),
+                                                                       out.name().or("?"),
+                                                                       scope)))
                                         .toList())
                        .or(List.of(unresolvedStar("columns of '" + relation.name() + "' cannot be listed")));
     }
@@ -706,14 +731,20 @@ public final class OutputNullability {
         var label = relation.name() + "." + column;
         var found = relation.derived()
                             .map(outs -> outs.stream()
-                                             .filter(out -> out.name().map(column::equals).or(false))
+                                             .filter(out -> out.name()
+                                                               .map(column::equals)
+                                                               .or(false))
                                              .map(Output::nullability)
                                              .filter(verdict -> !verdict.isNonNull())
                                              .findFirst()
-                                             .orElse(outs.stream().anyMatch(out -> out.name().map(column::equals).or(false))
+                                             .orElse(outs.stream()
+                                                         .anyMatch(out -> out.name()
+                                                                             .map(column::equals)
+                                                                             .or(false))
                                                      ? Nullability.NON_NULL
                                                      : Nullability.mayBeNull("column '" + label + "' cannot be resolved")))
-                            .or(Nullability.mayBeNull("column '" + label + "' comes from a derived table, CTE or function"));
+                            .or(Nullability.mayBeNull("column '" + label
+                                                     + "' comes from a derived table, CTE or function"));
 
         return overlay(relation, found, column, scope);
     }
