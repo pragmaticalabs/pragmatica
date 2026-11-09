@@ -7,7 +7,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Arrays;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
 
@@ -25,8 +27,16 @@ public record JwtSecret(byte[] value) {
         value = value.clone();
     }
 
-    /// The secret, or a cause that names the required length and never the value.
+    private static final Cause BLANK = Causes.cause("HS256 secret is blank: an empty or whitespace-only secret is refused");
+
+    /// The secret, or a cause that names the required length and never the value. The text is used exactly as given,
+    /// NOT trimmed (trimming would silently change the key the issuer signs with); a blank text, empty or
+    /// whitespace-only, is refused whatever its length.
     public static Result<JwtSecret> jwtSecret(String text) {
+        return Verify.ensure(text, Verify.Is::notBlank, BLANK).flatMap(JwtSecret::longEnough);
+    }
+
+    private static Result<JwtSecret> longEnough(String text) {
         var bytes = text.getBytes(StandardCharsets.UTF_8);
 
         return bytes.length >= MIN_BYTES

@@ -98,6 +98,24 @@ class LaunchHttpHs256AndAuthenticatorTest {
         hs256(Map.of("jwt.secret", "short-secret")).onFailure(cause -> assertThat(cause.message()).doesNotContain("short-secret"));
     }
 
+    /// 40 spaces are 40 bytes, long enough to pass a length check and no key at all: refused like an empty secret.
+    @Test
+    void hs256_withAWhitespaceOnlySecret_refusesTheLaunch() {
+        assertRefused(hs256(Map.of("jwt.secret", " ".repeat(40))), "blank");
+        assertRefused(hs256(Map.of("jwt.secret", "\t".repeat(40))), "blank");
+        assertRefused(hs256(Map.of("jwt.secret", "")), "blank");
+    }
+
+    /// The secret is used as written, not trimmed: 30 characters padded to 32 bytes launch, and verify tokens signed
+    /// with the padded text.
+    @Test
+    void hs256_secretIsNotTrimmed() {
+        var padded = " " + SECRET.substring(2) + " ";
+        var auth = hs256(Map.of("jwt.secret", padded)).unwrap().authenticator().apply();
+
+        assertThat(validate(auth, "Bearer " + token("{\"alg\":\"HS256\"}", padded.getBytes(StandardCharsets.UTF_8))).isSuccess()).isTrue();
+    }
+
     @Test
     void hs256_withJwksUrl_refusesTheLaunch() {
         assertRefused(hs256(Map.of("jwt.secret", SECRET, "jwt.jwks_url", "https://auth.example.com/jwks.json")), "never reads a JWKS");

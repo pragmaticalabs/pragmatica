@@ -34,6 +34,25 @@ class JwtSecretTest {
         assertThat(JwtSecret.jwtSecret("é".repeat(15)).isFailure()).isTrue();
     }
 
+    /// A whitespace-only text is long enough in bytes and still no key: refused, like an empty one.
+    @Test
+    void jwtSecret_refusesBlankText_whateverItsLength() {
+        for (var blank : new String[]{"", " ", " ".repeat(40), "\t".repeat(40), "\n".repeat(33)}) {
+            JwtSecret.jwtSecret(blank)
+                     .onSuccess(_ -> fail("a blank secret must be refused: length " + blank.length()))
+                     .onFailure(cause -> assertThat(cause.message()).contains("blank"));
+        }
+    }
+
+    /// The text is used as written: padding around a real secret is part of the key, never trimmed away.
+    @Test
+    void jwtSecret_isNotTrimmed() {
+        var padded = " " + THIRTY_TWO + " ";
+
+        assertThat(JwtSecret.jwtSecret(padded).unwrap().value()).isEqualTo(padded.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertThat(JwtSecret.jwtSecret(" " + THIRTY_TWO.substring(2) + " ").isSuccess()).as("30 characters padded to 32 bytes: counted as written, not as trimmed").isTrue();
+    }
+
     @Test
     void toString_neverPrintsTheSecret() {
         assertThat(JwtSecret.jwtSecret(THIRTY_TWO).unwrap().toString()).doesNotContain(THIRTY_TWO).contains("redacted");
