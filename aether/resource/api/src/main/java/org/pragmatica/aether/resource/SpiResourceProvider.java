@@ -394,6 +394,37 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// A per-slice entry under today's key, for an unmarked factory or `pool_scope = "slice"`. The entry is a placeholder
     /// inserted by `computeIfAbsent`, and the provision runs after it returns, so no factory code runs under the bin
     /// lock. The eviction of a failed provision is today's.
+    ///
+    /// ```tla SharedPools:SP_Insert
+    /// \* computeIfAbsent inserts an unresolved placeholder; this caller provisions it after computeIfAbsent returned.
+    /// SP_Insert(s) ==
+    ///     /\ SlicePath
+    ///     /\ sliceCache[s] = 0
+    ///     /\ spc[s] = 0
+    ///     /\ nPools < MaxPools
+    ///     /\ nAcq < MaxAcquires
+    ///     /\ sliceCache' = [sliceCache EXCEPT ![s] = nPools + 1]
+    ///     /\ spc' = [spc EXCEPT ![s] = nPools + 1]
+    ///     /\ poolSt' = [poolSt EXCEPT ![nPools + 1] = "pending"]
+    ///     /\ nPools' = nPools + 1
+    ///     /\ nAcq' = nAcq + 1
+    ///     /\ UNCHANGED <<entry, count, closed, shared, inflight, closing, captures, closes, caVars, thr, slotSt, slotOf,
+    ///                    faults, staleHit>>
+    /// ```
+    ///
+    /// ```tla SharedPools:SP_Provision
+    /// \* `provisionBound(...).onResult(placeholder::resolve)`: a factory that throws synchronously leaves it unresolved.
+    /// SP_Provision(s) ==
+    ///     /\ spc[s] # 0
+    ///     /\ spc' = [spc EXCEPT ![s] = 0]
+    ///     /\ \/ /\ inflight' = inflight \cup {spc[s]}
+    ///           /\ UNCHANGED faults
+    ///        \/ /\ faults < MaxFaults
+    ///           /\ faults' = faults + 1
+    ///           /\ UNCHANGED inflight
+    ///     /\ UNCHANGED <<entry, count, closed, poolSt, shared, closing, captures, closes, caVars, thr, slotSt, slotOf,
+    ///                    nAcq, nPools, staleHit, sliceCache>>
+    /// ```
     @SuppressWarnings("unchecked")
     private <T, C> Promise<T> provideSlicePool(ResourceFactory<T, C> factory,
                                                C config,
@@ -497,6 +528,16 @@ public final class SpiResourceProvider implements ResourceProvider {
     }
 
     /// Releases `scope`'s entries, plus the shared-pool releases the caller already started (`shared`).
+    ///
+    /// ```tla SharedPools:SP_Release
+    /// \* remove(key, cached) then cached.flatMap(close): the per-slice entry is detached once and its close waits.
+    /// SP_Release(s) ==
+    ///     /\ sliceCache[s] # 0
+    ///     /\ sliceCache' = [sliceCache EXCEPT ![s] = 0]
+    ///     /\ Capture(sliceCache[s])
+    ///     /\ UNCHANGED <<entry, count, closed, poolSt, shared, inflight, closes, caVars, thr, slotSt, slotOf, nAcq,
+    ///                    nPools, faults, staleHit, spc>>
+    /// ```
     private Promise<Unit> releaseScope(String scope, List<Promise<Unit>> shared) {
         var closeFutures = new ArrayList<Promise<Unit>>(shared);
 

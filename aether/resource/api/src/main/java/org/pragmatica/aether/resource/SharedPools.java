@@ -100,6 +100,31 @@ final class SharedPools {
 
     /// Adds `scope` as a holder of the pool under `key` and yields that holder's view. `provision` runs only when this
     /// call inserted the entry, after `compute` returned.
+    ///
+    /// ```tla SharedPools:Acq_Post
+    /// \* After the admission compute returned (where a re-check of `closed` would sit; there is none here). The ghost
+    /// \* sawClosed records what such a check would read.
+    /// Acq_Post(t) == /\ pc[t] = "post"
+    ///                /\ sawClosed' = [sawClosed EXCEPT ![t] = closed]
+    ///                /\ pc' = [pc EXCEPT ![t] = IF created[t] THEN "provision" ELSE "wait"]
+    ///                /\ UNCHANGED <<entry, count, closed, poolSt, shared, inflight, closing, captures, closes, caVars,
+    ///                               created, newHolder, tslot, tpool, afterClosedHit, slotSt, slotOf, nAcq, nPools, faults,
+    ///                               staleHit, sliceCache, spc>>
+    /// ```
+    ///
+    /// ```tla SharedPools:Acq_Provision
+    /// \* `provision.apply()` is called directly: a factory that throws synchronously leaves the pool promise unresolved.
+    /// Acq_Provision(t) ==
+    ///     /\ pc[t] = "provision"
+    ///     /\ pc' = [pc EXCEPT ![t] = "wait"]
+    ///     /\ \/ /\ inflight' = inflight \cup {tpool[t]}
+    ///           /\ UNCHANGED faults
+    ///        \/ /\ faults < MaxFaults
+    ///           /\ faults' = faults + 1
+    ///           /\ UNCHANGED inflight
+    ///     /\ UNCHANGED <<entry, count, closed, poolSt, shared, closing, captures, closes, caVars, created, newHolder,
+    ///                    tslot, tpool, sawClosed, afterClosedHit, slotSt, slotOf, nAcq, nPools, staleHit, sliceCache, spc>>
+    /// ```
     @SuppressWarnings("unchecked")
     <T> Promise<T> acquire(Object key,
                            String scope,
@@ -136,6 +161,54 @@ final class SharedPools {
 
     /// The `compute` mapping function: refuses after node stop (keeping whatever is there, absent included), inserts
     /// the entry when absent, otherwise joins it.
+    ///
+    /// ```tla SharedPools:Acq_Admit
+    /// \* One compute on the key: refuse after node stop, insert (this thread provisions), re-join, or join.
+    /// Acq_Admit(t) ==
+    ///     LET s == t[1]
+    ///         k == t[2]
+    ///         e == entry[k]
+    ///         sl == nAcq + 1
+    ///         p == nPools + 1
+    ///     IN /\ pc[t] = "idle"
+    ///        /\ nAcq < MaxAcquires
+    ///        /\ nAcq' = nAcq + 1
+    ///        /\ sawClosed' = [sawClosed EXCEPT ![t] = FALSE]
+    ///        /\ IF closed
+    ///           THEN /\ UNCHANGED pc
+    ///                /\ UNCHANGED <<entry, poolSt, shared, nPools, slotSt, slotOf, created, newHolder, tslot, tpool>>
+    ///           ELSE IF e.pool = 0
+    ///           THEN /\ nPools < MaxPools
+    ///                /\ entry' = [entry EXCEPT ![k] = [pool |-> p, holders |-> [NoHolders EXCEPT ![s] = sl]]]
+    ///                /\ poolSt' = [poolSt EXCEPT ![p] = "pending"]
+    ///                /\ shared' = shared \cup {p}
+    ///                /\ nPools' = p
+    ///                /\ slotSt' = [slotSt EXCEPT ![sl] = "pending"]
+    ///                /\ slotOf' = [slotOf EXCEPT ![sl] = t]
+    ///                /\ created' = [created EXCEPT ![t] = TRUE]
+    ///                /\ newHolder' = [newHolder EXCEPT ![t] = TRUE]
+    ///                /\ tslot' = [tslot EXCEPT ![t] = sl]
+    ///                /\ tpool' = [tpool EXCEPT ![t] = p]
+    ///                /\ pc' = [pc EXCEPT ![t] = "admitted"]
+    ///           ELSE IF e.holders[s] # 0
+    ///           THEN /\ created' = [created EXCEPT ![t] = FALSE]
+    ///                /\ newHolder' = [newHolder EXCEPT ![t] = FALSE]
+    ///                /\ tslot' = [tslot EXCEPT ![t] = e.holders[s]]
+    ///                /\ tpool' = [tpool EXCEPT ![t] = e.pool]
+    ///                /\ pc' = [pc EXCEPT ![t] = "post"]
+    ///                /\ UNCHANGED <<entry, poolSt, shared, nPools, slotSt, slotOf>>
+    ///           ELSE /\ entry' = [entry EXCEPT ![k].holders[s] = sl]
+    ///                /\ slotSt' = [slotSt EXCEPT ![sl] = "pending"]
+    ///                /\ slotOf' = [slotOf EXCEPT ![sl] = t]
+    ///                /\ created' = [created EXCEPT ![t] = FALSE]
+    ///                /\ newHolder' = [newHolder EXCEPT ![t] = TRUE]
+    ///                /\ tslot' = [tslot EXCEPT ![t] = sl]
+    ///                /\ tpool' = [tpool EXCEPT ![t] = e.pool]
+    ///                /\ pc' = [pc EXCEPT ![t] = "post"]
+    ///                /\ UNCHANGED <<poolSt, shared, nPools>>
+    ///        /\ UNCHANGED <<count, closed, inflight, closing, captures, closes, caVars, faults, staleHit, sliceCache, spc,
+    ///                       afterClosedHit>>
+    /// ```
     @NullReturn
     private SharedEntry admit(SharedEntry current, String scope, String label, Admission admission) {
         if (closed.get()) {
@@ -178,6 +251,45 @@ final class SharedPools {
 
     /// Resolves the slot of the holder this thread added: the view on success, the pool's failure otherwise. It runs as
     /// a dependent of the pool, which is after `compute` returned, so outside the bin lock.
+    ///
+    /// ```tla SharedPools:Acq_Fill
+    /// \* The holder's slot resolves from the pool: the view on success, the failure otherwise. A re-joining holder
+    /// \* receives its existing slot.
+    /// Acq_Fill(t) ==
+    ///     LET p == tpool[t]
+    ///         sl == tslot[t]
+    ///         view == IF newHolder[t] THEN poolSt[p] # "failed" ELSE slotSt[sl] # "failed"
+    ///     IN /\ pc[t] = "wait"
+    ///        /\ IF newHolder[t]
+    ///           THEN /\ poolSt[p] \in {"open", "failed", "closed"}
+    ///                /\ slotSt' = [slotSt EXCEPT ![sl] = IF poolSt[p] = "failed" THEN "failed" ELSE "view"]
+    ///           ELSE /\ slotSt[sl] # "pending"
+    ///                /\ UNCHANGED slotSt
+    ///        /\ afterClosedHit' = (afterClosedHit \/ (view /\ sawClosed[t]))
+    ///        /\ pc' = [pc EXCEPT ![t] = "idle"]
+    ///        /\ created' = [created EXCEPT ![t] = FALSE]
+    ///        /\ newHolder' = [newHolder EXCEPT ![t] = FALSE]
+    ///        /\ tslot' = [tslot EXCEPT ![t] = 0]
+    ///        /\ tpool' = [tpool EXCEPT ![t] = 0]
+    ///        /\ sawClosed' = [sawClosed EXCEPT ![t] = FALSE]
+    ///        /\ UNCHANGED <<entry, count, closed, poolSt, shared, inflight, closing, captures, closes, caVars,
+    ///                       slotOf, nAcq, nPools, faults, staleHit, sliceCache, spc>>
+    /// ```
+    ///
+    /// ```tla SharedPools:ViewStop
+    /// \* The view's stop runs `release(key, scope)`: bound to the scope, not to the holding the view was issued for.
+    /// ViewStop(sl) ==
+    ///     LET s == slotOf[sl][1]
+    ///         k == slotOf[sl][2]
+    ///     IN /\ slotSt[sl] = "view"
+    ///        /\ slotSt' = [slotSt EXCEPT ![sl] = "stopped"]
+    ///        /\ IF entry[k].holders[s] # 0
+    ///           THEN /\ Leave(k, s)
+    ///                /\ staleHit' = (staleHit \/ entry[k].holders[s] # sl)
+    ///           ELSE UNCHANGED <<entry, count, captures, closing, staleHit>>
+    ///        /\ UNCHANGED <<closed, poolSt, shared, inflight, closes, caVars, thr, slotOf, nAcq, nPools, faults,
+    ///                       sliceCache, spc>>
+    /// ```
     @SuppressWarnings("unchecked")
     private <T> Promise<T> fillSlot(Promise<T> slot,
                                     Result<Provisioned<?>> result,
@@ -190,6 +302,24 @@ final class SharedPools {
 
     /// A failed pool was never opened, so it has nothing to close. Its holders all receive the failure, and the next
     /// acquire opens a fresh pool. Conditional on identity, so it can never evict a newer entry.
+    ///
+    /// ```tla SharedPools:Resolve
+    /// \* The provision promise resolves (environment: the factory). On failure the eviction dependent removes the entry
+    /// \* that still holds this pool (conditional on identity); the per-slice path's `withFailure` eviction likewise.
+    /// Resolve(p) ==
+    ///     /\ p \in inflight
+    ///     /\ inflight' = inflight \ {p}
+    ///     /\ \/ /\ poolSt' = [poolSt EXCEPT ![p] = "open"]
+    ///           /\ UNCHANGED <<entry, count, faults, sliceCache>>
+    ///        \/ /\ faults < MaxFaults
+    ///           /\ faults' = faults + 1
+    ///           /\ poolSt' = [poolSt EXCEPT ![p] = "failed"]
+    ///           /\ entry' = [k \in Keys |-> IF entry[k].pool = p THEN NoEntry ELSE entry[k]]
+    ///           /\ count' = [k \in Keys |-> IF entry[k].pool = p THEN count[k] - 1 ELSE count[k]]
+    ///           /\ sliceCache' = [s \in Scopes |-> IF sliceCache[s] = p THEN 0 ELSE sliceCache[s]]
+    ///     /\ UNCHANGED <<closed, shared, closing, captures, closes, caVars, thr, slotSt, slotOf, nAcq, nPools,
+    ///                    staleHit, spc>>
+    /// ```
     private Unit evictFailed(Object key, Promise<Provisioned<?>> failed) {
         entries.compute(key, (_, current) -> unlessFailed(current, failed));
 
@@ -214,6 +344,15 @@ final class SharedPools {
     }
 
     /// The `compute` mapping function of a release: an absent key or a scope that is not a holder is left as it is.
+    ///
+    /// ```tla SharedPools:ReleaseAll
+    /// \* releaseScope -> release(key, scope): one compute that removes the holder, capturing the entry when last.
+    /// ReleaseAll(s, k) ==
+    ///     /\ entry[k].holders[s] # 0
+    ///     /\ Leave(k, s)
+    ///     /\ UNCHANGED <<closed, poolSt, shared, inflight, closes, caVars, thr, slotSt, slotOf, nAcq, nPools, faults,
+    ///                    staleHit, sliceCache, spc>>
+    /// ```
     @NullReturn
     private static SharedEntry depart(SharedEntry current, String scope, Departure departure) {
         return option(current).filter(entry -> entry.holders()
@@ -250,6 +389,20 @@ final class SharedPools {
     }
 
     /// The shared-pool caller of the provider's one close funnel.
+    ///
+    /// ```tla SharedPools:Close_Pool
+    /// \* pool.flatMap(closer): waits for the pool to resolve; closes an opened pool, skips a failed one.
+    /// Close_Pool(p) ==
+    ///     /\ p \in closing
+    ///     /\ poolSt[p] \in {"open", "failed"}
+    ///     /\ closing' = closing \ {p}
+    ///     /\ IF poolSt[p] = "open"
+    ///        THEN /\ poolSt' = [poolSt EXCEPT ![p] = "closed"]
+    ///             /\ closes' = [closes EXCEPT ![p] = @ + 1]
+    ///        ELSE UNCHANGED <<poolSt, closes>>
+    ///     /\ UNCHANGED <<entry, count, closed, shared, inflight, captures, caVars, thr, slotSt, slotOf, nAcq, nPools,
+    ///                    faults, staleHit, sliceCache, spc>>
+    /// ```
     private Promise<Unit> close(SharedEntry entry) {
         return entry.pool()
                     .flatMap(closer)
@@ -274,6 +427,26 @@ final class SharedPools {
     /// Node stop: refuse every later acquire, then drain. Only `compute`s already in flight can still insert once the
     /// flag is visible, and the loop catches them. Each pool closes exactly once: the drain uses the same capture as a
     /// release, never a plain `remove(key)`.
+    ///
+    /// ```tla SharedPools:CA_Flag
+    /// CA_Flag == /\ ca = "idle"
+    ///            /\ closed' = TRUE
+    ///            /\ ca' = "check"
+    ///            /\ UNCHANGED <<entry, count, poolSt, shared, inflight, closing, captures, closes, caSnap, caPools, thr,
+    ///                           slotSt, slotOf, nAcq, nPools, faults, staleHit, sliceCache, spc>>
+    /// ```
+    ///
+    /// ```tla SharedPools:CA_Check
+    /// \* `while (!entries.isEmpty())` reads the published count; a pass snapshots the key set.
+    /// CA_Check == /\ ca = "check"
+    ///             /\ IF Total <= 0
+    ///                THEN /\ ca' = "returned"
+    ///                     /\ UNCHANGED caSnap
+    ///                ELSE /\ caSnap' = {k \in Keys : entry[k].pool # 0}
+    ///                     /\ ca' = IF caSnap' = {} THEN "check" ELSE "drain"
+    ///             /\ UNCHANGED <<entry, count, closed, poolSt, shared, inflight, closing, captures, closes, caPools, thr,
+    ///                            slotSt, slotOf, nAcq, nPools, faults, staleHit, sliceCache, spc>>
+    /// ```
     List<Promise<Unit>> closeAll() {
         closed.set(true);
         var closes = new ArrayList<Promise<Unit>>();
@@ -291,6 +464,22 @@ final class SharedPools {
     }
 
     /// The drain's `compute` mapping function: captures the entry and removes it (`null` is the `compute` contract).
+    ///
+    /// ```tla SharedPools:CA_Drain
+    /// CA_Drain(k) ==
+    ///     /\ ca = "drain"
+    ///     /\ k \in caSnap
+    ///     /\ caSnap' = caSnap \ {k}
+    ///     /\ ca' = IF caSnap' = {} THEN "check" ELSE "drain"
+    ///     /\ IF entry[k].pool # 0
+    ///        THEN /\ entry' = [entry EXCEPT ![k] = NoEntry]
+    ///             /\ count' = [count EXCEPT ![k] = @ - 1]
+    ///             /\ Capture(entry[k].pool)
+    ///             /\ caPools' = caPools \cup {entry[k].pool}
+    ///        ELSE UNCHANGED <<entry, count, captures, closing, caPools>>
+    ///     /\ UNCHANGED <<closed, poolSt, shared, inflight, closes, thr, slotSt, slotOf, nAcq, nPools, faults, staleHit,
+    ///                    sliceCache, spc>>
+    /// ```
     @NullReturn
     private static SharedEntry drain(SharedEntry current, Departure departure) {
         departure.removed = current;
