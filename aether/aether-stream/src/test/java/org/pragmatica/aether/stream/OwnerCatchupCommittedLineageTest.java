@@ -407,6 +407,28 @@ class OwnerCatchupCommittedLineageTest {
         assertThat(head()).isEqualTo(-1L);
     }
 
+    /// A source that is read and reaches the target ends the round: the next-ranked replica, holding the same end, is not read.
+    @Test
+    void probePath_whenTheTopRankedSourceIsRead_noOtherSourceIsReadInTheRound() {
+        var fixture = fixture(true, equalReplicas());
+        var result = fixture.backfill().backfill("s", 0).await();
+
+        assertThat(result.isSuccess()).as("%s", result).isTrue();
+        assertThat(head()).isEqualTo(15L);
+        assertThat(fixture.served()).hasSize(1);
+    }
+
+    /// Same, registry path.
+    @Test
+    void registryPath_whenTheTopRankedSourceIsRead_noOtherSourceIsReadInTheRound() {
+        var fixture = fixture(false, equalReplicas());
+        var result = fixture.backfill().backfill("s", 0).await();
+
+        assertThat(result.isSuccess()).as("%s", result).isTrue();
+        assertThat(head()).isEqualTo(15L);
+        assertThat(fixture.served()).hasSize(1);
+    }
+
     private static List<Replica> equalReplicas() {
         return List.of(new Replica(SOURCE, 15L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))),
                        new Replica(OTHER, 15L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))));
