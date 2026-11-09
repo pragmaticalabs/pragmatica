@@ -809,8 +809,7 @@ public final class OutputNullability {
     }
 
     private static void collectConjunct(CstNavigator conjunct, List<CstNavigator> refs) {
-        if (conjunct.has("NotKW")) return;
-
+        // `NOT x` nests another NotExpr and has no CompareExpr child of its own, so it proves nothing here
         conjunct.child("CompareExpr").onPresent(compare -> collectCompare(compare, refs));
     }
 
@@ -850,9 +849,8 @@ public final class OutputNullability {
 
             return;
         }
-
-        chainTo(operand, "PrimaryExpr").filter(OutputNullability::isParenthesised)
-               .flatMap(primary -> primary.child("Expr"))
+        // only a parenthesised PrimaryExpr has an Expr child
+        chainTo(operand, "PrimaryExpr").flatMap(primary -> primary.child("Expr"))
                .onPresent(inner -> collectConjuncts(inner, refs));
     }
 
@@ -861,9 +859,8 @@ public final class OutputNullability {
     }
 
     private static Option<CstNavigator> bareColumnOperand(CstNavigator operand) {
-        return operand.has("IsClause")
-               ? Option.empty()
-               : chainTo(operand, "ColRef");
+        // an IS clause gives the IsExpr a second child, which stops the chain
+        return chainTo(operand, "ColRef");
     }
 
     /// Descends through single-child rules until `rule`; absent when a rule on the way has more than one child.

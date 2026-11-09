@@ -373,6 +373,7 @@ class OutputNullabilityTest {
         "SELECT note AS x FROM t WHERE note IS DISTINCT FROM 'a'",
         "SELECT note AS x FROM t WHERE note IS TRUE",
         "SELECT note AS x FROM t WHERE note IS NULL = true",
+        "SELECT u.id AS x FROM u RIGHT JOIN t ON u.t_id = t.id WHERE id IS NOT NULL",
         "SELECT note AS x FROM t WHERE qty > 1",
         "SELECT t.note AS x FROM t, missing m WHERE note IS NOT NULL",
         "SELECT note AS x FROM t WHERE note IS NOT NULL GROUP BY ROLLUP (note)",
