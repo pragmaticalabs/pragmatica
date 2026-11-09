@@ -318,11 +318,11 @@ public class RouteSourceGenerator {
                                    Map<String, MethodModel> methodMap,
                                    TypeElement sliceElement) {
         routeConfig.routes()
-                   .forEach((name, routeDsl) -> warnRoute(json,
-                                                          name,
-                                                          routeDsl,
-                                                          methodMap.get(name),
-                                                          sliceElement));
+                   .forEach((name, routeDsl) -> Option.option(methodMap.get(name)).onPresent(method -> warnRoute(json,
+                                                                                                                 name,
+                                                                                                                 routeDsl,
+                                                                                                                 method,
+                                                                                                                 sliceElement)));
     }
 
     private void warnRoute(JsonCodecGenerator json,
@@ -330,10 +330,6 @@ public class RouteSourceGenerator {
                            RouteDsl routeDsl,
                            MethodModel method,
                            TypeElement sliceElement) {
-        if (method == null) {
-            return;
-        }
-
         for (var root : jsonRoots(method, routeDsl)) {
             if (root.body()) {
                 json.stillRequired(root.type(),
