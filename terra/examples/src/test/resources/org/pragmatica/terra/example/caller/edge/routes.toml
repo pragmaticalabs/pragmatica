@@ -1,0 +1,8 @@
+prefix = "/api/caller"
+
+[routes]
+enter = "GET /enter"
+enterOpen = { route = "GET /open", security = "public" }
+
+[errors]
+default = 500
