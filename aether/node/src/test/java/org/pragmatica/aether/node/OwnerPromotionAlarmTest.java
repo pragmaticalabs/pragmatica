@@ -15,6 +15,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.WarningLevel;
 
 import org.junit.jupiter.api.Test;
 
@@ -79,6 +80,29 @@ class OwnerPromotionAlarmTest {
             .isEqualTo(org.pragmatica.lang.Option.some(OperatorWarningCode.STREAM_OWNER_LINEAGE_REFUSED));
     }
 
+    /// #2960: the all-stalled terminal state of an owner catch-up raises its CRITICAL code, and its end raises the paired INFO recovery on the
+    /// same subject, so the event layer publishes the recovery only after the raise (#752).
+    @Test
+    void catchupStalledBlock_raisesItsCode_andItsEndRaisesTheRecovery_onTheSameSubject() {
+        var alarm = StreamAssembly.ownerPromotionAlarm(sink);
+        var block = new ActivationBlock.CatchupStalled("orders", 3, 5);
+
+        alarm.raise(block);
+        alarm.resolved(block);
+
+        await().atMost(java.time.Duration.ofSeconds(5)).until(() -> published.size() == 2);
+        assertThat(published).extracting(OperatorWarning::code)
+                             .containsExactly(OperatorWarningCode.STREAM_OWNER_CATCHUP_STALLED, OperatorWarningCode.STREAM_OWNER_CATCHUP_PROGRESSING);
+        assertThat(OperatorWarningCode.STREAM_OWNER_CATCHUP_STALLED.level()).as("the all-stalled owner is a CRITICAL condition")
+                                                                             .isEqualTo(WarningLevel.CRITICAL);
+        assertThat(published.getFirst().message()).as("partition and rounds in the order the message names them")
+                                                  .contains("of orders[3] cannot progress")
+                                                  .contains("for 5 consecutive rounds");
+        assertThat(published).extracting(OperatorWarning::subject).containsOnly("orders[3]");
+        assertThat(OperatorWarningCode.STREAM_OWNER_CATCHUP_PROGRESSING.recoveryOf())
+            .isEqualTo(org.pragmatica.lang.Option.some(OperatorWarningCode.STREAM_OWNER_CATCHUP_STALLED));
+    }
+
     /// #2080: an escape is a CRITICAL point event naming the partition, the candidate, the skipped members and the gate, with no
     /// recovery code; two escapes of one partition for different members are two subjects, so the event layer's throttle keeps both.
     @Test
@@ -92,7 +116,7 @@ class OwnerPromotionAlarmTest {
 
         await().atMost(java.time.Duration.ofSeconds(5)).until(() -> published.size() == 2);
         assertThat(published).extracting(OperatorWarning::code).containsOnly(OperatorWarningCode.STREAM_PROMOTION_PAST_UNREACHABLE_PEERS);
-        assertThat(OperatorWarningCode.STREAM_PROMOTION_PAST_UNREACHABLE_PEERS.level()).isEqualTo(org.pragmatica.utility.warning.WarningLevel.CRITICAL);
+        assertThat(OperatorWarningCode.STREAM_PROMOTION_PAST_UNREACHABLE_PEERS.level()).isEqualTo(WarningLevel.CRITICAL);
         assertThat(OperatorWarningCode.STREAM_PROMOTION_PAST_UNREACHABLE_PEERS.recoveryOf()).isEqualTo(org.pragmatica.lang.Option.none());
         assertThat(published.get(0).message()).contains("orders[3]").contains(candidate.toString()).contains(PEER.toString()).contains("promotion_escape_after");
         assertThat(published).extracting(OperatorWarning::subject).doesNotHaveDuplicates().allMatch(subject -> subject.startsWith("orders[3]/OWNER_ACTIVATION"));

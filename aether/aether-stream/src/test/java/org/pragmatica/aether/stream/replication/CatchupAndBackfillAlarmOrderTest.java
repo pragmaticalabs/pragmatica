@@ -208,6 +208,118 @@ class CatchupAndBackfillAlarmOrderTest {
         assertThat(events).as("the successor's own clear still resolves its block").containsExactly("raise", "resolved");
     }
 
+    /// #2960: the all-stalled block follows the same flight gate. A superseded flight raises nothing and its clear resolves nothing; only the
+    /// current flight raises and clears. Mutation: the `current` gate in `raiseStalled` or in `clearStalled` always true turns this red.
+    @Test
+    void backfill_aSupersededFlightNeitherRaisesNorClearsTheAllStalledBlock() throws Exception {
+        var events = new CopyOnWriteArrayList<String>();
+        var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
+
+        manager.createStream(StreamConfig.streamConfig(STREAM));
+        var base = partitionBackfill(replicaRegistry(),
+                                     manager.alignedRecovery(),
+                                     CatchupTransport.NOOP,
+                                     (_, _, _) -> ReplicationError.General.REPLICATION_TIMEOUT.promise(),
+                                     (_, _) -> 3L,
+                                     SELF,
+                                     TimeSpan.timeSpan(10).seconds(),
+                                     () -> 0L);
+
+        base.blockAlarm(new OwnerActivation.BlockAlarm() {
+            @Override
+            public Unit raise(OwnerActivation.ActivationBlock block) {
+                events.add("raise");
+
+                return Unit.unit();
+            }
+
+            @Override
+            public Unit resolved(OwnerActivation.ActivationBlock block) {
+                events.add("resolved");
+
+                return Unit.unit();
+            }
+        });
+
+        var successor = base.withCurrent(() -> true);
+        var stale = base.withCurrent(() -> false);
+
+        stale.raiseStalled(STREAM, PARTITION);
+        assertThat(events).as("a superseded flight raises nothing").isEmpty();
+        successor.raiseStalled(STREAM, PARTITION);
+        successor.raiseStalled(STREAM, PARTITION);
+        assertThat(events).as("the current flight raises once").containsExactly("raise");
+        stale.clearStalled(STREAM, PARTITION);
+        assertThat(events).as("the superseded flight's clear resolved nothing").containsExactly("raise");
+        successor.clearStalled(STREAM, PARTITION);
+        assertThat(events).as("the successor's own clear resolves it").containsExactly("raise", "resolved");
+    }
+
+    /// #2960: the raised block names the partition the state was found in, not a fixed one. Mutation: `raiseStalled` building the block with
+    /// partition 0 turns this red.
+    @Test
+    void backfill_theAllStalledBlock_namesTheStalledPartition() throws Exception {
+        var raised = new CopyOnWriteArrayList<OwnerActivation.ActivationBlock>();
+        var backfill = backfillRecordingBlocks(raised, new CopyOnWriteArrayList<>());
+
+        backfill.raiseStalled(STREAM, 7);
+
+        assertThat(raised).containsExactly(new OwnerActivation.ActivationBlock.CatchupStalled(STREAM, 7, PartitionBackfill.MAX_STALLED_ROUNDS));
+    }
+
+    /// #2960: a destroyed stream's open all-stalled reports are all resolved, each for its own partition, and another stream's report stays
+    /// open. Mutations: the stream filter inverted, or the per-partition clear dropped, turns this red.
+    @Test
+    void backfill_clearStalledOf_resolvesEveryPartitionOfThatStreamOnly() throws Exception {
+        var raised = new CopyOnWriteArrayList<OwnerActivation.ActivationBlock>();
+        var resolved = new CopyOnWriteArrayList<OwnerActivation.ActivationBlock>();
+        var backfill = backfillRecordingBlocks(raised, resolved);
+
+        backfill.raiseStalled(STREAM, 1);
+        backfill.raiseStalled(STREAM, 2);
+        backfill.raiseStalled("other", 1);
+        backfill.clearStalledOf(STREAM);
+
+        assertThat(resolved).containsExactlyInAnyOrder(new OwnerActivation.ActivationBlock.CatchupStalled(STREAM, 1, PartitionBackfill.MAX_STALLED_ROUNDS),
+                                                       new OwnerActivation.ActivationBlock.CatchupStalled(STREAM, 2, PartitionBackfill.MAX_STALLED_ROUNDS));
+
+        backfill.clearStalledOf("other");
+
+        assertThat(resolved).as("the other stream's report was still open").hasSize(3);
+    }
+
+    private PartitionBackfill backfillRecordingBlocks(List<OwnerActivation.ActivationBlock> raised, List<OwnerActivation.ActivationBlock> resolved) {
+        var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
+
+        manager.createStream(StreamConfig.streamConfig(STREAM));
+        var backfill = partitionBackfill(replicaRegistry(),
+                                         manager.alignedRecovery(),
+                                         CatchupTransport.NOOP,
+                                         (_, _, _) -> ReplicationError.General.REPLICATION_TIMEOUT.promise(),
+                                         (_, _) -> 3L,
+                                         SELF,
+                                         TimeSpan.timeSpan(10).seconds(),
+                                         () -> 0L);
+
+        backfill.blockAlarm(new OwnerActivation.BlockAlarm() {
+            @Override
+            public Unit raise(OwnerActivation.ActivationBlock block) {
+                raised.add(block);
+
+                return Unit.unit();
+            }
+
+            @Override
+            public Unit resolved(OwnerActivation.ActivationBlock block) {
+                resolved.add(block);
+
+                return Unit.unit();
+            }
+        });
+
+        return backfill;
+    }
+
     /// Lock order and delivery order under real threads: raise and clear race over many episodes at the two sites; the deadlock detector sees no
     /// cycle, every thread finishes inside the bound, and no key ever delivers a recovery before its raise.
     @Test
