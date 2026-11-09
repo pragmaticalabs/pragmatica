@@ -18,6 +18,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.utils.TimeSource;
+import org.pragmatica.swim.QuorumReport;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -129,12 +130,17 @@ public final class QuorumLossDetector {
     /// check that [`SharedScheduler`] has already dispatched to a virtual thread.
     private volatile boolean stopped;
     private volatile Consumer<QuorumLossIntent> listener = QuorumLossDetector::ignoreIntent;
-    /// #2936 — receives this node's own quorum-loss REPORT on every change: `true` while the detector is armed and
-    /// either below threshold or consensus-PASSIVE, `false` otherwise. Unlike [#listener] it is not debounced by the
-    /// split window: it says "cannot write to the quorum NOW", which peers use to keep this node out of their
-    /// forward set and to hold a refuted drain. Guarded by this object's monitor, like [#reportedLost].
-    private volatile Consumer<Boolean> reportListener = QuorumLossDetector::ignoreReport;
-    private boolean reportedLost;
+    /// #2936 — receives this node's own [QuorumReport] on every change: `OBSERVER` while this node is passive BY ROLE
+    /// ([#observerRole]); otherwise `LOST` while the detector is armed and either below threshold or consensus-PASSIVE,
+    /// `HELD` otherwise. Unlike [#listener] it is not debounced by the split window: `LOST` says "a voter that cannot
+    /// write to the quorum NOW", which peers use to keep this node out of their forward set and to hold a refuted
+    /// drain. Guarded by this object's monitor, like [#reported].
+    private volatile Consumer<QuorumReport> reportListener = QuorumLossDetector::ignoreReport;
+    private QuorumReport reported = QuorumReport.HELD;
+    /// #2936 ruling: this node is an observer BY ROLE (a #1790 demotion, or an observer applying decisions), not a
+    /// voter. Its PASSIVE is no quorum loss, so the report says `OBSERVER` and never `LOST` until consensus is ACTIVE
+    /// again (a re-promoted voter). Guarded by this object's monitor.
+    private boolean observerRole;
     /// Membership co-confirmation supplier (Fix C, split-brain safety). When present, the firing
     /// check consults it to decide whether a STRICT-count quorum loss is a genuine partition or a
     /// stuck-promotion artifact: SUPPRESS the drain iff the EFFECTIVE quorum count (strict count +
@@ -254,6 +260,42 @@ public final class QuorumLossDetector {
         publishReport();
     }
 
+    /// Consensus-state edge input carrying the ROLE the edge proves (#2936 ruling): a #1790 demotion proves
+    /// [ConsensusRole#OBSERVER], an ACTIVE edge proves [ConsensusRole#VOTER], a plain PASSIVE proves nothing
+    /// ([ConsensusRole#UNCHANGED]: an observer that lost track of the decisions is still an observer). The role is set
+    /// BEFORE the presence edge under one monitor, so the report never passes through `LOST` on a demotion or on a
+    /// re-promotion. The presence edge is handled exactly as [#onQuorumPresence] (the drain path does not read the
+    /// role).
+    @Contract
+    public synchronized void onConsensusEdge(boolean present, ConsensusRole role) {
+        observerRole = role.observerAfter(observerRole);
+        onQuorumPresence(present);
+        publishReport();
+    }
+
+    /// Observer-resumed input (#2936 ruling): an observer applies committed decisions again (`ConsensusObserving`), so
+    /// it is passive BY ROLE — including a configured observer whose first published edge this is.
+    @Contract
+    public synchronized void onObserverResumed() {
+        observerRole = true;
+        publishReport();
+    }
+
+    /// The consensus role a state edge proves (#2936 ruling). See [#onConsensusEdge].
+    public enum ConsensusRole {
+        VOTER,
+        OBSERVER,
+        UNCHANGED;
+
+        boolean observerAfter(boolean observerBefore) {
+            return switch (this) {
+                case VOTER -> false;
+                case OBSERVER -> true;
+                case UNCHANGED -> observerBefore;
+            };
+        }
+    }
+
     /// Register the consumer that will receive emitted [`QuorumLossIntent`]s. At E1 the
     /// wiring layer's consumer just logs; a later stage replaces it with the §8 drain
     /// trigger.
@@ -262,12 +304,12 @@ public final class QuorumLossDetector {
         listener = newListener;
     }
 
-    /// Register the consumer of this node's own quorum-loss report (#2936, see [#reportListener]). It is called with
-    /// the CURRENT report at once, so a listener registered after the first edge still starts from the truth.
+    /// Register the consumer of this node's own quorum report (#2936, see [#reportListener]). It is called with the
+    /// CURRENT report at once, so a listener registered after the first edge still starts from the truth.
     @Contract
-    public synchronized void setQuorumReportListener(Consumer<Boolean> newListener) {
+    public synchronized void setQuorumReportListener(Consumer<QuorumReport> newListener) {
         reportListener = newListener;
-        newListener.accept(reportedLost);
+        newListener.accept(reported);
     }
 
     /// Inject the membership co-confirmation supplier (Fix C). Sampled at firing time (NOT at
@@ -380,12 +422,23 @@ public final class QuorumLossDetector {
     /// cluster forms [taste, marked: mirrors the drain's own arm gate]. Callers hold this object's monitor.
     @Contract
     private void publishReport() {
-        var lost = armed && (belowThresholdSinceNanos.get() != Long.MIN_VALUE || quorumPresenceLost);
+        var report = currentReport();
 
-        if (lost != reportedLost) {
-            reportedLost = lost;
-            reportListener.accept(lost);
+        if (report != reported) {
+            reported = report;
+            reportListener.accept(report);
         }
+    }
+
+    /// Role first (#2936 ruling): a passive-by-role node is never quorum-less, whatever its count or presence says.
+    private QuorumReport currentReport() {
+        if (observerRole) {
+            return QuorumReport.OBSERVER;
+        }
+
+        return armed && (belowThresholdSinceNanos.get() != Long.MIN_VALUE || quorumPresenceLost)
+               ? QuorumReport.LOST
+               : QuorumReport.HELD;
     }
 
     private synchronized void reconcileWindow(boolean nowBelow, long now) {
@@ -613,10 +666,11 @@ public final class QuorumLossDetector {
     }
 
     @Contract
-    private static void ignoreReport(boolean lost) {
+    private static void ignoreReport(QuorumReport report) {
     // intentionally empty — default report listener prior to wiring
     }
 
+    @Contract
     private static void ignoreIntent(QuorumLossIntent intent) {
     // intentionally empty — default listener prior to wiring
     }

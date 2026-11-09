@@ -18,6 +18,7 @@ import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.swim.GossipEncryptor;
+import org.pragmatica.swim.QuorumReport;
 import org.pragmatica.swim.SwimConfig;
 import org.pragmatica.swim.SwimMember;
 import org.pragmatica.swim.SwimMember.MemberState;
@@ -265,9 +266,9 @@ class CoreSwimHealthDetectorTest {
     /// #2936: a quorum-loss report made before SWIM starts is kept and replayed onto the protocol `start()` creates,
     /// and the detector reads a peer's report from the live protocol.
     @Nested
-    class QuorumReport {
+    class SelfQuorumReport {
         @Test
-        void reportSelfQuorumLoss_beforeStart_isReplayedOntoTheStartedProtocol() throws InterruptedException, SocketException {
+        void reportSelfQuorum_beforeStart_isReplayedOntoTheStartedProtocol() throws InterruptedException, SocketException {
             var swimPort = ObservationListenerPreRegistration.freeUdpPort();
             var self = NodeInfo.nodeInfo(SELF,
                                          NodeAddress.nodeAddress("127.0.0.1", swimPort - CoreSwimHealthDetector.SWIM_PORT_OFFSET)
@@ -279,7 +280,7 @@ class CoreSwimHealthDetectorTest {
                                                                               Mockito.mock(Serializer.class),
                                                                               Mockito.mock(Deserializer.class));
 
-            freshDetector.reportSelfQuorumLoss(true);
+            freshDetector.reportSelfQuorum(QuorumReport.LOST);
             try {
                 freshDetector.start(org.pragmatica.lang.Option.none(), GossipEncryptor.none())
                              .await()
@@ -291,7 +292,7 @@ class CoreSwimHealthDetectorTest {
                 var protocol = ((SwimHealthState.Running) freshDetector.lifecycleState()).swim();
 
                 protocol.announceJoin(self, "replay", 1L, List.of());
-                freshDetector.reportSelfQuorumLoss(false);
+                freshDetector.reportSelfQuorum(QuorumReport.HELD);
 
                 assertThat(protocol.selfIncarnation())
                     .as("the replayed report makes its clearing a change, advertised with one incarnation bump")

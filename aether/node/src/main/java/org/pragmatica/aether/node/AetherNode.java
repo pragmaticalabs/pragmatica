@@ -4449,10 +4449,34 @@ public interface AetherNode extends ManageableNode {
     /// (the minority measures `T` from its own local-quorum-loss observation). The read-path
     /// quiesce (`AppHttpServer::onQuorumStateChange`) stays IMMEDIATE on PASSIVE — read-path
     /// protection is cheap to undo on regain; only the process-exit drain gets the window.
+    ///
+    /// #2936 ruling: the edge also carries the consensus ROLE it proves into the detector's quorum REPORT — a #1790
+    /// demotion makes this node an observer BY ROLE (reported `OBSERVER`, never `LOST`, so peers keep forwarding to
+    /// it), an ACTIVE edge makes it a voter again, a plain PASSIVE leaves the role as it was. Package-private for the
+    /// route test.
     @Contract
-    private static void routeQuorumDisappearedToDrain(ClusterStateNotification notification,
-                                                      AtomicReference<QuorumLossDetector> quorumLossDetectorRef) {
-        Option.option(quorumLossDetectorRef.get()).onPresent(detector -> detector.onQuorumPresence(notification.state() != ClusterStateNotification.State.PASSIVE));
+    static void routeQuorumDisappearedToDrain(ClusterStateNotification notification,
+                                              AtomicReference<QuorumLossDetector> quorumLossDetectorRef) {
+        Option.option(quorumLossDetectorRef.get()).onPresent(detector -> detector.onConsensusEdge(notification.state() != ClusterStateNotification.State.PASSIVE,
+                                                                                                 consensusRole(notification)));
+    }
+
+    private static QuorumLossDetector.ConsensusRole consensusRole(ClusterStateNotification notification) {
+        if (notification.demoted()) {
+            return QuorumLossDetector.ConsensusRole.OBSERVER;
+        }
+
+        return notification.state() == ClusterStateNotification.State.ACTIVE
+               ? QuorumLossDetector.ConsensusRole.VOTER
+               : QuorumLossDetector.ConsensusRole.UNCHANGED;
+    }
+
+    /// #2936 ruling: an observer applying committed decisions again (`ConsensusObserving`) is passive BY ROLE, so its
+    /// quorum report says `OBSERVER` — this is the first published edge of a configured observer, and the recovery
+    /// edge of a demoted one that lost track. Package-private for the route test.
+    @Contract
+    static void routeObserverResumedToReport(AtomicReference<QuorumLossDetector> quorumLossDetectorRef) {
+        Option.option(quorumLossDetectorRef.get()).onPresent(QuorumLossDetector::onObserverResumed);
     }
 
     /// #517: self is in its own topology by the time assembly runs — `TopologyObserver.topologyObserver`
@@ -5263,6 +5287,8 @@ public interface AetherNode extends ManageableNode {
                                               eventAggregator::onMembershipDecision));
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, eventAggregator::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(ObserverResumedNotification.class, eventAggregator::onObserverResumed));
+        entries.add(MessageRouter.Entry.route(ObserverResumedNotification.class,
+                                              _ -> routeObserverResumedToReport(quorumLossDetectorRef)));
         entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class,
                                               eventAggregator::onSelfShutdown));
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class, abTestManager::onDeploymentFailed));

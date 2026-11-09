@@ -40,7 +40,8 @@ import static org.pragmatica.swim.SwimConfig.swimConfig;
 /// #2936: a node's own quorum-loss report rides its SWIM self-ALIVE as the gossiped `quorum=lost` label. It is STATE,
 /// not identity: the subject bumps its incarnation on every change, a receiver takes the report only from a strictly
 /// newer update, a report change on an ALIVE member re-emits `HealthyObserved` so the membership layer re-reads it,
-/// and the dial `NodeInfo` never carries it. The literal key and value pin the wire format.
+/// and the dial `NodeInfo` never carries it. The literal key and value pin the wire format. Per the PR #2940 ruling,
+/// `quorum=observer` (passive BY ROLE) is a distinct value that never reads as quorum loss.
 class SwimQuorumReportTest {
     private static final NodeId SELF_ID = new NodeId("node-self");
     private static final NodeId GOSSIPER = new NodeId("node-gossiper");
@@ -51,6 +52,7 @@ class SwimQuorumReportTest {
     private static final long TOKEN = 77L;
     private static final Map<String, String> CORE_LABELS = Map.of(NodeInfo.LABEL_ROLE, "core");
     private static final Map<String, String> CORE_LOST = Map.of(NodeInfo.LABEL_ROLE, "core", "quorum", "lost");
+    private static final Map<String, String> CORE_OBSERVER = Map.of(NodeInfo.LABEL_ROLE, "core", "quorum", "observer");
 
     private RecordingTransport transport;
     private RecordingObservationSink observations;
@@ -146,26 +148,62 @@ class SwimQuorumReportTest {
     void selfReport_bumpsIncarnationOncePerChange_andRidesTheSelfAlive() {
         announceSelf();
 
-        protocol.reportSelfQuorumLoss(true);
-        protocol.reportSelfQuorumLoss(true);
+        protocol.reportSelfQuorum(QuorumReport.LOST);
+        protocol.reportSelfQuorum(QuorumReport.LOST);
         assertThat(protocol.selfIncarnation()).as("one bump for one change; a repeat is a no-op").isEqualTo(2L);
         assertThat(lastSelfAdvertised()).extracting(MembershipUpdate::incarnation).isEqualTo(2L);
         assertThat(lastSelfAdvertised().labels()).containsEntry("quorum", "lost");
 
-        protocol.reportSelfQuorumLoss(false);
+        protocol.reportSelfQuorum(QuorumReport.HELD);
         assertThat(protocol.selfIncarnation()).isEqualTo(3L);
         assertThat(lastSelfAdvertised().labels()).doesNotContainKey("quorum");
     }
 
     @Test
     void selfReport_beforeAnnounce_isKeptAndCarriedOnceAnnounced() {
-        protocol.reportSelfQuorumLoss(true);
+        protocol.reportSelfQuorum(QuorumReport.LOST);
         assertThat(protocol.selfIncarnation()).as("no incarnation to bump before announce").isZero();
 
         announceSelf();
 
         assertThat(lastSelfAdvertised().labels()).as("announce keeps the stored report")
                                                  .containsEntry("quorum", "lost");
+    }
+
+    @Test
+    void observerReport_isNotQuorumLoss_andALaterLostReportIs() {
+        gossip(update(MemberState.ALIVE, 1L, CORE_OBSERVER));
+        assertThat(protocol.reportsQuorumLoss(PEER)).as("passive by role is not quorum loss").isFalse();
+        assertThat(protocol.members().get(PEER).labels()).containsEntry("quorum", "observer");
+
+        gossip(update(MemberState.ALIVE, 2L, CORE_LOST));
+        assertThat(protocol.reportsQuorumLoss(PEER)).as("a re-promoted voter that cannot write reports loss").isTrue();
+    }
+
+    @Test
+    void aliveToAlive_lostToObserver_reemitsHealthy() {
+        gossip(update(MemberState.ALIVE, 1L, CORE_LOST));
+        var before = healthyIncarnations().size();
+
+        gossip(update(MemberState.ALIVE, 2L, CORE_OBSERVER));
+
+        assertThat(protocol.reportsQuorumLoss(PEER)).isFalse();
+        assertThat(healthyIncarnations().subList(before, healthyIncarnations().size()))
+            .as("leaving the loss report for the observer report re-admits through HealthyObserved")
+            .containsExactly(2L);
+    }
+
+    @Test
+    void selfReport_observer_isAdvertisedAsItsOwnValue_withABumpPerChange() {
+        announceSelf();
+
+        protocol.reportSelfQuorum(QuorumReport.OBSERVER);
+        assertThat(protocol.selfIncarnation()).isEqualTo(2L);
+        assertThat(lastSelfAdvertised().labels()).containsEntry("quorum", "observer");
+
+        protocol.reportSelfQuorum(QuorumReport.LOST);
+        assertThat(protocol.selfIncarnation()).as("observer -> lost is a change: one bump").isEqualTo(3L);
+        assertThat(lastSelfAdvertised().labels()).containsEntry("quorum", "lost");
     }
 
     private void announceSelf() {

@@ -228,7 +228,7 @@ public sealed interface MembershipAssembly {
                                   CoreSwimHealthDetector swimHealthDetector) {
         membershipFsm.setQuorumLossReport(swimHealthDetector::reportsQuorumLoss);
         if (!worker) {
-            quorumLossDetector.setQuorumReportListener(swimHealthDetector::reportSelfQuorumLoss);
+            quorumLossDetector.setQuorumReportListener(swimHealthDetector::reportSelfQuorum);
         }
     }
 

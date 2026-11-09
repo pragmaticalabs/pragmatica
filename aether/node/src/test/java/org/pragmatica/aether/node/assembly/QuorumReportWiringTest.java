@@ -120,6 +120,53 @@ class QuorumReportWiringTest {
                                           .isEqualTo(ANNOUNCED_INCARNATION);
     }
 
+    /// Item 2 of the PR #2940 fix round: an excluded node's routes come back once it regains quorum writes. The stated
+    /// bound is one SWIM dissemination of the subject's clearing bump; on the receiver the first strictly newer update
+    /// re-admits it at once, on both forward paths.
+    @Test
+    void excludedPeer_regainsQuorum_isForwardableAgainOnItsNextNewerUpdate() {
+        MembershipAssembly.wireQuorumReports(false, membership, quorumLossDetector, detector);
+        peerGossips(2L, Map.of("quorum", "lost"));
+        assertThat(accessible(false)).isEmpty();
+        assertThat(accessible(true)).isEmpty();
+
+        peerGossips(2L, Map.of());
+
+        assertThat(accessible(false)).as("a relay at the held incarnation does not re-admit").isEmpty();
+
+        peerGossips(3L, Map.of());
+
+        assertThat(accessible(false)).as("the clearing bump re-admits it on the core forward path").containsExactly(PEER);
+        assertThat(accessible(true)).as("and on the worker forward path").containsExactly(PEER);
+    }
+
+    /// PR #2940 ruling: a #1790-demoted (or configured) observer reports `quorum=observer` — passive by role, not
+    /// quorum-less — so it stays forwardable; a later genuine loss after re-promotion still excludes it.
+    @Test
+    void demotedObserverPeer_staysForwardable_andAGenuineLossStillExcludes() {
+        MembershipAssembly.wireQuorumReports(false, membership, quorumLossDetector, detector);
+
+        peerGossips(2L, Map.of("quorum", "observer"));
+
+        assertThat(accessible(false)).as("a demoted observer is forwardable from a core").containsExactly(PEER);
+        assertThat(accessible(true)).as("and from a worker").containsExactly(PEER);
+
+        peerGossips(3L, Map.of("quorum", "lost"));
+
+        assertThat(accessible(false)).as("control: a voter's quorum loss is still excluded").isEmpty();
+    }
+
+    @Test
+    void core_publishesItsOwnDemotion_withABump() {
+        MembershipAssembly.wireQuorumReports(false, membership, quorumLossDetector, detector);
+        quorumLossDetector.reevaluate();
+
+        quorumLossDetector.onConsensusEdge(false, QuorumLossDetector.ConsensusRole.OBSERVER);
+
+        assertThat(swim.selfIncarnation()).as("the observer report is a change, advertised with one bump")
+                                          .isEqualTo(ANNOUNCED_INCARNATION + 1);
+    }
+
     private List<NodeId> accessible(boolean worker) {
         return SliceRuntimeAssembly.accessibleCandidates(List.of(PEER), membership, worker, directory, () -> Set.of(PEER));
     }

@@ -295,12 +295,12 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Piggyback byte budget for messages this node sends, from ITS OWN id length (see [PiggybackBuffer#piggybackBudgetFor]).
     private final int piggybackBudgetBytes;
 
-    /// The one gossiped STATE label (#2936): a node's own report that it cannot write to its quorum, present with
-    /// value [#QUORUM_LOST] while the report holds and absent otherwise. Unlike the identity labels below it changes
-    /// over a node's life, so it is ordered by the subject's incarnation: the subject bumps its incarnation on every
-    /// change ([#reportSelfQuorumLoss]) and a receiver takes it only from a STRICTLY newer update ([#withQuorumReport]).
+    /// The one gossiped STATE label (#2936): a node's own [QuorumReport], present with the report's wire value
+    /// (`lost` for a voter that cannot write, `observer` for a node passive by role) and absent for
+    /// [QuorumReport#HELD]. Unlike the identity labels below it changes over a node's life, so it is ordered by the
+    /// subject's incarnation: the subject bumps its incarnation on every change ([#reportSelfQuorum]) and a receiver
+    /// takes it only from a STRICTLY newer update ([#withQuorumReport]).
     private static final String LABEL_QUORUM = "quorum";
-    private static final String QUORUM_LOST = "lost";
 
     /// The only labels gossip carries: what core counting and the member descriptor read (`role`, `source`) plus `zone`,
     /// which feeds the anti-affinity placement hint (a decision, and a few bytes). Hostname, pool and instance type stay out.
@@ -311,7 +311,7 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                                   NodeInfo.LABEL_ZONE,
                                                                   LABEL_QUORUM);
 
-    /// Serialises [#reportSelfQuorumLoss]: the label swap and its incarnation bump are one step.
+    /// Serialises [#reportSelfQuorum]: the label swap and its incarnation bump are one step.
     private final Object selfQuorumReportLock = new Object();
     /// Boot-token registry (owner ruling, session 28: terminal removal) — shared with the QUIC
     /// transport via [#setBootTokens] so both layers hold ONE view of which process owns a NodeId.
@@ -3294,8 +3294,10 @@ public final class SwimProtocol implements SwimMessageHandler {
         return Map.copyOf(merged);
     }
 
+    /// Only a voter's quorum loss excludes: an `observer` report (passive by role) reads as no loss (#2936 ruling).
     private static boolean reportsQuorumLoss(Map<String, String> labels) {
-        return QUORUM_LOST.equals(labels.get(LABEL_QUORUM));
+        return QuorumReport.LOST.wireValue()
+                                .equals(Option.option(labels.get(LABEL_QUORUM)));
     }
 
     private static Map<String, String> gossipLabels(Map<String, String> labels) {
@@ -3800,42 +3802,38 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                                                 config.suspectTimeout().millis()));
     }
 
-    /// #2936: publish this node's own quorum-loss report on its SWIM self-ALIVE. A change swaps the gossiped
-    /// [#LABEL_QUORUM] label and advances the durable self-incarnation (atomic +1), so the new `Alive(self, k+1)`
+    /// #2936: publish this node's own [QuorumReport] on its SWIM self-ALIVE. A change swaps the gossiped
+    /// [#LABEL_QUORUM] label (any change, including `lost` <-> `observer`) and advances the durable self-incarnation (atomic +1), so the new `Alive(self, k+1)`
     /// out-ranks every relay of the old report and receivers adopt it ([#applyExistingMember] takes the report only
     /// from a strictly newer incarnation). An unchanged report is a no-op: no bump, no gossip. Before `announceJoin`
     /// seeds the incarnation the label is only stored, and the first self-ALIVE carries it.
-    public Unit reportSelfQuorumLoss(boolean lost) {
+    public Unit reportSelfQuorum(QuorumReport report) {
         synchronized (selfQuorumReportLock) {
             var next = withQuorumReport(selfLabels,
-                                        lost
-                                        ? Map.of(LABEL_QUORUM, QUORUM_LOST)
-                                        : Map.of());
+                                        report.wireValue()
+                                              .map(value -> Map.of(LABEL_QUORUM, value))
+                                              .or(Map.of()));
 
             if (next.equals(selfLabels)) {
                 return Unit.unit();
             }
 
             selfLabels = next;
-            advertiseQuorumReport(lost);
+            advertiseQuorumReport(report);
         }
 
         return Unit.unit();
     }
 
     @Contract
-    private void advertiseQuorumReport(boolean lost) {
+    private void advertiseQuorumReport(QuorumReport report) {
         if (selfIncarnation.get() == 0) {
             return;
         }
 
         var bumped = selfIncarnation.incrementAndGet();
 
-        LOG.info("SWIM self quorum report (#2936): quorum {} — advancing self-incarnation to {}",
-                 lost
-                 ? "LOST"
-                 : "held",
-                 bumped);
+        LOG.info("SWIM self quorum report (#2936): quorum {} — advancing self-incarnation to {}", report, bumped);
         addMemberUpdate(MembershipUpdate.membershipUpdate(selfId,
                                                           MemberState.ALIVE,
                                                           bumped,
@@ -3844,8 +3842,9 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                           selfLabels));
     }
 
-    /// #2936: whether `peer`'s latest gossiped self-report says it cannot write to its quorum. `false` for an unknown
-    /// peer and for a peer that never reported (an older node, a worker, a node that has not lost quorum).
+    /// #2936: whether `peer`'s latest gossiped self-report says it is a voter that cannot write to its quorum. `false`
+    /// for an unknown peer, for a peer that never reported (an older node, a worker, a node that has not lost quorum)
+    /// and for a peer that reports `observer` (passive by role: reachability alone decides its accessibility).
     public boolean reportsQuorumLoss(NodeId peer) {
         return Option.option(members.get(peer))
                      .map(member -> reportsQuorumLoss(member.labels()))
