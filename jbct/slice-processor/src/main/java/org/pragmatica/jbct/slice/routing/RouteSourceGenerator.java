@@ -147,6 +147,7 @@ public class RouteSourceGenerator {
     private static final String HANDLER_TYPE = "org.pragmatica.http.routing.Handler";
 
     private static final String REQUEST_HEADERS_FACTORY = "org.pragmatica.aether.http.handler.RequestHeaders.requestHeaders";
+
     /// #2157: the security context the edge validated for THIS request, read from the request itself.
     private static final String REQUEST_SECURITY = "org.pragmatica.aether.http.adapter.RequestSecurity.securityOf(__request)";
 
@@ -536,7 +537,6 @@ public class RouteSourceGenerator {
         }
 
         out.println("import org.pragmatica.aether.http.handler.security.SecurityPolicy;");
-
         if (usesCommonContentType(routeConfig)) {
             out.println("import org.pragmatica.http.CommonContentType;");
         }
@@ -1601,8 +1601,9 @@ public class RouteSourceGenerator {
                                          MethodModel method,
                                          String lambdaParams,
                                          String delegateCall) {
-        out.println("                 .to(" + lambdaParams + " org.pragmatica.lang.Promise.success(__request -> "
-                   + delegateCall + "))");
+        out.println("                 .to(" + lambdaParams
+                   + " org.pragmatica.lang.Promise.success(__request -> " + delegateCall
+                   + "))");
     }
 
     /// The first line of a route expression. A route whose method takes injected parameters (#2879, #2157) is declared as a route

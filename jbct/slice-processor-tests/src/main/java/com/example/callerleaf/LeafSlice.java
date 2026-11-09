@@ -9,6 +9,7 @@ import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Promise;
 
+
 /// #2157 receiving slice: every shape of a method called on its caller's behalf. A `SecurityContext` parameter takes
 /// the caller's identity from beside the payload; the payload is what is left (one record, nothing, or a record and
 /// `RequestHeaders`). A method taking only a `Principal` keeps it in the payload (guess G1b).
@@ -34,14 +35,14 @@ public interface LeafSlice {
 
             @Override
             public Promise<Seen> both(Principal principal, SecurityContext context, Note note) {
-                return Promise.success(Seen.seen(context, note.text() + ">leaf:principal=" + principal.value()));
+                return Promise.success(Seen.seen(context,
+                                                 note.text() + ">leaf:principal=" + principal.value()));
             }
 
             @Override
             public Promise<Seen> withHeaders(SecurityContext context, RequestHeaders headers, Note note) {
                 return Promise.success(Seen.seen(context,
-                                                 note.text() + ">leaf:probe=" + headers.first("x-probe")
-                                                                                      .or("none")));
+                                                 note.text() + ">leaf:probe=" + headers.first("x-probe").or("none")));
             }
 
             @Override

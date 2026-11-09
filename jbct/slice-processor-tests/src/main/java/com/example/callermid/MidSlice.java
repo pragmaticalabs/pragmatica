@@ -3,14 +3,15 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package com.example.callermid;
 
-import com.example.callerleaf.LeafSlice;
-import com.example.callerleaf.Note;
-import com.example.callerleaf.Seen;
-
 import org.pragmatica.aether.http.handler.RequestHeaders;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.aether.slice.annotation.Slice;
 import org.pragmatica.lang.Promise;
+
+import com.example.callerleaf.LeafSlice;
+import com.example.callerleaf.Note;
+import com.example.callerleaf.Seen;
+
 
 /// #2157 middle hop: each method passes the context it was given straight on to [LeafSlice], so the leaf sees the
 /// identity the edge validated two hops away.

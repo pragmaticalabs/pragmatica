@@ -10,10 +10,13 @@ import org.pragmatica.aether.http.handler.security.Principal;
 import org.pragmatica.aether.http.handler.security.Role;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 
+
 /// What reached a caller-taking slice method (#2157): the principal and roles it was given, and the path the call took.
 public record Seen(String principal, List<String> roles, String trail) {
     public static Seen seen(SecurityContext context, String trail) {
-        return new Seen(context.principal().value(), sorted(context.roles()), trail);
+        return new Seen(context.principal().value(),
+                        sorted(context.roles()),
+                        trail);
     }
 
     public static Seen seen(Principal principal, String trail) {

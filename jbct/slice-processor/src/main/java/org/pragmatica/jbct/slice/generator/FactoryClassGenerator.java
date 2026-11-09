@@ -1268,13 +1268,12 @@ public class FactoryClassGenerator {
         var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
         // Generate request records for multi-param proxy methods BEFORE the proxy record
         for (var method : methods) {
-            if (method.wireParams()
-                      .size() > 1) {
+            if (method.wireParams().size() > 1) {
                 var proxyRequestRecordName = dep.parameterName() + "_" + capitalize(method.name) + "Request";
                 var reqComponents = method.wireParams()
                                           .stream()
-                                                 .map(p -> importTracker.use(p.type()) + " " + p.name())
-                                                 .collect(Collectors.joining(", "));
+                                          .map(p -> importTracker.use(p.type()) + " " + p.name())
+                                          .collect(Collectors.joining(", "));
 
                 out.println("        record " + proxyRequestRecordName + "(" + reqComponents + ") {}");
                 out.println();
@@ -1396,9 +1395,7 @@ public class FactoryClassGenerator {
             return callArgument(wire.getFirst(), importTracker);
         }
 
-        var argList = wire.stream()
-                          .map(p -> callArgument(p, importTracker))
-                          .collect(Collectors.joining(", "));
+        var argList = wire.stream().map(p -> callArgument(p, importTracker)).collect(Collectors.joining(", "));
 
         return "new " + dep.parameterName() + "_" + capitalize(method.name) + "Request(" + argList + ")";
     }
@@ -1833,7 +1830,8 @@ public class FactoryClassGenerator {
         }
 
         if (MethodModel.isPrincipalParam(param)) {
-            return importTracker.use(MethodModel.SECURITY_CONTEXT_TYPE) + ".securityContext(__caller.caller()).principal()";
+            return importTracker.use(MethodModel.SECURITY_CONTEXT_TYPE)
+                 + ".securityContext(__caller.caller()).principal()";
         }
 
         return hasWireRequestRecord(method)
