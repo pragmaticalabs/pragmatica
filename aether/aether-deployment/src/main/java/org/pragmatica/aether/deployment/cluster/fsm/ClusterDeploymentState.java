@@ -30,6 +30,7 @@ import org.pragmatica.aether.deployment.AuditLog;
 import org.pragmatica.aether.config.cluster.CommunityPolicy;
 import org.pragmatica.aether.deployment.cluster.AllocationPool;
 import org.pragmatica.aether.deployment.cluster.CommunityGrowthPolicy;
+import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
@@ -107,6 +108,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent.Shutdown;
 import org.pragmatica.consensus.topology.MembershipDecision;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeDecommissioned;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeDraining;
 import org.pragmatica.consensus.topology.MembershipDecision.NodeFailedDrain;
@@ -341,6 +343,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
 
             rebuildStateFromKVStore();
+            removeDeadMembers();
             reconcile();
             startReconcileTimer();
             SharedScheduler.schedule(this::deferredTopologyRecheck, timeSpan(2).seconds());
@@ -501,6 +504,24 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 case NodeFailedDrain(NodeId failedDrainNode, _, _, _) -> log.warn("Node {} drain failed — operator intervention may be required",
                                                                                   failedDrainNode);
                 case MembershipDecision.NodeShuttingDown _ -> {}
+            }
+        }
+
+        /// #2937 (deployment-fsm-spec C17r, legacy parity): the removal input of every id in local membership's current DEAD set,
+        /// `NodeRemoved` for a core and `WorkerLeave` for a worker, handled as if delivered now. While Dormant those inputs are
+        /// dropped, so a DEAD verdict this node reached as a follower would otherwise wait for the stale sweeps. A re-admitted node
+        /// is not DEAD and is not synthesised; unlike FSM2 the legacy removal has no R-4.3.0 fence.
+        private void removeDeadMembers() {
+            ctx.deadMembersSupplier()
+               .get()
+               .forEach(this::removeDeadMember);
+        }
+
+        private void removeDeadMember(NodeId node, MemberDescriptor descriptor) {
+            if (descriptor.isCore()) {
+                processMembershipDecision(MembershipDecision.nodeRemoved(node, List.of()));
+            } else {
+                processWorkerLeave(WorkerLeaveDecision.workerLeaveDecision(node, HlcTimestamp.ZERO));
             }
         }
 

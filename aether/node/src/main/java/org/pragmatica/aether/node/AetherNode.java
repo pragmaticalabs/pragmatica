@@ -58,6 +58,7 @@ import org.pragmatica.aether.node.deployment.AdmissionSeam;
 import org.pragmatica.aether.node.deployment.DeploymentWiring;
 import org.pragmatica.aether.node.deployment.EffectTranslator;
 import org.pragmatica.aether.node.deployment.Fsm2System;
+import org.pragmatica.aether.node.deployment.MembershipInputs;
 import org.pragmatica.aether.node.deployment.SeamPoller;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.TerminationRetirement;
@@ -3764,6 +3765,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                  .keySet(),
                                                                                                               admissionSeam::tokenOf),
                                                                                        admissionSeam,
+                                                                                       () -> MembershipInputs.deadSet(membershipFsm.deadMembers()),
                                                                                        deploymentWiring.guard(),
                                                                                        FsmTimers.sharedScheduler(),
                                                                                        configuredWorker(config))));

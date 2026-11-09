@@ -89,6 +89,7 @@ final class ClusterRig implements AutoCloseable {
                                                                                                   KvSnapshotter.kvSnapshotter(store),
                                                                                                   this::seams,
                                                                                                   Map::of,
+                                                                                                  () -> ClusterInput.DeadSet.NONE,
                                                                                                   clock,
                                                                                                   sunk::add,
                                                                                                   this::stepped),

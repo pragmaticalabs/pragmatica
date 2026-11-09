@@ -47,6 +47,7 @@ public final class ClusterFsmInterpreter extends FsmRuntime<ClusterInput, TimerI
                         KvSnapshotter snapshotter,
                         Supplier<Seams> seams,
                         Supplier<Map<NodeId, Admission>> admissions,
+                        Supplier<ClusterInput.DeadSet> dead,
                         FsmTimers.TimerService clock,
                         Consumer<ClusterEffect> sink,
                         StepObserver observer) {}
@@ -154,7 +155,7 @@ public final class ClusterFsmInterpreter extends FsmRuntime<ClusterInput, TimerI
 
     /// R-3.1.6: the snapshot is read at a revision and stepped in this very dispatch.
     private void rebuild() {
-        var cut = parts.snapshotter().clusterSnapshot(parts.seams(), parts.admissions());
+        var cut = parts.snapshotter().clusterSnapshot(parts.seams(), parts.admissions(), parts.dead());
 
         snapshotTakenAt(cut.revision());
         step(new ClusterInput.Rebuild(cut.snapshot()));

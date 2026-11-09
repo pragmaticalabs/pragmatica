@@ -988,6 +988,25 @@ public final class MembershipFsm {
         return snapshot;
     }
 
+    /// The current DEAD set (#2937, deployment-fsm-spec C17r): every tracked member whose state is terminally DEAD, i.e. a
+    /// verdict this node reached and has not re-admitted (a fenced rejoin moves the member out of DEAD), with its retained
+    /// descriptor. Read by the deployment engines on becoming leader, so a verdict reached as a follower is not lost.
+    /// Insertion-ordered, matching [`#memberStates`]. Pure read.
+    public Map<NodeId, MemberDescriptor> deadMembers() {
+        var snapshot = new LinkedHashMap<NodeId, MemberDescriptor>();
+
+        members.forEach((id, tracking) -> addIfDead(snapshot, id, tracking));
+
+        return snapshot;
+    }
+
+    @Contract
+    private static void addIfDead(Map<NodeId, MemberDescriptor> snapshot, NodeId id, MemberTracking tracking) {
+        if (tracking.isDead()) {
+            snapshot.put(id, tracking.descriptor());
+        }
+    }
+
     /// Wave-1 diagnostic snapshot (cluster-topology-overhaul spec, item 6): each tracked
     /// member's SWIM-incarnation high-water mark ([`MembershipContext#lastSeenIncarnation`]).
     /// Insertion-ordered, matching [`#memberStates`] / [`#memberDescriptors`]; includes DEAD

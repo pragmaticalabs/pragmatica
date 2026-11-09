@@ -4,7 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Stream;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Snapshot;
@@ -52,6 +56,27 @@ public sealed interface Lifecycle {
         Reconcile.request(m, ctx);
 
         return m;
+    }
+
+    /// C17r (#2937): one synthesised removal input per id in local membership's current DEAD set, `NodeRemoved` for a core and
+    /// `WorkerLeave` for a worker, in id order (a deterministic `Rebuild`). The FSM applies them right after `Rebuild`, before
+    /// the inputs held while rebuilding, so each counts as a removal input processed after `Rebuild` (W4, R-2.11). They run C17
+    /// unchanged: its guard (n not in `departed` or `departing`) refuses a node already recorded, and the R-4.3.0 fence refuses
+    /// a re-admission that commits first. A verdict this node never reached is left to C9-C11.
+    static List<ClusterInput> removalsAtRebuild(Snapshot snapshot) {
+        return Stream.concat(synthesised(snapshot.dead()
+                                                 .cores(),
+                                         ClusterInput.NodeRemoved::new),
+                             synthesised(snapshot.dead()
+                                                 .workers(),
+                                         ClusterInput.WorkerLeave::new))
+                     .toList();
+    }
+
+    private static Stream<ClusterInput> synthesised(Set<NodeId> nodes, Function<NodeId, ClusterInput> removal) {
+        return nodes.stream()
+                    .sorted(Comparator.comparing(NodeId::id))
+                    .map(removal);
     }
 
     /// H-1: C11f's non-STALE extension applies to the DEPARTED records that were already committed when this leader rebuilt.

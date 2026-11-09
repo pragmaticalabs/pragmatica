@@ -752,6 +752,7 @@ public sealed interface WorkerHierarchyAssembly {
         // Core/local membership and fresh governor evidence remain distinct inputs. A stale
         // worker FSM entry cannot override expiry of the community report.
         clusterDeploymentManager.setLocalAliveMembersSupplier(() -> communityHealthRuntime.aliveNodes(membershipFsm.dhtRoutableMembers()));
+        clusterDeploymentManager.setDeadMembersSupplier(membershipFsm::deadMembers);
 
         return Unit.unit();
     }

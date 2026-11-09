@@ -116,11 +116,14 @@ public final class ClusterFsm {
         return new Rebuilding(rebuilding.incarnation(), held);
     }
 
-    /// C1: build the indexes from the snapshot, then replay what arrived while rebuilding, in order.
+    /// C1: build the indexes from the snapshot, apply the removals C17r synthesises from the DEAD set, then replay what arrived
+    /// while rebuilding, in order.
     private ClusterState rebuilt(Rebuilding rebuilding, Rebuild rebuild, Ctx ctx) {
         counted(ctx, rebuild, "applied");
-        var model = freshlyBuilt(Lifecycle.rebuild(ctx, rebuilding.incarnation(), rebuild.snapshot()),
-                                 ctx);
+        var model = withDeadRemoved(freshlyBuilt(Lifecycle.rebuild(ctx, rebuilding.incarnation(), rebuild.snapshot()),
+                                                 ctx),
+                                    rebuild,
+                                    ctx);
 
         for (var held : rebuilding.held()) {
             model = apply(model, held, ctx);
@@ -170,8 +173,9 @@ public final class ClusterFsm {
 
     /// A `Rebuild` while Active starts a fresh incarnation: the old model's timers are cancelled and a tick that already fired is
     /// dropped by the incarnation check, so one tick chain runs. The correlation sequence and the generation counter continue
-    /// (R-1.6.1: monotone), so a generation allocated but not yet committed is never issued again.
-    private static ClusterModel rebuiltAgain(ClusterModel model, Rebuild rebuild, Ctx ctx) {
+    /// (R-1.6.1: monotone), so a generation allocated but not yet committed is never issued again. The C17r removals follow, as
+    /// after any `Rebuild`.
+    private ClusterModel rebuiltAgain(ClusterModel model, Rebuild rebuild, Ctx ctx) {
         cancelTimers(model, ctx);
         var fresh = freshlyBuilt(Lifecycle.rebuild(ctx, model.incarnation() + 1, rebuild.snapshot()),
                                  ctx);
@@ -179,7 +183,18 @@ public final class ClusterFsm {
         fresh.txSeq = model.txSeq;
         fresh.genCounter = Math.max(fresh.genCounter, model.genCounter);
 
-        return fresh;
+        return withDeadRemoved(fresh, rebuild, ctx);
+    }
+
+    /// C17r (#2937): the removal inputs synthesised from the snapshot's DEAD set, each applied as an ordinary input.
+    private ClusterModel withDeadRemoved(ClusterModel model, Rebuild rebuild, Ctx ctx) {
+        var next = model;
+
+        for (var removal : Lifecycle.removalsAtRebuild(rebuild.snapshot())) {
+            next = apply(next, removal, ctx);
+        }
+
+        return next;
     }
 
     private static ClusterModel cancelTimers(ClusterModel model, Ctx ctx) {
