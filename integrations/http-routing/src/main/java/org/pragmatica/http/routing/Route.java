@@ -389,7 +389,7 @@ public interface Route<T> extends RouteSource, RouteShape {
     /// request itself, such as its headers, beside the parsed path, query and body arguments. The context is the one
     /// the router passed to this route's handler; it is never read from ambient state.
     ///
-    /// Method, path, content type, spacers, name, security, version, path arity, spacer slots and upload limits are
+    /// Method, path, content type, spacers, name, security, version, path arity, spacer slots, upload limits and declared success response are
     /// those of `route`.
     ///
     /// @param route a route whose result is a [Handler] for the response
@@ -405,7 +405,8 @@ public interface Route<T> extends RouteSource, RouteShape {
                      route.version(),
                      route.pathParamCount(),
                      route.spacerSlots(),
-                     route.uploadSpec());
+                     route.uploadSpec(),
+                     route.successSpec());
     }
 
     private static <R> Handler<R> bindRequestContext(Handler<Handler<R>> binding) {

@@ -185,7 +185,7 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
                                                 }));
     }
 
-    private static <T> Route<T> secure(Route<T> route, SecurityPolicy defaultPolicy, HttpAuthenticator authenticator) {
+    static <T> Route<T> secure(Route<T> route, SecurityPolicy defaultPolicy, HttpAuthenticator authenticator) {
         return Route.route(route.method(),
                            route.path(),
                            context -> authenticate(route, context, defaultPolicy, authenticator).flatMap(security -> invoke(route,
@@ -197,8 +197,9 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
                            route.security(),
                            route.version(),
                            route.pathParamCount(),
-                           route.spacerSlots())
-                    .withSuccess(route.successSpec());
+                           route.spacerSlots(),
+                           route.uploadSpec(),
+                           route.successSpec());
     }
 
     private static Promise<SecurityContext> authenticate(Route<?> route,

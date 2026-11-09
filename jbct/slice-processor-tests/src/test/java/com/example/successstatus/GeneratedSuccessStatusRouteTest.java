@@ -149,13 +149,32 @@ class GeneratedSuccessStatusRouteTest {
         assertThat(send("GET", "/api/blog/lookup/unknown", "").statusCode()).isEqualTo(404);
     }
 
-    /// A route that declares neither key generates the source it always did: only the seven declaring routes carry
+    /// #2965: a route whose method takes an injected [org.pragmatica.aether.http.handler.RequestHeaders] is wrapped in
+    /// `Route.withRequestContext`; the wrapper kept the status 200 and no Location instead of the declared 201 + Location.
+    @Test
+    void declared201_withInjectedRequestHeaders_answersCreatedWithLocation() {
+        var response = send("POST", "/api/blog/with-headers", ARTICLE);
+
+        assertThat(response.statusCode()).isEqualTo(201);
+        assertThat(response.headers()).containsEntry("Location", "/api/blog/articles/hello%20world");
+    }
+
+    /// #2965: the same for an injected [org.pragmatica.aether.http.handler.security.SecurityContext].
+    @Test
+    void declared201_withInjectedSecurityContext_answersCreatedWithLocation() {
+        var response = send("POST", "/api/blog/with-context", ARTICLE);
+
+        assertThat(response.statusCode()).isEqualTo(201);
+        assertThat(response.headers()).containsEntry("Location", "/api/blog/articles/hello%20world");
+    }
+
+    /// A route that declares neither key generates the source it always did: only the nine declaring routes carry
     /// `.withSuccess(...)`.
     @Test
     void undeclaredRoutes_generateNoSuccessDeclaration() throws IOException {
         var generated = Files.readString(generatedRoutes());
 
-        assertThat(generated.split("\\.withSuccess\\(", -1)).hasSize(8);
+        assertThat(generated.split("\\.withSuccess\\(", -1)).hasSize(10);
         assertThat(generated).contains(".withSuccess(org.pragmatica.http.routing.SuccessSpec.successSpec(202))");
     }
 
