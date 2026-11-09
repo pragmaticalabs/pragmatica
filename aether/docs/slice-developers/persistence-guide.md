@@ -173,7 +173,7 @@ Promise<Unit> updateUser(long id, UpdateUserRequest request);
 | `Promise<List<T>>` | Zero or more rows |
 | `Promise<Unit>` | No result (DML) |
 | `Promise<Long>` | Scalar count (an expression such as `count(*)` needs an alias: `SELECT count(*) AS n FROM t`) |
-| `Promise<Boolean>` | Scalar boolean (an expression such as `EXISTS(..)` needs an alias: `SELECT EXISTS(..) AS found`) |
+| `Promise<Boolean>` | Scalar boolean (an expression such as `EXISTS(..)` needs an alias: `SELECT EXISTS(..) AS found`; see Nullable Columns) |
 
 ### Query Narrowing
 
@@ -248,7 +248,25 @@ record UserRow(long id, String name, Option<String> nickname) {}
 Promise<Unit> rename(long id, Option<String> nickname);
 ```
 
-A plain `String` component of a nullable column still reads `NULL` as `""`.
+A `@Query` output that is not proven non-null and is read into a non-`Option` component or scalar result fails the
+build, naming the method, the output, the reason and the fix (`COALESCE(..., <default>)`, or `Option<T>` on a record
+component). Nullability is computed per output expression, never from the column alone: a `NOT NULL` column is still
+NULL on the nullable side of an outer join, in `max`/`min`/`sum`/`avg` over an empty group, in a `CASE` without `ELSE`,
+through `NULLIF`, from an empty scalar subquery, or in a set operation with a nullable branch. Proven non-null: a
+`NOT NULL` column of the `FROM` root or of an inner-joined table, `count(..)`, a literal, `EXISTS (..)` and `NOT EXISTS (..)`, a scalar subquery that is a lone `count(..)` with no `GROUP BY`, `HAVING`, set operation, `LIMIT` or `OFFSET` (it always returns one row; a `max(..)` or grouped subquery stays nullable), `COALESCE` whose last
+argument is proven, and a cast, sign or parentheses over such an expression. A NULL-rejecting predicate on a bare
+column proves that column too (`col IS NOT NULL`, `=`, `<>`, `<`, `>`, `<=`, `>=`, `BETWEEN`, `LIKE`/`ILIKE`, `IN (..)`; a quantified `= ALL (..)`, `op ANY/SOME (..)` and `IS [NOT] DISTINCT FROM`, `IS [NOT] TRUE/FALSE/UNKNOWN` prove nothing),
+but only as a top-level `AND` conjunct of the `WHERE` of the same `SELECT`: not under `OR` or `NOT`, not inside a
+subquery, not in `HAVING`, not in an outer join's `ON`, and a predicate on an expression (`lower(col) = ..`,
+`col::text = ..`) proves nothing. It proves only that column, and a `WHERE` predicate on a column of the nullable side of a
+`LEFT JOIN` proves that column (the other columns of that side stay unproven). `Option<T>` on a proven output is
+accepted without a warning. A scalar or `@Jsonb` single-output method reads its value through a non-nullable accessor,
+so `Promise<Option<T>>` (row optional) does not make a NULL value acceptable; use `COALESCE`. CRUD-generated methods
+are not analysed. An unaliased output is matched under the name PostgreSQL gives it (`max(total)` is `max`,
+`col::text` is `col`), and an output with no certain name is treated as possibly read by any field no named output
+covers. `SELECT *` over a derived table or CTE carries each inner output's nullability; when the columns cannot be
+listed, every field is unproven. A name that appears twice in the select list and is read by a record component is
+a build error (alias the outputs distinctly).
 
 ## JSON Documents (`json` / `jsonb`)
 

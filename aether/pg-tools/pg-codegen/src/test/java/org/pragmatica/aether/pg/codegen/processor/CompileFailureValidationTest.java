@@ -406,7 +406,7 @@ class CompileFailureValidationTest {
                 public interface ReadingCteRepo {
                     record Row(long id, String name) {}
 
-                    @Query("WITH active_users AS (SELECT id, name FROM users WHERE active = true) SELECT id, name FROM active_users")
+                    @Query("WITH active_users AS (SELECT id, name FROM users WHERE active = true) SELECT COALESCE(id, 0) AS id, COALESCE(name, '') AS name FROM active_users")
                     Promise<List<Row>> activeUsers();
                 }
                 """;

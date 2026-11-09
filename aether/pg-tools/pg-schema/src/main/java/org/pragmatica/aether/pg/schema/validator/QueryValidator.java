@@ -111,7 +111,7 @@ public final class QueryValidator {
     /// `_ROOT -> Input -> Statement -> DmlStatement -> <body>`. Absent when the text holds anything
     /// other than exactly one statement, so a script never has one statement's shape attributed to
     /// another.
-    private static Option<CstNavigator> singleStatementBody(CstNavigator queryRoot) {
+    static Option<CstNavigator> singleStatementBody(CstNavigator queryRoot) {
         var input = queryRoot.child("Input").or(queryRoot);
         var statements = input.allChildren("Statement");
 
@@ -150,7 +150,7 @@ public final class QueryValidator {
     /// target (the `AS` of a `CAST` is followed by a `DataType`, so it is never one), else
     /// `bareColumnName` for a plain, possibly qualified, column reference; leaves `*` and compound expressions unresolved (absent) so the caller
     /// skips the whole check.
-    private static Option<String> outputColumnName(CstNavigator target) {
+    static Option<String> outputColumnName(CstNavigator target) {
         var aliasedOrQualified = explicitAlias(target);
 
         if (aliasedOrQualified.isPresent()) return aliasedOrQualified;
@@ -300,7 +300,7 @@ public final class QueryValidator {
         }
     }
 
-    private static List<CstNavigator> ownedSelectCores(CstNavigator parent) {
+    static List<CstNavigator> ownedSelectCores(CstNavigator parent) {
         var cores = new ArrayList<CstNavigator>();
 
         for (var child : parent.children()) {
@@ -756,7 +756,7 @@ public final class QueryValidator {
         return aliasName(alias.unwrap());
     }
 
-    private static Option<String> aliasName(CstNavigator alias) {
+    static Option<String> aliasName(CstNavigator alias) {
         var names = CstExtractor.leafIdentifiers(alias, ALIAS_KEYWORDS);
 
         if (names.isEmpty()) return Option.empty();

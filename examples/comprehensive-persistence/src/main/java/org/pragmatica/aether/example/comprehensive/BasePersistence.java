@@ -51,15 +51,15 @@ public interface BasePersistence {
     Promise<List<CustomerOrder>> findCustomerOrdersByStatus(String status);
 
     @Query("SELECT c.id AS customer_id, c.name AS customer_name, "
-          + "count(o.id) AS order_count, sum(o.total) AS total_revenue, "
-          + "min(o.total) AS min_order_value, max(o.total) AS max_order_value "
+          + "count(o.id) AS order_count, COALESCE(sum(o.total), 0) AS total_revenue, "
+          + "COALESCE(min(o.total), 0) AS min_order_value, COALESCE(max(o.total), 0) AS max_order_value "
           + "FROM customers c LEFT JOIN orders o ON o.customer_id = c.id "
           + "WHERE c.active = :active "
           + "GROUP BY c.id, c.name")
     Promise<List<CustomerRevenue>> customerRevenueReport(Boolean active);
 
     @Query("SELECT p.id AS product_id, p.sku AS product_sku, p.name AS product_name, "
-          + "sum(i.quantity) AS units_sold, sum(i.quantity * i.unit_price) AS total_revenue "
+          + "COALESCE(sum(i.quantity), 0) AS units_sold, COALESCE(sum(i.quantity * i.unit_price), 0) AS total_revenue "
           + "FROM products p JOIN order_items i ON i.product_id = p.id "
           + "JOIN orders o ON o.id = i.order_id "
           + "WHERE o.status = :status "
@@ -94,6 +94,6 @@ public interface BasePersistence {
           + "  SELECT id, total, customer_id FROM orders "
           + "  WHERE created_at > :since AND total > :minTotal"
           + ") "
-          + "SELECT sum(total) AS total_amount FROM recent_orders WHERE customer_id = :customerId")
+          + "SELECT COALESCE(sum(total), 0) AS total_amount FROM recent_orders WHERE customer_id = :customerId")
     Promise<BigDecimal> recentOrderTotalForCustomer(Instant since, BigDecimal minTotal, Long customerId);
 }

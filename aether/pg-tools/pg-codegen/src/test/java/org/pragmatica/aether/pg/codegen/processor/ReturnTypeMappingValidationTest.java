@@ -97,7 +97,7 @@ class ReturnTypeMappingValidationTest {
             public interface KeywordAliasRepo {
                 record Row(long id, long name) {}
 
-                @Query("SELECT id, (SELECT 1) AS name FROM orders")
+                @Query("SELECT id, COALESCE((SELECT 1), 0) AS name FROM orders")
                 Promise<List<Row>> findAll();
             }
             """;

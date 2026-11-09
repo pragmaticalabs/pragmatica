@@ -97,6 +97,34 @@ public final class ProcessorError {
         return PREFIX + "Field '" + field + "' in return type " + recordType + " has no matching SELECT column";
     }
 
+    public static String nullableOutputToNonOption(String method,
+                                                   String output,
+                                                   String target,
+                                                   String reason,
+                                                   boolean fieldTarget) {
+        return PREFIX
+             + "Method '" + method
+             + "': output '" + output
+             + "' may be NULL (" + reason
+             + ") but is read into " + target
+             + ", which cannot hold NULL. Fix: wrap the output in COALESCE(..., <default>)" + (fieldTarget
+                                                                                               ? " or declare the field as Option<T>."
+                                                                                               : ".");
+    }
+
+    public static String ambiguousOutputName(String method, String output, int count, String field) {
+        return PREFIX
+             + "Method '" + method
+             + "': output name '" + output
+             + "' appears " + count
+             + " times in the select list, so field '" + field
+             + "' cannot be mapped unambiguously. Fix: give each output a distinct alias.";
+    }
+
+    public static String analysisFailed(String method, String sql, String detail) {
+        return PREFIX + "Method '" + method + "' could not be analysed (" + detail + "); SQL: " + sql;
+    }
+
     public static String missingValueMappingForParam(String param, String type) {
         return PREFIX
              + "Parameter '" + param
