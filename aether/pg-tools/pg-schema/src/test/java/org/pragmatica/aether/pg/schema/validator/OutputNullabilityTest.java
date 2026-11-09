@@ -73,6 +73,8 @@ class OutputNullabilityTest {
         "SELECT x FROM (SELECT 1 AS x) d | x | derived table",
         "SELECT t.id AS x FROM t, missing m | x | NOT_USED",
         "SELECT qty AS x FROM t GROUP BY ROLLUP (qty) | x | subtotal rows",
+        "SELECT qty AS x FROM t GROUP BY CUBE (qty) | x | subtotal rows",
+        "SELECT public.u.id AS x FROM t LEFT JOIN u ON u.t_id = t.id | x | nullable side of a LEFT JOIN",
         "SELECT note AS x FROM t UNION SELECT name FROM t | x | column 't.note' is nullable",
         "SELECT name AS x FROM t UNION SELECT note FROM t | x | set operation branch 2",
         "UPDATE t SET qty = 1 RETURNING note AS x | x | column 't.note' is nullable"
@@ -134,6 +136,14 @@ class OutputNullabilityTest {
         assertThat(result).hasSize(7);
         assertThat(result.subList(0, 3).stream().allMatch(o -> o.nullability().isNonNull())).isTrue();
         assertThat(result.subList(4, 7).stream().noneMatch(o -> o.nullability().isNonNull())).isTrue();
+    }
+
+    @Test
+    void schemaQualifiedStar_matchesTheLastQualifierPart() {
+        var result = outputs("SELECT public.u.* FROM t LEFT JOIN u ON u.t_id = t.id");
+
+        assertThat(result).hasSize(3);
+        assertThat(result.stream().noneMatch(o -> o.nullability().isNonNull())).isTrue();
     }
 
     @Test
