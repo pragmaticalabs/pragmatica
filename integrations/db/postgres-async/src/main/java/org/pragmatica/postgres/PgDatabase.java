@@ -21,7 +21,8 @@ public class PgDatabase extends PgConnectible {
         return obtainStream.get()
                            .flatMap(stream -> new PgConnection(stream, dataConverter, 0).connect(username,
                                                                                                  password,
-                                                                                                 database))
+                                                                                                 database,
+                                                                                                 applicationName))
                            .flatMap(this::validateConnection);
     }
 

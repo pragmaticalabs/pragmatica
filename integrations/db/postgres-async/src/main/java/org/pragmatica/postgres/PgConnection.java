@@ -261,8 +261,8 @@ public class PgConnection implements Connection {
         this.onRelease = onRelease;
     }
 
-    Promise<Connection> connect(String username, String password, String database) {
-        return stream.connect(new StartupMessage(username, database))
+    Promise<Connection> connect(String username, String password, String database, String applicationName) {
+        return stream.connect(new StartupMessage(username, database, applicationName))
                      .flatMap(authentication -> authenticate(username, password, authentication))
                      .map(_ -> PgConnection.this);
     }

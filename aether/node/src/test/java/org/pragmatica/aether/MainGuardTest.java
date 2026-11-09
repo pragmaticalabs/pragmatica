@@ -8,6 +8,7 @@ package org.pragmatica.aether;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.TlsConfig;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -17,6 +18,27 @@ class MainGuardTest {
 
     @Nested
     class NodeIdGate {
+
+        @Test
+        void publishNodeId_setsTheNodeIdProperty_forDatasourceDefaults() {
+            var saved = System.getProperty("aether.node.id");
+
+            try {
+                Main.publishNodeId(NodeId.nodeId("node-pub").unwrap());
+
+                assertEquals("node-pub", System.getProperty("aether.node.id"));
+            } finally {
+                restoreProperty("aether.node.id", saved);
+            }
+        }
+
+        private static void restoreProperty(String key, String saved) {
+            if (saved == null) {
+                System.clearProperty(key);
+            } else {
+                System.setProperty(key, saved);
+            }
+        }
 
         @Test
         void resolveNodeId_succeeds_fromArg() {

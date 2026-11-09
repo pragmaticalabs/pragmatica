@@ -113,6 +113,8 @@ public record Main(String[] args) {
         enforceClusterNamePresent();
         enforceDevModeCompatibility(aetherConfig);
         var nodeId = parseNodeId(aetherConfig);
+
+        publishNodeId(nodeId);
         var port = parsePort(aetherConfig);
         var managementPort = parseManagementPort(aetherConfig);
         var nodeLabels = collectNodeLabels();
@@ -1066,6 +1068,14 @@ public record Main(String[] args) {
                     .orElse(() -> NodeId.nodeId(aetherNodeIdEnv))
                     .orElse(() -> NodeId.nodeId(nodeIdEnv))
                     .mapError(_ -> MISSING_NODE_ID);
+    }
+
+    /// Publishes the resolved node id so datasource connectors can default `application_name` to `aether-<node id>`
+    /// (#2948); the db-async module reads the `aether.node.id` property (`PgPoolSettings.NODE_ID_PROPERTY`) and does
+    /// not depend on the node module.
+    @Contract
+    static void publishNodeId(NodeId nodeId) {
+        System.setProperty("aether.node.id", nodeId.id());
     }
 
     private int parsePort(Option<AetherConfig> aetherConfig) {

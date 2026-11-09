@@ -125,7 +125,7 @@ public class PgConnectionPool extends PgConnectible {
 
                         conn.onRelease(() -> release(conn));
 
-                        return conn.connect(username, password, database);
+                        return conn.connect(username, password, database, applicationName);
                     }).flatMap(this::validateConnection).withResult(result -> result.fold(cause -> {
                                                                                               propagateFailure(cause);
 
