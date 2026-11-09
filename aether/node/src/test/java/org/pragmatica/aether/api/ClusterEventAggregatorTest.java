@@ -2910,6 +2910,9 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.KV_DISPATCH_CAUGHT_UP,
                 OperatorWarningCode.KV_DISPATCH_SLOW_HANDLER_RETURNED,
                 OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED,
+                // the datasource recoveries of #2973: demand back within the server limit, a refused server answering again
+                OperatorWarningCode.DATASOURCE_DEMAND_WITHIN_SERVER_LIMIT,
+                OperatorWarningCode.DATASOURCE_SERVER_ACCEPTING_CONNECTIONS,
                 // the 13 FSM2 recoveries of the D.6 ruling (#2761, know 7cc9e79f61)
                 OperatorWarningCode.DEPARTURE_INFERRED_REVERSED,
                 OperatorWarningCode.SCHEMA_HOLD_CLEARED,
