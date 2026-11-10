@@ -90,6 +90,7 @@ class StreamErrorStatusTest {
         all.put(new StreamError.StaleEpochRead("s", 0, EPOCH, EPOCH), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.OwnerCatchupPending("s", 0), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.LinearizableRoundTimeout("s", 0), HttpStatus.SERVICE_UNAVAILABLE);
+        all.put(new StreamError.OwnershipMovedBeforeAck("s", 0), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.ReplicaNotVerified("s", 0, 3L), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.RepairNotAuthorized("s", 0, 3L), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.RepairWitnessFailed("s", 0, "r"), HttpStatus.SERVICE_UNAVAILABLE);
