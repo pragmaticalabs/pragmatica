@@ -1,0 +1,2 @@
+### Fixed (2026-11-10 — #2995: EmberCluster.killNode threw an NPE on a null node id)
+- **`EmberCluster.killNode(null, ...)` now returns a failed promise naming the null id instead of throwing a NullPointerException.** The replica-relay phase-4 test awaited `sourceOf(joiner) == Option.option(stalledCore.get())`, which is true for a joiner with no source while no core had been asked (`Option.option(null)` is empty), so it killed a null core; it now waits for a non-null stalled core. [verified: `EmberKillNodeNullIdTest`, red on the old code]

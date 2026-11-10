@@ -1399,7 +1399,15 @@ public final class EmberCluster {
                      .or(() -> nodeNotFound(nodeIdStr));
     }
 
+    private static final Cause NULL_NODE_ID = org.pragmatica.lang.utils.Causes.cause("killNode needs a node id, got null");
+
     public Promise<Unit> killNode(String nodeIdStr, boolean graceful) {
+        return Option.option(nodeIdStr)
+                     .map(id -> killKnownOrMissing(id, graceful))
+                     .or(NULL_NODE_ID::promise);
+    }
+
+    private Promise<Unit> killKnownOrMissing(String nodeIdStr, boolean graceful) {
         return Option.option(nodes.get(nodeIdStr))
                      .map(node -> killNodeInternal(nodeIdStr, node, graceful))
                      .or(() -> nodeNotFound(nodeIdStr));
