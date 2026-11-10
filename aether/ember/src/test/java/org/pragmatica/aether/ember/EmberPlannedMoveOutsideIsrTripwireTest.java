@@ -36,7 +36,9 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.sleepQuietly;
 /// the move record after the new owner has applied it and activated, so that the deposed owner still acknowledges on its old
 /// ISR. Neither an apply-delay seam on chosen nodes nor a snapshot-skew seam exists; `EmberCluster.relaunchNode` is refused
 /// under terminal removal, so the model's restart of the old owner is not available either. The decisive test is written
-/// below, `@Disabled`, and goes live with those seams (#2981 direction 2: fencing the deposed owner).
+/// below, `@Disabled`. The two seams are test infrastructure for the runtime proof of the election rule (#2981 direction 1);
+/// they fence nothing. The mechanism that closes the N2 loss regardless of the election rule is direction B, the ack-time
+/// ownership check on the deposed owner, a separate later change that this test does not cover.
 ///
 /// **The enabled tripwire** pins the current behaviour that makes it unreachable: after an owner's loss the failover elects
 /// a member of the old ISR, and with the new owner live and no membership change, no planned move follows. If it goes red,
@@ -81,7 +83,7 @@ class EmberPlannedMoveOutsideIsrTripwireTest {
         assertThat(history.stream().map(StreamPartitionOwnershipValue::owner).distinct().toList())
             .as("TRIPWIRE #2981: no planned move with the new owner live and no membership change; if this goes red the "
                 + "harness reached a planned move, so enable plannedMoveOutsideTheDeposedOwnersIsr_losesNoAcknowledgedRecord "
-                + "(#2981 direction 2). Committed history: %s", history)
+                + "(#2981 direction 1 runtime proof). Committed history: %s", history)
             .containsExactly(failedOver.before().owner(), failedOver.after().owner());
     }
 
@@ -91,8 +93,10 @@ class EmberPlannedMoveOutsideIsrTripwireTest {
     /// owner and the third node while the new owner activates. Every acknowledged record must be held by the final owner.
     @Test
     @Timeout(600)
-    @Disabled("#2981 direction 2: needs a test-only snapshot-skew seam on the leader's reconcile and an apply-delay seam for the "
-              + "ownership record on chosen nodes; neither exists. The enabled tripwire above pins why it is unreachable today.")
+    @Disabled("#2981 direction 1 runtime proof: needs two test-only seams (test infrastructure, not fencing): a snapshot-skew seam "
+              + "on the leader's reconcile and an apply-delay seam for the ownership record on chosen nodes; neither exists. The "
+              + "enabled tripwire above pins why it is unreachable today. Fencing the deposed owner is direction B (ack-time "
+              + "ownership check), a separate follow-up.")
     void plannedMoveOutsideTheDeposedOwnersIsr_losesNoAcknowledgedRecord() {
         var failedOver = failedOverCluster();
         var owner = node(failedOver.after().owner().id());

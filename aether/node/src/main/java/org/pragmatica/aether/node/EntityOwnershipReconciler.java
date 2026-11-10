@@ -236,7 +236,7 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
     }
 
     /// As above, and `writerFactory` also receives the [ArcHosting] view, which a writer that must not hand an arc to a
-    /// node that no longer hosts it narrows its live members with (#2981; see [#hostingOnly]).
+    /// node that no longer hosts it narrows its owner-eligible members with (#2981; see [#hostingOnly]).
     public static EntityOwnershipReconciler entityOwnershipReconciler(KVStore<AetherKey, AetherValue> kvStore,
                                                                       NodeId self,
                                                                       Supplier<List<NodeId>> membersSupplier,
@@ -537,7 +537,7 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
     }
 
     /// The live members of an entity arc narrowed to the keyspace's committed hosts (#2981): what an ownership writer reads
-    /// as "live FOR this arc". An owner that is a live member but no longer hosts the slice must not count as live, or the
+    /// as "may OWN this arc" (ISR membership and the fenced set keep the unnarrowed live view). An owner that is a live member but no longer hosts the slice must not count as live, or the
     /// arc is stranded on a node that cannot serve it (a planned move is allowed only to a live ISR member, so HRW's choice
     /// outside the ISR waits behind it). When no committed host is live there is no host to fail over to and the reconciler
     /// leaves the record as it stands (see [#arcOwner]); the view then stays the unnarrowed members, so that case does not
@@ -563,8 +563,9 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
         return hosting.or(live);
     }
 
-    /// `base` with each arc's live members narrowed by `hosting`: the entity writer's view (#2981). The initial ISR is
-    /// untouched; only the liveness read per arc changes, so stream writers sharing `base` are unaffected.
+    /// `base` with each arc's owner-eligible members narrowed by `hosting`: the entity writer's view (#2981). The initial ISR
+    /// and the ISR's live view are untouched; only the ownership read per arc changes, so stream writers sharing `base` are
+    /// unaffected.
     public static IsrInputs hostingOnly(IsrInputs base, ArcHosting hosting) {
         return new IsrInputs() {
             @Override
@@ -574,6 +575,11 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
 
             @Override
             public List<NodeId> liveMembers(String stream, int partition) {
+                return base.liveMembers(stream, partition);
+            }
+
+            @Override
+            public List<NodeId> hostingMembers(String stream, int partition) {
                 return hosting.liveHosts(stream, base.liveMembers(stream, partition));
             }
 

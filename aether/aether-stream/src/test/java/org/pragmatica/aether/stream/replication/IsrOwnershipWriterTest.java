@@ -297,6 +297,72 @@ class IsrOwnershipWriterTest {
         }
     }
 
+    /// #2981 F2: the writer reads the ISR's live view and the owner-eligible view separately. A live member that may not own
+    /// the partition keeps its ISR membership; failover prefers an ISR member that may own, else any live ISR member.
+    @Nested
+    class HostingView {
+        /// Stream partitions have no hosting condition: a default-input writer driven through `decide` with a committed
+        /// record keeps the unnarrowed view, so a settled record writes nothing (a view that read as empty would fail the
+        /// owner over or commit a refusal).
+        @Test
+        void decide_committedRecordSettled_defaultInputs_writesNothing() {
+            var settled = Option.some(record(A, 3L, List.of(A, B), 4L));
+
+            assertThat(writer.decide(STREAM, PARTITION, settled, A, GENERATION).isEmpty())
+                .as("stream writers keep the unnarrowed live view: nothing to change")
+                .isTrue();
+        }
+
+        @Test
+        void next_ownerHosts_aLiveNonHostIsrMember_staysInTheIsr_unfenced_writesNothing() {
+            var current = record(A, 3L, List.of(A, C), 4L);
+
+            assertThat(writer.next(STREAM, PARTITION, Option.some(current), A, GENERATION, List.of(A, C, D), List.of(A, D)).isEmpty())
+                .as("a live member outside the owner-eligible view is not dropped or fenced")
+                .isTrue();
+        }
+
+        @Test
+        void next_liveOwnerNoLongerHosts_aHostIsInTheIsr_movesToIt_keepingTheNonHostInTheIsr() {
+            var current = record(A, 3L, List.of(A, B), 4L);
+            var next = writer.next(STREAM, PARTITION, Option.some(current), B, GENERATION, List.of(A, B, D), List.of(B, D)).unwrap();
+
+            assertThat(next.owner()).isEqualTo(B);
+            assertThat(next.isr()).as("the deposed non-host owner stays a live ISR member").containsExactly(B, A);
+            assertThat(next.fenced()).isEmpty();
+        }
+
+        @Test
+        void next_liveOwnerNoLongerHosts_noHostInTheIsr_keepsTheOwner_writesNothing() {
+            var current = record(A, 3L, List.of(A, C), 4L);
+
+            assertThat(writer.next(STREAM, PARTITION, Option.some(current), B, GENERATION, List.of(A, B, C), List.of(B)).isEmpty())
+                .as("no host to elect: the owner keeps the arc and does not re-elect itself")
+                .isTrue();
+        }
+
+        @Test
+        void next_ownerGone_noHostInTheIsr_electsAnyLiveIsrMember_notRefused() {
+            var current = record(A, 3L, List.of(A, C), 4L);
+            var next = writer.next(STREAM, PARTITION, Option.some(current), B, GENERATION, List.of(B, C), List.of(B)).unwrap();
+
+            assertThat(next.owner()).isEqualTo(C);
+            assertThat(next.failoverRefused()).isFalse();
+        }
+
+        /// Failover prefers an ISR member that may own: with either of B, C the host, the host is elected, so the choice
+        /// is not rank order alone.
+        @Test
+        void next_ownerGone_prefersALiveIsrMemberThatHosts() {
+            var current = record(A, 3L, List.of(A, B, C), 4L);
+            var hostB = writer.next(STREAM, PARTITION, Option.some(current), D, GENERATION, List.of(B, C, D), List.of(B, D)).unwrap();
+            var hostC = writer.next(STREAM, PARTITION, Option.some(current), D, GENERATION, List.of(B, C, D), List.of(C, D)).unwrap();
+
+            assertThat(hostB.owner()).isEqualTo(B);
+            assertThat(hostC.owner()).isEqualTo(C);
+        }
+    }
+
     @Nested
     class Guarded {
         /// The CAS: the owner commits an ISR change first; the leader's write decided on the older record is then

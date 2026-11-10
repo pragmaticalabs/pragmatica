@@ -1062,6 +1062,86 @@ class EntityOwnershipReconcilerTest {
         }
     }
 
+    /// #2981 F2 (v2992): hosting narrows only who may OWN an entity arc. A live replica that does not host the slice keeps its
+    /// ISR membership and stays unfenced; failover prefers an ISR member that hosts and otherwise falls back to any live ISR
+    /// member, so an arc is never refused while one exists.
+    @Nested
+    class NonHostIsrMember {
+        /// The owner hosts and is HRW's choice (no move). N4 is a live placement replica of the entity log that does not host
+        /// the slice. Nothing about N4 changed, so the committed ISR must keep it and must not fence it.
+        @Test
+        void tick_ownerHostsAndStays_aLiveNonHostIsrMember_staysInTheIsr_unfenced() {
+            var cluster = new IsrCluster();
+            var owner = ownerOf(storeRegisteredOn(HOSTS), MEMBERS, 0);
+
+            cluster.seedOwned(0, owner, List.of(owner, N4));
+            cluster.reconcile();
+            var after = cluster.committed(ARC, 0).unwrap();
+
+            assertThat(after.owner()).as("arming: no move").isEqualTo(owner);
+            assertThat(after.isr()).as("a live non-host replica is not dropped from the entity log's ISR").contains(N4);
+            assertThat(after.fenced()).as("nor fenced (IsrMonitor never re-admits a fenced member)").doesNotContain(N4);
+        }
+
+        /// The owner (the only host in the ISR) dies; N4, a live ISR member, holds every acknowledged record. The arc fails
+        /// over to N4 instead of being committed refused, which nothing could resolve while the owner is down.
+        @Test
+        void tick_soleHostInTheIsrDies_aLiveIsrMemberExists_theArcIsNotRefused() {
+            var cluster = new IsrCluster();
+            var owner = ownerOf(storeRegisteredOn(HOSTS), MEMBERS, 0);
+
+            cluster.seedOwned(0, owner, List.of(owner, N4));
+            cluster.members.set(MEMBERS.stream().filter(member -> !member.equals(owner)).toList());
+            cluster.reconcile();
+            var after = cluster.committed(ARC, 0).unwrap();
+
+            assertThat(after.failoverRefused()).as("a live ISR member exists, so the arc is not refused: %s", after).isFalse();
+            assertThat(after.owner()).as("the live ISR member holds every acknowledged record").isEqualTo(N4);
+        }
+
+        /// The non-host owner N4 keeps the arc while no host is in its ISR (no write, no re-election of itself), and hands
+        /// it to the desired host once the ISR monitor admits one.
+        @Test
+        void tick_nonHostOwner_staysUntilAHostIsAdmitted_thenHandsOverToTheHost() {
+            var cluster = new IsrCluster();
+            var host = ownerOf(storeRegisteredOn(HOSTS), MEMBERS, 0);
+
+            cluster.seedOwned(0, N4, List.of(N4));
+            cluster.reconcile();
+            var waiting = cluster.committed(ARC, 0).unwrap();
+
+            assertThat(waiting.owner()).as("no host in the ISR: the owner keeps the arc").isEqualTo(N4);
+            assertThat(waiting.ownershipTerm()).as("and writes nothing").isEqualTo(1L);
+
+            cluster.seedOwned(0, N4, List.of(N4, host));
+            cluster.reconcile();
+
+            assertThat(cluster.committedOwner(0)).as("a host in the ISR: the arc is handed over").isEqualTo(host);
+        }
+
+        /// The initial ISR is the placement and hosting does not touch it: a non-host replica is a normal member of a fresh
+        /// entity log, and the hosting view narrows only ownership.
+        @Test
+        void hostingOnly_leavesTheInitialIsrAndTheIsrLiveViewUntouched_narrowsOnlyOwnership() {
+            var base = new StreamPartitionOwnershipWriter.IsrInputs() {
+                @Override
+                public List<NodeId> liveMembers() {
+                    return MEMBERS;
+                }
+
+                @Override
+                public List<NodeId> initialIsr(String stream, int partition, NodeId owner) {
+                    return List.of(owner, N4);
+                }
+            };
+            var narrowed = EntityOwnershipReconciler.hostingOnly(base, (_, live) -> live.stream().filter(HOSTS::contains).toList());
+
+            assertThat(narrowed.initialIsr(ARC, 0, N1)).as("the initial ISR is the placement, host or not").containsExactly(N1, N4);
+            assertThat(narrowed.liveMembers(ARC, 0)).as("the ISR's live view is not narrowed").isEqualTo(MEMBERS);
+            assertThat(narrowed.hostingMembers(ARC, 0)).as("control: ownership is narrowed to the hosts").isEqualTo(HOSTS.stream().filter(MEMBERS::contains).toList());
+        }
+    }
+
     /// A reconciler over a seeded store with the REAL ISR writer, wired as the node wires the entity writer: the live view
     /// is narrowed to the keyspace's hosts. The gate is off, so every pass decides over the current set.
     private static final class IsrCluster {

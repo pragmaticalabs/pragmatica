@@ -141,8 +141,11 @@ import org.slf4j.LoggerFactory;
 /// That membership is an ELECTION rule, not a property of the confirmation factor: failover elects from the live ISR,
 /// and a planned move goes only to a live ISR member (#2981). Without that rule `confirmation_factor` >= 2 did not
 /// close it: a planned move to a node outside the ISR, under apply skew, lost an acknowledged record (#2981, TLA+
-/// model `Streams.tla`, invariant `AckedNeverLost`). Still open (#2981 direction 2): nothing fences the previous owner
-/// itself, so the guarantee holds only while every path that commits an owner elects inside the previous owner's ISR.
+/// model `Streams.tla`, invariant `AckedNeverLost`). Still open: nothing fences the previous owner itself, so the
+/// guarantee holds only while every path that commits an owner elects inside the previous owner's ISR, and the closure
+/// assumes the maximal ISR covers every committed ISR member; #2993 (an `IsrMonitor` expansion still in flight is
+/// forgotten by the next tick) is a known gap there. Direction B, an ownership check at acknowledgement time on the
+/// deposed owner, is the mechanism that closes N2 regardless of both (a separate later change).
 /// [mechanism: the election rule above with all-member acknowledgement; model-checked on three nodes, not reproduced at
 /// runtime]
 public final class OwnerActivation {
