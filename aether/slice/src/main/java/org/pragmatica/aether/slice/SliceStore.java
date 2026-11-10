@@ -308,14 +308,22 @@ public interface SliceStore {
 
         /// A load can fail AFTER the slice was created, subscribed and registered (its codec cannot be bound, say): no
         /// entry is ever created, so no unload will ever come for it. Take back what THIS load did - unregister the
-        /// slice and release its subscriptions, together; releasing a slice that stays registered is wrong, and so is
-        /// unregistering one it did not register (an earlier load, as a dependency, owns that instance).
+        /// slice, release its subscriptions and release the resources it provisioned, together; releasing a slice that
+        /// stays registered is wrong, and so is unregistering one it did not register (an earlier load, as a dependency,
+        /// owns that instance).
+        ///
+        /// #2975: the resources are released through the same facade call a slice's generated `stop()` makes, under the
+        /// slice's scope (`artifact.asString()`). Without it every failed load leaked what it had provisioned before the
+        /// failure (pools, connectors, subscribers), and with node-shared pools (#2973) such a leak would pin a shared
+        /// pool for the life of the node.
         Promise<Unit> unwindFailedLoad(Artifact artifact, boolean alreadyRegistered) {
             if (alreadyRegistered) {
                 return Promise.unitPromise();
             }
 
-            return Promise.success(unregisterQuietly(artifact)).flatMap(_ -> releaseConfigWatches(artifact));
+            return Promise.success(unregisterQuietly(artifact))
+                          .flatMap(_ -> releaseConfigWatches(artifact))
+                          .flatMap(_ -> resourceFacade.releaseAll(artifact.asString()));
         }
 
         /// A failure that happened before registration leaves nothing to unregister; the release must happen regardless.

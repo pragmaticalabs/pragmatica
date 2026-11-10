@@ -21,6 +21,8 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.utils.Causes.cause;
 
 
+/// A datasource section. Not `@StrictKeys` (#2973, D4.2): forge.toml's `[database]` carries Ember's own keys into the
+/// same composite. The misspellings of `pool_scope` are refused by [MisplacedPoolScope] instead.
 public record DatabaseConnectorConfig(Option<String> name,
                                       Option<DatabaseType> type,
                                       Option<String> host,
@@ -33,7 +35,8 @@ public record DatabaseConnectorConfig(Option<String> name,
                                       Option<String> jdbcUrl,
                                       Option<String> r2dbcUrl,
                                       Option<String> asyncUrl,
-                                      Option<String> applicationName) {
+                                      Option<String> applicationName,
+                                      Option<PoolScope> poolScope) {
     /// PostgreSQL truncates `application_name` at `NAMEDATALEN - 1` bytes; a longer configured name is refused at load
     /// rather than cut silently (#2948). Characters outside printable ASCII are accepted but reach the server as `?`
     /// (the server would otherwise rewrite them to `\xNN`), so `pg_stat_activity` shows the `?` form; see the pg-async
@@ -43,6 +46,37 @@ public record DatabaseConnectorConfig(Option<String> name,
     private static final Pattern URL_PATTERN = Pattern.compile("(?:\\w+:)*(?://)?(?:[^@]+@)?([^/:]+)(?::(\\d+))?/(.+?)(?:\\?.*)?$");
 
     private static final Pattern CREDENTIALS_PATTERN = Pattern.compile("://([^:]+):([^@]+)@");
+
+    /// The record without a `pool_scope` (#2973): the pre-#2973 shape, kept so existing callers compile unchanged. The
+    /// scope is absent, which means [PoolScope#NODE].
+    public DatabaseConnectorConfig(Option<String> name,
+                                   Option<DatabaseType> type,
+                                   Option<String> host,
+                                   Option<Integer> port,
+                                   Option<String> database,
+                                   Option<String> username,
+                                   Option<String> password,
+                                   PoolConfig poolConfig,
+                                   Map<String, String> properties,
+                                   Option<String> jdbcUrl,
+                                   Option<String> r2dbcUrl,
+                                   Option<String> asyncUrl,
+                                   Option<String> applicationName) {
+        this(name,
+             type,
+             host,
+             port,
+             database,
+             username,
+             password,
+             poolConfig,
+             properties,
+             jdbcUrl,
+             r2dbcUrl,
+             asyncUrl,
+             applicationName,
+             none());
+    }
 
     /// The record without an `application_name`: the pre-#2948 shape, kept so existing callers compile unchanged.
     public DatabaseConnectorConfig(Option<String> name,
@@ -92,6 +126,7 @@ public record DatabaseConnectorConfig(Option<String> name,
              + ", r2dbcUrl=" + sanitizeUrl(r2dbcUrl)
              + ", asyncUrl=" + sanitizeUrl(asyncUrl)
              + ", applicationName=" + applicationName
+             + ", poolScope=" + poolScope
              + "]";
     }
 
@@ -183,6 +218,38 @@ public record DatabaseConnectorConfig(Option<String> name,
                                                                           Option<String> r2dbcUrl,
                                                                           Option<String> asyncUrl,
                                                                           Option<String> applicationName) {
+        return databaseConnectorConfig(name,
+                                       type,
+                                       host,
+                                       port,
+                                       database,
+                                       username,
+                                       password,
+                                       poolConfig,
+                                       properties,
+                                       jdbcUrl,
+                                       r2dbcUrl,
+                                       asyncUrl,
+                                       applicationName,
+                                       none());
+    }
+
+    /// The full shape, and the one the section binder calls (it matches the record's components): `pool_scope` absent
+    /// means [PoolScope#NODE] (#2973).
+    public static Result<DatabaseConnectorConfig> databaseConnectorConfig(Option<String> name,
+                                                                          Option<DatabaseType> type,
+                                                                          Option<String> host,
+                                                                          Option<Integer> port,
+                                                                          Option<String> database,
+                                                                          Option<String> username,
+                                                                          Option<String> password,
+                                                                          PoolConfig poolConfig,
+                                                                          Map<String, String> properties,
+                                                                          Option<String> jdbcUrl,
+                                                                          Option<String> r2dbcUrl,
+                                                                          Option<String> asyncUrl,
+                                                                          Option<String> applicationName,
+                                                                          Option<PoolScope> poolScope) {
         return validateConfig(type, host, database, jdbcUrl, r2dbcUrl, asyncUrl).flatMap(_ -> ensureApplicationName(applicationName))
                              .map(_ -> new DatabaseConnectorConfig(name,
                                                                    type,
@@ -196,7 +263,8 @@ public record DatabaseConnectorConfig(Option<String> name,
                                                                    jdbcUrl,
                                                                    r2dbcUrl,
                                                                    asyncUrl,
-                                                                   applicationName));
+                                                                   applicationName,
+                                                                   poolScope));
     }
 
     /// An absent name is valid (the connector derives one); a present one must be non-blank, free of NUL (the startup
@@ -581,6 +649,7 @@ public record DatabaseConnectorConfig(Option<String> name,
         private Option<String> r2dbcUrl = none();
         private Option<String> asyncUrl = none();
         private Option<String> applicationName = none();
+        private Option<PoolScope> poolScope = none();
 
         private Builder() {}
 
@@ -662,6 +731,12 @@ public record DatabaseConnectorConfig(Option<String> name,
             return this;
         }
 
+        public Builder withPoolScope(PoolScope value) {
+            this.poolScope = option(value);
+
+            return this;
+        }
+
         public Result<DatabaseConnectorConfig> build() {
             return databaseConnectorConfig(name,
                                            type,
@@ -675,7 +750,8 @@ public record DatabaseConnectorConfig(Option<String> name,
                                            jdbcUrl,
                                            r2dbcUrl,
                                            asyncUrl,
-                                           applicationName);
+                                           applicationName,
+                                           poolScope);
         }
     }
 }

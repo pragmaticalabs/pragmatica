@@ -10,12 +10,15 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
+import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.PoolConfig;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.postgres.SqlError;
 import org.pragmatica.postgres.net.Connectible;
 import org.pragmatica.postgres.net.Connection;
 import org.pragmatica.postgres.net.netty.NettyConnectibleBuilder;
@@ -76,6 +79,18 @@ final class PgPoolSettings {
         return value.length() <= DatabaseConnectorConfig.MAX_APPLICATION_NAME_BYTES
                ? value
                : value.substring(0, DatabaseConnectorConfig.MAX_APPLICATION_NAME_BYTES);
+    }
+
+    /// The demand guard's view of a pg-async probe failure (#2973 D6.3): the driver reports a server refusal as its own
+    /// `SqlError.ServerError` (SQLSTATE `53300` arrives as `ServerErrorInsufficientResources`), which the guard in the
+    /// resource API cannot see. It is re-typed as a [DatabaseConnectorError.ConnectionFailed] carrying the server's
+    /// SQLSTATE; every other failure passes unchanged.
+    static Cause typedProbeFailure(Cause cause) {
+        return cause instanceof SqlError.ServerError error
+               ? DatabaseConnectorError.connectionFailed(error.message(),
+                                                         Option.none(),
+                                                         Option.some(error.response().code()))
+               : cause;
     }
 
     /// A built connector together with the pool that serves it, so provisioning can warm the pool before handing the

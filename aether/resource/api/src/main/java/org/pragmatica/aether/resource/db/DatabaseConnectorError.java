@@ -261,6 +261,16 @@ public sealed interface DatabaseConnectorError extends Cause {
         }
     }
 
+    /// A slice called a shared datasource handle after releasing it with `stop()` or `close()` (#2973). The handle never
+    /// reaches the pool again; the pool itself stays open for the slices still holding it.
+    enum HandleReleased implements DatabaseConnectorError {
+        INSTANCE;
+        @Override
+        public String message() {
+            return "This datasource handle was released (stop() or close()); it no longer reaches the shared pool";
+        }
+    }
+
     record DatabaseFailure(Throwable cause) implements DatabaseConnectorError {
         public static Result<DatabaseFailure> databaseFailure(Throwable cause) {
             return success(new DatabaseFailure(cause));

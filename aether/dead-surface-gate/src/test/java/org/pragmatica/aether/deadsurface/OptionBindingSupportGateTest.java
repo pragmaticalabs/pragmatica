@@ -105,6 +105,7 @@ class OptionBindingSupportGateTest {
                                                                          "DatabaseConnectorConfig.jdbcUrl : org.pragmatica.lang.Option<java.lang.String>",
                                                                          "DatabaseConnectorConfig.name : org.pragmatica.lang.Option<java.lang.String>",
                                                                          "DatabaseConnectorConfig.password : org.pragmatica.lang.Option<java.lang.String>",
+                                                                         "DatabaseConnectorConfig.poolScope : org.pragmatica.lang.Option<org.pragmatica.aether.resource.db.PoolScope>",
                                                                          "DatabaseConnectorConfig.port : org.pragmatica.lang.Option<java.lang.Integer>",
                                                                          "DatabaseConnectorConfig.r2dbcUrl : org.pragmatica.lang.Option<java.lang.String>",
                                                                          "DatabaseConnectorConfig.type : org.pragmatica.lang.Option<org.pragmatica.aether.resource.db.DatabaseType>",

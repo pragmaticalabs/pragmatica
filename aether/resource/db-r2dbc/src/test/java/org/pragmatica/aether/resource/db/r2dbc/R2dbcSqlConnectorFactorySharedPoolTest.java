@@ -1,0 +1,160 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
+package org.pragmatica.aether.resource.db.r2dbc;
+
+import java.io.IOException;
+import java.lang.reflect.Proxy;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
+
+import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.resource.db.r2dbc.probe.TcclProbeProvider;
+import org.pragmatica.aether.resource.ResourceFactory;
+import org.pragmatica.aether.resource.db.DatabaseConnector;
+import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
+import org.pragmatica.aether.resource.db.DatabaseType;
+import org.pragmatica.aether.resource.db.PoolConfig;
+import org.pragmatica.aether.resource.db.SqlConnector;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.resource.db.DatabaseConnectorConfig.databaseConnectorConfigBuilder;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+
+/// #2973 D2.7 and D2.8 for R2dbcSqlConnectorFactory: the view it hands a holder is not the pool, its stop() releases that holder and
+/// never stops the pool; and the pool is created under the factory's class loader, never the caller's (a node-shared pool
+/// may outlive the slice whose thread opened it, and its threads inherit the creating thread's context loader).
+class R2dbcSqlConnectorFactorySharedPoolTest {
+    private static final TimeSpan TIMEOUT = timeSpan(10).seconds();
+
+    private final R2dbcSqlConnectorFactory factory = new R2dbcSqlConnectorFactory();
+
+    @Test
+    void view_isNotThePool_stopReleases_andNeverStopsThePool() {
+        var poolStops = new AtomicInteger();
+        var releases = new AtomicInteger();
+        var pool = (SqlConnector) Proxy.newProxyInstance(SqlConnector.class.getClassLoader(),
+                                                   new Class<?>[]{SqlConnector.class},
+                                                   (_, method, _) -> answer(method.getName(), poolStops));
+        var view = factory.view(pool, () -> counted(releases));
+
+        assertThat(view).isNotSameAs(pool);
+
+        view.stop().await(TIMEOUT);
+        view.stop().await(TIMEOUT);
+
+        assertThat(releases.get()).as("the first stop() released this holder, once").isEqualTo(1);
+        assertThat(poolStops.get()).as("the pool's own stop() is never called by a view").isZero();
+    }
+
+    private static Object answer(String method, AtomicInteger poolStops) {
+        if (Set.of("stop", "close").contains(method)) {
+            poolStops.incrementAndGet();
+        }
+
+        return Promise.unitPromise();
+    }
+
+    private static Promise<Unit> counted(AtomicInteger releases) {
+        releases.incrementAndGet();
+
+        return Promise.unitPromise();
+    }
+
+    /// Defines the classes of the factory's own package afresh, so the factory's class loader is not the loader the
+    /// node's other threads (the Promise executor among them) already run under. Without that the loader switch is
+    /// unobservable: the factory's loader and the default context loader are one and the same.
+    private static final class OwnerLoader extends ClassLoader {
+        private static final String OWN_PACKAGE = R2dbcSqlConnectorFactory.class.getPackageName() + ".";
+
+        private OwnerLoader() {
+            super("factory-owner", R2dbcSqlConnectorFactory.class.getClassLoader());
+        }
+
+        @Override
+        protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+            synchronized (getClassLoadingLock(name)) {
+                return isOwnPackage(name)
+                       ? ownClass(name)
+                       : super.loadClass(name, resolve);
+            }
+        }
+
+        private static boolean isOwnPackage(String name) {
+            return name.startsWith(OWN_PACKAGE) && name.indexOf('.', OWN_PACKAGE.length()) < 0;
+        }
+
+        private Class<?> ownClass(String name) throws ClassNotFoundException {
+            var loaded = findLoadedClass(name);
+
+            return loaded != null
+                   ? loaded
+                   : define(name);
+        }
+
+        private Class<?> define(String name) throws ClassNotFoundException {
+            try (var in = getParent().getResourceAsStream(name.replace('.', '/') + ".class")) {
+                if (in == null) {
+                    throw new ClassNotFoundException(name);
+                }
+
+                var bytes = in.readAllBytes();
+
+                return defineClass(name, bytes, 0, bytes.length);
+            } catch (IOException e) {
+                throw new ClassNotFoundException(name, e);
+            }
+        }
+
+        @SuppressWarnings("unchecked")
+        private ResourceFactory<? extends DatabaseConnector, DatabaseConnectorConfig> newFactory() throws Exception {
+            return (ResourceFactory<? extends DatabaseConnector, DatabaseConnectorConfig>) loadClass(R2dbcSqlConnectorFactory.class.getName())
+                .getDeclaredConstructor()
+                .newInstance();
+        }
+    }
+
+    @Test
+    void provision_createsThePoolUnderTheFactorysLoader_notTheCallers() throws Exception {
+        var owner = new OwnerLoader();
+        var factory = owner.newFactory();
+        var caller = new ClassLoader("caller-slice", null) {};
+        var thread = Thread.currentThread();
+        var previous = thread.getContextClassLoader();
+        Promise<? extends DatabaseConnector> provisioning;
+
+        TcclProbeProvider.SEEN.set(null);
+        thread.setContextClassLoader(caller);
+        try {
+            provisioning = factory.provision(probeConfig());
+        } finally {
+            thread.setContextClassLoader(previous);
+        }
+
+        // The provider records the context loader of the thread that asks it for the connection factory, which is the
+        // first thing the provisioning body does. Whether the pool then opens is not the point.
+        provisioning.await(TIMEOUT).onSuccess(pool -> pool.stop().await(TIMEOUT));
+
+        assertThat(TcclProbeProvider.SEEN.get()).as("control: the provisioning body reached the probe provider")
+                                                .isNotNull();
+        assertThat(TcclProbeProvider.SEEN.get()).as("the pool is created under the factory's loader, never the caller's")
+                                                .isSameAs(owner)
+                                                .isNotSameAs(caller);
+    }
+
+    private static DatabaseConnectorConfig probeConfig() {
+        return databaseConnectorConfigBuilder().withName("db")
+                                               .withR2dbcUrl("r2dbc:" + TcclProbeProvider.DRIVER + "://h/db")
+                                               .withType(DatabaseType.H2)
+                                               .withUsername("sa")
+                                               .withPassword("")
+                                               .withPoolConfig(PoolConfig.DEFAULT)
+                                               .build()
+                                               .unwrap();
+    }
+}

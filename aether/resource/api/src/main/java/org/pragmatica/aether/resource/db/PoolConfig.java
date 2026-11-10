@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.db;
 
+import org.pragmatica.config.StrictKeys;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -13,6 +14,10 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.utils.Causes.cause;
 
 
+/// `@StrictKeys` (#2973): a key `pool_config` does not declare fails the bind. In particular `pool_scope` belongs to the
+/// datasource section, and written here it is refused rather than ignored, so a misplaced opt-out cannot silently keep
+/// the pool shared.
+@StrictKeys
 public record PoolConfig(int minConnections,
                          int maxConnections,
                          TimeSpan connectionTimeout,

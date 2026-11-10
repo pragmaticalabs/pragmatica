@@ -1,0 +1,3 @@
+### Fixed (2026-11-09 — #2975: SliceStore.unwindFailedLoad leaks resources provisioned before a failed slice load)
+- **A slice load that failed after provisioning resources leaked them.** Datasource pools, connectors and subscribers a slice had provisioned before its load failed were never released, so repeated failed deploys or reloads accumulated open pools and database sessions.
+- The failed-load unwind now releases every resource provisioned under the slice's scope, through the same release a normal unload makes, and only when that load registered the slice. [mechanism: `SliceStore.unwindFailedLoad` calls the resource facade's `releaseAll(<artifact>)`; pinned by `SliceStoreConfigWatchLifecycleTest` (unit level, not a live-path test)]

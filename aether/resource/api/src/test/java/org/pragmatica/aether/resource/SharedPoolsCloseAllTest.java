@@ -1,0 +1,294 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
+package org.pragmatica.aether.resource;
+
+import java.lang.reflect.Field;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiFunction;
+
+import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.resource.SharedPoolFixtures.FakeConnector;
+import org.pragmatica.aether.resource.SharedPoolFixtures.FakeShareableFactory;
+import org.pragmatica.aether.resource.SpiResourceProvider.Provisioned;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.resource.SharedPoolFixtures.TIMEOUT;
+
+/// Node stop reports done only when every pool is closed: the drain follows key presence rather than the map's count,
+/// and it also carries the closes a release started before the drain.
+class SharedPoolsCloseAllTest {
+    /// `isEmpty()` lies once, as the map's striped count can while another key's insert and remove race: it says empty
+    /// although a key is present.
+    private static final class LyingMap extends ConcurrentHashMap<Object, Object> {
+        private final AtomicBoolean lied = new AtomicBoolean();
+
+        @Override
+        public boolean isEmpty() {
+            return lied.compareAndSet(false, true) || super.isEmpty();
+        }
+    }
+
+    /// Parks the thread named in `parked` right after its `compute` returned: the entry is gone from the map and the thread
+    /// has not yet reached its close.
+    private static final class ParkingMap extends ConcurrentHashMap<Object, Object> {
+        private volatile Thread parked;
+        private volatile int parkAt = 1;
+        private volatile Runnable afterFirst = () -> {};
+        private final AtomicInteger parkedCalls = new AtomicInteger();
+        private final CountDownLatch removed = new CountDownLatch(1);
+        private final CountDownLatch go = new CountDownLatch(1);
+
+        @Override
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        public Object compute(Object key, BiFunction f) {
+            var result = super.compute(key, f);
+
+            if (Thread.currentThread() == parked) {
+                parkedOnCall(parkedCalls.incrementAndGet());
+            }
+
+            return result;
+        }
+
+        private void parkedOnCall(int call) {
+            if (call == 1) {
+                afterFirst.run();
+            }
+
+            if (call == parkAt) {
+                removed.countDown();
+                await(go);
+            }
+        }
+
+        private static void await(CountDownLatch latch) {
+            try {
+                latch.await(20, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    private final FakeShareableFactory factory = new FakeShareableFactory();
+    private final AtomicInteger closes = new AtomicInteger();
+    private final Promise<Unit> deferred = Promise.promise();
+
+    private Promise<Unit> closePool(Provisioned<?> provisioned) {
+        closes.incrementAndGet();
+        ((FakeConnector) provisioned.resource()).underlying().close();
+
+        return Promise.unitPromise();
+    }
+
+    private Promise<Unit> deferClose(Provisioned<?> provisioned) {
+        closes.incrementAndGet();
+
+        return deferred;
+    }
+
+    private Promise<Provisioned<?>> provision() {
+        return Promise.<Provisioned<?>> success(Provisioned.provisioned((FakeConnector) factory.newPool(), factory));
+    }
+
+    private Promise<FakeConnector> acquire(SharedPools pools, String scope) {
+        return pools.acquire("k", scope, factory, this::provision, "label");
+    }
+
+    @Test
+    void closeAll_whenIsEmptyLiesOnce_stillClosesTheHeldPool() throws Exception {
+        var pools = SharedPools.sharedPools(this::closePool);
+        var entries = SharedPools.class.getDeclaredField("entries");
+
+        acquire(pools, "slice-a").await(TIMEOUT);
+        entries.setAccessible(true);
+        var held = new LyingMap();
+
+        held.putAll((ConcurrentHashMap<?, ?>) entries.get(pools));
+        entries.set(pools, held);
+        pools.closeAll();
+
+        assertThat(closes.get()).as("the held pool must be closed although isEmpty() lied").isEqualTo(1);
+        assertThat(pools.size()).isZero();
+    }
+
+    @Test
+    void releaseScope_whenIsEmptyLiesOnce_stillReleasesTheScopesPool() throws Exception {
+        var pools = SharedPools.sharedPools(this::closePool);
+        var entries = SharedPools.class.getDeclaredField("entries");
+
+        acquire(pools, "slice-a").await(TIMEOUT);
+        entries.setAccessible(true);
+        var held = new LyingMap();
+
+        held.putAll((ConcurrentHashMap<?, ?>) entries.get(pools));
+        entries.set(pools, held);
+        pools.releaseScope("slice-a");
+
+        assertThat(closes.get()).as("the scope's pool must be released although isEmpty() lied").isEqualTo(1);
+        assertThat(pools.size()).isZero();
+    }
+
+    @Test
+    void closeAll_includesAReleaseCloseStillPending() {
+        var pools = SharedPools.sharedPools(this::deferClose);
+
+        acquire(pools, "slice-a").await(TIMEOUT);
+        pools.release("k", "slice-a");
+
+        var reported = pools.closeAll();
+
+        assertThat(reported).as("the release's close is pending, so node stop must carry it").isNotEmpty();
+        assertThat(reported).allSatisfy(pending -> assertThat(pending.isResolved()).isFalse());
+        deferred.succeed(Unit.unit());
+        assertThat(reported).allSatisfy(pending -> assertThat(pending.await(TIMEOUT).isSuccess()).isTrue());
+    }
+
+    /// A release has removed the last holder's entry but not yet started the close: `closeAll` running in that window
+    /// must still report the release, because node stop is not done until that pool is closed.
+    @Test
+    void closeAll_whenReleaseRemovedTheEntryButNotYetClosed_reportsTheClose() throws Exception {
+        var pools = SharedPools.sharedPools(this::closePool);
+        var entries = SharedPools.class.getDeclaredField("entries");
+
+        acquire(pools, "slice-a").await(TIMEOUT);
+        entries.setAccessible(true);
+        var parking = new ParkingMap();
+
+        parking.putAll((ConcurrentHashMap<?, ?>) entries.get(pools));
+        entries.set(pools, parking);
+        var releaser = new Thread(() -> pools.release("k", "slice-a"));
+
+        parking.parked = releaser;
+        releaser.start();
+        assertThat(parking.removed.await(10, TimeUnit.SECONDS)).isTrue();
+        var reported = pools.closeAll();
+
+        parking.go.countDown();
+        releaser.join(10_000);
+
+        assertThat(reported).as("closeAll returned with the release's pool neither reported nor started").isNotEmpty();
+        assertThat(closes.get()).as("the pool is closed once, by the release").isEqualTo(1);
+    }
+
+    /// A joiner that saw the node-stop flag drains the entry its creator opened and is the only closer; it has removed the
+    /// entry but not yet closed the pool. `closeAll` running in that window must still report the joiner's close.
+    @Test
+    void closeAll_whenRefusedJoinerRemovedTheEntryButNotYetClosed_reportsTheClose() throws Exception {
+        var pools = SharedPools.sharedPools(this::closePool);
+        var entries = SharedPools.class.getDeclaredField("entries");
+        var flag = SharedPools.class.getDeclaredField("closed");
+
+        acquire(pools, "slice-a").await(TIMEOUT);
+        entries.setAccessible(true);
+        flag.setAccessible(true);
+        var parking = new ParkingMap();
+
+        parking.putAll((ConcurrentHashMap<?, ?>) entries.get(pools));
+        entries.set(pools, parking);
+        parking.parkAt = 2;
+        parking.afterFirst = () -> raise(pools, flag);
+        var joiner = new Thread(() -> acquire(pools, "slice-b").await(TIMEOUT));
+
+        parking.parked = joiner;
+        joiner.start();
+        assertThat(parking.removed.await(10, TimeUnit.SECONDS)).isTrue();
+        var reported = pools.closeAll();
+
+        parking.go.countDown();
+        joiner.join(10_000);
+
+        assertThat(reported).as("closeAll returned with the joiner's close neither reported nor started").isNotEmpty();
+        assertThat(closes.get()).as("the pool is closed once, by the joiner").isEqualTo(1);
+    }
+
+    /// The view-stop path (the one slices use) is parked in the gap between removing the entry and closing the pool:
+    /// `closeAll` running there must report that close, so the claim has to be registered before the removing `compute`.
+    @Test
+    void closeAll_whenViewStopRemovedTheEntryButNotYetClosed_reportsTheClose() throws Exception {
+        var pools = SharedPools.sharedPools(this::closePool);
+        var entries = SharedPools.class.getDeclaredField("entries");
+        var view = acquire(pools, "slice-a").await(TIMEOUT).unwrap();
+
+        entries.setAccessible(true);
+        var parking = new ParkingMap();
+
+        parking.putAll((ConcurrentHashMap<?, ?>) entries.get(pools));
+        entries.set(pools, parking);
+        var stopper = new Thread(view::stop);
+
+        parking.parked = stopper;
+        stopper.start();
+        assertThat(parking.removed.await(10, TimeUnit.SECONDS)).isTrue();
+        var reported = pools.closeAll();
+
+        parking.go.countDown();
+        stopper.join(10_000);
+
+        assertThat(reported).as("closeAll returned with the view stop's pool neither reported nor started").isNotEmpty();
+        assertThat(closes.get()).as("the pool is closed once, by the view stop").isEqualTo(1);
+    }
+
+    /// A release that captured nothing (a non-last holder, an absent key, a stale view stop) still holds a claim on
+    /// `closeAll`'s wait; if it were never resolved, node stop would wait on it forever.
+    @Test
+    void closeAll_afterReleasesThatCapturedNothing_reportsOnlyPromisesThatComplete() {
+        var pools = SharedPools.sharedPools(this::closePool);
+
+        acquire(pools, "slice-a").await(TIMEOUT);
+        acquire(pools, "slice-b").await(TIMEOUT);
+        pools.release("k", "slice-a");
+        pools.release("absent", "slice-a");
+        pools.releaseSlot("k", "slice-b", Promise.promise());
+
+        var reported = pools.closeAll();
+
+        assertThat(closes.get()).as("the pool still held by slice-b is closed once, by the drain").isEqualTo(1);
+        assertThat(reported).allSatisfy(pending -> assertThat(pending.await(TIMEOUT).isSuccess()).as(
+            "a release that captured nothing must resolve its claim, or node stop hangs").isTrue());
+    }
+
+    /// A joiner that saw the node-stop flag after its admission finds its key already drained: it captures nothing,
+    /// yet its claim on `closeAll`'s wait must still resolve.
+    @Test
+    void closeAll_whenRefusedJoinerFindsItsKeyAlreadyDrained_reportsOnlyPromisesThatComplete() throws Exception {
+        var pools = SharedPools.sharedPools(this::closePool);
+        var entries = SharedPools.class.getDeclaredField("entries");
+
+        acquire(pools, "slice-a").await(TIMEOUT);
+        entries.setAccessible(true);
+        var parking = new ParkingMap();
+
+        parking.putAll((ConcurrentHashMap<?, ?>) entries.get(pools));
+        entries.set(pools, parking);
+        parking.parkAt = Integer.MAX_VALUE;
+        parking.afterFirst = pools::closeAll;
+        var joiner = new Thread(() -> acquire(pools, "slice-b").await(TIMEOUT));
+
+        parking.parked = joiner;
+        joiner.start();
+        joiner.join(10_000);
+
+        var reported = pools.closeAll();
+
+        assertThat(joiner.isAlive()).isFalse();
+        assertThat(closes.get()).as("the pool is closed once, by the drain inside the joiner's window").isEqualTo(1);
+        assertThat(reported).allSatisfy(pending -> assertThat(pending.await(TIMEOUT).isSuccess()).as(
+            "a refused joiner that captured nothing must resolve its claim, or node stop hangs").isTrue());
+    }
+
+    private static void raise(SharedPools pools, Field flag) {
+        try {
+            ((AtomicBoolean) flag.get(pools)).set(true);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+}
