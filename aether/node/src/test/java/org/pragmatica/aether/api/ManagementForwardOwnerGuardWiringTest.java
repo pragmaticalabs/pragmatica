@@ -154,6 +154,30 @@ class ManagementForwardOwnerGuardWiringTest {
         assertThat(network.sentMessages()).as("one send, no re-send: the window is the request's budget").hasSize(1);
     }
 
+    /// #2569 per-reply wiring through the PRODUCTION resender (the one `ManagementServerImpl` builds, real scheduler and clock): a second
+    /// reply refused in the same episode holds 250 ms (+-20%) before its own first re-send. One backoff shared by all replies would
+    /// make it the second hold, 500 ms (+-20%, so 400 ms at the least).
+    @Test
+    void onHttpForwardRequest_holdsASecondRefusedReplyForTheFirstHold_notAnEscalatedOne() throws InterruptedException {
+        network.refuseAll();
+        var server = server("/api/v1/no/such/route", Option.some(OTHER));
+
+        server.onHttpForwardRequest(forwardRequest("corr-first", "req-first", HEALTHY_BUDGET_MILLIS));
+        server.onHttpForwardRequest(forwardRequest("corr-second", "req-second", HEALTHY_BUDGET_MILLIS));
+        var deadline = System.nanoTime() + 5_000_000_000L;
+
+        while (network.sendNanos("req-second").size() < 2 && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+
+        var secondSends = network.sendNanos("req-second");
+
+        assertThat(secondSends).as("the second reply was refused, so it is re-sent").hasSizeGreaterThanOrEqualTo(2);
+        assertThat((secondSends.get(1) - secondSends.get(0)) / 1_000_000L)
+                .as("ms between the second reply's first send and its re-send: its own first hold (200-300), not the shared second hold (400+)")
+                .isLessThan(350L);
+    }
+
     private HttpForwardResponse soleResponse() {
         assertThat(network.sentMessages()).hasSize(1);
 
@@ -165,9 +189,13 @@ class ManagementForwardOwnerGuardWiringTest {
     }
 
     private static HttpForwardRequest forwardRequest(long remainingMillis) {
+        return forwardRequest("corr-owner-guard", "req-owner-guard", remainingMillis);
+    }
+
+    private static HttpForwardRequest forwardRequest(String correlationId, String requestId, long remainingMillis) {
         return new HttpForwardRequest(SENDER,
-                                      "corr-owner-guard",
-                                      "req-owner-guard",
+                                      correlationId,
+                                      requestId,
                                       new byte[] {1},
                                       Pipeline.MANAGEMENT,
                                       remainingMillis);
@@ -226,10 +254,23 @@ class ManagementForwardOwnerGuardWiringTest {
 
     private static final class RecordingClusterNetwork implements ClusterNetwork {
         private final List<ProtocolMessage> sentMessages = new ArrayList<>();
+        private final List<Long> sendTimes = new ArrayList<>();
         private volatile boolean refusing;
 
         void refuseAll() {
             refusing = true;
+        }
+
+        synchronized List<Long> sendNanos(String requestId) {
+            var nanos = new ArrayList<Long>();
+
+            for (var i = 0; i < sentMessages.size(); i++) {
+                if (sentMessages.get(i) instanceof HttpForwardResponse reply && reply.requestId().equals(requestId)) {
+                    nanos.add(sendTimes.get(i));
+                }
+            }
+
+            return nanos;
         }
 
         synchronized List<ProtocolMessage> sentMessages() {
@@ -246,6 +287,7 @@ class ManagementForwardOwnerGuardWiringTest {
 
         @Override public synchronized <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             sentMessages.add(message);
+            sendTimes.add(System.nanoTime());
 
             return Promise.success(refusing
                                    ? new WriteOutcome.BackpressureRefused(nodeId)
