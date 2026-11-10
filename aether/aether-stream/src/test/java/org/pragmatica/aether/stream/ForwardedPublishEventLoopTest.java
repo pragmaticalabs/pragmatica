@@ -153,7 +153,10 @@ class ForwardedPublishEventLoopTest {
     /// The post-wait work (ordered section, WAL frame write, transport send) must run on neither thread that can finish the
     /// wait: the one that resolves the name's commit lane (in production the consensus apply / KV dispatcher side, the
     /// thread #2952 freed) nor the JVM-wide single `promise-timeout-scheduler` thread. Control: the first attempt runs on
-    /// the caller thread, and the lane's resolver is read from a synchronous dependent registered on the lane itself
+    /// the caller thread, and (#2997) the loop is drained before the commit so the wait is attached while the lane is open --
+    /// without the barrier the loop itself can settle the lane (its `Put`-resolution dependent is attached after an early
+    /// commit), the loop is then both the resolver and the first attempt's thread, and the assertion would sample a
+    /// thread the product never promised. The lane's resolver is read from a synchronous dependent registered on the lane itself
     /// (synchronous dependents run inline on the resolving thread, as the wait's own continuation did before the hop).
     @Test
     void continuationThread_isNotTheLaneResolver_whenTheCommitArrivesInTime() {
@@ -162,6 +165,7 @@ class ForwardedPublishEventLoopTest {
         owner.ownerEpochSource((_, _) -> recordThread(seen));
         forwardOnTheLoop("first", LAGGING);
         node.awaitPut();
+        awaitLoopIdle();
         owner.commitLaneOf(LAGGING)
              .onPresent(lane -> lane.map(_ -> observeThread(resolver)));
         node.commit();
@@ -225,6 +229,14 @@ class ForwardedPublishEventLoopTest {
     private static Unit recordCurrent(ConcurrentLinkedQueue<Thread> seen) {
         seen.add(Thread.currentThread());
         return Unit.unit();
+    }
+
+    private void awaitLoopIdle() {
+        try {
+            loop.submit(() -> {}).get(BOUNDED_MS, TimeUnit.MILLISECONDS);
+        } catch (Exception e) {
+            fail("the event loop never drained: " + e);
+        }
     }
 
     private static Unit observeThread(AtomicReference<Thread> resolver) {
