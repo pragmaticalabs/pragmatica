@@ -13,6 +13,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BiFunction;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
@@ -33,6 +34,7 @@ import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement.Placement;
 import org.pragmatica.aether.stream.replication.StreamPartitionOwnershipWriter;
 import org.pragmatica.aether.stream.replication.StreamPartitionOwnershipWriter.HrwOwner;
+import org.pragmatica.aether.stream.replication.StreamPartitionOwnershipWriter.IsrInputs;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
@@ -159,7 +161,7 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
                                       NodeId self,
                                       Supplier<List<NodeId>> membersSupplier,
                                       BooleanSupplier consensusActive,
-                                      Function<HrwOwner, StreamPartitionOwnershipWriter> writerFactory,
+                                      BiFunction<HrwOwner, ArcHosting, StreamPartitionOwnershipWriter> writerFactory,
                                       Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                       Executor reconcileExecutor,
                                       long settleNanos,
@@ -170,7 +172,7 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
         this.self = self;
         this.membersSupplier = membersSupplier;
         this.consensusActive = consensusActive;
-        this.writer = writerFactory.apply(this::snapshotArcOwner);
+        this.writer = writerFactory.apply(this::snapshotArcOwner, this::liveHostsOf);
         this.applier = applier;
         this.reconcileExecutor = reconcileExecutor;
         this.settleNanos = settleNanos;
@@ -212,6 +214,34 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
                                                                       Supplier<List<NodeId>> membersSupplier,
                                                                       BooleanSupplier consensusActive,
                                                                       Function<HrwOwner, StreamPartitionOwnershipWriter> writerFactory,
+                                                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                                                      Executor reconcileExecutor,
+                                                                      int settleTicks,
+                                                                      int firstMintCeilingTicks,
+                                                                      TimeSpan tickInterval,
+                                                                      LongSupplier nanoClock,
+                                                                      OperatorWarningSink warningSink) {
+        return entityOwnershipReconciler(kvStore,
+                                         self,
+                                         membersSupplier,
+                                         consensusActive,
+                                         (hrwOwner, _) -> writerFactory.apply(hrwOwner),
+                                         applier,
+                                         reconcileExecutor,
+                                         settleTicks,
+                                         firstMintCeilingTicks,
+                                         tickInterval,
+                                         nanoClock,
+                                         warningSink);
+    }
+
+    /// As above, and `writerFactory` also receives the [ArcHosting] view, which a writer that must not hand an arc to a
+    /// node that no longer hosts it narrows its owner-eligible members with (#2981; see [#hostingOnly]).
+    public static EntityOwnershipReconciler entityOwnershipReconciler(KVStore<AetherKey, AetherValue> kvStore,
+                                                                      NodeId self,
+                                                                      Supplier<List<NodeId>> membersSupplier,
+                                                                      BooleanSupplier consensusActive,
+                                                                      BiFunction<HrwOwner, ArcHosting, StreamPartitionOwnershipWriter> writerFactory,
                                                                       Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                                                       Executor reconcileExecutor,
                                                                       int settleTicks,
@@ -504,6 +534,60 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
         return Option.option(previous)
                      .map(state -> state.observe(now, clock, settleNanos, ceilingNanos))
                      .or(() -> Settling.first(now, clock, settleNanos, ceilingNanos));
+    }
+
+    /// The live members of an entity arc narrowed to the keyspace's committed hosts (#2981): what an ownership writer reads
+    /// as "may OWN this arc" (ISR membership and the fenced set keep the unnarrowed live view). An owner that is a live member but no longer hosts the slice must not count as live, or the
+    /// arc is stranded on a node that cannot serve it (a planned move is allowed only to a live ISR member, so HRW's choice
+    /// outside the ISR waits behind it). When no committed host is live there is no host to fail over to and the reconciler
+    /// leaves the record as it stands (see [#arcOwner]); the view then stays the unnarrowed members, so that case does not
+    /// turn into a committed failover refusal. A name that is not an entity arc, or a keyspace with no committed
+    /// registration yet (the first tick, before the scan), is likewise left unnarrowed.
+    @FunctionalInterface
+    public interface ArcHosting {
+        List<NodeId> liveHosts(String arcName, List<NodeId> live);
+    }
+
+    private List<NodeId> liveHostsOf(String arcName, List<NodeId> live) {
+        return liveHosting(committedKeyspaces, arcName, live);
+    }
+
+    static List<NodeId> liveHosting(Map<String, HostedKeyspace> committed, String arcName, List<NodeId> live) {
+        var hosting = EntityPartitionArc.keyspaceOf(arcName)
+                                        .flatMap(keyspace -> Option.option(committed.get(keyspace)))
+                                        .map(hosted -> live.stream()
+                                                           .filter(hosted.hosts()::contains)
+                                                           .toList())
+                                        .filter(hosts -> !hosts.isEmpty());
+
+        return hosting.or(live);
+    }
+
+    /// `base` with each arc's owner-eligible members narrowed by `hosting`: the entity writer's view (#2981). The initial ISR
+    /// and the ISR's live view are untouched; only the ownership read per arc changes, so stream writers sharing `base` are
+    /// unaffected.
+    public static IsrInputs hostingOnly(IsrInputs base, ArcHosting hosting) {
+        return new IsrInputs() {
+            @Override
+            public List<NodeId> liveMembers() {
+                return base.liveMembers();
+            }
+
+            @Override
+            public List<NodeId> liveMembers(String stream, int partition) {
+                return base.liveMembers(stream, partition);
+            }
+
+            @Override
+            public List<NodeId> hostingMembers(String stream, int partition) {
+                return hosting.liveHosts(stream, base.liveMembers(stream, partition));
+            }
+
+            @Override
+            public List<NodeId> initialIsr(String stream, int partition, NodeId owner) {
+                return base.initialIsr(stream, partition, owner);
+            }
+        };
     }
 
     /// The HRW owner of `(entity:<keyspace>, partition)` over the keyspace's HOSTING set — the nodes
