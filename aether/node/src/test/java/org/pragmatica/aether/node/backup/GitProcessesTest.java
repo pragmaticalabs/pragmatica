@@ -7,11 +7,15 @@ package org.pragmatica.aether.node.backup;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.lang.reflect.Proxy;
 import java.time.Instant;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -19,6 +23,7 @@ import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -84,13 +89,14 @@ class GitProcessesTest {
         assertThat(System.nanoTime() - started).as("the kill ended at its bound").isLessThan(20_000_000_000L);
     }
 
-    /// An interrupt that lands while the kill waits for a death is not swallowed: the caller's thread still carries it, and the wait reports what it saw.
+    /// An interrupt that is set when the death wait starts does not cut the wait short: the wait runs to its bound, reports the live member, and the
+    /// caller's thread still carries the interrupt.
     @Test
     void awaitDead_keepsTheInterrupt_andReportsTheLiveMember() {
         var handle = undyingHandle(Stream::empty);
 
         Thread.currentThread().interrupt();
-        var dead = GitProcesses.awaitDead(Set.of(handle), System.nanoTime() + 20_000_000_000L);
+        var dead = GitProcesses.awaitDead(Set.of(handle), System.nanoTime() + 300_000_000L);
         var stillInterrupted = Thread.interrupted();
 
         assertThat(dead).as("a member that is alive is not dead").isFalse();
@@ -178,6 +184,114 @@ class GitProcessesTest {
         processes.finished(root);
 
         assertThat(processes.close()).isEmpty();
+    }
+
+    /// A member that joins a root's tree only after the freeze's last read (a fork that completed in the kernel after the read) is killed too: the
+    /// roots' trees are read once more before the roots are killed (#2979, fork-window mechanism). The root reports no child on its first read and a
+    /// child on every later one.
+    @Test
+    @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void kill_killsAMemberThatJoinsAfterTheFreezesLastRead() {
+        var reads = new AtomicInteger();
+        var late = mortalHandle(0);
+        var root = mortalHandle(0, () -> reads.incrementAndGet() == 1 ? Stream.<ProcessHandle>empty() : Stream.of(late));
+
+        assertThat(GitProcesses.kill(List.of(processOf(root)), 5_000)).as("the whole tree is dead").isTrue();
+        assertThat(late.isAlive()).as("the member found after the freeze is killed").isFalse();
+        assertThat(root.isAlive()).as("the root is killed").isFalse();
+        assertThat(reads.get()).as("the sweep read again after the freeze's last read").isGreaterThanOrEqualTo(2);
+    }
+
+    /// An interrupt that lands while the freeze helper runs does not kill the helper: the freeze completes (the helper leaves its mark), the tree is
+    /// dead, and the thread carries the interrupt afterwards (#2979, interrupt mid-kill).
+    @Test
+    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void kill_interruptedDuringTheFreezeHelper_stillCompletesTheFreeze(@TempDir Path dir) throws Exception {
+        var mark = dir.resolve("helper-finished");
+        var root = new ProcessBuilder("sleep", "30.5979").start();
+        var outcome = new CompletableFuture<List<Boolean>>();
+        var killer = new Thread(() -> outcome.complete(killAndReport(root, mark)));
+
+        killer.start();
+        Thread.sleep(200);
+        killer.interrupt();
+        var result = outcome.get(30, java.util.concurrent.TimeUnit.SECONDS);
+
+        assertThat(Files.exists(mark)).as("the freeze helper was not killed by the interrupt").isTrue();
+        assertThat(result.get(0)).as("the tree is dead and kill says so").isTrue();
+        assertThat(result.get(1)).as("the interrupt flag is restored").isTrue();
+        assertThat(root.isAlive()).isFalse();
+    }
+
+    private static List<Boolean> killAndReport(Process root, Path mark) {
+        var dead = GitProcesses.kill(List.of(root),
+                                     10_000,
+                                     List.of("sh", "-c", "sleep 0.6; touch \"$1\"; shift; kill -STOP \"$@\" 2>/dev/null", "sh", mark.toString()));
+
+        return List.of(dead, Thread.interrupted());
+    }
+
+    /// An interrupt that lands while the kill waits for a death does not make it report a member that is dying as alive: the wait goes on to the member's
+    /// exit, 400 ms after the kill, and the flag is restored.
+    @Test
+    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void kill_interruptedDuringTheDeathWait_waitsForTheDeath() throws Exception {
+        var root = mortalHandle(400);
+        var outcome = new CompletableFuture<List<Boolean>>();
+        var killer = new Thread(() -> outcome.complete(List.of(GitProcesses.kill(List.of(processOf(root)), 10_000), Thread.currentThread().isInterrupted())));
+
+        killer.start();
+        Thread.sleep(200);
+        killer.interrupt();
+        var result = outcome.get(30, java.util.concurrent.TimeUnit.SECONDS);
+
+        assertThat(result.get(0)).as("the member that exited after the interrupt is dead, and kill says so").isTrue();
+        assertThat(result.get(1)).as("the interrupt flag is restored").isTrue();
+    }
+
+    /// A handle that dies `exitDelayMillis` after `destroyForcibly`: alive until then, `onExit` completes then. Descendants come from `descendants`.
+    private static ProcessHandle mortalHandle(long exitDelayMillis) {
+        return mortalHandle(exitDelayMillis, Stream::empty);
+    }
+
+    private static ProcessHandle mortalHandle(long exitDelayMillis, Supplier<Stream<ProcessHandle>> descendants) {
+        var exited = new AtomicBoolean();
+        var exit = new CompletableFuture<ProcessHandle>();
+        var self = new ProcessHandle[1];
+
+        self[0] = (ProcessHandle) Proxy.newProxyInstance(GitProcessesTest.class.getClassLoader(),
+                                                         new Class<?>[]{ProcessHandle.class},
+                                                         (proxy, method, args) -> switch (method.getName()) {
+                                                             case "pid" -> 2_000_000_001L;
+                                                             case "isAlive" -> !exited.get();
+                                                             case "destroyForcibly", "destroy" -> destroy(exited, exit, self[0], exitDelayMillis);
+                                                             case "onExit" -> exit;
+                                                             case "descendants" -> descendants.get();
+                                                             case "children" -> Stream.empty();
+                                                             case "info" -> infoStartedAt(Option.none());
+                                                             case "hashCode" -> System.identityHashCode(proxy);
+                                                             case "equals" -> proxy == args[0];
+                                                             default -> null;
+                                                         });
+        return self[0];
+    }
+
+    private static boolean destroy(AtomicBoolean exited, CompletableFuture<ProcessHandle> exit, ProcessHandle self, long delayMillis) {
+        CompletableFuture.runAsync(() -> {
+            sleepFor(delayMillis);
+            exited.set(true);
+            exit.complete(self);
+        });
+
+        return true;
+    }
+
+    private static void sleepFor(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private static long processesWith(String marker) {
