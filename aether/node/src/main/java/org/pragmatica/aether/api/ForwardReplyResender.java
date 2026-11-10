@@ -6,6 +6,7 @@ package org.pragmatica.aether.api;
 
 import java.util.function.BiConsumer;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
 import org.pragmatica.aether.stream.forward.RefusalBackoff;
@@ -13,6 +14,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 
@@ -31,9 +33,10 @@ import org.slf4j.LoggerFactory;
 /// - written on the first send ([WriteOutcome.Sent]): sent once, nothing more (the transport reports a local outcome, so a frame
 ///   lost after that is still the requester's to time out);
 /// - refused ([WriteOutcome.BackpressureRefused], [WriteOutcome.NoPeerState], [WriteOutcome.ConnectionDead]): the same frame
-///   is sent again after a hold of 250 ms doubling to a 4 s cap, +-20% jitter, reset by a `Sent` -- the shape ruled for
-///   #2574 (know 89e17399a9), the [RefusalBackoff] itself, held per peer so that every reply to one congested peer paces
-///   together;
+///   is sent again after a hold of 250 ms doubling to a 4 s cap, +-20% jitter -- the shape ruled for #2574
+///   (know 89e17399a9), the [RefusalBackoff] itself. The schedule is PER REPLY: each reply owns its backoff, which starts at
+///   the first hold and is dropped with the reply (that is its reset on a `Sent`). A burst of replies refused in one episode
+///   therefore all re-send after the first hold, instead of escalating one shared backoff past the requesters' windows;
 /// - [WriteOutcome.EncodeFailed]: never re-sent (it cannot succeed), one WARN;
 /// - the requester's budget cannot cover the next hold: not re-sent, one WARN. Past the budget the requester has completed
 ///   or timed out, so no correlation waits for the reply.
@@ -46,41 +49,47 @@ final class ForwardReplyResender {
 
     private final BiConsumer<Runnable, TimeSpan> scheduler;
     private final LongSupplier nanoClock;
-    private final RefusalBackoff<NodeId> holds;
+    private final Supplier<RefusalBackoff<Unit>> backoffs;
 
     private ForwardReplyResender(BiConsumer<Runnable, TimeSpan> scheduler,
                                  LongSupplier nanoClock,
-                                 RefusalBackoff<NodeId> holds) {
+                                 Supplier<RefusalBackoff<Unit>> backoffs) {
         this.scheduler = scheduler;
         this.nanoClock = nanoClock;
-        this.holds = holds;
+        this.backoffs = backoffs;
     }
 
     /// The production resender: shared scheduler, system nano clock, jittered backoff.
     static ForwardReplyResender forwardReplyResender() {
         return forwardReplyResender(ForwardReplyResender::scheduleShared,
                                     System::nanoTime,
-                                    RefusalBackoff.refusalBackoff());
+                                    RefusalBackoff::refusalBackoff);
     }
 
     static ForwardReplyResender forwardReplyResender(BiConsumer<Runnable, TimeSpan> scheduler,
                                                      LongSupplier nanoClock,
-                                                     RefusalBackoff<NodeId> holds) {
-        return new ForwardReplyResender(scheduler, nanoClock, holds);
+                                                     Supplier<RefusalBackoff<Unit>> backoffs) {
+        return new ForwardReplyResender(scheduler, nanoClock, backoffs);
     }
 
     /// Sends `reply` to `target` through `network`; `budget` is the requester's remaining wait, which bounds every re-send.
+    /// The reply gets its own backoff.
     @Contract
     void deliver(ClusterNetwork network, NodeId target, HttpForwardResponse reply, TimeSpan budget) {
         write(network,
               target,
               reply,
+              backoffs.get(),
               nanoClock.getAsLong() + budget.nanos());
     }
 
     @Contract
-    private void write(ClusterNetwork network, NodeId target, HttpForwardResponse reply, long deadlineNanos) {
-        network.send(target, reply).onSuccess(outcome -> settle(network, target, reply, outcome, deadlineNanos));
+    private void write(ClusterNetwork network,
+                       NodeId target,
+                       HttpForwardResponse reply,
+                       RefusalBackoff<Unit> holds,
+                       long deadlineNanos) {
+        network.send(target, reply).onSuccess(outcome -> settle(network, target, reply, outcome, holds, deadlineNanos));
     }
 
     @Contract
@@ -88,14 +97,16 @@ final class ForwardReplyResender {
                         NodeId target,
                         HttpForwardResponse reply,
                         WriteOutcome outcome,
+                        RefusalBackoff<Unit> holds,
                         long deadlineNanos) {
         switch (outcome) {
-            case WriteOutcome.Sent _ -> holds.sent(target);
+            case WriteOutcome.Sent _ -> {}
             case WriteOutcome.EncodeFailed _ -> giveUp(target, reply, outcome, "cannot be encoded");
             case WriteOutcome.BackpressureRefused _, WriteOutcome.NoPeerState _, WriteOutcome.ConnectionDead _ -> holdThenResend(network,
                                                                                                                                  target,
                                                                                                                                  reply,
                                                                                                                                  outcome,
+                                                                                                                                 holds,
                                                                                                                                  deadlineNanos);
         }
     }
@@ -105,8 +116,9 @@ final class ForwardReplyResender {
                                 NodeId target,
                                 HttpForwardResponse reply,
                                 WriteOutcome outcome,
+                                RefusalBackoff<Unit> holds,
                                 long deadlineNanos) {
-        var hold = holds.refused(target);
+        var hold = holds.refused(Unit.unit());
 
         if (hold.nanos() >= deadlineNanos - nanoClock.getAsLong()) {
             giveUp(target,
@@ -117,7 +129,7 @@ final class ForwardReplyResender {
             return;
         }
 
-        scheduler.accept(() -> write(network, target, reply, deadlineNanos), hold);
+        scheduler.accept(() -> write(network, target, reply, holds, deadlineNanos), hold);
     }
 
     @Contract
