@@ -95,11 +95,13 @@ final class SharedPools {
     /// sink's monitor, taken inside any bin lock the region already holds (bin, then sink: the only order), so the
     /// recorded sequence is a linearization of the regions. Event names are the spec's action names.
     interface TraceSink {
-        void event(Object... event);
+        Unit event(Object... event);
     }
 
-    void traceTo(TraceSink sink) {
+    Unit traceTo(TraceSink sink) {
         this.trace = sink;
+
+        return Unit.unit();
     }
 
     private <R> R region(Fn0<R> body, Fn1<Object[], R> event) {

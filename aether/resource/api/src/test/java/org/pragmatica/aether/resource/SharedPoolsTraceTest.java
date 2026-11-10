@@ -21,6 +21,7 @@ import org.pragmatica.aether.resource.SharedPoolFixtures.FakeConnector;
 import org.pragmatica.aether.resource.SharedPoolFixtures.FakeShareableFactory;
 import org.pragmatica.aether.resource.SpiResourceProvider.Provisioned;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -37,9 +38,9 @@ class SharedPoolsTraceTest {
         private final Map<Object, Integer> pools = new IdentityHashMap<>();
 
         @Override
-        public void event(Object... event) {
+        public Unit event(Object... event) {
             if (event.length == 0) {
-                return;
+                return Unit.unit();
             }
             var action = (String) event[0];
             var line = new StringBuilder(action);
@@ -48,6 +49,7 @@ class SharedPoolsTraceTest {
                 line.append(' ').append(name(action, i, event[i]));
             }
             lines.add(line.toString().strip());
+            return Unit.unit();
         }
 
         private String name(String action, int position, Object value) {
