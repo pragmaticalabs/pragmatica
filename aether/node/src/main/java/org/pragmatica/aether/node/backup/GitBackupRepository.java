@@ -379,12 +379,13 @@ public record GitBackupRepository(Path dir,
     }
 
     /// The wait ended in an interruption (the stop's deadline): kill git and whatever it started, and leave the interrupt visible to the caller. The
-    /// tree is frozen before it is killed ([GitProcesses#kill]), so git cannot fork its hook between the decision and the kill (#2924). On a
-    /// local remote the server side is among the children, so nothing in flight lands afterwards. Over a network a push the server has already received
-    /// can still land; that is harmless, a fast-forward of the node's own decided state. What is guaranteed is that no git of ours outlives the stop.
+    /// tree is frozen before it is killed ([GitProcesses#kill]), so git cannot fork its hook between the decision and the kill (#2924). A tree that is
+    /// not dead within the command bound stays in flight ([GitProcesses#killOrKeep]), as a timed-out one does, so the stop's close hands it over again
+    /// instead of the registry forgetting it. On a local remote the server side is among the children, so nothing in flight lands afterwards. Over a
+    /// network a push the server has already received can still land; that is harmless, a fast-forward of the node's own decided state.
     @Contract
     private void abandon(Process process) {
-        GitProcesses.kill(List.of(process), timeout.millis());
+        processes.killOrKeep(process, timeout.millis());
         Thread.currentThread().interrupt();
     }
 

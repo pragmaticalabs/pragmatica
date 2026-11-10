@@ -6,6 +6,7 @@ package org.pragmatica.aether.node.backup;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -97,7 +98,7 @@ class KvBackupStopOrderTest {
         var inClock = new CountDownLatch(1);
         var worker = new AtomicReference<Thread>();
         var processes = new ReleasingOnClose(released, worker);
-        var repository = new GitBackupRepository(temp.resolve("local"), Option.none(), "backup", TimeSpan.timeSpan(30).seconds(), java.util.Map.of(), processes);
+        var repository = new GitBackupRepository(temp.resolve("local"), Option.none(), "backup", TimeSpan.timeSpan(30).seconds(), Map.of(), processes);
         var warnings = new CopyOnWriteArrayList<BackupWarning>();
         var tasks = new CopyOnWriteArrayList<Runnable>();
         var store = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), NODE_CODEC, NODE_CODEC);
@@ -122,6 +123,31 @@ class KvBackupStopOrderTest {
 
         assertThat(processes.refused.get()).as("control: the held flush reached git and was refused by the closed repository").isGreaterThanOrEqualTo(1);
         assertThat(warnings).extracting(BackupWarning::code).as("the stop's own refusal is not a failing repository").doesNotContain(Code.BACKUP_COMMIT_FAILED);
+    }
+
+    /// The stop releases the worker exactly once and ends the leadership, so no later leader-gated flush is scheduled (v-2979b ks03, ks05).
+    @Test
+    void stop_releasesTheWorkerOnce_andEndsTheLeadership() {
+        var releases = new AtomicInteger();
+        var repository = new GitBackupRepository(temp.resolve("local"), Option.none(), "backup", TimeSpan.timeSpan(30).seconds(), Map.of(), new GitProcesses());
+        var tasks = new CopyOnWriteArrayList<Runnable>();
+        var store = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), NODE_CODEC, NODE_CODEC);
+        var service = KvBackupService.kvBackupService(store,
+                                                      CODEC,
+                                                      repository,
+                                                      (task, delay) -> tasks.add(task),
+                                                      () -> 0L,
+                                                      _ -> {},
+                                                      KvBackupService.Timing.timing(500, 5_000, 1_000, 8_000, 3_000),
+                                                      releases::incrementAndGet);
+
+        service.onLeaderChange(LeaderNotification.leaderChange(Option.some(NodeId.nodeId("node-1").unwrap()), true));
+        assertThat(service.isLeader()).as("control: the service leads before the stop").isTrue();
+
+        service.stop();
+
+        assertThat(releases.get()).as("the stop released the worker once").isOne();
+        assertThat(service.isLeader()).as("the stop ended the leadership").isFalse();
     }
 
     /// A clock that holds the worker's read of the time until released, then reports a time far past any due time.

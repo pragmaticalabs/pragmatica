@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.backup;
 
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -11,11 +12,16 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.lang.reflect.Proxy;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -26,11 +32,14 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /// The process registry behind the stop (#2924): nothing starts once closed, and a kill ends the whole tree, including children forked while the kill
 /// was being decided.
 class GitProcessesTest {
-    private static final String MARK = "7.7137";
+    /// The fraction of every `sleep` this test starts and then counts: unique to the test, so a process left over by another run (or by another test) is
+    /// never counted as this test's.
+    private final String mark = uniqueMark(7);
 
     @Test
     void start_isRefused_afterClose() throws IOException {
@@ -109,7 +118,7 @@ class GitProcessesTest {
     @Timeout(value = 120, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
     void kill_underASetInterrupt_reportsTheTruth_andKeepsTheFlag() throws Exception {
         for (var round = 0; round < 20; round++) {
-            var root = new ProcessBuilder("sh", "-c", "sleep 31.2979 & sleep 31.2979 & wait").start();
+            var root = new ProcessBuilder("sh", "-c", "sleep " + mark + " & sleep " + mark + " & wait").start();
             var children = awaitChildren(root, 2);
 
             Thread.currentThread().interrupt();
@@ -127,16 +136,17 @@ class GitProcessesTest {
     @Test
     @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
     void kill_boundsAndEndsAFreezeHelperThatHangs() throws Exception {
-        var root = new ProcessBuilder("sleep", "30.4979").start();
+        var helperMark = uniqueMark(60);
+        var root = new ProcessBuilder("sleep", mark).start();
         var started = System.nanoTime();
 
-        GitProcesses.kill(List.of(root), 1_000, List.of("sh", "-c", "exec sleep 60.4979", "sh"));
+        GitProcesses.kill(List.of(root), 1_000, hangingHelper(helperMark));
         var elapsedMs = (System.nanoTime() - started) / 1_000_000;
         Thread.sleep(300);
 
         assertThat(elapsedMs).as("the hanging helper did not hold the kill past its 1 s bound").isLessThan(3_000L);
-        assertThat(processesWith("60.4979")).as("the hanging helper was killed").isZero();
-        assertThat(processesWith("30.4979")).as("the tree is killed although the freeze did not happen").isZero();
+        assertThat(processesWith(helperMark)).as("the hanging helper was killed").isZero();
+        assertThat(processesWith(mark)).as("the tree is killed although the freeze did not happen").isZero();
     }
 
     /// A pid that now belongs to another process is not stopped: its start time differs from the one read (v-2979, PID reuse).
@@ -178,7 +188,7 @@ class GitProcessesTest {
     @Test
     void killOrKeep_releasesATreeThatIsDead() throws IOException {
         var processes = new GitProcesses();
-        var root = processes.start(new ProcessBuilder("sleep", "30.4979")).unwrap();
+        var root = processes.start(new ProcessBuilder("sleep", mark)).unwrap();
 
         assertThat(processes.killOrKeep(root, 10_000)).isTrue();
         processes.finished(root);
@@ -217,17 +227,17 @@ class GitProcessesTest {
     @Test
     @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
     void kill_interruptedDuringTheFreezeHelper_stillCompletesTheFreeze(@TempDir Path dir) throws Exception {
-        var mark = dir.resolve("helper-finished");
-        var root = new ProcessBuilder("sleep", "30.5979").start();
+        var helperFinished = dir.resolve("helper-finished");
+        var root = new ProcessBuilder("sleep", mark).start();
         var outcome = new CompletableFuture<List<Boolean>>();
-        var killer = new Thread(() -> outcome.complete(killAndReport(root, mark)));
+        var killer = new Thread(() -> outcome.complete(killAndReport(root, helperFinished)));
 
         killer.start();
         Thread.sleep(200);
         killer.interrupt();
-        var result = outcome.get(30, java.util.concurrent.TimeUnit.SECONDS);
+        var result = outcome.get(30, TimeUnit.SECONDS);
 
-        assertThat(Files.exists(mark)).as("the freeze helper was not killed by the interrupt").isTrue();
+        assertThat(Files.exists(helperFinished)).as("the freeze helper was not killed by the interrupt").isTrue();
         assertThat(result.get(0)).as("the tree is dead and kill says so").isTrue();
         assertThat(result.get(1)).as("the interrupt flag is restored").isTrue();
         assertThat(root.isAlive()).isFalse();
@@ -253,10 +263,234 @@ class GitProcessesTest {
         killer.start();
         Thread.sleep(200);
         killer.interrupt();
-        var result = outcome.get(30, java.util.concurrent.TimeUnit.SECONDS);
+        var result = outcome.get(30, TimeUnit.SECONDS);
 
         assertThat(result.get(0)).as("the member that exited after the interrupt is dead, and kill says so").isTrue();
         assertThat(result.get(1)).as("the interrupt flag is restored").isTrue();
+    }
+
+    /// A member that is inside a fork when its `SIGSTOP` is sent completes the fork before it stops, and a kill of the member after that orphans the
+    /// child (v-2979b N1). Here every read that does not wait for the member's stop comes between the signal and the fork's end, so only a kill whose
+    /// read follows the member being seen stopped finds the child.
+    @Test
+    @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void kill_killsTheChildThatAMemberForkedBeforeItStopped() {
+        var lateFork = new LateFork();
+        var root = mortalHandle(2_000_000_010L, 0, lateFork::read, GitProcessesTest::nothing);
+
+        var dead = GitProcesses.kill(List.of(processOf(root)), 10_000, List.of("sh", "-c", ":", "sh"), lateFork::stopped);
+
+        assertThat(lateFork.forkedWhileTheMemberLived()).as("control: the member's fork completed before the member was killed").isTrue();
+        assertThat(dead).as("the whole tree is dead").isTrue();
+        assertThat(lateFork.child.isAlive()).as("the child the member forked before it stopped is killed, not orphaned").isFalse();
+    }
+
+    /// The kernel's order for a member that is inside a fork when its `SIGSTOP` is sent: the fork completes (the child joins the member's tree), then
+    /// the member stops; a child is in the root's tree only while the member that forked it lives. The fork ends right after any read that did not see
+    /// it, and on its own 200 ms after the member was found.
+    private static final class LateFork {
+        private static final long FORK_NANOS = 200_000_000L;
+        private static final long NEVER = Long.MAX_VALUE;
+
+        private final AtomicLong memberFoundAt = new AtomicLong(NEVER);
+        private final AtomicLong forkedAt = new AtomicLong(NEVER);
+        private final AtomicLong memberKilledAt = new AtomicLong(NEVER);
+        final ProcessHandle child = mortalHandle(2_000_000_012L, 0, Stream::empty, GitProcessesTest::nothing);
+        final ProcessHandle member = mortalHandle(2_000_000_011L, 0, Stream::empty, this::memberKilled);
+
+        Stream<ProcessHandle> read() {
+            var now = System.nanoTime();
+
+            if (memberFoundAt.compareAndSet(NEVER, now)) {
+                return Stream.of(member);
+            }
+            settle(now);
+            var visible = forkedAt.get() < now && memberKilledAt.get() > now;
+
+            forkedAt.compareAndSet(NEVER, now);
+
+            return visible ? Stream.of(member, child) : Stream.of(member);
+        }
+
+        boolean stopped(ProcessHandle handle) {
+            var now = System.nanoTime();
+
+            settle(now);
+
+            return handle != member || forkedAt.get() <= now;
+        }
+
+        boolean forkedWhileTheMemberLived() {
+            return forkedAt.get() < memberKilledAt.get();
+        }
+
+        private void settle(long now) {
+            var due = memberFoundAt.get() + FORK_NANOS;
+
+            if (memberFoundAt.get() != NEVER && now >= due) {
+                forkedAt.compareAndSet(NEVER, due);
+            }
+        }
+
+        private void memberKilled() {
+            memberKilledAt.compareAndSet(NEVER, System.nanoTime());
+        }
+    }
+
+    /// The production check of a stopped member reads `/proc`: a running process is not stopped, a `SIGSTOP`ped one is, a continued one is not again,
+    /// and one that is gone reads stopped (nothing is left to wait for).
+    @Test
+    @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void isStopped_readsTheStateOfTheProcessFromProc() throws Exception {
+        assumeTrue(Files.isDirectory(Path.of("/proc/self/task")), "a host with /proc");
+        var process = new ProcessBuilder("sleep", mark).start();
+        var handle = process.toHandle();
+
+        assertThat(GitProcesses.isStopped(handle)).as("a running process is not stopped").isFalse();
+        signal("-STOP", handle);
+        assertThat(eventually(() -> GitProcesses.isStopped(handle))).as("a SIGSTOPped process reads stopped").isTrue();
+        signal("-CONT", handle);
+        assertThat(eventually(() -> !GitProcesses.isStopped(handle))).as("a continued process no longer reads stopped").isTrue();
+        process.destroyForcibly().waitFor();
+        assertThat(GitProcesses.isStopped(handle)).as("a process that is gone reads stopped").isTrue();
+    }
+
+    @Test
+    void stoppedState_readsTheStateAfterTheLastParenthesis() {
+        assertThat(GitProcesses.stoppedState("42 (sh) T 1 42")).as("stopped").isTrue();
+        assertThat(GitProcesses.stoppedState("42 (sh) t 1 42")).as("stopped by a tracer").isTrue();
+        assertThat(GitProcesses.stoppedState("42 (git) Z 1 42")).as("a zombie").isTrue();
+        assertThat(GitProcesses.stoppedState("42 (a) S (b)) T 1")).as("a command name holding parentheses").isTrue();
+        assertThat(GitProcesses.stoppedState("42 (x) T) S 1")).as("a running process whose name holds a T").isFalse();
+        assertThat(GitProcesses.stoppedState("42 (git) R 1 42")).as("running").isFalse();
+        assertThat(GitProcesses.stoppedState("42 (git) D 1 42")).as("in the kernel").isFalse();
+        assertThat(GitProcesses.stoppedState("garbage")).as("no state").isFalse();
+    }
+
+    /// A freeze helper that hangs takes at most the freeze's half of the bound, so the death wait still sees a tree that dies shortly after its kill
+    /// (v-2979b N2: a hung helper took the whole bound, and a tree dead a few milliseconds later was reported alive).
+    @Test
+    @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void kill_leavesTheDeathWaitTime_whenTheFreezeHelperHangs() throws Exception {
+        var helperMark = uniqueMark(60);
+
+        var dead = GitProcesses.kill(List.of(processOf(mortalHandle(100))), 700, hangingHelper(helperMark));
+        Thread.sleep(300);
+
+        assertThat(dead).as("the tree died 100 ms after its kill, inside the bound, and kill says so").isTrue();
+        assertThat(processesWith(helperMark)).as("the hanging helper was killed").isZero();
+    }
+
+    /// Under a long bound a hanging freeze helper is given up at its five-second cap, not at the freeze's half of the bound (v-2979b gp42).
+    @Test
+    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void kill_givesUpAHangingFreezeHelperAtFiveSeconds_underALongBound() {
+        var helperMark = uniqueMark(60);
+        var started = System.nanoTime();
+
+        var dead = GitProcesses.kill(List.of(processOf(mortalHandle(0))), 20_000, hangingHelper(helperMark));
+        var elapsedMs = (System.nanoTime() - started) / 1_000_000;
+
+        assertThat(dead).as("the tree is dead").isTrue();
+        assertThat(elapsedMs).as("the helper was given up at five seconds, not at the freeze's ten").isBetween(4_000L, 7_000L);
+    }
+
+    /// A member that is gone although its exit has not been seen yet is dead: at its deadline the wait reads the member itself (v-2979b gp51).
+    @Test
+    void awaitDead_isTrue_forAMemberThatIsGoneBeforeItsExitIsSeen() {
+        assertThat(GitProcesses.awaitDead(Set.of(goneHandle()), System.nanoTime() + 100_000_000L)).isTrue();
+    }
+
+    /// A start that is in progress when the close comes is finished first and handed over: the close waits for it instead of returning without it,
+    /// which would leave a git running that no stop kills (v-2979b gp03). The start is held where the JDK opens its standard input, a FIFO that has no
+    /// writer yet.
+    @Test
+    @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void close_waitsForAStartInProgress_andHandsItOver(@TempDir Path dir) throws Exception {
+        var fifo = dir.resolve("stdin");
+        var processes = new GitProcesses();
+        var started = new CompletableFuture<Process>();
+        var closed = new CompletableFuture<List<Process>>();
+
+        assertThat(new ProcessBuilder("mkfifo", fifo.toString()).start().waitFor()).as("control: the FIFO exists").isZero();
+        var starter = Thread.ofPlatform().start(() -> started.complete(processes.start(new ProcessBuilder("sleep", mark).redirectInput(fifo.toFile())).unwrap()));
+        assertThat(eventually(() -> isOpening(starter))).as("control: the start is held opening the FIFO").isTrue();
+        Thread.ofPlatform().start(() -> closed.complete(processes.close()));
+        Thread.sleep(300);
+
+        assertThat(closed).as("the close waits for the start in progress").isNotDone();
+        try (var writer = new FileOutputStream(fifo.toFile())) {
+            var process = started.get(10, TimeUnit.SECONDS);
+
+            assertThat(closed.get(10, TimeUnit.SECONDS)).as("the started process is handed over").containsExactly(process);
+            assertThat(GitProcesses.kill(List.of(process), 10_000)).isTrue();
+        }
+    }
+
+    private static boolean isOpening(Thread thread) {
+        return Arrays.stream(thread.getStackTrace())
+                     .anyMatch(frame -> frame.getClassName().equals("java.io.FileInputStream") && frame.getMethodName().startsWith("open"));
+    }
+
+    /// The roots are killed after the sweep's last read: a killed root has no children left to read, so a member it forked after the freeze's last
+    /// read is found only while the root lives (v-2979b gp22). This root, like a real one, reports no descendants once it is killed.
+    @Test
+    @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void kill_killsTheRootsAfterTheSweep_soItFindsTheirLateChild() {
+        var reads = new AtomicInteger();
+        var rootKilled = new AtomicBoolean();
+        var child = mortalHandle(2_000_000_022L, 0, Stream::empty, GitProcessesTest::nothing);
+        var root = mortalHandle(2_000_000_021L, 0, () -> rootKilled.get() ? Stream.empty() : lateChild(reads.incrementAndGet(), child), () -> rootKilled.set(true));
+
+        assertThat(GitProcesses.kill(List.of(processOf(root)), 5_000)).as("the whole tree is dead").isTrue();
+        assertThat(reads.get()).as("control: the sweep read the live root after the freeze's read").isGreaterThanOrEqualTo(2);
+        assertThat(child.isAlive()).as("the root's late child is killed").isFalse();
+    }
+
+    /// A member that only the sweep finds is stopped before it is killed, like the members the freeze found (v-2979b gp26): the freeze helper is called
+    /// with its pid.
+    @Test
+    @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void kill_stopsAMemberFoundByTheSweep_beforeKillingIt(@TempDir Path dir) throws Exception {
+        var calls = dir.resolve("helper-calls");
+        var reads = new AtomicInteger();
+        var child = mortalHandle(2_000_000_026L, 0, Stream::empty, GitProcessesTest::nothing);
+        var root = mortalHandle(2_000_000_025L, 0, () -> lateChild(reads.incrementAndGet(), child), GitProcessesTest::nothing);
+
+        assertThat(GitProcesses.kill(List.of(processOf(root)), 5_000, List.of("sh", "-c", "echo \"$@\" >> \"$0\"", calls.toString()))).isTrue();
+
+        assertThat(reads.get()).as("control: the member was found after the freeze's first read").isGreaterThanOrEqualTo(2);
+        assertThat(child.isAlive()).as("control: the member is killed").isFalse();
+        assertThat(Files.readAllLines(calls)).as("the freeze helper was called with the member the sweep found").anyMatch(line -> line.contains("2000000026"));
+    }
+
+    private static Stream<ProcessHandle> lateChild(int read, ProcessHandle child) {
+        return read == 1 ? Stream.empty() : Stream.of(child);
+    }
+
+    /// A handle that reads gone (not alive) while its exit never completes.
+    private static ProcessHandle goneHandle() {
+        return (ProcessHandle) Proxy.newProxyInstance(GitProcessesTest.class.getClassLoader(),
+                                                      new Class<?>[]{ProcessHandle.class},
+                                                      (proxy, method, args) -> switch (method.getName()) {
+                                                          case "isAlive" -> false;
+                                                          case "onExit" -> new CompletableFuture<ProcessHandle>();
+                                                          case "hashCode" -> System.identityHashCode(proxy);
+                                                          case "equals" -> proxy == args[0];
+                                                          default -> null;
+                                                      });
+    }
+
+    private static void signal(String signal, ProcessHandle handle) throws Exception {
+        assertThat(new ProcessBuilder("kill", signal, Long.toString(handle.pid())).start().waitFor()).as("control: kill " + signal).isZero();
+    }
+
+    private static boolean eventually(BooleanSupplier condition) {
+        for (var attempt = 0; attempt < 200 && !condition.getAsBoolean(); attempt++) {
+            sleep();
+        }
+
+        return condition.getAsBoolean();
     }
 
     /// A handle that dies `exitDelayMillis` after `destroyForcibly`: alive until then, `onExit` completes then. Descendants come from `descendants`.
@@ -265,6 +499,11 @@ class GitProcessesTest {
     }
 
     private static ProcessHandle mortalHandle(long exitDelayMillis, Supplier<Stream<ProcessHandle>> descendants) {
+        return mortalHandle(2_000_000_001L, exitDelayMillis, descendants, GitProcessesTest::nothing);
+    }
+
+    /// A [#mortalHandle] with its own pid (beyond any kernel's range, so the real freeze reaches nothing) that runs `onDestroy` when it is killed.
+    private static ProcessHandle mortalHandle(long pid, long exitDelayMillis, Supplier<Stream<ProcessHandle>> descendants, Runnable onDestroy) {
         var exited = new AtomicBoolean();
         var exit = new CompletableFuture<ProcessHandle>();
         var self = new ProcessHandle[1];
@@ -272,9 +511,9 @@ class GitProcessesTest {
         self[0] = (ProcessHandle) Proxy.newProxyInstance(GitProcessesTest.class.getClassLoader(),
                                                          new Class<?>[]{ProcessHandle.class},
                                                          (proxy, method, args) -> switch (method.getName()) {
-                                                             case "pid" -> 2_000_000_001L;
+                                                             case "pid" -> pid;
                                                              case "isAlive" -> !exited.get();
-                                                             case "destroyForcibly", "destroy" -> destroy(exited, exit, self[0], exitDelayMillis);
+                                                             case "destroyForcibly", "destroy" -> destroy(exited, exit, self[0], exitDelayMillis, onDestroy);
                                                              case "onExit" -> exit;
                                                              case "descendants" -> descendants.get();
                                                              case "children" -> Stream.empty();
@@ -286,7 +525,12 @@ class GitProcessesTest {
         return self[0];
     }
 
-    private static boolean destroy(AtomicBoolean exited, CompletableFuture<ProcessHandle> exit, ProcessHandle self, long delayMillis) {
+    private static boolean destroy(AtomicBoolean exited,
+                                   CompletableFuture<ProcessHandle> exit,
+                                   ProcessHandle self,
+                                   long delayMillis,
+                                   Runnable onDestroy) {
+        onDestroy.run();
         CompletableFuture.runAsync(() -> {
             sleepFor(delayMillis);
             exited.set(true);
@@ -296,12 +540,23 @@ class GitProcessesTest {
         return true;
     }
 
+    private static void nothing() {}
+
     private static void sleepFor(long millis) {
         try {
             Thread.sleep(millis);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    /// A `sleep` duration no other test or run uses: whole seconds plus nine random fractional digits.
+    private static String uniqueMark(int seconds) {
+        return String.format("%d.%09d", seconds, ThreadLocalRandom.current().nextInt(1_000_000_000));
+    }
+
+    private static List<String> hangingHelper(String helperMark) {
+        return List.of("sh", "-c", "exec sleep " + helperMark, "sh");
     }
 
     private static long processesWith(String marker) {
@@ -382,11 +637,11 @@ class GitProcessesTest {
     /// second shape forks through a middle process the first read finds alive, which only the repeated read after the freeze reaches.
     @Test
     void kill_leavesNoChildOfATreeThatKeepsForking() throws Exception {
-        killLeavesNoMarkedChild("while :; do sleep " + MARK + " & sleep 0.005; done");
-        killLeavesNoMarkedChild("sh -c 'while :; do sleep " + MARK + " & sleep 0.005; done' & wait");
+        killLeavesNoMarkedChild("while :; do sleep " + mark + " & sleep 0.005; done", mark);
+        killLeavesNoMarkedChild("sh -c 'while :; do sleep " + mark + " & sleep 0.005; done' & wait", mark);
     }
 
-    private static void killLeavesNoMarkedChild(String script) throws Exception {
+    private static void killLeavesNoMarkedChild(String script, String mark) throws Exception {
         for (var round = 0; round < 15; round++) {
             var root = new ProcessBuilder("sh", "-c", script).start();
 
@@ -394,14 +649,8 @@ class GitProcessesTest {
             assertThat(GitProcesses.kill(List.of(root), 20_000)).isTrue();
             Thread.sleep(100);
 
-            assertThat(markedSleeps()).as("round " + round + " of " + script + ": no forked child outlives the kill").isZero();
+            assertThat(processesWith(mark)).as("round " + round + " of " + script + ": no forked child outlives the kill").isZero();
         }
-    }
-
-    private static long markedSleeps() {
-        return ProcessHandle.allProcesses()
-                            .filter(handle -> handle.info().commandLine().map(line -> line.contains(MARK)).orElse(false))
-                            .count();
     }
 
     private static List<ProcessHandle> awaitChildren(Process root, int count) {

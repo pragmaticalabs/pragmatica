@@ -9,6 +9,9 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
@@ -29,11 +32,17 @@ class GitBackupTimedOutPushTest {
     /// A repository whose `receive-pack` is a script that stamps, sleeps three seconds, stamps again and only then runs git: the second stamp exists
     /// only if that child outlives its kill.
     private GitBackupRepository repositoryWithSlowReceivePack(String name, long timeoutMillis, Path before, Path after) {
+        return repositoryWithSlowReceivePack(name, timeoutMillis, before, after, new GitProcesses());
+    }
+
+    private GitBackupRepository repositoryWithSlowReceivePack(String name, long timeoutMillis, Path before, Path after, GitProcesses processes) {
         var remote = bareRemote(temp.resolve(name + "-remote.git"));
-        var repository = GitBackupRepository.gitBackupRepository(temp.resolve(name + "-repo"),
-                                                                 Option.some(remote),
-                                                                 "backup",
-                                                                 TimeSpan.timeSpan(timeoutMillis).millis());
+        var repository = new GitBackupRepository(temp.resolve(name + "-repo"),
+                                                 Option.some(remote),
+                                                 "backup",
+                                                 TimeSpan.timeSpan(timeoutMillis).millis(),
+                                                 Map.of(),
+                                                 processes);
         var script = temp.resolve(name + "-slow-receive-pack");
 
         assertThat(repository.prepare().isSuccess()).as("control: prepare").isTrue();
@@ -54,7 +63,7 @@ class GitBackupTimedOutPushTest {
 
         assertThat(Files.exists(before)).as("control: the receive-pack child started").isTrue();
         assertThat(pushed.isFailure()).as("control: the push timed out").isTrue();
-        pushed.onFailure(cause -> assertThat(cause.message()).contains("timed out"));
+        pushed.onFailure(cause -> assertThat(cause.message()).contains("timed out").doesNotContain("still running"));
         assertThat(repository.halt()).as("the timed-out push left the in-flight set").isEmpty();
         Thread.sleep(4_000);
 
@@ -81,6 +90,61 @@ class GitBackupTimedOutPushTest {
         Thread.sleep(4_000);
 
         assertThat(Files.exists(after)).as("nothing of an in-flight push runs after the stop").isFalse();
+    }
+
+    /// A registry whose tree kill really kills, records its bound, and then reports the tree as not dead: what a tree that outlived its bound looks like
+    /// to the repository.
+    private static final class TreeKillFails extends GitProcesses {
+        final List<Long> bounds = new CopyOnWriteArrayList<>();
+
+        @Override
+        boolean endTree(Process process, long boundMillis) {
+            bounds.add(boundMillis);
+            super.endTree(process, boundMillis);
+
+            return false;
+        }
+    }
+
+    /// A timed-out push whose tree outlived its bound says so, and stays in flight for the stop (v-2979b gr07).
+    @Test
+    void aTimedOutPushWhoseTreeOutlivedItsBound_saysSo_andIsHandedToTheStop() throws Exception {
+        var before = temp.resolve("k.before");
+        var after = temp.resolve("k.after");
+        var processes = new TreeKillFails();
+        var repository = repositoryWithSlowReceivePack("k", 1_000, before, after, processes);
+
+        var pushed = repository.push();
+
+        assertThat(pushed.isFailure()).as("control: the push timed out").isTrue();
+        pushed.onFailure(cause -> assertThat(cause.message()).contains("timed out")
+                                                             .contains("its process tree was still running at the bound and is left to the stop"));
+        assertThat(processes.bounds).as("the tree kill ran with the command bound").containsExactly(1_000L);
+        assertThat(repository.halt()).as("the push whose tree was not dead is handed to the stop").hasSize(1);
+    }
+
+    /// A worker interrupted while git runs, with no stop under way, kills git's tree through the same kill as a timeout, with the whole command bound,
+    /// and a tree that is not dead within it stays in flight for the stop instead of being forgotten (v-2979b N4, gr03, gr05).
+    @Test
+    void anInterruptedPushWhoseTreeOutlivedItsBound_isHandedToTheStop() throws Exception {
+        var before = temp.resolve("i.before");
+        var after = temp.resolve("i.after");
+        var processes = new TreeKillFails();
+        var repository = repositoryWithSlowReceivePack("i", 60_000, before, after, processes);
+        var pusher = Thread.ofPlatform().start(repository::push);
+
+        for (var attempt = 0; attempt < 400 && !Files.exists(before); attempt++) {
+            Thread.sleep(10);
+        }
+        assertThat(Files.exists(before)).as("control: the receive-pack child started").isTrue();
+        pusher.interrupt();
+        pusher.join(30_000);
+
+        assertThat(pusher.isAlive()).as("control: the interrupted push returned").isFalse();
+        assertThat(processes.bounds).as("the interrupt killed git's tree with the whole command bound").containsExactly(60_000L);
+        assertThat(repository.halt()).as("the interrupted push whose tree was not dead is handed to the stop").hasSize(1);
+        Thread.sleep(4_000);
+        assertThat(Files.exists(after)).as("the tree kill ended the receive-pack child").isFalse();
     }
 
     private static void write(Path file, String content) {
