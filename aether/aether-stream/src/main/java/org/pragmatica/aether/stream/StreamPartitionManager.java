@@ -368,6 +368,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// set once at wiring, read only on the forwarded-publish recovery path.
     private volatile CommittedConfigSource committedConfigSource = _ -> Option.none();
 
+    /// Test-only gate, see [#configApplyGateForTest]. A no-op unless a test sets it.
+    private volatile Consumer<String> configApplyGate = _ -> {};
+
     /// Default replica-catch-up source (#265 increment 5): reports "everyone caught up" — a large
     /// other-caught-up count (so the release catch-up gate always passes) and `selfCaughtUp = true` (so an
     /// in-flight slot frees on the next tick). Forge/unit/legacy managers keep this; `AetherNode` late-binds
@@ -2082,10 +2085,20 @@ public final class StreamPartitionManager implements AutoCloseable {
                    .mapToUnit();
     }
 
+    /// Test-only seam (#2972): called with the stream name at the start of [#onStreamConfigPut], before the stream is
+    /// materialised here, so a test can hold the window in which the committed config is visible in the KV store but this
+    /// node has not applied it. The default does nothing and production never sets it.
+    @Contract
+    public void configApplyGateForTest(Consumer<String> gate) {
+        this.configApplyGate = gate;
+    }
+
     @Contract
     @MessageReceiver
     public void onStreamConfigPut(ValuePut<StreamConfigKey, StreamConfigValue> put) {
         var streamName = put.cause().key().streamName();
+
+        configApplyGate.accept(streamName);
         var config = put.cause().value().config();
 
         entries.appliedConfigs().put(streamName, config);
