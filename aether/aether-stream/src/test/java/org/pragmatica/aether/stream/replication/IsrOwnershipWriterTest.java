@@ -313,6 +313,17 @@ class IsrOwnershipWriterTest {
                 .isTrue();
         }
 
+        /// Default inputs treat every live member as eligible to own: a planned move to a live ISR member goes through
+        /// `decide` (an input that read as nobody eligible would deny the owner its liveness and block the move).
+        @Test
+        void decide_committedRecord_defaultInputs_plannedMoveToALiveIsrMember_isWritten() {
+            var current = Option.some(record(A, 3L, List.of(A, B), 4L));
+
+            assertThat(writer.decide(STREAM, PARTITION, current, B, GENERATION).isPresent())
+                .as("stream partitions have no hosting condition: the planned move goes ahead")
+                .isTrue();
+        }
+
         @Test
         void next_ownerHosts_aLiveNonHostIsrMember_staysInTheIsr_unfenced_writesNothing() {
             var current = record(A, 3L, List.of(A, C), 4L);
