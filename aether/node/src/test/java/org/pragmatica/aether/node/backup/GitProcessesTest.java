@@ -339,13 +339,23 @@ class GitProcessesTest {
         return processOf(undyingHandle(Stream::empty));
     }
 
+    /// An [#undying] whose exit the test controls: completing `exit` ends it, which releases a kill that is waiting for it (a kill is immune to an
+    /// interrupt, so only the member's exit or the kill's bound ends the wait).
+    static Process undying(CompletableFuture<ProcessHandle> exit) {
+        return processOf(undyingHandle(Stream::empty, exit));
+    }
+
     private static ProcessHandle undyingHandle(Supplier<Stream<ProcessHandle>> descendants) {
+        return undyingHandle(descendants, new CompletableFuture<>());
+    }
+
+    private static ProcessHandle undyingHandle(Supplier<Stream<ProcessHandle>> descendants, CompletableFuture<ProcessHandle> exit) {
         return (ProcessHandle) Proxy.newProxyInstance(GitProcessesTest.class.getClassLoader(),
                                                       new Class<?>[]{ProcessHandle.class},
                                                       (proxy, method, args) -> switch (method.getName()) {
                                                           case "pid" -> 2_000_000_000L;
                                                           case "isAlive", "destroy", "destroyForcibly" -> true;
-                                                          case "onExit" -> new CompletableFuture<ProcessHandle>();
+                                                          case "onExit" -> exit;
                                                           case "descendants" -> descendants.get();
                                                           case "children" -> Stream.empty();
                                                           case "info" -> infoStartedAt(Option.none());

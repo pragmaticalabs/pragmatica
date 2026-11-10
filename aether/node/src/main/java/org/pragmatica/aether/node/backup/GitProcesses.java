@@ -46,7 +46,7 @@ import org.pragmatica.lang.utils.Causes;
 /// bounded by the kill's own deadline and killed when it does not finish, and a member is stopped only while its start time is the one read when it
 /// joined the tree, so a pid reused by an unrelated process is never stopped (a reuse inside the helper's own start-up, a few milliseconds, is the
 /// residue). [#kill] is immune to an interrupt: the caller's flag is cleared on entry, an interrupt that lands during the helper's wait or the death
-/// wait is recorded and the wait goes on with what is left of the bound, and the flag is set again when [#kill] returns, so an interrupted caller
+/// wait is recorded and the wait goes on with what is left of the bound (an interrupt never shortens the bound, so a member that cannot die holds the caller for all of it), and the flag is set again when [#kill] returns, so an interrupted caller
 /// still gets the freeze, the sweep and an honest answer.
 class GitProcesses {
     private static final Cause STOPPED = Causes.cause("the backup repository is stopped: no git is started");

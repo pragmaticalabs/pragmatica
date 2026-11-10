@@ -590,7 +590,9 @@ class KvBackupStopFlushRaceTest {
         awaitFile(started);
         var neverEnds = org.mockito.Mockito.mock(ProcessBuilder.class);
 
-        org.mockito.Mockito.doReturn(GitProcessesTest.undying()).when(neverEnds).start();
+        var neverExits = new java.util.concurrent.CompletableFuture<ProcessHandle>();
+
+        org.mockito.Mockito.doReturn(GitProcessesTest.undying(neverExits)).when(neverEnds).start();
         harness.repository().processes().start(neverEnds).unwrap();
         try (var log = org.pragmatica.testlogging.LogCapture.capture(KvBackupService.class, org.apache.logging.log4j.Level.WARN, false)) {
             harness.service().stopWithin(500);
@@ -600,6 +602,7 @@ class KvBackupStopFlushRaceTest {
         }
         assertThat(harness.warnings()).as("the stop's report (the killed push may add the flush's own failure, depending on which side wins the race)")
                                       .anyMatch(warning -> warning.code() == Code.BACKUP_STOP_FLUSH_FAILED && warning.detail().contains("still running"));
+        neverExits.complete(null);
         settle(harness.executor());
     }
 
