@@ -132,7 +132,10 @@ class GitProcesses {
         return dead;
     }
 
-    private static boolean killTree(List<Process> processes, long boundMillis, List<String> freeze, AtomicBoolean interrupts) {
+    private static boolean killTree(List<Process> processes,
+                                    long boundMillis,
+                                    List<String> freeze,
+                                    AtomicBoolean interrupts) {
         var deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(boundMillis);
         var tree = new LinkedHashMap<ProcessHandle, Option<Instant>>();
         var roots = new HashSet<ProcessHandle>();
@@ -210,7 +213,10 @@ class GitProcesses {
     /// `SIGSTOP` every live member of `tree` that still has the start time it was read with. Best effort: a member that already ended needs no stop,
     /// and a host without a shell's `kill` still gets the kill that follows, only without the freeze.
     @Contract
-    private static void stop(Map<ProcessHandle, Option<Instant>> tree, long deadline, List<String> freeze, AtomicBoolean interrupts) {
+    private static void stop(Map<ProcessHandle, Option<Instant>> tree,
+                             long deadline,
+                             List<String> freeze,
+                             AtomicBoolean interrupts) {
         var command = new ArrayList<String>(freeze);
 
         command.addAll(stoppable(tree));
@@ -248,7 +254,8 @@ class GitProcesses {
     private static boolean helperExited(Process helper, long helperDeadline, AtomicBoolean interrupts) {
         for (;;) {
             try {
-                return helper.waitFor(Math.max(0, helperDeadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+                return helper.waitFor(Math.max(0, helperDeadline - System.nanoTime()),
+                                      TimeUnit.NANOSECONDS);
             } catch (InterruptedException interrupted) {
                 interrupts.set(true);
             }
@@ -280,7 +287,8 @@ class GitProcesses {
     private static boolean ended(ProcessHandle handle, long deadline, AtomicBoolean interrupts) {
         for (;;) {
             try {
-                handle.onExit().get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+                handle.onExit().get(Math.max(0, deadline - System.nanoTime()),
+                                    TimeUnit.NANOSECONDS);
 
                 return true;
             } catch (InterruptedException interrupted) {
