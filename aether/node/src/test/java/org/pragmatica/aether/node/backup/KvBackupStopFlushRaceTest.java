@@ -110,7 +110,7 @@ class KvBackupStopFlushRaceTest {
         var hook = node.repository().dir().resolve(".git").resolve("hooks").resolve("pre-push");
 
         write(hook,
-              "#!/bin/sh\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE\ndate +%s%3N >> '" + stamps + "'\nD=$(mktemp -d)\n"
+              "#!/bin/sh\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE\ndate +%s%3N >> '" + stamps + "'\n{ date +%s%3N; ps -eo pid,ppid,stat,etime,args; } >> '" + stamps + ".ctx' 2>&1\nD=$(mktemp -d)\n"
               + "git clone --quiet --branch backup '" + remote + "' \"$D/c\" && git -C \"$D/c\" -c user.email=s@x -c user.name=racer commit --quiet --allow-empty -m race"
               + " && git -C \"$D/c\" push --quiet origin backup\nrm -rf \"$D\"\nexit 0\n");
     }
@@ -286,8 +286,21 @@ class KvBackupStopFlushRaceTest {
         assertThat(lines).as("control: it did decide again, every push being a lost race").hasSizeGreaterThanOrEqualTo(2);
         assertThat(returnedAfterMs - last).as("and it was still deciding at the end: the last decision is within two of its own longest passes (+500 ms) of the return")
                                           .isLessThanOrEqualTo(2 * longestGap(lines) + 500);
-        assertThat(last).as("nothing is pushed after the stop returned").isLessThanOrEqualTo(stoppedEpoch - startedEpoch + 200);
+        assertThat(last).as("nothing is pushed after the stop returned; stop returned at " + (stoppedEpoch - startedEpoch) + " ms, stamps " + lines + ", at the last stamp:\n" + lastContext(stamps))
+                        .isLessThanOrEqualTo(stoppedEpoch - startedEpoch + 200);
         assertThat(node.warnings()).extracting(BackupWarning::code).containsExactly(Code.BACKUP_STOP_FLUSH_FAILED);
+    }
+
+    /// What ran when the last hook started (diagnostic for #2924: the process list the hook saw).
+    private static String lastContext(Path stamps) throws java.io.IOException {
+        var context = Path.of(stamps + ".ctx");
+
+        if (!Files.exists(context)) {
+            return "(no context)";
+        }
+        var text = Files.readString(context);
+
+        return text.substring(Math.max(0, text.lastIndexOf("\n17") - 0)).lines().limit(80).collect(java.util.stream.Collectors.joining("\n"));
     }
 
     /// The longest gap between consecutive decisions (stamps), i.e. the longest pass this run produced.
