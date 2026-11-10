@@ -1577,7 +1577,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Test seam (#2997): `hop` runs the task that resolves the returned promise; production passes the async executor.
     /// A test executor that finishes the task before `execute` returns forces the "already resolved when attached" ordering.
     static Promise<Unit> boundedCommitWait(Promise<Unit> lane, Executor hop) {
-        return offResolver(lane.map(_ -> unit()).timeout(PUBLISH_COMMIT_WAIT).recover(_ -> unit()), hop);
+        return offResolver(lane.map(_ -> unit()).timeout(PUBLISH_COMMIT_WAIT).recover(_ -> unit()),
+                           hop);
     }
 
     /// The hop is unconditional (#2997): the returned promise is resolved ONLY by a task submitted to the async executor
