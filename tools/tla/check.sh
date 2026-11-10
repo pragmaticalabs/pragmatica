@@ -10,7 +10,13 @@ jar=${TLA_JAR:-$HOME/tools/tla/tla2tools.jar}
 out=${TLA_OUT:-target/tla/$module}
 python3 "$here/extract.py" --module "$module" --out "$out" --base . "$@"
 cfg="$out/${module}_${variant}.cfg"
+[ -n "${TLC_CONST:-}" ] && echo "check: constants overridden: $TLC_CONST"
 [ -f "$cfg" ] || { echo "check: ERROR no config fragment $module:$variant" >&2; exit 2; }
+# TLC_CONST="Name=value ..." overrides a constant of the config for this run (bounds scaling); recorded in the log.
+for kv in ${TLC_CONST:-}; do
+  grep -qE "^(CONSTANTS?)?[[:space:]]*${kv%%=*}[[:space:]]*=" "$cfg" || { echo "check: ERROR no constant ${kv%%=*} in $cfg" >&2; exit 2; }
+  sed -i.bak -E "s/^((CONSTANTS?)?[[:space:]]*${kv%%=*}[[:space:]]*=[[:space:]]*).*/\1${kv#*=}/" "$cfg"
+done
 set +e
 ( cd "$out" && exec java -XX:+UseParallelGC -cp "$jar" tlc2.TLC -workers "${TLC_WORKERS:-4}" -cleanup -deadlock ${TLC_OPTS:-} \
     -config "${module}_${variant}.cfg" "$module.tla" ) > "$out/${module}_${variant}.raw" 2>&1

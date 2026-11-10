@@ -108,6 +108,7 @@ final class SharedPools {
         if (sink == null) {
             return body.apply();
         }
+
         synchronized (sink) {
             var result = body.apply();
 
@@ -164,8 +165,9 @@ final class SharedPools {
 
         entries.compute(key,
                         (_, current) -> region(() -> admit(current, scope, label, admission),
-                                               _ -> new Object[]{"Acq_Admit", scope, key, outcome(admission),
-                                                                 admission.created ? admission.entry.pool() : ""}));
+                                               _ -> new Object[]{"Acq_Admit", scope, key, outcome(admission), admission.created
+                                                                                                              ? admission.entry.pool()
+                                                                                                              : ""}));
         if (admission.refused) {
             return ResourceProvisioningError.ProviderClosed.INSTANCE.promise();
         }
@@ -194,9 +196,13 @@ final class SharedPools {
                    })
                    .onSuccess(_ -> LOG.log(System.Logger.Level.INFO, "opened shared pool {0} for {1}", label, scope))
                    .onResult(result -> {
-                       note("Resolve", pool, result.isSuccess() ? "open" : "failed");
-                       pool.resolve(result);
-                   });
+                                 note("Resolve",
+                                      pool,
+                                      result.isSuccess()
+                                      ? "open"
+                                      : "failed");
+                                 pool.resolve(result);
+                             });
         }
 
         return attached.flatMap(_ -> slot);
@@ -324,7 +330,12 @@ final class SharedPools {
                                     NodeShareable<T, ?> shareable,
                                     Object key,
                                     String scope) {
-        note("Acq_Fill", scope, key, result.isSuccess() ? "view" : "failed");
+        note("Acq_Fill",
+             scope,
+             key,
+             result.isSuccess()
+             ? "view"
+             : "failed");
 
         return slot.resolve(result.map(provisioned -> shareable.view((T) provisioned.resource(),
                                                                      () -> releaseSlot(key, scope, slot))));
@@ -444,13 +455,17 @@ final class SharedPools {
     ///                       staleHit, sliceCache, spc>>
     /// ```
     private void drainIfClosedMeanwhile(Object key, String scope) {
-        if (region(closed::get, seen -> seen ? new Object[0] : new Object[]{"Acq_Post", scope, key, "nodrain"})) {
+        if (region(closed::get,
+                   seen -> seen
+                           ? new Object[0]
+                           : new Object[]{"Acq_Post", scope, key, "nodrain"})) {
             var late = new Departure();
 
             entries.compute(key,
                             (_, current) -> region(() -> drain(current, late),
-                                                   _ -> new Object[]{"Acq_Post", scope, key,
-                                                                     late.removed == null ? "nodrain" : "drained"}));
+                                                   _ -> new Object[]{"Acq_Post", scope, key, late.removed == null
+                                                                                             ? "nodrain"
+                                                                                             : "drained"}));
             option(late.removed).onPresent(this::close);
         }
     }
@@ -518,7 +533,8 @@ final class SharedPools {
     private Promise<Unit> close(SharedEntry entry) {
         return entry.pool()
                     .flatMap(provisioned -> {
-                        note("Close_Pool", entry.pool());
+                        note("Close_Pool",
+                             entry.pool());
 
                         return closer.apply(provisioned);
                     })
@@ -580,8 +596,9 @@ final class SharedPools {
 
                 entries.compute(key,
                                 (_, current) -> region(() -> drain(current, departure),
-                                                       _ -> new Object[]{"CA_Drain", key,
-                                                                         departure.removed == null ? "empty" : "captured"}));
+                                                       _ -> new Object[]{"CA_Drain", key, departure.removed == null
+                                                                                          ? "empty"
+                                                                                          : "captured"}));
                 option(departure.removed).onPresent(removed -> closes.add(close(removed)));
             }
         }
@@ -594,8 +611,10 @@ final class SharedPools {
         return region(() -> entries.isEmpty()
                             ? Option.<List<Object>> none()
                             : Option.some(List.copyOf(entries.keySet())),
-                      pass -> new Object[]{"CA_Check", pass.map(keys -> keys.isEmpty() ? "check" : "drain")
-                                                          .or("returned")});
+                      pass -> new Object[]{"CA_Check", pass.map(keys -> keys.isEmpty()
+                                                                        ? "check"
+                                                                        : "drain")
+                                                           .or("returned")});
     }
 
     /// The drain's `compute` mapping function: captures the entry and removes it (`null` is the `compute` contract).

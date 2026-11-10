@@ -2,7 +2,6 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 /// Stream partition replication: backfill, catch-up and owner activation.
 ///
 /// The TLA+ model `Stalled` (at 92ccde7f6c, level-triggered) of the owner catch-up's all-stalled warning ([PartitionBackfill]) lives in
