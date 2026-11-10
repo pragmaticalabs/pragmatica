@@ -119,6 +119,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #1278 ruling F: how long the publish auto-create path waits for its proposed config to commit and apply here.
     /// Inside the 5 s forward timeout that made this path asynchronous; past it the publish refuses retriably.
     private static final TimeSpan PUBLISH_COMMIT_WAIT = TimeSpan.timeSpan(2).seconds();
+    /// The settling task of [#offResolver]; a constant so `async` resolves to the supplier overload, not the `Runnable` one.
+    private static final Supplier<Result<Unit>> SETTLED = Result::unitResult;
     /// Bound on dropping or checking a stream's durable footprint (a local ref write and one forced snapshot).
     private static final TimeSpan FOOTPRINT_TIMEOUT = TimeSpan.timeSpan(30).seconds();
     private static final Logger log = LoggerFactory.getLogger(StreamPartitionManager.class);
@@ -1581,7 +1583,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     private static Promise<Unit> offResolver(Promise<Unit> waited) {
         var off = Promise.<Unit> promise();
 
-        waited.onResultRun(() -> off.async(Result::unitResult));
+        waited.onResultRun(() -> off.async(SETTLED));
 
         return off;
     }
