@@ -531,43 +531,107 @@ class SegmentSealerTest {
     }
 
     /// A sink whose seals complete only when the test says so — the slowest possible storage tier.
+    /// Each call is ONE entry holding its segment and its outcome, added in a single step: the sink is called from
+    /// several partitions' drain tasks at once, and two lists added to one after the other let call N's index
+    /// point at one partition's segment and another partition's outcome (#2988).
     private static final class ManualSink implements SegmentSink {
-        private final List<SealedSegment> segments = new CopyOnWriteArrayList<>();
-        private final List<Promise<Unit>> outcomes = new CopyOnWriteArrayList<>();
+        private record Call(SealedSegment segment, Promise<Unit> outcome) {}
+
+        private final List<Call> callLog = new CopyOnWriteArrayList<>();
 
         @Override
         public Promise<Unit> seal(SealedSegment segment, Option<AppendLog> log) {
             var outcome = Promise.<Unit> promise();
 
-            // outcomes first: calls() counts segments, so a reader that saw call N must find outcome N.
-            outcomes.add(outcome);
-            segments.add(segment);
+            callLog.add(new Call(segment, outcome));
 
             return outcome;
         }
 
         void succeed(int call) {
-            outcomes.get(call).succeed(unit());
+            callLog.get(call).outcome().succeed(unit());
         }
 
         /// Complete every seal of `streamName`, whatever order the partitions reached the sink in.
         void succeedFor(String streamName) {
-            for (int call = 0; call < segments.size(); call++) {
-                if (segments.get(call).streamName().equals(streamName)) {
+            for (int call = 0; call < callLog.size(); call++) {
+                if (callLog.get(call).segment().streamName().equals(streamName)) {
                     succeed(call);
                 }
             }
         }
 
         int calls() {
-            return segments.size();
+            return callLog.size();
         }
 
         List<Long> startOffsets() {
-            return segments.stream()
-                           .map(SealedSegment::startOffset)
-                           .toList();
+            return callLog.stream()
+                          .map(call -> call.segment().startOffset())
+                          .toList();
         }
+    }
+
+    /// #2988: `succeed(call)` must complete the outcome of the segment `startOffsets().get(call)` names, however
+    /// two threads' calls interleave. The two-list sink completed the other thread's outcome some of the time.
+    /// Two threads are released together by a spin barrier so their `seal` calls overlap.
+    @Test
+    void manualSink_succeedCall_completesTheOutcomeOfThatCallsSegment() {
+        var iterations = 200_000;
+        var current = new AtomicReference<ManualSink>();
+        var outcomes = new AtomicReference<>(new Promise<?>[2]);
+        var go = new AtomicInteger(-1);
+        var finished = new AtomicInteger();
+        var stop = new AtomicBoolean();
+        var threads = new Thread[2];
+
+        for (var thread = 0; thread < 2; thread++) {
+            var index = thread;
+            var segment = sealedSegmentAt(index);
+
+            threads[thread] = Thread.ofPlatform().daemon().start(() -> {
+                for (var round = 0; !stop.get(); round++) {
+                    while (go.get() < round && !stop.get()) {
+                        Thread.onSpinWait();
+                    }
+                    if (stop.get()) {
+                        return;
+                    }
+                    outcomes.get()[index] = current.get().seal(segment, Option.none());
+                    finished.incrementAndGet();
+                }
+            });
+        }
+
+        var mismatches = 0;
+
+        try {
+            for (var round = 0; round < iterations; round++) {
+                var sink = new ManualSink();
+
+                current.set(sink);
+                outcomes.set(new Promise<?>[2]);
+                finished.set(0);
+                go.set(round);
+                while (finished.get() < 2) {
+                    Thread.onSpinWait();
+                }
+                // call 0 lands: the outcome returned to the thread whose segment is call 0 must be the one resolved
+                var firstCallThread = sink.startOffsets().getFirst().intValue();
+
+                sink.succeed(0);
+                if (!outcomes.get()[firstCallThread].isResolved()) {
+                    mismatches++;
+                }
+            }
+        } finally {
+            stop.set(true);
+        }
+        assertThat(mismatches).as("calls whose index pointed at another call's outcome, of %d", iterations).isZero();
+    }
+
+    private static SealedSegment sealedSegmentAt(long offset) {
+        return SealedSegment.sealedSegment(STREAM, PARTITION, offset, offset, 1, 1L, 1L, new byte[]{1});
     }
 
     private static void awaitCondition(BooleanSupplier condition) {
