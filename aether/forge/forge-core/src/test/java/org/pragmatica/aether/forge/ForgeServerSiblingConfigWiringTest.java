@@ -11,6 +11,9 @@ import java.util.List;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.config.JwtConfig;
+import org.pragmatica.aether.config.JwtKeyMode;
+import org.pragmatica.aether.config.SecurityMode;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.ember.EmberConfig;
 import org.pragmatica.http.JdkHttpOperations;
@@ -141,5 +144,53 @@ class ForgeServerSiblingConfigWiringTest {
     @Test
     void emberCluster_defaultsToAnOpenManagementPlane() {
         assertThat(EmberCluster.emberCluster().appHttpConfigFor(8070).managementSecurityEnabled()).isFalse();
+    }
+
+    private static final String JWT_HS256_NO_KEYS = "[cluster]\nenvironment = \"docker\"\nnodes = 3\n\n[app-http]\nenabled = true\nsecurity_mode = \"jwt\"\n"
+                                                    + "jwt_algorithm = \"HS256\"\nauth_schemes = [\"Token\"]\n\n[management]\nsecurity_mode = \"none\"\n";
+
+    /// #2983: a JWT sibling with NO API key reaches the nodes: the mode is JWT, and the JWT config (HS256, the secret from
+    /// `AETHER_JWT_SECRET`, the `Token` scheme) is the one every node is built with. The secret is set by this module's surefire configuration.
+    @Test
+    void applyAppHttpSecurity_passesTheJwtConfigToTheNodes_withoutAnyApiKey(@TempDir Path dir) throws Exception {
+        var ember = EmberCluster.emberCluster();
+        var exits = new ArrayList<Integer>();
+
+        serverWithSibling(dir, JWT_HS256_NO_KEYS).applyAppHttpSecurity(ember, exits::add);
+
+        var appHttp = ember.appHttpConfigFor(8070);
+
+        assertThat(exits).isEmpty();
+        assertThat(appHttp.securityMode()).isEqualTo(SecurityMode.JWT);
+        assertThat(appHttp.apiKeys()).as("no API key was declared").isEmpty();
+        assertThat(appHttp.jwtConfig().map(JwtConfig::keyMode)).isEqualTo(Option.some(JwtKeyMode.HS256));
+        assertThat(appHttp.jwtConfig().map(JwtConfig::authSchemes)).isEqualTo(Option.some(List.of("Token")));
+        assertThat(appHttp.jwtConfig().flatMap(JwtConfig::sharedSecret).isPresent()).as("the secret reached the node config").isTrue();
+    }
+
+    /// #2983 pin: API_KEY behaviour is unchanged: the keys and the mode reach the nodes and no JWT config appears.
+    @Test
+    void applyAppHttpSecurity_apiKeyMode_stillPassesKeysAndNoJwtConfig(@TempDir Path dir) throws Exception {
+        var ember = EmberCluster.emberCluster();
+
+        serverWithSibling(dir, KEYED).applyAppHttpSecurity(ember, code -> {});
+
+        var appHttp = ember.appHttpConfigFor(8070);
+
+        assertThat(appHttp.securityMode()).isEqualTo(SecurityMode.API_KEY);
+        assertThat(appHttp.apiKeys()).containsKey("k-962-key");
+        assertThat(appHttp.jwtConfig().isPresent()).isFalse();
+    }
+
+    /// #2983 control: an `[app-http]` section with the default mode and no key arms nothing, as before (the loader defaults
+    /// `security_mode` to api-key whether or not the section exists, so the mode alone is not a request for security).
+    @Test
+    void applyAppHttpSecurity_defaultModeWithoutKeys_armsNothing(@TempDir Path dir) throws Exception {
+        var ember = EmberCluster.emberCluster();
+
+        serverWithSibling(dir, "[cluster]\nenvironment = \"docker\"\nnodes = 3\n\n[app-http]\nenabled = true\n").applyAppHttpSecurity(ember, code -> {});
+
+        assertThat(ember.appHttpConfigFor(8070).securityMode()).isEqualTo(SecurityMode.NONE);
+        assertThat(ember.appHttpConfigFor(8070).jwtConfig().isPresent()).isFalse();
     }
 }
