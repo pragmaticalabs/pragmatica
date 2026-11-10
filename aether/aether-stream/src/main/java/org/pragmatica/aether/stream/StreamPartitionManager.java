@@ -416,6 +416,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// admission) and by owner-role reads ([#readServing], [#mayServeAsOwner]). Default: [#ADMIT_OWNER].
     /// Volatile: set once at wiring.
     private volatile OwnerServeGate ownerServeGate = ADMIT_OWNER;
+    /// The acknowledgement-time ownership check (#2981 direction B), consulted by [#awaitReplication] once the replicas
+    /// confirmed. Default: [AckOwnershipCheck#UNCHECKED]. Volatile: set once at wiring.
+    private volatile AckOwnershipCheck ackOwnershipCheck = AckOwnershipCheck.UNCHECKED;
     /// Why this node's owner promotion of a partition waits for an operator (#1555), read by the partition status
     /// view. Default: [#NO_BLOCK]. Volatile: set once at wiring.
     private volatile OwnerBlockSource ownerBlockSource = NO_BLOCK;
@@ -892,6 +895,15 @@ public final class StreamPartitionManager implements AutoCloseable {
     public void ownerServeGate(OwnerServeGate gate) {
         this.ownerServeGate = gate;
         boundSeams.add(StreamSeam.OWNER_SERVE_GATE);
+    }
+
+    /// Late-bind the acknowledgement-time ownership check (#2981 direction B, [AckOwnershipCheck]). `AetherNode` wires the
+    /// barrier-batched check; until then, and in Forge/unit/legacy managers, acknowledgements complete unchecked. Set once at
+    /// wiring; read on every confirmed acknowledgement.
+    @Contract
+    public void ackOwnershipCheck(AckOwnershipCheck check) {
+        this.ackOwnershipCheck = check;
+        boundSeams.add(StreamSeam.ACK_OWNERSHIP_CHECK);
     }
 
     /// Late-bind the owner of this node's per-stream durable refs (#1278 review): a destroyed stream drops its sealed
@@ -4554,11 +4566,22 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// ack in the pre-update observer call, both registry rows then land, and the await resolves before
     /// either post-update observer call — so without this the continuation could miss its own acked write.
     /// A ring released in the meantime has no reader left to expose the event to.
+    ///
+    /// #2981 direction B: this is where every `confirmation_factor` >= 2 acknowledgement resolves to its writer (publish,
+    /// forwarded publish, control runs, entity logs), so it is the one place the acknowledgement-time ownership check runs.
+    /// The ownership the append was admitted under is captured here, when the wait registers; once the replicas confirmed,
+    /// the acknowledgement completes only if [AckOwnershipCheck] finds that ownership still committed after a consensus
+    /// round. Otherwise the wait fails with [StreamError.OwnershipMovedBeforeAck], an unknown outcome to the writer.
+    /// Visibility is refreshed on the replicas' confirmation either way: the check decides the writer's answer, not what
+    /// the replicas hold.
     public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
+        var admittedUnder = ownershipRecords.committed(streamName, partition);
+
         return replicationManager.awaitReplication(streamName, partition, offset, minAcks)
                                  .withSuccess(_ -> resolvePartitionBuffer(streamName, partition).onSuccess(ring -> refreshVisible(ring,
                                                                                                                                   streamName,
-                                                                                                                                  partition)));
+                                                                                                                                  partition)))
+                                 .flatMap(_ -> ackOwnershipCheck.confirm(streamName, partition, admittedUnder));
     }
 
     /// #1262 fail-closed guard, applied ONCE by `StreamWriteRouter.publish` — the single write operation behind

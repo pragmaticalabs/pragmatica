@@ -78,6 +78,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.storage.DelegatedStorageAdapter;
+import org.pragmatica.aether.stream.AckOwnershipCheck;
 import org.pragmatica.aether.stream.CommittedEpochStarts;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.DeadLetterHandler;
@@ -904,6 +905,17 @@ public sealed interface StreamAssembly {
         streamPartitionManager.ownershipRecords((stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
                                                                                                                                                 partition),
                                                                                         StreamPartitionOwnershipValue.class));
+        // #2981 direction B: an owner acknowledges a confirmation_factor >= 2 append only while the committed record, read after
+        // a no-op consensus round, still carries the ownership the append was admitted under; one round per resolved batch of
+        // acknowledgements per partition. Like the promotion gate's round, ALWAYS ordered, independent of the read-linearization
+        // knob: the acknowledgement's correctness depends on it.
+        streamPartitionManager.ackOwnershipCheck(AckOwnershipCheck.batched(config.self(),
+                                                                           (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
+                                                                                                                                                                           partition),
+                                                                                                                   StreamPartitionOwnershipValue.class),
+                                                                           LinearizableBarrier.noOpRound(clusterCommandApplier,
+                                                                                                         streamingConfig.readForwardTimeout()),
+                                                                           AckOwnershipCheck.VIRTUAL_HOP));
         // #2201 C-16: a consumer read below the ring tail is served from the sealed tier (StreamPartitionManager.readServingTiered,
         // the validated read of StreamReadRouter and of the owner's forward handler). Unbound, every consumer behind the ring
         // would be moved to the ring tail; EmberConsumerPathTripwireTest#tierFallbackSeam_isBoundOnEveryBootedNode pins it.

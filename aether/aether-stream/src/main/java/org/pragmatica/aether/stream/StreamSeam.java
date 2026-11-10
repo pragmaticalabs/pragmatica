@@ -41,6 +41,8 @@ public enum StreamSeam {
     OWNER_WRITE_ADMISSION(true),
     /// The owner promotion gate; the default serves and acknowledges as owner without promotion.
     OWNER_SERVE_GATE(true),
+    /// The ownership check at acknowledgement time (#2981 direction B); the default acknowledges a deposed owner's append.
+    ACK_OWNERSHIP_CHECK(true),
     OWNER_BLOCK_SOURCE(false),
     /// The durable anchor of stream lives; the default anchors neither life adoption nor reclamation.
     STREAM_FOOTPRINT(true),

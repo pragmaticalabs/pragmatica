@@ -680,4 +680,17 @@ public sealed interface StreamError extends Cause {
                                                                                                                                              partition);
         }
     }
+
+    /// Acknowledgement-time ownership check (#2981 direction B): the replicas confirmed an append of `(streamName, partition)`,
+    /// but after a no-op consensus round ([LinearizableBarrier]) the committed ownership is no longer the one the append was
+    /// admitted under: the partition moved, so another owner may have activated without the append. The write is NOT
+    /// acknowledged; whether it survives is unknown. The writers report it as an unknown outcome, and a retry routed to the
+    /// current owner may append a duplicate (spec §4). Transient: the retry goes to the new owner.
+    record OwnershipMovedBeforeAck(String streamName, int partition) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Append to %s[%d] not acknowledged: the committed ownership changed before the acknowledgement completed".formatted(streamName,
+                                                                                                                                       partition);
+        }
+    }
 }
