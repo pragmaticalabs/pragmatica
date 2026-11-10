@@ -141,11 +141,22 @@ import org.slf4j.LoggerFactory;
 /// That membership is an ELECTION rule, not a property of the confirmation factor: failover elects from the live ISR,
 /// and a planned move goes only to a live ISR member (#2981). Without that rule `confirmation_factor` >= 2 did not
 /// close it: a planned move to a node outside the ISR, under apply skew, lost an acknowledged record (#2981, TLA+
-/// model `Streams.tla`, invariant `AckedNeverLost`). Still open: nothing fences the previous owner itself, so the
-/// guarantee holds only while every path that commits an owner elects inside the previous owner's ISR, and the closure
-/// assumes the maximal ISR covers every committed ISR member; #2993 (an `IsrMonitor` expansion still in flight is
-/// forgotten by the next tick) is a known gap there. Direction B, an ownership check at acknowledgement time on the
-/// deposed owner, is the mechanism that closes N2 regardless of both (a separate later change).
+/// model `Streams.tla`, invariant `AckedNeverLost`).
+///
+/// A LIVE previous owner is also fenced at acknowledgement time (#2981 direction B, [AckOwnershipCheck]): its
+/// `confirmation_factor` >= 2 acknowledgement completes only if the committed record, read after a no-op consensus round
+/// that starts once the replicas confirmed, still carries the ownership the append was admitted under (owner, owner
+/// epoch, ownership term, transfer stamp) and names it. This activation commits only on a record naming the new owner, so
+/// once such a move is committed the previous owner's late acknowledgement fails as an unknown outcome
+/// ([StreamError.OwnershipMovedBeforeAck]) instead of "ok", whether the move was planned or a failover of an owner that is
+/// still running. For that case the closure no longer rests on the election rule or on the maximal ISR.
+/// [mechanism: Rabia's single apply order + the post-ack round; model-checked as `FenceMech=B` in `Streams.tla`, pinned by
+/// AckTimeOwnershipCheckTest; not reproduced at runtime]
+/// Still open: (1) a previous owner that CRASHED acknowledges nothing after the move, but what it acknowledged before is
+/// held by the new owner only because the election picks inside its ISR and the maximal ISR covers every committed ISR
+/// member, where #2993 (an `IsrMonitor` expansion still in flight is forgotten by the next tick) is a known gap;
+/// (2) `confirmation_factor` 1 runs no check and keeps its documented window; (3) admission is not cut: a deposed owner
+/// still APPENDS until it applies the move (direction A with a lease, deferred), it only cannot acknowledge.
 /// [mechanism: the election rule above with all-member acknowledgement; model-checked on three nodes, not reproduced at
 /// runtime]
 public final class OwnerActivation {
