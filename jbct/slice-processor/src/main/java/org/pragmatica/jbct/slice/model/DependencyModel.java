@@ -136,6 +136,13 @@ public record DependencyModel(String parameterName,
         return sliceAnnotated;
     }
 
+    /// Check if this dependency is a slice dependency: a step that resolves to another slice's
+    /// artifact. Resources and plain-interface steps are not. Every generator that lists or wires
+    /// slice dependencies (manifest, factory, Terra descriptor) classifies through this one predicate.
+    public boolean isSliceDependency() {
+        return !isResource() && !isPlainInterface();
+    }
+
     /// Check if this dependency is a plain interface: not resource, not slice, has factory method.
     public boolean isPlainInterface() {
         return ! isResource()

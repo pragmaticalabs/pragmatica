@@ -125,8 +125,8 @@ public class ManifestGenerator {
             // Artifact coordinates
             props.setProperty("base.artifact", getArtifactFromEnv());
             props.setProperty("slice.artifactId", getArtifactIdFromEnv() + "-" + toKebabCase(sliceName));
-            // Dependencies for blueprint generation (exclude resource dependencies)
-            var dependencies = model.dependencies().stream().filter(dep -> !dep.isResource()).toList();
+            // Dependencies for blueprint generation (slice dependencies only: no resources, no plain-interface steps)
+            var dependencies = model.dependencies().stream().filter(DependencyModel::isSliceDependency).toList();
 
             props.setProperty("dependencies.count",
                               String.valueOf(dependencies.size()));

@@ -1076,6 +1076,91 @@ class SliceProcessorTest {
         assertThat(consumerManifest.getProperty("dependency.0.artifact")).isEqualTo("com.example:" + providerArtifactId);
     }
 
+    /// #2982: a plain-interface step (non-@Slice interface with a static factory) is not a slice
+    /// dependency. The manifest, which the packaging step turns into the `[slices]` section of
+    /// `META-INF/dependencies/<Factory>`, and the generated factory must name the same set.
+    @Test
+    void should_list_only_real_slice_dependencies_when_a_plain_interface_step_is_present() throws Exception {
+        var provider = JavaFileObjects.forSourceString("com.example.app.payments.PaymentService",
+                                                       """
+            package com.example.app.payments;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+
+            @Slice
+            public interface PaymentService {
+                Promise<Boolean> processPayment(String paymentRequest);
+
+                static PaymentService paymentService() {
+                    return null;
+                }
+            }
+            """);
+        var plainStep = JavaFileObjects.forSourceString("com.example.app.steps.OrderValidator",
+                                                        """
+            package com.example.app.steps;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface OrderValidator {
+                Promise<Boolean> validate(String orderId);
+
+                static OrderValidator orderValidator() {
+                    return null;
+                }
+            }
+            """);
+        var consumer = JavaFileObjects.forSourceString("com.example.app.orders.OrderService",
+                                                       """
+            package com.example.app.orders;
+
+            import com.example.app.payments.PaymentService;
+            import com.example.app.steps.OrderValidator;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(OrderValidator validator, PaymentService payments) {
+                    return null;
+                }
+            }
+            """);
+        var sources = commonSources();
+
+        sources.add(provider);
+        sources.add(plainStep);
+        sources.add(consumer);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor())
+                                         .withOptions("-Aslice.groupId=com.example", "-Aslice.artifactId=app")
+                                         .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var manifest = sliceManifestProperties(compilation, "OrderService");
+
+        assertThat(manifest.getProperty("dependencies.count")).isEqualTo("1");
+        assertThat(manifest.getProperty("dependency.0.interface")).isEqualTo("com.example.app.payments.PaymentService");
+        assertThat(manifest.getProperty("dependency.0.artifact")).isEqualTo("com.example:app-payment-service");
+        assertThat(manifest.stringPropertyNames().stream().anyMatch(name -> name.startsWith("dependency.1."))).isFalse();
+        assertThat(manifest.values()
+                           .stream()
+                           .anyMatch(value -> value.toString().contains("OrderValidator")
+                                              || value.toString().contains("order-validator"))).isFalse();
+
+        var factory = compilation.generatedSourceFile("com.example.app.orders.OrderServiceFactory")
+                                 .get()
+                                 .getCharContent(false)
+                                 .toString();
+
+        assertThat(factory).contains("record paymentService(MethodHandle<");
+        assertThat(factory).doesNotContain("record orderValidator(MethodHandle<");
+    }
+
     /// The narrow case the superseded immediate-parent-package test did handle — provider and
     /// consumer as direct package siblings. Keying on the module must not regress it.
     @Test
