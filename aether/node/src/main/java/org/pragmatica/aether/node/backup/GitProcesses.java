@@ -7,12 +7,14 @@ package org.pragmatica.aether.node.backup;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -33,13 +35,19 @@ import org.pragmatica.lang.utils.Causes;
 ///
 /// **End.** [#kill] freezes the tree before killing it: git and its hooks are stopped (`SIGSTOP`, which a process cannot ignore) and the tree is read
 /// again until a read after the stop adds no process. A frozen process starts no child, so nothing escapes between deciding what to kill and
-/// killing it, which a scan taken while git runs cannot promise (the pre-push hook is forked by a git that is still alive during the scan). Only then
-/// is every member of the tree killed. Guarantee earned: every process that was in the tree when the freeze took effect is dead when [#kill]
-/// returns `true`. A fork already inside the kernel when the stop lands completes first, so the repeated read sees its child; a process that
-/// detached itself from the tree (a hook that double-forks a daemon) is outside it, and no parent-child walk can find it. The freeze helper is
+/// killing it, which a scan taken while git runs cannot promise (the pre-push hook is forked by a git that is still alive during the scan). The members
+/// below the roots are killed first and the roots stay frozen and alive; the roots' trees are then read once more, and a member found only now is
+/// stopped and killed as well, until a read finds none; only then are the roots killed. Guarantee earned: every process that was in a root's tree when
+/// the freeze took effect, or that joined it up to the last read before the roots were killed, is dead when [#kill] returns `true`; `false` is returned
+/// when the bound ran out first. `SIGSTOP` is delivered when the target next runs, so a fork already inside the kernel completes after it is sent
+/// (under CPU starvation, after the read as well): the sweep is what catches that child. The residue: a fork that completes after the sweep's last read
+/// and before the roots' kill, which `SIGKILL` of the forking process aborts in the kernel unless it is already past the point of no return, and a
+/// process that detached itself from the tree before a read (a hook that double-forks a daemon): no parent-child walk can find it. The freeze helper is
 /// bounded by the kill's own deadline and killed when it does not finish, and a member is stopped only while its start time is the one read when it
 /// joined the tree, so a pid reused by an unrelated process is never stopped (a reuse inside the helper's own start-up, a few milliseconds, is the
-/// residue). [#kill] runs with the caller's interrupt flag cleared and restores it, so an interrupted caller still gets the freeze and an honest answer.
+/// residue). [#kill] is immune to an interrupt: the caller's flag is cleared on entry, an interrupt that lands during the helper's wait or the death
+/// wait is recorded and the wait goes on with what is left of the bound, and the flag is set again when [#kill] returns, so an interrupted caller
+/// still gets the freeze, the sweep and an honest answer.
 class GitProcesses {
     private static final Cause STOPPED = Causes.cause("the backup repository is stopped: no git is started");
 
@@ -114,24 +122,57 @@ class GitProcesses {
 
     /// [#kill] with the freeze's helper command given: a test replaces it with one that hangs.
     static boolean kill(List<Process> processes, long boundMillis, List<String> freeze) {
-        var interrupted = Thread.interrupted();
-        var dead = killTree(processes, boundMillis, freeze);
+        var interrupts = new AtomicBoolean(Thread.interrupted());
+        var dead = killTree(processes, boundMillis, freeze, interrupts);
 
-        if (interrupted) {
+        if (interrupts.get()) {
             Thread.currentThread().interrupt();
         }
 
         return dead;
     }
 
-    private static boolean killTree(List<Process> processes, long boundMillis, List<String> freeze) {
+    private static boolean killTree(List<Process> processes, long boundMillis, List<String> freeze, AtomicBoolean interrupts) {
         var deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(boundMillis);
         var tree = new LinkedHashMap<ProcessHandle, Option<Instant>>();
+        var roots = new HashSet<ProcessHandle>();
 
-        processes.forEach(process -> freezeTree(process, tree, deadline, freeze));
-        tree.keySet().forEach(ProcessHandle::destroyForcibly);
+        processes.forEach(process -> roots.add(process.toHandle()));
+        processes.forEach(process -> freezeTree(process, tree, deadline, freeze, interrupts));
+        killMembers(tree, roots);
+        sweep(processes, tree, deadline, freeze, interrupts);
+        roots.forEach(ProcessHandle::destroyForcibly);
 
-        return awaitDead(tree.keySet(), deadline);
+        return awaitDead(tree.keySet(), deadline, interrupts);
+    }
+
+    /// `SIGKILL` every member that is not a root, the deepest-found last-first. The roots stay frozen and alive, so the sweep that follows can still read
+    /// what they have started.
+    @Contract
+    private static void killMembers(Map<ProcessHandle, Option<Instant>> tree, Set<ProcessHandle> roots) {
+        var members = new ArrayList<>(tree.keySet());
+
+        Collections.reverse(members);
+        members.stream().filter(member -> !roots.contains(member)).forEach(ProcessHandle::destroyForcibly);
+    }
+
+    /// Read the roots' trees once more before the roots are killed: a member that joined after the freeze's last read (a fork that completed in the
+    /// kernel after the read) is stopped and killed too. Repeats until a read adds nothing, within the bound.
+    @Contract
+    private static void sweep(List<Process> roots,
+                              Map<ProcessHandle, Option<Instant>> tree,
+                              long deadline,
+                              List<String> freeze,
+                              AtomicBoolean interrupts) {
+        for (var again = true; again && System.nanoTime() < deadline;) {
+            var added = roots.stream().flatMap(root -> found(root, tree).stream()).toList();
+
+            again = !added.isEmpty();
+            if (again) {
+                stop(tree, deadline, freeze, interrupts);
+                added.forEach(ProcessHandle::destroyForcibly);
+            }
+        }
     }
 
     /// Stop the tree under `root` and read it again until a read after the stop adds nothing. Each member is stored with the start time it had when read.
@@ -139,15 +180,22 @@ class GitProcesses {
     private static void freezeTree(Process root,
                                    Map<ProcessHandle, Option<Instant>> tree,
                                    long deadline,
-                                   List<String> freeze) {
+                                   List<String> freeze,
+                                   AtomicBoolean interrupts) {
         tree.computeIfAbsent(root.toHandle(), GitProcesses::startOf);
         for (var grown = true; grown && System.nanoTime() < deadline;) {
-            stop(tree, deadline, freeze);
-            var before = tree.size();
-
-            root.descendants().forEach(handle -> tree.computeIfAbsent(handle, GitProcesses::startOf));
-            grown = tree.size() > before;
+            stop(tree, deadline, freeze, interrupts);
+            grown = !found(root, tree).isEmpty();
         }
+    }
+
+    /// The descendants of `root` that `tree` did not have: added to it with the start time they have now.
+    private static List<ProcessHandle> found(Process root, Map<ProcessHandle, Option<Instant>> tree) {
+        var added = root.descendants().filter(handle -> !tree.containsKey(handle)).toList();
+
+        added.forEach(handle -> tree.put(handle, startOf(handle)));
+
+        return added;
     }
 
     private static Option<Instant> startOf(ProcessHandle handle) {
@@ -162,13 +210,14 @@ class GitProcesses {
     /// `SIGSTOP` every live member of `tree` that still has the start time it was read with. Best effort: a member that already ended needs no stop,
     /// and a host without a shell's `kill` still gets the kill that follows, only without the freeze.
     @Contract
-    private static void stop(Map<ProcessHandle, Option<Instant>> tree, long deadline, List<String> freeze) {
+    private static void stop(Map<ProcessHandle, Option<Instant>> tree, long deadline, List<String> freeze, AtomicBoolean interrupts) {
         var command = new ArrayList<String>(freeze);
 
         command.addAll(stoppable(tree));
         try {
             awaitHelper(new ProcessBuilder(command).redirectErrorStream(true).start(),
-                        deadline);
+                        deadline,
+                        interrupts);
         } catch (IOException ignored) {
         // no shell: the kill still follows
         }
@@ -185,26 +234,42 @@ class GitProcesses {
                    .toList();
     }
 
-    /// Wait for the freeze helper no longer than the kill's own deadline, and kill it when it has not finished by then.
+    /// Wait for the freeze helper no longer than the kill's own deadline, and kill it when it has not finished by then. An interrupt that lands during the
+    /// wait is recorded in `interrupts` and the wait goes on: the helper is the freeze.
     @Contract
-    private static void awaitHelper(Process helper, long deadline) {
-        var wait = Math.min(HELPER_BOUND_NANOS,
-                            Math.max(0, deadline - System.nanoTime()));
+    private static void awaitHelper(Process helper, long deadline, AtomicBoolean interrupts) {
+        var helperDeadline = Math.min(System.nanoTime() + HELPER_BOUND_NANOS, deadline);
 
-        try {
-            if (!helper.waitFor(wait, TimeUnit.NANOSECONDS)) {
-                helper.destroyForcibly();
-            }
-        } catch (InterruptedException interrupted) {
+        if (!helperExited(helper, helperDeadline, interrupts)) {
             helper.destroyForcibly();
-            Thread.currentThread().interrupt();
         }
     }
 
-    /// Whether every member of `tree` has ended by `deadline`.
+    private static boolean helperExited(Process helper, long helperDeadline, AtomicBoolean interrupts) {
+        for (;;) {
+            try {
+                return helper.waitFor(Math.max(0, helperDeadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+            } catch (InterruptedException interrupted) {
+                interrupts.set(true);
+            }
+        }
+    }
+
+    /// Whether every member of `tree` has ended by `deadline`. An interrupt that lands during the wait stays on the caller's thread.
     static boolean awaitDead(Set<ProcessHandle> tree, long deadline) {
+        var interrupts = new AtomicBoolean(Thread.interrupted());
+        var dead = awaitDead(tree, deadline, interrupts);
+
+        if (interrupts.get()) {
+            Thread.currentThread().interrupt();
+        }
+
+        return dead;
+    }
+
+    private static boolean awaitDead(Set<ProcessHandle> tree, long deadline, AtomicBoolean interrupts) {
         for (var handle : tree) {
-            if (!ended(handle, deadline)) {
+            if (!ended(handle, deadline, interrupts)) {
                 return false;
             }
         }
@@ -212,18 +277,17 @@ class GitProcesses {
         return true;
     }
 
-    private static boolean ended(ProcessHandle handle, long deadline) {
-        try {
-            handle.onExit().get(Math.max(0, deadline - System.nanoTime()),
-                                TimeUnit.NANOSECONDS);
+    private static boolean ended(ProcessHandle handle, long deadline, AtomicBoolean interrupts) {
+        for (;;) {
+            try {
+                handle.onExit().get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
 
-            return true;
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-
-            return ! handle.isAlive();
-        } catch (Exception notEnded) {
-            return ! handle.isAlive();
+                return true;
+            } catch (InterruptedException interrupted) {
+                interrupts.set(true);
+            } catch (Exception notEnded) {
+                return ! handle.isAlive();
+            }
         }
     }
 }
