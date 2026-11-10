@@ -149,7 +149,7 @@ class GitProcesses {
         return awaitDead(tree.keySet(), deadline, interrupts);
     }
 
-    /// `SIGKILL` every member that is not a root, the deepest-found last-first. The roots stay frozen and alive, so the sweep that follows can still read
+    /// `SIGKILL` every member that is not a root, in the reverse of the order they were found. The roots stay frozen and alive, so the sweep that follows can still read
     /// what they have started.
     @Contract
     private static void killMembers(Map<ProcessHandle, Option<Instant>> tree, Set<ProcessHandle> roots) {

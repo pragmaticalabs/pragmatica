@@ -186,20 +186,30 @@ class GitProcessesTest {
         assertThat(processes.close()).isEmpty();
     }
 
-    /// A member that joins a root's tree only after the freeze's last read (a fork that completed in the kernel after the read) is killed too: the
-    /// roots' trees are read once more before the roots are killed (#2979, fork-window mechanism). The root reports no child on its first read and a
-    /// child on every later one.
+    /// A member that joins a root's tree only after the freeze's last read (a fork that completed in the kernel after the read) is killed too, and so
+    /// is one that joins after that sweep's own read: the roots' trees are read again, before the roots are killed, until a read adds nothing (#2979,
+    /// fork-window mechanism). The root reports no child on its first read, one child on its second and two on every later one.
     @Test
     @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
-    void kill_killsAMemberThatJoinsAfterTheFreezesLastRead() {
+    void kill_killsTheMembersThatJoinAfterTheFreezesLastRead_untilAReadAddsNothing() {
         var reads = new AtomicInteger();
-        var late = mortalHandle(0);
-        var root = mortalHandle(0, () -> reads.incrementAndGet() == 1 ? Stream.<ProcessHandle>empty() : Stream.of(late));
+        var first = mortalHandle(0);
+        var second = mortalHandle(0);
+        var root = mortalHandle(0, () -> childrenAtRead(reads.incrementAndGet(), first, second));
 
         assertThat(GitProcesses.kill(List.of(processOf(root)), 5_000)).as("the whole tree is dead").isTrue();
-        assertThat(late.isAlive()).as("the member found after the freeze is killed").isFalse();
+        assertThat(first.isAlive()).as("the member found after the freeze is killed").isFalse();
+        assertThat(second.isAlive()).as("the member found after the sweep's first read is killed").isFalse();
         assertThat(root.isAlive()).as("the root is killed").isFalse();
-        assertThat(reads.get()).as("the sweep read again after the freeze's last read").isGreaterThanOrEqualTo(2);
+        assertThat(reads.get()).as("the sweep read until a read added nothing").isGreaterThanOrEqualTo(4);
+    }
+
+    private static Stream<ProcessHandle> childrenAtRead(int read, ProcessHandle first, ProcessHandle second) {
+        return switch (read) {
+            case 1 -> Stream.empty();
+            case 2 -> Stream.of(first);
+            default -> Stream.of(first, second);
+        };
     }
 
     /// An interrupt that lands while the freeze helper runs does not kill the helper: the freeze completes (the helper leaves its mark), the tree is
