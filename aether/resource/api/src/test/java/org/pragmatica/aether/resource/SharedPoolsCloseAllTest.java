@@ -209,6 +209,81 @@ class SharedPoolsCloseAllTest {
         assertThat(closes.get()).as("the pool is closed once, by the joiner").isEqualTo(1);
     }
 
+    /// The view-stop path (the one slices use) is parked in the gap between removing the entry and closing the pool:
+    /// `closeAll` running there must report that close, so the claim has to be registered before the removing `compute`.
+    @Test
+    void closeAll_whenViewStopRemovedTheEntryButNotYetClosed_reportsTheClose() throws Exception {
+        var pools = SharedPools.sharedPools(this::closePool);
+        var entries = SharedPools.class.getDeclaredField("entries");
+        var view = acquire(pools, "slice-a").await(TIMEOUT).unwrap();
+
+        entries.setAccessible(true);
+        var parking = new ParkingMap();
+
+        parking.putAll((ConcurrentHashMap<?, ?>) entries.get(pools));
+        entries.set(pools, parking);
+        var stopper = new Thread(view::stop);
+
+        parking.parked = stopper;
+        stopper.start();
+        assertThat(parking.removed.await(10, TimeUnit.SECONDS)).isTrue();
+        var reported = pools.closeAll();
+
+        parking.go.countDown();
+        stopper.join(10_000);
+
+        assertThat(reported).as("closeAll returned with the view stop's pool neither reported nor started").isNotEmpty();
+        assertThat(closes.get()).as("the pool is closed once, by the view stop").isEqualTo(1);
+    }
+
+    /// A release that captured nothing (a non-last holder, an absent key, a stale view stop) still holds a claim on
+    /// `closeAll`'s wait; if it were never resolved, node stop would wait on it forever.
+    @Test
+    void closeAll_afterReleasesThatCapturedNothing_reportsOnlyPromisesThatComplete() {
+        var pools = SharedPools.sharedPools(this::closePool);
+
+        acquire(pools, "slice-a").await(TIMEOUT);
+        acquire(pools, "slice-b").await(TIMEOUT);
+        pools.release("k", "slice-a");
+        pools.release("absent", "slice-a");
+        pools.releaseSlot("k", "slice-b", Promise.promise());
+
+        var reported = pools.closeAll();
+
+        assertThat(closes.get()).as("the pool still held by slice-b is closed once, by the drain").isEqualTo(1);
+        assertThat(reported).allSatisfy(pending -> assertThat(pending.await(TIMEOUT).isSuccess()).as(
+            "a release that captured nothing must resolve its claim, or node stop hangs").isTrue());
+    }
+
+    /// A joiner that saw the node-stop flag after its admission finds its key already drained: it captures nothing,
+    /// yet its claim on `closeAll`'s wait must still resolve.
+    @Test
+    void closeAll_whenRefusedJoinerFindsItsKeyAlreadyDrained_reportsOnlyPromisesThatComplete() throws Exception {
+        var pools = SharedPools.sharedPools(this::closePool);
+        var entries = SharedPools.class.getDeclaredField("entries");
+
+        acquire(pools, "slice-a").await(TIMEOUT);
+        entries.setAccessible(true);
+        var parking = new ParkingMap();
+
+        parking.putAll((ConcurrentHashMap<?, ?>) entries.get(pools));
+        entries.set(pools, parking);
+        parking.parkAt = Integer.MAX_VALUE;
+        parking.afterFirst = pools::closeAll;
+        var joiner = new Thread(() -> acquire(pools, "slice-b").await(TIMEOUT));
+
+        parking.parked = joiner;
+        joiner.start();
+        joiner.join(10_000);
+
+        var reported = pools.closeAll();
+
+        assertThat(joiner.isAlive()).isFalse();
+        assertThat(closes.get()).as("the pool is closed once, by the drain inside the joiner's window").isEqualTo(1);
+        assertThat(reported).allSatisfy(pending -> assertThat(pending.await(TIMEOUT).isSuccess()).as(
+            "a refused joiner that captured nothing must resolve its claim, or node stop hangs").isTrue());
+    }
+
     private static void raise(SharedPools pools, Field flag) {
         try {
             ((AtomicBoolean) flag.get(pools)).set(true);
