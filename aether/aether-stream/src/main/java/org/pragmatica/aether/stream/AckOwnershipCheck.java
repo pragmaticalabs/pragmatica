@@ -36,7 +36,6 @@ public interface AckOwnershipCheck {
     /// fails with [StreamError.OwnershipMovedBeforeAck] when the committed ownership moved, or with the round's own failure
     /// (an unknown outcome as well).
     Promise<Unit> confirm(String stream, int partition, Option<StreamPartitionOwnershipValue> admittedUnder);
-
     /// No check: the default of a manager with no consensus behind it.
     AckOwnershipCheck UNCHECKED = (_, _, _) -> Promise.unitPromise();
 
@@ -56,8 +55,6 @@ public interface AckOwnershipCheck {
 
     @Contract
     private static void startVirtual(Runnable round) {
-        Thread.ofVirtual()
-              .name("ack-ownership-round")
-              .start(round);
+        Thread.ofVirtual().name("ack-ownership-round").start(round);
     }
 }

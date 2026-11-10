@@ -99,9 +99,9 @@ final class BatchedAckOwnershipCheck implements AckOwnershipCheck {
             partitionRounds.scheduled = false;
             partitionRounds.running = true;
         }
-
         // A dependent step: it runs on the thread that resolves the round, so the record read follows the round's local apply.
-        barrier.awaitRound(key.streamName(), key.partition())
+        barrier.awaitRound(key.streamName(),
+                           key.partition())
                .withResult(round -> finishRound(key, partitionRounds, batch, round));
     }
 
