@@ -427,9 +427,9 @@ record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
                              partition,
                              electable(current, live, liveIsr, hosting),
                              desired).map(owner -> moved(current, owner, committedEpoch, liveIsr, fenced))
-                                     .orElse(() -> live.contains(current.owner())
-                                                   ? shrunk(current, liveIsr, fenced)
-                                                   : refused(current));
+                            .orElse(() -> live.contains(current.owner())
+                                          ? shrunk(current, liveIsr, fenced)
+                                          : refused(current));
     }
 
     /// The owner counts as live for the planned-move branch when it is live AND may own the partition (hosts the slice, for
