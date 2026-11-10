@@ -142,6 +142,13 @@ class EmberSilentPartitionMinorityOwnerAcksTest {
         var ownerId = cf2Stream.record().owner();
         var owner = cluster.getNode(ownerId.id()).unwrap();
 
+        assertThat(owner.streamPartitionManager().confirmationFactorFor(cf2Stream.engineKey()))
+            .as("the config-apply hold opened the #2972 window: ownership is committed and visible, the owner has not materialised the stream")
+            .isZero();
+
+        awaitOwnerFactor(owner, cf2Stream.engineKey(), 2);
+        awaitOwnerFactor(owner, cf1Stream.engineKey(), 1);
+
         assertThat(owner.streamPartitionManager().confirmationFactorFor(cf2Stream.engineKey())).as("control: the CF 2 stream's factor").isEqualTo(2);
         assertThat(owner.streamPartitionManager().confirmationFactorFor(cf1Stream.engineKey())).as("control: the CF 1 stream's factor").isEqualTo(1);
 
@@ -214,6 +221,84 @@ class EmberSilentPartitionMinorityOwnerAcksTest {
         assertThat(windowMs).as("detection window from the cut to the gate's refusal, ms").isLessThanOrEqualTo(PASSIVE_BOUND_MS);
         assertThat(cf1After).as("CF 1: no write started after the owner gate refused may be acknowledged (window %d ms)", windowMs).isEmpty();
         assertThat(cf2AfterCut).as("CF 2: no write started after the cut may be acknowledged: the ISR is unreachable").isEmpty();
+    }
+
+    /// #2972, the product question: a client publish that arrives INSIDE the window (ownership committed, the owner has not
+    /// materialised the stream) must be acknowledged once the owner materialises, or refused with a retryable 503 that the
+    /// client's retry turns into an acknowledgement; never a wrong confirmation factor, a lost or duplicated write, or a
+    /// non-retryable error. One client publishes through a non-owner node (forwarded to the owner), one through the owner's own
+    /// management port.
+    @Test
+    @Timeout(600)
+    void publishInsideTheConfigApplyWindow_isAcknowledgedOrRefusedRetryably_andLandsExactlyOnce() {
+        cluster = EmberTestPorts.startedCluster(PORTS, this::fiveNodes, START_BOUND);
+        awaitLeader();
+
+        var leaderId = cluster.currentLeader().unwrap();
+
+        holdConfigApplyOnFollowers(leaderId);
+
+        var names = names("silentcf2-", STREAMS_PER_FACTOR);
+
+        names.forEach(this::createStream);
+
+        var followerOwned = names.stream()
+                                 .map(this::awaitOwnership)
+                                 .filter(chosen -> !chosen.record().owner().id().equals(leaderId))
+                                 .toList();
+
+        assertThat(followerOwned).as("at least two of the streams are owned by a non-leader (gated) node").hasSizeGreaterThanOrEqualTo(2);
+
+        var viaForward = followerOwned.get(0);
+        var viaOwner = followerOwned.get(1);
+        var ownerOfForward = cluster.getNode(viaForward.record().owner().id()).unwrap();
+        var ownerOfDirect = cluster.getNode(viaOwner.record().owner().id()).unwrap();
+
+        assertThat(ownerOfForward.streamPartitionManager().confirmationFactorFor(viaForward.engineKey())).as("window open for the forwarded stream").isZero();
+        assertThat(ownerOfDirect.streamPartitionManager().confirmationFactorFor(viaOwner.engineKey())).as("window open for the direct stream").isZero();
+
+        var forwardStatuses = new CopyOnWriteArrayList<String>();
+        var directStatuses = new CopyOnWriteArrayList<String>();
+        var forwardPort = cluster.status().nodes().stream().filter(node -> !node.id().equals(viaForward.record().owner().id())).findFirst().orElseThrow().mgmtPort();
+        var directPort = cluster.status().nodes().stream().filter(node -> node.id().equals(viaOwner.record().owner().id())).findFirst().orElseThrow().mgmtPort();
+        var forwardClient = Thread.ofPlatform().unstarted(() -> publishUntilAcknowledged(forwardPort, viaForward.name(), forwardStatuses));
+        var directClient = Thread.ofPlatform().unstarted(() -> publishUntilAcknowledged(directPort, viaOwner.name(), directStatuses));
+
+        forwardClient.start();
+        directClient.start();
+        join(forwardClient);
+        join(directClient);
+
+        System.out.printf("WINDOWPUBLISH forwardStatuses=%s directStatuses=%s%n", forwardStatuses, directStatuses);
+
+        assertThat(forwardStatuses).as("forwarded client: every refusal is retryable (503) and the last answer is a 2xx").isNotEmpty().allSatisfy(this::retryableOrAcknowledged);
+        assertThat(forwardStatuses.getLast()).startsWith("2");
+        assertThat(directStatuses).as("owner-direct client: every refusal is retryable (503) and the last answer is a 2xx").isNotEmpty().allSatisfy(this::retryableOrAcknowledged);
+        assertThat(directStatuses.getLast()).startsWith("2");
+        awaitOwnerFactor(ownerOfForward, viaForward.engineKey(), 2);
+        awaitOwnerFactor(ownerOfDirect, viaOwner.engineKey(), 2);
+        assertThat(ownerOfForward.streamPartitionManager().nextExpectedOffset(viaForward.engineKey(), 0)).as("forwarded stream: exactly one record landed").isEqualTo(1L);
+        assertThat(ownerOfDirect.streamPartitionManager().nextExpectedOffset(viaOwner.engineKey(), 0)).as("owner-direct stream: exactly one record landed").isEqualTo(1L);
+    }
+
+    private void retryableOrAcknowledged(String answer) {
+        assertThat(answer.startsWith("2") || answer.startsWith("503")).as("a publish answer inside the window is a 2xx or a retryable 503, got: %s", answer).isTrue();
+    }
+
+    private void publishUntilAcknowledged(int mgmtPort, String name, List<String> statuses) {
+        var deadline = System.currentTimeMillis() + OWNERSHIP_BUDGET_MS;
+
+        while (System.currentTimeMillis() < deadline) {
+            var answer = post(mgmtPort, "/api/v1/streams/" + NAMESPACE + "/" + name + "/" + VERSION + "/publish", "{\"data\":\"in-window\"}");
+
+            statuses.add(answer.length() > 160 ? answer.substring(0, 160) : answer);
+
+            if (answer.startsWith("2") || !answer.startsWith("503")) {
+                return;
+            }
+
+            sleepQuietly(200L);
+        }
     }
 
     private Thread producer(AetherNode owner, Chosen stream, List<Attempt> sink, AtomicBoolean running) {
@@ -289,6 +374,21 @@ class EmberSilentPartitionMinorityOwnerAcksTest {
                .stream()
                .filter(node -> !node.self().id().equals(leaderId))
                .forEach(node -> node.streamPartitionManager().configApplyGateForTest(name -> holdUntil(openAtNs, name)));
+    }
+
+    /// The owner applies a committed `StreamConfigKey` through its own notification path, after the KV store holds it, so the
+    /// ownership record [#awaitOwnership] reads can be visible while this owner has not yet materialised the stream and its factor
+    /// reads 0 (#2972). Waits, bounded, for the condition the controls assert on.
+    private static void awaitOwnerFactor(AetherNode owner, String engineKey, int expected) {
+        var deadline = System.currentTimeMillis() + OWNERSHIP_BUDGET_MS;
+
+        while (System.currentTimeMillis() < deadline && owner.streamPartitionManager().confirmationFactorFor(engineKey) != expected) {
+            sleepQuietly(50L);
+        }
+
+        assertThat(owner.streamPartitionManager().confirmationFactorFor(engineKey))
+            .as("the owner %s materialised %s with confirmation factor %d within %d ms", owner.self().id(), engineKey, expected, OWNERSHIP_BUDGET_MS)
+            .isEqualTo(expected);
     }
 
     private static void holdUntil(AtomicLong openAtNs, String stream) {
