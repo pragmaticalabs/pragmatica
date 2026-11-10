@@ -201,6 +201,20 @@ class ForwardReplyResenderTest {
         assertThat(writes).hasSize(3);
     }
 
+    /// Production wiring pin: the production factory (real clock, real jittered backoff supplier; only the scheduler is captured) gives
+    /// each reply its own backoff. One backoff shared by the replies would make the second reply's first hold the second hold (400-600 ms).
+    @Test
+    void productionResender_holdsASecondRefusedReplyForTheFirstHold_notAnEscalatedOne() {
+        script.add(refused());
+        script.add(refused());
+        var resender = ForwardReplyResender.forwardReplyResender((task, hold) -> holds.add(hold));
+
+        resender.deliver(network, ENTRY, REPLY, timeSpan(1).hours());
+        resender.deliver(network, ENTRY, reply("req-2"), timeSpan(1).hours());
+
+        assertThat(holds).extracting(TimeSpan::millis).hasSize(2).allSatisfy(hold -> assertThat(hold).isBetween(200L, 300L));
+    }
+
     private ForwardReplyResender resender(DoubleSupplier random) {
         return ForwardReplyResender.forwardReplyResender((task, hold) -> {
                                                              holds.add(hold);

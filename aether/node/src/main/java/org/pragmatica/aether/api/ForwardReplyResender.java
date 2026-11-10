@@ -61,9 +61,12 @@ final class ForwardReplyResender {
 
     /// The production resender: shared scheduler, system nano clock, jittered backoff.
     static ForwardReplyResender forwardReplyResender() {
-        return forwardReplyResender(ForwardReplyResender::scheduleShared,
-                                    System::nanoTime,
-                                    RefusalBackoff::refusalBackoff);
+        return forwardReplyResender(ForwardReplyResender::scheduleShared);
+    }
+
+    /// The production resender with only the scheduler replaced: the clock and the per-reply jittered backoff stay production.
+    static ForwardReplyResender forwardReplyResender(BiConsumer<Runnable, TimeSpan> scheduler) {
+        return forwardReplyResender(scheduler, System::nanoTime, RefusalBackoff::refusalBackoff);
     }
 
     static ForwardReplyResender forwardReplyResender(BiConsumer<Runnable, TimeSpan> scheduler,
