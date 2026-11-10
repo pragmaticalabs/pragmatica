@@ -15,7 +15,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import org.junit.jupiter.api.AfterEach;
@@ -162,7 +161,7 @@ class ForwardedPublishEventLoopTest {
     @Test
     void continuationThread_isNotTheLaneResolver_whenTheCommitArrivesInTime() {
         var seen = new ConcurrentLinkedQueue<Thread>();
-        var resolver = new AtomicReference<Thread>();
+        var resolver = new CompletableFuture<Thread>();
         owner.ownerEpochSource((_, _) -> recordThread(seen));
         forwardOnTheLoop("first", LAGGING);
         node.awaitPut();
@@ -172,9 +171,9 @@ class ForwardedPublishEventLoopTest {
         node.commit();
         response("first", BOUNDED_MS);
 
-        assertThat(resolver.get()).as("control: the lane settled and its resolver was observed").isNotNull();
+        assertThat(resolverWithin(resolver)).as("control: the lane settled and its resolver was observed").isNotNull();
         assertThat(seen).as("control: the append ran").isNotEmpty();
-        assertThat(seen).as("not the thread that resolved the lane").doesNotContain(resolver.get());
+        assertThat(seen).as("not the thread that resolved the lane").doesNotContain(resolverWithin(resolver));
         assertThat(seen).as("not the timeout scheduler").noneMatch(ForwardedPublishEventLoopTest::isTimeoutScheduler);
     }
 
@@ -283,8 +282,18 @@ class ForwardedPublishEventLoopTest {
         }
     }
 
-    private static Unit observeThread(AtomicReference<Thread> resolver) {
-        resolver.set(Thread.currentThread());
+    /// The lane's own dependent runs on the thread that settles the lane, which can lag the wait's continuation (an earlier
+    /// dependent of the same lane): the answer may arrive before the observer ran, so the observation is awaited, bounded.
+    private static Thread resolverWithin(CompletableFuture<Thread> resolver) {
+        try {
+            return resolver.get(BOUNDED_MS, TimeUnit.MILLISECONDS);
+        } catch (Exception e) {
+            return fail("the lane's resolver was never observed: " + e);
+        }
+    }
+
+    private static Unit observeThread(CompletableFuture<Thread> resolver) {
+        resolver.complete(Thread.currentThread());
         return Unit.unit();
     }
 
