@@ -175,7 +175,7 @@ final class SharedPools {
 
         entries.compute(key, (_, current) -> drain(current, late));
         option(late.removed).onPresent(removed -> close(removed).onResult(late.pending::resolve))
-                           .onEmpty(() -> late.pending.succeed(Unit.unit()));
+              .onEmpty(() -> late.pending.succeed(Unit.unit()));
 
         return refusal.promise();
     }
