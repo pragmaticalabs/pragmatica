@@ -1567,18 +1567,24 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// uncommitted life.
     ///
     /// The continuation hops off whichever thread ended the wait ([#offResolver]): a timed-out wait ends on the JVM-wide
-    /// single `promise-timeout-scheduler` thread, an in-time commit on the thread that resolves the lane, and the
-    /// post-wait work (ordered section, WAL frame write, transport send) belongs on neither (#2952).
-    private static Promise<Unit> boundedCommitWait(Promise<Unit> lane) {
-        return lane.map(_ -> unit())
-                   .timeout(PUBLISH_COMMIT_WAIT)
-                   .recover(_ -> unit())
-                   .flatMap(StreamPartitionManager::offResolver);
+    /// `promise-timeout-scheduler` pool, an in-time commit on the thread that resolves the lane, and the
+    /// post-wait work (ordered section, WAL frame write, transport send) belongs on neither (#2952, #2997).
+    static Promise<Unit> boundedCommitWait(Promise<Unit> lane) {
+        return offResolver(lane.map(_ -> unit())
+                               .timeout(PUBLISH_COMMIT_WAIT)
+                               .recover(_ -> unit()));
     }
 
-    /// A fresh promise resolved on the async executor's own virtual thread, so what is composed after it runs there.
-    private static Promise<Unit> offResolver(Unit settled) {
-        return Promise.promise(Result::unitResult);
+    /// The hop is unconditional (#2997): the returned promise is resolved ONLY by a task submitted to the async executor
+    /// once `waited` settles, so a continuation attached before that runs on the executor's virtual thread, never on the
+    /// lane resolver or the timeout scheduler. (The earlier `flatMap` into a fresh async promise skipped the hop whenever
+    /// that promise had already resolved by the time `flatMap` checked it: the flatMap result was then resolved inline on
+    /// the settling thread.) A continuation attached after the resolution runs on the attaching thread, as for any promise.
+    private static Promise<Unit> offResolver(Promise<Unit> waited) {
+        var off = Promise.<Unit> promise();
+
+        waited.onResultRun(() -> off.async(Result::unitResult));
+        return off;
     }
 
     /// #1564: create a DECLARED stream — a `[streams.X]` resource, a durable topic (and its dead-letter stream)

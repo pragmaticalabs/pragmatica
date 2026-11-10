@@ -58,6 +58,7 @@ class ForwardedPublishEventLoopTest {
     private static final long RESPONSIVE_MS = 1_000L;
     /// The commit wait (2 s) plus generous slack for a loaded machine: the bounded refusal arrives within it.
     private static final long BOUNDED_MS = 6_000L;
+    private static final int ITERATIONS = 200;
     private static final StreamConfig COMMITTED = StreamConfig.streamConfig(LAGGING,
                                                                             1,
                                                                             RetentionPolicy.retentionPolicy(),
@@ -183,6 +184,47 @@ class ForwardedPublishEventLoopTest {
         assertThat(answered.retryable()).as("fixture: the wait elapsed without a commit: %s", answered).isTrue();
         assertThat(seen).as("control: the post-wait work ran").isNotEmpty();
         assertThat(seen).as("not the timeout scheduler that fired the wait").noneMatch(ForwardedPublishEventLoopTest::isTimeoutScheduler);
+    }
+
+    /// #2997: the hop is a guarantee of the wait itself, not of a lucky interleaving. A continuation attached before the lane
+    /// settles must run on the async executor's thread, never on the thread that resolved the lane, across many
+    /// resolutions (the earlier `flatMap` into a fresh async promise skipped the hop whenever that promise had already
+    /// resolved when `flatMap` checked it). Controls: every continuation ran, and every resolver thread was observed.
+    @Test
+    void boundedCommitWait_resumesOffTheResolver_acrossManyResolutions() throws InterruptedException {
+        var resumedOn = new ConcurrentLinkedQueue<Thread>();
+        var resolvedOn = new ConcurrentLinkedQueue<Thread>();
+
+        for (var i = 0; i < ITERATIONS; i++) {
+            resolveOnFreshThread(resumedOn, resolvedOn);
+        }
+
+        assertThat(resumedOn).as("control: every continuation ran").hasSize(ITERATIONS);
+        assertThat(resolvedOn).as("control: every resolver thread was observed").hasSize(ITERATIONS);
+        assertThat(resumedOn).as("no continuation ran on the thread that resolved its lane")
+                             .doesNotContainAnyElementsOf(resolvedOn);
+    }
+
+    private static void resolveOnFreshThread(ConcurrentLinkedQueue<Thread> resumedOn,
+                                             ConcurrentLinkedQueue<Thread> resolvedOn) throws InterruptedException {
+        var lane = Promise.<Unit> promise();
+        var resumed = StreamPartitionManager.boundedCommitWait(lane)
+                                            .map(_ -> recordCurrent(resumedOn));
+        var resolver = Thread.ofPlatform().unstarted(() -> resolveLane(lane, resolvedOn));
+
+        resolver.start();
+        resumed.await();
+        resolver.join();
+    }
+
+    private static void resolveLane(Promise<Unit> lane, ConcurrentLinkedQueue<Thread> resolvedOn) {
+        resolvedOn.add(Thread.currentThread());
+        lane.succeed(Unit.unit());
+    }
+
+    private static Unit recordCurrent(ConcurrentLinkedQueue<Thread> seen) {
+        seen.add(Thread.currentThread());
+        return Unit.unit();
     }
 
     private static Unit observeThread(AtomicReference<Thread> resolver) {
