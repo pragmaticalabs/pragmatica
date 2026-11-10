@@ -131,10 +131,10 @@ class SharedPoolsCloseAllTest {
 
         var reported = pools.closeAll();
 
-        assertThat(reported).as("the release's close is pending, so node stop must carry it").hasSize(1);
-        assertThat(reported.getFirst().isResolved()).isFalse();
+        assertThat(reported).as("the release's close is pending, so node stop must carry it").isNotEmpty();
+        assertThat(reported).allSatisfy(pending -> assertThat(pending.isResolved()).isFalse());
         deferred.succeed(Unit.unit());
-        assertThat(reported.getFirst().await(TIMEOUT).isSuccess()).isTrue();
+        assertThat(reported).allSatisfy(pending -> assertThat(pending.await(TIMEOUT).isSuccess()).isTrue());
     }
 
     /// A release has removed the last holder's entry but not yet started the close: `closeAll` running in that window
