@@ -19,6 +19,7 @@ import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -119,8 +120,6 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #1278 ruling F: how long the publish auto-create path waits for its proposed config to commit and apply here.
     /// Inside the 5 s forward timeout that made this path asynchronous; past it the publish refuses retriably.
     private static final TimeSpan PUBLISH_COMMIT_WAIT = TimeSpan.timeSpan(2).seconds();
-    /// The settling task of [#offResolver]; a constant so `async` resolves to the supplier overload, not the `Runnable` one.
-    private static final Supplier<Result<Unit>> SETTLED = Result::unitResult;
     /// Bound on dropping or checking a stream's durable footprint (a local ref write and one forced snapshot).
     private static final TimeSpan FOOTPRINT_TIMEOUT = TimeSpan.timeSpan(30).seconds();
     private static final Logger log = LoggerFactory.getLogger(StreamPartitionManager.class);
@@ -1572,7 +1571,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// `promise-timeout-scheduler` pool, an in-time commit on the thread that resolves the lane, and the
     /// post-wait work (ordered section, WAL frame write, transport send) belongs on neither (#2952, #2997).
     static Promise<Unit> boundedCommitWait(Promise<Unit> lane) {
-        return offResolver(lane.map(_ -> unit()).timeout(PUBLISH_COMMIT_WAIT).recover(_ -> unit()));
+        return boundedCommitWait(lane, task -> Promise.async(task));
+    }
+
+    /// Test seam (#2997): `hop` runs the task that resolves the returned promise; production passes the async executor.
+    /// A test executor that finishes the task before `execute` returns forces the "already resolved when attached" ordering.
+    static Promise<Unit> boundedCommitWait(Promise<Unit> lane, Executor hop) {
+        return offResolver(lane.map(_ -> unit()).timeout(PUBLISH_COMMIT_WAIT).recover(_ -> unit()), hop);
     }
 
     /// The hop is unconditional (#2997): the returned promise is resolved ONLY by a task submitted to the async executor
@@ -1580,10 +1585,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// lane resolver or the timeout scheduler. (The earlier `flatMap` into a fresh async promise skipped the hop whenever
     /// that promise had already resolved by the time `flatMap` checked it: the flatMap result was then resolved inline on
     /// the settling thread.) A continuation attached after the resolution runs on the attaching thread, as for any promise.
-    private static Promise<Unit> offResolver(Promise<Unit> waited) {
+    private static Promise<Unit> offResolver(Promise<Unit> waited, Executor hop) {
         var off = Promise.<Unit> promise();
 
-        waited.onResultRun(() -> off.async(SETTLED));
+        waited.onResultRun(() -> hop.execute(() -> off.succeed(unit())));
 
         return off;
     }

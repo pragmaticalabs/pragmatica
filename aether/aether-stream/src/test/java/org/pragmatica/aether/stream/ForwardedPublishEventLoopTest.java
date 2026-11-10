@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -209,10 +210,53 @@ class ForwardedPublishEventLoopTest {
                              .doesNotContainAnyElementsOf(resolvedOn);
     }
 
+    /// Runs the task on a fresh thread and joins it before `execute` returns: the hop's promise is ALREADY resolved when the
+    /// wait's continuation is attached, the ordering the earlier `flatMap` shape mishandled.
+    private static final Executor RUN_BEFORE_RETURN = ForwardedPublishEventLoopTest::runToCompletionOnFreshThread;
+
+    private static void runToCompletionOnFreshThread(Runnable task) {
+        var worker = Thread.ofPlatform().unstarted(task);
+
+        worker.start();
+        joinUninterrupted(worker);
+    }
+
+    private static void joinUninterrupted(Thread worker) {
+        try {
+            worker.join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            fail("interrupted joining the hop task: " + e);
+        }
+    }
+
+    /// #2997, deterministic: with an executor that completes the hop task before `execute` returns, the continuation must
+    /// still never run on the thread that resolved the lane. The old `flatMap` shape fails this every time (300/300).
+    @Test
+    void boundedCommitWait_resumesOffTheResolver_whenTheHopFinishesBeforeAttach() throws InterruptedException {
+        var resumedOn = new ConcurrentLinkedQueue<Thread>();
+        var resolvedOn = new ConcurrentLinkedQueue<Thread>();
+
+        for (var i = 0; i < ITERATIONS; i++) {
+            resolveOnFreshThread(resumedOn, resolvedOn, RUN_BEFORE_RETURN);
+        }
+
+        assertThat(resumedOn).as("control: every continuation ran").hasSize(ITERATIONS);
+        assertThat(resolvedOn).as("control: every resolver thread was observed").hasSize(ITERATIONS);
+        assertThat(resumedOn).as("no continuation ran on the thread that resolved its lane")
+                             .doesNotContainAnyElementsOf(resolvedOn);
+    }
+
     private static void resolveOnFreshThread(ConcurrentLinkedQueue<Thread> resumedOn,
                                              ConcurrentLinkedQueue<Thread> resolvedOn) throws InterruptedException {
+        resolveOnFreshThread(resumedOn, resolvedOn, task -> Promise.async(task));
+    }
+
+    private static void resolveOnFreshThread(ConcurrentLinkedQueue<Thread> resumedOn,
+                                             ConcurrentLinkedQueue<Thread> resolvedOn,
+                                             Executor hop) throws InterruptedException {
         var lane = Promise.<Unit> promise();
-        var resumed = StreamPartitionManager.boundedCommitWait(lane)
+        var resumed = StreamPartitionManager.boundedCommitWait(lane, hop)
                                             .map(_ -> recordCurrent(resumedOn));
         var resolver = Thread.ofPlatform().unstarted(() -> resolveLane(lane, resolvedOn));
 
