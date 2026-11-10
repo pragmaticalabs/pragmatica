@@ -160,7 +160,7 @@ class KvBackupStopFlushRaceTest {
         var ended = harness.done().await(20, TimeUnit.SECONDS);
         var elapsedMs = (System.nanoTime() - started) / 1_000_000;
 
-        harness.executor().shutdownNow();
+        settle(harness.executor());
         assertThat(ended).as("the task ended on its own, at the deadline").isTrue();
         assertThat(harness.thrown().get()).as("and not by an error such as StackOverflowError").isNull();
         assertThat(elapsedMs).isBetween(2_900L, 8_000L);
@@ -185,9 +185,15 @@ class KvBackupStopFlushRaceTest {
         Files.createFile(release);
         var ended = harness.done().await(20, TimeUnit.SECONDS);
 
-        harness.executor().shutdownNow();
+        settle(harness.executor());
         assertThat(ended).as("control: the pass ended").isTrue();
         assertThat(Files.exists(stamps) ? Files.readString(stamps) : "").as("no push started after the stop").isEmpty();
+    }
+
+    /// Ends the worker and waits for it: a worker still unwinding writes into the `@TempDir` while JUnit deletes it (one cleanup failure in 50 rounds under CPU load).
+    private static void settle(java.util.concurrent.ExecutorService executor) throws InterruptedException {
+        executor.shutdownNow();
+        assertThat(executor.awaitTermination(15, TimeUnit.SECONDS)).as("the worker ended before the temp dir is deleted").isTrue();
     }
 
     private static void awaitFile(Path file) throws InterruptedException {
@@ -231,7 +237,7 @@ class KvBackupStopFlushRaceTest {
         harness.service().stop();
         var ended = harness.done().await(10, TimeUnit.SECONDS);
 
-        harness.executor().shutdownNow();
+        settle(harness.executor());
         assertThat(ended).as("the stop ended the loop").isTrue();
         assertThat(harness.thrown().get()).isNull();
     }
@@ -246,7 +252,7 @@ class KvBackupStopFlushRaceTest {
         harness.service().stopFlushed(TimeSpan.timeSpan(120).seconds());
         var ended = harness.done().await(15, TimeUnit.SECONDS);
 
-        harness.executor().shutdownNow();
+        settle(harness.executor());
         assertThat(ended).as("the clock passed the deadline and the loop ended, unstopped and uninterrupted").isTrue();
         assertThat(harness.thrown().get()).isNull();
     }
@@ -489,7 +495,7 @@ class KvBackupStopFlushRaceTest {
         assertThat(Files.exists(stamps) ? Files.readString(stamps) : "").as("the hook never started, before or after the return").isEmpty();
         assertThat(harness.warnings()).as("the killed push is the flush's own failure; the stop itself reports no live tree")
                                       .noneMatch(warning -> warning.detail().contains("still running"));
-        harness.executor().shutdownNow();
+        settle(harness.executor());
     }
 
     private static boolean isGit(ProcessHandle handle) {
@@ -512,7 +518,7 @@ class KvBackupStopFlushRaceTest {
 
         assertThat(git(Path.of(remote), "fsck", "--no-progress")).doesNotContain("error", "fatal");
         assertThat(git(Path.of(remote), "rev-parse", "backup").strip()).as("the remote head did not move").isEqualTo(seededHead);
-        harness.executor().shutdownNow();
+        settle(harness.executor());
     }
 
     /// Once stopped, the repository starts no git at all: the guard and the spawn are one step, so a push that was past the service's own check
@@ -541,7 +547,7 @@ class KvBackupStopFlushRaceTest {
         slowReceivePack(harness.repository(), started, temp);
         harness.service().stopFlushed(TimeSpan.timeSpan(120).seconds());
         awaitFile(started);
-        harness.executor().shutdownNow();
+        settle(harness.executor());
         Thread.sleep(2_500);
 
         assertThat(Files.exists(stamps) ? Files.readString(stamps) : "").as("the hook never started").isEmpty();
@@ -581,7 +587,7 @@ class KvBackupStopFlushRaceTest {
         }
         assertThat(harness.warnings()).as("the stop's report (the killed push may add the flush's own failure, depending on which side wins the race)")
                                       .anyMatch(warning -> warning.code() == Code.BACKUP_STOP_FLUSH_FAILED && warning.detail().contains("still running"));
-        harness.executor().shutdownNow();
+        settle(harness.executor());
     }
 
     // ---------------- helpers ----------------
