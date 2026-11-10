@@ -262,7 +262,7 @@ class EmberReplicaRelayTest {
 
     /// #2995: `Option.option(null)` is empty, so an unset stalled core used to equal a joiner with no source yet, and the await passed with a null core.
     static boolean followsStalledCore(Option<String> source, String stalledCore) {
-        return source.equals(Option.option(stalledCore));
+        return stalledCore != null && source.equals(Option.some(stalledCore));
     }
 
     /// The first core a newcomer (a node not in `registered`) asks for a snapshot is the one that never answers; every other core answers.
