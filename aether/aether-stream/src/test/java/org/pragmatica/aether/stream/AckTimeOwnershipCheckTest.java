@@ -178,6 +178,26 @@ class AckTimeOwnershipCheckTest {
                                     .isInstanceOf(StreamError.OwnershipMovedBeforeAck.class);
     }
 
+    /// An ack wait registered after this node already applied a record naming ANOTHER owner (a control run's await, or an
+    /// append admitted before the move and awaited after it): the ownership is unchanged by the round, but it does not name
+    /// this node, so the acknowledgement does not complete.
+    @Test
+    void awaitReplication_admittedUnderAnotherOwnersRecord_isOutcomeUnknown() {
+        var offset = owner.publishLocalAtFloor(STREAM, PARTITION, bytes("moved-before-await"), 1L, 1)
+                          .unwrap();
+
+        committed.set(Option.some(Y_AT_3));
+        localView.set(Option.some(Y_AT_3));
+        var ack = owner.awaitReplication(STREAM, PARTITION, offset, 1);
+
+        startQueuedRounds();
+        var outcome = ack.timeout(ACK_BOUND)
+                         .await();
+
+        assertThat(causeOf(outcome)).as("%s", outcome)
+                                    .isInstanceOf(StreamError.OwnershipMovedBeforeAck.class);
+    }
+
     @Test
     void awaitReplication_roundFails_isOutcomeUnknownWithTheRoundCause() {
         var ack = publishAndAwait("timeout");
