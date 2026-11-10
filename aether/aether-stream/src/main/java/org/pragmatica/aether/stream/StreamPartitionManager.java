@@ -2099,7 +2099,6 @@ public final class StreamPartitionManager implements AutoCloseable {
         var streamName = put.cause().key().streamName();
 
         configApplyGate.accept(streamName);
-
         var config = put.cause().value().config();
 
         entries.appliedConfigs().put(streamName, config);
