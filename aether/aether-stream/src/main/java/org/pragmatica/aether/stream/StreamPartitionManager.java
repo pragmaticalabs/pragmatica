@@ -19,6 +19,7 @@ import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -1570,18 +1571,30 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// uncommitted life.
     ///
     /// The continuation hops off whichever thread ended the wait ([#offResolver]): a timed-out wait ends on the JVM-wide
-    /// single `promise-timeout-scheduler` thread, an in-time commit on the thread that resolves the lane, and the
-    /// post-wait work (ordered section, WAL frame write, transport send) belongs on neither (#2952).
-    private static Promise<Unit> boundedCommitWait(Promise<Unit> lane) {
-        return lane.map(_ -> unit())
-                   .timeout(PUBLISH_COMMIT_WAIT)
-                   .recover(_ -> unit())
-                   .flatMap(StreamPartitionManager::offResolver);
+    /// `promise-timeout-scheduler` pool, an in-time commit on the thread that resolves the lane, and the
+    /// post-wait work (ordered section, WAL frame write, transport send) belongs on neither (#2952, #2997).
+    static Promise<Unit> boundedCommitWait(Promise<Unit> lane) {
+        return boundedCommitWait(lane, task -> Promise.async(task));
     }
 
-    /// A fresh promise resolved on the async executor's own virtual thread, so what is composed after it runs there.
-    private static Promise<Unit> offResolver(Unit settled) {
-        return Promise.promise(Result::unitResult);
+    /// Test seam (#2997): `hop` runs the task that resolves the returned promise; production passes the async executor.
+    /// A test executor that finishes the task before `execute` returns forces the "already resolved when attached" ordering.
+    static Promise<Unit> boundedCommitWait(Promise<Unit> lane, Executor hop) {
+        return offResolver(lane.map(_ -> unit()).timeout(PUBLISH_COMMIT_WAIT).recover(_ -> unit()),
+                           hop);
+    }
+
+    /// The hop is unconditional (#2997): the returned promise is resolved ONLY by a task submitted to the async executor
+    /// once `waited` settles, so a continuation attached before that runs on the executor's virtual thread, never on the
+    /// lane resolver or the timeout scheduler. (The earlier `flatMap` into a fresh async promise skipped the hop whenever
+    /// that promise had already resolved by the time `flatMap` checked it: the flatMap result was then resolved inline on
+    /// the settling thread.) A continuation attached after the resolution runs on the attaching thread, as for any promise.
+    private static Promise<Unit> offResolver(Promise<Unit> waited, Executor hop) {
+        var off = Promise.<Unit> promise();
+
+        waited.onResultRun(() -> hop.execute(() -> off.succeed(unit())));
+
+        return off;
     }
 
     /// #1564: create a DECLARED stream — a `[streams.X]` resource, a durable topic (and its dead-letter stream)

@@ -9,12 +9,12 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import org.junit.jupiter.api.AfterEach;
@@ -58,6 +58,7 @@ class ForwardedPublishEventLoopTest {
     private static final long RESPONSIVE_MS = 1_000L;
     /// The commit wait (2 s) plus generous slack for a loaded machine: the bounded refusal arrives within it.
     private static final long BOUNDED_MS = 6_000L;
+    private static final int ITERATIONS = 200;
     private static final StreamConfig COMMITTED = StreamConfig.streamConfig(LAGGING,
                                                                             1,
                                                                             RetentionPolicy.retentionPolicy(),
@@ -152,23 +153,27 @@ class ForwardedPublishEventLoopTest {
     /// The post-wait work (ordered section, WAL frame write, transport send) must run on neither thread that can finish the
     /// wait: the one that resolves the name's commit lane (in production the consensus apply / KV dispatcher side, the
     /// thread #2952 freed) nor the JVM-wide single `promise-timeout-scheduler` thread. Control: the first attempt runs on
-    /// the caller thread, and the lane's resolver is read from a synchronous dependent registered on the lane itself
+    /// the caller thread, and (#2997) the loop is drained before the commit so the wait is attached while the lane is open --
+    /// without the barrier the loop itself can settle the lane (its `Put`-resolution dependent is attached after an early
+    /// commit), the loop is then both the resolver and the first attempt's thread, and the assertion would sample a
+    /// thread the product never promised. The lane's resolver is read from a synchronous dependent registered on the lane itself
     /// (synchronous dependents run inline on the resolving thread, as the wait's own continuation did before the hop).
     @Test
     void continuationThread_isNotTheLaneResolver_whenTheCommitArrivesInTime() {
         var seen = new ConcurrentLinkedQueue<Thread>();
-        var resolver = new AtomicReference<Thread>();
+        var resolver = new CompletableFuture<Thread>();
         owner.ownerEpochSource((_, _) -> recordThread(seen));
         forwardOnTheLoop("first", LAGGING);
         node.awaitPut();
+        awaitLoopIdle();
         owner.commitLaneOf(LAGGING)
              .onPresent(lane -> lane.map(_ -> observeThread(resolver)));
         node.commit();
         response("first", BOUNDED_MS);
 
-        assertThat(resolver.get()).as("control: the lane settled and its resolver was observed").isNotNull();
+        assertThat(resolverWithin(resolver)).as("control: the lane settled and its resolver was observed").isNotNull();
         assertThat(seen).as("control: the append ran").isNotEmpty();
-        assertThat(seen).as("not the thread that resolved the lane").doesNotContain(resolver.get());
+        assertThat(seen).as("not the thread that resolved the lane").doesNotContain(resolverWithin(resolver));
         assertThat(seen).as("not the timeout scheduler").noneMatch(ForwardedPublishEventLoopTest::isTimeoutScheduler);
     }
 
@@ -185,8 +190,110 @@ class ForwardedPublishEventLoopTest {
         assertThat(seen).as("not the timeout scheduler that fired the wait").noneMatch(ForwardedPublishEventLoopTest::isTimeoutScheduler);
     }
 
-    private static Unit observeThread(AtomicReference<Thread> resolver) {
-        resolver.set(Thread.currentThread());
+    /// #2997: the hop is a guarantee of the wait itself, not of a lucky interleaving. A continuation attached before the lane
+    /// settles must run on the async executor's thread, never on the thread that resolved the lane, across many
+    /// resolutions (the earlier `flatMap` into a fresh async promise skipped the hop whenever that promise had already
+    /// resolved when `flatMap` checked it). Controls: every continuation ran, and every resolver thread was observed.
+    @Test
+    void boundedCommitWait_resumesOffTheResolver_acrossManyResolutions() throws InterruptedException {
+        var resumedOn = new ConcurrentLinkedQueue<Thread>();
+        var resolvedOn = new ConcurrentLinkedQueue<Thread>();
+
+        for (var i = 0; i < ITERATIONS; i++) {
+            resolveOnFreshThread(resumedOn, resolvedOn);
+        }
+
+        assertThat(resumedOn).as("control: every continuation ran").hasSize(ITERATIONS);
+        assertThat(resolvedOn).as("control: every resolver thread was observed").hasSize(ITERATIONS);
+        assertThat(resumedOn).as("no continuation ran on the thread that resolved its lane")
+                             .doesNotContainAnyElementsOf(resolvedOn);
+    }
+
+    /// Runs the task on a fresh thread and joins it before `execute` returns: the hop's promise is ALREADY resolved when the
+    /// wait's continuation is attached, the ordering the earlier `flatMap` shape mishandled.
+    private static final Executor RUN_BEFORE_RETURN = ForwardedPublishEventLoopTest::runToCompletionOnFreshThread;
+
+    private static void runToCompletionOnFreshThread(Runnable task) {
+        var worker = Thread.ofPlatform().unstarted(task);
+
+        worker.start();
+        joinUninterrupted(worker);
+    }
+
+    private static void joinUninterrupted(Thread worker) {
+        try {
+            worker.join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            fail("interrupted joining the hop task: " + e);
+        }
+    }
+
+    /// #2997, deterministic: with an executor that completes the hop task before `execute` returns, the continuation must
+    /// still never run on the thread that resolved the lane. The old `flatMap` shape fails this every time (300/300).
+    @Test
+    void boundedCommitWait_resumesOffTheResolver_whenTheHopFinishesBeforeAttach() throws InterruptedException {
+        var resumedOn = new ConcurrentLinkedQueue<Thread>();
+        var resolvedOn = new ConcurrentLinkedQueue<Thread>();
+
+        for (var i = 0; i < ITERATIONS; i++) {
+            resolveOnFreshThread(resumedOn, resolvedOn, RUN_BEFORE_RETURN);
+        }
+
+        assertThat(resumedOn).as("control: every continuation ran").hasSize(ITERATIONS);
+        assertThat(resolvedOn).as("control: every resolver thread was observed").hasSize(ITERATIONS);
+        assertThat(resumedOn).as("no continuation ran on the thread that resolved its lane")
+                             .doesNotContainAnyElementsOf(resolvedOn);
+    }
+
+    private static void resolveOnFreshThread(ConcurrentLinkedQueue<Thread> resumedOn,
+                                             ConcurrentLinkedQueue<Thread> resolvedOn) throws InterruptedException {
+        resolveOnFreshThread(resumedOn, resolvedOn, task -> Promise.async(task));
+    }
+
+    private static void resolveOnFreshThread(ConcurrentLinkedQueue<Thread> resumedOn,
+                                             ConcurrentLinkedQueue<Thread> resolvedOn,
+                                             Executor hop) throws InterruptedException {
+        var lane = Promise.<Unit> promise();
+        var resumed = StreamPartitionManager.boundedCommitWait(lane, hop)
+                                            .map(_ -> recordCurrent(resumedOn));
+        var resolver = Thread.ofPlatform().unstarted(() -> resolveLane(lane, resolvedOn));
+
+        resolver.start();
+        resumed.await();
+        resolver.join();
+    }
+
+    private static void resolveLane(Promise<Unit> lane, ConcurrentLinkedQueue<Thread> resolvedOn) {
+        resolvedOn.add(Thread.currentThread());
+        lane.succeed(Unit.unit());
+    }
+
+    private static Unit recordCurrent(ConcurrentLinkedQueue<Thread> seen) {
+        seen.add(Thread.currentThread());
+        return Unit.unit();
+    }
+
+    private void awaitLoopIdle() {
+        try {
+            loop.submit(() -> {}).get(BOUNDED_MS, TimeUnit.MILLISECONDS);
+        } catch (Exception e) {
+            fail("the event loop never drained: " + e);
+        }
+    }
+
+    /// The lane's own dependent runs on the thread that settles the lane, which can lag the wait's continuation (an earlier
+    /// dependent of the same lane): the answer may arrive before the observer ran, so the observation is awaited, bounded.
+    private static Thread resolverWithin(CompletableFuture<Thread> resolver) {
+        try {
+            return resolver.get(BOUNDED_MS, TimeUnit.MILLISECONDS);
+        } catch (Exception e) {
+            return fail("the lane's resolver was never observed: " + e);
+        }
+    }
+
+    private static Unit observeThread(CompletableFuture<Thread> resolver) {
+        resolver.complete(Thread.currentThread());
         return Unit.unit();
     }
 
