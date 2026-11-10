@@ -1570,9 +1570,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// `promise-timeout-scheduler` pool, an in-time commit on the thread that resolves the lane, and the
     /// post-wait work (ordered section, WAL frame write, transport send) belongs on neither (#2952, #2997).
     static Promise<Unit> boundedCommitWait(Promise<Unit> lane) {
-        return offResolver(lane.map(_ -> unit())
-                               .timeout(PUBLISH_COMMIT_WAIT)
-                               .recover(_ -> unit()));
+        return offResolver(lane.map(_ -> unit()).timeout(PUBLISH_COMMIT_WAIT).recover(_ -> unit()));
     }
 
     /// The hop is unconditional (#2997): the returned promise is resolved ONLY by a task submitted to the async executor
@@ -1584,6 +1582,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         var off = Promise.<Unit> promise();
 
         waited.onResultRun(() -> off.async(Result::unitResult));
+
         return off;
     }
 
