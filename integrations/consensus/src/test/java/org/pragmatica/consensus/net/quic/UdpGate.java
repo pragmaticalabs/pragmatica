@@ -32,7 +32,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// client (by source address) through its own upstream socket and relays the replies back.
 final class UdpGate implements AutoCloseable {
     private final DatagramSocket front;
-    private final InetSocketAddress target;
+    private volatile InetSocketAddress target;
     private final Map<SocketAddress, DatagramSocket> upstreams = new ConcurrentHashMap<>();
     private final List<Thread> threads = new CopyOnWriteArrayList<>();
     private volatile boolean open;
@@ -84,6 +84,12 @@ final class UdpGate implements AutoCloseable {
         synchronized (drops) {
             return drops.nextDouble() < dropRate;
         }
+    }
+
+    /// #2998: points the relay at a target bound after the gate was created, so the target's port can be probed
+    /// immediately before its bind instead of up front.
+    void retarget(int targetPort) {
+        target = new InetSocketAddress(InetAddress.getLoopbackAddress(), targetPort);
     }
 
     int port() {
