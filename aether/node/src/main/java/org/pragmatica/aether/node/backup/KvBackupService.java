@@ -265,12 +265,38 @@ public final class KvBackupService {
         return System.nanoTime() / 1_000_000;
     }
 
-    /// Stop flushing and release the worker. A node that stopped must not keep writing backups.
+    /// Stop flushing and release the worker. A node that stopped must not keep writing backups: when this returns, no git of the backup is running
+    /// and none can start (#2924). The service is marked stopped FIRST (a git refused by the closed repository is then never read as a failing
+    /// repository), then the repository is closed to git (a spawn is refused from then on, and one already started is handed back), then the worker is
+    /// released, then the git trees in flight are frozen and killed, within the repository's own command bound. A tree that is not dead by then is
+    /// reported: logged at WARN and raised as [Code#BACKUP_STOP_FLUSH_FAILED] (a push may still land after the stop), never passed off as a clean stop.
+    /// Guarantee earned: no backup git starts after the close; a push that was already in flight is dead at the return unless the report says
+    /// otherwise. Recovery: the next flush of this backup closes the warning.
     @Contract
     public void stop() {
+        stopWithin(repository.timeout().millis());
+    }
+
+    @Contract
+    void stopWithin(long boundMillis) {
         stopped.set(true);
         leader.set(false);
+        var inFlight = repository.halt();
+
         onStop.run();
+        if (!repository.reap(inFlight, boundMillis)) {
+            reportLiveGit(boundMillis);
+        }
+    }
+
+    /// FER (the stop goes ahead): a git that outlives its kill bound cannot hold the node's shutdown. Guarantee earned: the stop completes within the
+    /// bound and says that a push may still land late.
+    @Contract
+    private void reportLiveGit(long boundMillis) {
+        LOG.warn("KV backup stop: a git process of the backup push was still alive {} ms after the stop; a push may still land",
+                 boundMillis);
+        absorbStopFlushFailure(Causes.cause("a git process of the backup push was still running " + boundMillis
+                                           + " ms after the stop, so a push may land after it"));
     }
 
     /// Whether a node holds the full backed-up state. A worker holds the metadata projection or, under the live replica feed, a replica

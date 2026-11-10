@@ -110,13 +110,14 @@ class KvBackupStopFlushRaceTest {
         var hook = node.repository().dir().resolve(".git").resolve("hooks").resolve("pre-push");
 
         write(hook,
-              "#!/bin/sh\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE\ndate +%s%3N >> '" + stamps + "'\nD=$(mktemp -d)\n"
+              "#!/bin/sh\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE\ndate +%s%3N >> '" + stamps + "'\n{ date +%s%3N; ps -eo pid,ppid,stat,etime,args; } >> '" + stamps + ".ctx' 2>&1\nD=$(mktemp -d)\n"
               + "git clone --quiet --branch backup '" + remote + "' \"$D/c\" && git -C \"$D/c\" -c user.email=s@x -c user.name=racer commit --quiet --allow-empty -m race"
               + " && git -C \"$D/c\" push --quiet origin backup\nrm -rf \"$D\"\nexit 0\n");
     }
 
     /// A service whose worker is never interrupted (a scheduler without `shutdownNow`) on a real executor, with a racing hook that loses every push.
-    private record Uninterrupted(KvBackupService service, CountDownLatch done, AtomicReference<Throwable> thrown, java.util.concurrent.ScheduledExecutorService executor) {}
+    private record Uninterrupted(KvBackupService service, CountDownLatch done, AtomicReference<Throwable> thrown, java.util.concurrent.ScheduledExecutorService executor,
+                                 List<BackupWarning> warnings, GitBackupRepository repository) {}
 
     private Uninterrupted uninterrupted(String remote, java.util.function.LongSupplier clock) {
         var stamps = temp.resolve("push.stamps");
@@ -135,7 +136,7 @@ class KvBackupStopFlushRaceTest {
         seedHead(remote);
         installRacingHook(node, remote, stamps);
 
-        return new Uninterrupted(service, done, thrown, executor);
+        return new Uninterrupted(service, done, thrown, executor, warnings, repository);
     }
 
     private static void runRecording(Runnable task, AtomicReference<Throwable> thrown, CountDownLatch done) {
@@ -159,7 +160,7 @@ class KvBackupStopFlushRaceTest {
         var ended = harness.done().await(20, TimeUnit.SECONDS);
         var elapsedMs = (System.nanoTime() - started) / 1_000_000;
 
-        harness.executor().shutdownNow();
+        settle(harness.executor());
         assertThat(ended).as("the task ended on its own, at the deadline").isTrue();
         assertThat(harness.thrown().get()).as("and not by an error such as StackOverflowError").isNull();
         assertThat(elapsedMs).isBetween(2_900L, 8_000L);
@@ -184,9 +185,15 @@ class KvBackupStopFlushRaceTest {
         Files.createFile(release);
         var ended = harness.done().await(20, TimeUnit.SECONDS);
 
-        harness.executor().shutdownNow();
+        settle(harness.executor());
         assertThat(ended).as("control: the pass ended").isTrue();
         assertThat(Files.exists(stamps) ? Files.readString(stamps) : "").as("no push started after the stop").isEmpty();
+    }
+
+    /// Ends the worker and waits for it: a worker still unwinding writes into the `@TempDir` while JUnit deletes it (one cleanup failure in 50 rounds under CPU load).
+    private static void settle(java.util.concurrent.ExecutorService executor) throws InterruptedException {
+        executor.shutdownNow();
+        assertThat(executor.awaitTermination(15, TimeUnit.SECONDS)).as("the worker ended before the temp dir is deleted").isTrue();
     }
 
     private static void awaitFile(Path file) throws InterruptedException {
@@ -230,7 +237,7 @@ class KvBackupStopFlushRaceTest {
         harness.service().stop();
         var ended = harness.done().await(10, TimeUnit.SECONDS);
 
-        harness.executor().shutdownNow();
+        settle(harness.executor());
         assertThat(ended).as("the stop ended the loop").isTrue();
         assertThat(harness.thrown().get()).isNull();
     }
@@ -245,7 +252,7 @@ class KvBackupStopFlushRaceTest {
         harness.service().stopFlushed(TimeSpan.timeSpan(120).seconds());
         var ended = harness.done().await(15, TimeUnit.SECONDS);
 
-        harness.executor().shutdownNow();
+        settle(harness.executor());
         assertThat(ended).as("the clock passed the deadline and the loop ended, unstopped and uninterrupted").isTrue();
         assertThat(harness.thrown().get()).isNull();
     }
@@ -279,8 +286,21 @@ class KvBackupStopFlushRaceTest {
         assertThat(lines).as("control: it did decide again, every push being a lost race").hasSizeGreaterThanOrEqualTo(2);
         assertThat(returnedAfterMs - last).as("and it was still deciding at the end: the last decision is within two of its own longest passes (+500 ms) of the return")
                                           .isLessThanOrEqualTo(2 * longestGap(lines) + 500);
-        assertThat(last).as("nothing is pushed after the stop returned").isLessThanOrEqualTo(stoppedEpoch - startedEpoch + 200);
+        assertThat(last).as("nothing is pushed after the stop returned; stop returned at " + (stoppedEpoch - startedEpoch) + " ms, stamps " + lines + ", at the last stamp:\n" + lastContext(stamps))
+                        .isLessThanOrEqualTo(stoppedEpoch - startedEpoch + 200);
         assertThat(node.warnings()).extracting(BackupWarning::code).containsExactly(Code.BACKUP_STOP_FLUSH_FAILED);
+    }
+
+    /// What ran when the last hook started (diagnostic for #2924: the process list the hook saw).
+    private static String lastContext(Path stamps) throws java.io.IOException {
+        var context = Path.of(stamps + ".ctx");
+
+        if (!Files.exists(context)) {
+            return "(no context)";
+        }
+        var text = Files.readString(context);
+
+        return text.substring(Math.max(0, text.lastIndexOf("\n17") - 0)).lines().limit(80).collect(java.util.stream.Collectors.joining("\n"));
     }
 
     /// The longest gap between consecutive decisions (stamps), i.e. the longest pass this run produced.
@@ -455,6 +475,135 @@ class KvBackupStopFlushRaceTest {
                 assertThat(node.warnings()).as("round %d: quiet", round).isEmpty();
             }
         }
+    }
+
+    // ---------------- the stop ends the push tree (#2924) ----------------
+
+    /// A `receive-pack` that answers late: git is alive and waiting for it, and starts the pre-push hook only when it answers (the hook runs once git
+    /// has the remote's refs). This is the delayed spawn of the hook the flake caught: the stop lands while git is alive and the hook is not yet started.
+    private static void slowReceivePack(GitBackupRepository repository, Path started, Path dir) {
+        var script = dir.resolve("slow-receive-pack");
+
+        write(script, "#!/bin/sh\ndate +%s%3N >> '" + started + "'\nsleep 1\nexec git receive-pack \"$@\"\n");
+        git(repository.dir(), "config", "remote.origin.receivepack", script.toString());
+    }
+
+    /// The worker is not interrupted (the interrupt can land late, or never): only `stop()` itself can end the push. With git alive and its hook not yet
+    /// started when `stop()` is called, the hook must never start. Before the fix `stop()` returned at once and the hook started a second later.
+    @Test
+    void stop_returnsOnlyWhenThePushTreeIsDead_soNoHookStartsAfterIt() throws Exception {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var harness = uninterrupted(remote, System::currentTimeMillis);
+        var started = temp.resolve("receive-pack.started");
+        var stamps = temp.resolve("push.stamps");
+
+        slowReceivePack(harness.repository(), started, temp);
+        harness.service().stopFlushed(TimeSpan.timeSpan(120).seconds());
+        awaitFile(started);
+        harness.service().stop();
+        var live = ProcessHandle.current().descendants().filter(handle -> isGit(handle)).count();
+        Thread.sleep(2_500);
+
+        assertThat(live).as("no git of the backup is alive when stop() returns").isZero();
+        assertThat(Files.exists(stamps) ? Files.readString(stamps) : "").as("the hook never started, before or after the return").isEmpty();
+        assertThat(harness.warnings()).as("the killed push is the flush's own failure; the stop itself reports no live tree")
+                                      .noneMatch(warning -> warning.detail().contains("still running"));
+        settle(harness.executor());
+    }
+
+    private static boolean isGit(ProcessHandle handle) {
+        return handle.info().command().map(command -> command.endsWith("/git")).orElse(false);
+    }
+
+    /// The remote is atomic to the end: a push killed by the stop leaves the remote at the seeded head and the commit queued locally.
+    @Test
+    void stop_duringAPush_leavesTheRemoteUnchanged() throws Exception {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var harness = uninterrupted(remote, System::currentTimeMillis);
+        var started = temp.resolve("receive-pack.started");
+        var seededHead = git(Path.of(remote), "rev-parse", "backup").strip();
+
+        slowReceivePack(harness.repository(), started, temp);
+        harness.service().stopFlushed(TimeSpan.timeSpan(120).seconds());
+        awaitFile(started);
+        harness.service().stop();
+        Thread.sleep(1_500);
+
+        assertThat(git(Path.of(remote), "fsck", "--no-progress")).doesNotContain("error", "fatal");
+        assertThat(git(Path.of(remote), "rev-parse", "backup").strip()).as("the remote head did not move").isEqualTo(seededHead);
+        settle(harness.executor());
+    }
+
+    /// Once stopped, the repository starts no git at all: the guard and the spawn are one step, so a push that was past the service's own check
+    /// still cannot start a process.
+    @Test
+    void afterStop_theRepositoryStartsNoGit() {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var node = node(remote, "node", 1);
+
+        node.service().stop();
+        var pushed = node.repository().push();
+
+        assertThat(pushed.isFailure()).isTrue();
+        pushed.onFailure(cause -> assertThat(cause.message()).contains("stopped"));
+    }
+
+    /// The worker's own reaction to an interrupt kills the tree too, with no `stop()` at all: git is alive and its hook not yet started when the
+    /// worker is interrupted, and the hook must never start.
+    @Test
+    void anInterruptedWorker_killsItsPushTree_withoutAStop() throws Exception {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var harness = uninterrupted(remote, System::currentTimeMillis);
+        var started = temp.resolve("receive-pack.started");
+        var stamps = temp.resolve("push.stamps");
+
+        slowReceivePack(harness.repository(), started, temp);
+        harness.service().stopFlushed(TimeSpan.timeSpan(120).seconds());
+        awaitFile(started);
+        settle(harness.executor());
+        Thread.sleep(2_500);
+
+        assertThat(Files.exists(stamps) ? Files.readString(stamps) : "").as("the hook never started").isEmpty();
+    }
+
+    /// A git that ran to its end is no longer in flight: the stop has nothing of it to kill.
+    @Test
+    void aCompletedGit_isNotInFlight() {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var node = node(remote, "node", 1);
+
+        node.repository().prepare().onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
+
+        assertThat(node.repository().halt()).isEmpty();
+    }
+
+    /// A tree that is not dead within the bound is reported, not passed off as a clean stop. A member that can never end is registered beside the real
+    /// push, so the outcome does not depend on how fast the host reaps the killed push.
+    @Test
+    void stop_reportsATreeThatIsNotDeadWithinTheBound() throws Exception {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var harness = uninterrupted(remote, System::currentTimeMillis);
+        var started = temp.resolve("receive-pack.started");
+
+        slowReceivePack(harness.repository(), started, temp);
+        harness.service().stopFlushed(TimeSpan.timeSpan(120).seconds());
+        awaitFile(started);
+        var neverEnds = org.mockito.Mockito.mock(ProcessBuilder.class);
+
+        var neverExits = new java.util.concurrent.CompletableFuture<ProcessHandle>();
+
+        org.mockito.Mockito.doReturn(GitProcessesTest.undying(neverExits)).when(neverEnds).start();
+        harness.repository().processes().start(neverEnds).unwrap();
+        try (var log = org.pragmatica.testlogging.LogCapture.capture(KvBackupService.class, org.apache.logging.log4j.Level.WARN, false)) {
+            harness.service().stopWithin(500);
+
+            assertThat(log.entries()).as("the overrun is also logged at WARN, for the operator reading the log")
+                                     .anyMatch(entry -> entry.level() == org.apache.logging.log4j.Level.WARN && entry.message().contains("still alive"));
+        }
+        assertThat(harness.warnings()).as("the stop's report (the killed push may add the flush's own failure, depending on which side wins the race)")
+                                      .anyMatch(warning -> warning.code() == Code.BACKUP_STOP_FLUSH_FAILED && warning.detail().contains("still running"));
+        neverExits.complete(null);
+        settle(harness.executor());
     }
 
     // ---------------- helpers ----------------
