@@ -31,7 +31,6 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
@@ -91,14 +90,14 @@ class ForgeJwtAppHttpForgeTest {
         """.formatted(TestArtifacts.ECHO_SLICE, NODES);
     private static final Base64.Encoder B64 = Base64.getUrlEncoder().withoutPadding();
 
-    @TempDir
-    Path dir;
+    private Path dir;
 
     private EmberCluster cluster;
     private final HttpClient http = HttpClient.newHttpClient();
 
     @BeforeAll
     void setUp() throws Exception {
+        dir = Files.createTempDirectory("fjwt-sibling");
         cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "fjwt");
         Files.writeString(dir.resolve("aether.toml"), SIBLING);
 
