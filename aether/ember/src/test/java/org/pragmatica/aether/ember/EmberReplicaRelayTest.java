@@ -246,7 +246,7 @@ class EmberReplicaRelayTest {
         cores.forEach(id -> node(id).setInboundFaultFilter(holdsBackNewcomerSnapshots(id, stalledCore, registered)));
         var joiner = addWorkers("north", 1).getFirst();
 
-        await("a core has been asked for the joiner's snapshot, and the joiner follows it", () -> sourceOf(joiner).equals(Option.option(stalledCore.get())));
+        await("a core has been asked for the joiner's snapshot, and the joiner follows it", () -> followsStalledCore(sourceOf(joiner), stalledCore.get()));
         var core = stalledCore.get();
 
         assertThat(client(joiner).counters().get("replica_snapshots_installed_total")).as("precondition: the snapshot is still under way").isZero();
@@ -258,6 +258,11 @@ class EmberReplicaRelayTest {
               () -> ready(joiner));
         assertThat(client(joiner).source().unwrap().id()).isNotEqualTo(core);
         await("it equals the leader", () -> equalsTheLeader(joiner));
+    }
+
+    /// #2995: `Option.option(null)` is empty, so an unset stalled core used to equal a joiner with no source yet, and the await passed with a null core.
+    static boolean followsStalledCore(Option<String> source, String stalledCore) {
+        return source.equals(Option.option(stalledCore));
     }
 
     /// The first core a newcomer (a node not in `registered`) asks for a snapshot is the one that never answers; every other core answers.
