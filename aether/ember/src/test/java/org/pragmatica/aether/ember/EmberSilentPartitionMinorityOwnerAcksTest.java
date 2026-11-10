@@ -82,6 +82,7 @@ class EmberSilentPartitionMinorityOwnerAcksTest {
     /// Past `AetherNode.COLD_BOOT_CONVERGENCE_WINDOW_MS` (75 s), measured from cluster start, as in `EmberPartitionedCoreSelfFenceTest`.
     private static final long COLD_BOOT_CLEARANCE_MS = 85_000L;
     private static final long OWNERSHIP_BUDGET_MS = 60_000L;
+    private static final long CONFIG_APPLY_HOLD_MS = 8_000L;
     /// One attempt waits at most this for the confirmation barrier, so a CF 2 attempt never outlives the observation by much.
     private static final TimeSpan ATTEMPT_BOUND = TimeSpan.timeSpan(2).seconds();
     /// How long the producers and the poller keep going after the gate first refuses.
@@ -121,6 +122,9 @@ class EmberSilentPartitionMinorityOwnerAcksTest {
         awaitLeader();
 
         var leaderId = cluster.currentLeader().unwrap();
+
+        holdConfigApplyOnFollowers(leaderId);
+
         var cf2Names = names("silentcf2-", STREAMS_PER_FACTOR);
 
         cf2Names.forEach(this::createStream);
@@ -272,6 +276,31 @@ class EmberSilentPartitionMinorityOwnerAcksTest {
         }
 
         return last;
+    }
+
+    /// #2972: forces the window between "the ownership record is committed" and "the owner has materialised the stream". Every
+    /// non-leader node (the streams are created through the leader, and the test picks a non-leader owner) holds its
+    /// application of a committed `silentcf*` config until [#CONFIG_APPLY_HOLD_MS] after the first one arrived, so the owner
+    /// reads confirmation factor 0 for a stream whose ownership record every node already sees.
+    private void holdConfigApplyOnFollowers(String leaderId) {
+        var openAtNs = new AtomicLong(0L);
+
+        cluster.allNodes()
+               .stream()
+               .filter(node -> !node.self().id().equals(leaderId))
+               .forEach(node -> node.streamPartitionManager().configApplyGateForTest(name -> holdUntil(openAtNs, name)));
+    }
+
+    private static void holdUntil(AtomicLong openAtNs, String stream) {
+        if (!stream.contains("silentcf")) {
+            return;
+        }
+
+        openAtNs.compareAndSet(0L, System.nanoTime() + CONFIG_APPLY_HOLD_MS * 1_000_000L);
+
+        while (System.nanoTime() < openAtNs.get()) {
+            sleepQuietly(10L);
+        }
     }
 
     private static List<String> names(String prefix, int count) {
