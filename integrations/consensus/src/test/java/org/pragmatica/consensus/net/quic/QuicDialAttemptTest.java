@@ -182,7 +182,7 @@ class QuicDialAttemptTest {
 
         for (int i = 1; i <= CORES; i++) {
             ids.add(new NodeId("dl-" + i));
-            ports.add(freeUdpPort());
+            ports.add(0);
             nodes.add(node(ids.getLast(), DEFAULT_HELLO_TIMEOUT, BootTokens.bootTokens(0L)));
         }
 
@@ -191,9 +191,11 @@ class QuicDialAttemptTest {
         // attached at all of them. Without it, a seed's retransmitted Initial can reach the late core FIRST under load:
         // that seed's dial then completes (legitimately — the late core's own dial becomes a DUPLICATE, 20 still holds)
         // and there is nothing left to abandon, so the arming below would be timing. The gate makes it exact.
-        try (var gate = UdpGate.udpGate(ports.get(late))) {
+        // #2998: a probed UDP port is free only until something else binds it, so each core's port is probed
+        // immediately before its own bind (the late core's, seconds after the seeds start, is the widest window).
+        try (var gate = UdpGate.udpGate(0)) {
             for (int i = 0; i < late; i++) {
-                start(nodes.get(i).network(), ports.get(i));
+                ports.set(i, startOnFreePort(nodes.get(i).network()));
             }
             // Each seed dials every higher seed — the designated dialer — and the seeds connect to each other first.
             for (int i = 0; i < late; i++) {
@@ -226,7 +228,8 @@ class QuicDialAttemptTest {
             assertThat(seeds.stream().filter(seed -> phase(seed.network(), ids.get(late)) == PeerState.Phase.CONNECTING))
                 .as("arming: every seed's dial to the late core is still pending when the late core starts")
                 .hasSize(late);
-            start(nodes.get(late).network(), ports.get(late));
+            ports.set(late, startOnFreePort(nodes.get(late).network()));
+            gate.retarget(ports.get(late));
             // The late core is the designated dialer for no pair; it initiates from its isolation branch (forced).
             for (int i = 0; i < late; i++) {
                 nodes.get(late).network().dialForTests(nodeInfo(ids.get(i), ports.get(i)), true);
@@ -318,6 +321,13 @@ class QuicDialAttemptTest {
 
     private static NodeInfo nodeInfo(NodeId id, int port) {
         return NodeInfo.nodeInfo(id, NodeAddress.nodeAddress("127.0.0.1", port).fold(_ -> fail("bad address"), a -> a));
+    }
+
+    private static int startOnFreePort(QuicClusterNetwork network) {
+        var port = freeUdpPort();
+
+        start(network, port);
+        return port;
     }
 
     private static void start(QuicClusterNetwork network, int port) {
