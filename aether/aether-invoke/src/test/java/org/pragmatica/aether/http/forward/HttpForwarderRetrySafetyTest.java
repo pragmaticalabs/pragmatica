@@ -37,6 +37,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 import org.junit.jupiter.api.Test;
@@ -190,6 +191,7 @@ class HttpForwarderRetrySafetyTest {
     void forward_duplicateReplyAfterTheFirst_isIgnored() {
         var network = new ScriptedClusterNetwork(Set.of(A, B), _ -> WriteOutcome.Sent::new);
         var forwarder = appForwarder(network, "POST");
+        var decodesBefore = FixedDeserializer.DECODES.get();
 
         network.onSend = sent -> {
             forwarder.onHttpForwardResponse(replyTo(sent));
@@ -199,6 +201,8 @@ class HttpForwarderRetrySafetyTest {
 
         assertThat(result.isSuccess()).as("the first reply completes it: " + failureOf(result)).isTrue();
         assertThat(network.requests()).as("a duplicate reply triggers no re-send").hasSize(1);
+        assertThat(FixedDeserializer.DECODES.get() - decodesBefore).as("the first reply removed the pending entry; the duplicate finds none and is not processed")
+                                                                  .isEqualTo(1);
         assertThatCode(() -> forwarder.onHttpForwardResponse(replyTo(network.requests().getFirst()))).doesNotThrowAnyException();
     }
 
@@ -347,11 +351,15 @@ class HttpForwarderRetrySafetyTest {
 
     /// Every success payload decodes to the same 200 response.
     private static final class FixedDeserializer implements Deserializer {
+        static final AtomicInteger DECODES = new AtomicInteger();
+
         @Override public <T> T read(io.netty.buffer.ByteBuf byteBuf) {return null;}
 
         @Override
         @SuppressWarnings("unchecked")
         public <T> T decode(byte[] bytes) {
+            DECODES.incrementAndGet();
+
             return (T) OK;
         }
     }

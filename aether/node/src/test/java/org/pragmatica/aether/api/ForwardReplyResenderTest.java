@@ -31,7 +31,7 @@ import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #2569 / #2583 P2 (know 89e17399a9 shape): a management reply the transport proves it did not write is re-sent after a hold
-/// of 250 ms doubling to 4 s (+-20% jitter, reset by a `Sent`), until the requester's budget cannot cover the next hold.
+/// of 250 ms doubling to 4 s (+-20% jitter, per reply: a burst does not escalate one shared backoff), until the requester's budget cannot cover the next hold.
 /// A fake clock and scheduler drive the sequence; the unit random is fixed at 0.5 (no jitter) unless a test says otherwise.
 class ForwardReplyResenderTest {
     private static final NodeId ENTRY = nodeId("entry-1").unwrap();
@@ -98,7 +98,7 @@ class ForwardReplyResenderTest {
     }
 
     @Test
-    void send_aWrittenReply_resetsThePeersHoldToTheFirst() {
+    void send_aLaterReply_startsAtTheFirstHold_whateverAnEarlierOneEscalatedTo() {
         script.add(refused());
         script.add(refused());
         script.add(sent());
@@ -111,22 +111,47 @@ class ForwardReplyResenderTest {
         resender.deliver(network, ENTRY, reply("req-2"), timeSpan(1).hours());
         runScheduled();
 
-        assertThat(holds).extracting(TimeSpan::millis).as("250, 500, then Sent resets, then 250 again").containsExactly(250L, 500L, 250L);
+        assertThat(holds).extracting(TimeSpan::millis).as("250, 500 for the first reply; 250 again for the second").containsExactly(250L, 500L, 250L);
     }
 
     @Test
-    void send_holdsArePerPeer() {
-        script.add(refused());
-        script.add(refused());
+    void send_holdsArePerReply_notPerPeerNorShared() {
+        for (var i = 0; i < 4; i++) {
+            script.add(refused());
+        }
         script.add(sent());
         script.add(sent());
         var resender = resender(() -> 0.5);
 
         resender.deliver(network, ENTRY, REPLY, timeSpan(1).hours());
-        resender.deliver(network, OTHER, reply("req-2"), timeSpan(1).hours());
+        resender.deliver(network, ENTRY, reply("req-2"), timeSpan(1).hours());
         runScheduled();
 
-        assertThat(holds).extracting(TimeSpan::millis).as("another peer's backoff is not advanced").startsWith(250L, 250L);
+        assertThat(holds).extracting(TimeSpan::millis)
+                         .as("two replies to ONE peer: each is on its own schedule (250, 250 first holds; 500, 500 second)")
+                         .containsExactly(250L, 250L, 500L, 500L);
+    }
+
+    /// The #2569 CI episode: 24 refusals in 6 ms. Five replies to one peer, each refused once, each requester waiting 2.5 s:
+    /// a backoff shared by the burst gave them 250, 500, 1000, 2000, 4000 ms and dropped the fifth.
+    @Test
+    void send_aBurstOfRefusedReplies_allReachTheirRequestersWithinTheWindow() {
+        for (var i = 0; i < 5; i++) {
+            script.add(refused());
+        }
+        for (var i = 0; i < 5; i++) {
+            script.add(sent());
+        }
+        var resender = resender(() -> 0.5);
+
+        for (var i = 0; i < 5; i++) {
+            resender.deliver(network, ENTRY, reply("req-" + i), timeSpan(2500).millis());
+        }
+        runScheduled();
+
+        assertThat(holds).extracting(TimeSpan::millis).containsExactly(250L, 250L, 250L, 250L, 250L);
+        assertThat(writes).as("five first sends and five re-sends, none given up").hasSize(10);
+        assertThat(nowNanos.get()).isLessThanOrEqualTo(timeSpan(2500).millis().nanos());
     }
 
     @Test
@@ -185,7 +210,7 @@ class ForwardReplyResenderTest {
                                                              });
                                                          },
                                                          nowNanos::get,
-                                                         RefusalBackoff.refusalBackoff(random));
+                                                         () -> RefusalBackoff.refusalBackoff(random));
     }
 
     /// Records every reply and answers each send with the next scripted outcome.
