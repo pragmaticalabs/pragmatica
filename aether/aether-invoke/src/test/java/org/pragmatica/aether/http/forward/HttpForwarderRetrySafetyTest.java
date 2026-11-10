@@ -37,11 +37,13 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -183,7 +185,46 @@ class HttpForwarderRetrySafetyTest {
         assertThat(failureOf(result)).isInstanceOf(ForwardError.OutcomeUnknown.class);
     }
 
+    // --- late and duplicate replies (#2569: the receiver re-sends a reply the transport refused) ---
+
+    @Test
+    void forward_duplicateReplyAfterTheFirst_isIgnored() {
+        var network = new ScriptedClusterNetwork(Set.of(A, B), _ -> WriteOutcome.Sent::new);
+        var forwarder = appForwarder(network, "POST");
+        var decodesBefore = FixedDeserializer.DECODES.get();
+
+        network.onSend = sent -> {
+            forwarder.onHttpForwardResponse(replyTo(sent));
+            forwarder.onHttpForwardResponse(replyTo(sent));
+        };
+        var result = forwarder.forward(context("POST", PATH), "POST", PREFIX, "dup-reply").await(timeSpan(5).seconds());
+
+        assertThat(result.isSuccess()).as("the first reply completes it: " + failureOf(result)).isTrue();
+        assertThat(network.requests()).as("a duplicate reply triggers no re-send").hasSize(1);
+        assertThat(FixedDeserializer.DECODES.get() - decodesBefore).as("the first reply removed the pending entry; the duplicate finds none and is not processed")
+                                                                  .isEqualTo(1);
+        assertThatCode(() -> forwarder.onHttpForwardResponse(replyTo(network.requests().getFirst()))).doesNotThrowAnyException();
+    }
+
+    @Test
+    void forward_replyAfterTheHopTimedOut_isIgnored_andLaterForwardsAreUnaffected() {
+        var network = new ScriptedClusterNetwork(Set.of(A, B), _ -> WriteOutcome.Sent::new);
+        var forwarder = appForwarder(network, "POST");
+        var timedOut = forwarder.forward(context("POST", PATH), "POST", PREFIX, "late-reply").await(timeSpan(5).seconds());
+
+        assertThat(timedOut.isFailure()).as("no reply within the hop: " + failureOf(timedOut)).isTrue();
+        assertThatCode(() -> forwarder.onHttpForwardResponse(replyTo(network.requests().getFirst()))).doesNotThrowAnyException();
+        network.onSend = sent -> forwarder.onHttpForwardResponse(replyTo(sent));
+        var later = forwarder.forward(context("POST", PATH), "POST", PREFIX, "after-late-reply").await(timeSpan(5).seconds());
+
+        assertThat(later.isSuccess()).as("a stale reply leaves no state behind: " + failureOf(later)).isTrue();
+    }
+
     // --- helpers ---
+    private static HttpForwardResponse replyTo(HttpForwardRequest sent) {
+        return new HttpForwardResponse(B, sent.correlationId(), sent.requestId(), true, new byte[0], sent.pipeline());
+    }
+
 
     private static void answer(HttpForwarder forwarder, ScriptedClusterNetwork network, HttpForwardRequest sent) {
         if (network.requests().size() == 1) {
@@ -310,11 +351,15 @@ class HttpForwarderRetrySafetyTest {
 
     /// Every success payload decodes to the same 200 response.
     private static final class FixedDeserializer implements Deserializer {
+        static final AtomicInteger DECODES = new AtomicInteger();
+
         @Override public <T> T read(io.netty.buffer.ByteBuf byteBuf) {return null;}
 
         @Override
         @SuppressWarnings("unchecked")
         public <T> T decode(byte[] bytes) {
+            DECODES.incrementAndGet();
+
             return (T) OK;
         }
     }
