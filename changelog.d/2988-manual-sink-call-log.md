@@ -1,0 +1,3 @@
+### Fixed (2026-11-10 — #2988: SegmentSealerTest flaked on a test-fixture race, not a product double release)
+- **The `ManualSink` test fixture kept segments and outcomes in two lists added one after the other**, so concurrent partition drains could swap indices and `succeed(call)` completed another call's outcome (about 1 in 200 class loops).
+- The sink now keeps one call log, one entry per call. No product code changed. `[verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/segment/SegmentSealerTest.java manualSink_succeedCall_completesTheOutcomeOfThatCallsSegment, 200,000 rounds, red against the two-list sink in 3 of 3 runs (1,626 mismatches in the last), green against the call log]`
