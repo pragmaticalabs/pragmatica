@@ -166,7 +166,7 @@ final class SharedPools {
     /// `ProviderClosed` instead of being provisioned, so the drain's close completes on a failed pool, and holders that
     /// joined the entry meanwhile fail with the same cause.
     private <T> Promise<T> refuseAfterAdmission(Object key, Admission admission) {
-        var late = new Departure();
+        var late = departing();
         var refusal = ResourceProvisioningError.ProviderClosed.INSTANCE;
 
         if (admission.created) {
@@ -174,7 +174,8 @@ final class SharedPools {
         }
 
         entries.compute(key, (_, current) -> drain(current, late));
-        option(late.removed).onPresent(this::close);
+        option(late.removed).onPresent(removed -> close(removed).onResult(late.pending::resolve))
+                           .onEmpty(() -> late.pending.succeed(Unit.unit()));
 
         return refusal.promise();
     }
@@ -302,7 +303,7 @@ final class SharedPools {
         return next;
     }
 
-    /// A release's departure, with its claim on `closeAll`'s wait already registered.
+    /// A release's (or a refused joiner's) departure, with its claim on `closeAll`'s wait already registered.
     private Departure departing() {
         var departure = new Departure();
         var claim = Promise.<Unit> promise();

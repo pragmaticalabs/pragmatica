@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource;
 
+import java.lang.reflect.Field;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -38,6 +39,9 @@ class SharedPoolsCloseAllTest {
     /// has not yet reached its close.
     private static final class ParkingMap extends ConcurrentHashMap<Object, Object> {
         private volatile Thread parked;
+        private volatile int parkAt = 1;
+        private volatile Runnable afterFirst = () -> {};
+        private final AtomicInteger parkedCalls = new AtomicInteger();
         private final CountDownLatch removed = new CountDownLatch(1);
         private final CountDownLatch go = new CountDownLatch(1);
 
@@ -47,11 +51,21 @@ class SharedPoolsCloseAllTest {
             var result = super.compute(key, f);
 
             if (Thread.currentThread() == parked) {
-                removed.countDown();
-                await(go);
+                parkedOnCall(parkedCalls.incrementAndGet());
             }
 
             return result;
+        }
+
+        private void parkedOnCall(int call) {
+            if (call == 1) {
+                afterFirst.run();
+            }
+
+            if (call == parkAt) {
+                removed.countDown();
+                await(go);
+            }
         }
 
         private static void await(CountDownLatch latch) {
@@ -162,5 +176,44 @@ class SharedPoolsCloseAllTest {
 
         assertThat(reported).as("closeAll returned with the release's pool neither reported nor started").isNotEmpty();
         assertThat(closes.get()).as("the pool is closed once, by the release").isEqualTo(1);
+    }
+
+    /// A joiner that saw the node-stop flag drains the entry its creator opened and is the only closer; it has removed the
+    /// entry but not yet closed the pool. `closeAll` running in that window must still report the joiner's close.
+    @Test
+    void closeAll_whenRefusedJoinerRemovedTheEntryButNotYetClosed_reportsTheClose() throws Exception {
+        var pools = SharedPools.sharedPools(this::closePool);
+        var entries = SharedPools.class.getDeclaredField("entries");
+        var flag = SharedPools.class.getDeclaredField("closed");
+
+        acquire(pools, "slice-a").await(TIMEOUT);
+        entries.setAccessible(true);
+        flag.setAccessible(true);
+        var parking = new ParkingMap();
+
+        parking.putAll((ConcurrentHashMap<?, ?>) entries.get(pools));
+        entries.set(pools, parking);
+        parking.parkAt = 2;
+        parking.afterFirst = () -> raise(pools, flag);
+        var joiner = new Thread(() -> acquire(pools, "slice-b").await(TIMEOUT));
+
+        parking.parked = joiner;
+        joiner.start();
+        assertThat(parking.removed.await(10, TimeUnit.SECONDS)).isTrue();
+        var reported = pools.closeAll();
+
+        parking.go.countDown();
+        joiner.join(10_000);
+
+        assertThat(reported).as("closeAll returned with the joiner's close neither reported nor started").isNotEmpty();
+        assertThat(closes.get()).as("the pool is closed once, by the joiner").isEqualTo(1);
+    }
+
+    private static void raise(SharedPools pools, Field flag) {
+        try {
+            ((AtomicBoolean) flag.get(pools)).set(true);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
     }
 }
