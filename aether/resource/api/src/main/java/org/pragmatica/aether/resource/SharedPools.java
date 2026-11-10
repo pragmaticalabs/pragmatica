@@ -85,12 +85,17 @@ final class SharedPools {
         private SharedEntry removed;
         private int remaining;
         private boolean wasHolder;
+        /// A release's claim on `closeAll`'s wait, registered before the removing `compute` (see [#departing]); absent for
+        /// a drain, whose closes `closeAll` collects itself.
+        private Promise<Unit> pending;
     }
 
     private final Map<Object, SharedEntry> entries = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
-    /// Every close in flight, whoever started it: `closeAll` must not report node stop done while a release that captured
-    /// its pool before the drain is still closing it. An entry leaves the set when its close completes.
+    /// Every release or close in flight, whoever started it: `closeAll` must not report node stop done while a release is
+    /// between removing its pool and finishing the close. A release registers its claim BEFORE its removing `compute`,
+    /// so there is no moment when the pool has left the map and no claim stands for it; the claim leaves the set when the
+    /// release settles (its close completed, or nothing was captured).
     private final Set<Promise<Unit>> pendingCloses = ConcurrentHashMap.newKeySet();
     private final Fn1<Promise<Unit>, Provisioned<?>> closer;
 
@@ -246,7 +251,7 @@ final class SharedPools {
     /// Removes `scope` as a holder of `key`; closes the pool when this removed the last holder. Idempotent: a scope that
     /// is not a holder, or a key that is absent, changes nothing and closes nothing.
     Promise<Unit> release(Object key, String scope) {
-        var departure = new Departure();
+        var departure = departing();
 
         entries.compute(key, (_, current) -> depart(current, scope, departure));
 
@@ -256,7 +261,7 @@ final class SharedPools {
     /// Release bound to the holding a view was issued for: a no-op when `scope` now holds a different slot (the view
     /// outlived its holding and the scope re-acquired) or no longer holds the key at all.
     Promise<Unit> releaseSlot(Object key, String scope, Promise<?> slot) {
-        var departure = new Departure();
+        var departure = departing();
 
         entries.compute(key, (_, current) -> departIfHolding(current, scope, slot, departure));
 
@@ -297,9 +302,22 @@ final class SharedPools {
         return next;
     }
 
+    /// A release's departure, with its claim on `closeAll`'s wait already registered.
+    private Departure departing() {
+        var departure = new Departure();
+        var claim = Promise.<Unit> promise();
+
+        departure.pending = claim;
+        pendingCloses.add(claim);
+        claim.onResultRun(() -> pendingCloses.remove(claim));
+
+        return departure;
+    }
+
     private Promise<Unit> closeIfCaptured(Departure departure, String scope) {
         return option(departure.removed).map(this::close)
-                     .or(() -> logDeparture(departure, scope));
+                     .or(() -> logDeparture(departure, scope))
+                     .onResult(departure.pending::resolve);
     }
 
     private Promise<Unit> logDeparture(Departure departure, String scope) {

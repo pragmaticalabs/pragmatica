@@ -4,8 +4,11 @@
 package org.pragmatica.aether.resource;
 
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiFunction;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.resource.SharedPoolFixtures.FakeConnector;
@@ -28,6 +31,35 @@ class SharedPoolsCloseAllTest {
         @Override
         public boolean isEmpty() {
             return lied.compareAndSet(false, true) || super.isEmpty();
+        }
+    }
+
+    /// Parks the thread named in `parked` right after its `compute` returned: the entry is gone from the map and the thread
+    /// has not yet reached its close.
+    private static final class ParkingMap extends ConcurrentHashMap<Object, Object> {
+        private volatile Thread parked;
+        private final CountDownLatch removed = new CountDownLatch(1);
+        private final CountDownLatch go = new CountDownLatch(1);
+
+        @Override
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        public Object compute(Object key, BiFunction f) {
+            var result = super.compute(key, f);
+
+            if (Thread.currentThread() == parked) {
+                removed.countDown();
+                await(go);
+            }
+
+            return result;
+        }
+
+        private static void await(CountDownLatch latch) {
+            try {
+                latch.await(20, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
@@ -103,5 +135,32 @@ class SharedPoolsCloseAllTest {
         assertThat(reported.getFirst().isResolved()).isFalse();
         deferred.succeed(Unit.unit());
         assertThat(reported.getFirst().await(TIMEOUT).isSuccess()).isTrue();
+    }
+
+    /// A release has removed the last holder's entry but not yet started the close: `closeAll` running in that window
+    /// must still report the release, because node stop is not done until that pool is closed.
+    @Test
+    void closeAll_whenReleaseRemovedTheEntryButNotYetClosed_reportsTheClose() throws Exception {
+        var pools = SharedPools.sharedPools(this::closePool);
+        var entries = SharedPools.class.getDeclaredField("entries");
+
+        acquire(pools, "slice-a").await(TIMEOUT);
+        entries.setAccessible(true);
+        var parking = new ParkingMap();
+
+        parking.putAll((ConcurrentHashMap<?, ?>) entries.get(pools));
+        entries.set(pools, parking);
+        var releaser = new Thread(() -> pools.release("k", "slice-a"));
+
+        parking.parked = releaser;
+        releaser.start();
+        assertThat(parking.removed.await(10, TimeUnit.SECONDS)).isTrue();
+        var reported = pools.closeAll();
+
+        parking.go.countDown();
+        releaser.join(10_000);
+
+        assertThat(reported).as("closeAll returned with the release's pool neither reported nor started").isNotEmpty();
+        assertThat(closes.get()).as("the pool is closed once, by the release").isEqualTo(1);
     }
 }
