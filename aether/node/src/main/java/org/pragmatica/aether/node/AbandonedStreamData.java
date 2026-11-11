@@ -113,25 +113,29 @@ public interface AbandonedStreamData {
     }
 
     private static List<String> markedIds(Path marker) {
-        return lift(Causes::fromThrowable, () -> Files.readAllLines(marker))
-               .onFailure(cause -> log.warn("Cannot read marker {}, its warning stays open: {}", marker, cause.message()))
-               .or(List.of())
-               .stream()
-               .filter(id -> !id.isBlank())
-               .toList();
+        return lift(Causes::fromThrowable,
+                    () -> Files.readAllLines(marker)).onFailure(cause -> log.warn("Cannot read marker {}, its warning stays open: {}",
+                                                                                  marker,
+                                                                                  cause.message()))
+                   .or(List.of())
+                   .stream()
+                   .filter(id -> !id.isBlank())
+                   .toList();
     }
 
     private static Result<Unit> writeMarker(Path marker, String selfId) {
         return existingIds(marker).map(ids -> idsWith(ids, selfId))
-                         .flatMap(content -> lift(Causes::fromThrowable, () -> Files.writeString(marker, content)))
-                         .mapToUnit()
-                         .onFailure(cause -> log.warn("Cannot write marker {}, the warning will not be cleared by a later boot: {}",
-                                                      marker,
-                                                      cause.message()));
+                          .flatMap(content -> lift(Causes::fromThrowable,
+                                                   () -> Files.writeString(marker, content)))
+                          .mapToUnit()
+                          .onFailure(cause -> log.warn("Cannot write marker {}, the warning will not be cleared by a later boot: {}",
+                                                       marker,
+                                                       cause.message()));
     }
 
     private static String idsWith(List<String> existing, String selfId) {
-        return Stream.concat(existing.stream(), Stream.of(selfId))
+        return Stream.concat(existing.stream(),
+                             Stream.of(selfId))
                      .distinct()
                      .collect(Collectors.joining("\n", "", "\n"));
     }
@@ -143,7 +147,8 @@ public interface AbandonedStreamData {
     }
 
     private static String unclearable(Path marker, Cause cause) {
-        return " The marker " + marker + " that lets a later boot close this warning could not be written (" + cause.message()
+        return " The marker " + marker
+             + " that lets a later boot close this warning could not be written (" + cause.message()
              + "), so this warning will not clear automatically.";
     }
 
