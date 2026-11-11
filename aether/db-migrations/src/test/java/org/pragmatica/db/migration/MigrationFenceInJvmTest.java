@@ -302,20 +302,56 @@ class MigrationFenceInJvmTest {
         assertThat(cause).isInstanceOf(MigrationError.PhysicalDatasourceOwnershipConflict.class);
     }
 
-    /// U2: a serialized second undo finds its history row already gone under the lock and skips: it neither reruns
-    /// the undo script nor fails.
+    /// U2: a serialized second undo finds its history row already gone under the lock and skips: it neither runs the
+    /// undo script (which would fail here, the table is gone) nor fails.
     @Test
-    void undo_secondRunAfterTheRowIsGone_skipsTheScript() {
+    void undo_rowRemovedAfterTheAppliedRead_skipsTheScriptUnderTheLock() {
         var file = dir.resolve("undoTwice.db");
         var connector = sqlite(file);
-        var scripts = List.of(MigrationScript.migrationScript("V1__a.sql", MARK_SCRIPT, 1L),
-                              MigrationScript.migrationScript("U1__a.sql", "DROP TABLE applied_marks", 2L));
-        var migrations = SchemaMigrations.schemaMigrations(timeSpan(1).minutes());
+        var raced = new AtomicBoolean();
+        var probe = Probe.over(connector, DatabaseType.SQLITE, new CopyOnWriteArrayList<>())
+                         .afterHistoryRead(() -> removeRowOnce(file, raced));
 
         assertThat(migrate(connector, MARK_SCRIPT).await().isSuccess()).isTrue();
-        assertThat(migrations.undo(DATASOURCE, 0, scripts, connector, "node", OWNER).await().isSuccess()).isTrue();
+        var undo = undoOver(probe);
 
-        assertThat(migrations.undo(DATASOURCE, 0, scripts, connector, "node", OWNER).await().isSuccess()).isTrue();
+        assertThat(undo.isSuccess()).isTrue();
+        assertThat(raced.get()).isTrue();
+    }
+
+    /// L1b: the undo's per-script lock is the FIRST statement of its transaction, before the row re-read and before
+    /// the undo script.
+    @Test
+    void undo_tierThreeLock_isTheFirstStatementOfTheUndoTransaction() {
+        var connector = sqlite(dir.resolve("undoLock.db"));
+        var statements = new CopyOnWriteArrayList<String>();
+
+        assertThat(migrate(connector, MARK_SCRIPT).await().isSuccess()).isTrue();
+        assertThat(undoOver(Probe.over(connector, DatabaseType.SQLITE, statements)).isSuccess()).isTrue();
+
+        var lock = indexOf(statements, "UPDATE aether_schema_owner");
+        assertThat(lock).isGreaterThanOrEqualTo(0);
+        assertThat(lock).isLessThan(indexOf(statements, "SELECT status, statements_completed, checksum"));
+        assertThat(lock).isLessThan(indexOf(statements, "DROP TABLE applied_marks"));
+    }
+
+    private Result<SchemaResult> undoOver(SqlConnector connector) {
+        return SchemaMigrations.schemaMigrations(timeSpan(1).minutes())
+                               .undo(DATASOURCE,
+                                     0,
+                                     List.of(MigrationScript.migrationScript("V1__a.sql", MARK_SCRIPT, 1L),
+                                             MigrationScript.migrationScript("U1__a.sql", "DROP TABLE applied_marks", 2L)),
+                                     connector,
+                                     "node",
+                                     OWNER)
+                               .await();
+    }
+
+    private static void removeRowOnce(Path file, AtomicBoolean raced) {
+        if (raced.compareAndSet(false, true)) {
+            execute(file, "DELETE FROM aether_schema_history WHERE version = 1");
+            execute(file, "DROP TABLE applied_marks");
+        }
     }
 
     private static void insertOtherOwnerOnce(Path file, AtomicBoolean raced) {
