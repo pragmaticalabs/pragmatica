@@ -441,7 +441,9 @@ class MigrationFenceInJvmTest {
             gate.countDown();
 
             assertThat(firstRun.get(60, TimeUnit.SECONDS).isSuccess()).isTrue();
-            assertThat(secondRun.get(60, TimeUnit.SECONDS).isSuccess()).as("the loser waited and skipped").isTrue();
+            var loser = secondRun.get(60, TimeUnit.SECONDS);
+
+            assertThat(loser.isSuccess()).as("the loser waited and skipped: %s", loser).isTrue();
             assertThat(scalar("jdbc:sqlite:" + file, "SELECT COUNT(*) FROM applied_marks")).isEqualTo(1);
             assertThat(scalar("jdbc:sqlite:" + file, "SELECT COUNT(*) FROM aether_schema_history WHERE status = 'SUCCESS'")).isEqualTo(1);
         } finally {
