@@ -121,10 +121,10 @@ sealed interface PortLockFile {
         return t -> PortError.LockFileUnavailable.FACTORY.apply(file.toString(), Causes.fromThrowable(t));
     }
 
-    private static Result<Option<List<FileLock>>> lockFrom(FileChannel channel,
-                                                           List<Integer> ports,
-                                                           int index,
-                                                           List<FileLock> held) {
+    static Result<Option<List<FileLock>>> lockFrom(FileChannel channel,
+                                                   List<Integer> ports,
+                                                   int index,
+                                                   List<FileLock> held) {
         return index == ports.size()
                ? success(some(held))
                : tryLock(channel,
