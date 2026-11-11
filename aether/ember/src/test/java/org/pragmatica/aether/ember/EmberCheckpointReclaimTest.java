@@ -16,8 +16,10 @@ import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.node.StreamEntityLogSubstrate;
 import org.pragmatica.aether.resource.entity.EntityLogSubstrate;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DhtPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DhtPartitionOwnershipValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
 import org.pragmatica.aether.stream.EvictionListener;
@@ -96,8 +98,6 @@ class EmberCheckpointReclaimTest {
     private static final String DEAD = "Dead";
     private static final String MEMBER = "Member";
     private static final long OWNERSHIP_BUDGET_MS = 30_000L;
-    /// The bootstrap mints the core record at term 1, provisionally; the incarnation commit rewrites it at term 2.
-    private static final long COMMITTED_OWNERSHIP_TERM = 2L;
     private static final String KEYSPACE = "reclaim";
     private static final String DHT_PREFIX = "stream-segments/";
     private static final StreamEntityLogSubstrate.CheckpointReclaim RECLAIM = checkpointReclaim(TimeSpan.timeSpan(1).seconds(),
@@ -138,17 +138,18 @@ class EmberCheckpointReclaimTest {
 
     /// A DHT put is stamped with the writer's applied owner epoch and refused by replicas that hold a newer one (#2535), so a save issued
     /// while the core ownership record is still changing fails "refused by owner-epoch fences" (#3067: the first save landed 12 ms after the
-    /// provisional mint and 38 ms before the incarnation commit rewrote it at term 2). Probes cannot gate this: they pass before the record
-    /// exists. The record is final once every node has applied it at term 2 or later.
+    /// provisional mint and 38 ms before the incarnation commit rewrote the record). Probes cannot gate this: they pass before the record
+    /// exists. The record is final once every node has applied the cluster incarnation, whose commit rewrites the provisional record, and
+    /// holds a non-zero core record.
     private static void awaitCoreOwnershipCommitted(List<AetherNode> nodes) {
-        awaitCondition("every node applied the committed core ownership record", OWNERSHIP_BUDGET_MS, () -> nodes.stream().allMatch(EmberCheckpointReclaimTest::coreOwnershipCommitted));
+        awaitCondition("every node applied the committed incarnation and the core ownership record", OWNERSHIP_BUDGET_MS, () -> nodes.stream().allMatch(EmberCheckpointReclaimTest::coreOwnershipCommitted));
     }
 
     private static boolean coreOwnershipCommitted(AetherNode node) {
-        return node.kvStore()
-                   .getTyped(DhtPartitionOwnershipKey.dhtPartitionOwnershipKey("core"), DhtPartitionOwnershipValue.class)
-                   .filter(record -> record.ownershipTerm() >= COMMITTED_OWNERSHIP_TERM)
-                   .isPresent();
+        var incarnation = node.kvStore().getTyped(ClusterIncarnationKey.clusterIncarnationKey(), ClusterIncarnationValue.class);
+        var ownership = node.kvStore().getTyped(DhtPartitionOwnershipKey.dhtPartitionOwnershipKey("core"), DhtPartitionOwnershipValue.class);
+
+        return incarnation.isPresent() && ownership.isPresent();
     }
 
     /// Puts a small probe block through each node's `streams` storage until the write is accepted. A probe is not a checkpoint: no
