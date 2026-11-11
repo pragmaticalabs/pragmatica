@@ -4,6 +4,7 @@
 package org.pragmatica.aether.resource.db;
 
 import java.lang.reflect.InvocationHandler;
+import java.util.Arrays;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
@@ -42,6 +43,48 @@ class PgSqlConnectorTransactionalTest {
 
         assertThat(result.isSuccess()).isTrue();
         assertThat(events).containsExactly("tx-update", "commit");
+    }
+
+    @Test
+    void scope_forwardsEveryMethodOfTheBaseConnectorToTheTransaction() {
+        var seen = new ArrayList<String>();
+        var plain = (SqlConnector) Proxy.newProxyInstance(getClass().getClassLoader(),
+                                                          new Class<?>[]{SqlConnector.class},
+                                                          (_, method, _) -> record(seen, method.getName()));
+        var scope = PgSqlConnectorScope.pgSqlConnectorScope(plain);
+        var expected = Arrays.stream(SqlConnector.class.getMethods())
+                             .filter(method -> !java.lang.reflect.Modifier.isStatic(method.getModifiers()))
+                             .toList();
+
+        expected.forEach(method -> invokeWithDefaults(scope, method));
+
+        assertThat(seen).containsAll(expected.stream().map(java.lang.reflect.Method::getName).toList());
+    }
+
+    @Test
+    void scope_ofAPgSqlConnector_isThatConnector() {
+        var pg = pool();
+
+        assertThat(PgSqlConnectorScope.pgSqlConnectorScope(pg)).isSameAs(pg);
+    }
+
+    private static Object record(List<String> seen, String name) {
+        seen.add(name);
+        return null;
+    }
+
+    private static void invokeWithDefaults(Object target, java.lang.reflect.Method method) {
+        try {
+            method.invoke(target, Arrays.stream(method.getParameterTypes()).map(PgSqlConnectorTransactionalTest::defaultFor).toArray());
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError(method.getName(), e);
+        }
+    }
+
+    private static Object defaultFor(Class<?> type) {
+        return type == Object[].class
+               ? new Object[0]
+               : null;
     }
 
     /// Only compiles when `connector` is a `PgSqlConnector`: the static type is the proof of the overload.

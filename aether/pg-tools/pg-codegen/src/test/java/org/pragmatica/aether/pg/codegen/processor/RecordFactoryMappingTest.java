@@ -109,6 +109,18 @@ class RecordFactoryMappingTest {
         }
         """;
 
+    private static final String FOREIGN_RESULT_REPO = HEADER + """
+        record StatusRow(String status) {
+            static Result<String> statusRow(String status) { return Result.success(status); }
+        }
+
+        @PgSql
+        public interface ForeignResultRepo {
+            @Query("SELECT status FROM orders WHERE id = :id")
+            Promise<Option<StatusRow>> statusOf(long id);
+        }
+        """;
+
     private static final String VALUE_OBJECT_REPO = HEADER + """
         record OrderStatus(String value) {
             static Result<OrderStatus> orderStatus(String raw) {
@@ -252,6 +264,17 @@ class RecordFactoryMappingTest {
         @Test
         void factoryReturningNeitherRecordNorResult_isCompileError() throws Exception {
             var result = TestCompilationHelper.compileWithProcessor(WRONG_RETURN_REPO, "test/WrongReturnRepo.java", tempDir);
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("must return StatusRow or Result<StatusRow>");
+        }
+    }
+
+    @Nested
+    class ForeignResult {
+        @Test
+        void factoryReturningResultOfAnotherType_isCompileError() throws Exception {
+            var result = TestCompilationHelper.compileWithProcessor(FOREIGN_RESULT_REPO, "test/ForeignResultRepo.java", tempDir);
 
             assertThat(result.success()).isFalse();
             assertThat(result.diagnostics()).contains("must return StatusRow or Result<StatusRow>");
