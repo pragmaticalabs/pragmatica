@@ -72,7 +72,6 @@ public class CstFactoryNamingRule implements CstLintRule {
 
     private Option<String> enclosingTypeName(Cursor root, Cursor method) {
         return findAncestor(root, method, RuleKind.TYPE_KIND).map(CstNodes::text)
-                           .map(CstFactoryNamingRule::declaredTypeName)
                            .flatMap(CstFactoryNamingRule::declaredTypeName);
     }
 
