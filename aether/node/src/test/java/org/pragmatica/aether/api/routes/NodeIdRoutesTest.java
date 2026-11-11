@@ -144,6 +144,8 @@ class NodeIdRoutesTest {
 
         assertThat(result.isFailure()).isTrue();
         result.onFailure(cause -> assertThat(cause).isInstanceOf(ManagementServerError.Conflict.class));
+        assertThat(cluster.committedHighWater(SRC, "core")).as("three attempts, each beaten by one concurrent ordinal: the retry is bounded at three")
+                                                           .isEqualTo(Option.some(5));
     }
 
     @Test
