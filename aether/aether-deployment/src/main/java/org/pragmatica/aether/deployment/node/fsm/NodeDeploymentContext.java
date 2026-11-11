@@ -236,11 +236,14 @@ public final class NodeDeploymentContext {
         return cleanupsInFlight.containsKey(artifact);
     }
 
-    /// Records `cleanup` as the artifact's in-flight cleanup; the entry goes when it settles, whatever the outcome.
+    /// Records `cleanup` as the artifact's in-flight cleanup; the entry goes when it settles, whatever the outcome. The removal is a DEPENDENT
+    /// step (`withResult`), done before the settling `resolve` returns: an `onResult` event handler runs asynchronously, and a remove arriving
+    /// right after the settle would find the entry still there and skip its cleanup. Registered after the `put`, so a cleanup that already
+    /// settled removes its entry at once.
     @Contract
     public void trackCleanup(Artifact artifact, Promise<Unit> cleanup) {
         cleanupsInFlight.put(artifact, cleanup);
-        cleanup.onResultRun(() -> cleanupsInFlight.remove(artifact, cleanup));
+        cleanup.withResult(_ -> cleanupsInFlight.remove(artifact, cleanup));
     }
 
     /// Resolves once the artifact's in-flight cleanup, if any, has settled. FER: a failed cleanup was already logged at its site
