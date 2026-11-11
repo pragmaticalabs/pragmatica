@@ -13,7 +13,15 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.pragmatica.aether.artifact.Artifact;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
+import org.pragmatica.aether.deployment.wiring.FsmTimers;
+import org.pragmatica.aether.node.deployment.AdmissionSeam;
+import org.pragmatica.aether.node.deployment.DeploymentWiring;
+import org.pragmatica.aether.node.deployment.EngineMarkerGuard;
+import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.slice.Slice;
@@ -378,6 +386,72 @@ class FalseDeathWorkerCatchUpTest {
 
         manager.onQuorumStateChange(ClusterStateNotification.active());
         assertUnloadedAndQuiet(GONE, mark);
+    }
+
+    // --- Arm H: the production binding of replay-end to the sweep (m30, m31) ---
+
+    /// Every other arm registers `manager::onReplayDelivered` on the worker store itself. Here the manager is built by the factory `AetherNode`
+    /// calls (`nodeDeploymentManagerFromSnapshot`) and handed the registrar `DeploymentWiring.replayEnd` returns, and nothing else registers: the
+    /// replay-end signal reaches the sweep only if both the wiring and the factory bind it. A no-op registrar or a manager that drops the
+    /// registration leaves the loaded slice with no entry in place.
+    @Test
+    void armH_productionWiring_replayEndRunsTheCatchUpSweep() {
+        assembleThroughProductionWiring();
+        resync();
+        sliceStore.markAsLoadedWithSlice(GONE);
+        var mark = writesBefore();
+
+        resync();
+
+        assertUnloadedAndQuiet(GONE, mark);
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void assembleThroughProductionWiring() {
+        var router = MessageRouter.mutable();
+
+        worker = newStore(router);
+        applier = ReplicaApplier.replicaApplier(worker, 1 << 20);
+        var wiring = DeploymentWiring.deploymentWiring(DeploymentEngine.LEGACY,
+                                                       true,
+                                                       new SimpleMeterRegistry(),
+                                                       openGuard(),
+                                                       new DeploymentWiring.Node(SELF, () -> 0L, () -> false, AdmissionSeam.admissionSeam(_ -> 0L, _ -> 0L)));
+
+        manager = NodeDeploymentManager.nodeDeploymentManagerFromSnapshot(SELF,
+                                                                           new NodeAddress("", 0),
+                                                                           router,
+                                                                           sliceStore,
+                                                                           clusterNode,
+                                                                           worker,
+                                                                           Mockito.mock(InvocationHandler.class, FalseDeathWorkerCatchUpTest::answerPromisesAndOptions),
+                                                                           SliceActionConfig.sliceActionConfig(),
+                                                                           SliceCodec.sliceCodec(List.of()),
+                                                                           Option.some(publisher),
+                                                                           Option.none(),
+                                                                           NodeDeploymentManager.DEFAULT_ACTIVATION_CHAIN_TIMEOUT,
+                                                                           NodeDeploymentManager.DEFAULT_TRANSITION_RETRY_DELAY,
+                                                                           () -> Epoch.epoch(1L, 1L, 1L),
+                                                                           wiring.replayEnd(worker));
+        KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                            .onPut(NodeArtifactKey.class, manager::onNodeArtifactPut)
+                            .onRemove(NodeArtifactKey.class, manager::onNodeArtifactRemove)
+                            .build()
+                            .asRouteEntries()
+                            .forEach(entry -> entry.entries()
+                                                   .forEach(route -> router.addRoute((Class) route.first(), (Consumer) route.last())));
+        manager.onQuorumStateChange(ClusterStateNotification.active());
+    }
+
+    private EngineMarkerGuard openGuard() {
+        return EngineMarkerGuard.engineMarkerGuard(DeploymentEngine.LEGACY,
+                                                   SELF,
+                                                   1_000L,
+                                                   EngineMarkerGuard.readerOver(worker),
+                                                   FsmTimers.sharedScheduler(),
+                                                   () -> 1L,
+                                                   OperatorWarningSink.handingOffTo(_ -> {}),
+                                                   _ -> {});
     }
 
     // --- Doubles ---
