@@ -44,8 +44,8 @@ final class NodeIdReservation {
     }
 
     private static Option<Integer> digits(String text) {
-        return !text.isEmpty() && text.length() <= 9 && text.chars()
-                                                            .allMatch(Character::isDigit)
+        return ! text.isEmpty() && text.length() <= 9 && text.chars()
+                                                             .allMatch(Character::isDigit)
                ? some(Integer.parseInt(text))
                : none();
     }
@@ -57,7 +57,7 @@ final class NodeIdReservation {
         var highestKnown = knownNodeIds.flatMap(id -> ordinalOf(id, source, role).stream())
                                        .mapToInt(Integer::intValue)
                                        .max()
-                                       .orElse(- 1);
+                                       .orElse(-1);
 
         return Math.max(configuredCount - 1, highestKnown);
     }

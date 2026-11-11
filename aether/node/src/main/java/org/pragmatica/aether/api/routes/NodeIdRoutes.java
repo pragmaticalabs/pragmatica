@@ -37,7 +37,6 @@ import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.Verify.Is;
 
 
-
 /// #1715: `POST /cluster/node-ids/reserve`, served by the core leader. Reserves `count` node ids `<source>-<role>-<n>` by advancing the
 /// committed per-(source, role) high-water ([NodeIdHighWaterKey]) in ONE compare-and-set leader transaction, and answers only after the
 /// advance is committed. `cluster apply` calls it BEFORE it creates any VM, so a CLI that dies between reserve and provision leaves a gap in
@@ -67,7 +66,7 @@ public final class NodeIdRoutes implements RouteSource {
 
     Promise<ReserveNodeIdsResponse> handleReserve(ReserveNodeIdsRequest request) {
         return validated(request).async()
-                                 .flatMap(valid -> commit(valid, COMMIT_ATTEMPTS));
+                        .flatMap(valid -> commit(valid, COMMIT_ATTEMPTS));
     }
 
     private static Result<ReserveNodeIdsRequest> validated(ReserveNodeIdsRequest request) {
@@ -91,7 +90,7 @@ public final class NodeIdRoutes implements RouteSource {
         var node = nodeSupplier.get();
 
         return committedLeaderOf(node).async()
-                                      .flatMap(leader -> attempt(node, leader, request, attemptsLeft));
+                                .flatMap(leader -> attempt(node, leader, request, attemptsLeft));
     }
 
     /// The reservation is refused unless THIS node is the committed core leader: no committed leader is an election in progress (503), a
@@ -111,15 +110,13 @@ public final class NodeIdRoutes implements RouteSource {
                                                     ReserveNodeIdsRequest request,
                                                     int attemptsLeft) {
         var key = NodeIdHighWaterKey.nodeIdHighWaterKey(request.source(), request.role());
-        var stored = node.kvStore()
-                         .getTyped(key, NodeIdHighWaterValue.class);
+        var stored = node.kvStore().getTyped(key, NodeIdHighWaterValue.class);
         var reservation = NodeIdReservation.reserve(stored.map(NodeIdHighWaterValue::highWater)
                                                           .or(() -> seed(node, request)),
                                                     request.source(),
                                                     request.role(),
                                                     request.count());
-        var transactionId = UUID.randomUUID()
-                                .toString();
+        var transactionId = UUID.randomUUID().toString();
         var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(key,
                                                                       stored.map(value -> (AetherValue) value),
                                                                       Option.<AetherValue> some(reservation.next()));
@@ -130,8 +127,7 @@ public final class NodeIdRoutes implements RouteSource {
                                                                               List.of(mutation));
 
         return node.<Object> apply(List.of(command))
-                   .flatMap(results -> accepted(results,
-                                                transactionId)
+                   .flatMap(results -> accepted(results, transactionId)
                                        ? Promise.success(response(request, reservation))
                                        : retryOrRefuse(request, attemptsLeft));
     }
@@ -140,8 +136,9 @@ public final class NodeIdRoutes implements RouteSource {
         return attemptsLeft > 1
                ? commit(request, attemptsLeft - 1)
                : new ManagementServerError.Conflict("Node id reservation lost the compare-and-set " + COMMIT_ATTEMPTS
-                                                    + " times to concurrent reservations for " + request.source()
-                                                    + "/" + request.role() + "; nothing was reserved. Retry.").<ReserveNodeIdsResponse> promise();
+                                                   + " times to concurrent reservations for " + request.source()
+                                                   + "/" + request.role()
+                                                   + "; nothing was reserved. Retry.").<ReserveNodeIdsResponse> promise();
     }
 
     private static boolean accepted(List<Object> results, String transactionId) {
@@ -156,8 +153,7 @@ public final class NodeIdRoutes implements RouteSource {
         return new ReserveNodeIdsResponse(request.source(),
                                           request.role(),
                                           reservation.ids(),
-                                          reservation.next()
-                                                     .highWater());
+                                          reservation.next().highWater());
     }
 
     /// First reservation of a (source, role): what bootstrap and earlier applies already took. The persisted config's desired count covers
@@ -173,11 +169,8 @@ public final class NodeIdRoutes implements RouteSource {
         node.kvStore()
             .forEach(NodeIdentityKey.class,
                      NodeLifecycleValue.class,
-                     (identity, _) -> known.add(identity.nodeId()
-                                                        .id()));
-        return NodeIdReservation.seedHighWater(configured,
-                                               request.source(),
-                                               request.role(),
-                                               known.stream());
+                     (identity, _) -> known.add(identity.nodeId().id()));
+
+        return NodeIdReservation.seedHighWater(configured, request.source(), request.role(), known.stream());
     }
 }
