@@ -88,7 +88,29 @@ class ConfigLoaderOwnerLeaseTest {
         assertRefused("clock_drift_bound = 1.0", "10s", "clock_drift_bound");
         assertRefused("clock_drift_bound = 1.5", "10s", "clock_drift_bound");
         assertRefused("clock_drift_bound = -0.1", "10s", "clock_drift_bound");
+        assertRefused("clock_drift_bound = nan", "10s", "clock_drift_bound");
+        assertRefused("clock_drift_bound = inf", "10s", "clock_drift_bound");
+        assertRefused("clock_drift_bound = +inf", "10s", "clock_drift_bound");
+        assertRefused("clock_drift_bound = -inf", "10s", "clock_drift_bound");
+        assertRefused("clock_drift_bound = \"abc\"", "10s", "clock_drift_bound");
         assertAccepted("clock_drift_bound = 0.001", "10s");
+    }
+
+    /// A refused drift bound makes `W` undefined, so it must be the only error: the suspect-timeout bound is not evaluated
+    /// from a `W` computed out of an invalid `rho`. At rho = 1 the wait divides by zero and would exceed any suspect timeout.
+    @Test
+    void invalidClockDriftBound_isTheOnlyError_noSuspectTimeoutError() {
+        for (var rho : new String[]{"1.0", "1.5"}) {
+            ConfigLoader.loadFromString(streaming("clock_drift_bound = " + rho, "10s"))
+                        .onSuccess(config -> Assertions.fail("must be refused: rho " + rho))
+                        .onFailure(cause -> assertOnlyDriftError(cause.message(), rho));
+        }
+    }
+
+    private static void assertOnlyDriftError(String message, String rho) {
+        assertThat(message).as("rho " + rho).contains("clock_drift_bound");
+        assertThat(message).as("rho " + rho + " must not add a suspect_timeout error").doesNotContain("suspect_timeout");
+        assertThat(message.split("clock_drift_bound", -1)).as("rho " + rho + " exactly one drift error").hasSize(2);
     }
 
     /// rho = 0.5 makes W = 3 T + 50 ms exact in binary floating point, so with T = 2 s the bound is exactly 8050 ms and the
