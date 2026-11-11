@@ -63,6 +63,7 @@ public final class StorageMaintenanceDriver {
     private final DegradeReporter degrade;
     private final Supplier<Unit> retryPending;
     private final AtomicBoolean promoting = new AtomicBoolean(false);
+
     private final AtomicReference<StorageMaintenanceProgress> progress = new AtomicReference<>(StorageMaintenanceProgress.storageMaintenanceProgress());
 
     private StorageMaintenanceDriver(DemotionManager demotionManager,
@@ -146,7 +147,8 @@ public final class StorageMaintenanceDriver {
     /// demotion no longer keeps garbage collection from running.
     private Result<Integer> runPass(String part, Supplier<Integer> pass) {
         return Result.lift(Causes::fromThrowable, pass::get)
-                     .onFailure(cause -> raisePassFailed(part, cause.message()))
+                     .onFailure(cause -> raisePassFailed(part,
+                                                         cause.message()))
                      .onSuccessRun(() -> raisePassRecovered(part));
     }
 
@@ -202,7 +204,8 @@ public final class StorageMaintenanceDriver {
             Result.lift(Causes::fromThrowable, this::promoteAndObserve)
                   .onFailure(cause -> log.warn("Storage promotion cycle failed: {}",
                                                cause.message()))
-                  .onFailure(cause -> raisePassFailed(PART_PROMOTION, cause.message()))
+                  .onFailure(cause -> raisePassFailed(PART_PROMOTION,
+                                                      cause.message()))
                   .onSuccessRun(() -> raisePassRecovered(PART_PROMOTION))
                   .onSuccess(StorageMaintenanceDriver::logPromoted);
         } finally {

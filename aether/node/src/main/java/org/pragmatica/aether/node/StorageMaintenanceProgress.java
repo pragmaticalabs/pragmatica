@@ -7,6 +7,7 @@ package org.pragmatica.aether.node;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
+
 /// #800: what the storage maintenance tick has done on this node, so a wedged or failing maintenance no longer looks the same
 /// as an idle one. `lastRunMs` is when the latest tick finished (0 before the first), `outcome` is how it ended,
 /// `consecutiveFailedTicks` counts the ticks in a row with a failed pass, `lastFailure` carries the cause of the latest failed
@@ -33,13 +34,15 @@ public record StorageMaintenanceProgress(long lastRunMs,
 
         return new StorageMaintenanceProgress(nowMs,
                                               failure.fold(() -> Outcome.OK, _ -> Outcome.FAILED),
-                                              failure.fold(() -> 0, _ -> consecutiveFailedTicks + 1),
+                                              failure.fold(() -> 0,
+                                                           _ -> consecutiveFailedTicks + 1),
                                               failure.orElse(lastFailure),
                                               demoted + demotion.or(0),
                                               collected + collection.or(0));
     }
 
     private static Option<String> failureOf(Result<Integer> pass) {
-        return pass.fold(cause -> Option.some(cause.message()), _ -> Option.none());
+        return pass.fold(cause -> Option.some(cause.message()),
+                         _ -> Option.none());
     }
 }

@@ -172,7 +172,7 @@ public final class DelegatedStorageAdapter {
 
             return wantActive
                    ? attemptActivation()
-                   : attemptDeactivation();
+                   : attemptDeactivation().or(unit());
         }
 
         return unit();
@@ -205,23 +205,23 @@ public final class DelegatedStorageAdapter {
         wantActive = false;
         retriesLeft = MAX_RETRIES;
 
-        return Promise.success(attemptDeactivation());
+        return Promise.success(attemptDeactivation().or(unit()));
     }
 
-    private Unit attemptDeactivation() {
+    private Result<Unit> attemptDeactivation() {
         if (!active.get()) {
-            return unit();
+            return Result.success(unit());
         }
 
-        Result.all(garbageCollector.deactivate().onFailure(cause -> logDeactivationFailure("garbage collector", cause)),
-                   demotionManager.deactivate().onFailure(cause -> logDeactivationFailure("demotion manager", cause)))
-              .map((_, _) -> unit())
-              .onSuccessRun(() -> active.set(false))
-              .onSuccessRun(() -> log.info("STORAGE delegation group deactivated"))
-              .onSuccessRun(this::reportDeactivated)
-              .onFailure(this::reportNotDeactivated);
-
-        return unit();
+        return Result.all(garbageCollector.deactivate()
+                                          .onFailure(cause -> logDeactivationFailure("garbage collector", cause)),
+                          demotionManager.deactivate()
+                                         .onFailure(cause -> logDeactivationFailure("demotion manager", cause)))
+                     .map((_, _) -> unit())
+                     .onSuccessRun(() -> active.set(false))
+                     .onSuccessRun(() -> log.info("STORAGE delegation group deactivated"))
+                     .onSuccessRun(this::reportDeactivated)
+                     .onFailure(this::reportNotDeactivated);
     }
 
     private void reportDeactivated() {
