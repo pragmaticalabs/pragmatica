@@ -2910,6 +2910,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.SCHEMA_MIGRATION_FENCED,
                 OperatorWarningCode.KV_DISPATCH_CAUGHT_UP,
                 OperatorWarningCode.KV_DISPATCH_SLOW_HANDLER_RETURNED,
+                OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED,
                 OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED,
                 // the datasource recoveries of #2973: demand back within the server limit, a refused server answering again
                 OperatorWarningCode.DATASOURCE_DEMAND_WITHIN_SERVER_LIMIT,
