@@ -2121,7 +2121,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     private List<MembershipUpdate> ackPiggybackWith(Option<MembershipUpdate> notice) {
         var piggyback = ackPiggyback();
 
-        return notice.map(entry -> appendBeyondCap(piggyback, leadingIdentityCount(piggyback), entry))
+        return notice.map(entry -> appendBeyondCap(piggyback,
+                                                   leadingIdentityCount(piggyback),
+                                                   entry))
                      .or(piggyback);
     }
 
@@ -2155,7 +2157,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         return Option.from(ping.piggyback()
                                .stream()
                                .sorted(Comparator.comparing((MembershipUpdate update) -> !update.nodeId()
-                                                                                                 .equals(ping.from())))
+                                                                                                .equals(ping.from())))
                                .flatMap(update -> deathNoticeFor(update).stream())
                                .findFirst());
     }
@@ -2460,7 +2462,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// refused still learns why. The refusal never goes through [#refuseAnnounce], whose `IdentityRefused` makes the
     /// receiver exit.
     @Contract
-    private void replyWithMembershipSnapshot(InetSocketAddress sender, NodeId announcer, Option<MembershipUpdate> notice) {
+    private void replyWithMembershipSnapshot(InetSocketAddress sender,
+                                             NodeId announcer,
+                                             Option<MembershipUpdate> notice) {
         var pages = PiggybackBuffer.pack(snapshotFor(announcer),
                                          config.maxPiggyback(),
                                          piggybackBudgetBytes,
@@ -2471,14 +2475,14 @@ public final class SwimProtocol implements SwimMessageHandler {
             transport.send(sender,
                            Ack.ack(selfId,
                                    SYNC_ACK_SEQUENCE,
-                                   notice.stream()
-                                         .toList()));
+                                   notice.stream().toList()));
 
             return;
         }
 
         pages.forEach(page -> transport.send(sender, Ack.ack(selfId, SYNC_ACK_SEQUENCE, page)));
-        notice.onPresent(entry -> transport.send(sender, Ack.ack(selfId, SYNC_ACK_SEQUENCE, List.of(entry))));
+        notice.onPresent(entry -> transport.send(sender,
+                                                 Ack.ack(selfId, SYNC_ACK_SEQUENCE, List.of(entry))));
     }
 
     /// The ANNOUNCE's incarnation and boot token are the claim compared with the death record (#3028 design §3.2).
