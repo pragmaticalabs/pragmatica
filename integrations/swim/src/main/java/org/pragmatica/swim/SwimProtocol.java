@@ -2237,7 +2237,8 @@ public final class SwimProtocol implements SwimMessageHandler {
     private Option<MembershipUpdate> pingDeathNotice(Ping ping) {
         return Option.from(ping.piggyback()
                                .stream()
-                               .filter(update -> isAnswerable(ping, update.nodeId()))
+                               .filter(update -> isAnswerable(ping,
+                                                              update.nodeId()))
                                .flatMap(update -> deathNoticeFor(update).stream())
                                .findFirst());
     }
