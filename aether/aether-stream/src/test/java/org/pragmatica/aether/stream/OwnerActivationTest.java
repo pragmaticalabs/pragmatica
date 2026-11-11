@@ -44,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// the exact committed record.
 class OwnerActivationTest {
     private static final String STREAM = "orders";
-    private static final int PARTITION = 0;
+    private static final int PARTITION = 2;
     private static final NodeId SELF = new NodeId("self");
     private static final NodeId PEER_A = new NodeId("peer-a");
     private static final NodeId PEER_B = new NodeId("peer-b");
@@ -94,8 +94,10 @@ class OwnerActivationTest {
 
     {
         activation.peerRingTail((_, _, _) -> Promise.success(peerTail.get()));
-        activation.peerLineageEnd((_, _, peer, watermark) -> Math.min(watermark,
-                                                                      learnedEnds.getOrDefault(peer, Long.MAX_VALUE)));
+        activation.peerLineageEnd((stream, partition, peer, watermark) -> STREAM.equals(stream) && partition == PARTITION
+                                                                          ? Math.min(watermark,
+                                                                                     learnedEnds.getOrDefault(peer, Long.MAX_VALUE))
+                                                                          : watermark);
     }
 
     /// Every node holds the same lineage over any range the gate compares (`rec-<offset>`), except the nodes in
@@ -629,6 +631,38 @@ class OwnerActivationTest {
         assertThat(activate()).isTrue();
         assertThat(localWatermark).hasValue(3L);
         assertThat(catchUps).containsExactly("peer-b@5", "peer-a@3");
+    }
+
+    /// #3071 (n5): a source whose learned end (3) is below its raw watermark (5) is ranked by the end but PULLED at its RAW tail:
+    /// the backfill's lineage memory is keyed by the raw tail, so a pull at the capped end would shrink it and re-open the livelock.
+    @Test
+    void activate_sourceWithLearnedEndBelowRaw_isPulledAtItsRawTail() {
+        members.set(List.of(SELF, PEER_A));
+        localWatermark.set(1L);
+        peerWatermarks.put(PEER_A, 5L);
+        learnedEnds.put(PEER_A, 3L);
+
+        assertThat(activate()).isTrue();
+        assertThat(catchUps).containsExactly("peer-a@5");
+    }
+
+    /// #3071 (n6): the candidate-divergence window stays RAW. Peer B: end 3, raw 5; owner local 4; B's record at 4 differs. Judged over
+    /// min(local, raw) = 4 the difference is seen and B is left out (its row forgotten); judged over its end it would be missed.
+    @Test
+    void activate_isrElected_peerDivergingAboveItsEndButWithinRawOverlap_isLeftOut() {
+        var forgotten = new java.util.concurrent.CopyOnWriteArrayList<NodeId>();
+
+        activation.peerRows((_, _, peer) -> forgotten.add(peer));
+        record.set(Option.some(isrElected()));
+        members.set(List.of(SELF, PEER_B));
+        localWatermark.set(4L);
+        peerWatermarks.put(PEER_B, 5L);
+        learnedEnds.put(PEER_B, 3L);
+        divergent.add(PEER_B);
+        divergentFrom.set(4L);
+
+        assertThat(activate()).isTrue();
+        assertThat(forgotten).containsExactly(PEER_B);
     }
 
     /// #3071: two peers ahead; B's raw watermark is the highest but its committed-lineage end (4) is below A's (6). A is the source,
