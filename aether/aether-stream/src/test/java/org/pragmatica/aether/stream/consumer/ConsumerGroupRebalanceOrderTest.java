@@ -253,15 +253,18 @@ class ConsumerGroupRebalanceOrderTest {
             assertThat(held).isEmpty();
         }
 
-        /// With no known partitions there is nothing to clear, so the leave mints nothing and cannot be refused for
-        /// a lagging term: the no-partition guard is what separates this from the refusal below.
+        /// A group registered with zero partitions has nothing to clear, so its last leave mints nothing and cannot
+        /// be refused for a lagging term: the no-partition guard is what separates this from the refusal below.
+        /// (The lagging join is itself refused, but the member stays registered, which is what reaches the leave.)
         @Test
-        void leaveGroup_unknownMember_withNoKnownPartitions_isNotRefusedByALaggingTerm() {
+        void leaveGroup_lastMemberOfAZeroPartitionGroup_isNotRefusedByALaggingTerm() {
             newCoordinator(2L).joinGroup(GROUP, STREAM, PARTITIONS, "c3", NODE_A);
             commit(0);
             held.clear();
+            var lagging = newCoordinator(1L);
+            lagging.joinGroup(GROUP, STREAM, 0, "c4", NODE_B);
 
-            var result = newCoordinator(1L).leaveGroup(GROUP, STREAM, "ghost");
+            var result = lagging.leaveGroup(GROUP, STREAM, "c4");
 
             result.onFailure(cause -> Assertions.fail("nothing to clear must not be refused: " + cause.message()));
             assertThat(held).isEmpty();
