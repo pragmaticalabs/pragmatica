@@ -3022,7 +3022,6 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STRAY_INSTANCE,
                 OperatorWarningCode.WORKER_ABSENCE_UNJUDGEABLE,
                 OperatorWarningCode.WORKER_NO_COMMUNITY_POLICY,
-                OperatorWarningCode.STREAM_TRUNCATION_BELOW_VISIBLE,
             });
         var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);
