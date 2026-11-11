@@ -34,6 +34,8 @@ import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.StorageInstance;
 
 import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
@@ -175,6 +177,11 @@ class EmberCheckpointReclaimTest {
         return streams(node).put(probe).await(SAVE_BOUND).isSuccess();
     }
 
+    @AfterEach
+    void freshClusterEachRepetition() {
+        startAFreshCluster();
+    }
+
     @AfterAll
     void stopCluster() {
         if (cluster != null) {
@@ -183,7 +190,7 @@ class EmberCheckpointReclaimTest {
         }
     }
 
-    @Test
+    @RepeatedTest(50)
     @Order(1)
     @Timeout(300)
     void identicalSnapshots_inTwoPartitions_areDifferentBlocks() {
