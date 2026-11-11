@@ -81,7 +81,7 @@ public final class RecordGenerator {
         }
 
         sb.append(") {\n");
-        if (config.generateStaticFactory()) {
+        if (config.generateStaticFactory() || config.generateRowMapper()) {
             var factoryName = NamingConvention.toFactoryMethodName(className);
 
             sb.append("\n    public static ").append(className).append(" ").append(factoryName).append("(\n");
@@ -123,7 +123,7 @@ public final class RecordGenerator {
             exprs.add(renderAccessor(field));
         }
 
-        BatchedAllRenderer.appendReturn(sb, "Result", className, exprs, "        ");
+        BatchedAllRenderer.appendReturn(sb, "Result", BatchedAllRenderer.Factory.factory(className, false), exprs, "        ");
         sb.append("    }\n");
     }
 
