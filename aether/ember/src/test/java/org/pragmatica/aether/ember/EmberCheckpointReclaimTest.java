@@ -121,8 +121,6 @@ class EmberCheckpointReclaimTest {
         if (cluster == null) {
             cluster = EmberTestPorts.startedCluster(PORTS, this::threeNodes, START_BOUND);
             awaitCondition("a leader is elected", LEADER_BUDGET_MS, () -> cluster.currentLeader().isPresent());
-            awaitCoreOwnershipCommitted(cluster.allNodes());
-            awaitWritesAccepted(cluster.allNodes());
         } else {
             assertTheDataDirOutlivesTheTest();
         }
