@@ -95,7 +95,7 @@ class SwimFalseDeadRejoinTest {
     /// and its gossip about X never reaches I, so I keeps X ALIVE at k and X (hearing from I) never bumps its incarnation.
     /// The co-confirmation kill-gate holds a lone accuser's verdict (no FaultyObserved, no death record), so T's
     /// transport reports the link to X lost: the transport-veto corroboration lets T's verdict through.
-    /// T's Faulty(X,k) is not circulating and I's Alive(X,k) is refused by T's death-record gate, so the ONLY path by
+    /// T's Faulty(X,k) stops circulating before the helper's first relay (the relay is held until T's buffer holds no FAULTY entry), and I's Alive(X,k) is refused by T's death-record gate, so the ONLY path by
     /// which X can learn of its death is the notice T answers to the Ping I relays for X's PingReq (`onBehalfOf` = X):
     /// X refutes with k+1 and T re-admits it. RED without the notice (relay marker ignored): X stays dead at T.
     @Test
@@ -309,6 +309,10 @@ class SwimFalseDeadRejoinTest {
                 return;
             }
 
+            if (relayHeld(target, message)) {
+                return;
+            }
+
             noteRelayedPing(target, message);
             noteNewsOfDeath(target, message);
             countLiveSpeech(message);
@@ -323,6 +327,14 @@ class SwimFalseDeadRejoinTest {
             if (liveIsolated.get() && inboundOnly.get() && selfPort == LIVE_PORT) {
                 liveSpoke.incrementAndGet();
             }
+        }
+
+        /// The helper's relay to the observer waits until the observer's own Faulty(live) gossip has stopped circulating (its
+        /// dissemination buffer holds no FAULTY entry), so the only FAULTY entry a relayed Ack can carry is the death notice.
+        private boolean relayHeld(InetSocketAddress target, SwimMessage message) {
+            return observerVerdictPrivate.get() && selfPort == HELPER_PORT && target.getPort() == OBSERVER_PORT
+                   && message instanceof SwimMessage.Ping ping && ping.onBehalfOf().isPresent()
+                   && (verdictSnapshot.get() == null || observerNode.piggybackFaultyCountForTest() > 0);
         }
 
         private void noteNewsOfDeath(InetSocketAddress target, SwimMessage message) {
