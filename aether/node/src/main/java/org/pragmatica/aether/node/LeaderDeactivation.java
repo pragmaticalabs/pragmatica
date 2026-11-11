@@ -32,12 +32,14 @@ import static org.pragmatica.lang.Unit.unit;
 /// enters `QuorumLost` raises the change, and it can still be between its CAS and its entry action when the stop's own
 /// dispatch, finding `QuorumLost` already current, has returned).
 ///
-/// KNOWN RESIDUAL (#2688, not fixed here): the wait is not covered when, at the moment `stop()` takes [#next], this node is not
-/// yet recorded as the leader because a `LeaderChange(self)` is still queued and undelivered on the `LeaderManager` executor,
-/// AND the matching deactivation is enqueued after the drain marker. The state is then resolved, the marker passes, and the
-/// deactivation is dropped by the quiesce, so the leader-toggled components may stay active. It needs two racing leader-FSM
-/// dispatches around `stop()`. It is also unverified whether a toggle whose own `deactivate()` re-dispatches onto another
-/// executor (ControlLoop, RollbackManager) finishes inside this wait.
+/// A `LeaderChange(self)` still queued and undelivered when `stop()` takes the wait leaves [#next] resolved (the node is not yet
+/// recorded as the leader), so [#delivered] first drains the executor: that delivers every change queued before the stop, and
+/// only then reads [#next], so a leadership delivered by the drain makes the wait pending and its deactivation is awaited
+/// even when it is enqueued after the drain marker.
+///
+/// Not covered: a toggle whose own `deactivate()` re-dispatches onto another executor (ControlLoop, RollbackManager) is
+/// stopped explicitly by `stop()` instead, and a `LeaderChange(self)` that the leader FSM has not yet enqueued when the
+/// drain marker is taken (its dispatch is between the CAS and the entry action).
 ///
 /// `deadline` arms the bound on the wait: [Promise#timeout] in production, a manual clock in the tests that pin the bound.
 public record LeaderDeactivation(AtomicReference<Promise<Unit>> next,
@@ -79,12 +81,14 @@ public record LeaderDeactivation(AtomicReference<Promise<Unit>> next,
         return unit();
     }
 
-    /// Resolves once a deactivation has been delivered to the toggles (at once if this node is not the leader) and then every
+    /// Resolves once the changes queued before the call were delivered, then a deactivation has been delivered to the toggles (at once if this node is not the leader), and then every
     /// reaction queued on `executor` before that point has run: the route that delivered it may still be running the toggles
     /// registered after this record's. Never fails: past `bound` it warns and resolves, so a wedged reaction or a leader that
     /// never steps down cannot hold the stop.
     public Promise<Unit> delivered(ReactExecutor executor, TimeSpan bound) {
-        return deadline.apply(next.get().flatMap(executor::drained),
+        return deadline.apply(executor.drained()
+                                      .flatMap(_ -> next.get())
+                                      .flatMap(executor::drained),
                               bound)
                        .recover(cause -> undelivered(executor, bound, cause));
     }
