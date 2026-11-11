@@ -241,7 +241,7 @@ class PeerObservationOrderTest {
         node.harness.dispatch(new ClusterFsmEvent.NodeGone(N1, WITHOUT_N1, 4L));
 
         assertThat(node.ctx.currentTopology()).as("control: the stale event was dropped").contains(N1);
-        assertThat(electing.tickFuture().get()).as("a dropped event leaves the pending tick alone").isSameAs(afterFresh);
+        assertThat(electing.tickFuture().get() == afterFresh).as("a dropped event leaves the pending tick alone").isTrue();
     }
 
     @Test
@@ -255,10 +255,10 @@ class PeerObservationOrderTest {
 
         assertThat(node.ctx.currentTopology()).as("the reconnect restored the view").contains(N1);
         var afterRestore = electing.tickFuture().get();
-        assertThat(afterRestore).as("a restoring reconnect reaches the FSM as NodeAdded (reschedules the tick)").isNotSameAs(afterEviction);
+        assertThat(afterRestore != afterEviction).as("a restoring reconnect reaches the FSM as NodeAdded (reschedules the tick)").isTrue();
 
         node.manager.peerReconnected(new PeerReconnected(N1, ALL, ObservationSource.QUIC, 4L));
-        assertThat(electing.tickFuture().get()).as("a no-op reconnect dispatches nothing").isSameAs(afterRestore);
+        assertThat(electing.tickFuture().get() == afterRestore).as("a no-op reconnect dispatches nothing").isTrue();
         node.manager.peerDisconnected(new PeerDisconnected(N1, WITHOUT_N1, ObservationSource.QUIC, 3L));
         assertThat(node.ctx.currentTopology()).as("the no-op reconnect still advanced the fence").contains(N1);
     }
