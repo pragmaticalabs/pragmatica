@@ -1049,8 +1049,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// One probe per round: the least-recently-probed probable member, or, with none and the self-isolation latch set,
     /// one isolation ping ([#probeWhileIsolated]).
     private void probeRound() {
-        selectNextProbeTarget().onPresent(this::probeTarget)
-                               .onEmpty(this::probeWhileIsolated);
+        selectNextProbeTarget().onPresent(this::probeTarget).onEmpty(this::probeWhileIsolated);
     }
 
     /// #3028 design §3.4 (S1) `[guess: design rule]`: a latched node probes nobody ([#isProbable] excludes FAULTY), so
@@ -1071,9 +1070,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         return Option.from(members.values()
                                   .stream()
                                   .filter(member -> member.state() == MemberState.FAULTY)
-                                  .min(Comparator.comparingLong(this::lastProbedAtOf)
-                                                 .thenComparing(member -> member.nodeId()
-                                                                                .id())));
+                                  .min(Comparator.comparingLong(this::lastProbedAtOf).thenComparing(member -> member.nodeId()
+                                                                                                                    .id())));
     }
 
     /// No pending probe is registered (D4): a lost isolation ping is the expected outcome while isolated, so its
@@ -1088,8 +1086,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         transport.send(target.address(),
                        ping)
                  .onFailure(cause -> LOG.debug("SWIM isolation ping to {} failed: {}",
-                                               target.nodeId()
-                                                     .id(),
+                                               target.nodeId().id(),
                                                cause.message()));
     }
 
