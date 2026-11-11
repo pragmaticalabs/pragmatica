@@ -292,8 +292,8 @@ class KvBackupStopFlushRaceTest {
         var startedNanos = System.nanoTime();
 
         await(node.service().stopFlushed(TimeSpan.timeSpan(10).seconds()));
+        var pushesAtTheStop = Files.readAllLines(stamps).size();
         var returnedAfterMs = (System.nanoTime() - startedNanos) / 1_000_000;
-        var stoppedEpoch = System.currentTimeMillis();
 
         Thread.sleep(3_000);
         var lines = Files.readAllLines(stamps);
@@ -303,8 +303,9 @@ class KvBackupStopFlushRaceTest {
         assertThat(lines).as("control: it did decide again, every push being a lost race").hasSizeGreaterThanOrEqualTo(2);
         assertThat(returnedAfterMs - last).as("and it was still deciding at the end: the last decision is within two of its own longest passes (+500 ms) of the return")
                                           .isLessThanOrEqualTo(2 * longestGap(lines) + 500);
-        assertThat(last).as("nothing is pushed after the stop returned; stop returned at " + (stoppedEpoch - startedEpoch) + " ms, stamps " + lines + ", at the last stamp:\n" + lastContext(stamps))
-                        .isLessThanOrEqualTo(stoppedEpoch - startedEpoch + 200);
+        assertThat(lines).as("nothing is pushed after the stop returned: " + pushesAtTheStop + " pushes had started at the return, stop returned at " + returnedAfterMs
+                           + " ms, at the last stamp:\n" + lastContext(stamps))
+                         .hasSize(pushesAtTheStop);
         assertThat(node.warnings()).extracting(BackupWarning::code).containsExactly(Code.BACKUP_STOP_FLUSH_FAILED);
     }
 
