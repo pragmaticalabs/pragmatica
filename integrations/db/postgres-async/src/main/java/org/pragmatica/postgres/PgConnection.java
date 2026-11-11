@@ -604,8 +604,8 @@ public class PgConnection implements Connection {
                                    },
                                    _ -> {
                                        if (remaining.decrementAndGet() == 0) {
-                                       result.succeed(unit());
-                                   }
+                                           result.succeed(unit());
+                                       }
 
                                        return null;
                                    }));

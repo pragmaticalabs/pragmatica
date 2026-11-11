@@ -92,14 +92,14 @@ public interface JdbcOperations {
                                                    params,
                                                    rs -> {
                                                        if (rs.next()) {
-                                                       var result = mapper.apply(rs);
+                                                           var result = mapper.apply(rs);
 
-                                                       if (rs.next()) {
-                                                       throw new java.sql.SQLException("Multiple results found");
-                                                   }
+                                                           if (rs.next()) {
+                                                               throw new java.sql.SQLException("Multiple results found");
+                                                           }
 
-                                                       return result;
-                                                   }
+                                                           return result;
+                                                       }
 
                                                        throw new java.sql.SQLException("No result found");
                                                    }));
@@ -112,8 +112,8 @@ public interface JdbcOperations {
                                                    params,
                                                    rs -> {
                                                        if (rs.next()) {
-                                                       return Option.option(mapper.apply(rs));
-                                                   }
+                                                           return Option.option(mapper.apply(rs));
+                                                       }
 
                                                        return Option.none();
                                                    }));
@@ -128,8 +128,8 @@ public interface JdbcOperations {
                                                        var results = new java.util.ArrayList<T>();
 
                                                        while (rs.next()) {
-                                                       results.add(rowMapper.apply(rs));
-                                                   }
+                                                           results.add(rowMapper.apply(rs));
+                                                       }
 
                                                        return results;
                                                    }));
@@ -141,8 +141,8 @@ public interface JdbcOperations {
                                 () -> {
                                     try (var conn = dataSource.getConnection();
                                          var stmt = prepareStatement(conn, sql, params)) {
-                                    return stmt.executeUpdate();
-                                }
+                                        return stmt.executeUpdate();
+                                    }
                                 });
         }
 
@@ -151,13 +151,13 @@ public interface JdbcOperations {
             return Promise.lift(e -> JdbcError.fromException(e, sql),
                                 () -> {
                                     try (var conn = dataSource.getConnection(); var stmt = conn.prepareStatement(sql)) {
-                                    for (var params : paramsList) {
-                                    setParameters(stmt, params);
-                                    stmt.addBatch();
-                                }
+                                        for (var params : paramsList) {
+                                            setParameters(stmt, params);
+                                            stmt.addBatch();
+                                        }
 
-                                    return stmt.executeBatch();
-                                }
+                                        return stmt.executeBatch();
+                                    }
                                 });
         }
 

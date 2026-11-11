@@ -18,6 +18,7 @@ package org.pragmatica.cloud.aws;
 
 import org.pragmatica.lang.Option;
 
+
 /// Configuration for the AWS Cloud API client.
 ///
 /// [#endpointOverride] is an optional service endpoint base URL. When present, all three service
@@ -54,7 +55,9 @@ public record AwsConfig(String accessKeyId, String secretAccessKey, String regio
 
     @Override
     public String toString() {
-        return "AwsConfig[accessKeyId=" + accessKeyId + ", secretAccessKey=REDACTED, region=" + region
-             + ", endpointOverride=" + endpointOverride + "]";
+        return "AwsConfig[accessKeyId=" + accessKeyId
+             + ", secretAccessKey=REDACTED, region=" + region
+             + ", endpointOverride=" + endpointOverride
+             + "]";
     }
 }
