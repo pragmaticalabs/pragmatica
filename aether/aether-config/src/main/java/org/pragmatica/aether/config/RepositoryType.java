@@ -41,8 +41,8 @@ public sealed interface RepositoryType {
 
             return clashes.isEmpty()
                    ? success(this)
-                   : RepositoryTypeError.InvalidRepositoryType.invalidRepositoryType("module coordinate declared [shared]: "
-                                                                                    + String.join(", ", clashes)).result();
+                   : RepositoryTypeError.InvalidRepositoryType.invalidRepositoryType("module coordinate declared [shared]: " + String.join(", ",
+                                                                                                                                           clashes)).result();
         }
     }
 

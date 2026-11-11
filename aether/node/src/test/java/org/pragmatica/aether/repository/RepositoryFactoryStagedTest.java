@@ -10,10 +10,6 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Set;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.RepositoryType;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
@@ -23,8 +19,14 @@ import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.lang.Result;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+
 
 /// #3021 step 1: the `Staged` entry is the router that makes a module's own coordinates fail closed. The Maven local
 /// repository (`maven.repo.local`) holds a PLANTED jar under the module coordinate in every test that matters, so a
@@ -35,6 +37,7 @@ class RepositoryFactoryStagedTest {
 
     @TempDir
     Path staged;
+
     @TempDir
     Path mavenLocal;
 
@@ -59,7 +62,6 @@ class RepositoryFactoryStagedTest {
     void moduleCoordinate_isLocatedFromTheStagedRoot() throws IOException {
         jar(staged, MODULE, "");
         jar(mavenLocal, MODULE, "");
-
         var located = nodeRepositories().locate(MODULE).await();
 
         assertThat(located.isSuccess()).isTrue();
@@ -69,17 +71,16 @@ class RepositoryFactoryStagedTest {
     @Test
     void moduleCoordinate_withTheStagedFileRemoved_failsArtifactNotFound_althoughMavenLocalHoldsAJarUnderTheSameCoordinate() throws IOException {
         jar(mavenLocal, MODULE, "");
-
         var located = nodeRepositories().locate(MODULE).await();
 
-        assertThat(located.isFailure()).as("a module coordinate must never be served from the Maven local repository").isTrue();
+        assertThat(located.isFailure()).as("a module coordinate must never be served from the Maven local repository")
+                  .isTrue();
         located.onFailure(cause -> assertThat(cause).isInstanceOf(SliceLoadingFailure.Intermittent.ArtifactNotFound.class));
     }
 
     @Test
     void moduleCoordinate_classifierForm_alsoFailsClosed() throws IOException {
         jar(mavenLocal, MODULE, "-sources");
-
         var located = nodeRepositories().locate(MODULE, "sources").await();
 
         assertThat(located.isFailure()).as("the classifier form must route like the plain form").isTrue();
@@ -88,7 +89,6 @@ class RepositoryFactoryStagedTest {
     @Test
     void moduleCoordinate_classifierForm_isLocatedFromTheStagedRoot() throws IOException {
         jar(staged, MODULE, "-sources");
-
         var located = nodeRepositories().locate(MODULE, "sources").await();
 
         assertThat(located.isSuccess()).isTrue();
@@ -98,7 +98,6 @@ class RepositoryFactoryStagedTest {
     @Test
     void otherCoordinate_isLocatedFromTheMavenLocalRepository() throws IOException {
         jar(mavenLocal, FOREIGN, "");
-
         var located = nodeRepositories().locate(FOREIGN).await();
 
         assertThat(located.isSuccess()).isTrue();
@@ -108,7 +107,6 @@ class RepositoryFactoryStagedTest {
     @Test
     void otherCoordinate_isNeverLookedUpUnderTheStagedRoot() throws IOException {
         jar(staged, FOREIGN, "");
-
         var located = nodeRepositories().locate(FOREIGN).await();
 
         assertThat(located.isFailure()).isTrue();
@@ -117,12 +115,14 @@ class RepositoryFactoryStagedTest {
     private Repository nodeRepositories() {
         var factory = RepositoryFactory.repositoryFactory(mock(ArtifactStore.class));
 
-        return CompositeRepository.compositeRepository(List.of(factory.create(RepositoryType.Staged.staged(staged, Set.of(MODULE)))));
+        return CompositeRepository.compositeRepository(List.of(factory.create(RepositoryType.Staged.staged(staged,
+                                                                                                           Set.of(MODULE)))));
     }
 
     private static String urlOf(Result<Location> located) {
         return located.fold(cause -> "failure: " + cause.message(),
-                            location -> location.url().toString());
+                            location -> location.url()
+                                                .toString());
     }
 
     private static Artifact coordinate(String text) {

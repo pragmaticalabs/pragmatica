@@ -68,8 +68,6 @@ public interface RepositoryFactory {
     /// Maven local repository. The ONE place the routing is decided, so the Ember pre-check locates through the same
     /// router the node's loader does and the two cannot disagree on a path.
     static Repository stagedRepository(RepositoryType.Staged staged) {
-        return StagedRepository.stagedRepository(staged.moduleSet(),
-                                                 localRepository(staged.root()),
-                                                 localRepository());
+        return StagedRepository.stagedRepository(staged.moduleSet(), localRepository(staged.root()), localRepository());
     }
 }

@@ -360,16 +360,15 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         }
 
         publishLater(delay, routes, artifact);
+
         return Promise.unitPromise();
     }
 
     @Contract
     private void publishLater(TimeSpan delay, List<HttpRouteDefinition> routes, Artifact artifact) {
-        Promise.<Unit>promise(delay,
-                              promise -> recordAndPublish(routes, artifact).onResult(promise::resolve))
-               .onFailure(cause -> log.warn("Delayed route publication for {} failed: {}",
-                                            artifact,
-                                            cause.message()));
+        Promise.<Unit> promise(delay, promise -> recordAndPublish(routes, artifact).onResult(promise::resolve)).onFailure(cause -> log.warn("Delayed route publication for {} failed: {}",
+                                                                                                                                            artifact,
+                                                                                                                                            cause.message()));
     }
 
     private Promise<Unit> recordAndPublish(List<HttpRouteDefinition> routes, Artifact artifact) {

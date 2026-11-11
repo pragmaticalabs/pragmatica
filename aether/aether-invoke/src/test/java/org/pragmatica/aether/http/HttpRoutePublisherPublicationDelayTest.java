@@ -24,8 +24,9 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// #3021 probe 2 seam: with a route-publication delay set, the publication step returns at ONCE (so slice activation is not
 /// held back) while the routes appear on the node only after the delay. A readiness condition on routes is what closes that
@@ -41,7 +42,6 @@ class HttpRoutePublisherPublicationDelayTest {
         var publisher = HttpRoutePublisher.httpRoutePublisher(SELF, new SilentCluster());
 
         publish(publisher);
-
         assertThat(publisher.allLocalRoutes()).as("CONTROL: no delay, so the route is there at once").hasSize(1);
     }
 
@@ -51,23 +51,19 @@ class HttpRoutePublisherPublicationDelayTest {
         var publisher = HttpRoutePublisher.httpRoutePublisher(SELF, new SilentCluster());
 
         publisher.setRoutePublicationDelay(timeSpan(DELAY_MS).millis());
-
         var startedAt = System.nanoTime();
 
         publish(publisher);
-
         var returnedAfterMs = (System.nanoTime() - startedAt) / 1_000_000;
 
         assertThat(returnedAfterMs).as("publication must not wait for the delay").isLessThan(DELAY_MS);
         assertThat(publisher.allLocalRoutes()).as("the route must not be visible before the delay elapsed").isEmpty();
-
         awaitRoutes(publisher);
-
         assertThat(publisher.allLocalRoutes()).hasSize(1);
-
         var visibleAfterMs = (System.nanoTime() - startedAt) / 1_000_000;
 
-        assertThat(visibleAfterMs).as("the route became visible no earlier than the configured delay").isGreaterThanOrEqualTo(DELAY_MS);
+        assertThat(visibleAfterMs).as("the route became visible no earlier than the configured delay")
+                  .isGreaterThanOrEqualTo(DELAY_MS);
     }
 
     private static void awaitRoutes(HttpRoutePublisher publisher) {
@@ -79,7 +75,10 @@ class HttpRoutePublisherPublicationDelayTest {
     }
 
     private void publish(HttpRoutePublisher publisher) {
-        publisher.publishRoutes(OUTER, getClass().getClassLoader(), new NestedPrefixRouteFactories.OuterSlice(), stubInvokerFacade())
+        publisher.publishRoutes(OUTER,
+                                getClass().getClassLoader(),
+                                new NestedPrefixRouteFactories.OuterSlice(),
+                                stubInvokerFacade())
                  .await(timeSpan(30).seconds())
                  .onFailure(cause -> Assertions.fail("route publication must succeed: " + cause.message()));
     }
@@ -120,7 +119,7 @@ class HttpRoutePublisherPublicationDelayTest {
         @SuppressWarnings("unchecked")
         @Override
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
-            return (Promise<List<R>>) (Promise<?>) Promise.success(List.of());
+            return (Promise<List<R>>)(Promise<?>) Promise.success(List.of());
         }
     }
 }

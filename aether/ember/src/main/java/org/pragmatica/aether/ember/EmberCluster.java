@@ -232,11 +232,9 @@ public final class EmberCluster {
     /// Created LAZILY, by the first node that needs it (#3021): [#withHarnessTempRoot] runs after construction, so an eager
     /// creation would already have put a directory in `java.io.tmpdir` that the seam can no longer redirect.
     private Option<Path> participationMarkerBaseDir = Option.none();
-
     /// #3021 — where this cluster's harness temp dirs (participation marker, unwritable storage root) are created
     /// instead of `java.io.tmpdir`; [Option#none] (the default) keeps today's location. See [#withHarnessTempRoot].
     private final AtomicReference<Option<Path>> harnessTempRoot = new AtomicReference<>(Option.none());
-
     /// #3021 — the repositories every node resolves slices from; defaults to `[Local]`. See [#withSliceRepositories].
     private final AtomicReference<SliceConfig> sliceConfig = new AtomicReference<>(SliceConfig.sliceConfig());
 
@@ -816,7 +814,8 @@ public final class EmberCluster {
             return refuseAfterStart("Harness temp root");
         }
 
-        return Result.lift(org.pragmatica.lang.utils.Causes::fromThrowable, () -> Files.createDirectories(root))
+        return Result.lift(org.pragmatica.lang.utils.Causes::fromThrowable,
+                           () -> Files.createDirectories(root))
                      .onSuccess(created -> harnessTempRoot.set(Option.some(created)))
                      .mapToUnit();
     }
@@ -1889,7 +1888,8 @@ public final class EmberCluster {
         try {
             return Option.some(harnessTempRoot.get()
                                               .isPresent()
-                               ? Files.createTempDirectory(harnessTempRoot.get().unwrap(), prefix)
+                               ? Files.createTempDirectory(harnessTempRoot.get().unwrap(),
+                                                           prefix)
                                : Files.createTempDirectory(prefix));
         } catch (IOException e) {
             return Option.none();
