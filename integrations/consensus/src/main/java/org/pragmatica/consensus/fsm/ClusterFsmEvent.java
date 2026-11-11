@@ -31,12 +31,36 @@ public interface ClusterFsmEvent {
 
     record LeaderChange(Option<NodeId> leader, boolean localIsLeader) implements ClusterFsmEvent {}
 
-    record NodeAdded(NodeId node, List<NodeId> topology) implements ClusterFsmEvent {}
+    /// A peer-set change carrying the observer's whole view (#2971). `sequence` is the transport observation's
+    /// sequence (`TransportObservation#sequence`): a consumer that replaces its view wholesale drops an event whose
+    /// sequence is not above the last one it applied, so a delayed older view cannot overwrite a newer one.
+    /// [`#NO_SEQUENCE`] marks an unordered event, applied unconditionally.
+    sealed interface TopologyChange extends ClusterFsmEvent {
+        long NO_SEQUENCE = 0L;
+
+        NodeId node();
+
+        List<NodeId> topology();
+
+        long sequence();
+    }
+
+    record NodeAdded(NodeId node, List<NodeId> topology, long sequence) implements TopologyChange {
+        /// Sequence-less convenience constructor — an event carrying [`TopologyChange#NO_SEQUENCE`].
+        public NodeAdded(NodeId node, List<NodeId> topology) {
+            this(node, topology, NO_SEQUENCE);
+        }
+    }
 
     /// Unifies the previous `NodeRemoved` (SWIM/QUIC-detected departure) and `NodeDown`
     /// (local shutdown with non-empty topology) paths into a single event. The FSM treats
     /// both identically.
-    record NodeGone(NodeId node, List<NodeId> topology) implements ClusterFsmEvent {}
+    record NodeGone(NodeId node, List<NodeId> topology, long sequence) implements TopologyChange {
+        /// Sequence-less convenience constructor — an event carrying [`TopologyChange#NO_SEQUENCE`].
+        public NodeGone(NodeId node, List<NodeId> topology) {
+            this(node, topology, NO_SEQUENCE);
+        }
+    }
 
     record Shutdown() implements ClusterFsmEvent {}
 }

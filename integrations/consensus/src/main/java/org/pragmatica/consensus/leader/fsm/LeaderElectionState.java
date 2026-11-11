@@ -83,8 +83,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 // the SSOT for consensus readiness is the consensus engine itself, queried on
                 // entry to QuorumWaiting via `ctx.consensusReadySupplier()`.
                 case ConsensusReady _ -> tx.handle(NO_ACTION_DORMANT);
-                case ClusterFsmEvent.NodeAdded na -> tx.handle(() -> ctx.setCurrentTopology(na.topology()));
-                case ClusterFsmEvent.NodeGone ng -> tx.handle(() -> ctx.setCurrentTopology(ng.topology()));
+                case ClusterFsmEvent.NodeAdded na -> tx.handle(() -> ctx.applyTopology(na));
+                case ClusterFsmEvent.NodeGone ng -> tx.handle(() -> ctx.applyTopology(ng));
                 default -> tx.ignore();
             }
         }
@@ -170,8 +170,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 case ConsensusReady _ -> tx.transitionTo(ctx.awaitingKvSync());
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.dormant());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
-                case ClusterFsmEvent.NodeAdded na -> ctx.setCurrentTopology(na.topology());
-                case ClusterFsmEvent.NodeGone ng -> ctx.setCurrentTopology(ng.topology());
+                case ClusterFsmEvent.NodeAdded na -> ctx.applyTopology(na);
+                case ClusterFsmEvent.NodeGone ng -> ctx.applyTopology(ng);
                 case LeaderCommitted lc -> adoptLeaderUnconditionally(ctx, lc, tx);
                 default -> tx.ignore();
             }
@@ -264,8 +264,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 case KvSyncGraceTimeout _ -> graceTimeoutFallthrough(ctx, tx, this);
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
-                case ClusterFsmEvent.NodeAdded na -> ctx.setCurrentTopology(na.topology());
-                case ClusterFsmEvent.NodeGone ng -> ctx.setCurrentTopology(ng.topology());
+                case ClusterFsmEvent.NodeAdded na -> ctx.applyTopology(na);
+                case ClusterFsmEvent.NodeGone ng -> ctx.applyTopology(ng);
                 default -> tx.ignore();
             }
         }
@@ -419,8 +419,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 case LeaderCommitted lc -> adoptLeaderIfPostElectionCommit(ctx, lc, entryBaseline, "Electing", tx);
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
-                case ClusterFsmEvent.NodeAdded na -> handleTopologyChange(ctx, na.topology());
-                case ClusterFsmEvent.NodeGone ng -> handleTopologyChange(ctx, ng.topology());
+                case ClusterFsmEvent.NodeAdded na -> handleTopologyChange(ctx, na);
+                case ClusterFsmEvent.NodeGone ng -> handleTopologyChange(ctx, ng);
                 default -> tx.ignore();
             }
         }
@@ -505,7 +505,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
                                                                                                     directory.members()));
                 case ClusterFsmEvent.NodeGone ng -> handleNodeGoneInLed(ctx, this, ng, tx);
-                case ClusterFsmEvent.NodeAdded na -> ctx.setCurrentTopology(na.topology());
+                case ClusterFsmEvent.NodeAdded na -> ctx.applyTopology(na);
                 case LeaderCommitted lc -> handleLeaderCommittedInLed(ctx, leader, lc, tx);
                 case LeaderSilent ls -> handleLeaderSilentInLed(ctx, this, ls, tx);
                 case LeaderDoubtConfirmed dc -> handleLeaderDoubtConfirmedInLed(ctx, this, dc, tx);
@@ -589,8 +589,9 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                                             Led led,
                                             ClusterFsmEvent.NodeGone event,
                                             TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
-        ctx.setCurrentTopology(event.topology());
-        if (event.node().equals(led.leader())) {
+        // #2971: a stale NodeGone (an older view than one already applied) neither writes the view nor loses the
+        // leader — the newer observation already decided both.
+        if (ctx.applyTopology(event) && event.node().equals(led.leader())) {
             // #2869: no suspect on this path — the departed leader is already out of the transport topology.
             loseLeader(ctx, led, Option.none(), tx);
         }
@@ -770,8 +771,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 case LeaderCommitted lc -> adoptLeaderIfPostElectionCommit(ctx, lc, entryBaseline, "ReElecting", tx);
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
-                case ClusterFsmEvent.NodeAdded na -> handleTopologyChange(ctx, na.topology());
-                case ClusterFsmEvent.NodeGone ng -> handleTopologyChange(ctx, ng.topology());
+                case ClusterFsmEvent.NodeAdded na -> handleTopologyChange(ctx, na);
+                case ClusterFsmEvent.NodeGone ng -> handleTopologyChange(ctx, ng);
                 default -> tx.ignore();
             }
         }
@@ -804,8 +805,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 // `ctx.consensusReadySupplier()` on next entry to QuorumWaiting (after
                 // QuorumEstablished re-establishes quorum).
                 case ConsensusReady _ -> tx.handle(NO_ACTION_DORMANT);
-                case ClusterFsmEvent.NodeAdded na -> ctx.setCurrentTopology(na.topology());
-                case ClusterFsmEvent.NodeGone ng -> ctx.setCurrentTopology(ng.topology());
+                case ClusterFsmEvent.NodeAdded na -> ctx.applyTopology(na);
+                case ClusterFsmEvent.NodeGone ng -> ctx.applyTopology(ng);
                 case LeaderCommitted lc -> log.warn("Rejecting stale LeaderCommitted({}) in QuorumLost", lc.leader());
                 default -> tx.ignore();
             }
@@ -1009,8 +1010,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         notifyLeaderChange(ctx);
     }
 
-    private static void handleTopologyChange(LeaderElectionContext ctx, List<NodeId> topology) {
-        ctx.setCurrentTopology(topology);
+    private static void handleTopologyChange(LeaderElectionContext ctx, ClusterFsmEvent.TopologyChange event) {
+        ctx.applyTopology(event);
         rescheduleCurrentTick(ctx);
     }
 

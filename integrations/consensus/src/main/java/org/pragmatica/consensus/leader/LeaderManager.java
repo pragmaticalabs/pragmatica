@@ -507,7 +507,7 @@ public interface LeaderManager {
         @Contract
         @Override
         public void peerJoined(PeerJoined peerJoined) {
-            dispatchNodeAdded(peerJoined.nodeId(), peerJoined.topology());
+            dispatchNodeAdded(peerJoined.nodeId(), peerJoined.topology(), peerJoined.sequence());
             if (localMode) {
                 electLocallyIfPossible();
             }
@@ -527,7 +527,8 @@ public interface LeaderManager {
                                                       peerDisconnected.topology()
                                                                       .stream()
                                                                       .filter(context::isEligible)
-                                                                      .toList()));
+                                                                      .toList(),
+                                                      peerDisconnected.sequence()));
         }
 
         @Contract
@@ -554,7 +555,7 @@ public interface LeaderManager {
             // A reconnect that changes nothing (supersede, stale replace) dispatches nothing: an event would
             // reschedule an Electing node's rank staircase for no reason.
             if (restoresTheView(peerReconnected.nodeId(), peerReconnected.topology())) {
-                dispatchNodeAdded(peerReconnected.nodeId(), peerReconnected.topology());
+                dispatchNodeAdded(peerReconnected.nodeId(), peerReconnected.topology(), peerReconnected.sequence());
             }
         }
 
@@ -566,9 +567,10 @@ public interface LeaderManager {
             return peerMissing || !stored.equals(eligibleView);
         }
 
-        private void dispatchNodeAdded(NodeId nodeId, List<NodeId> topology) {
+        private void dispatchNodeAdded(NodeId nodeId, List<NodeId> topology, long sequence) {
             fsm.dispatch(new ClusterFsmEvent.NodeAdded(nodeId,
-                                                       topology.stream().filter(context::isEligible).toList()));
+                                                       topology.stream().filter(context::isEligible).toList(),
+                                                       sequence));
         }
 
         @Contract
