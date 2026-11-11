@@ -104,6 +104,11 @@ class LeaderManagerTest {
 
     @Nested
     class ConsensusElectionMode {
+        // Bounded deadlines for condition polls; far above the nominal 3s KvSync grace + 2-3s staircase delay,
+        // so a stalled host cannot turn a late-but-correct proposal into a failure.
+        private static final Duration ELECTION_DEADLINE = Duration.ofSeconds(30);
+        private static final Duration NOTIFICATION_DEADLINE = Duration.ofSeconds(10);
+
         private final MessageRouter.MutableRouter router = MessageRouter.mutable();
         private final Watcher<LeaderNotification> watcher = new Watcher<>(new CopyOnWriteArrayList<>());
         private final List<LeaderProposal> proposals = new CopyOnWriteArrayList<>();
@@ -162,7 +167,8 @@ class LeaderManagerTest {
             // The cold-boot self-proposal gate (AwaitingKvSync) defers the first proposal by
             // [`LeaderElectionContext#DEFAULT_KV_SYNC_GRACE_DELAY`] (3s); the test runs without
             // a peer KV-sync, so it falls through via the timeout path.
-            Thread.sleep(6_500);
+            await("leader proposal submitted").atMost(ELECTION_DEADLINE)
+                   .until(() -> !localProposals.isEmpty());
 
             // Proposal should have been submitted by min node
             assertThat(localProposals).hasSize(1);
@@ -188,7 +194,8 @@ class LeaderManagerTest {
             leaderManager.onLeaderCommitted(expectedLeader);
 
             // Wait for async notification (routeAsync uses Promise.async)
-            Thread.sleep(100);
+            await("async leader notification observed").atMost(NOTIFICATION_DEADLINE)
+                   .until(() -> !watcher.collected().isEmpty());
 
             // Now notification should be present
             assertThat(watcher.collected()).hasSize(1);
@@ -210,7 +217,8 @@ class LeaderManagerTest {
 
             // First commit
             leaderManager.onLeaderCommitted(nodes.getFirst());
-            Thread.sleep(50);
+            await("async leader notification observed").atMost(NOTIFICATION_DEADLINE)
+                   .until(() -> !watcher.collected().isEmpty());
 
             // Second commit with same leader (should skip notification)
             leaderManager.onLeaderCommitted(nodes.getFirst());
@@ -253,7 +261,8 @@ class LeaderManagerTest {
             localManager.triggerElection();
 
             // Wait for KvSync grace (3s) + stagger delay (rank 1 = 2s base + 1s rank).
-            Thread.sleep(8_000);
+            await("leader proposal submitted").atMost(ELECTION_DEADLINE)
+                   .until(() -> !localProposals.isEmpty());
 
             var expectedCandidate = nodes.stream().sorted().toList().getFirst();
             assertThat(localProposals).isNotEmpty()
@@ -298,7 +307,8 @@ class LeaderManagerTest {
             localManager.triggerElection();
 
             // Wait for proposal (KvSync grace 3s + BASE_ELECTION_DELAY 2s + margin).
-            Thread.sleep(6_500);
+            await("leader proposal submitted").atMost(ELECTION_DEADLINE)
+                   .until(() -> !localProposals.isEmpty());
 
             // Despite flapping, proposals should eventually be submitted
             assertThat(localProposals).isNotEmpty();
@@ -432,7 +442,8 @@ class LeaderManagerTest {
             var committed = nodes.getLast();
             localManager.onLeaderCommitted(committed);
 
-            Thread.sleep(100);
+            await("async leader notification observed").atMost(NOTIFICATION_DEADLINE)
+                   .until(() -> localManager.leader().equals(Option.some(committed)));
 
             assertThat(localManager.leader())
                     .as("committed leader adopted unconditionally despite absence from topology (FIX 1)")
@@ -548,7 +559,8 @@ class LeaderManagerTest {
             localRouter.route(ClusterStateNotification.active());
 
             // Wait past KvSync grace (3s) + staggered initial delay (base 2s + rank 0) + margin.
-            Thread.sleep(6_500);
+            await("leader proposal submitted").atMost(ELECTION_DEADLINE)
+                   .until(() -> !localProposals.isEmpty());
 
             assertThat(localProposals).isNotEmpty();
             assertThat(localProposals.getFirst().candidate()).isEqualTo(minNode);
@@ -567,7 +579,8 @@ class LeaderManagerTest {
 
             // Commit leader and wait for async notification to complete
             leaderManager.onLeaderCommitted(nodes.getFirst());
-            Thread.sleep(50);
+            await("async leader notification observed").atMost(NOTIFICATION_DEADLINE)
+                   .until(() -> !watcher.collected().isEmpty());
 
             // Clear watcher to check quorum disappearance
             watcher.collected().clear();
