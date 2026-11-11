@@ -18,7 +18,6 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// Sealed error interfaces enable exhaustive pattern matching.
 public class CstSealedErrorRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-SEAL-01";
-
     private static final String DOC_LINK = "https://pragmatica.dev/java/jbct/rules/#jbct-seal-01";
 
     // Match "interface Name" possibly preceded by modifier tokens. Captures the name.

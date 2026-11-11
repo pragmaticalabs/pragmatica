@@ -4,6 +4,7 @@ import org.pragmatica.jbct.derive.model.AnswerRow;
 import org.pragmatica.jbct.derive.model.Axis;
 import org.pragmatica.lang.Option;
 
+
 /// A mandate strike (SPEC.md §4 prune): a Q6 mandate row removes an `axis:value` pair from the
 /// menu. Binary, no weights — the value simply leaves, with the striking answer recorded.
 ///

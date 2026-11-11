@@ -812,27 +812,27 @@ final class FlowPrinter {
 
         walkTokensWith(varInit,
                        new TokenWalker() {
-            @Override
-            public void onChild(Cursor c) {
-                           printNodeContent(c);
-                       }
+                           @Override
+                           public void onChild(Cursor c) {
+                               printNodeContent(c);
+                           }
 
-            @Override
-            public void onToken(int kind, String text) {
-                           if ("{".equals(text)) {
-                           emitToken("{");
-                           alignCol[0] = currentColumn;
-                       } else if ("}".equals(text)) {
-                           emitToken("}");
-                       } else if (",".equals(text)) {
-                           emit(",");
-                           newline();
-                           printAlignedTo(alignCol[0]);
-                       } else {
-                           emitToken(text);
-                       }
-                       }
-        }  // right after `{`
+                           @Override
+                           public void onToken(int kind, String text) {
+                               if ("{".equals(text)) {
+                                   emitToken("{");
+                                   alignCol[0] = currentColumn;
+                               } else if ("}".equals(text)) {
+                                   emitToken("}");
+                               } else if (",".equals(text)) {
+                                   emit(",");
+                                   newline();
+                                   printAlignedTo(alignCol[0]);
+                               } else {
+                                   emitToken(text);
+                               }
+                           }
+                       }  // right after `{`
                       );
         for (int t = varInit.lastTokenIdx() + 1; t <= field.lastTokenIdx(); t++) {
             if (!tokens.isTrivia(t)) emitToken(tokens.textAt(t).toString());
@@ -1402,7 +1402,6 @@ final class FlowPrinter {
             if (!hasUnEmittedLeadingComment(stmt)) {
                 printAlignedTo(bodyCol);
             }
-
             // A block NESTED in this statement (the body of an `if`, `for`, `try`...) must align to the statement's
             // own column, not to the enclosing aligned block's: left on the inherited column its body printed at the
             // same indent as the `if` that owns it and its `}` fell BELOW that column (#974). Pushing the statement
@@ -1608,10 +1607,8 @@ final class FlowPrinter {
 
         while (i < ops.size()) {
             var op = ops.get(i);
-            boolean mergeable = i + 1 < ops.size()
-                                && startsWith(op, ".")
-                                && !containsToken(op, "(")
-                                && startsWith(ops.get(i + 1), "(");
+            boolean mergeable = i + 1 < ops.size() && startsWith(op, ".") && !containsToken(op, "(") && startsWith(ops.get(i + 1),
+                                                                                                                   "(");
 
             if (mergeable) {
                 links.add(List.of(op, ops.get(i + 1)));
@@ -1795,7 +1792,8 @@ final class FlowPrinter {
         int alignColumn = startColumn;
         // Identify a link by its head node; a merged link's head is its `.name` op.
         var methodCallSet = new HashSet<Cursor>(methodCallLinks.stream()
-                                                               .flatMap(link -> link.stream().limit(1))
+                                                               .flatMap(link -> link.stream()
+                                                                                    .limit(1))
                                                                .toList());
 
         if (primary != null) {
@@ -1869,7 +1867,6 @@ final class FlowPrinter {
                 for (var op : link) {
                     printNodeContent(op);
                 }
-
                 // Emit trailing line comments from the next link's leading trivia
                 // before the newline that separates chain calls.
                 if (pi + 1 < links.size()) {
@@ -2028,20 +2025,20 @@ final class FlowPrinter {
         // We walk tokens and let child branches handle their own rendering.
         walkTokensWith(postOp,
                        new TokenWalker() {
-            @Override
-            public void onChild(Cursor child) {
-                           if (child.kindIs(RuleKind.ARGS)) {
-                           printNodeContent(child);
-                       } else {
-                           printNode(child);
-                       }
-                       }
+                           @Override
+                           public void onChild(Cursor child) {
+                               if (child.kindIs(RuleKind.ARGS)) {
+                                   printNodeContent(child);
+                               } else {
+                                   printNode(child);
+                               }
+                           }
 
-            @Override
-            public void onToken(int kind, String text) {
-                           emitToken(text);
-                       }
-        });
+                           @Override
+                           public void onToken(int kind, String text) {
+                               emitToken(text);
+                           }
+                       });
     }
 
     // ===== Arguments =====
@@ -2069,16 +2066,16 @@ final class FlowPrinter {
             try (var scope = alignment.enterInlineExpression()) {
                 walkTokensWith(args,
                                new TokenWalker() {
-                    @Override
-                    public void onChild(Cursor c) {
-                                   printNodeContent(c);
-                               }
+                                   @Override
+                                   public void onChild(Cursor c) {
+                                       printNodeContent(c);
+                                   }
 
-                    @Override
-                    public void onToken(int kind, String text) {
-                                   emitToken(text);
-                               }
-                });
+                                   @Override
+                                   public void onToken(int kind, String text) {
+                                       emitToken(text);
+                                   }
+                               });
             }
         } else {
             printBrokenArgs(args);
@@ -2214,49 +2211,49 @@ final class FlowPrinter {
 
         walkTokensWith(args,
                        new TokenWalker() {
-            @Override
-            public void onChild(Cursor child) {
-                           if (child.kindIs(RuleKind.EXPR)) {
-                           // If this single arg fits on its own line, render its inner
-                           // chains/expressions inline. The args layout already broke at
-                           // commas; an individual arg-expression should not force further
-                           // vertical breaks unless its own width demands it.
-                           int width = measureWidth(child);
+                           @Override
+                           public void onChild(Cursor child) {
+                               if (child.kindIs(RuleKind.EXPR)) {
+                                   // If this single arg fits on its own line, render its inner
+                                   // chains/expressions inline. The args layout already broke at
+                                   // commas; an individual arg-expression should not force further
+                                   // vertical breaks unless its own width demands it.
+                                   int width = measureWidth(child);
 
-                           if (currentColumn + width <= config.maxLineLength()) {
-                           try (var inlineScope = alignment.enterInlineExpression()) {
-                           printNodeContent(child);
-                       }
-                       } else {
-                           printNodeContent(child);
-                       }
-                           // Rescue a comment trailing this argument (inside its span) before the next
-                           // delimiter; a line comment forces that delimiter onto a new line.
-                           if (flushInSpanTrailingComment(child)) {
-                           pendingLineBreak[0] = true;
-                       }
-                       } else {
-                           printNode(child);
-                       }
-                       }
+                                   if (currentColumn + width <= config.maxLineLength()) {
+                                       try (var inlineScope = alignment.enterInlineExpression()) {
+                                           printNodeContent(child);
+                                       }
+                                   } else {
+                                       printNodeContent(child);
+                                   }
+                                   // Rescue a comment trailing this argument (inside its span) before the next
+                                   // delimiter; a line comment forces that delimiter onto a new line.
+                                   if (flushInSpanTrailingComment(child)) {
+                                       pendingLineBreak[0] = true;
+                                   }
+                               } else {
+                                   printNode(child);
+                               }
+                           }
 
-            @Override
-            public void onToken(int kind, String text) {
-                           if (",".equals(text)) {
-                           if (pendingLineBreak[0]) {
-                           newline();
-                           printAlignedTo(alignCol);
-                           pendingLineBreak[0] = false;
-                       }
+                           @Override
+                           public void onToken(int kind, String text) {
+                               if (",".equals(text)) {
+                                   if (pendingLineBreak[0]) {
+                                       newline();
+                                       printAlignedTo(alignCol);
+                                       pendingLineBreak[0] = false;
+                                   }
 
-                           emit(",");
-                           newline();
-                           printAlignedTo(alignCol);
-                       } else {
-                           emitToken(text);
-                       }
-                       }
-        });
+                                   emit(",");
+                                   newline();
+                                   printAlignedTo(alignCol);
+                               } else {
+                                   emitToken(text);
+                               }
+                           }
+                       });
         // Last argument carried a trailing line comment, OR own-line comments dangle before `)`:
         // break so the enclosing `)` (emitted by the post-op after this returns) lands on its own
         // line instead of being swallowed (bug report mechanisms B last-arg / E2).
@@ -2281,31 +2278,31 @@ final class FlowPrinter {
     private void printLambdaWith(Cursor.Branch lambda, java.util.function.Consumer<Cursor> printHead) {
         walkTokensWith(lambda,
                        new TokenWalker() {
-            boolean afterArrow = false;
+                           boolean afterArrow = false;
 
-            @Override
-            public void onChild(Cursor child) {
-                           if (afterArrow) {
-                           try (var scope = alignment.enterTailContext()) {
-                           printNodeContent(child);
-                       }
+                           @Override
+                           public void onChild(Cursor child) {
+                               if (afterArrow) {
+                                   try (var scope = alignment.enterTailContext()) {
+                                       printNodeContent(child);
+                                   }
 
-                           afterArrow = false;
-                       } else {
-                           printHead.accept(child);
-                       }
-                       }
+                                   afterArrow = false;
+                               } else {
+                                   printHead.accept(child);
+                               }
+                           }
 
-            @Override
-            public void onToken(int kind, String text) {
-                           if ("->".equals(text)) {
-                           emit(" -> ");
-                           afterArrow = true;
-                       } else {
-                           emitToken(text);
-                       }
-                       }
-        });
+                           @Override
+                           public void onToken(int kind, String text) {
+                               if ("->".equals(text)) {
+                                   emit(" -> ");
+                                   afterArrow = true;
+                               } else {
+                                   emitToken(text);
+                               }
+                           }
+                       });
     }
 
     // ===== Parameters =====
@@ -2321,16 +2318,16 @@ final class FlowPrinter {
         if (currentColumn + paramsWidth + 3 <= config.maxLineLength()) {
             walkTokensWith(params,
                            new TokenWalker() {
-                @Override
-                public void onChild(Cursor c) {
-                               printNodeContent(c);
-                           }
+                               @Override
+                               public void onChild(Cursor c) {
+                                   printNodeContent(c);
+                               }
 
-                @Override
-                public void onToken(int kind, String text) {
-                               emitToken(text);
-                           }
-            });
+                               @Override
+                               public void onToken(int kind, String text) {
+                                   emitToken(text);
+                               }
+                           });
         } else {
             printBrokenParams(params);
         }
@@ -2341,28 +2338,26 @@ final class FlowPrinter {
 
         walkTokensWith(params,
                        new TokenWalker() {
-            @Override
-            public void onChild(Cursor child) {
-                           if (child.kindIs(RuleKind.PLAIN_PARAM)
-                               || child.kindIs(RuleKind.LAST_PARAM)
-                               || child.kindIs(RuleKind.RECEIVER_PARAM)) {
-                           printNodeContent(child);
-                       } else {
-                           printNode(child);
-                       }
-                       }
+                           @Override
+                           public void onChild(Cursor child) {
+                               if (child.kindIs(RuleKind.PLAIN_PARAM) || child.kindIs(RuleKind.LAST_PARAM) || child.kindIs(RuleKind.RECEIVER_PARAM)) {
+                                   printNodeContent(child);
+                               } else {
+                                   printNode(child);
+                               }
+                           }
 
-            @Override
-            public void onToken(int kind, String text) {
-                           if (",".equals(text)) {
-                           emit(",");
-                           newline();
-                           printAlignedTo(alignCol);
-                       } else {
-                           emitToken(text);
-                       }
-                       }
-        });
+                           @Override
+                           public void onToken(int kind, String text) {
+                               if (",".equals(text)) {
+                                   emit(",");
+                                   newline();
+                                   printAlignedTo(alignCol);
+                               } else {
+                                   emitToken(text);
+                               }
+                           }
+                       });
     }
 
     private void printParam(Cursor.Branch param) {
@@ -2380,20 +2375,20 @@ final class FlowPrinter {
         // break across lines.
         walkTokensWith(primary,
                        new TokenWalker() {
-            @Override
-            public void onChild(Cursor child) {
-                           if (child.kindIs(RuleKind.ARGS)) {
-                           printNodeContent(child);
-                       } else {
-                           printNode(child);
-                       }
-                       }
+                           @Override
+                           public void onChild(Cursor child) {
+                               if (child.kindIs(RuleKind.ARGS)) {
+                                   printNodeContent(child);
+                               } else {
+                                   printNode(child);
+                               }
+                           }
 
-            @Override
-            public void onToken(int kind, String text) {
-                           emitToken(text);
-                       }
-        });
+                           @Override
+                           public void onToken(int kind, String text) {
+                               emitToken(text);
+                           }
+                       });
     }
 
     private void printRecordDecl(Cursor.Branch recordDecl) {
@@ -2401,37 +2396,37 @@ final class FlowPrinter {
 
         walkTokensWith(recordDecl,
                        new TokenWalker() {
-            @Override
-            public void onChild(Cursor child) {
-                           if (child.kindIs(RuleKind.RECORD_COMPONENTS)) {
-                           printNodeContent(child);
-                           afterComponents[0] = true;
-                       } else if (child.kindIs(RuleKind.RECORD_BODY)) {
-                           // RECORD_BODY may be a Leaf (empty `{}`) or a Branch (has members).
-                           // Always include a space before `{` (matches Records.java golden where
-                           // empty bodies render as `{}` with a separating space, never `(){}`.
-                           if (child instanceof Cursor.Branch rbBranch) {
-                           printRecordBody(rbBranch);
-                       } else {
-                           emit(" {}");
-                       }
+                           @Override
+                           public void onChild(Cursor child) {
+                               if (child.kindIs(RuleKind.RECORD_COMPONENTS)) {
+                                   printNodeContent(child);
+                                   afterComponents[0] = true;
+                               } else if (child.kindIs(RuleKind.RECORD_BODY)) {
+                                   // RECORD_BODY may be a Leaf (empty `{}`) or a Branch (has members).
+                                   // Always include a space before `{` (matches Records.java golden where
+                                   // empty bodies render as `{}` with a separating space, never `(){}`.
+                                   if (child instanceof Cursor.Branch rbBranch) {
+                                       printRecordBody(rbBranch);
+                                   } else {
+                                       emit(" {}");
+                                   }
 
-                           afterComponents[0] = false;
-                       } else {
-                           printNode(child);
-                       }
-                       }
+                                   afterComponents[0] = false;
+                               } else {
+                                   printNode(child);
+                               }
+                           }
 
-            @Override
-            public void onToken(int kind, String text) {
-                           if ("{".equals(text) && afterComponents[0]) {
-                           emit(" {");
-                           afterComponents[0] = false;
-                       } else {
-                           emitToken(text);
-                       }
-                       }
-        });
+                           @Override
+                           public void onToken(int kind, String text) {
+                               if ("{".equals(text) && afterComponents[0]) {
+                                   emit(" {");
+                                   afterComponents[0] = false;
+                               } else {
+                                   emitToken(text);
+                               }
+                           }
+                       });
     }
 
     private void printRecordComponents(Cursor.Branch components) {
@@ -2447,16 +2442,16 @@ final class FlowPrinter {
         if (!hasLineCommentToken(components) && currentColumn + width + 3 <= config.maxLineLength()) {
             walkTokensWith(components,
                            new TokenWalker() {
-                @Override
-                public void onChild(Cursor c) {
-                               printNodeContent(c);
-                           }
+                               @Override
+                               public void onChild(Cursor c) {
+                                   printNodeContent(c);
+                               }
 
-                @Override
-                public void onToken(int kind, String text) {
-                               emitToken(text);
-                           }
-            });
+                               @Override
+                               public void onToken(int kind, String text) {
+                                   emitToken(text);
+                               }
+                           });
         } else {
             printBrokenRecordComponents(components);
         }
@@ -2467,25 +2462,25 @@ final class FlowPrinter {
 
         walkTokensWith(components,
                        new TokenWalker() {
-            @Override
-            public void onChild(Cursor child) {
-                           if (child.kindIs(RuleKind.RECORD_COMP)) {
-                           printOwnLineChildContentAligned(child, alignCol);
-                       } else {
-                           printNode(child);
-                       }
-                       }
+                           @Override
+                           public void onChild(Cursor child) {
+                               if (child.kindIs(RuleKind.RECORD_COMP)) {
+                                   printOwnLineChildContentAligned(child, alignCol);
+                               } else {
+                                   printNode(child);
+                               }
+                           }
 
-            @Override
-            public void onToken(int kind, String text) {
-                           if (",".equals(text)) {
-                           emit(",");
-                           newline();
-                       } else {
-                           emitToken(text);
-                       }
-                       }
-        });
+                           @Override
+                           public void onToken(int kind, String text) {
+                               if (",".equals(text)) {
+                                   emit(",");
+                                   newline();
+                               } else {
+                                   emitToken(text);
+                               }
+                           }
+                       });
     }
 
     // ===== Resource spec =====
@@ -2510,40 +2505,40 @@ final class FlowPrinter {
 
         walkTokensWith(resourceSpec,
                        new TokenWalker() {
-            @Override
-            public void onChild(Cursor child) {
-                           if (child.kindIs(RuleKind.RESOURCE)) {
-                           if (afterOpen[0]) {
-                           if (!first[0]) {
-                           newline();
-                           printAlignedTo(alignCol[0]);
-                       }
+                           @Override
+                           public void onChild(Cursor child) {
+                               if (child.kindIs(RuleKind.RESOURCE)) {
+                                   if (afterOpen[0]) {
+                                       if (!first[0]) {
+                                           newline();
+                                           printAlignedTo(alignCol[0]);
+                                       }
 
-                           printNodeContent(child);
-                           first[0] = false;
-                       } else {
-                           printNode(child);
-                       }
-                       } else {
-                           printNode(child);
-                       }
-                       }
+                                       printNodeContent(child);
+                                       first[0] = false;
+                                   } else {
+                                       printNode(child);
+                                   }
+                               } else {
+                                   printNode(child);
+                               }
+                           }
 
-            @Override
-            public void onToken(int kind, String text) {
-                           if ("(".equals(text)) {
-                           emitToken("(");
-                           alignCol[0] = currentColumn;
-                           afterOpen[0] = true;
-                       } else if (";".equals(text)) {
-                           emitToken(";");
-                       } else if (")".equals(text)) {
-                           emitToken(")");
-                       } else {
-                           emitToken(text);
-                       }
-                       }
-        });
+                           @Override
+                           public void onToken(int kind, String text) {
+                               if ("(".equals(text)) {
+                                   emitToken("(");
+                                   alignCol[0] = currentColumn;
+                                   afterOpen[0] = true;
+                               } else if (";".equals(text)) {
+                                   emitToken(";");
+                               } else if (")".equals(text)) {
+                                   emitToken(")");
+                               } else {
+                                   emitToken(text);
+                               }
+                           }
+                       });
     }
 
     // ===== Type generics =====
@@ -2592,37 +2587,37 @@ final class FlowPrinter {
 
             walkTokensWith(ternary,
                            new TokenWalker() {
-                @Override
-                public void onChild(Cursor child) {
-                               if (skipNext[0]) {
-                               printNodeContent(child);
-                               skipNext[0] = false;
-                           } else {
-                               // Ternary cond: suppress LOG_AND/LOG_OR breaking so `&&`/`||`
-                               // in the cond stay on one line per the always-break-`?`/`:` rule.
-                               try (var tc = alignment.enterTernaryCond()) {
-                               printNode(child);
-                           }
-                           }
-                           }
+                               @Override
+                               public void onChild(Cursor child) {
+                                   if (skipNext[0]) {
+                                       printNodeContent(child);
+                                       skipNext[0] = false;
+                                   } else {
+                                       // Ternary cond: suppress LOG_AND/LOG_OR breaking so `&&`/`||`
+                                       // in the cond stay on one line per the always-break-`?`/`:` rule.
+                                       try (var tc = alignment.enterTernaryCond()) {
+                                           printNode(child);
+                                       }
+                                   }
+                               }
 
-                @Override
-                public void onToken(int kind, String text) {
-                               if ("?".equals(text)) {
-                               newline();
-                               printAlignedTo(alignCol);
-                               emit("? ");
-                               skipNext[0] = true;
-                           } else if (":".equals(text)) {
-                               newline();
-                               printAlignedTo(alignCol);
-                               emit(": ");
-                               skipNext[0] = true;
-                           } else {
-                               emitToken(text);
-                           }
-                           }
-            });
+                               @Override
+                               public void onToken(int kind, String text) {
+                                   if ("?".equals(text)) {
+                                       newline();
+                                       printAlignedTo(alignCol);
+                                       emit("? ");
+                                       skipNext[0] = true;
+                                   } else if (":".equals(text)) {
+                                       newline();
+                                       printAlignedTo(alignCol);
+                                       emit(": ");
+                                       skipNext[0] = true;
+                                   } else {
+                                       emitToken(text);
+                                   }
+                               }
+                           });
         } else {
             walkTokens(ternary);
         }
@@ -2633,16 +2628,16 @@ final class FlowPrinter {
         if (measuringMode) {
             walkTokensWith(additive,
                            new TokenWalker() {
-                @Override
-                public void onChild(Cursor c) {
-                               printNodeContent(c);
-                           }
+                               @Override
+                               public void onChild(Cursor c) {
+                                   printNodeContent(c);
+                               }
 
-                @Override
-                public void onToken(int kind, String text) {
-                               emitToken(text);
-                           }
-            });
+                               @Override
+                               public void onToken(int kind, String text) {
+                                   emitToken(text);
+                               }
+                           });
 
             return;
         }
@@ -2652,16 +2647,16 @@ final class FlowPrinter {
         if (!hasStringLit) {
             walkTokensWith(additive,
                            new TokenWalker() {
-                @Override
-                public void onChild(Cursor c) {
-                               printNodeContent(c);
-                           }
+                               @Override
+                               public void onChild(Cursor c) {
+                                   printNodeContent(c);
+                               }
 
-                @Override
-                public void onToken(int kind, String text) {
-                               emitToken(text);
-                           }
-            });
+                               @Override
+                               public void onToken(int kind, String text) {
+                                   emitToken(text);
+                               }
+                           });
 
             return;
         }
@@ -2671,16 +2666,16 @@ final class FlowPrinter {
         if (currentColumn + width <= config.maxLineLength()) {
             walkTokensWith(additive,
                            new TokenWalker() {
-                @Override
-                public void onChild(Cursor c) {
-                               printNodeContent(c);
-                           }
+                               @Override
+                               public void onChild(Cursor c) {
+                                   printNodeContent(c);
+                               }
 
-                @Override
-                public void onToken(int kind, String text) {
-                               emitToken(text);
-                           }
-            });
+                               @Override
+                               public void onToken(int kind, String text) {
+                                   emitToken(text);
+                               }
+                           });
 
             return;
         }
@@ -2689,16 +2684,16 @@ final class FlowPrinter {
         if (alignment.isInInlineExpression()) {
             walkTokensWith(additive,
                            new TokenWalker() {
-                @Override
-                public void onChild(Cursor c) {
-                               printNodeContent(c);
-                           }
+                               @Override
+                               public void onChild(Cursor c) {
+                                   printNodeContent(c);
+                               }
 
-                @Override
-                public void onToken(int kind, String text) {
-                               emitToken(text);
-                           }
-            });
+                               @Override
+                               public void onToken(int kind, String text) {
+                                   emitToken(text);
+                               }
+                           });
 
             return;
         }
@@ -2721,41 +2716,41 @@ final class FlowPrinter {
 
         walkTokensWith(additive,
                        new TokenWalker() {
-            @Override
-            public void onChild(Cursor child) {
-                           if (pendingPlus[0]) {
-                           var info = operandInfo.get(child.firstTokenIdx());
-                           boolean startsWithStr = info != null && info.startsWithString();
+                           @Override
+                           public void onChild(Cursor child) {
+                               if (pendingPlus[0]) {
+                                   var info = operandInfo.get(child.firstTokenIdx());
+                                   boolean startsWithStr = info != null && info.startsWithString();
 
-                           if (startsWithStr && firstPrinted[0]) {
-                           // Multi-line additive: every `+` followed by a string-literal
-                           // operand breaks onto its own line (the goldens render each
-                           // continuation aligned under the first operand).
-                           newline();
-                           printAlignedTo(alignCol);
-                           emit("+ ");
-                       } else {
-                           emit(" + ");
-                       }
+                                   if (startsWithStr && firstPrinted[0]) {
+                                       // Multi-line additive: every `+` followed by a string-literal
+                                       // operand breaks onto its own line (the goldens render each
+                                       // continuation aligned under the first operand).
+                                       newline();
+                                       printAlignedTo(alignCol);
+                                       emit("+ ");
+                                   } else {
+                                       emit(" + ");
+                                   }
 
-                           pendingPlus[0] = false;
-                       }
+                                   pendingPlus[0] = false;
+                               }
 
-                           printNodeContent(child);
-                           firstPrinted[0] = true;
-                       }
+                               printNodeContent(child);
+                               firstPrinted[0] = true;
+                           }
 
-            @Override
-            public void onToken(int kind, String text) {
-                           if ("+".equals(text)) {
-                           pendingPlus[0] = true;
-                       } else if ("-".equals(text)) {
-                           emit(" - ");
-                       } else {
-                           emitToken(text);
-                       }
-                       }
-        });
+                           @Override
+                           public void onToken(int kind, String text) {
+                               if ("+".equals(text)) {
+                                   pendingPlus[0] = true;
+                               } else if ("-".equals(text)) {
+                                   emit(" - ");
+                               } else {
+                                   emitToken(text);
+                               }
+                           }
+                       });
     }
 
     /// Print a `LOG_AND` (`&&`) chain. In TAIL contexts (return/throw/lambda body),
@@ -2776,16 +2771,16 @@ final class FlowPrinter {
         if (measuringMode || alignment.isInInlineExpression() || alignment.isInTernaryCond() || !alignment.isInTailContext() || operatorCount < 2) {
             walkTokensWith(logAnd,
                            new TokenWalker() {
-                @Override
-                public void onChild(Cursor c) {
-                               printNodeContent(c);
-                           }
+                               @Override
+                               public void onChild(Cursor c) {
+                                   printNodeContent(c);
+                               }
 
-                @Override
-                public void onToken(int kind, String text) {
-                               emitToken(text);
-                           }
-            });
+                               @Override
+                               public void onToken(int kind, String text) {
+                                   emitToken(text);
+                               }
+                           });
 
             return;
         }
@@ -2799,23 +2794,23 @@ final class FlowPrinter {
 
         walkTokensWith(logAnd,
                        new TokenWalker() {
-            @Override
-            public void onChild(Cursor c) {
-                           printNodeContent(c);
-                           firstPrinted[0] = true;
-                       }
+                           @Override
+                           public void onChild(Cursor c) {
+                               printNodeContent(c);
+                               firstPrinted[0] = true;
+                           }
 
-            @Override
-            public void onToken(int kind, String text) {
-                           if ("&&".equals(text) && firstPrinted[0]) {
-                           newline();
-                           printAlignedTo(alignCol);
-                           emit("&& ");
-                       } else {
-                           emitToken(text);
-                       }
-                       }
-        });
+                           @Override
+                           public void onToken(int kind, String text) {
+                               if ("&&".equals(text) && firstPrinted[0]) {
+                                   newline();
+                                   printAlignedTo(alignCol);
+                                   emit("&& ");
+                               } else {
+                                   emitToken(text);
+                               }
+                           }
+                       });
     }
 
     private boolean containsStringLit(Cursor node) {
@@ -2866,20 +2861,20 @@ final class FlowPrinter {
 
                         walkTokensWith(br,
                                        new TokenWalker() {
-                            @Override
-                            public void onChild(Cursor c) {
-                                           printNodeContent(c);
-                                           if (breakAfterAnnotation && c.kindIs(RuleKind.ANNOTATION)) {
-                                           newline();
-                                           printIndent();
-                                       }
-                                       }
+                                           @Override
+                                           public void onChild(Cursor c) {
+                                               printNodeContent(c);
+                                               if (breakAfterAnnotation && c.kindIs(RuleKind.ANNOTATION)) {
+                                                   newline();
+                                                   printIndent();
+                                               }
+                                           }
 
-                            @Override
-                            public void onToken(int kind, String text) {
-                                           emitToken(text);
-                                       }
-                        });
+                                           @Override
+                                           public void onToken(int kind, String text) {
+                                               emitToken(text);
+                                           }
+                                       });
                     }
                 }
             }
@@ -2931,7 +2926,6 @@ final class FlowPrinter {
 
         if (isLine) {
             printIndent();
-
             var text = tokens.textAt(tokIdx).toString().stripTrailing();
 
             output.append(text);
@@ -3193,7 +3187,6 @@ final class FlowPrinter {
         if (firstChar == '>' && lastChar == ']') {
             return true;
         }
-
         // A `?` directly after `<` is a WILDCARD, never a ternary: `<` cannot precede a ternary's
         // `?` in valid Java. `?` sits in the spaced-operator set for ternaries, and that spacing is
         // normally suppressed by `typeContextDepth`, which the array-creation path leaves at 0 — so
@@ -3373,7 +3366,6 @@ final class FlowPrinter {
         if (text.equals(">") && lastChar == '-') {
             return false;
         }
-
         // Outside any TYPE_ARGS / TYPE_PARAMS node this '<' / '>' is a relational or shift operator and takes a space
         // before it whatever precedes it (#974): `1 << 21`, `MAX < x`, `arr[0] << 2`. The checks below guess "generic"
         // from the preceding token's text, which cannot tell `HashMap<K, V>` from `MAX < x` (both: uppercase word,

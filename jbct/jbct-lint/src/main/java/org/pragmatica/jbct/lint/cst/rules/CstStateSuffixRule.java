@@ -42,16 +42,16 @@ public class CstStateSuffixRule implements CstLintRule {
             return Stream.empty();
         }
 
-        return Stream.concat(findAllRecords(root).stream(), findAllClasses(root).stream())
+        return Stream.concat(findAllRecords(root).stream(),
+                             findAllClasses(root).stream())
                      .filter(this::isStateSuffixVariant)
                      .map(decl -> createDiagnostic(decl, ctx));
     }
 
     private boolean isStateSuffixVariant(Cursor decl) {
-        return DeclSupport.declName(decl)
-                          .endsWith(STATE_SUFFIX) && DeclSupport.implementedHeadNames(decl)
-                                                                .stream()
-                                                                .anyMatch(name -> name.endsWith(STATE_SUFFIX));
+        return DeclSupport.declName(decl).endsWith(STATE_SUFFIX) && DeclSupport.implementedHeadNames(decl)
+                                                                               .stream()
+                                                                               .anyMatch(name -> name.endsWith(STATE_SUFFIX));
     }
 
     private Diagnostic createDiagnostic(Cursor decl, LintContext ctx) {

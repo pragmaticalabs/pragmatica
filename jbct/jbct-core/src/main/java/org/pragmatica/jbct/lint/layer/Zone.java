@@ -1,6 +1,5 @@
 package org.pragmatica.jbct.lint.layer;
 
-
 /// Architecture zone of a package — a coarser grouping than [Layer].
 ///
 /// Two zones matter to the layering rules. `BUSINESS` code (domain, application, bootstrap) must

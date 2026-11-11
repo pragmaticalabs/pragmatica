@@ -37,10 +37,14 @@ final class CauseHierarchies {
     static boolean sanctionedLibraryPackage(String packageName) {
         return packageName.startsWith("org.pragmatica.lang");
     }
+
     private static final Pattern INTERFACE_NAME = Pattern.compile("\\binterface\\s+([A-Za-z_$][A-Za-z0-9_$]*)");
     private static final Pattern EXTENDS_CLAUSE = Pattern.compile("\\bextends\\b([^{]*)");
+
     private static final Pattern QUALIFIED_MIXIN = Pattern.compile("\\bCause\\s*\\.\\s*(Terminal|Wrapped|Transient)\\b");
+
     private static final Pattern IDENTIFIER_TAIL = Pattern.compile("([A-Za-z_$][A-Za-z0-9_$]*)\\s*$");
+
     private static final Pattern FACTORY_CALL = Pattern.compile("\\b(forOneValue|forTwoValues|forThreeValues)\\s*\\(");
 
     /// Names that make a same-file `implements` clause a cause variant: `Cause` itself plus every
@@ -49,7 +53,6 @@ final class CauseHierarchies {
         var names = new HashSet<String>();
 
         names.add(CAUSE);
-
         var grew = true;
 
         while (grew) {
@@ -77,43 +80,41 @@ final class CauseHierarchies {
     /// Whether `decl` implements a same-file cause interface, `Cause` directly, or a qualified
     /// mixin (`Cause.Terminal` / `Cause.Wrapped`).
     static boolean isCauseVariant(Cursor decl, Set<String> causeNames) {
-        if (DeclSupport.implementedHeadNames(decl)
-                       .stream()
-                       .anyMatch(causeNames::contains)) {
+        if (DeclSupport.implementedHeadNames(decl).stream().anyMatch(causeNames::contains)) {
             return true;
         }
 
-        return QUALIFIED_MIXIN.matcher(headerOf(text(decl)))
-                              .find();
+        return QUALIFIED_MIXIN.matcher(headerOf(text(decl))).find();
     }
 
     static List<Cursor> causeRecords(Cursor root, Set<String> causeNames) {
         return findAllRecords(root).stream()
-                      .filter(record -> isCauseVariant(record, causeNames))
-                      .toList();
+                             .filter(record -> isCauseVariant(record, causeNames))
+                             .toList();
     }
 
     static List<Cursor> causeEnums(Cursor root, Set<String> causeNames) {
         return findAllEnums(root).stream()
-                      .filter(anEnum -> isCauseVariant(anEnum, causeNames))
-                      .toList();
+                           .filter(anEnum -> isCauseVariant(anEnum, causeNames))
+                           .toList();
     }
 
     /// Component names of a record declaration, in order.
     static List<String> recordComponentNames(Cursor record) {
         var names = new ArrayList<String>();
 
-        childByRule(record, RuleKind.RECORD_DECL)
-                .flatMap(recordDecl -> childByRule(recordDecl, RuleKind.RECORD_COMPONENTS))
-                .onPresent(components -> {
-                    for (var component : childrenByRule(components, RuleKind.RECORD_COMP)) {
-                        var name = matchOf(IDENTIFIER_TAIL, text(component).trim());
+        childByRule(record, RuleKind.RECORD_DECL).flatMap(recordDecl -> childByRule(recordDecl,
+                                                                                    RuleKind.RECORD_COMPONENTS))
+                   .onPresent(components -> {
+                                  for (var component : childrenByRule(components, RuleKind.RECORD_COMP)) {
+                                      var name = matchOf(IDENTIFIER_TAIL,
+                                                         text(component).trim());
 
-                        if (!name.isEmpty()) {
-                            names.add(name);
-                        }
-                    }
-                });
+                                      if (!name.isEmpty()) {
+                                          names.add(name);
+                                      }
+                                  }
+                              });
 
         return names;
     }
@@ -129,7 +130,9 @@ final class CauseHierarchies {
 
         var args = topLevelArgs(masked, masked, open);
 
-        return args.size() == 1 && args.getFirst().raw().isBlank() && text(enumConstant).charAt(open + 1) == ')'
+        return args.size() == 1 && args.getFirst()
+                                       .raw()
+                                       .isBlank() && text(enumConstant).charAt(open + 1) == ')'
                ? 0
                : args.size();
     }
@@ -185,12 +188,14 @@ final class CauseHierarchies {
             } else if (ch == ')') {
                 depth--;
                 if (depth == 0) {
-                    args.add(new Arg(argStart, source.substring(argStart, i).trim()));
+                    args.add(new Arg(argStart,
+                                     source.substring(argStart, i).trim()));
 
                     return args;
                 }
             } else if (ch == ',' && depth == 1) {
-                args.add(new Arg(argStart, source.substring(argStart, i).trim()));
+                args.add(new Arg(argStart,
+                                 source.substring(argStart, i).trim()));
                 argStart = i + 1;
             }
         }
@@ -200,8 +205,7 @@ final class CauseHierarchies {
 
     /// Format-conversion count of a template literal's content: `%%` and `%n` excluded.
     static int conversionCount(String literalContent) {
-        var conversion = Pattern.compile("%(?:(%)|(n)|(?:\\d+\\$)?[-#+ 0,(]*\\d*(?:\\.\\d+)?[a-zA-Z])")
-                                .matcher(literalContent);
+        var conversion = Pattern.compile("%(?:(%)|(n)|(?:\\d+\\$)?[-#+ 0,(]*\\d*(?:\\.\\d+)?[a-zA-Z])").matcher(literalContent);
         var count = 0;
 
         while (conversion.find()) {
@@ -219,13 +223,17 @@ final class CauseHierarchies {
         if (raw.startsWith("\"\"\"")) {
             var end = raw.indexOf("\"\"\"", 3);
 
-            return end > 0 ? raw.substring(3, end) : "";
+            return end > 0
+                   ? raw.substring(3, end)
+                   : "";
         }
 
         if (raw.startsWith("\"")) {
             var end = raw.indexOf('"', 1);
 
-            return end > 0 ? raw.substring(1, end) : "";
+            return end > 0
+                   ? raw.substring(1, end)
+                   : "";
         }
 
         return "";
@@ -256,13 +264,17 @@ final class CauseHierarchies {
     private static String headerOf(String declText) {
         var brace = declText.indexOf('{');
 
-        return brace >= 0 ? declText.substring(0, brace) : declText;
+        return brace >= 0
+               ? declText.substring(0, brace)
+               : declText;
     }
 
     private static String matchOf(Pattern pattern, String text) {
         Matcher matcher = pattern.matcher(text);
 
-        return matcher.find() ? matcher.group(1) : "";
+        return matcher.find()
+               ? matcher.group(1)
+               : "";
     }
 
     private static boolean mentionsAny(String clause, Set<String> names) {
