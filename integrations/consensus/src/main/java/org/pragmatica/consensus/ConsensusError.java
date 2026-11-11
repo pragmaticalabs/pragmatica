@@ -27,6 +27,18 @@ public sealed interface ConsensusError extends Cause {
         }
     }
 
+    /// #2981 step 6: a core member that has completed its handshake runs a LOWER wire generation than this node,
+    /// so joining would corrupt consensus apply on it. Upgrades are stop-the-world: stop every node, then start every node.
+    record WireGenerationRefused(NodeId member, int memberGeneration, int ownGeneration) implements ConsensusError {
+        @Override
+        public String message() {
+            return "Refusing to join: member " + member.id()
+                 + " runs wire generation " + memberGeneration
+                 + ", this node runs " + ownGeneration
+                 + "; upgrades are stop-the-world (stop every node, then start every node)";
+        }
+    }
+
     record NodeInactive(NodeId nodeId) implements ConsensusError {
         @Override
         public String message() {

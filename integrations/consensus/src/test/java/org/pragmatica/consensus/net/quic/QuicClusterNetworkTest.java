@@ -35,6 +35,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetCodecs;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
+import org.pragmatica.consensus.net.JoinGenerationGuard;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.net.WriteOutcome;
@@ -556,11 +557,16 @@ class QuicClusterNetworkTest {
             assertThat(established.getFirst().nodeInfo().isPresent())
                 .as("a topology-KNOWN peer whose Hello carried labels is forwarded with them")
                 .isTrue();
-            assertThat(established.getFirst().nodeInfo().map(NodeInfo::labels).or(Map.of())).isEqualTo(CORE_LABELS);
+            assertThat(established.getFirst().nodeInfo().map(NodeInfo::labels).or(Map.of()))
+                .as("the assembly's labels plus the wire generation the consensus layer stamps")
+                .isEqualTo(JoinGenerationGuard.advertised(CORE_LABELS));
         }
 
         @Test
-        void inboundHello_knownPeerWithoutLabels_forwardsNoNodeInfo() {
+        /// #2981 step 6: no Hello is label-less any more; the consensus layer stamps the wire generation, so a known peer whose
+        /// assembly set no labels is still forwarded, carrying just that label. (Only a pre-generation-2 binary sends a label-less
+        /// Hello, and the join guard refuses it.)
+        void inboundHello_knownPeerWithoutAssemblyLabels_forwardsTheStampedGeneration() {
             var acceptorId = new NodeId("zzz-acceptor");
             var dialerId = new NodeId("aaa-dialer");
             var established = new CopyOnWriteArrayList<NetworkServiceMessage.ConnectionEstablished>();
@@ -572,9 +578,9 @@ class QuicClusterNetworkTest {
             dialer.connect(dialTarget(acceptorId, acceptor.boundPort().fold(() -> fail("acceptor not bound"), port -> port)));
 
             awaitTrue(() -> !established.isEmpty(), "the acceptor routes ConnectionEstablished for the dialer");
-            assertThat(established.getFirst().nodeInfo().isPresent())
-                .as("a topology-known peer with a label-less Hello is not re-announced upward")
-                .isFalse();
+            assertThat(established.getFirst().nodeInfo().map(NodeInfo::labels).or(Map.of()))
+                .as("a topology-known peer is forwarded with the stamped wire generation")
+                .isEqualTo(JoinGenerationGuard.advertised(Map.of()));
         }
 
         private static NodeInfo knownPeerInfo(NodeId id) {
