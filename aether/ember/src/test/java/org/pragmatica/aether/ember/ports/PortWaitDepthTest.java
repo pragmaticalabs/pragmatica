@@ -81,6 +81,39 @@ class PortWaitDepthTest {
         assertThat(polls.get()).as("about 400 ms / 50 ms polls, not a spin").isBetween(2, 20);
     }
 
+    @Test
+    @Timeout(30)
+    void poll_stepFailure_returnsTheFailureAtOnce_insteadOfRetryingUntilTheDeadline() {
+        var polls = new AtomicInteger();
+        var failure = Causes.cause("step failed");
+        var started = System.nanoTime();
+
+        var outcome = PortWait.poll(started + 10_000_000_000L,
+                                    50,
+                                    () -> polls.incrementAndGet() == 1
+                                          ? failure.<Option<String>> result()
+                                          : Result.success(Option.some("late")),
+                                    () -> Causes.cause("timed out"));
+
+        assertThat(outcome.fold(cause -> cause, _ -> null)).isSameAs(failure);
+        assertThat(polls.get()).as("no retry after a failure").isEqualTo(1);
+        assertThat(System.nanoTime() - started).as("returned well before the 10 s deadline").isLessThan(1_000_000_000L);
+    }
+
+    @Test
+    @Timeout(30)
+    void poll_lastSleepIsClampedToTheRemainingTime_soTheWaitDoesNotOvershootTheDeadline() {
+        var started = System.nanoTime();
+
+        var outcome = PortWait.poll(started + 100_000_000L,
+                                    2_000,
+                                    () -> Result.success(Option.<String> none()),
+                                    () -> Causes.cause("timed out"));
+
+        assertThat(outcome.isFailure()).isTrue();
+        assertThat(System.nanoTime() - started).as("2 s interval must not push a 100 ms wait past ~1 s").isLessThan(1_000_000_000L);
+    }
+
     private Supplier<Object> rendezvous(long boundMs) {
         var rendezvous = EmberPortRendezvous.emberPortRendezvous(meetDir, 2, boundMs, "solo");
 

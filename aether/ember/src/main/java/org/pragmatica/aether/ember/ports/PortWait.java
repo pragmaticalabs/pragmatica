@@ -19,7 +19,7 @@ sealed interface PortWait {
     }
 
     /// Polls `step` until it yields a value, fails, or `deadline` (a `System.nanoTime()` reading) passes, sleeping `intervalMs`
-    /// between polls. Iterative, so stack depth is constant however long the wait; a timeout yields `onTimeout`.
+    /// between polls (the last sleep is clamped to the time remaining). Iterative, so stack depth is constant however long the wait; a timeout yields `onTimeout`.
     static <T> Result<T> poll(long deadline,
                               long intervalMs,
                               Supplier<Result<Option<T>>> step,
@@ -27,12 +27,16 @@ sealed interface PortWait {
         var current = step.get();
 
         while (pending(current) && System.nanoTime() < deadline) {
-            current = sleep(intervalMs).flatMap(_ -> step.get());
+            current = sleep(Math.min(intervalMs, remainingMs(deadline))).flatMap(_ -> step.get());
         }
 
         return current.flatMap(found -> found.map(Result::success)
                                              .or(() -> onTimeout.get()
                                                                 .result()));
+    }
+
+    private static long remainingMs(long deadline) {
+        return Math.max(0L, (deadline - System.nanoTime()) / 1_000_000L);
     }
 
     private static <T> boolean pending(Result<Option<T>> current) {
