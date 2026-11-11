@@ -21,8 +21,9 @@ import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /// #800: each failing maintenance pass raises its warning once and the next good pass closes it; the progress record reflects
 /// every tick; the tick asks the adapter to retry a failed activation.
@@ -46,8 +47,8 @@ class StorageMaintenanceDriverProgressTest {
     void progress_reflectsEachTick_countsAccumulateAndFailuresStreak() {
         var driver = driver();
 
-        when(demotion.demote()).thenReturn(3, 4);
-        when(gc.collectGarbage()).thenReturn(2, 0);
+        doReturn(3, 4).when(demotion).demote();
+        doReturn(2, 0).when(gc).collectGarbage();
         driver.tick();
         var first = driver.progress();
         driver.tick();
@@ -61,7 +62,7 @@ class StorageMaintenanceDriverProgressTest {
         assertThat(second.collected()).isEqualTo(2);
         assertThat(second.lastRunMs()).isGreaterThanOrEqualTo(first.lastRunMs());
 
-        when(demotion.demote()).thenThrow(new IllegalStateException("tier gone"));
+        doThrow(new IllegalStateException("tier gone")).when(demotion).demote();
         driver.tick();
         driver.tick();
         var failed = driver.progress();
@@ -71,7 +72,7 @@ class StorageMaintenanceDriverProgressTest {
         assertThat(failed.lastFailure().fold(() -> "", message -> message)).contains("tier gone");
         assertThat(failed.demoted()).as("a failed pass adds nothing").isEqualTo(7);
 
-        when(demotion.demote()).thenReturn(1);
+        doReturn(1).when(demotion).demote();
         driver.tick();
         var recovered = driver.progress();
 
@@ -85,8 +86,8 @@ class StorageMaintenanceDriverProgressTest {
     void failingDemotion_raisesOnceThenRecovers_andGarbageCollectionStillRuns() throws InterruptedException {
         var driver = driver();
 
-        when(demotion.demote()).thenThrow(new IllegalStateException("tier gone"));
-        when(gc.collectGarbage()).thenReturn(5);
+        doThrow(new IllegalStateException("tier gone")).when(demotion).demote();
+        doReturn(5).when(gc).collectGarbage();
         driver.tick();
         driver.tick();
 
@@ -95,7 +96,7 @@ class StorageMaintenanceDriverProgressTest {
         assertThat(raised.getFirst().message()).contains("tier gone");
         assertThat(driver.progress().collected()).as("GC ran although demotion threw").isEqualTo(10);
 
-        when(demotion.demote()).thenReturn(0);
+        doReturn(0).when(demotion).demote();
         driver.tick();
         driver.tick();
 
@@ -107,13 +108,13 @@ class StorageMaintenanceDriverProgressTest {
     void failingGarbageCollection_raisesItsOwnPartThenRecovers() throws InterruptedException {
         var driver = driver();
 
-        when(gc.collectGarbage()).thenThrow(new IllegalStateException("gc boom"));
+        doThrow(new IllegalStateException("gc boom")).when(gc).collectGarbage();
         driver.tick();
 
         assertThat(codes(1)).containsExactly(FAILED);
         assertThat(raised.getFirst().subject()).isEqualTo("storage-maintenance/garbage-collection");
 
-        when(gc.collectGarbage()).thenReturn(0);
+        doReturn(0).when(gc).collectGarbage();
         driver.tick();
 
         assertThat(codes(2)).containsExactly(FAILED, RECOVERED);
@@ -124,14 +125,14 @@ class StorageMaintenanceDriverProgressTest {
     void failingPromotionCycle_raisesOnceThenRecovers() throws InterruptedException {
         var driver = driver();
 
-        when(promotion.promote()).thenThrow(new IllegalStateException("source unreadable"));
+        doThrow(new IllegalStateException("source unreadable")).when(promotion).promote();
         driver.tick();
         driver.tick();
 
         assertThat(codes(1)).containsExactly(FAILED);
         assertThat(raised.getFirst().subject()).isEqualTo("storage-maintenance/promotion");
 
-        when(promotion.promote()).thenReturn(0);
+        doReturn(0).when(promotion).promote();
         driver.tick();
 
         assertThat(codes(2)).containsExactly(FAILED, RECOVERED);
