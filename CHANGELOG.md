@@ -6,9 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc5] - Unreleased
 
-### Fixed
-- **`AetherNodeKvDispatcherFailureStopBootTest` control no longer assumes a dispatcher thread right after `start()` (#3057).** The delivery thread starts on the store's first append (`NotificationDispatcher#ensureStarted`), which under load may not have happened yet; the test now appends one batch and awaits the thread with a deadline. Test-only; pinned by `DispatcherLazyStartTest`. `[mechanism: lazy thread start, classified TEST]`
-
 ## [1.0.0-rc4] - 2026-10-17
 
 ### Fixed (2026-10-17 — disruption-budget suite mistook the slice-floor 409 for the quorum budget)
