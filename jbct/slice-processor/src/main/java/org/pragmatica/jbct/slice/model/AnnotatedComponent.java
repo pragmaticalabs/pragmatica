@@ -121,18 +121,21 @@ public record AnnotatedComponent(String ownerQualifiedName, String componentName
     }
 
     private static Cause multipleAnnotations(TypeElement typeElement,
-                                              String annotationName,
-                                              List<RecordComponentElement> annotated) {
+                                             String annotationName,
+                                             List<RecordComponentElement> annotated) {
         var marker = "@" + simpleName(annotationName);
 
-        return Causes.cause("Multiple " + marker + " annotations found on "
-                           + typeElement.getQualifiedName() + ": " + componentNames(annotated)
-                           + ". Only one " + marker + " component is allowed per record.");
+        return Causes.cause("Multiple " + marker
+                           + " annotations found on " + typeElement.getQualifiedName()
+                           + ": " + componentNames(annotated)
+                           + ". Only one " + marker
+                           + " component is allowed per record.");
     }
 
     private static String componentNames(List<RecordComponentElement> annotated) {
         return annotated.stream()
-                        .map(component -> component.getSimpleName().toString())
+                        .map(component -> component.getSimpleName()
+                                                   .toString())
                         .collect(Collectors.joining(", "));
     }
 
@@ -156,9 +159,8 @@ public record AnnotatedComponent(String ownerQualifiedName, String componentName
     private static boolean isAnnotationType(AnnotationMirror mirror, String annotationName) {
         var annotationType = mirror.getAnnotationType().asElement();
 
-        return annotationType instanceof TypeElement typeElement
-               && typeElement.getQualifiedName()
-                             .toString()
-                             .equals(annotationName);
+        return annotationType instanceof TypeElement typeElement && typeElement.getQualifiedName()
+                                                                               .toString()
+                                                                               .equals(annotationName);
     }
 }

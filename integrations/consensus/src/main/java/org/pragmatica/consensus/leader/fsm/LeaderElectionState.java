@@ -21,6 +21,7 @@ import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.KvSyncGraceTimeo
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderDoubtConfirmed;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderSilent;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.PeerRemovedFromView;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ProposalSettled;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -85,6 +86,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 case ConsensusReady _ -> tx.handle(NO_ACTION_DORMANT);
                 case ClusterFsmEvent.NodeAdded na -> tx.handle(() -> ctx.applyTopology(na));
                 case ClusterFsmEvent.NodeGone ng -> tx.handle(() -> ctx.applyTopology(ng));
+                case PeerRemovedFromView removed -> tx.handle(() -> ctx.removeFromView(removed.node()));
                 default -> tx.ignore();
             }
         }
@@ -172,6 +174,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
                 case ClusterFsmEvent.NodeAdded na -> ctx.applyTopology(na);
                 case ClusterFsmEvent.NodeGone ng -> ctx.applyTopology(ng);
+                case PeerRemovedFromView removed -> ctx.removeFromView(removed.node());
                 case LeaderCommitted lc -> adoptLeaderUnconditionally(ctx, lc, tx);
                 default -> tx.ignore();
             }
@@ -266,6 +269,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
                 case ClusterFsmEvent.NodeAdded na -> ctx.applyTopology(na);
                 case ClusterFsmEvent.NodeGone ng -> ctx.applyTopology(ng);
+                case PeerRemovedFromView removed -> ctx.removeFromView(removed.node());
                 default -> tx.ignore();
             }
         }
@@ -421,6 +425,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
                 case ClusterFsmEvent.NodeAdded na -> handleTopologyChange(ctx, na);
                 case ClusterFsmEvent.NodeGone ng -> handleTopologyChange(ctx, ng);
+                case PeerRemovedFromView removed -> handleRemoval(ctx, removed);
                 default -> tx.ignore();
             }
         }
@@ -505,6 +510,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
                                                                                                     directory.members()));
                 case ClusterFsmEvent.NodeGone ng -> handleNodeGoneInLed(ctx, this, ng, tx);
+                case PeerRemovedFromView removed -> handleRemovalInLed(ctx, this, removed, tx);
                 case ClusterFsmEvent.NodeAdded na -> ctx.applyTopology(na);
                 case LeaderCommitted lc -> handleLeaderCommittedInLed(ctx, leader, lc, tx);
                 case LeaderSilent ls -> handleLeaderSilentInLed(ctx, this, ls, tx);
@@ -593,6 +599,20 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         // leader — the newer observation already decided both.
         if (ctx.applyTopology(event) && event.node().equals(led.leader())) {
             // #2869: no suspect on this path — the departed leader is already out of the transport topology.
+            loseLeader(ctx, led, Option.none(), tx);
+        }
+    }
+
+    /// #3044: the removal is stored first (the storage decides only what is kept: an absent node, self, or the last
+    /// node leaves the view as it is), then a removal of the leader loses the leader UNCONDITIONALLY. A removal is
+    /// never stale, and gating on the storage result would keep a leader that is the last node of the stored view or
+    /// already absent from it. A removal of another peer leaves the leader alone.
+    private static void handleRemovalInLed(LeaderElectionContext ctx,
+                                           Led led,
+                                           PeerRemovedFromView event,
+                                           TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+        ctx.removeFromView(event.node());
+        if (event.node().equals(led.leader())) {
             loseLeader(ctx, led, Option.none(), tx);
         }
     }
@@ -773,6 +793,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
                 case ClusterFsmEvent.NodeAdded na -> handleTopologyChange(ctx, na);
                 case ClusterFsmEvent.NodeGone ng -> handleTopologyChange(ctx, ng);
+                case PeerRemovedFromView removed -> handleRemoval(ctx, removed);
                 default -> tx.ignore();
             }
         }
@@ -807,6 +828,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 case ConsensusReady _ -> tx.handle(NO_ACTION_DORMANT);
                 case ClusterFsmEvent.NodeAdded na -> ctx.applyTopology(na);
                 case ClusterFsmEvent.NodeGone ng -> ctx.applyTopology(ng);
+                case PeerRemovedFromView removed -> ctx.removeFromView(removed.node());
                 case LeaderCommitted lc -> log.warn("Rejecting stale LeaderCommitted({}) in QuorumLost", lc.leader());
                 default -> tx.ignore();
             }
@@ -1012,6 +1034,14 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
     private static void handleTopologyChange(LeaderElectionContext ctx, ClusterFsmEvent.TopologyChange event) {
         if (ctx.applyTopology(event)) {
+            rescheduleCurrentTick(ctx);
+        }
+    }
+
+    /// #3044: a view-free removal reschedules the election tick only when the storage removed the node, as a dropped
+    /// stale topology event does not (#3040).
+    private static void handleRemoval(LeaderElectionContext ctx, PeerRemovedFromView event) {
+        if (ctx.removeFromView(event.node())) {
             rescheduleCurrentTick(ctx);
         }
     }

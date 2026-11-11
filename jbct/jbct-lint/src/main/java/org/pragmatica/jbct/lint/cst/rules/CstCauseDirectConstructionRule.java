@@ -50,8 +50,7 @@ public class CstCauseDirectConstructionRule implements CstLintRule {
     /// The idiom-presence gate: the record's own (comment- and string-masked) body declares a
     /// `forXValues` factory.
     private boolean declaresFactory(Cursor record) {
-        return FACTORY_DECL.matcher(MapperSafety.blankNonCode(text(record)))
-                           .find();
+        return FACTORY_DECL.matcher(MapperSafety.blankNonCode(text(record))).find();
     }
 
     /// Source ranges of the record's own static factory members — the second sanctioned
@@ -105,7 +104,7 @@ public class CstCauseDirectConstructionRule implements CstLintRule {
 
         var causeNames = CauseHierarchies.causeInterfaceNames(root);
         var masked = MapperSafety.blankNonCode(source);
-        var diagnostics = Stream.<Diagnostic>builder();
+        var diagnostics = Stream.<Diagnostic> builder();
 
         for (var record : CauseHierarchies.causeRecords(root, causeNames)) {
             var name = DeclSupport.declName(record);
@@ -115,8 +114,7 @@ public class CstCauseDirectConstructionRule implements CstLintRule {
             }
 
             var exempt = staticFactoryRanges(root, record, name);
-            var instantiation = Pattern.compile("\\bnew\\s+" + Pattern.quote(name) + "\\s*\\(")
-                                       .matcher(masked);
+            var instantiation = Pattern.compile("\\bnew\\s+" + Pattern.quote(name) + "\\s*\\(").matcher(masked);
 
             while (instantiation.find()) {
                 if (inAny(exempt, instantiation.start())) {

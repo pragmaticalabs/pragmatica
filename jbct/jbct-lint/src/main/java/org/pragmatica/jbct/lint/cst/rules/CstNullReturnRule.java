@@ -19,9 +19,7 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// JDK callback contracts like Map.computeIfPresent).
 public class CstNullReturnRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-03";
-
     private static final String DOC_LINK = "https://pragmatica.dev/java/jbct/rules/#jbct-ret-03";
-
     private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
 
     @Override
@@ -56,7 +54,7 @@ public class CstNullReturnRule implements CstLintRule {
         var column = startColumn(stmt);
         // Find enclosing method name
         var methodName = enclosingMethodMember(root, stmt).map(member -> extractMethodName(memberDeclText(member)))
-                                     .or("(unknown)");
+                                              .or("(unknown)");
 
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),

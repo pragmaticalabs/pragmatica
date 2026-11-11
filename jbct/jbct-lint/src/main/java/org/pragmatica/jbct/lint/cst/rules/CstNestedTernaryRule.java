@@ -51,8 +51,10 @@ public class CstNestedTernaryRule implements CstLintRule {
     }
 
     private boolean isActualTernary(Cursor node) {
-        return node.kindIs(RuleKind.TERNARY) && node instanceof Cursor.Branch branch && branch.children()
-                                                                                              .count() > 1;
+        return node.kindIs(RuleKind.TERNARY)
+               && node instanceof Cursor.Branch branch
+               && branch.children()
+                        .count() > 1;
     }
 
     private boolean insideLambda(Cursor ternary) {
@@ -67,7 +69,7 @@ public class CstNestedTernaryRule implements CstLintRule {
 
     private boolean hasNestedTernary(Cursor ternary) {
         return children(ternary).stream()
-                                .anyMatch(this::containsTernaryWithoutCrossingLambda);
+                       .anyMatch(this::containsTernaryWithoutCrossingLambda);
     }
 
     private boolean containsTernaryWithoutCrossingLambda(Cursor node) {
@@ -80,7 +82,7 @@ public class CstNestedTernaryRule implements CstLintRule {
         }
 
         return children(node).stream()
-                             .anyMatch(this::containsTernaryWithoutCrossingLambda);
+                       .anyMatch(this::containsTernaryWithoutCrossingLambda);
     }
 
     private Diagnostic createDiagnostic(Cursor ternary, LintContext ctx) {

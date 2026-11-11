@@ -101,10 +101,10 @@ public interface SystemTags {
                                                        entry.getKey());
 
                           if (previousName != null) {
-                          throw new IllegalStateException("Tag %d is pinned to both %s and %s".formatted(entry.getValue(),
-                                                                                                         previousName,
-                                                                                                         entry.getKey()));
-                      }
+                              throw new IllegalStateException("Tag %d is pinned to both %s and %s".formatted(entry.getValue(),
+                                                                                                             previousName,
+                                                                                                             entry.getKey()));
+                          }
                       });
     }
 

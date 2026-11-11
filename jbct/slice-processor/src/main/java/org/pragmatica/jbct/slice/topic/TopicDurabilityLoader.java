@@ -34,13 +34,11 @@ import org.pragmatica.lang.utils.Causes;
 /// having this loader silently answer "ephemeral" for both.
 public final class TopicDurabilityLoader {
     public static final String CONFIG_FILE = "resources.toml";
-
     /// The declared value that selects the durable tier. Mirrors `TopicDurability.DURABLE` as a
     /// literal rather than an enum reference on purpose: `resource-api` is a `provided` dependency,
     /// so it is not guaranteed to be on the annotation-processor path of a consuming build.
     private static final String DURABLE_VALUE = "durable";
     private static final String DURABILITY_KEY = "durability";
-
     private static final Cause FILE_NOT_FOUND = Causes.cause("Topic durability configuration file not found");
     private static final Cause PARSE_ERROR = Causes.cause("Failed to parse topic durability configuration");
 

@@ -21,7 +21,6 @@ package org.pragmatica.jbct.slice.generator;
 final class CodecTagSpace {
     private static final long FNV_OFFSET_BASIS = 0xcbf29ce484222325L;
     private static final long FNV_PRIME = 0x100000001b3L;
-
     static final int USER_TAG_BASE = 16384;
     static final int USER_TAG_LIMIT = 1 << 21;
 

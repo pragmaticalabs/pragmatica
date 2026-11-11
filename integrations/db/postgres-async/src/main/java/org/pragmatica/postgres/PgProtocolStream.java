@@ -182,8 +182,8 @@ public abstract class PgProtocolStream implements ProtocolStream {
                               () -> {
                                   write(message);
                                   if (message instanceof ExtendedQueryMessage) {
-                                  write(FIndicators.SYNC);
-                              }
+                                      write(FIndicators.SYNC);
+                                  }
                               });
     }
 
