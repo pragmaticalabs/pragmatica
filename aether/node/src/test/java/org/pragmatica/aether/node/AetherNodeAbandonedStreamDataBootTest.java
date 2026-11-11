@@ -61,7 +61,9 @@ class AetherNodeAbandonedStreamDataBootTest {
         var config = AetherNodeContentStorageWarnBootTest.minimalConfig(Option.none(),
                                                                         Option.none(),
                                                                         ConfigurationProvider.builder().build(),
-                                                                        tempDir);
+                                                                        Map.of("artifacts",
+                                                                               HermeticStorage.storageConfigAt(tempDir,
+                                                                                                               false)));
         var foreign = AetherNode.streamDataDir(config)
                                 .getParent()
                                 .resolve("node-from-the-previous-run")
