@@ -1,5 +1,10 @@
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.List;
+
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.Submitted;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.TxDraft;
 import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 
@@ -84,5 +89,72 @@ class WarningsPersistenceTest {
 
         assertThat(persisted(h)).isTrue();
         assertThat(h.submits(WARNINGS)).as("no third write once accepted").hasSize(2);
+    }
+
+    /// Red when: an accepted WARNINGS transaction does not update the mirror at once (before the applier's notification): the next reconcile
+    /// drafts the same write again. The acceptance is settled here without the commit, so only the acceptance can move the mirror.
+    @Test
+    void acceptedWarningsTransaction_updatesTheMirror_beforeTheNotification() {
+        var h = threeCores();
+
+        h.seedQuietly(new SliceTargetKey(ORDERS.base()), target(ORDERS, 2, 1, "NOWHERE"));
+        h.policy = FsmHarness.SettlePolicy.HOLD;
+        h.activate();
+        var first = h.submits(WARNINGS).getFirst();
+
+        h.settleHeld(first, new Settlement.Accepted());
+        h.deliver(new ClusterInput.Reconcile());
+
+        assertThat(h.submits(WARNINGS)).as("the accepted write is not drafted again").hasSize(1);
+    }
+
+    /// Red when: a second WARNINGS transaction is drafted while one is still in flight (the in-flight guard of `pending` / `draft`): the
+    /// reconcile marks the set dirty again, but the mirror still lacks the held write, so the same difference would be sent twice.
+    @Test
+    void warningsTransactionInFlight_isNotDraftedAgain() {
+        var h = threeCores();
+
+        h.seedQuietly(new SliceTargetKey(ORDERS.base()), target(ORDERS, 2, 1, "NOWHERE"));
+        h.policy = FsmHarness.SettlePolicy.HOLD;
+        h.activate();
+        h.deliver(new ClusterInput.Reconcile());
+        h.deliver(new ClusterInput.Reconcile());
+
+        assertThat(h.submits(WARNINGS)).as("one in flight, none drafted beside it").hasSize(1);
+    }
+
+    /// Red when: a step that changed nothing leaves the open set dirty (the clean-again clause of `noteRaised`): a no-op flush would be queued.
+    @Test
+    void stepThatChangesNothing_leavesTheOpenSetClean() {
+        var m = new ClusterModel();
+
+        m.warningsDirty = true;
+        Warnings.noteRaised(m, SurvivorPinSupport.ctx(1_000L, 0L));
+
+        assertThat(Warnings.pending(m)).isFalse();
+    }
+
+    /// Red when: a flush while suspended leaves the open set dirty (it would draft on the first flush after the resume without the reconcile).
+    @Test
+    void flushWhileSuspended_clearsTheDirtyMark() {
+        var m = new ClusterModel();
+
+        m.warningsDirty = true;
+        Outbox.flush(m, SurvivorPinSupport.ctx(1_000L, 0L), true);
+
+        assertThat(m.warningsDirty).isFalse();
+    }
+
+    /// Red when: a WARNINGS submission that expired (lost) does not mark the open set dirty, so only the next reconcile would write it again.
+    @Test
+    void expiredWarningsTransaction_marksTheOpenSetDirty() {
+        var m = new ClusterModel();
+        var draft = TxDraft.draft(WARNINGS, KEY, List.of());
+        var bound = SurvivorPinSupport.settings().submissionExpiry() * 1_000_000L;
+
+        m.submitted = m.submitted.put("c1", new Submitted("c1", WARNINGS, List.of(draft), 1L, LEADER, 5L));
+        Outbox.expire(m, SurvivorPinSupport.ctx(1_000L, 5L + bound));
+
+        assertThat(m.warningsDirty).isTrue();
     }
 }
