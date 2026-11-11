@@ -20,6 +20,7 @@ import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.consensus.topology.TopologyManager;
@@ -67,6 +68,7 @@ class ConsumerGroupRebalanceOrderTest {
         store = new KVStore<>(router, stubSerializer(), stubDeserializer());
         registry = ConsumerGroupRegistry.consumerGroupRegistry();
         router.addRoute(ValuePut.class, this::route);
+        router.addRoute(ValueRemove.class, this::routeRemove);
         coordinator = newCoordinator(1L);
     }
 
@@ -74,6 +76,13 @@ class ConsumerGroupRebalanceOrderTest {
     private void route(ValuePut<?, ?> event) {
         if (event.cause().key() instanceof ConsumerGroupKey) {
             registry.onConsumerGroupPut((ValuePut<ConsumerGroupKey, ConsumerGroupValue>) event);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void routeRemove(ValueRemove<?, ?> event) {
+        if (event.cause().key() instanceof ConsumerGroupKey) {
+            registry.onConsumerGroupRemove((ValueRemove<ConsumerGroupKey, ConsumerGroupValue>) event);
         }
     }
 
@@ -182,6 +191,80 @@ class ConsumerGroupRebalanceOrderTest {
             assertThat(committedOwners().values()).as("c1 left; the newest batch gives every partition to c2")
                                                   .containsOnly("c2")
                                                   .hasSize(PARTITIONS);
+        }
+    }
+
+    /// #2635: the last member leaving used to submit nothing, so the committed assignments kept naming it.
+    @Nested
+    class LastMemberLeaves {
+        @Test
+        void leaveGroup_lastMember_unassignsEveryCommittedPartition() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            commit(0);
+            assertThat(committedOwners().values()).as("precondition: c1 owns every partition").containsOnly("c1");
+
+            coordinator.leaveGroup(GROUP, STREAM, "c1")
+                       .onFailure(cause -> Assertions.fail("Expected success, got: " + cause.message()));
+            commit(1);
+
+            assertThat(committedOwners()).as("no committed assignment names the departed member").isEmpty();
+            assertThat(registry.assignmentsFor(GROUP, STREAM)).as("no ghost owner for status and metrics").isEmpty();
+            assertThat(registry.partitionsFor(GROUP, STREAM, NODE_A)).isEmpty();
+        }
+
+        @Test
+        void joinGroup_afterTheLastMemberLeft_receivesEveryPartition() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            commit(0);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+            commit(1);
+
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+            commit(2);
+
+            assertThat(committedOwners().values()).containsOnly("c2").hasSize(PARTITIONS);
+        }
+
+        @Test
+        void leaveGroup_lastMemberWithNothingCommitted_submitsNothing() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            held.clear();
+
+            coordinator.leaveGroup(GROUP, STREAM, "c1")
+                       .onFailure(cause -> Assertions.fail("Expected success, got: " + cause.message()));
+
+            assertThat(held).isEmpty();
+        }
+
+        /// The removal's witness carries the epoch it was minted under, so a removal committing AFTER a newer join's
+        /// assignments is refused by the applier instead of deleting them.
+        @Test
+        void leaveGroup_lastMember_staleRemovalCommittingAfterANewerJoinDoesNotDeleteIt() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            commit(0);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+
+            commit(2);
+            commit(1);
+
+            assertThat(committedOwners().values()).containsOnly("c2").hasSize(PARTITIONS);
+        }
+
+        @Test
+        void leaveGroup_lastMember_isRefusedLoudly_whenCommittedAssignmentsCarryANewerTerm() {
+            newCoordinator(2L).joinGroup(GROUP, STREAM, PARTITIONS, "c3", NODE_A);
+            commit(0);
+            held.clear();
+            var lagging = newCoordinator(1L);
+
+            lagging.joinGroup(GROUP, STREAM, PARTITIONS, "c4", NODE_B);
+            var result = lagging.leaveGroup(GROUP, STREAM, "c4");
+
+            result.onSuccess(_ -> Assertions.fail("a deposed leader must not clear a newer term's assignments"))
+                  .onFailure(cause -> assertThat(cause).isEqualTo(ConsumerGroupCoordinator.CoordinatorError.SUPERSEDED));
+            assertThat(held).isEmpty();
+            assertThat(committedOwners().values()).containsOnly("c3").hasSize(PARTITIONS);
         }
     }
 

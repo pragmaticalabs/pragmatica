@@ -188,9 +188,7 @@ public sealed interface ConsumerGroupCoordinator {
                 var memberList = members.getOrDefault(new GroupKey(groupId, streamName), List.of());
 
                 if (memberList.isEmpty()) {
-                    log.info("No consumers in group {}/{}, skipping rebalance", groupId, streamName);
-
-                    return Result.success(List.of());
+                    return clearAssignmentCommands(groupId, streamName);
                 }
 
                 var sorted = memberList.stream().sorted(Comparator.comparing(ConsumerMember::consumerId)).toList();
@@ -200,6 +198,26 @@ public sealed interface ConsumerGroupCoordinator {
                                                                                            partitionCount,
                                                                                            sorted,
                                                                                            epoch));
+            }
+
+            /// #2635: an empty group owns no partitions, so its committed assignments are removed under a freshly
+            /// minted epoch through the same refusal as a rebalance. The `Remove` carries a witness stamped with that
+            /// epoch: the applier admits it only when the witness is not older than the committed assignment, so a
+            /// removal derived before a newer rebalance can never delete that rebalance's assignments. A group with no
+            /// committed assignments mints nothing and submits nothing.
+            private Result<List<KVCommand<AetherKey>>> clearAssignmentCommands(String groupId, String streamName) {
+                var committed = registry.assignmentsFor(groupId, streamName);
+
+                if (committed.isEmpty()) {
+                    log.info("No consumers and no assignments in group {}/{}, nothing to clear", groupId, streamName);
+
+                    return Result.success(List.of());
+                }
+
+                return nextEpoch(groupId, streamName).map(epoch -> buildRemoveCommands(groupId,
+                                                                                       streamName,
+                                                                                       committed,
+                                                                                       epoch));
             }
 
             /// `(incarnation, term)` come from the leader, the counter from this activation. When the committed
@@ -272,7 +290,7 @@ public sealed interface ConsumerGroupCoordinator {
                     members.remove(key);
                     partitionCounts.remove(key);
 
-                    return Result.unitResult();
+                    return rebalance(groupId, streamName, 0);
                 }
 
                 return rebalanceFromMembers(groupId, streamName, memberList);
@@ -289,6 +307,28 @@ public sealed interface ConsumerGroupCoordinator {
                 }
 
                 return rebalance(groupId, streamName, partitionCount);
+            }
+
+            private static List<KVCommand<AetherKey>> buildRemoveCommands(String groupId,
+                                                                          String streamName,
+                                                                          Map<Integer, ConsumerGroupValue> committed,
+                                                                          Epoch epoch) {
+                return committed.entrySet()
+                                .stream()
+                                .<KVCommand<AetherKey>>map(entry -> removeCommand(groupId, streamName, entry, epoch))
+                                .toList();
+            }
+
+            private static KVCommand<AetherKey> removeCommand(String groupId,
+                                                              String streamName,
+                                                              Map.Entry<Integer, ConsumerGroupValue> entry,
+                                                              Epoch epoch) {
+                var key = ConsumerGroupKey.consumerGroupKey(groupId, streamName, entry.getKey());
+                var witness = ConsumerGroupValue.consumerGroupValue(entry.getValue().assignedTo(),
+                                                                    entry.getValue().consumerId(),
+                                                                    epoch);
+
+                return new KVCommand.Remove<>(key, Option.<Object>some(witness));
             }
 
             private static List<KVCommand<AetherKey>> buildAssignmentCommands(String groupId,
