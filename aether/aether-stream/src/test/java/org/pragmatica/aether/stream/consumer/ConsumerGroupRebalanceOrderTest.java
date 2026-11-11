@@ -253,6 +253,20 @@ class ConsumerGroupRebalanceOrderTest {
             assertThat(held).isEmpty();
         }
 
+        /// With no known partitions there is nothing to clear, so the leave mints nothing and cannot be refused for
+        /// a lagging term: the no-partition guard is what separates this from the refusal below.
+        @Test
+        void leaveGroup_unknownMember_withNoKnownPartitions_isNotRefusedByALaggingTerm() {
+            newCoordinator(2L).joinGroup(GROUP, STREAM, PARTITIONS, "c3", NODE_A);
+            commit(0);
+            held.clear();
+
+            var result = newCoordinator(1L).leaveGroup(GROUP, STREAM, "ghost");
+
+            result.onFailure(cause -> Assertions.fail("nothing to clear must not be refused: " + cause.message()));
+            assertThat(held).isEmpty();
+        }
+
         /// The tombstone is epoch-bearing, so it is overwritten by the next join and the group is owned again.
         @Test
         void joinGroup_afterTheLastMemberLeft_overwritesTheTombstonesEvenWhenCommittedInOrder() {
