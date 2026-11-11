@@ -149,6 +149,14 @@ class NodeIdRoutesTest {
     }
 
     @Test
+    void reserve_withNoPersistedConfigAndNoIdentities_startsAtOrdinalZero() {
+        var response = new Cluster(new TestKVStore()).reserve(SRC, "core", 2).unwrap();
+
+        assertThat(response.ids()).containsExactly("eu-core-0", "eu-core-1");
+        assertThat(response.highWater()).isEqualTo(1);
+    }
+
+    @Test
     void reserve_sourceAndRoleKeepSeparateHighWaters() {
         var cluster = new Cluster(3);
 
