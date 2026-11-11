@@ -49,4 +49,22 @@ class ClusterFsmRouterReconnectTest {
 
         assertThat(recording.events()).containsExactly(new ClusterFsmEvent.NodeAdded(PEER, VIEW));
     }
+
+    /// #2971: the observation's transport sequence rides onto the FSM event, so a view-replacing FSM can drop an
+    /// older view that arrives after a newer one.
+    @Test
+    void wire_carriesTheObservationSequence_onEveryViewCarryingObservation() {
+        var recording = new Recording(new CopyOnWriteArrayList<>());
+        var harness = FsmTestHarness.<Recording, ClusterFsmEvent>harness("router-sequence", recording);
+        var router = MessageRouter.mutable();
+
+        ClusterFsmRouter.wire(router, harness.fsm(), new AtomicLong());
+        router.route(TransportObservation.peerJoined(PEER, VIEW, ObservationSource.QUIC, 7L));
+        router.route(TransportObservation.peerDisconnected(PEER, VIEW, ObservationSource.QUIC, 8L));
+        router.route(TransportObservation.peerReconnected(PEER, VIEW, ObservationSource.QUIC, 9L));
+
+        assertThat(recording.events()).containsExactly(new ClusterFsmEvent.NodeAdded(PEER, VIEW, 7L),
+                                                       new ClusterFsmEvent.NodeGone(PEER, VIEW, 8L),
+                                                       new ClusterFsmEvent.NodeAdded(PEER, VIEW, 9L));
+    }
 }
