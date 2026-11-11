@@ -62,8 +62,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// "Written" means a `Put` of a `NodeArtifactKey` of this node after the removal (D2: a swept slice must not draw a FAILED write that resurrects the
 /// key). The design names `SliceNodeKey`; the deployment manager here writes `NodeArtifactKey`, and the check covers both key types.
 ///
-/// Arms B, C and F are RED at the base (gaps 1, 2 and 1-off-the-burst): each is pinned by an ENABLED tripwire asserting today's behaviour, with the
-/// real assertion `@Disabled` beside it; the C3 production work enables the real assertion and deletes the tripwire.
+/// Arms B and F (gap 1, on and off the burst path) were RED at the probe head 1d9732e247 and are GREEN since the root fix (design 4 rule 1).
+/// Arm C is RED at the base (gap 2): it is pinned by an ENABLED tripwire asserting today's behaviour, with the real assertion `@Disabled` beside
+/// it; the C3 sweep work enables the real assertion and deletes the tripwire.
 class FalseDeathWorkerCatchUpTest {
     private static final NodeId SELF = NodeId.nodeId("worker-1").unwrap();
     private static final NodeId CORE = NodeId.nodeId("core-1").unwrap();
@@ -224,16 +225,6 @@ class FalseDeathWorkerCatchUpTest {
     }
 
     @Test
-    void armB_tripwire_loadedSliceStaysLoadedToday() {
-        armBRun();
-
-        assertThat(sliceStore.loaded()).as("gap 1 is still open (a LOADED slice survives its replayed remove); when the root fix lands, "
-                                           + "enable armB_loadedSlice_isUnloaded and delete this tripwire").extracting(SliceStore.LoadedSlice::artifact)
-                                       .containsExactly(GONE);
-    }
-
-    @Test
-    @Disabled("C3 root fix (design 4 rule 1): enable when shouldForceCleanup becomes 'loaded locally'")
     void armB_loadedSlice_isUnloaded() {
         var mark = writesBefore();
 
@@ -320,17 +311,6 @@ class FalseDeathWorkerCatchUpTest {
     }
 
     @Test
-    void armF_tripwire_incrementalRemoveOfLoadedSlice_staysLoadedToday() {
-        armFRun();
-
-        assertThat(sliceStore.loaded()).as("gap 1 off the burst path is still open (a live remove of a LOADED slice leaves it loaded); when the "
-                                           + "root fix lands, enable armF_incrementalRemove_isUnloaded and delete this tripwire")
-                                       .extracting(SliceStore.LoadedSlice::artifact)
-                                       .containsExactly(GONE);
-    }
-
-    @Test
-    @Disabled("C3 root fix (design 4 rule 1, D5): enable when shouldForceCleanup becomes 'loaded locally'")
     void armF_incrementalRemove_isUnloaded() {
         var mark = writesBefore();
 

@@ -369,11 +369,11 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private void handleSliceValueRemove(SliceNodeKey sliceKey) {
             log.debug("ValueRemove received for key: {}", sliceKey);
-            var deployment = Option.option(deployments.remove(sliceKey));
+            deployments.remove(sliceKey);
 
             unpark(sliceKey, "the entry was removed");
             routingEpochAckTracker.clear(sliceKey);
-            if (shouldForceCleanup(deployment)) {
+            if (shouldForceCleanup(sliceKey)) {
                 forceCleanupSlice(sliceKey);
             }
         }
@@ -408,9 +408,11 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             }
         }
 
-        private boolean shouldForceCleanup(Option<SliceDeployment> deployment) {
-            return deployment.map(d -> d.state() == SliceState.ACTIVE)
-                             .or(false);
+        /// A removed entry forces cleanup whenever the slice is loaded locally, whatever its `deployments` state:
+        /// a LOADED, ACTIVATING or ROUTING slice would otherwise stay loaded after the leader removed it (#3028 gap 1),
+        /// on the replay-burst path and on the incremental `ReplicaApplier.accept` path alike.
+        private boolean shouldForceCleanup(SliceNodeKey sliceKey) {
+            return findLoadedSlice(sliceKey.artifact()).isPresent();
         }
 
         private void forceCleanupSlice(SliceNodeKey sliceKey) {
