@@ -16,6 +16,7 @@ import java.util.function.Supplier;
 import java.util.stream.IntStream;
 
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.generation.EpochMintError;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerGroupKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -222,7 +223,17 @@ public sealed interface ConsumerGroupCoordinator {
                 return nextEpoch(groupId, streamName).map(epoch -> buildTombstoneCommands(groupId,
                                                                                           streamName,
                                                                                           partitions,
-                                                                                          epoch));
+                                                                                          epoch))
+                                .fold(this::absorbUncommittedIncarnation, Result::success);
+            }
+
+            /// Design-out, not a fallback: until the life's incarnation commits every mint is refused, so no batch
+            /// of this group was ever submitted and nothing is in flight to fence. The leave still succeeds, as it
+            /// did before tombstones; any other refusal (a deposed leader, #2654's siblings) stays loud.
+            private Result<List<KVCommand<AetherKey>>> absorbUncommittedIncarnation(Cause cause) {
+                return cause == EpochMintError.General.INCARNATION_NOT_COMMITTED
+                       ? Result.success(List.of())
+                       : cause.result();
             }
 
             /// `(incarnation, term)` come from the leader, the counter from this activation. When the committed
