@@ -235,4 +235,23 @@ class SwimIsolationProbeTest {
         assertThat(transport.sent).as("a node that still holds peers pings them and does not announce")
                                   .noneMatch(entry -> entry.message() instanceof SwimMessage.Announce && entry.target().equals(seed));
     }
+
+    @Test
+    void isolationProbe_onlyAnUnprobableNonFaultyPeerHeld_noAnnounceToASeed() {
+        var seed = new InetSocketAddress("127.0.0.1", 9100);
+
+        protocol.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of(seed));
+        protocol.joinAcknowledgedForTest();
+        protocol.latchSelfIsolation(() -> true);
+        protocol.removeMemberForTest(NODE_A);
+        protocol.removeMemberForTest(NODE_B);
+        protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.UNKNOWN);
+        transport.sent.clear();
+
+        protocol.probeRoundForTest();
+        await().pollDelay(300, TimeUnit.MILLISECONDS).atMost(Duration.ofSeconds(1)).until(() -> true);
+
+        assertThat(transport.sent).as("a node that still holds a peer is not alone, so it does not announce")
+                                  .noneMatch(entry -> entry.message() instanceof SwimMessage.Announce && entry.target().equals(seed));
+    }
 }
