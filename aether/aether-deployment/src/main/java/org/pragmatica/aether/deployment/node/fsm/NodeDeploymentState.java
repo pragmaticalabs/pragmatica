@@ -370,7 +370,6 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         private void handleSliceValueRemove(SliceNodeKey sliceKey) {
             log.debug("ValueRemove received for key: {}", sliceKey);
             deployments.remove(sliceKey);
-
             unpark(sliceKey, "the entry was removed");
             routingEpochAckTracker.clear(sliceKey);
             if (shouldForceCleanup(sliceKey)) {
