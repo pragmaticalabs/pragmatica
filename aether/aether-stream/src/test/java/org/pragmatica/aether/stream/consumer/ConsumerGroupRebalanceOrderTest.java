@@ -231,6 +231,108 @@ class ConsumerGroupRebalanceOrderTest {
             assertThat(committedOwners().values()).containsOnly("c2").hasSize(PARTITIONS);
         }
 
+        /// v3025d probe D5: tombstone epoch OLDER than live assignments: a fresh activation must seed its mint from the
+        /// NEWEST committed epoch (assignments and tombstones alike), not the oldest.
+        @Test
+        void v3025d_tombstoneOlderThanLiveAssignments_freshActivationMintsAboveTheAssignments() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+            for (var name : List.of("c2", "c3", "c4")) {
+                coordinator.joinGroup(GROUP, STREAM, PARTITIONS, name, NODE_B);
+            }
+            for (var i = 0; i < held.size(); i++) {
+                commit(i);
+            }
+            var before = held.size();
+
+            newCoordinator(1L).joinGroup(GROUP, STREAM, PARTITIONS, "c5", NODE_A);
+            for (var i = before; i < held.size(); i++) {
+                commit(i);
+            }
+
+            assertThat(committedOwners().values()).as("c5 joined last and must own its share").contains("c5");
+        }
+
+        /// v3025d probe E1: the join request carries the partition count (StreamRoutes.JoinGroupRequest), so a later
+        /// join with a SMALLER count leaves the higher partitions' committed assignments outside 0..count-1; the last
+        /// leave must still release every committed assignment of the departed member.
+        @Test
+        void v3025d_countShrinksBeforeLastLeave_committedHigherPartitionsMustNotKeepTheOwner() {
+            coordinator.joinGroup(GROUP, STREAM, 8, "c1", NODE_A);
+            commit(0);
+            coordinator.joinGroup(GROUP, STREAM, 4, "c1", NODE_A);
+            commit(1);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+            commit(2);
+
+            assertThat(registry.assignmentsFor(GROUP, STREAM)).as("no committed assignment may name the departed c1")
+                                                              .isEmpty();
+        }
+
+        /// v3025d probe D1: a FRESH activation (counter 0, same term) joins after the tombstones committed: its mint
+        /// must start above the committed tombstone epoch (registry.committedEpoch), or its Puts are refused.
+        @Test
+        void v3025d_freshActivationSameTerm_joinAfterTombstones_ownsEveryPartition() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            commit(0);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+            commit(1);
+            var before = held.size();
+
+            newCoordinator(1L).joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+            for (var i = before; i < held.size(); i++) {
+                commit(i);
+            }
+
+            assertThat(committedOwners().values()).containsOnly("c2").hasSize(PARTITIONS);
+        }
+
+        /// v3025d probe D2: a newer term joins after tombstones.
+        @Test
+        void v3025d_newerTermJoinAfterTombstones_ownsEveryPartition() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            commit(0);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+            commit(1);
+            var before = held.size();
+
+            newCoordinator(2L).joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+            for (var i = before; i < held.size(); i++) {
+                commit(i);
+            }
+
+            assertThat(committedOwners().values()).containsOnly("c2").hasSize(PARTITIONS);
+        }
+
+        /// v3025d probe D3: join/leave/join/leave cycle, in order: second tombstone overwrites the assignments.
+        @Test
+        void v3025d_secondClearOverAnAssignmentsLayer_leavesNoOwner() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+            coordinator.leaveGroup(GROUP, STREAM, "c2");
+            for (var i = 0; i < held.size(); i++) {
+                commit(i);
+            }
+
+            assertThat(committedOwners()).isEmpty();
+            assertThat(registry.assignmentsFor(GROUP, STREAM)).isEmpty();
+        }
+
+        /// v3025d probe D4: the whole four-batch cycle committed in REVERSE order: last word (leave c2) wins.
+        @Test
+        void v3025d_fourBatchCycleCommittedInReverse_lastLeaveWins() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+            coordinator.leaveGroup(GROUP, STREAM, "c2");
+            for (var i = held.size() - 1; i >= 0; i--) {
+                commit(i);
+            }
+
+            assertThat(committedOwners()).isEmpty();
+        }
+
         /// Nothing committed yet is not nothing to fence: the join's batch is in flight, so the leave still writes a
         /// tombstone for every partition.
         @Test

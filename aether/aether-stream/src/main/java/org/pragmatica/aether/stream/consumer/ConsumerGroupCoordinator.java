@@ -8,6 +8,8 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.SortedSet;
+import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
@@ -207,12 +209,14 @@ public sealed interface ConsumerGroupCoordinator {
             /// writing a tombstone there (not only the committed ones: a join still in flight has committed nothing yet,
             /// and a rebalance batch derived earlier may commit after this one). The applier's `Put` fence refuses any
             /// assignment older than a committed tombstone, so the clear is the newest word whatever order batches
-            /// commit in; a later rebalance mints higher and overwrites the tombstones. A group with no known
-            /// partitions mints nothing and submits nothing.
+            /// commit in; a later rebalance mints higher and overwrites the tombstones. The partition count is
+            /// client-supplied per join, so the released set is `0..partitionCount-1` UNION the committed assignment
+            /// keys (a later, smaller-count join leaves higher partitions naming the departed member). A group with
+            /// no known partitions and no committed assignments mints nothing and submits nothing.
             private Result<List<KVCommand<AetherKey>>> clearAssignmentCommands(String groupId,
                                                                                String streamName,
                                                                                int partitionCount) {
-                var partitions = IntStream.range(0, partitionCount).boxed().toList();
+                var partitions = releasedPartitions(groupId, streamName, partitionCount);
 
                 if (partitions.isEmpty()) {
                     log.info("No consumers and no partitions in group {}/{}, nothing to clear", groupId, streamName);
@@ -225,6 +229,14 @@ public sealed interface ConsumerGroupCoordinator {
                                                                                           partitions,
                                                                                           epoch))
                                 .fold(this::absorbUncommittedIncarnation, Result::success);
+            }
+
+            private SortedSet<Integer> releasedPartitions(String groupId, String streamName, int partitionCount) {
+                var partitions = new TreeSet<Integer>(registry.assignmentsFor(groupId, streamName).keySet());
+
+                IntStream.range(0, partitionCount).forEach(partitions::add);
+
+                return partitions;
             }
 
             /// Design-out, not a fallback: until the life's incarnation commits every mint is refused, so no batch
@@ -320,7 +332,7 @@ public sealed interface ConsumerGroupCoordinator {
 
             private static List<KVCommand<AetherKey>> buildTombstoneCommands(String groupId,
                                                                              String streamName,
-                                                                             List<Integer> partitions,
+                                                                             SortedSet<Integer> partitions,
                                                                              Epoch epoch) {
                 var tombstone = ConsumerGroupTombstone.consumerGroupTombstone(epoch);
 
