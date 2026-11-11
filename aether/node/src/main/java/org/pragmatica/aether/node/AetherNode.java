@@ -3766,6 +3766,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                               Set::of,
                                                                                                               () -> deploymentMemberSources(membershipFsm),
                                                                                                               Map::of,
+                                                                                                              () -> installedVoterIds(clusterNode),
                                                                                                               () -> membershipFsm.memberDescriptors()
                                                                                                                                  .keySet(),
                                                                                                               admissionSeam::tokenOf),

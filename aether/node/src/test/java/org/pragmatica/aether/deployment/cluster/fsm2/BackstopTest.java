@@ -631,4 +631,37 @@ class BackstopTest {
         assertThat(w.counts(CORE_2)).isTrue();
         assertThat(w.h.warns("join-refused-process")).isEmpty();
     }
+
+    // #2887 (1): the boot topology snapshot lacks CORE_2 (cloud-discovery majority boot); consensus later installs it. Red when: classOf reads only
+    // the boot-time Settings.seedCores (the committedCores disjunct dropped): CORE_2 stays an unassigned worker, UNJUDGEABLE, rows never removed.
+    @Test
+    void seedCore_missingAtBoot_committedLater_departsBeforeActivation_rowsRemoved() {
+        var w = withoutCore2(departedSeedCore(Set.of(CORE_1))).seams(s -> s.withCommittedCores(Set.of(CORE_1, CORE_2)));
+
+        w.activate();
+        assertRecordedAfterBrm_andRowsRemoved(w);
+    }
+
+    // #2887 (2), leader change / restart: the new leader's first activation samples the committed voters fresh, and the dropped NodeRemoved
+    // edge (the departure preceded activation) is stood in for by the backstop. Red when: the class depended on state the old leader held.
+    @Test
+    void seedCore_missingAtBoot_newLeaderSamplesCommittedSet_droppedEdge_rowsRemoved() {
+        var w = departedSeedCore(Set.of(CORE_1));
+
+        withoutCore2(w).seams(s -> s.withCommittedCores(Set.of(CORE_1, CORE_2))).h.deliver(new ClusterInput.NodeRemoved(CORE_2));
+        w.activate();
+        assertThat(w.recordOf(CORE_2).isEmpty()).as("no departure record from the dropped edge").isTrue();
+        assertRecordedAfterBrm_andRowsRemoved(w);
+    }
+
+    // #2887 (3): a core that appears in the committed set only after activation is classed CORE from the next seam sample; before it, a worker.
+    @Test
+    void seedCore_missingAtBoot_classChangesWhenTheCommittedSetCatchesUp() {
+        var w = withoutCore2(departedSeedCore(Set.of(CORE_1)));
+
+        w.activate();
+        assertThat(Absence.classOf(w.h.model(), new Ctx(w.h.settings, w.h.wallMs, w.h.monoNs), CORE_2)).as("before").isEqualTo(Absence.NodeClass.UNASSIGNED_WORKER);
+        w.refreshSeams(s -> s.withCommittedCores(Set.of(CORE_1, CORE_2)));
+        assertThat(Absence.classOf(w.h.model(), new Ctx(w.h.settings, w.h.wallMs, w.h.monoNs), CORE_2)).as("after").isEqualTo(Absence.NodeClass.CORE);
+    }
 }
