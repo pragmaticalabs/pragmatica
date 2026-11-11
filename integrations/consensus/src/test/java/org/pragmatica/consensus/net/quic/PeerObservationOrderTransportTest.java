@@ -22,6 +22,7 @@ import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionState;
 import org.pragmatica.consensus.net.NetworkServiceMessage.Send;
 import org.pragmatica.consensus.net.quic.TransportTripwireFixtures.TripwireTopology;
+import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected;
 import org.pragmatica.consensus.topology.TransportObservation.PeerJoined;
 import org.pragmatica.consensus.topology.TransportObservation.PeerReconnected;
@@ -32,6 +33,7 @@ import org.pragmatica.messaging.MessageRouter;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -64,13 +66,14 @@ class PeerObservationOrderTransportTest {
     private final List<QuicClusterNetwork> networks = new ArrayList<>();
     private final CountDownLatch joinHeld = new CountDownLatch(1);
     private final CountDownLatch evictionHandled = new CountDownLatch(1);
+    private final CountDownLatch releaseJoin = new CountDownLatch(1);
     private final AtomicBoolean joinHandled = new AtomicBoolean();
     private final AtomicBoolean joinOutlivedTheGate = new AtomicBoolean();
     private FsmBackedLeaderManager manager;
 
     @AfterEach
     void tearDown() {
-        evictionHandled.countDown();
+        releaseJoin.countDown();
         if (manager != null) {
             manager.stop();
         }
@@ -78,15 +81,15 @@ class PeerObservationOrderTransportTest {
         networks.clear();
     }
 
-    /// Holds the leader's join on the dial thread until the eviction has been handled (or the gate times out, which the
-    /// test reports rather than hangs on).
+    /// Holds the leader's join on the dial thread until the test releases it, after the eviction has been handled and
+    /// checked (or until the gate times out, which the test reports rather than hangs on).
     private void holdTheLeaderJoin(PeerJoined joined) {
         if (!joined.nodeId().equals(LEADER)) {
             return;
         }
 
         joinHeld.countDown();
-        joinOutlivedTheGate.set(!awaitQuietly(evictionHandled));
+        joinOutlivedTheGate.set(!awaitQuietly(releaseJoin));
     }
 
     private static boolean awaitQuietly(CountDownLatch latch) {
@@ -148,12 +151,41 @@ class PeerObservationOrderTransportTest {
         follower.peerStateForTests(LEADER).evict(System.nanoTime()).onPresent(connection -> connection.close().await(AWAIT));
         assertThat(awaitQuietly(evictionHandled)).as("the eviction's PeerDisconnected was handled while the join was held").isTrue();
         assertThat(suspectsTheLeader()).as("control: the eviction removed the leader from the view; " + followerState()).isTrue();
+        assertThat(joinHandled.get()).as("control: the join is still held").isFalse();
+
+        releaseJoin.countDown();
 
         awaitTrue(joinHandled::get, AWAIT, () -> "the held join reached the manager after the eviction; " + followerState());
 
-        assertThat(joinOutlivedTheGate.get()).as("the join was released by the eviction, not by the gate's timeout").isFalse();
+        assertThat(joinOutlivedTheGate.get()).as("the join was released by the test, not by the gate's timeout").isFalse();
         assertThat(manager.context().currentTopology()).as("the late join's older view does not restore the evicted leader").doesNotContain(LEADER);
         assertThat(suspectsTheLeader()).as("the eviction wins: the follower still suspects the leader; " + followerState()).isTrue();
         assertThat(followsTheLeader()).as("control: pre-vote holds the follower in Led while it asks").isTrue();
+    }
+
+    /// The producer side of the fence: join, eviction and re-attach of one link each carry a transport sequence, above
+    /// [TransportObservation#NO_SEQUENCE] and increasing in transport order.
+    @Test
+    void processViewChange_stampsJoinEvictionAndReconnect_withIncreasingSequences() {
+        var followerRouter = MessageRouter.mutable();
+        var sequences = new CopyOnWriteArrayList<String>();
+
+        followerRouter.addRoute(PeerJoined.class, (Consumer<PeerJoined>) joined -> sequences.add("joined:" + joined.sequence()));
+        followerRouter.addRoute(PeerDisconnected.class, (Consumer<PeerDisconnected>) gone -> sequences.add("disconnected:" + gone.sequence()));
+        followerRouter.addRoute(PeerReconnected.class, (Consumer<PeerReconnected>) back -> sequences.add("reconnected:" + back.sequence()));
+        followerRouter.addRoute(Send.class, (Consumer<Send>) _ -> {});
+        var follower = startedNetwork(new TripwireTopology(FOLLOWER, false, TimeSpan.timeSpan(30).seconds()), followerRouter, networks);
+        var leader = startedNetwork(new TripwireTopology(LEADER, false, TimeSpan.timeSpan(30).seconds()), MessageRouter.mutable(), networks);
+        var leaderInfo = infoOf(LEADER, leader);
+
+        follower.dialForTests(leaderInfo, false);
+        awaitTrue(() -> sequences.size() == 1, AWAIT, () -> "the join was observed; " + sequences);
+        follower.peerStateForTests(LEADER).evict(System.nanoTime()).onPresent(connection -> connection.close().await(AWAIT));
+        awaitTrue(() -> sequences.size() == 2, AWAIT, () -> "the eviction was observed; " + sequences);
+        awaitTrue(() -> !connected(leader, FOLLOWER), AWAIT, () -> "the leader noticed the closed link; " + sequences);
+        follower.dialForTests(leaderInfo, false);
+        awaitTrue(() -> sequences.size() == 3, AWAIT, () -> "the re-attach was observed; " + sequences);
+
+        assertThat(sequences).as("one link's transport-ordered observations").containsExactly("joined:1", "disconnected:2", "reconnected:3");
     }
 }
