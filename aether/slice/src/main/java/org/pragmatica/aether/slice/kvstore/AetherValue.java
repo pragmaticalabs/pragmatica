@@ -3063,6 +3063,26 @@ public sealed interface AetherValue {
         }
     }
 
+    /// #2635: the empty group's release of one partition. An absent key cannot refuse a stale `Put` (the applier's fence
+    /// compares only against a committed value), so a rebalance batch derived before the last member left, committing
+    /// after the clear, would resurrect the departed owner. The clear therefore WRITES this value at its freshly minted
+    /// epoch for every partition: it shares [ConsumerGroupValue]'s fence kind (an `Epoch`), so the applier refuses any
+    /// older assignment `Put` over it, and the registry reads it as "no owner". It is reclaimed by the next rebalance of
+    /// the group, which mints a higher epoch and overwrites it; a group that never rebalances again keeps one such
+    /// entry per partition.
+    ///
+    /// @param epoch the clear this tombstone belongs to; strictly newer than every assignment it releases
+    record ConsumerGroupTombstone(Epoch epoch) implements AetherValue, EpochBearing<Epoch> {
+        @Override
+        public Epoch fenceEpoch() {
+            return epoch;
+        }
+
+        public static ConsumerGroupTombstone consumerGroupTombstone(Epoch epoch) {
+            return new ConsumerGroupTombstone(epoch);
+        }
+    }
+
     /// #1278: fenced on the stream's incarnation ([IncarnationFenced]), so while a life of the name is committed no
     /// other life can commit over it — concurrent first creates resolve first-wins, and a recreate commits only after
     /// the removal of the old life has applied.

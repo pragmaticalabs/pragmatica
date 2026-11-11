@@ -32,7 +32,13 @@ public final class FactoryGenerator {
                              boolean needsMapper,
                              Option<JavaTypeAccessor.AccessorInfo> scalarAccessor,
                              Option<MapperColumn> documentColumn,
-                             Option<String> scalarColumn) {}
+                             Option<String> scalarColumn,
+                             boolean fallibleRecordFactory) {
+        /// The type-named static factory the row mapper builds the result record through.
+        BatchedAllRenderer.Factory recordFactory() {
+            return BatchedAllRenderer.Factory.factory(innerTypeName, fallibleRecordFactory);
+        }
+    }
 
     public record MethodParam(String name, String typeName, String accessor) {
         public static MethodParam simple(String name, String typeName) {
@@ -311,14 +317,15 @@ public final class FactoryGenerator {
     /// A single-column record maps its one decoded value directly; wrapping it in `Result.all`
     /// would bury a value-object decode failure inside an accumulating composite cause, hiding the
     /// typed `RowDecode`. Multi-column records use `Result.all` so every column's decode failure is
-    /// collected.
+    /// collected. Either way the record is built through its type-named static factory, never `new`: a
+    /// fallible factory (returning `Result`) is joined with `flatMap`, so its failure is the query's failure.
     private static void appendMapperBody(StringBuilder sb, MethodInfo method) {
         var columns = method.mapperColumns;
 
         if (columns.size() == 1) {
             sb.append("        return ");
             appendColumnExpr(sb, columns.getFirst());
-            sb.append(".map(").append(method.innerTypeName).append("::new);\n");
+            appendFactoryJoin(sb, method.recordFactory());
 
             return;
         }
@@ -329,7 +336,17 @@ public final class FactoryGenerator {
             exprs.add(columnExpr(column));
         }
 
-        BatchedAllRenderer.appendReturn(sb, "Result", method.innerTypeName, exprs, "        ");
+        BatchedAllRenderer.appendReturn(sb, "Result", method.recordFactory(), exprs, "        ");
+    }
+
+    private static void appendFactoryJoin(StringBuilder sb, BatchedAllRenderer.Factory factory) {
+        sb.append(factory.fallible()
+                  ? ".flatMap("
+                  : ".map(")
+          .append(factory.typeName())
+          .append("::")
+          .append(factory.methodName())
+          .append(");\n");
     }
 
     private static String columnExpr(MapperColumn col) {

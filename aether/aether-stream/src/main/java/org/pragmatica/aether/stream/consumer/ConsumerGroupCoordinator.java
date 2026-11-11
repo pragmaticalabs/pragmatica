@@ -8,16 +8,21 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.SortedSet;
+import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
+import java.util.stream.IntStream;
 
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.generation.EpochMintError;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerGroupKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerGroupTombstone;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerGroupValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -188,9 +193,7 @@ public sealed interface ConsumerGroupCoordinator {
                 var memberList = members.getOrDefault(new GroupKey(groupId, streamName), List.of());
 
                 if (memberList.isEmpty()) {
-                    log.info("No consumers in group {}/{}, skipping rebalance", groupId, streamName);
-
-                    return Result.success(List.of());
+                    return clearAssignmentCommands(groupId, streamName, partitionCount);
                 }
 
                 var sorted = memberList.stream().sorted(Comparator.comparing(ConsumerMember::consumerId)).toList();
@@ -200,6 +203,49 @@ public sealed interface ConsumerGroupCoordinator {
                                                                                            partitionCount,
                                                                                            sorted,
                                                                                            epoch));
+            }
+
+            /// #2635: an empty group owns no partitions, so EVERY partition is released under a freshly minted epoch by
+            /// writing a tombstone there (not only the committed ones: a join still in flight has committed nothing yet,
+            /// and a rebalance batch derived earlier may commit after this one). The applier's `Put` fence refuses any
+            /// assignment older than a committed tombstone, so the clear is the newest word whatever order batches
+            /// commit in; a later rebalance mints higher and overwrites the tombstones. The partition count is
+            /// client-supplied per join, so the released set is `0..partitionCount-1` UNION the committed assignment
+            /// keys (a later, smaller-count join leaves higher partitions naming the departed member). A group with
+            /// no known partitions and no committed assignments mints nothing and submits nothing.
+            private Result<List<KVCommand<AetherKey>>> clearAssignmentCommands(String groupId,
+                                                                               String streamName,
+                                                                               int partitionCount) {
+                var partitions = releasedPartitions(groupId, streamName, partitionCount);
+
+                if (partitions.isEmpty()) {
+                    log.info("No consumers and no partitions in group {}/{}, nothing to clear", groupId, streamName);
+
+                    return Result.success(List.of());
+                }
+
+                return nextEpoch(groupId, streamName).map(epoch -> buildTombstoneCommands(groupId,
+                                                                                          streamName,
+                                                                                          partitions,
+                                                                                          epoch))
+                                .fold(this::absorbUncommittedIncarnation, Result::success);
+            }
+
+            private SortedSet<Integer> releasedPartitions(String groupId, String streamName, int partitionCount) {
+                var partitions = new TreeSet<Integer>(registry.assignmentsFor(groupId, streamName).keySet());
+
+                IntStream.range(0, partitionCount).forEach(partitions::add);
+
+                return partitions;
+            }
+
+            /// Design-out, not a fallback: until the life's incarnation commits every mint is refused, so no batch
+            /// of this group was ever submitted and nothing is in flight to fence. The leave still succeeds, as it
+            /// did before tombstones; any other refusal (a deposed leader, #2654's siblings) stays loud.
+            private Result<List<KVCommand<AetherKey>>> absorbUncommittedIncarnation(Cause cause) {
+                return cause == EpochMintError.General.INCARNATION_NOT_COMMITTED
+                       ? Result.success(List.of())
+                       : cause.result();
             }
 
             /// `(incarnation, term)` come from the leader, the counter from this activation. When the committed
@@ -218,7 +264,7 @@ public sealed interface ConsumerGroupCoordinator {
             }
 
             private Result<Epoch> nextEpochFrom(String groupId, String streamName, Epoch base) {
-                var committed = committedEpoch(groupId, streamName);
+                var committed = registry.committedEpoch(groupId, streamName);
                 var seeded = committed.filter(c -> sameTerm(c, base)).map(Epoch::localCounter).or(0L);
                 var candidate = base.withCounter(Math.max(counter.get(), seeded) + 1);
 
@@ -239,14 +285,6 @@ public sealed interface ConsumerGroupCoordinator {
 
             private static boolean sameTerm(Epoch committed, Epoch base) {
                 return committed.incarnation() == base.incarnation() && committed.rabiaTerm() == base.rabiaTerm();
-            }
-
-            private Option<Epoch> committedEpoch(String groupId, String streamName) {
-                return Option.from(registry.assignmentsFor(groupId, streamName)
-                                           .values()
-                                           .stream()
-                                           .map(ConsumerGroupValue::epoch)
-                                           .max(Comparator.naturalOrder()));
             }
 
             private static void addGroupStatusIfMatching(Map<String, List<ConsumerInfo>> result,
@@ -270,9 +308,10 @@ public sealed interface ConsumerGroupCoordinator {
                                           .equals(consumerId));
                 if (memberList.isEmpty()) {
                     members.remove(key);
-                    partitionCounts.remove(key);
 
-                    return Result.unitResult();
+                    return rebalance(groupId,
+                                     streamName,
+                                     option(partitionCounts.remove(key)).or(0));
                 }
 
                 return rebalanceFromMembers(groupId, streamName, memberList);
@@ -289,6 +328,26 @@ public sealed interface ConsumerGroupCoordinator {
                 }
 
                 return rebalance(groupId, streamName, partitionCount);
+            }
+
+            private static List<KVCommand<AetherKey>> buildTombstoneCommands(String groupId,
+                                                                             String streamName,
+                                                                             SortedSet<Integer> partitions,
+                                                                             Epoch epoch) {
+                var tombstone = ConsumerGroupTombstone.consumerGroupTombstone(epoch);
+
+                return partitions.stream()
+                                 .map(partition -> tombstoneCommand(groupId, streamName, partition, tombstone))
+                                 .toList();
+            }
+
+            private static KVCommand<AetherKey> tombstoneCommand(String groupId,
+                                                                 String streamName,
+                                                                 int partition,
+                                                                 ConsumerGroupTombstone tombstone) {
+                var key = ConsumerGroupKey.consumerGroupKey(groupId, streamName, partition);
+
+                return new KVCommand.Put<AetherKey, AetherValue>(key, tombstone);
             }
 
             private static List<KVCommand<AetherKey>> buildAssignmentCommands(String groupId,
