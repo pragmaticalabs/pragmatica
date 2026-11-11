@@ -56,7 +56,7 @@ public record EmberPortAllocator(Path lockDir,
     /// A started cluster and the claim that must stay open as long as it runs.
     public record Started<C>(C cluster, PortClaim claim) {
         public static <C> Started<C> started(C cluster, PortClaim claim) {
-            return Started.started(cluster, claim);
+            return new Started<>(cluster, claim);
         }
     }
 
