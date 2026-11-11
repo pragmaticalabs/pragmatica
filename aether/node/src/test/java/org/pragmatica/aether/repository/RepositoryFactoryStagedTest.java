@@ -5,6 +5,7 @@
 package org.pragmatica.aether.repository;
 
 import java.io.IOException;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -65,7 +66,7 @@ class RepositoryFactoryStagedTest {
         var located = nodeRepositories().locate(MODULE).await();
 
         assertThat(located.isSuccess()).isTrue();
-        assertThat(urlOf(located)).startsWith(staged.toUri().toString());
+        assertThat(pathOf(located)).startsWith(staged);
     }
 
     @Test
@@ -92,7 +93,7 @@ class RepositoryFactoryStagedTest {
         var located = nodeRepositories().locate(MODULE, "sources").await();
 
         assertThat(located.isSuccess()).isTrue();
-        assertThat(urlOf(located)).startsWith(staged.toUri().toString());
+        assertThat(pathOf(located)).startsWith(staged);
     }
 
     @Test
@@ -101,7 +102,7 @@ class RepositoryFactoryStagedTest {
         var located = nodeRepositories().locate(FOREIGN).await();
 
         assertThat(located.isSuccess()).isTrue();
-        assertThat(urlOf(located)).startsWith(mavenLocal.toUri().toString());
+        assertThat(pathOf(located)).startsWith(mavenLocal);
     }
 
     @Test
@@ -119,10 +120,9 @@ class RepositoryFactoryStagedTest {
                                                                                                            Set.of(MODULE)))));
     }
 
-    private static String urlOf(Result<Location> located) {
-        return located.fold(cause -> "failure: " + cause.message(),
-                            location -> location.url()
-                                                .toString());
+    private static Path pathOf(Result<Location> located) {
+        return located.fold(cause -> Path.of("failure: " + cause.message()),
+                            location -> Path.of(URI.create(location.url().toString())));
     }
 
     private static Artifact coordinate(String text) {
