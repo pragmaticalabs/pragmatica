@@ -10,7 +10,6 @@ import org.pragmatica.lang.Verify;
 /// Query-only request record whose factory rejects a blank tag (#3019).
 public record QueryItemRequest(String tag) {
     public static Result<QueryItemRequest> queryItemRequest(String tag) {
-        return Result.all(Verify.ensure(tag, Verify.Is::present))
-                     .map(QueryItemRequest::new);
+        return Result.all(Verify.ensure(tag, Verify.Is::present)).map(QueryItemRequest::new);
     }
 }
