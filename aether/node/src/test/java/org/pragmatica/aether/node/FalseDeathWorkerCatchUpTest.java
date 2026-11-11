@@ -217,18 +217,16 @@ class FalseDeathWorkerCatchUpTest {
 
     // --- Arm B: LOADED slice (gap 1) ---
 
-    private void armBRun() {
-        assign(GONE, SliceState.LOAD);
-        resync();
-        leaderRemoves(GONE);
-        resync();
-    }
-
+    /// The mark is taken after the slice's own load writes (LOADING, LOADED) and before the removal, as in arm A: D2 is about what the
+    /// worker writes once the leader removed the slice.
     @Test
     void armB_loadedSlice_isUnloaded() {
+        assign(GONE, SliceState.LOAD);
+        resync();
         var mark = writesBefore();
 
-        armBRun();
+        leaderRemoves(GONE);
+        resync();
 
         assertUnloadedAndQuiet(GONE, mark);
     }
@@ -304,17 +302,14 @@ class FalseDeathWorkerCatchUpTest {
 
     // --- Arm F (D5): incremental accept of a remove for a LOADED slice, no burst ---
 
-    private void armFRun() {
-        assign(GONE, SliceState.LOAD);
-        resync();
-        feed(new KVCommand.Remove<AetherKey>(NodeArtifactKey.nodeArtifactKey(SELF, GONE)));
-    }
-
+    /// The mark sits after the slice's own load writes and before the live remove, as in arm B.
     @Test
     void armF_incrementalRemove_isUnloaded() {
+        assign(GONE, SliceState.LOAD);
+        resync();
         var mark = writesBefore();
 
-        armFRun();
+        feed(new KVCommand.Remove<AetherKey>(NodeArtifactKey.nodeArtifactKey(SELF, GONE)));
 
         assertUnloadedAndQuiet(GONE, mark);
     }
