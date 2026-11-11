@@ -215,6 +215,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$NodeArtifactKey (nodeId:org.
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$NodeDepartureKey (nodeId:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$NodeIdHighWaterKey (source:java.lang.String,role:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$NodeIdentityKey (nodeId:org.pragmatica.consensus.NodeId)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$NodeLeaseKey (nodeId:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$NodePlacementKey (nodeId:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$NodeReplacementKey (original:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$NodeRoutesKey (nodeId:org.pragmatica.consensus.NodeId,artifact:org.pragmatica.aether.artifact.Artifact)
@@ -299,6 +300,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$LogLevelValue (loggerName:
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodeArtifactValue (state:org.pragmatica.aether.slice.SliceState,failureReason:org.pragmatica.lang.Option<java.lang.String>,fatal:boolean,instanceNumber:int,methods:java.util.List<java.lang.String>,transitionedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodeDepartureValue (state:org.pragmatica.aether.slice.kvstore.AetherValue$DepartureState,epoch:long,process:org.pragmatica.aether.slice.kvstore.AetherValue$ProcessIncarnation,cause:org.pragmatica.lang.Option<org.pragmatica.aether.slice.kvstore.AetherValue$DepartureCause>,decidedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodeIdHighWaterValue (highWater:int)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodeLeaseValue (seq:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodeLifecycleValue (identity:org.pragmatica.lang.Option<org.pragmatica.aether.slice.kvstore.AetherValue$IdentityFacet>,capacity:org.pragmatica.lang.Option<org.pragmatica.aether.slice.kvstore.AetherValue$CapacityFacet>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodePlacementValue (sourceName:java.lang.String,observedZone:org.pragmatica.lang.Option<java.lang.String>,providerInstanceId:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodeReplacementValue (replacement:org.pragmatica.consensus.NodeId,role:java.lang.String,phase:org.pragmatica.aether.slice.kvstore.AetherValue$NodeReplacementPhase,phaseDeadlineMs:long,source:java.lang.String,targetVersion:java.lang.String,mode:java.lang.String,attempt:int,reason:java.lang.String,epoch:long)
@@ -664,6 +666,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherKey$NodeArtifactKey 1113
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$NodeDepartureKey 2147
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$NodeIdHighWaterKey 2904
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$NodeIdentityKey 2193
+TAG  org.pragmatica.aether.slice.kvstore.AetherKey$NodeLeaseKey 2910
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$NodePlacementKey 1676
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$NodeReplacementKey 2129
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$NodeRoutesKey 1114
@@ -760,6 +763,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$LogLevelValue 1626
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$NodeArtifactValue 1627
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$NodeDepartureValue 2152
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$NodeIdHighWaterValue 2905
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$NodeLeaseValue 2911
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$NodeLifecycleValue 2194
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$NodePlacementValue 1677
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$NodeReplacementPhase 2131

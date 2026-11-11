@@ -774,6 +774,15 @@ public sealed interface AetherValue {
         }
     }
 
+    /// One node lease renewal (#2981 §2.1), stored under [AetherKey.NodeLeaseKey]. `seq` rises with every renewal the node
+    /// submits, so no two renewals are content-identical and none merges with another; the submitter matches the delivered
+    /// `seq` against the renewals it has in flight to learn which submission time the delivery anchors.
+    record NodeLeaseValue(long seq) implements AetherValue {
+        public static NodeLeaseValue nodeLeaseValue(long seq) {
+            return new NodeLeaseValue(seq);
+        }
+    }
+
     /// The operator's pause of one scheduled task, stored under [AetherKey.ScheduledTaskPauseKey]. Its
     /// presence is the pause; `pausedAt` records when, for the operator.
     record ScheduledTaskPauseValue(long pausedAt) implements AetherValue {

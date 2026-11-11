@@ -779,6 +779,9 @@ public interface SystemTags {
         pin(table, 2905, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeIdHighWaterValue");
         // #2635: the empty consumer group's per-partition tombstone, inside the fix2635 reservation 2900..2901.
         pin(table, 2900, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerGroupTombstone");
+        // #2981 step 1: the node lease renewal row. Inside the impl2981s1 reservation 2910..2911 of wire-tag-ranges.txt.
+        pin(table, 2910, "org.pragmatica.aether.slice.kvstore.AetherKey.NodeLeaseKey");
+        pin(table, 2911, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeLeaseValue");
         // ---- unpinned numbers up to 16383 RESERVED: reserve a range in wire-tag-ranges.txt first ----
         rejectDuplicateTags(table);
 
