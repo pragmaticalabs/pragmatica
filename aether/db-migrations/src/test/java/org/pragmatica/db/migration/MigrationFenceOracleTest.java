@@ -32,7 +32,8 @@ import static org.pragmatica.aether.resource.db.DatabaseConnectorConfig.database
 @Tag("heavy-db")
 class MigrationFenceOracleTest extends LiveMigrateFenceContract {
     private static final String BOOTSTRAP_DEFECT = "Oracle's history bootstrap (`DEFAULT 'VERSIONED' NOT NULL` written NOT NULL first) is refused with ORA-03076:"
-                                                   + " pre-existing, not part of #2591; enable when the bootstrap is fixed";
+                                                   + " pre-existing, not part of #2591;"
+                                                   + " #3069: enable when migrate_freshSchema_failsOnTheHistoryBootstrap_ORA03076 stops seeing ORA-03076";
 
     private static final AtomicInteger USERS = new AtomicInteger();
     private static final String PASSWORD = "fencepw";
@@ -65,7 +66,10 @@ class MigrationFenceOracleTest extends LiveMigrateFenceContract {
 
         var result = migrate(connector(2), "node-a", script(1, "ok", APPLY_SCRIPT));
 
-        assertThat(causeOf(result).message()).as("the failure is the bootstrap DDL, not the fence").contains("ORA-03076");
+        assertThat(causeOf(result).message()).as("#3069: Oracle history bootstrap fails with ORA-03076; when this passes without the error, delete this tripwire"
+                                                                  + " and enable migrate_leavesNoFenceBehind_onSuccessAndOnFailure,"
+                                                                  + " migrate_twoConcurrentRunners_applyTheScriptExactlyOnce,"
+                                                                  + " migrate_fenceSurvivesTheRunnersOwnCommits_competitorIsFencedMidRun").contains("ORA-03076");
     }
 
     @Disabled(BOOTSTRAP_DEFECT)
