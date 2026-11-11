@@ -8,18 +8,13 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.logging.log4j.Level;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.core.LogEvent;
-import org.apache.logging.log4j.core.LoggerContext;
-import org.apache.logging.log4j.core.appender.AbstractAppender;
-import org.apache.logging.log4j.core.config.Property;
+import org.pragmatica.testlogging.LogCapture;
 import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
@@ -286,35 +281,17 @@ class AbandonedStreamDataTest {
     @Test
     void cleanBootWithoutMarker_logsNoWarning() throws Exception {
         var segments = root.resolve("stream-segments");
-        var warns = new ArrayList<String>();
-        var context = (LoggerContext) LogManager.getContext(false);
-        var loggerConfig = context.getConfiguration().getLoggerConfig(AbandonedStreamData.class.getName());
-        var appender = new AbstractAppender("cleanBootProbe", null, null, true, Property.EMPTY_ARRAY) {
-            @Override
-            public void append(LogEvent event) {
-                if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
-                    warns.add(event.getMessage().getFormattedMessage());
-                }
-            }
-        };
 
         Files.createDirectories(segments);
-        appender.start();
-        loggerConfig.addAppender(appender, null, null);
-        context.updateLoggers();
-        try {
+        try (var capture = LogCapture.capture(AbandonedStreamData.class, Level.WARN, true)) {
             AbandonedStreamData.check(sink,
                                       segments.resolve(SELF),
                                       segments.resolve(SELF).resolve("wal"),
                                       SELF);
-        } finally {
-            loggerConfig.removeAppender(appender.getName());
-            context.updateLoggers();
-            appender.stop();
-        }
 
-        assertNothingRaised();
-        assertThat(warns).as("WARN lines on a clean boot without a marker").isEmpty();
+            assertNothingRaised();
+            assertThat(capture.messages()).as("WARN lines on a clean boot without a marker").isEmpty();
+        }
     }
 
     private OperatorWarning next() throws InterruptedException {
