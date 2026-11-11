@@ -36,6 +36,19 @@
             <version>${project.version}</version>
             <scope>test</scope>
         </dependency>
+        <!-- FDB-2b (#2591): H2 (T12, tier 1 via SET EXCLUSIVE) and SQLite (T6, T8, T8b, tier 3) run in-JVM. TEST scope only. -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <version>2.4.240</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.xerial</groupId>
+            <artifactId>sqlite-jdbc</artifactId>
+            <version>3.54.1.0</version>
+            <scope>test</scope>
+        </dependency>
         <!-- the transports declare their pools optional: a test that provisions them supplies the pools -->
         <dependency>
             <groupId>com.zaxxer</groupId>

@@ -5,6 +5,7 @@ package org.pragmatica.db.migration;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -67,14 +68,16 @@ class MigrationFenceTest {
             assertThat(cause.message()).contains("pid=7");
         }
 
-        /// The engine is probed, not trusted: CockroachDB configured as PostgreSQL gets no tier-1 lock (FDB-2b gives it
-        /// the tier-3 one).
+        /// The engine is probed, not trusted: CockroachDB configured as PostgreSQL gets no advisory lock but the tier-3
+        /// per-script lock (FDB-2b, mutant M7: without the probe the PostgreSQL fence is taken).
         @Test
-        void acquire_cockroachBehindAPostgresConfig_takesNoAdvisoryLock() {
+        void acquire_cockroachBehindAPostgresConfig_takesTheTierThreeLockNotAnAdvisoryLock() {
             var session = new ScriptedSession(DatabaseType.POSTGRESQL, Map.of("version()", row("v", "CockroachDB CCL v23.1.11")));
 
-            assertThat(MigrationFence.acquire(session, "ds", "node-1").await().isSuccess()).isTrue();
+            var fence = MigrationFence.acquire(session, "ds", "node-1").await().unwrap();
+
             assertThat(session.statements).noneMatch(sql -> sql.contains("pg_try_advisory_lock"));
+            assertThat(fence.scriptLock().map(MigrationFence.ScriptLock::statement)).isEqualTo(some("SELECT 1 FROM aether_schema_owner FOR UPDATE"));
         }
 
         /// FDB-2a fix round 1 (A1): `pg_try_advisory_lock` is re-entrant, so a server session that already holds the
@@ -180,11 +183,16 @@ class MigrationFenceTest {
 
         /// F1: MariaDB is a tier-1 engine; F3: acquire on a MariaDB session takes the MySQL lock.
         @Test
-        void isTierOne_mariadb_isTrue() {
-            assertThat(MigrationFence.isTierOne(DatabaseType.MARIADB)).isTrue();
-            assertThat(MigrationFence.isTierOne(DatabaseType.MYSQL)).isTrue();
-            assertThat(MigrationFence.isTierOne(DatabaseType.POSTGRESQL)).isTrue();
-            assertThat(MigrationFence.isTierOne(DatabaseType.H2)).isFalse();
+        void isSessionFenced_byEngine_matchesTheTierTable() {
+            assertThat(MigrationFence.isSessionFenced(DatabaseType.MARIADB)).isTrue();
+            assertThat(MigrationFence.isSessionFenced(DatabaseType.MYSQL)).isTrue();
+            assertThat(MigrationFence.isSessionFenced(DatabaseType.POSTGRESQL)).isTrue();
+            assertThat(MigrationFence.isSessionFenced(DatabaseType.H2)).isTrue();
+            assertThat(MigrationFence.isSessionFenced(DatabaseType.SQLSERVER)).isTrue();
+            assertThat(MigrationFence.isSessionFenced(DatabaseType.ORACLE)).isTrue();
+            assertThat(MigrationFence.isSessionFenced(DatabaseType.COCKROACHDB)).isFalse();
+            assertThat(MigrationFence.isSessionFenced(DatabaseType.DB2)).isFalse();
+            assertThat(MigrationFence.isSessionFenced(DatabaseType.SQLITE)).isFalse();
         }
 
         @Test
@@ -236,9 +244,9 @@ class MigrationFenceTest {
             assertThat(firstHistory).as("history touched only after the fence is verified").isGreaterThan(verified);
         }
 
-        /// FDB-2a scope: an engine without a tier-1 fence keeps today's path and never asks for a pinned session.
+        /// FDB-2a scope: a tier-3 engine (per-script lock) never asks for a pinned session.
         @Test
-        void migrate_onAnEngineWithoutATierOneFence_neverPins() {
+        void migrate_onATierThreeEngine_neverPins() {
             var session = new ScriptedSession(DatabaseType.SQLITE, Map.of());
 
             SchemaMigrations.schemaMigrations(timeSpan(1).minutes())
@@ -453,6 +461,119 @@ class MigrationFenceTest {
 
     /// An in-memory session that records every statement and answers the fence's statements as an uncontended
     /// database would, unless an override (matched by SQL fragment) says otherwise.
+    /// FDB-2b: tier 2 (SQL Server, Oracle) and H2 take a session fence; their statements are pinned here against a
+    /// scripted session, the live engines being nightly heavy-db `[unverified engine]`.
+    @Nested
+    class TierTwo {
+        @Test
+        void acquire_sqlServerLockGranted_takesAnExclusiveSessionOwnedApplock() {
+            var session = new ScriptedSession(DatabaseType.SQLSERVER, Map.of());
+
+            var fence = MigrationFence.acquire(session, "ds", "node-1").await();
+
+            assertThat(fence.unwrap()).isInstanceOf(MigrationFence.SqlServerFence.class);
+            assertThat(session.statements).anyMatch(sql -> sql.contains("sp_getapplock") && sql.contains("'Session'") && sql.contains("@LockTimeout = 0"));
+        }
+
+        @Test
+        void acquire_sqlServerLockNotGranted_isFencedNamingTheHolder() {
+            var session = new ScriptedSession(DatabaseType.SQLSERVER,
+                                              Map.of("sp_getapplock", row("granted", -1),
+                                                     "AS holder", row("holder", "session_id=55, program=aether")));
+
+            var cause = causeOf(MigrationFence.acquire(session, "ds", "node-1").await());
+
+            assertThat(cause).isInstanceOf(MigrationError.MigrationFencedInDatabase.class);
+            assertThat(cause.message()).contains("session_id=55");
+        }
+
+        @Test
+        void acquire_sqlServerLockGrantedButNotHeld_isFenceUnavailable() {
+            var session = new ScriptedSession(DatabaseType.SQLSERVER, Map.of("APPLOCK_MODE", row("n", 0)));
+
+            assertThat(causeOf(MigrationFence.acquire(session, "ds", "node-1").await())).isInstanceOf(MigrationError.FenceUnavailable.class);
+        }
+
+        @Test
+        void acquire_oracleRequestGranted_takesTheSessionLockThatSurvivesCommit() {
+            var session = new ScriptedSession(DatabaseType.ORACLE, Map.of());
+
+            var fence = MigrationFence.acquire(session, "ds", "node-1").await();
+
+            assertThat(fence.unwrap()).isInstanceOf(MigrationFence.OracleFence.class);
+            assertThat(session.statements).anyMatch(sql -> sql.contains("DBMS_LOCK.REQUEST(h, DBMS_LOCK.X_MODE, 0, FALSE)"));
+            assertThat(session.params).contains("aether-mig:node-1");
+        }
+
+        @Test
+        void acquire_oracleLockHeldElsewhere_isFencedInDatabase() {
+            var session = new ScriptedSession(DatabaseType.ORACLE, Map.of()).failingUpdate("DBMS_APPLICATION_INFO", Causes.cause("ORA-20931: held"));
+
+            assertThat(causeOf(MigrationFence.acquire(session, "ds", "node-1").await())).isInstanceOf(MigrationError.MigrationFencedInDatabase.class);
+        }
+
+        /// Owner ruling Q2: without `EXECUTE ON SYS.DBMS_LOCK` the fence fails closed, naming the GRANT.
+        @Test
+        void acquire_oracleWithoutExecuteOnDbmsLock_isFenceUnavailableNamingTheGrant() {
+            var session = new ScriptedSession(DatabaseType.ORACLE, Map.of()).failingUpdate("DBMS_APPLICATION_INFO", Causes.cause("PLS-00201: identifier 'SYS.DBMS_LOCK' must be declared"));
+
+            var cause = causeOf(MigrationFence.acquire(session, "ds", "node-1").await());
+
+            assertThat(cause).isInstanceOf(MigrationError.FenceUnavailable.class);
+            assertThat(cause.message()).contains("GRANT EXECUTE ON SYS.DBMS_LOCK");
+        }
+
+        @Test
+        void acquire_oracleServerSessionAlreadyHoldsTheLock_isFenceUnavailableNamingThePooler() {
+            var session = new ScriptedSession(DatabaseType.ORACLE, Map.of()).failingUpdate("DBMS_APPLICATION_INFO", Causes.cause("ORA-20932: reentered"));
+
+            var cause = causeOf(MigrationFence.acquire(session, "ds", "node-1").await());
+
+            assertThat(cause).isInstanceOf(MigrationError.FenceUnavailable.class);
+            assertThat(cause.message()).contains("pooler");
+        }
+
+        @Test
+        void verifyHeld_oracleRequestNotAnsweringAlreadyOwned_isFenceUnavailable() {
+            var session = new ScriptedSession(DatabaseType.ORACLE, Map.of());
+            var fence = MigrationFence.acquire(session, "ds", "node-1").await().unwrap();
+            session.failingUpdate("IF r <> 4", Causes.cause("ORA-20933: not held"));
+
+            assertThat(causeOf(fence.verifyHeld(session).await())).isInstanceOf(MigrationError.FenceUnavailable.class);
+        }
+
+        @Test
+        void acquire_h2_setsExclusiveModeAndVerifiesIt() {
+            var session = new ScriptedSession(DatabaseType.H2, Map.of("INFORMATION_SCHEMA.SETTINGS", row("v", "TRUE")));
+
+            var fence = MigrationFence.acquire(session, "ds", "node-1").await();
+
+            assertThat(fence.unwrap()).isInstanceOf(MigrationFence.H2Fence.class);
+            assertThat(session.statements).anyMatch(sql -> sql.equals("SET EXCLUSIVE 1"));
+        }
+
+        @Test
+        void acquire_h2ExclusiveNotInEffect_isFenceUnavailable() {
+            var session = new ScriptedSession(DatabaseType.H2, Map.of("INFORMATION_SCHEMA.SETTINGS", row("v", "FALSE")));
+
+            assertThat(causeOf(MigrationFence.acquire(session, "ds", "node-1").await())).isInstanceOf(MigrationError.FenceUnavailable.class);
+        }
+
+        @Test
+        void acquire_db2AndSqlite_takeNoLockUntilTheScriptTransaction() {
+            var db2 = new ScriptedSession(DatabaseType.DB2, Map.of());
+            var sqlite = new ScriptedSession(DatabaseType.SQLITE, Map.of());
+
+            var db2Fence = MigrationFence.acquire(db2, "ds", "node-1").await().unwrap();
+            var sqliteFence = MigrationFence.acquire(sqlite, "ds", "node-1").await().unwrap();
+
+            assertThat(db2.statements).isEmpty();
+            assertThat(sqlite.statements).isEmpty();
+            assertThat(db2Fence.scriptLock().map(MigrationFence.ScriptLock::statement)).isEqualTo(some("LOCK TABLE aether_schema_history IN EXCLUSIVE MODE"));
+            assertThat(sqliteFence.scriptLock().map(MigrationFence.ScriptLock::statement).map(sql -> sql.startsWith("UPDATE aether_schema_owner SET"))).isEqualTo(some(true));
+        }
+    }
+
     private static final class ScriptedSession implements SqlConnector {
         private static final Map<String, Map<String, Object>> DEFAULTS = Map.of("pg_try_advisory_lock", row("granted", 1),
                                                                                 "AS n FROM pg_locks", row("n", 1),
@@ -460,7 +581,9 @@ class MigrationFenceTest {
                                                                                 "set_config", row("v", "set"),
                                                                                 "DATABASE()", row("db", "shop"),
                                                                                 "GET_LOCK(", row("granted", 1),
-                                                                                "CONNECTION_ID(), 0)", row("n", 1));
+                                                                                "CONNECTION_ID(), 0)", row("n", 1),
+                                                                                "sp_getapplock", row("granted", 0),
+                                                                                "APPLOCK_MODE", row("n", 1));
         private final DatabaseConnectorConfig config;
         private final Map<String, Map<String, Object>> overrides;
         private final List<Map<String, Object>> variables;
@@ -470,6 +593,7 @@ class MigrationFenceTest {
         private final AtomicInteger writes = new AtomicInteger();
         private Option<AtomicInteger> heldChecksLeft = none();
         private Option<ScriptedSession> pinnedSession = none();
+        private final Map<String, Cause> updateFailures = new HashMap<>();
 
         ScriptedSession(DatabaseType type, Map<String, Map<String, Object>> overrides) {
             this(type, overrides, List.of());
@@ -486,6 +610,12 @@ class MigrationFenceTest {
         /// (the pool) is distinguishable from one on the pinned session.
         ScriptedSession pinningTo(ScriptedSession dedicated) {
             pinnedSession = some(dedicated);
+            return this;
+        }
+
+        /// An update whose text contains `fragment` fails with `cause`.
+        ScriptedSession failingUpdate(String fragment, Cause cause) {
+            updateFailures.put(fragment, cause);
             return this;
         }
 
@@ -520,7 +650,12 @@ class MigrationFenceTest {
         public Promise<Integer> update(String sql, Object... args) {
             record(sql, args);
             writes.incrementAndGet();
-            return Promise.success(0);
+            return updateFailures.entrySet()
+                                 .stream()
+                                 .filter(entry -> sql.contains(entry.getKey()))
+                                 .findFirst()
+                                 .map(entry -> entry.getValue().<Integer>promise())
+                                 .orElseGet(() -> Promise.success(0));
         }
 
         @Override
