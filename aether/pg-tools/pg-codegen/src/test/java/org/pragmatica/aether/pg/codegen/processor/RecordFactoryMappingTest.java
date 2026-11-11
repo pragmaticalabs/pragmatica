@@ -232,7 +232,7 @@ class RecordFactoryMappingTest {
         void findById_resultFactory_flatMapsAndKeepsTheFactoryFailure() throws Exception {
             var generated = generated(CRUD_REPO, "CrudRepo");
 
-            assertThat(generated).contains("OrderRow.orderRow(").doesNotContain("::new");
+            assertThat(generated).contains(".flatMap(CrudRepo.OrderRow::orderRow)").doesNotContain("::new");
             assertThat(decode(CRUD_REPO, "CrudRepo", "findById", "OK", 1L).isSuccess()).isTrue();
             assertOwnCause(failure(decode(CRUD_REPO, "CrudRepo", "findById", "BAD", 1L)), "bad order");
         }
