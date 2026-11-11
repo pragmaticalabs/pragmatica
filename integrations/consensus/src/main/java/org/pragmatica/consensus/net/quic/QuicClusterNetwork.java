@@ -3683,7 +3683,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
             return;
         }
-
         // #2971: taken before any currentView() read below — see `observationSequence`.
         var sequence = observationSequence.incrementAndGet();
         var activePeerCount = activeConnectedCount();
