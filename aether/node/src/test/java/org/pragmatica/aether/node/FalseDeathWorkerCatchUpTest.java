@@ -19,7 +19,6 @@ import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceActionConfig;
-import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
