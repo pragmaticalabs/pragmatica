@@ -200,7 +200,7 @@ public sealed interface MigrationFence {
 
         private Promise<Unit> waitFor(SqlConnector tx, TimeSpan wait) {
             return busyWait
-                   ? tx.update(BUSY_TIMEOUT + wait.duration().toMillis())
+                   ? tx.queryList(BUSY_TIMEOUT + wait.duration().toMillis(), IGNORED)
                        .mapToUnit()
                    : Promise.unitPromise();
         }
