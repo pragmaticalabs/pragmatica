@@ -822,7 +822,7 @@ public sealed interface Verify {
         /// @param <T>   the type of character sequence
         /// @return true if the code point count is between min and max (inclusive), false otherwise
         static <T extends CharSequence> boolean codePointsBetween(T value, int min, int max) {
-            var count = value.codePointCount(0, value.length());
+            var count = Character.codePointCount(value, 0, value.length());
 
             return count >= min && count <= max;
         }
