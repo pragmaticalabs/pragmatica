@@ -2937,6 +2937,7 @@ public interface AetherNode extends ManageableNode {
         // D1-react (KVStore dispatcher design §3.5.1 rows 25/28): registry-driven timer arms run on the scheduler's react executor.
         scheduledTaskManager.installReactExecutor(reactors.executor("ScheduledTaskRegistry"));
         var selfAddress = findSelfAddress(config);
+        // #3028 (design 4 rule 2): the last argument binds: after every delivered replay burst the legacy NDM sweeps the slices it holds without a delivered entry.
         var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManagerFromSnapshot(config.self(),
                                                                                             selfAddress,
                                                                                             delegateRouter,
@@ -2955,7 +2956,6 @@ public interface AetherNode extends ManageableNode {
                                                                                                   .deployment()
                                                                                                   .transitionRetryDelay(),
                                                                                             currentGenerationEpochSupplier,
-                                                                                            // #3028 (design 4 rule 2): after every delivered replay burst the legacy NDM sweeps the slices it holds without a delivered entry.
                                                                                             deploymentWiring.replayEnd(kvStore));
         // #1935: a declared stream consumer that cannot be registered reaches THIS node's event log.
         nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);

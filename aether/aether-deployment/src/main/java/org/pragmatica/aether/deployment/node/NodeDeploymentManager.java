@@ -427,25 +427,27 @@ public interface NodeDeploymentManager {
                                                                    Supplier<Epoch> observedEpochSupplier,
                                                                    Consumer<LongConsumer> replayEndRegistrar) {
         return bindReplayEnd(nodeDeploymentManager(self,
-                                     selfAddress,
-                                     router,
-                                     sliceStore,
-                                     cluster,
-                                     kvStore,
-                                     invocationHandler,
-                                     configuration,
-                                     nodeCodec,
-                                     httpRoutePublisher,
-                                     sliceInvokerFacade,
-                                     activationChainTimeout,
-                                     transitionRetryDelay,
-                                     () -> Option.some(observedEpochSupplier.get())),
+                                                   selfAddress,
+                                                   router,
+                                                   sliceStore,
+                                                   cluster,
+                                                   kvStore,
+                                                   invocationHandler,
+                                                   configuration,
+                                                   nodeCodec,
+                                                   httpRoutePublisher,
+                                                   sliceInvokerFacade,
+                                                   activationChainTimeout,
+                                                   transitionRetryDelay,
+                                                   () -> Option.some(observedEpochSupplier.get())),
                              replayEndRegistrar);
     }
 
     /// #3028: hands the manager's catch-up sweep trigger to the registrar the wiring supplies (bound only under LEGACY, so no engine-neutral name leaks).
-    private static NodeDeploymentManager bindReplayEnd(NodeDeploymentManager manager, Consumer<LongConsumer> registrar) {
+    private static NodeDeploymentManager bindReplayEnd(NodeDeploymentManager manager,
+                                                       Consumer<LongConsumer> registrar) {
         registrar.accept(manager::onReplayDelivered);
+
         return manager;
     }
 
