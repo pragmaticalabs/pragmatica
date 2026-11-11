@@ -2005,6 +2005,19 @@ class ClusterEventAggregatorTest {
         assertThat(codes(successor)).containsExactly("instance-termination-confirmed");
     }
 
+    /// #2825 (v3046 PROBE3): the abandoned-data warning is raised by boot N and the recovery by boot N+1, a fresh process whose aggregator never saw
+    /// the warning. The code closes across nodes, so the fresh aggregator publishes the recovery, once.
+    @Test
+    void onOperatorWarning_anAbandonedStreamDataRecovery_isPublishedByAFreshAggregatorOfALaterBoot() {
+        var laterBoot = Harness.create();
+
+        laterBoot.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED,
+                                                                                 "/data/root",
+                                                                                 "clear"));
+
+        assertThat(codes(laterBoot)).containsExactly("stream-data-abandoned-cleared");
+    }
+
     /// F1 (v2803): the owner of the cluster events may have moved or restarted since the ESCALATED was raised; the successor holds no open state
     /// but the committed run state closes the incident, so the recovery is published, once.
     @Test
@@ -2040,6 +2053,8 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.DEPARTURE_INFERRED_REVERSED,
                 OperatorWarningCode.DEPARTURE_INFERRED_CONFIRMED,
                 OperatorWarningCode.SLICE_UNRESPONSIVE_EXPIRED,
+                // #2825: the warning belongs to an earlier boot; the raiser's marker file owns "is it open"
+                OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED,
             });
     }
 

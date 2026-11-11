@@ -77,7 +77,10 @@ class AetherNodeAbandonedStreamDataBootTest {
                          .unwrap();
         assertThat(capture.messages()).anyMatch(msg -> msg.contains("[stream-data-abandoned]")
                                                        && msg.contains("node-from-the-previous-run")
-                                                       && msg.contains("321 bytes"));
+                                                       && msg.contains("321 bytes")
+                                                       && msg.contains("NOT read by this node")
+                                                       && !msg.contains("After a whole-cluster restart stream records"));
+        assertThat(AetherNode.streamDataDir(config).getParent().resolve(AbandonedStreamData.MARKER)).exists();
         assertThat(foreign.resolve("a.blk")).exists();
     }
 }

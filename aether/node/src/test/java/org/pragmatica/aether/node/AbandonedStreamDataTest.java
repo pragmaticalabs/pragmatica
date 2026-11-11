@@ -59,6 +59,76 @@ class AbandonedStreamDataTest {
         assertThat(events.poll(300, TimeUnit.MILLISECONDS)).isNull();
         assertThat(oldSegments).exists();
         assertThat(oldWal).exists();
+        assertThat(segments.resolve(AbandonedStreamData.MARKER)).as("marker beside the data root").exists();
+    }
+
+    @Test
+    void laterCleanBoot_withMarker_raisesTheClear_andDeletesTheMarker() throws Exception {
+        var segments = root.resolve("stream-segments");
+        var old = write(segments.resolve("node-old").resolve("a.blk"), 9);
+
+        boot(segments);
+        assertThat(next().code()).isEqualTo(OperatorWarningCode.STREAM_DATA_ABANDONED);
+        Files.delete(old);
+        Files.delete(old.getParent());
+        boot(segments);
+        var cleared = next();
+
+        assertThat(cleared.code()).isEqualTo(OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED);
+        assertThat(cleared.subject()).isEqualTo(segments.toAbsolutePath().normalize().toString());
+        assertThat(segments.resolve(AbandonedStreamData.MARKER)).doesNotExist();
+        boot(segments);
+        assertNothingRaised();
+    }
+
+    @Test
+    void cleanBoot_withoutMarker_raisesNothing() throws Exception {
+        var segments = root.resolve("stream-segments");
+
+        write(segments.resolve(SELF).resolve("a.blk"), 9);
+        boot(segments);
+        assertNothingRaised();
+        assertThat(segments.resolve(AbandonedStreamData.MARKER)).doesNotExist();
+    }
+
+    @Test
+    void crashBetweenRaiseAndMarkerDelete_raisesTheClearOnceMore_andThenSettles() throws Exception {
+        var segments = root.resolve("stream-segments");
+        var marker = write(segments.resolve(AbandonedStreamData.MARKER), 1);
+
+        boot(segments);
+        assertThat(next().code()).isEqualTo(OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED);
+        assertThat(marker).doesNotExist();
+        Files.write(marker, new byte[1]);
+        boot(segments);
+        assertThat(next().code()).isEqualTo(OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED);
+        boot(segments);
+        assertNothingRaised();
+    }
+
+    /// v3046: a node restarted in place on its old disk while the rest of the cluster stays up gets the same warning (the check reads
+    /// the disk only). Its text must be accurate there: it names the directories, says they are not read by THIS node, and
+    /// ties "all of them" to a whole-cluster restart instead of asserting one.
+    @Test
+    void rollingRestartInPlace_warnsWithATextThatDoesNotClaimAWholeClusterRestart() throws Exception {
+        var segments = root.resolve("stream-segments");
+
+        write(segments.resolve("node-before-the-restart").resolve("a.blk"), 5);
+        boot(segments);
+        var message = next().message();
+
+        assertThat(message).contains("node-before-the-restart")
+                           .contains("NOT read by this node")
+                           .contains("after a whole-cluster restart that is all of them")
+                           .doesNotContain("After a whole-cluster restart stream records");
+    }
+
+    private void boot(Path segments) {
+        AbandonedStreamData.check(sink, segments.resolve(SELF), segments.resolve(SELF).resolve("wal"), SELF);
+    }
+
+    private void assertNothingRaised() throws InterruptedException {
+        assertThat(events.poll(300, TimeUnit.MILLISECONDS)).isNull();
     }
 
     @Test
@@ -99,8 +169,7 @@ class AbandonedStreamDataTest {
                                   segments.resolve(SELF),
                                   segments.resolve(SELF).resolve("wal"),
                                   SELF);
-        assertThat(next().code()).isEqualTo(OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED);
-        assertThat(events.poll(300, TimeUnit.MILLISECONDS)).isNull();
+        assertNothingRaised();
     }
 
     @Test
@@ -109,7 +178,7 @@ class AbandonedStreamDataTest {
                                   root.resolve("absent").resolve(SELF),
                                   root.resolve("absent").resolve(SELF).resolve("wal"),
                                   SELF);
-        assertThat(next().code()).isEqualTo(OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED);
+        assertNothingRaised();
     }
 
     @Test
@@ -147,7 +216,7 @@ class AbandonedStreamDataTest {
                                       segments.resolve(SELF),
                                       segments.resolve(SELF).resolve("wal"),
                                       SELF);
-            assertThat(next().code()).isEqualTo(OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED);
+            assertNothingRaised();
         } finally {
             Files.setPosixFilePermissions(segments, PosixFilePermissions.fromString("rwx------"));
         }

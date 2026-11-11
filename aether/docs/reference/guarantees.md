@@ -305,7 +305,12 @@ NodeId; real fix: #1569, rc6).
 
 Recovery after a whole-cluster restart: republish the stream records from their source. A node that boots over a data root
 holding directories of another NodeId raises the operator warning `stream-data-abandoned` (naming each directory and its
-size) and deletes nothing; remove the directories by hand once nothing needs them. See
+size) and deletes nothing; remove the directories by hand once nothing needs them. The warning leaves a marker file
+`.stream-data-abandoned` beside the stream data root; the first later boot that finds no directory of another NodeId raises
+`stream-data-abandoned-cleared` (which closes the warning even though a new process raised it), deletes the marker, and a
+boot over a root that never warned raises nothing. A node restarted in place on its old disk during a rolling replacement gets the
+same warning for its own earlier directories (the check reads the disk, not the cluster); those records survive on the replicas
+that stayed up. See
 [known limitations](known-limitations.md#streams-and-durable-entities).
 
 | Kind | Operation | What the caller gets | Mechanism | Evidence |

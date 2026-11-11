@@ -1092,12 +1092,14 @@ public enum OperatorWarningCode {
     /// The real fix is #1569. Closed by [#STREAM_DATA_ABANDONED_CLEARED].
     STREAM_DATA_ABANDONED("stream-data-abandoned", "stream-storage", WarningLevel.WARNING),
     /// The recovery of [#STREAM_DATA_ABANDONED], same subject, the data root (#2825): a later boot found no stream or WAL directory
-    /// of another NodeId under it. INFO, published only after a published abandoned-data warning for the subject (#752 mechanism);
-    /// a boot over a clean root publishes nothing the log shows.
+    /// of another NodeId under it. INFO, closes across nodes: the warning belongs to an earlier boot, so no event layer of this process
+    /// has seen it. The raiser owns "is it open": it raises this only when the marker file the warning left beside the data root exists,
+    /// so a boot over a clean root that never warned publishes nothing.
     STREAM_DATA_ABANDONED_CLEARED("stream-data-abandoned-cleared",
                                   "stream-storage",
                                   WarningLevel.INFO,
-                                  STREAM_DATA_ABANDONED),
+                                  STREAM_DATA_ABANDONED,
+                                  true),
     /// The recovery of [#DHT_DEPARTURE_SOLE_COPY_AT_RISK], same subject (#2034): every sole-copy key was acknowledged by a target in its
     /// post-departure responsible set before the node halted. INFO, published by the draining node itself, only after its published
     /// at-risk event (#752 mechanism).
