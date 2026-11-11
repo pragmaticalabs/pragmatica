@@ -482,7 +482,7 @@ public final class StatusRoutes implements RouteSource {
         return new EnrichedNodeInfo(id, role, isLeader);
     }
 
-    private HealthResponse buildHealthResponse() {
+    HealthResponse buildHealthResponse() {
         var node = nodeSupplier.get();
         var metrics = node.metricsCollector().allMetrics();
         var metricsNodeCount = metrics.size();
@@ -502,7 +502,18 @@ public final class StatusRoutes implements RouteSource {
                                   connectedNodeCount,
                                   metricsNodeCount,
                                   sliceCount,
-                                  BuildInfo.buildInfo().buildTimestamp());
+                                  BuildInfo.buildInfo().buildTimestamp(),
+                                  List.of(storageMaintenanceHealth(node.storageMaintenanceDegradation())));
+    }
+
+    /// #800: storage maintenance on this node, DEGRADED while ticks in a row fail or a pass is overdue. Served on
+    /// `/api/health` only and read by neither `status` nor `ready`: maintenance shrinks and warms tiers, so a fault in it must
+    /// not pull a node that still serves; `/health/ready` does not carry it.
+    static ComponentHealth storageMaintenanceHealth(Option<String> degradation) {
+        return degradation.fold(() -> new ComponentHealth("storage-maintenance",
+                                                          "UP",
+                                                          "Storage maintenance ticks complete"),
+                                reason -> new ComponentHealth("storage-maintenance", "DEGRADED", reason));
     }
 
     public LivenessResponse buildLivenessResponse() {

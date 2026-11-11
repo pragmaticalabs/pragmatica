@@ -5,6 +5,7 @@
 package org.pragmatica.aether.node;
 
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.storage.DegradeReporter;
 import java.util.ArrayList;
 import java.util.List;
@@ -122,7 +123,7 @@ class StorageMaintenanceDriverPromotionTest {
             return 0;
         });
 
-        StorageMaintenanceDriver.storageMaintenanceDriver(demotion, promotion, noWatch(), gc, DegradeReporter.degradeReporter("test"), () -> Unit.unit()).tick();
+        StorageMaintenanceDriver.storageMaintenanceDriver(demotion, promotion, noWatch(), gc, DegradeReporter.degradeReporter("test"), () -> Unit.unit(), TimeSpan.timeSpan(5).minutes()).tick();
 
         assertThat(ran.await(10, TimeUnit.SECONDS)).isTrue();
         assertThat(thread.get()).isNotSameAs(Thread.currentThread());
@@ -155,7 +156,7 @@ class StorageMaintenanceDriverPromotionTest {
                                                                         PromotionStallWatch.promotionStallWatch(setups, sink),
                                                                         gc,
                                                                         Runnable::run,
-                                                                        DegradeReporter.degradeReporter("test"), () -> Unit.unit());
+                                                                        DegradeReporter.degradeReporter("test"), () -> Unit.unit(), System::currentTimeMillis, TimeSpan.timeSpan(5).minutes());
 
         for (var i = 0; i < PromotionStallWatch.STALLED_AFTER_CYCLES; i++) {
             driver.tick();
@@ -171,7 +172,7 @@ class StorageMaintenanceDriverPromotionTest {
     }
 
     private StorageMaintenanceDriver driver(java.util.concurrent.Executor executor) {
-        return StorageMaintenanceDriver.storageMaintenanceDriver(demotion, promotion, noWatch(), gc, executor, DegradeReporter.degradeReporter("test"), () -> Unit.unit());
+        return StorageMaintenanceDriver.storageMaintenanceDriver(demotion, promotion, noWatch(), gc, executor, DegradeReporter.degradeReporter("test"), () -> Unit.unit(), System::currentTimeMillis, TimeSpan.timeSpan(5).minutes());
     }
 
     private static PromotionStallWatch noWatch() {

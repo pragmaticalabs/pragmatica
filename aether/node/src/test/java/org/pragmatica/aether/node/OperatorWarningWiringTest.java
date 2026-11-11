@@ -61,7 +61,7 @@ class OperatorWarningWiringTest {
     /// and managers, so un-binding either here, or handing the watch a different sink or a partial setup map, left them green.
     @Test
     void assembly_givesTheMaintenanceDriverAStallWatchOverEverySetupOnThisNodesSink() {
-        assertThat(assemblyCode()).containsOnlyOnce("StorageMaintenanceDriver.storageMaintenanceDriver(compositeDemotionManager,compositePromotionManager,PromotionStallWatch.promotionStallWatch(storageSetups,operatorWarningSink),compositeGarbageCollector,maintenancePasses,delegatedStorageAdapter::retryPending);");
+        assertThat(assemblyCode()).containsOnlyOnce("StorageMaintenanceDriver.storageMaintenanceDriver(compositeDemotionManager,compositePromotionManager,PromotionStallWatch.promotionStallWatch(storageSetups,operatorWarningSink),compositeGarbageCollector,maintenancePasses,delegatedStorageAdapter::retryPending,config.timeouts().storageMaintenance().interval());");
     }
 
     /// #800: a maintenance pass that throws reaches this node's sink through the driver's own reporter, and the node serves the
@@ -70,6 +70,17 @@ class OperatorWarningWiringTest {
     @Test
     void assembly_bindsTheMaintenancePassReporterToThisNodesSink() {
         assertThat(assemblyCode()).containsOnlyOnce("maintenancePasses=DegradeReporter.degradeReporter(StorageMaintenanceDriver.REPORT_SUBJECT);maintenancePasses.bind(operatorWarningSink);");
+    }
+
+    /// #800: the overdue watchdog runs on its own timer, the gauges join the registry the Management API scrapes, and the node
+    /// serves the driver's degradation to `/api/health`. The driver is tested alone, so dropping any of these left it green.
+    @Test
+    void assembly_schedulesTheWatchdog_registersTheGauges_andServesTheDegradation() {
+        var code = assemblyCode();
+
+        assertThat(code).containsOnlyOnce("SharedScheduler.scheduleAtFixedRate(storageMaintenanceDriver::checkOverdue,config.timeouts().storageMaintenance().interval())");
+        assertThat(code).containsOnlyOnce("storageMaintenanceDriver.registerMeters(deploymentMeters);");
+        assertThat(code).containsOnlyOnce("returnstorageMaintenanceDriver.degradation();");
     }
 
     @Test

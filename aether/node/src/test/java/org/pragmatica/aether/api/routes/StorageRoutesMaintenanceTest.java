@@ -68,6 +68,7 @@ class StorageRoutesMaintenanceTest {
                                                       2,
                                                       Option.some("demote boom"),
                                                       7,
+                                                      3,
                                                       5);
         var node = (AetherNode) Proxy.newProxyInstance(AetherNode.class.getClassLoader(),
                                                        new Class[]{AetherNode.class},

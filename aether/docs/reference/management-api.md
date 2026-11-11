@@ -263,9 +263,19 @@ Get node health status including readiness and quorum.
   "nodeCount": 3,
   "connectedPeers": 2,
   "metricsNodeCount": 3,
-  "sliceCount": 5
+  "sliceCount": 5,
+  "buildTimestamp": "2026-11-11T10:00:00Z",
+  "components": [
+    {"name": "storage-maintenance", "status": "UP", "detail": "Storage maintenance ticks complete"}
+  ]
 }
 ```
+
+- `components` (#800): one entry, `storage-maintenance`. Its `status` is `DEGRADED` while the latest maintenance ticks in a
+  row had a failed pass, while no maintenance tick completed within three maintenance intervals (counted from node assembly
+  before the first tick), or while one promotion cycle has been running that long; `detail` names which. Otherwise `UP`.
+  It is informational: neither `status` nor `ready` here reads it, and `/health/ready` does not carry it, so a maintenance
+  fault never takes a serving node out of rotation.
 
 ### GET /health/live
 
@@ -566,6 +576,8 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `storage-maintenance-stopped` (INFO — the recovery: the group was stopped, or this node leads again; raised only after `storage-maintenance-not-stopped` was offered to the event feed for the same `subject`)
 - `storage-maintenance-pass-failed` (WARNING — one maintenance pass threw instead of completing, so that part of maintenance did nothing this tick; `subject` is `storage-maintenance/<part>` with part `demotion`, `garbage-collection` or `promotion`; raised once per part, the message carries the cause)
 - `storage-maintenance-pass-recovered` (INFO — the recovery: the next pass of that part completed; raised only after `storage-maintenance-pass-failed` was offered to the event feed for the same `subject`)
+- `storage-maintenance-pass-overdue` (WARNING — a maintenance pass has not completed within three maintenance intervals: `subject` `storage-maintenance/tick` when no tick completed in that time (a pass is blocked, or the ticks are not running), `storage-maintenance/promotion` when one promotion cycle has been running that long; raised once per `subject` by a watchdog on its own timer)
+- `storage-maintenance-pass-completed` (INFO — the recovery: the next tick or promotion cycle completed; raised only after `storage-maintenance-pass-overdue` was offered to the event feed for the same `subject`)
 - `storage-wal-tail-cut` (WARNING — a stream append log cut a torn tail while opening, bytes that were never acknowledged; `subject` is the instance; a cut happens once at open, so there is no recovery event)
 - `storage-volume-guard-inactive` (WARNING — the unmounted-volume guard of the instance is off: its sentinel is on the same filesystem as the guarded volume and is lost with it, so the node would boot empty on an unmounted volume instead of refusing; `subject` is the instance; decided once at boot, no recovery event)
 - `storage-wal-fail-stopped` (CRITICAL — an append log fail-stopped after a failed fsync, frame write or reopen and refuses every append; for a stream partition's WAL the `subject` is `stream[partition]` and the warning is raised once per partition log (#2201 D-01), every later publish to that partition is refused with `PartitionFailStopped` before it takes an offset, and gauge `aether.streams.wal.failstopped` counts the node's fail-stopped partitions; for any other log the `subject` is the instance, the message names the log, and it is raised once per instance; recovery for a stream partition: replace the node, see `wal.failStopped` (a node id never returns, so the replacement does not reopen the log); closed by `storage-wal-writable` when a whole-cluster restart reopens the same WAL under the same node id and it accepts a durable write, by `storage-wal-retired` when the node that raised it is removed or decommissioned (as when it is replaced), and superseded by that node's `NODE_FAILED` when it crashes; the instance subject has no recovery event. Named limit: the subject is the partition, not the node, so when two nodes fail-stop the same partition one node's close also closes the other's warning)
@@ -1541,6 +1553,12 @@ Includes the streams gauges: `aether_streams_memory_used_bytes`, `aether_streams
 `aether_streams_wal_failstopped` (#2201 D-01): the number of partitions materialized on this node whose WAL fail-stopped, 0 from
 boot and at least 1 while a partition refuses every publish (`storage-wal-fail-stopped`, `wal.failStopped`). Each sample line ends in its
 value; the registry writes no timestamp.
+
+Includes the storage maintenance gauges (#800): `aether_storage_maintenance_consecutive_failed_ticks` (maintenance ticks
+in a row with a failed pass, 0 after a tick with none), `aether_storage_maintenance_seconds_since_last_pass` (seconds since
+the latest tick completed, since node assembly before the first; it keeps growing while a tick is blocked) and
+`aether_storage_maintenance_last_outcome` with an `outcome` tag (`NEVER_RUN`, `OK`, `FAILED`): 1 for the latest tick's
+outcome, 0 for the others.
 `consensus_consecutive_empty_slots_with_pending` (a level, #2045) counts the slots this node decided in a row
 without applying a batch while it held pending batches; it returns to 0 once a slot applies a batch or the queue
 empties. The comprehensive response carries it as `consecutiveEmptySlotsWithPending`, next to
@@ -2324,12 +2342,13 @@ readiness.
     "consecutiveFailedTicks": 0,
     "lastFailure": null,
     "demoted": 7,
+    "promoted": 3,
     "collected": 5
   }
 }
 ```
 
-- `maintenance` (#800): what the storage maintenance tick (demotion, promotion, garbage collection) has done on this node. `lastRunMs` is when the latest tick finished (`0` before the first); `outcome` is `NEVER_RUN`, `OK` or `FAILED` (a pass threw); `consecutiveFailedTicks` counts the ticks in a row with a failed pass; `lastFailure` is the cause of the latest failed pass and stays after a recovery (`null` if none ever failed); `demoted` and `collected` are blocks since boot. A failing pass also raises `storage-maintenance-pass-failed`.
+- `maintenance` (#800): what the storage maintenance tick (demotion, promotion, garbage collection) has done on this node. `lastRunMs` is when the latest tick finished (`0` before the first); `outcome` is `NEVER_RUN`, `OK` or `FAILED` (a demotion, promotion or garbage-collection pass threw); `consecutiveFailedTicks` counts the ticks in a row with a failed pass; `lastFailure` is the cause of the latest failed pass and stays after a recovery (`null` if none ever failed); `demoted`, `promoted` and `collected` are blocks since boot. A promotion cycle runs off the tick, so its result counts in the first tick that ends after the cycle ended. A failing pass also raises `storage-maintenance-pass-failed`; a pass that does not complete raises `storage-maintenance-pass-overdue`.
 - `utilizationPct`: `usedBytes / maxBytes` as a percentage rounded to one decimal (`0.0` when `maxBytes` is 0).
 - `readiness.isReadReady` / `isWriteReady`: whether the instance's `StorageReadinessGate` currently admits reads / writes. `isReadReady` turns true once the local snapshot is loaded; `isWriteReady` turns true when the node reports ready (its DHT-backed instances admitted), and stays false before that. Nothing in the storage engine consults the gate yet: it is an observability signal.
 - `wal` (#634-3): live stream-WAL usage — non-`null` **only on the `streams` instance**. The WAL is a

@@ -293,6 +293,33 @@ class DelegatedStorageAdapterTest {
         assertThat(gc.deactivateCalls.get()).isEqualTo(1 + DelegatedStorageAdapter.MAX_RETRIES);
     }
 
+    /// The budget restarts on the deactivation side too (#800, ruling know b23d9159fa): an activation that took two retries
+    /// leaves one, and the deactivation after it must still get all three, not that one.
+    @Test
+    void retryPending_deactivationAfterARetriedActivation_getsTheFullBudget() {
+        var gc = new SwitchableCollector();
+        var adapter = adapterOver(gc, new java.util.concurrent.CopyOnWriteArrayList<>());
+
+        gc.failActivate.set(true);
+        adapter.activate().await();
+        adapter.retryPending();
+        gc.failActivate.set(false);
+        adapter.retryPending();
+
+        assertThat(adapter.isActive()).as("activated on the second retry, one retry left").isTrue();
+        assertThat(gc.activateCalls.get()).isEqualTo(3);
+
+        gc.failDeactivate.set(true);
+        adapter.deactivate().await();
+
+        for (var i = 0; i < DelegatedStorageAdapter.MAX_RETRIES + 2; i++) {
+            adapter.retryPending();
+        }
+
+        assertThat(gc.deactivateCalls.get()).as("the call itself plus a full budget of retries")
+                                            .isEqualTo(1 + DelegatedStorageAdapter.MAX_RETRIES);
+    }
+
     private static DelegatedStorageAdapter adapterOver(StorageGarbageCollector gc,
                                                        java.util.List<org.pragmatica.utility.warning.OperatorWarning> raised) {
         var degrade = org.pragmatica.storage.DegradeReporter.degradeReporter(DelegatedStorageAdapter.REPORT_SUBJECT);

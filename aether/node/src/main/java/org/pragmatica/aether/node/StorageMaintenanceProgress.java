@@ -11,12 +11,14 @@ import org.pragmatica.lang.Result;
 /// #800: what the storage maintenance tick has done on this node, so a wedged or failing maintenance no longer looks the same
 /// as an idle one. `lastRunMs` is when the latest tick finished (0 before the first), `outcome` is how it ended,
 /// `consecutiveFailedTicks` counts the ticks in a row with a failed pass, `lastFailure` carries the cause of the latest failed
-/// pass (kept after a recovery, until the next failure replaces it), `demoted` and `collected` are cumulative since boot.
+/// pass (kept after a recovery, until the next failure replaces it), `demoted`, `promoted` and `collected` are cumulative since boot.
+/// A promotion cycle runs off the tick, so its result counts in the first tick that ends after the cycle ended.
 public record StorageMaintenanceProgress(long lastRunMs,
                                          Outcome outcome,
                                          int consecutiveFailedTicks,
                                          Option<String> lastFailure,
                                          long demoted,
+                                         long promoted,
                                          long collected) {
     public enum Outcome {
         NEVER_RUN,
@@ -25,12 +27,17 @@ public record StorageMaintenanceProgress(long lastRunMs,
     }
 
     public static StorageMaintenanceProgress storageMaintenanceProgress() {
-        return new StorageMaintenanceProgress(0, Outcome.NEVER_RUN, 0, Option.none(), 0, 0);
+        return new StorageMaintenanceProgress(0, Outcome.NEVER_RUN, 0, Option.none(), 0, 0, 0);
     }
 
-    /// The progress after a tick that ended at `nowMs` with the demotion and garbage-collection pass results given.
-    StorageMaintenanceProgress after(long nowMs, Result<Integer> demotion, Result<Integer> collection) {
-        var failure = failureOf(demotion).orElse(() -> failureOf(collection));
+    /// The progress after a tick that ended at `nowMs` with the demotion and garbage-collection pass results given, and the
+    /// result of the promotion cycle that ended since the previous tick, none when no cycle ended in between.
+    StorageMaintenanceProgress after(long nowMs,
+                                     Result<Integer> demotion,
+                                     Option<Result<Integer>> promotion,
+                                     Result<Integer> collection) {
+        var failure = failureOf(demotion).orElse(() -> promotion.flatMap(StorageMaintenanceProgress::failureOf))
+                                         .orElse(() -> failureOf(collection));
 
         return new StorageMaintenanceProgress(nowMs,
                                               failure.fold(() -> Outcome.OK, _ -> Outcome.FAILED),
@@ -38,6 +45,8 @@ public record StorageMaintenanceProgress(long lastRunMs,
                                                            _ -> consecutiveFailedTicks + 1),
                                               failure.orElse(lastFailure),
                                               demoted + demotion.or(0),
+                                              promoted + promotion.flatMap(Result::option)
+                                                                  .or(0),
                                               collected + collection.or(0));
     }
 

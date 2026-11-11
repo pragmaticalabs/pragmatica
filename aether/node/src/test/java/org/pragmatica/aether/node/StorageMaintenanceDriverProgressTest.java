@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.node.StorageMaintenanceProgress.Outcome;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.storage.DegradeReporter;
 import org.pragmatica.storage.DemotionManager;
 import org.pragmatica.storage.PromotionManager;
@@ -201,7 +202,9 @@ class StorageMaintenanceDriverProgressTest {
                                                                   gc,
                                                                   executor,
                                                                   degrade,
-                                                                  this::countRetry);
+                                                                  this::countRetry,
+                                                                  System::currentTimeMillis,
+                                                                  TimeSpan.timeSpan(5).minutes());
     }
 
     private Unit countRetry() {

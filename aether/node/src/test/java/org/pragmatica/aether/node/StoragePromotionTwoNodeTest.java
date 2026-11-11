@@ -5,6 +5,7 @@
 package org.pragmatica.aether.node;
 
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.storage.DegradeReporter;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -124,7 +125,7 @@ class StoragePromotionTwoNodeTest {
                                                                                                           OperatorWarningSink.logOnly()),
                                                                   StorageFactory.compositeGarbageCollector(setups),
                                                                   Runnable::run,
-                                                                  DegradeReporter.degradeReporter("test"), () -> Unit.unit());
+                                                                  DegradeReporter.degradeReporter("test"), () -> Unit.unit(), System::currentTimeMillis, TimeSpan.timeSpan(5).minutes());
     }
 
     private static boolean isResidentInMemory(StorageFactory.StorageSetup setup, BlockId id) {

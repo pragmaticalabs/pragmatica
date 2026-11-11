@@ -6,12 +6,19 @@ package org.pragmatica.aether.node;
 
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.pragmatica.aether.node.StorageMaintenanceProgress.Outcome;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.storage.DegradeReporter;
 import org.pragmatica.storage.DemotionManager;
@@ -43,6 +50,12 @@ import org.slf4j.LoggerFactory;
 /// scheduler thread: the tick starts it on its own thread and returns. At most one cycle runs at a time; a tick that
 /// finds the previous cycle still running skips promotion and counts nothing, so a slow DHT cannot pile cycles up.
 ///
+/// #800: a pass that does not complete is a signal too. [#checkOverdue], on its own timer, raises
+/// `STORAGE_MAINTENANCE_PASS_OVERDUE` when no tick completed within [#OVERDUE_AFTER_INTERVALS] maintenance intervals, or one
+/// promotion cycle ran that long; the next completed tick or cycle raises the recovery. [#degradation] is the same reading
+/// plus a failed-tick streak, for the `storage-maintenance` component of `/api/health`; [#registerMeters] exposes the streak,
+/// the age of the last completed tick and the last outcome as gauges. All of it reads the injected clock.
+///
 /// GC never touches the shared DHT tier: that invariant is enforced inside
 /// `StorageInstance.deleteFromPrivateTiers` (integrations/storage), over whatever tier list the
 /// collector is handed, independent of anything this driver does.
@@ -52,6 +65,11 @@ public final class StorageMaintenanceDriver {
     static final String PART_DEMOTION = "demotion";
     static final String PART_PROMOTION = "promotion";
     static final String PART_GARBAGE_COLLECTION = "garbage-collection";
+    /// The whole tick, as the overdue warning names it: no tick completed, whichever pass holds it.
+    static final String PART_TICK = "tick";
+    /// How many maintenance intervals a pass may take before it is overdue.
+    static final int OVERDUE_AFTER_INTERVALS = 3;
+    private static final long NO_CYCLE = -1L;
     /// The instance of the driver's operator-warning reporter.
     public static final String REPORT_SUBJECT = "storage-maintenance";
 
@@ -62,7 +80,14 @@ public final class StorageMaintenanceDriver {
     private final Executor promotionExecutor;
     private final DegradeReporter degrade;
     private final Supplier<Unit> retryPending;
+    private final LongSupplier clock;
+    private final long overdueAfterMs;
+    private final long createdMs;
     private final AtomicBoolean promoting = new AtomicBoolean(false);
+    /// When the running promotion cycle started, [#NO_CYCLE] while none runs.
+    private final AtomicLong promotionStartedMs = new AtomicLong(NO_CYCLE);
+    /// The result of the latest promotion cycle that ended and no tick has counted yet.
+    private final AtomicReference<Option<Result<Integer>>> promotionResult = new AtomicReference<>(Option.none());
 
     private final AtomicReference<StorageMaintenanceProgress> progress = new AtomicReference<>(StorageMaintenanceProgress.storageMaintenanceProgress());
 
@@ -72,7 +97,9 @@ public final class StorageMaintenanceDriver {
                                      StorageGarbageCollector garbageCollector,
                                      Executor promotionExecutor,
                                      DegradeReporter degrade,
-                                     Supplier<Unit> retryPending) {
+                                     Supplier<Unit> retryPending,
+                                     LongSupplier clock,
+                                     TimeSpan interval) {
         this.demotionManager = demotionManager;
         this.promotionManager = promotionManager;
         this.stallWatch = stallWatch;
@@ -80,6 +107,9 @@ public final class StorageMaintenanceDriver {
         this.promotionExecutor = promotionExecutor;
         this.degrade = degrade;
         this.retryPending = retryPending;
+        this.clock = clock;
+        this.overdueAfterMs = OVERDUE_AFTER_INTERVALS * interval.millis();
+        this.createdMs = clock.getAsLong();
     }
 
     public static StorageMaintenanceDriver storageMaintenanceDriver(DemotionManager demotionManager,
@@ -87,32 +117,40 @@ public final class StorageMaintenanceDriver {
                                                                     PromotionStallWatch stallWatch,
                                                                     StorageGarbageCollector garbageCollector,
                                                                     DegradeReporter degrade,
-                                                                    Supplier<Unit> retryPending) {
+                                                                    Supplier<Unit> retryPending,
+                                                                    TimeSpan interval) {
         return storageMaintenanceDriver(demotionManager,
                                         promotionManager,
                                         stallWatch,
                                         garbageCollector,
                                         StorageMaintenanceDriver::startOnDaemonThread,
                                         degrade,
-                                        retryPending);
+                                        retryPending,
+                                        System::currentTimeMillis,
+                                        interval);
     }
 
     /// `promotionExecutor` runs one promotion cycle; the production one is a fresh daemon thread per cycle (a cycle
-    /// starts every few minutes at most, so a pool would only hold an idle thread per node).
+    /// starts every few minutes at most, so a pool would only hold an idle thread per node). `clock` is wall-clock
+    /// milliseconds; `interval` is the maintenance tick interval, which the overdue reading is measured in.
     static StorageMaintenanceDriver storageMaintenanceDriver(DemotionManager demotionManager,
                                                              PromotionManager promotionManager,
                                                              PromotionStallWatch stallWatch,
                                                              StorageGarbageCollector garbageCollector,
                                                              Executor promotionExecutor,
                                                              DegradeReporter degrade,
-                                                             Supplier<Unit> retryPending) {
+                                                             Supplier<Unit> retryPending,
+                                                             LongSupplier clock,
+                                                             TimeSpan interval) {
         return new StorageMaintenanceDriver(demotionManager,
                                             promotionManager,
                                             stallWatch,
                                             garbageCollector,
                                             promotionExecutor,
                                             degrade,
-                                            retryPending);
+                                            retryPending,
+                                            clock,
+                                            interval);
     }
 
     @Contract
@@ -133,13 +171,114 @@ public final class StorageMaintenanceDriver {
         var collection = runPass(PART_GARBAGE_COLLECTION, garbageCollector::collectGarbage);
 
         retryPending.get();
-        progress.updateAndGet(before -> before.after(System.currentTimeMillis(), demotion, collection));
+        var promotion = promotionResult.getAndSet(Option.none());
+
+        progress.updateAndGet(before -> before.after(clock.getAsLong(), demotion, promotion, collection));
+        raisePassCompleted(PART_TICK);
         logMoved(demotion.or(0), collection.or(0));
     }
 
     /// What the latest tick did and how many ticks in a row failed (#800); the Management API serves it.
     public StorageMaintenanceProgress progress() {
         return progress.get();
+    }
+
+    /// The maintenance watchdog (#800), on its own timer so that a blocked tick cannot hold it: raises the overdue warning
+    /// for the tick and for a promotion cycle that has not completed within [#OVERDUE_AFTER_INTERVALS] intervals, once per
+    /// part. The completed tick or cycle closes it. Fire-and-forget scheduler entry point, as [#tick].
+    @Contract
+    public void checkOverdue() {
+        var now = clock.getAsLong();
+
+        overdueTick(now).onPresent(reason -> raiseOverdue(PART_TICK, reason));
+        overduePromotion(now).onPresent(reason -> raiseOverdue(PART_PROMOTION, reason));
+    }
+
+    /// Why storage maintenance on this node is degraded, none while it is not (#800): ticks in a row with a failed pass, no
+    /// tick completed within [#OVERDUE_AFTER_INTERVALS] intervals, or a promotion cycle running that long.
+    public Option<String> degradation() {
+        var now = clock.getAsLong();
+
+        return failedStreak().orElse(() -> overdueTick(now))
+                             .orElse(() -> overduePromotion(now));
+    }
+
+    /// Seconds since the latest tick completed, or since the driver was built before the first one.
+    public long secondsSinceLastPass() {
+        return (clock.getAsLong() - lastCompletedMs()) / 1000;
+    }
+
+    /// Registers the maintenance gauges (#800) in `registry`: `aether_storage_maintenance_consecutive_failed_ticks`,
+    /// `aether_storage_maintenance_seconds_since_last_pass`, and `aether_storage_maintenance_last_outcome`, which is 1 for the
+    /// `outcome` tag of the latest tick and 0 for the others.
+    public Unit registerMeters(MeterRegistry registry) {
+        Gauge.builder("aether_storage_maintenance_consecutive_failed_ticks",
+                      () -> progress().consecutiveFailedTicks())
+             .description("Storage maintenance ticks in a row with a failed pass")
+             .register(registry);
+        Gauge.builder("aether_storage_maintenance_seconds_since_last_pass", this::secondsSinceLastPass)
+             .description("Seconds since the latest storage maintenance tick completed")
+             .register(registry);
+        for (var outcome : Outcome.values()) {
+            registerOutcomeGauge(registry, outcome);
+        }
+        return Unit.unit();
+    }
+
+    private void registerOutcomeGauge(MeterRegistry registry, Outcome outcome) {
+        Gauge.builder("aether_storage_maintenance_last_outcome",
+                      () -> isLastOutcome(outcome))
+             .description("1 for the outcome of the latest storage maintenance tick, 0 for the others")
+             .tag("outcome", outcome.name())
+             .register(registry);
+    }
+
+    private int isLastOutcome(Outcome outcome) {
+        return progress().outcome() == outcome
+               ? 1
+               : 0;
+    }
+
+    private Option<String> failedStreak() {
+        var current = progress.get();
+
+        return Option.some(current.consecutiveFailedTicks())
+                     .filter(streak -> streak > 0)
+                     .map(streak -> streak + " maintenance tick(s) in a row had a failed pass, latest: "
+                                    + current.lastFailure().or("unknown"));
+    }
+
+    private Option<String> overdueTick(long now) {
+        return Option.some(now - lastCompletedMs())
+                     .filter(elapsed -> elapsed > overdueAfterMs)
+                     .map(elapsed -> "no maintenance tick completed for " + elapsed / 1000 + " s");
+    }
+
+    private Option<String> overduePromotion(long now) {
+        return Option.some(promotionStartedMs.get())
+                     .filter(started -> started != NO_CYCLE)
+                     .map(started -> now - started)
+                     .filter(elapsed -> elapsed > overdueAfterMs)
+                     .map(elapsed -> "the promotion cycle has been running for " + elapsed / 1000 + " s");
+    }
+
+    private long lastCompletedMs() {
+        return Math.max(createdMs, progress.get().lastRunMs());
+    }
+
+    private void raiseOverdue(String part, String reason) {
+        degrade.degradedFor(OperatorWarningCode.STORAGE_MAINTENANCE_PASS_OVERDUE,
+                            part,
+                            "Storage maintenance {} is overdue: {}",
+                            part,
+                            reason);
+    }
+
+    private void raisePassCompleted(String part) {
+        degrade.recoveredFor(OperatorWarningCode.STORAGE_MAINTENANCE_PASS_OVERDUE,
+                             part,
+                             "Storage maintenance {} completed again",
+                             part);
     }
 
     /// One pass of the tick. A throw is the pass's failure (BER-free: nothing is retried here, the next tick runs the pass
@@ -183,9 +322,12 @@ public final class StorageMaintenanceDriver {
     private void startPromotionUnlessRunning() {
         if (promoting.compareAndSet(false, true)) {
             try {
+                promotionStartedMs.set(clock.getAsLong());
                 promotionExecutor.execute(this::runPromotionCycle);
             } catch (Throwable t) {
+                promotionStartedMs.set(NO_CYCLE);
                 promoting.set(false);
+                promotionResult.set(Option.some(Causes.fromThrowable(t).<Integer>result()));
                 raisePassFailed(PART_PROMOTION, t.toString());
                 log.warn("Storage promotion cycle could not be started: {} -- the next tick tries again", t.toString());
             }
@@ -197,18 +339,23 @@ public final class StorageMaintenanceDriver {
     /// `finally`, so it is released however the cycle ends, including by an `Error` that `Result.lift` rethrows
     /// (a `VirtualMachineError`); otherwise one such cycle would stop promotion on this node for good. The guarantee is only
     /// that promotion retries every tick; a cycle that keeps failing is surfaced by the stall watch, not by this log line.
+    /// The cycle's result is left for the next tick's progress record (#800), and its end closes an overdue warning.
     @Contract
     @SuppressWarnings("JBCT-EX-01")
     private void runPromotionCycle() {
         try {
-            Result.lift(Causes::fromThrowable, this::promoteAndObserve)
-                  .onFailure(cause -> log.warn("Storage promotion cycle failed: {}",
-                                               cause.message()))
-                  .onFailure(cause -> raisePassFailed(PART_PROMOTION,
-                                                      cause.message()))
-                  .onSuccessRun(() -> raisePassRecovered(PART_PROMOTION))
-                  .onSuccess(StorageMaintenanceDriver::logPromoted);
+            var result = Result.lift(Causes::fromThrowable, this::promoteAndObserve)
+                               .onFailure(cause -> log.warn("Storage promotion cycle failed: {}",
+                                                            cause.message()))
+                               .onFailure(cause -> raisePassFailed(PART_PROMOTION,
+                                                                   cause.message()))
+                               .onSuccessRun(() -> raisePassRecovered(PART_PROMOTION))
+                               .onSuccess(StorageMaintenanceDriver::logPromoted);
+
+            promotionResult.set(Option.some(result));
+            raisePassCompleted(PART_PROMOTION);
         } finally {
+            promotionStartedMs.set(NO_CYCLE);
             promoting.set(false);
         }
     }

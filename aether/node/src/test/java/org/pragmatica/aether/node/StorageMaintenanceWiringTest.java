@@ -14,6 +14,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.storage.AnchorName;
 import org.pragmatica.storage.AnchorRetention;
 import org.pragmatica.storage.BlockId;
@@ -780,7 +781,7 @@ class StorageMaintenanceWiringTest {
                                                                                                           OperatorWarningSink.logOnly()),
                                                                   garbageCollector,
                                                                   Runnable::run,
-                                                                  DegradeReporter.degradeReporter("test"), () -> Unit.unit());
+                                                                  DegradeReporter.degradeReporter("test"), () -> Unit.unit(), System::currentTimeMillis, TimeSpan.timeSpan(5).minutes());
     }
 
     /// Mirrors `LocalDiskTier`'s own private `blockPath` sharding (`{base}/{hex[0:2]}/{hex[2:4]}/{hex}`)

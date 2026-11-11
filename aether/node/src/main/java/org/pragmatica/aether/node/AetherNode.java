@@ -1814,6 +1814,11 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override
+            public Option<String> storageMaintenanceDegradation() {
+                return storageMaintenanceDriver.degradation();
+            }
+
+            @Override
             public Option<PrefetchGossipStats> prefetchGossipStats() {
                 return PrefetchGossipStats.prefetchGossipStats(swimHealthDetector.appGossipStats(), prefetchChannel);
             }
@@ -3014,6 +3019,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                     operatorWarningSink));
         var delegatedStorageAdapter = storageMaintenanceOut.delegatedStorageAdapter();
         var storageMaintenanceDriver = storageMaintenanceOut.storageMaintenanceDriver();
+        // #800: the maintenance gauges, in the registry the Management API scrapes (the management server joins it below).
+        storageMaintenanceDriver.registerMeters(deploymentMeters);
         var consumerGroupRegistry = ConsumerGroupRegistry.consumerGroupRegistry();
         var consumerGroupCoordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(clusterNode,
                                                                                          consumerGroupRegistry,

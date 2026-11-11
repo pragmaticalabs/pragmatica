@@ -17,6 +17,7 @@ import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.PromotionManager;
 import org.pragmatica.storage.TierLevel;
@@ -258,7 +259,7 @@ class StoragePromotionWiringTest {
                                                                                                           OperatorWarningSink.logOnly()),
                                                                   StorageFactory.compositeGarbageCollector(setups),
                                                                   Runnable::run,
-                                                                  DegradeReporter.degradeReporter("test"), () -> Unit.unit());
+                                                                  DegradeReporter.degradeReporter("test"), () -> Unit.unit(), System::currentTimeMillis, TimeSpan.timeSpan(5).minutes());
     }
 
     private static boolean maintenanceActive(StorageFactory.StorageSetup setup) {
