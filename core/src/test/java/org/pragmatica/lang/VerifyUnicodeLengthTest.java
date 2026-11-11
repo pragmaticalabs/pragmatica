@@ -77,6 +77,7 @@ class VerifyUnicodeLengthTest {
         assertFalse(Verify.Is.utf8LengthAtMost(EMOJI, 3));
         assertTrue(Verify.Is.utf8LengthAtMost("𐀀", 4));
         assertFalse(Verify.Is.utf8LengthAtMost("􏿿", 3));
+        assertFalse(Verify.Is.utf8LengthAtMost(Character.toString(0x10000), 3));
     }
 
     @Test
@@ -101,6 +102,8 @@ class VerifyUnicodeLengthTest {
     void utf8LengthAtMost_loneSurrogateCountsOneByte() {
         assertTrue(Verify.Is.utf8LengthAtMost("\uD83D", 1));
         assertTrue(Verify.Is.utf8LengthAtMost("\uDE00", 1));
+        assertTrue(Verify.Is.utf8LengthAtMost("\uD800", 1));
+        assertTrue(Verify.Is.utf8LengthAtMost("\uDFFF", 1));
     }
 
     @Test
