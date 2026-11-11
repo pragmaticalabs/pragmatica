@@ -53,7 +53,7 @@ class ClusterNodeIdsReserveCommand implements Callable<Integer> {
     }
 
     /// Field names MUST match `ManagementApiResponses.ReserveNodeIdsRequest`; the CLI cannot depend on `aether/node`, so
-    /// `ClusterNodeIdsReserveCommandTest` and `NodeIdRoutesTest` pin the two spellings.
+    /// `ClusterNodeIdsReserveCommandTest` pins this side (source, role, count).
     static String buildReserveJson(String source, String role, int count) {
         return "{\"source\":" + MAPPER.writeAsString(source).or("\"\"")
              + ",\"role\":" + MAPPER.writeAsString(role).or("\"\"")
