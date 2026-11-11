@@ -1434,7 +1434,7 @@ public class FactoryClassGenerator {
         }
 
         var argList = wire.stream().map(p -> callArgument(p, importTracker)).collect(Collectors.joining(", "));
-
+        // `new` is deliberate (owner ruling on #3019, 2026-11-10): the record is processor-synthesised and only wraps the call's parameters as they are, so it cannot fail.
         return "new " + method.requestRecordName() + "(" + argList + ")";
     }
 
@@ -2742,7 +2742,7 @@ public class FactoryClassGenerator {
         }
 
         var ctorArgs = components.stream().map(ComponentInfo::name).collect(Collectors.joining(", "));
-
+        // `new` is deliberate (CTO ruling on #3019, 2026-11-11): the invariant ran in the producing side's factory and this rebuilds a value from a trusted internal wire; decode-side re-validation needs a Result channel in the reader contract.
         out.println("                            return new " + name + "(" + ctorArgs + ");");
         out.println("                        })" + comma);
     }

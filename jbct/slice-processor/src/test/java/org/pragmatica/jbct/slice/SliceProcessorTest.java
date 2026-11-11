@@ -12,6 +12,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import javax.tools.JavaFileObject;
 import javax.tools.StandardLocation;
@@ -894,6 +896,60 @@ class SliceProcessorTest {
         assertThat(diagnostics).contains("also a component of another type the slice decodes or answers");
     }
 
+    /// #2963 N1: a container that reaches the merged record keeps the component strict, so every container form
+    /// warns -- as a response (List, Set, Option, Map, nested generics) and as a body of another route.
+    @ParameterizedTest(name = "response {0}")
+    @ValueSource(strings = {"java.util.List<Note>",
+                            "java.util.Set<Note>",
+                            "org.pragmatica.lang.Option<Note>",
+                            "java.util.Map<String, Note>",
+                            "java.util.List<java.util.List<Note>>",
+                            "org.pragmatica.lang.Option<java.util.List<Note>>"})
+    void mergedRoute_whoseRecordIsInsideAContainerResponse_warns(String response, @TempDir Path classes) throws IOException {
+        var diagnostics = compileWarnings(classes,
+                                          "merged = \"PUT /notes/{id}\"\nlisted = \"GET /notes\"",
+                                          "Promise<String> merged(Note note);\n    Promise<" + response + "> listed();",
+                                          List.of(record("Note", "String id, String text")));
+
+        assertThat(diagnostics).contains("Route 'merged' (PUT /notes/{id}): component 'id' of upload.Note");
+        assertThat(diagnostics).contains("also a component of another type the slice decodes or answers");
+    }
+
+    @Test
+    void mergedRoute_whoseRecordIsTheElementOfAnotherRoutesListBody_warns(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWarnings(classes,
+                                          "merged = \"PUT /notes/{id}\"\nbulk = \"POST /bulk\"",
+                                          "Promise<String> merged(Note note);\n    Promise<String> bulk(java.util.List<Note> notes);",
+                                          List.of(record("Note", "String id, String text")));
+
+        assertThat(diagnostics).contains("Route 'merged' (PUT /notes/{id}): component 'id' of upload.Note");
+        assertThat(diagnostics).contains("also a component of another type the slice decodes or answers");
+    }
+
+    /// Negative control for the container forms: a container of an UNRELATED record leaves the merged one relaxed.
+    @Test
+    void mergedRoute_whoseRecordIsNotInTheContainer_doesNotWarn(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWarnings(classes,
+                                          "merged = \"PUT /notes/{id}\"\nlisted = \"GET /others\"",
+                                          "Promise<String> merged(Note note);\n    Promise<java.util.List<Other>> listed();",
+                                          List.of(record("Note", "String id, String text"), record("Other", "String name")));
+
+        assertThat(diagnostics).doesNotContain("stays required in the JSON body");
+    }
+
+    /// #2963 N2: one warning per (route, component), however many uses keep the component strict.
+    @Test
+    void mergedRoute_whoseComponentStaysRequiredBySeveralUses_warnsExactlyOnce(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWarnings(classes,
+                                          "merged = \"PUT /notes/{id}\"\nplain = \"POST /notes\"\nlisted = \"GET /notes\"",
+                                          "Promise<String> merged(Note note);\n    Promise<String> plain(Note note);\n"
+                                         + "    Promise<java.util.List<Note>> listed();",
+                                          List.of(record("Note", "String id, String text")));
+
+        assertThat(occurrences(diagnostics, "Route 'merged' (PUT /notes/{id}): component 'id' of upload.Note")).isEqualTo(1);
+        assertThat(occurrences(diagnostics, "stays required in the JSON body")).isEqualTo(1);
+    }
+
     /// Negative control for the three above: the same record on a merged route alone is relaxed, and draws no warning.
     @Test
     void mergedRoute_whoseComponentIsRelaxed_doesNotWarn(@TempDir Path classes) throws IOException {
@@ -906,6 +962,10 @@ class SliceProcessorTest {
         assertThat(joinMessages(diagnostics.stream())).contains("Generated routes: UploadService");
         assertThat(joinMessages(diagnostics.stream().filter(SliceProcessorTest::isWarning)))
             .doesNotContain("stays required in the JSON body");
+    }
+
+    private static int occurrences(String text, String needle) {
+        return text.split(java.util.regex.Pattern.quote(needle), -1).length - 1;
     }
 
     private static JavaFileObject record(String name, String components) {
