@@ -183,6 +183,15 @@ class NodeLeaseTest {
     }
 
     @Test
+    void renew_seqStartsAboveTheWallClockMicrosAtCreation_soAPreviousIncarnationsRenewalNeverMatches() {
+        lease.renew();
+        lease.renew();
+
+        assertThat(submitted.getFirst()).isGreaterThan(TimeUnit.MILLISECONDS.toMicros(1_700_000_000_000L));
+        assertThat(submitted.get(1)).isEqualTo(submitted.getFirst() + 1);
+    }
+
+    @Test
     void renew_whileRevoked_keepsSubmitting() {
         lease.revoke();
         lease.renew();
