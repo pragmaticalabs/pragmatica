@@ -415,10 +415,10 @@ public interface LeaderManager {
             return org.pragmatica.lang.Unit.unit();
         }
 
+        /// A leader that lost eligibility is removed view-free (#3044): no read of the view, no re-dispatched view.
         private void installLeaderEligibility(List<NodeId> members) {
             var previous = context.currentLeader();
 
-            // A leader that lost eligibility is removed view-free (#3044): no read of the view, no re-dispatched view.
             context.installVoters(members);
             previous.filter(node -> !context.isEligible(node))
                     .onPresent(node -> fsm.dispatch(new LeaderElectionEvents.PeerRemovedFromView(node)));
