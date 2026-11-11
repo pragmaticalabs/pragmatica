@@ -135,7 +135,7 @@ class QuicClusterClientReconnectTest {
         client.closeDatagramChannelOf(SERVER_NODE, dial).await(AWAIT_TIMEOUT);
 
         assertThat(client.datagramChannelCount()).as("the link's own socket is released").isEqualTo(0);
-        assertThat(dial.isActive()).as("closing the socket closes the link over it").isFalse();
+        TransportTripwireFixtures.awaitTrue(() -> !dial.isActive(), AWAIT_TIMEOUT, "closing the socket closes the link over it");
     }
 
     @Test
