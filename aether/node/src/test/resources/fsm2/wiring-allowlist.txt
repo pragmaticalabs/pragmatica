@@ -43,6 +43,7 @@
 1|AetherNode.java|a LEGACY target handed to DeploymentWiring (the line continues the call), bound only under LEGACY (B1..B12)|nodeDeploymentManager::onNodeArtifactPut))
 1|AetherNode.java|a LEGACY target handed to DeploymentWiring (the line continues the call), bound only under LEGACY (B1..B12)|clusterDeploymentManager::onNodeArtifactPut))
 1|AetherNode.java|a LEGACY target handed to DeploymentWiring (the line continues the call), bound only under LEGACY (B1..B12)|nodeDeploymentManager::onNodeArtifactRemove))
+1|AetherNode.java|a LEGACY target handed to DeploymentWiring (the line continues the call), bound only under LEGACY (#3028 C3, ADDED: a new legacy binding routed through DeploymentWiring.legacy, dropped under FSM2)|nodeDeploymentManager::onReplayDelivered);
 1|AetherNode.java|a LEGACY target handed to DeploymentWiring (the line continues the call), bound only under LEGACY (B1..B12)|clusterDeploymentManager::onNodeArtifactRemove))
 1|AetherNode.java|a LEGACY target handed to DeploymentWiring, which binds it only under LEGACY and drops it, counted, under FSM2 (B1..B12)|var configApplied = deploymentWiring.configApplied(nodeDeploymentManager::onConfigChanged);
 1|AetherNode.java|a LEGACY target handed to DeploymentWiring (the line continues the call), bound only under LEGACY (B1..B12)|clusterDeploymentManager::onGovernorAnnouncementPut));
