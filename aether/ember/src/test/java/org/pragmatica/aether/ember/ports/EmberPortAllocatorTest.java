@@ -4,7 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.ember.ports;
 
+import java.net.DatagramSocket;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.nio.channels.FileChannel;
+import java.nio.channels.OverlappingFileLockException;
 import java.nio.file.Files;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -26,6 +32,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.pragmatica.lang.Unit.unit;
 
 
@@ -38,6 +45,9 @@ class EmberPortAllocatorTest {
 
     @TempDir
     Path lockDir;
+
+    @TempDir
+    Path otherLockDir;
 
     private final List<PortClaim> open = new CopyOnWriteArrayList<>();
 
@@ -93,6 +103,91 @@ class EmberPortAllocatorTest {
 
         assertThat(open).hasSize(8);
         assertThat(ports).doesNotHaveDuplicates();
+    }
+
+    @Test
+    @Timeout(60)
+    void claim_differentLockDirsInOneJvm_stillNeverShareABlock_becauseTheRegistryIsJvmWide() {
+        var first = allocator(50, 1);
+        var second = first.lockDir(otherLockDir);
+
+        claimed(first, 3);
+
+        assertThat(failureOf(second, 3)).isInstanceOf(PortError.NoFreeBlock.class);
+    }
+
+    @Test
+    @Timeout(60)
+    void claim_foreignTcpBinderInTheFirstBlock_skipsThatBlock() throws Exception {
+        var allocator = allocator(51, 2);
+        var firstBase = allocator.first();
+
+        try (var foreign = new ServerSocket(firstBase + 5, 1, InetAddress.getLoopbackAddress())) {
+            assertThat(claimed(allocator, 1).block().base()).isEqualTo(firstBase + BLOCK);
+        }
+    }
+
+    @Test
+    @Timeout(60)
+    void claim_foreignUdpBinderInTheFirstBlock_skipsThatBlock() throws Exception {
+        var allocator = allocator(53, 2);
+        var firstBase = allocator.first();
+
+        try (var foreign = new DatagramSocket(firstBase + 7, InetAddress.getLoopbackAddress())) {
+            assertThat(claimed(allocator, 1).block().base()).isEqualTo(firstBase + BLOCK);
+        }
+    }
+
+    @Test
+    @Timeout(60)
+    void claimsOff_foreignBinderInTheFirstBlock_isStillSkippedByTheBindProbe() throws Exception {
+        var allocator = allocator(55, 2).claims(EmberPortAllocator.Claims.OFF);
+        var firstBase = allocator.first();
+
+        try (var foreign = new ServerSocket(firstBase + 3, 1, InetAddress.getLoopbackAddress())) {
+            assertThat(claimed(allocator, 1).block().base()).isEqualTo(firstBase + BLOCK);
+        }
+    }
+
+    @Test
+    @Timeout(60)
+    void claim_afterProbeHookFails_releasesTheClaim() {
+        var allocator = allocator(57, 1);
+        var hooked = allocator.afterProbe(_ -> Causes.cause("hook refused").result());
+
+        assertThat(failureOf(hooked, 1).message()).contains("hook refused");
+        claimed(allocator, 1);
+    }
+
+    @Test
+    void isBindCollision_recognisesEachOfTheTwoMessages_andNothingElse() {
+        assertThat(BindProbe.isBindCollision("Failed to bind to port 1: Address already in use")).isTrue();
+        assertThat(BindProbe.isBindCollision("java.net.BindException: cannot assign")).isTrue();
+        assertThat(BindProbe.isBindCollision("connection refused")).isFalse();
+    }
+
+    @Test
+    @Timeout(60)
+    void claim_lockChannelBroken_isRefusedAsLockFailed_notReadAsABusyBlock() throws Exception {
+        var allocator = allocator(58, 1);
+
+        claimed(allocator, 1).close();
+        PortLockFile.CHANNELS.get(lockDir).close();
+
+        assertThat(failureOf(allocator, 1)).isInstanceOf(PortError.LockFailed.class);
+    }
+
+    @Test
+    @Timeout(60)
+    void claim_locksEveryPortOfTheBlock() throws Exception {
+        var claim = claimed(allocator(59, 1), 1);
+
+        try (var other = FileChannel.open(lockDir.resolve("ports.lock"), StandardOpenOption.READ, StandardOpenOption.WRITE)) {
+            for (var port : claim.block().ports().boxed().toList()) {
+                assertThatThrownBy(() -> other.tryLock(port, 1, false)).as("port %d is locked", port)
+                                                                       .isInstanceOf(OverlappingFileLockException.class);
+            }
+        }
     }
 
     @Test
