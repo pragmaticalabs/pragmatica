@@ -1028,6 +1028,16 @@ public class RabiaEngine<C extends Command> {
     private final ParticipationMarker participationMarker;
     private final ConsensusMetrics metrics;
     private final boolean activationGated;
+
+    /// #2981 step 6: runs once per engine start, after quorum is first established and before the node's first
+    /// consensus apply (sync). Default no-op; failure refuses startup. NOT the `activationGated` authorizer.
+    private volatile Supplier<Promise<Unit>> preSyncCheck = () -> Promise.success(Unit.unit());
+    /// True until a check is installed, so an engine without one behaves exactly as before.
+    private volatile boolean preSyncDone = true;
+    private final AtomicBoolean preSyncRunning = new AtomicBoolean();
+    /// The newest accepted cluster-state edge; the pre-sync completion consults it, so a PASSIVE that arrived
+    /// during the wait suppresses sync.
+    private volatile ClusterStateNotification latestClusterState;
     private final TimeSpan phaseStallCheck;
     private volatile boolean activationAuthorized;
     private volatile boolean observerMode;
@@ -1372,6 +1382,7 @@ public class RabiaEngine<C extends Command> {
         }
 
         log.trace("Node {} received cluster state {}", self, clusterStateNotification);
+        latestClusterState = clusterStateNotification;
         switch (clusterStateNotification.state()) {
             case ACTIVE -> handleClusterActive(clusterStateNotification);
             case PASSIVE -> pauseForQuorumLoss();
@@ -1380,6 +1391,12 @@ public class RabiaEngine<C extends Command> {
 
     private void handleClusterActive(ClusterStateNotification notification) {
         if (authorityFailure.isPresent()) {
+            return;
+        }
+
+        if (!preSyncDone) {
+            runPreSyncCheck();
+
             return;
         }
 
@@ -1410,6 +1427,43 @@ public class RabiaEngine<C extends Command> {
             // Stopped (cold start) or Observing — begin a sync round to catch up, then Active.
             clusterConnected();
         }
+    }
+
+    /// Install the pre-sync check (#2981 step 6). Install before [#start]; production never replaces the default
+    /// except through `RabiaNode` wiring.
+    @Contract
+    public void preSyncCheck(Supplier<Promise<Unit>> check) {
+        this.preSyncCheck = check;
+        this.preSyncDone = false;
+    }
+
+    /// Runs the pre-sync check without blocking the notifying thread: a wait already in flight absorbs repeated ACTIVE
+    /// edges, and the completion re-enters on the engine thread.
+    private void runPreSyncCheck() {
+        if (preSyncRunning.compareAndSet(false, true)) {
+            preSyncCheck.get()
+                        .onResult(result -> safeExecute(() -> preSyncCompleted(result)));
+        }
+    }
+
+    private void preSyncCompleted(Result<Unit> result) {
+        preSyncRunning.set(false);
+        result.onSuccess(_ -> preSyncPassed())
+              .onFailure(this::refuseStartup);
+    }
+
+    private void preSyncPassed() {
+        preSyncDone = true;
+        Option.option(latestClusterState)
+              .filter(latest -> latest.state() == ClusterStateNotification.State.ACTIVE)
+              .onPresent(this::handleClusterActive);
+    }
+
+    private void refuseStartup(Cause cause) {
+        log.error("Node {}: refusing to start consensus: {}", self, cause.message());
+        startPromise.get()
+                    .fail(cause);
+        var _ = stop();
     }
 
     /// Authorize a gated engine to start consensus participation.

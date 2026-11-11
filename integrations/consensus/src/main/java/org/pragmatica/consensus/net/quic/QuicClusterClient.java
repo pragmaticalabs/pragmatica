@@ -931,6 +931,8 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             // at bind time) — eviction closes the right channel, and no code path can register
             // a connection under an unverified id.
             var peerConnection = quicPeerConnection(peerId, selfId, generation, quicChannel);
+
+            peerConnection.helloLabels(hello.labels());
             // The handshake stream is the CONTROL lane.
             var _ = peerConnection.registerStream(StreamType.CONTROL, (QuicStreamChannel) ctx.channel());
             // #1578: stamp the VERIFIED connection so a lane the acceptor opens finds it (the acceptor

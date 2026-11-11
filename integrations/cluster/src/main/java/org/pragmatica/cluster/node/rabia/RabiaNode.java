@@ -29,6 +29,7 @@ import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionContext;
 import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.net.JoinGenerationGuard;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkMessage.DiscoverNodes;
 import org.pragmatica.consensus.net.NetworkMessage.DiscoveredNodes;
@@ -555,6 +556,10 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                           RabiaEngine.DEFAULT_PHASE_STALL_CHECK,
                                           consensusBridge);
 
+        consensus.preSyncCheck(() -> JoinGenerationGuard.admit(joinDecisionSet(topologyManager),
+                                                               network::peerHelloLabels,
+                                                               config.joinGenerationWait(),
+                                                               JoinGenerationGuard.WIRE_GENERATION));
         network.setProposalRelayMembership(id -> consensus.voterConfiguration()
                                                           .map(voters -> voters.contains(id))
                                                           .or(false));
@@ -1058,6 +1063,16 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     TimeSpan DEFAULT_PROPOSAL_TIMEOUT = timeSpan(8).seconds();
 
     @SuppressWarnings("unchecked")
+    /// The wire-generation join guard decides over the core voters other than this node (#2981 step 6).
+    private static Set<NodeId> joinDecisionSet(TopologyObserver topologyManager) {
+        var self = topologyManager.self().id();
+
+        return topologyManager.coreNodes()
+                              .stream()
+                              .filter(id -> !id.equals(self))
+                              .collect(Collectors.toUnmodifiableSet());
+    }
+
     private static <C extends Command> Promise<Unit> submitLeaderProposal(RabiaEngine<C> consensus,
                                                                           NodeId candidate,
                                                                           long viewSequence,

@@ -61,6 +61,7 @@ import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.node.SwimGossipEncryptors;
 import org.pragmatica.aether.node.labels.ContainerLabelInspector;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.JoinGenerationGuard;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.cluster.state.kvstore.DispatcherFailureSink;
 import org.pragmatica.cluster.state.kvstore.FatalEscapeRelay;
@@ -1471,6 +1472,8 @@ public record Main(String[] args) {
         envLookup.apply("AETHER_SOURCE").onPresent(s -> labels.put(NodeInfo.LABEL_SOURCE, s));
         // #1543 part C: the running binary's own version, so an upgrade can see what each node actually runs.
         labels.put(NodeInfo.LABEL_VERSION, AetherNode.VERSION);
+        // #2981 step 6: the wire generation, so a newer node can refuse to join a cluster with an older member.
+        labels.put(NodeInfo.LABEL_WIRE_GENERATION, Integer.toString(JoinGenerationGuard.WIRE_GENERATION));
         // #689: the default is deliberate (blank counts as core — the safe failure direction for
         // the core tier) and unchanged; what was missing is the node saying so. A worker started
         // without this label joins the core set on every peer and nothing else reports why.
