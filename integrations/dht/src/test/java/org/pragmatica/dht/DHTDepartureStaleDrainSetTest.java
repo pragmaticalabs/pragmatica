@@ -39,7 +39,7 @@ class DHTDepartureStaleDrainSetTest {
     private static final byte[] DEPOSED = "deposed".getBytes(StandardCharsets.UTF_8);
 
     // ---- 4. (a): co-drain with a stale or missing drain-set entry, real ring ----
-    @Test
+    @org.junit.jupiter.api.RepeatedTest(200)
     void coDrain_realRing_staleEntryNeverLosesALastCopy_controlWithoutTheSetDoes() {
         var rnd = new Random(1820);
         int lossWithStale = 0, lossWithExact = 0, lossWithEmpty = 0, trials = 0;
@@ -97,7 +97,7 @@ class DHTDepartureStaleDrainSetTest {
         cluster.departing.addAll(coDeparting);
         var pushes = new ArrayList<Promise<Unit>>();
         drainers.forEach(d -> pushes.add(cluster.members.get(d).rebalancer()
-                                                .pushOnDeparture(TimeSpan.timeSpan(50).millis(), coDeparting,
+                                                .pushOnDeparture(TimeSpan.timeSpan(Long.getLong("dht3049.budgetMs", 50L)).millis(), coDeparting,
                                                                  DeparturePushObserver.noop())));
         cluster.queueing = false;
         cluster.flush(drainers);
