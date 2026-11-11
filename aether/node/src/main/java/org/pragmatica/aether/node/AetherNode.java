@@ -1754,6 +1754,7 @@ public interface AetherNode extends ManageableNode {
                           Option<ProjectionNodeSupport> projectionNodeSupport,
                           StreamNamespacesService streamNamespacesService,
                           Map<String, StorageFactory.StorageSetup> storageSetups,
+                          StorageMaintenanceDriver storageMaintenanceDriver,
                           ClusterTopologyManager clusterTopologyManagerInstance,
                           EventLoopMetricsCollector eventLoopMetricsCollector,
                           CoreSwimHealthDetector swimHealthDetector,
@@ -1806,6 +1807,16 @@ public interface AetherNode extends ManageableNode {
                           NodeReactors reactors,
                           LeaderDeactivation leaderDeactivation) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
+
+            @Override
+            public StorageMaintenanceProgress storageMaintenanceProgress() {
+                return storageMaintenanceDriver.progress();
+            }
+
+            @Override
+            public Option<String> storageMaintenanceDegradation() {
+                return storageMaintenanceDriver.degradation();
+            }
 
             @Override
             public Option<PrefetchGossipStats> prefetchGossipStats() {
@@ -3013,6 +3024,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                     operatorWarningSink));
         var delegatedStorageAdapter = storageMaintenanceOut.delegatedStorageAdapter();
         var storageMaintenanceDriver = storageMaintenanceOut.storageMaintenanceDriver();
+        // #800: the maintenance gauges, in the registry the Management API scrapes (the management server joins it below).
+        storageMaintenanceDriver.registerMeters(deploymentMeters);
         var consumerGroupRegistry = ConsumerGroupRegistry.consumerGroupRegistry();
         var consumerGroupCoordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(clusterNode,
                                                                                          consumerGroupRegistry,
@@ -3671,6 +3684,7 @@ public interface AetherNode extends ManageableNode {
                                   Option.some(projectionNodeSupport),
                                   streamNamespacesService,
                                   storageSetups,
+                                  storageMaintenanceDriver,
                                   clusterTopologyManager,
                                   eventLoopMetricsCollector,
                                   swimHealthDetector,
@@ -3887,6 +3901,7 @@ public interface AetherNode extends ManageableNode {
                                                                             Option.some(projectionNodeSupport),
                                                                             streamNamespacesService,
                                                                             storageSetups,
+                                                                            storageMaintenanceDriver,
                                                                             clusterTopologyManager,
                                                                             eventLoopMetricsCollector,
                                                                             swimHealthDetector,

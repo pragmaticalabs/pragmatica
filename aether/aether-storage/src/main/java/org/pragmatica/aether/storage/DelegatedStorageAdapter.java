@@ -24,11 +24,16 @@ public final class DelegatedStorageAdapter {
     private static final Logger log = LoggerFactory.getLogger(DelegatedStorageAdapter.class);
     /// The operator-warning subject of the leader-pinned group, which belongs to no single storage instance (#800, #1736).
     public static final String REPORT_SUBJECT = "leader-maintenance";
+    /// #800: retries of a failed activation or deactivation per leader-change call, one per maintenance tick.
+    static final int MAX_RETRIES = 3;
 
     private final DemotionManager demotionManager;
     private final StorageGarbageCollector garbageCollector;
     private final AtomicBoolean active = new AtomicBoolean(false);
     private final DegradeReporter degrade;
+    /// #800: what the latest `activate()` / `deactivate()` asked for, and how many retries of it remain. Guarded by `this`.
+    private boolean wantActive = false;
+    private int retriesLeft = 0;
 
     private DelegatedStorageAdapter(DemotionManager demotionManager,
                                     StorageGarbageCollector garbageCollector,
@@ -127,8 +132,17 @@ public final class DelegatedStorageAdapter {
     /// `deactivate()` could reach it, because that guards on the adapter being active. Both methods are
     /// synchronized so an activation and a deactivation never interleave their manager calls.
     public synchronized Promise<Unit> activate() {
+        wantActive = true;
+        retriesLeft = MAX_RETRIES;
+        degrade.recovered(OperatorWarningCode.STORAGE_MAINTENANCE_NOT_STOPPED,
+                          "Leader-pinned storage maintenance runs on the leader again");
+
+        return Promise.success(attemptActivation());
+    }
+
+    private Unit attemptActivation() {
         if (active.get()) {
-            return Promise.success(unit());
+            return unit();
         }
 
         var demotion = demotionManager.activate().onFailure(cause -> logActivationFailure("demotion manager", cause));
@@ -143,7 +157,25 @@ public final class DelegatedStorageAdapter {
               .onFailure(this::reportNotActivated)
               .onFailureRun(() -> stopPartiallyActivated(demotion, collector));
 
-        return Promise.success(unit());
+        return unit();
+    }
+
+    /// #800: retries what the last `activate()` or `deactivate()` failed to reach, at most [#MAX_RETRIES] times per such call
+    /// (FER: the failure is already raised as an operator warning; the retry only shortens the time to the next election).
+    /// Driven by the maintenance tick, so the interval is the maintenance cadence. A no-op when the adapter is in the wanted state.
+    public synchronized Unit retryPending() {
+        if (retriesLeft > 0 && wantActive != active.get()) {
+            retriesLeft--;
+            log.info("STORAGE delegation group not in the wanted state (wanted active={}), retrying; {} retries left after this one",
+                     wantActive,
+                     retriesLeft);
+
+            return wantActive
+                   ? attemptActivation()
+                   : attemptDeactivation().or(unit());
+        }
+
+        return unit();
     }
 
     private void reportActivated() {
@@ -154,7 +186,7 @@ public final class DelegatedStorageAdapter {
     private void reportNotActivated(Cause cause) {
         degrade.degraded(OperatorWarningCode.STORAGE_MAINTENANCE_NOT_STARTED,
                          "Leader-pinned storage maintenance (demotion, garbage collection) could not be started: {}; "
-                        + "it is retried on the next leader election",
+                        + "it is retried on the next maintenance ticks and on the next leader election",
                          cause.message());
     }
 
@@ -170,17 +202,38 @@ public final class DelegatedStorageAdapter {
     /// A failed deactivation keeps it active (a maintenance pass may still be scheduled or running) and
     /// is logged at WARN with the cause; a later `deactivate()` retries.
     public synchronized Promise<Unit> deactivate() {
+        wantActive = false;
+        retriesLeft = MAX_RETRIES;
+
+        return Promise.success(attemptDeactivation().or(unit()));
+    }
+
+    private Result<Unit> attemptDeactivation() {
         if (!active.get()) {
-            return Promise.success(unit());
+            return Result.success(unit());
         }
 
-        Result.all(garbageCollector.deactivate().onFailure(cause -> logDeactivationFailure("garbage collector", cause)),
-                   demotionManager.deactivate().onFailure(cause -> logDeactivationFailure("demotion manager", cause)))
-              .map((_, _) -> unit())
-              .onSuccessRun(() -> active.set(false))
-              .onSuccessRun(() -> log.info("STORAGE delegation group deactivated"));
+        return Result.all(garbageCollector.deactivate()
+                                          .onFailure(cause -> logDeactivationFailure("garbage collector", cause)),
+                          demotionManager.deactivate()
+                                         .onFailure(cause -> logDeactivationFailure("demotion manager", cause)))
+                     .map((_, _) -> unit())
+                     .onSuccessRun(() -> active.set(false))
+                     .onSuccessRun(() -> log.info("STORAGE delegation group deactivated"))
+                     .onSuccessRun(this::reportDeactivated)
+                     .onFailure(this::reportNotDeactivated);
+    }
 
-        return Promise.success(unit());
+    private void reportDeactivated() {
+        degrade.recovered(OperatorWarningCode.STORAGE_MAINTENANCE_NOT_STOPPED,
+                          "Leader-pinned storage maintenance stopped");
+    }
+
+    private void reportNotDeactivated(Cause cause) {
+        degrade.degraded(OperatorWarningCode.STORAGE_MAINTENANCE_NOT_STOPPED,
+                         "Leader-pinned storage maintenance (demotion, garbage collection) could not be stopped: {}; it keeps "
+                        + "running on a node that is not the leader and is retried on the next maintenance ticks",
+                         cause.message());
     }
 
     public boolean isActive() {

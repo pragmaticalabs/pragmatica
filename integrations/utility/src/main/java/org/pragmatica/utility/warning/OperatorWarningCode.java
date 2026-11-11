@@ -795,6 +795,37 @@ public enum OperatorWarningCode {
                                 "storage",
                                 WarningLevel.INFO,
                                 STORAGE_MAINTENANCE_NOT_STARTED),
+    /// The leader-pinned storage maintenance group (demotion, garbage collection) could not be stopped when this node stopped
+    /// leading (#800): it keeps running on a node that is no longer the leader. The subject is `leader-maintenance`. Closed by
+    /// [#STORAGE_MAINTENANCE_STOPPED].
+    STORAGE_MAINTENANCE_NOT_STOPPED("storage-maintenance-not-stopped", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STORAGE_MAINTENANCE_NOT_STOPPED], same subject: the group was stopped, or this node leads again so
+    /// running it is correct. INFO, published only after a published failure for the subject (#752 mechanism).
+    STORAGE_MAINTENANCE_STOPPED("storage-maintenance-stopped",
+                                "storage",
+                                WarningLevel.INFO,
+                                STORAGE_MAINTENANCE_NOT_STOPPED),
+    /// One storage maintenance pass (`demotion`, `garbage-collection` or `promotion`) threw instead of completing (#800), so
+    /// that part of maintenance did nothing this tick. Raised once per part; the subject is `storage-maintenance/<part>` and
+    /// the message carries the cause. Closed by [#STORAGE_MAINTENANCE_PASS_RECOVERED].
+    STORAGE_MAINTENANCE_PASS_FAILED("storage-maintenance-pass-failed", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STORAGE_MAINTENANCE_PASS_FAILED], same subject: the next pass of that part completed. INFO, published
+    /// only after a published failure for the subject (#752 mechanism).
+    STORAGE_MAINTENANCE_PASS_RECOVERED("storage-maintenance-pass-recovered",
+                                       "storage",
+                                       WarningLevel.INFO,
+                                       STORAGE_MAINTENANCE_PASS_FAILED),
+    /// A storage maintenance pass has not completed within three maintenance intervals (#800): the tick (subject
+    /// `storage-maintenance/tick`, no tick completed in that time, so a pass is blocked or the ticks are not running) or a
+    /// promotion cycle (subject `storage-maintenance/promotion`, one cycle running that long). Raised once per subject by the
+    /// maintenance watchdog. Closed by [#STORAGE_MAINTENANCE_PASS_COMPLETED].
+    STORAGE_MAINTENANCE_PASS_OVERDUE("storage-maintenance-pass-overdue", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STORAGE_MAINTENANCE_PASS_OVERDUE], same subject: the next tick or promotion cycle completed. INFO,
+    /// published only after a published overdue warning for the subject (#752 mechanism).
+    STORAGE_MAINTENANCE_PASS_COMPLETED("storage-maintenance-pass-completed",
+                                       "storage",
+                                       WarningLevel.INFO,
+                                       STORAGE_MAINTENANCE_PASS_OVERDUE),
     /// A stream append log cut a torn tail while opening: bytes past the last valid record were discarded (they were never
     /// acknowledged). The subject is the storage instance; the message names the log, the byte range and the last valid offset. The
     /// cut happens once, at open, so there is no recovery code. Raised once per instance: a second log cut in the same boot is in

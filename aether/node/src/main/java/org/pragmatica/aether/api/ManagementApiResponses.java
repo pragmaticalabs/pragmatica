@@ -75,7 +75,8 @@ public sealed interface ManagementApiResponses {
                           int connectedPeers,
                           int metricsNodeCount,
                           int sliceCount,
-                          String buildTimestamp) {}
+                          String buildTimestamp,
+                          List<ComponentHealth> components) {}
 
     record LivenessResponse(String status, String nodeId, String state, boolean ready) {}
 
