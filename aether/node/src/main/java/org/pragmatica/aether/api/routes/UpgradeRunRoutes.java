@@ -78,24 +78,24 @@ public final class UpgradeRunRoutes implements RouteSource {
 
     UpgradeRunResponse status() {
         return service().status()
-                      .fold(UpgradeRunResponse::none, UpgradeRunResponse::of);
+                      .fold(UpgradeRunResponse::none, UpgradeRunResponse::upgradeRunResponse);
     }
 
     Promise<UpgradeRunResponse> pause() {
         return service().pause()
-                      .map(UpgradeRunResponse::of)
+                      .map(UpgradeRunResponse::upgradeRunResponse)
                       .mapError(UpgradeRunRoutes::asManagementError);
     }
 
     Promise<UpgradeRunResponse> resume() {
         return service().resume()
-                      .map(UpgradeRunResponse::of)
+                      .map(UpgradeRunResponse::upgradeRunResponse)
                       .mapError(UpgradeRunRoutes::asManagementError);
     }
 
     Promise<UpgradeRunResponse> abort() {
         return service().abort()
-                      .map(UpgradeRunResponse::of)
+                      .map(UpgradeRunResponse::upgradeRunResponse)
                       .mapError(UpgradeRunRoutes::asManagementError);
     }
 

@@ -844,7 +844,7 @@ public interface StreamConsumerManager {
         /// encounter order, so resolution picks the same first match the full-list scan did.
         private static Map<ConsumerGroupKey, List<ConsumerDeclaration>> declarationsByGroup(List<ConsumerDeclaration> declarations) {
             return declarations.stream()
-                               .collect(Collectors.groupingBy(ConsumerGroupKey::of));
+                               .collect(Collectors.groupingBy(ConsumerGroupKey::consumerGroupKey));
         }
 
         private static List<ArtifactBase> distinctBases(List<ConsumerDeclaration> declarations) {
