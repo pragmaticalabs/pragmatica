@@ -300,6 +300,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// no [PeerTransitionRecord] reports. Defaults to a no-op; set only through [#attachObserverForTests].
     private volatile Consumer<AttachObservation> attachObserver = ignored -> {};
 
+    /// Test hook (#2971): told of every view `currentView()` reads, on the reading thread, before the read returns to
+    /// the observation it builds. Lets a test hold an observation between its view read and anything after it, the
+    /// window the observation sequence must not depend on. Defaults to a no-op; set only through
+    /// [#viewReadObserverForTests].
+    private volatile Consumer<List<NodeId>> viewReadObserver = ignored -> {};
+
     /// REMOVE view-changes report a connectivity observation upstream via
     /// `PeerConnectivityReporter` on leader and follower alike (#691 removed the leader-only
     /// `QuicDisconnectListener`, a v1 surface whose only consumer was deleted with the
@@ -3513,6 +3519,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
                               : observer;
     }
 
+    /// Package-private test hook (#2971) — observe every view read for a view-carrying observation, on the reading
+    /// thread, before the observation is built. A null observer restores the no-op.
+    @Contract
+    void viewReadObserverForTests(Consumer<List<NodeId>> observer) {
+        this.viewReadObserver = observer == null
+                                ? ignored -> {}
+                                : observer;
+    }
+
     /// Package-private test seam (#1578) — dial `peer` through the production dial path, optionally
     /// as the non-designated initiator, so a test can force BOTH ends of a pair to dial at once.
     @Contract
@@ -3780,13 +3795,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     private List<NodeId> currentView() {
-        return Stream.concat(Stream.of(self.id()),
-                             peers.values()
-                                  .stream()
-                                  .filter(p -> p.phase() == PeerState.Phase.CONNECTED)
-                                  .map(PeerState::peerId))
-                     .sorted()
-                     .toList();
+        var view = Stream.concat(Stream.of(self.id()),
+                                 peers.values()
+                                      .stream()
+                                      .filter(p -> p.phase() == PeerState.Phase.CONNECTED)
+                                      .map(PeerState::peerId))
+                         .sorted()
+                         .toList();
+
+        viewReadObserver.accept(view);
+
+        return view;
     }
 
     // --- Internal: shutdown ---

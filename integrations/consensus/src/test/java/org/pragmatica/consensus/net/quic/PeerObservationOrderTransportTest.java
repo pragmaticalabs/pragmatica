@@ -67,6 +67,9 @@ class PeerObservationOrderTransportTest {
     private final CountDownLatch joinHeld = new CountDownLatch(1);
     private final CountDownLatch evictionHandled = new CountDownLatch(1);
     private final CountDownLatch releaseJoin = new CountDownLatch(1);
+    private final CountDownLatch viewReadHeld = new CountDownLatch(1);
+    private final CountDownLatch releaseViewRead = new CountDownLatch(1);
+    private final AtomicBoolean viewReadArmed = new AtomicBoolean(true);
     private final AtomicBoolean joinHandled = new AtomicBoolean();
     private final AtomicBoolean joinOutlivedTheGate = new AtomicBoolean();
     private FsmBackedLeaderManager manager;
@@ -74,6 +77,7 @@ class PeerObservationOrderTransportTest {
     @AfterEach
     void tearDown() {
         releaseJoin.countDown();
+        releaseViewRead.countDown();
         if (manager != null) {
             manager.stop();
         }
@@ -90,6 +94,17 @@ class PeerObservationOrderTransportTest {
 
         joinHeld.countDown();
         joinOutlivedTheGate.set(!awaitQuietly(releaseJoin));
+    }
+
+    /// Holds the first view read that holds the leader — the join's — on the dial thread, between the read and the
+    /// observation built from it, until the test releases it (or the gate times out, which the test reports).
+    private void holdTheJoinViewRead(List<NodeId> view) {
+        if (!view.contains(LEADER) || !viewReadArmed.compareAndSet(true, false)) {
+            return;
+        }
+
+        viewReadHeld.countDown();
+        joinOutlivedTheGate.set(!awaitQuietly(releaseViewRead));
     }
 
     private static boolean awaitQuietly(CountDownLatch latch) {
@@ -161,6 +176,36 @@ class PeerObservationOrderTransportTest {
         assertThat(manager.context().currentTopology()).as("the late join's older view does not restore the evicted leader").doesNotContain(LEADER);
         assertThat(suspectsTheLeader()).as("the eviction wins: the follower still suspects the leader; " + followerState()).isTrue();
         assertThat(followsTheLeader()).as("control: pre-vote holds the follower in Led while it asks").isTrue();
+    }
+
+    /// The producer's ordering (#2971): an observation takes its sequence BEFORE it reads its view. The join is held
+    /// between its view read (which still holds the leader) and the observation built from it, while the eviction runs
+    /// start to finish. A join that took its sequence after the read would outrank the eviction and restore the leader.
+    @Test
+    void joinHeldAfterItsViewRead_isOutrankedByTheEvictionThatFollows() {
+        var followerRouter = MessageRouter.mutable();
+
+        manager = followerRoutedFrom(followerRouter);
+        releaseJoin.countDown();
+        var follower = startedNetwork(new TripwireTopology(FOLLOWER, false, TimeSpan.timeSpan(30).seconds()), followerRouter, networks);
+        var leader = startedNetwork(new TripwireTopology(LEADER, false, TimeSpan.timeSpan(30).seconds()), MessageRouter.mutable(), networks);
+
+        follower.viewReadObserverForTests(this::holdTheJoinViewRead);
+        follower.dialForTests(infoOf(LEADER, leader), false);
+        assertThat(awaitQuietly(viewReadHeld)).as("the join read a view holding the leader and the hook holds it").isTrue();
+
+        follower.peerStateForTests(LEADER).evict(System.nanoTime()).onPresent(connection -> connection.close().await(AWAIT));
+        assertThat(awaitQuietly(evictionHandled)).as("the eviction's PeerDisconnected was handled while the join was held").isTrue();
+        assertThat(suspectsTheLeader()).as("control: the eviction removed the leader from the view; " + followerState()).isTrue();
+        assertThat(joinHandled.get()).as("control: the join is still held").isFalse();
+
+        releaseViewRead.countDown();
+
+        awaitTrue(joinHandled::get, AWAIT, () -> "the held join reached the manager after the eviction; " + followerState());
+
+        assertThat(joinOutlivedTheGate.get()).as("the join was released by the test, not by the gate's timeout").isFalse();
+        assertThat(manager.context().currentTopology()).as("the join's older view does not restore the evicted leader").doesNotContain(LEADER);
+        assertThat(suspectsTheLeader()).as("the eviction wins: the follower still suspects the leader; " + followerState()).isTrue();
     }
 
     /// The producer side of the fence: join, eviction and re-attach of one link each carry a transport sequence, above
