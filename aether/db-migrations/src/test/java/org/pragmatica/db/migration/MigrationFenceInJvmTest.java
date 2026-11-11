@@ -16,9 +16,11 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
 import java.util.function.Predicate;
 
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
+import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.aether.resource.db.PoolConfig;
 import org.pragmatica.aether.resource.db.RowMapper;
@@ -117,6 +119,16 @@ class MigrationFenceInJvmTest {
         assertThat(scalar(url, "SELECT COUNT(*) FROM aether_schema_history WHERE status = 'SUCCESS'")).isEqualTo(1);
     }
 
+    /// F61: a session-fenced engine (H2 here) takes NO tier-3 script lock: the pinned session is the fence.
+    @Test
+    void t12_h2Migrate_issuesNoScriptLockStatement() {
+        var statements = new CopyOnWriteArrayList<String>();
+        var probe = Probe.over(h2("jdbc:h2:mem:t12nolock;DB_CLOSE_DELAY=-1"), DatabaseType.H2, statements);
+
+        assertThat(migrate(probe, MARK_SCRIPT).await().isSuccess()).isTrue();
+        assertThat(statements).isNotEmpty().noneMatch(sql -> sql.startsWith(LOCK_STATEMENT) || sql.contains("LOCK TABLE") || sql.contains("FOR UPDATE"));
+    }
+
     // ---------------------------------------------------------------- T6
 
     /// T6 (SQLite): a script that cannot run in a transaction is refused before its first statement.
@@ -132,6 +144,31 @@ class MigrationFenceInJvmTest {
         assertThat(cause.message()).contains("SQLite").contains("VACUUM").contains("No statement was run");
         assertThat(statements).noneMatch(sql -> sql.startsWith("VACUUM"));
         assertThat(scalar("jdbc:sqlite:" + file, "SELECT COUNT(*) FROM aether_schema_history")).isZero();
+    }
+
+    /// S10: the refusal is case-insensitive: a lowercase `vacuum` is refused too.
+    @Test
+    void t6_sqliteLowercaseVacuum_isRefusedBeforeAnyStatement() {
+        var statements = new CopyOnWriteArrayList<String>();
+        var probe = Probe.over(sqlite(dir.resolve("t6lower.db")), DatabaseType.SQLITE, statements);
+
+        var cause = causeOf(migrate(probe, "vacuum;").await());
+
+        assertThat(cause).isInstanceOf(MigrationError.NonTransactionalScriptUnfenced.class);
+        assertThat(statements).noneMatch(sql -> sql.toUpperCase().startsWith("VACUUM"));
+    }
+
+    /// S8/E1/E2: the refusal names the migration's file and shows the offending statement on ONE line, cut at 80 chars.
+    @Test
+    void t6_refusalMessage_namesTheFileAndAbbreviatesTheStatementToOneLine() {
+        var statement = "VACUUM\n   " + "x".repeat(100);
+
+        var message = MigrationError.NonTransactionalScriptUnfenced.nonTransactionalScriptUnfenced("SQLite", "V7__big.sql", statement).message();
+
+        assertThat(message).contains("'V7__big.sql'")
+                           .contains("(VACUUM " + "x".repeat(73) + "...)")
+                           .doesNotContain("\n");
+        assertThat(MigrationError.NonTransactionalScriptUnfenced.nonTransactionalScriptUnfenced("SQLite", "V7__small.sql", "VACUUM").message()).contains("(VACUUM)");
     }
 
     /// T6 (CockroachDB fake): `CREATE INDEX CONCURRENTLY` cannot run in a transaction, so it is refused, nothing run.
@@ -270,6 +307,34 @@ class MigrationFenceInJvmTest {
         var again = repository.recordMigration(connector, row).await();
 
         assertThat(causeOf(again)).isInstanceOf(MigrationError.HistoryRowCollision.class);
+    }
+
+    /// H14: a history insert failing with an error that is no unique violation (here a timeout: no SQLSTATE, no
+    /// constraint text) keeps its own cause; it is never relabelled a collision.
+    @Test
+    void t8b_historyInsertFailingWithATimeout_keepsItsCause() {
+        var probe = Probe.over(h2("jdbc:h2:mem:t8btimeout;DB_CLOSE_DELAY=-1"), DatabaseType.H2, new CopyOnWriteArrayList<>())
+                         .failingUpdate(sql -> sql.startsWith("INSERT INTO aether_schema_history"), DatabaseConnectorError.timeout("insert"));
+        var repository = SchemaHistoryRepository.schemaHistoryRepository();
+        var row = AppliedMigration.appliedMigration(1, MigrationType.VERSIONED, "a", "V1__a.sql", 1L, "node", 0L, 0);
+        repository.bootstrap(probe).await().unwrap();
+
+        var failed = repository.recordMigration(probe, row).await();
+
+        assertThat(causeOf(failed)).isInstanceOf(DatabaseConnectorError.TimedOut.class);
+    }
+
+    /// H12: a bare SQLSTATE of class 23 on a plain query failure (the R2DBC mapping keeps it unclassified) is a collision.
+    @Test
+    void t8b_historyInsertFailingWithSqlStateClass23_isHistoryRowCollision() {
+        var cause = DatabaseConnectorError.queryFailed("INSERT", "boom", Option.none(), Option.some("23505"));
+        var probe = Probe.over(h2("jdbc:h2:mem:t8b23;DB_CLOSE_DELAY=-1"), DatabaseType.H2, new CopyOnWriteArrayList<>())
+                         .failingUpdate(sql -> sql.startsWith("INSERT INTO aether_schema_history"), cause);
+        var repository = SchemaHistoryRepository.schemaHistoryRepository();
+        var row = AppliedMigration.appliedMigration(1, MigrationType.VERSIONED, "a", "V1__a.sql", 1L, "node", 0L, 0);
+        repository.bootstrap(probe).await().unwrap();
+
+        assertThat(causeOf(repository.recordMigration(probe, row).await())).isInstanceOf(MigrationError.HistoryRowCollision.class);
     }
 
     // ---------------------------------------------------------------- survivors of the first mutation run
@@ -412,6 +477,7 @@ class MigrationFenceInJvmTest {
                                    .await();
 
         assertThat(undo.isSuccess()).isTrue();
+        assertThat(undo.unwrap().appliedCount()).as("S27: one undo step ran").isEqualTo(1);
         assertThat(scalar("jdbc:sqlite:" + file, "SELECT COUNT(*) FROM aether_schema_history WHERE version = 1")).isZero();
         assertThat(scalar("jdbc:sqlite:" + file, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'applied_marks'")).isZero();
     }
@@ -708,6 +774,7 @@ class MigrationFenceInJvmTest {
         private Runnable afterRepeatableRead = () -> {};
         private Runnable afterLock = () -> {};
         private Predicate<String> failingUpdate = _ -> false;
+        private Function<String, Cause> failure = sql -> Causes.cause("injected failure of: " + sql);
 
         private Probe(SqlConnector delegate, DatabaseType type, List<String> statements) {
             this.delegate = delegate;
@@ -753,9 +820,17 @@ class MigrationFenceInJvmTest {
             return this;
         }
 
+        /// Fails every update whose text matches, with the given cause.
+        Probe failingUpdate(Predicate<String> matches, Cause cause) {
+            failingUpdate = matches;
+            failure = _ -> cause;
+            return this;
+        }
+
         private Probe inheritedBy(Probe inner) {
             inner.afterLock = afterLock;
             inner.failingUpdate = failingUpdate;
+            inner.failure = failure;
             return inner;
         }
 
@@ -797,7 +872,7 @@ class MigrationFenceInJvmTest {
         public Promise<Integer> update(String sql, Object... params) {
             statements.add(sql);
             return failingUpdate.test(sql)
-                   ? Causes.cause("injected failure of: " + sql).promise()
+                   ? failure.apply(sql).promise()
                    : delegate.update(sql, params).map(count -> afterLockRan(sql, count));
         }
 

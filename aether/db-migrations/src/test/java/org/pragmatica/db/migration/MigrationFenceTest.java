@@ -560,6 +560,13 @@ class MigrationFenceTest {
         }
 
         @Test
+        void acquire_h2ExclusiveReportedAsZero_isFenceUnavailable() {
+            var session = new ScriptedSession(DatabaseType.H2, Map.of("INFORMATION_SCHEMA.SETTINGS", row("v", "0")));
+
+            assertThat(causeOf(MigrationFence.acquire(session, "ds", "node-1").await())).isInstanceOf(MigrationError.FenceUnavailable.class);
+        }
+
+        @Test
         void acquire_db2AndSqlite_takeNoLockUntilTheScriptTransaction() {
             var db2 = new ScriptedSession(DatabaseType.DB2, Map.of());
             var sqlite = new ScriptedSession(DatabaseType.SQLITE, Map.of());
