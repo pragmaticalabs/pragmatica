@@ -294,6 +294,24 @@ class FalseDeathWorkerCatchUpTest {
         assertThat(sliceStore.loaded()).as("a settled cleanup leaves nothing in flight: a later removal cleans up again").isEmpty();
     }
 
+    /// m12: a claimed-ACTIVE redeploy (KV convergence) of a slice whose cleanup is still in flight waits for the cleanup; it must end loaded, never
+    /// unloaded by the late cleanup.
+    @Test
+    void armE_claimedActiveRedeployDuringTheCleanup_endsLoaded() {
+        sliceActive(GONE);
+        resync();
+        var deactivation = sliceStore.holdDeactivation();
+
+        leaderRemoves(GONE);
+        resync();
+        assign(GONE, SliceState.ACTIVE);
+        feed(new KVCommand.Put<AetherKey, AetherValue>(NodeArtifactKey.nodeArtifactKey(SELF, GONE), NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE)));
+        deactivation.succeed(new TestSliceStore.Loaded(GONE, null));
+
+        assertThat(sliceStore.unloadCalls).as("one cleanup, joined by the redeploy").containsExactly(GONE);
+        assertThat(sliceStore.loaded()).as("the redeploy's load ran after the cleanup settled").extracting(SliceStore.LoadedSlice::artifact).containsExactly(GONE);
+    }
+
     /// FER at the wait (`NodeDeploymentContext.cleanupSettled`): a cleanup that fails is logged at its site and the LOAD still runs.
     @Test
     void armE_failedCleanup_loadStillRunsAndNeverFailed() {

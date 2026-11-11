@@ -6,7 +6,9 @@ package org.pragmatica.aether.deployment.node;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.LongConsumer;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentContext;
@@ -422,8 +424,9 @@ public interface NodeDeploymentManager {
                                                                    Option<SliceInvokerFacade> sliceInvokerFacade,
                                                                    TimeSpan activationChainTimeout,
                                                                    TimeSpan transitionRetryDelay,
-                                                                   Supplier<Epoch> observedEpochSupplier) {
-        return nodeDeploymentManager(self,
+                                                                   Supplier<Epoch> observedEpochSupplier,
+                                                                   Consumer<LongConsumer> replayEndRegistrar) {
+        return bindReplayEnd(nodeDeploymentManager(self,
                                      selfAddress,
                                      router,
                                      sliceStore,
@@ -436,7 +439,14 @@ public interface NodeDeploymentManager {
                                      sliceInvokerFacade,
                                      activationChainTimeout,
                                      transitionRetryDelay,
-                                     () -> Option.some(observedEpochSupplier.get()));
+                                     () -> Option.some(observedEpochSupplier.get())),
+                             replayEndRegistrar);
+    }
+
+    /// #3028: hands the manager's catch-up sweep trigger to the registrar the wiring supplies (bound only under LEGACY, so no engine-neutral name leaks).
+    private static NodeDeploymentManager bindReplayEnd(NodeDeploymentManager manager, Consumer<LongConsumer> registrar) {
+        registrar.accept(manager::onReplayDelivered);
+        return manager;
     }
 
     private static NodeDeploymentContext buildContext(NodeId self,
