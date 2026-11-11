@@ -31,6 +31,7 @@ import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage.Ack;
@@ -40,6 +41,7 @@ import org.pragmatica.swim.SwimProtocolTombstoneTest.RecordingListener;
 import org.pragmatica.swim.SwimProtocolTombstoneTest.RecordingTransport;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.swim.SwimConfig.swimConfig;
@@ -293,5 +295,107 @@ class SwimIsolationProbeTest {
 
         assertThat(transport.sent).as("a node that still holds a peer is not alone, so it does not announce")
                                   .noneMatch(entry -> entry.message() instanceof SwimMessage.Announce && entry.target().equals(seed));
+    }
+
+    /// Mutant m07 (tick without the isolation probe): the real tick reaches the isolation Ping. NODE_A is brought to a
+    /// stamped FAULTY through the protocol (an unstamped test-injected FAULTY member is swept on the first tick).
+    @Test
+    void isolationProbe_throughTheRealTick_latchedNodePingsTheFaultyPeer() {
+        protocol.removeMemberForTest(NODE_A);
+        protocol.removeMemberForTest(NODE_B);
+        protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(faultyClaim(MemberState.ALIVE, 0L))));
+        protocol.recordTransportHint(NODE_A,
+                                     new TransportObservation.PeerUnreachable(NODE_A,
+                                                                              Causes.cause("test peer down"),
+                                                                              TransportObservation.HintOrigin.LINK_LOST));
+        protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(faultyClaim(MemberState.FAULTY, 1L))));
+        protocol.latchSelfIsolation(() -> true);
+        transport.sent.clear();
+
+        assertThat(protocol.members().get(NODE_A).state()).as("precondition: stamped FAULTY resident").isEqualTo(MemberState.FAULTY);
+
+        protocol.start();
+
+        await().atMost(Duration.ofSeconds(2))
+               .untilAsserted(() -> assertThat(transport.pingTargets()).as("the tick itself sends the isolation Ping").contains(ADDR_A));
+    }
+
+    private static SwimMessage.MembershipUpdate faultyClaim(MemberState state, long incarnation) {
+        return SwimMessage.MembershipUpdate.membershipUpdate(NODE_A, state, incarnation, ADDR_A, TOKEN_A);
+    }
+
+    /// Mutant m10 (no empty-seed guard): identity present, zero seeds, latched, empty map. `nextInt(0)` would throw
+    /// inside the tick.
+    @Test
+    void isolationProbe_latchedAlone_noSeedsKnown_doesNotThrowAndSendsNothing() {
+        protocol.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of());
+        protocol.latchSelfIsolation(() -> true);
+        protocol.removeMemberForTest(NODE_A);
+        protocol.removeMemberForTest(NODE_B);
+        transport.sent.clear();
+
+        assertThatCode(protocol::probeRoundForTest).as("no seed to ask: nothing to do, not an error").doesNotThrowAnyException();
+        await().pollDelay(300, TimeUnit.MILLISECONDS).atMost(Duration.ofSeconds(1)).until(() -> true);
+
+        assertThat(transport.sent).as("nothing is sent without a seed").isEmpty();
+    }
+
+    /// Mutant m11 (announce ignores stop): a stop within one period of the scheduling cancels the announce. The period
+    /// is 1 s so the random delay (below one period) is almost never under the time between the round and the stop.
+    @Test
+    void isolationProbe_stopWithinOnePeriodOfAScheduledAnnounce_sendsNoAnnounce() {
+        var seed = new InetSocketAddress("127.0.0.1", 9102);
+        var slowTransport = new AddressedTransport();
+
+        holder = SwimProtocol.swimProtocol(swimConfig(timeSpan(1000).millis(),
+                                                      timeSpan(20).millis(),
+                                                      3,
+                                                      timeSpan(100).millis(),
+                                                      8,
+                                                      timeSpan(20).millis()).withJoinGrace(timeSpan(0).millis()),
+                                           slowTransport,
+                                           new RecordingListener(),
+                                           SELF_ID,
+                                           SELF_ADDR,
+                                           () -> false)
+                             .unwrap();
+        holder.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of(seed));
+        holder.joinAcknowledgedForTest();
+        holder.latchSelfIsolation(() -> true);
+        slowTransport.sent.clear();
+
+        holder.probeRoundForTest();
+        holder.stop();
+        await().pollDelay(1300, TimeUnit.MILLISECONDS).atMost(Duration.ofSeconds(3)).until(() -> true);
+
+        assertThat(slowTransport.sent).as("the announce scheduled before the stop is never sent")
+                                      .noneMatch(entry -> entry.message() instanceof SwimMessage.Announce);
+    }
+
+    /// Mutant m12 (any member state): an UNKNOWN peer is not probable and not FAULTY, so no Ping goes to it.
+    @Test
+    void isolationProbe_onlyAnUnprobableNonFaultyPeerHeld_noPingAtAll() {
+        protocol.removeMemberForTest(NODE_A);
+        protocol.removeMemberForTest(NODE_B);
+        protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.UNKNOWN);
+        protocol.latchSelfIsolation(() -> true);
+
+        protocol.probeRoundForTest();
+
+        assertThat(protocol.members().get(NODE_A).state()).as("precondition: the peer stays UNKNOWN").isEqualTo(MemberState.UNKNOWN);
+        assertThat(transport.pingTargets()).as("no isolation Ping to a non-FAULTY peer").isEmpty();
+    }
+
+    /// Mutant m50 (isolation ping also when a probable member exists): one probe per round.
+    @Test
+    void isolationProbe_latchedWithAProbablePeer_onlyTheRegularProbeGoesOut() {
+        protocol.removeMemberForTest(NODE_A);
+        protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.ALIVE);
+        protocol.latchSelfIsolation(() -> true);
+
+        protocol.probeRoundForTest();
+
+        assertThat(transport.pingTargets()).as("the regular probe to the probable peer only; NODE_B (FAULTY) gets none")
+                                           .containsExactly(ADDR_A);
     }
 }

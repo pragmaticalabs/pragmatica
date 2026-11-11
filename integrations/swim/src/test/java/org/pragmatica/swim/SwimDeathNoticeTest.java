@@ -313,6 +313,47 @@ class SwimDeathNoticeTest {
                           .allMatch(probe -> probe.onBehalfOf().isEmpty());
     }
 
+    /// Mutant m29 (notice for any claim state): the relayed requester entry is answered like the pinger's own claim,
+    /// but only an `Alive` claim earns a notice. The relayer's snapshot of the requester may be `Suspect`.
+    @Test
+    void deathNotice_relayedPing_requesterEntryIsSuspect_noNotice_aliveControlEarnsOne() {
+        protocol.putDeathRecordForTest(NODE_A, 1L, TOKEN_A, System.currentTimeMillis());
+
+        protocol.onMessage(ADDR_B,
+                           Ping.relayedPing(NODE_B, 7L, List.of(updateOf(NODE_A, MemberState.SUSPECT, 1L, TOKEN_A)), NODE_A));
+        protocol.onMessage(ADDR_B,
+                           Ping.relayedPing(NODE_B, 8L, List.of(updateOf(NODE_A, MemberState.ALIVE, 1L, TOKEN_A)), NODE_A));
+
+        assertThat(carriesFaultyOf(ackOf(transport, 8L), NODE_A)).as("control: the Alive claim of the same requester earns the notice")
+                                                                 .isTrue();
+        assertThat(carriesFaultyOf(ackOf(transport, 7L), NODE_A)).as("a Suspect claim is not an aliveness claim: no Faulty notice")
+                                                                 .isFalse();
+    }
+
+    /// Mutant m40 (floor 1): when the requester entry does not fit beside the buffered gossip, the gossip is trimmed
+    /// down to nothing (floor 0) and the requester entry is still sent.
+    @Test
+    void deathNotice_pingReqRelay_overBudget_gossipTrimmedToZero_requesterEntryKept() {
+        var overlong = longId('z', 1250);
+
+        protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.ALIVE);
+        protocol.putMemberForTest(NODE_B, ADDR_B, MemberState.ALIVE);
+        ping(NODE_B, 1L, List.of(updateOf(overlong, MemberState.ALIVE, 1L, 0L)));
+        transport.sentMessages.clear();
+
+        protocol.onMessage(ADDR_A, new PingReq(NODE_A, NODE_B, 9L));
+
+        var relayed = transport.sentMessages.stream()
+                                            .filter(Ping.class::isInstance)
+                                            .map(Ping.class::cast)
+                                            .reduce((first, last) -> last)
+                                            .orElseThrow();
+
+        assertThat(relayed.piggyback()).as("no gossip entry survives beside the requester entry")
+                                       .singleElement()
+                                       .matches(update -> update.nodeId().equals(NODE_A));
+    }
+
     @Test
     void deathNotice_directPing_emptyOnBehalfOf_unchanged() {
         protocol.putDeathRecordForTest(NODE_A, 1L, TOKEN_A, System.currentTimeMillis());
