@@ -90,7 +90,7 @@ public interface SliceCodec extends Serializer, Deserializer {
     int SYSTEM_TAG_MAX = 16383;
     int TAG_SPACE_SIZE = 16384;
     int USER_TAG_BASE = 16384;
-    int USER_TAG_LIMIT = 1<< 21;
+    int USER_TAG_LIMIT = 1 << 21;
     int USER_TAG_SPACE_SIZE = USER_TAG_LIMIT - USER_TAG_BASE;
     // --- Stream header ---
     int MAGIC = 0xAE01;
