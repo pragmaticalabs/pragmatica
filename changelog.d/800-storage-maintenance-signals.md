@@ -1,0 +1,4 @@
+### Changed (2026-11-11 — #800: storage maintenance failure and progress signals)
+- **A storage maintenance failure now raises an operator warning and its recovery.** A failed deactivation of the leader-pinned group raises `storage-maintenance-not-stopped` (closed by `storage-maintenance-stopped`); a demotion, garbage-collection or promotion pass that throws raises `storage-maintenance-pass-failed` once per part, subject `storage-maintenance/<part>` (closed by `storage-maintenance-pass-recovered`), and no longer keeps the passes after it from running.
+- **A failed activation or deactivation of the leader-pinned group is retried** on the next three maintenance ticks (the budget restarts with each leader change).
+- **`GET /api/v1/storage` carries a `maintenance` block**: last run time, outcome, consecutive failed ticks, last failure, and cumulative demoted and collected block counts.

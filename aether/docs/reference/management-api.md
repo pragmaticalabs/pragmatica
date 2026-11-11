@@ -2317,10 +2317,19 @@ readiness.
       "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true},
       "wal": {"totalBytes": 8388608, "walPartitions": 4}
     }
-  ]
+  ],
+  "maintenance": {
+    "lastRunMs": 1700000000099,
+    "outcome": "OK",
+    "consecutiveFailedTicks": 0,
+    "lastFailure": null,
+    "demoted": 7,
+    "collected": 5
+  }
 }
 ```
 
+- `maintenance` (#800): what the storage maintenance tick (demotion, promotion, garbage collection) has done on this node. `lastRunMs` is when the latest tick finished (`0` before the first); `outcome` is `NEVER_RUN`, `OK` or `FAILED` (a pass threw); `consecutiveFailedTicks` counts the ticks in a row with a failed pass; `lastFailure` is the cause of the latest failed pass and stays after a recovery (`null` if none ever failed); `demoted` and `collected` are blocks since boot. A failing pass also raises `storage-maintenance-pass-failed`.
 - `utilizationPct`: `usedBytes / maxBytes` as a percentage rounded to one decimal (`0.0` when `maxBytes` is 0).
 - `readiness.isReadReady` / `isWriteReady`: whether the instance's `StorageReadinessGate` currently admits reads / writes. `isReadReady` turns true once the local snapshot is loaded; `isWriteReady` turns true when the node reports ready (its DHT-backed instances admitted), and stays false before that. Nothing in the storage engine consults the gate yet: it is an observability signal.
 - `wal` (#634-3): live stream-WAL usage — non-`null` **only on the `streams` instance**. The WAL is a
