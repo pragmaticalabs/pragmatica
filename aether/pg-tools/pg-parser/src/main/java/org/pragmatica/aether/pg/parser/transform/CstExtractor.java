@@ -5,6 +5,7 @@ package org.pragmatica.aether.pg.parser.transform;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 import org.pragmatica.aether.pg.parser.ast.common.DataTypeName;
@@ -136,7 +137,7 @@ public final class CstExtractor {
                 default -> Option.<Identifier> empty();
             };
 
-            leaf.filter(id -> !keywords.contains(id.value().toLowerCase())).onPresent(result::add);
+            leaf.filter(id -> !keywords.contains(id.value().toLowerCase(Locale.ROOT))).onPresent(result::add);
         }
 
         return result;
@@ -405,7 +406,7 @@ public final class CstExtractor {
     }
 
     private static String extractTimestampTypeName(CstNavigator nav) {
-        var text = deepLeafText(nav).or("timestamp").trim().toLowerCase();
+        var text = deepLeafText(nav).or("timestamp").trim().toLowerCase(Locale.ROOT);
 
         if (text.contains("timestamptz")) {
             return "timestamptz";
@@ -423,7 +424,7 @@ public final class CstExtractor {
     }
 
     private static String extractTimeTypeName(CstNavigator nav) {
-        var text = deepLeafText(nav).or("time").trim().toLowerCase();
+        var text = deepLeafText(nav).or("time").trim().toLowerCase(Locale.ROOT);
 
         if (text.contains("timetz")) {
             return "timetz";

@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
@@ -1678,7 +1679,7 @@ public final class ConfigLoader {
     /// without one, and `--tls=yes` turned TLS off; a value that is not `true` or `false` refuses the load like the
     /// neighbouring `restore` mode does. The CLI overrides use the same parse as the TOML booleans.
     private static Result<Boolean> strictBoolean(String raw) {
-        return switch (raw.toLowerCase()) {
+        return switch (raw.toLowerCase(Locale.ROOT)) {
             case "true" -> success(true);
             case "false" -> success(false);
             default -> ConfigError.invalidConfig("'" + raw + "' is not true or false").result();
@@ -1713,7 +1714,7 @@ public final class ConfigLoader {
     }
 
     public static Duration parseDuration(String value) {
-        var normalized = value.trim().toLowerCase();
+        var normalized = value.trim().toLowerCase(Locale.ROOT);
 
         return normalized.isEmpty()
                ? Duration.ofSeconds(1)

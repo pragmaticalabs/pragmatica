@@ -1,5 +1,7 @@
 package org.pragmatica.jbct.derive.model;
 
+import java.util.Locale;
+
 /// The nine questions of the architecture answer sheet (SPEC.md §3).
 ///
 /// Each question sources a set of scoped rows in the TOML sheet under the
@@ -28,6 +30,6 @@ public enum QuestionId {
 
     /// The TOML array-of-tables key that holds this question's rows (e.g. `answers.q1`).
     public String tableName() {
-        return "answers." + name().toLowerCase();
+        return "answers." + name().toLowerCase(Locale.ROOT);
     }
 }

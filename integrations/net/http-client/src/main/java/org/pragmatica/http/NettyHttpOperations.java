@@ -24,6 +24,7 @@ import java.net.http.HttpResponse.BodyHandler;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
@@ -466,7 +467,7 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
             var headerMap = new HashMap<String, List<String>>();
 
             for (var entry : response.headers()) {
-                headerMap.computeIfAbsent(entry.getKey().toLowerCase(),
+                headerMap.computeIfAbsent(entry.getKey().toLowerCase(Locale.ROOT),
                                           _ -> new ArrayList<>()).add(entry.getValue());
             }
 
@@ -535,7 +536,7 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
             var headerMap = new HashMap<String, List<String>>();
 
             for (var entry : h3Headers) {
-                var key = entry.getKey().toString().toLowerCase();
+                var key = entry.getKey().toString().toLowerCase(Locale.ROOT);
 
                 if (!key.startsWith(":")) {
                     headerMap.computeIfAbsent(key, _ -> new ArrayList<>()).add(entry.getValue().toString());

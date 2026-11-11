@@ -5,6 +5,7 @@
 package org.pragmatica.aether.api;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 import java.util.Map;
@@ -292,7 +293,7 @@ public class DynamicConfigManager {
     }
 
     private static String redactIfSensitive(String key, String value) {
-        var lower = key.toLowerCase();
+        var lower = key.toLowerCase(Locale.ROOT);
 
         if (lower.contains("password") || lower.contains("secret") || lower.contains("key") || lower.contains("token")) {
             return "***REDACTED***";

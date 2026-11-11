@@ -18,7 +18,11 @@ package org.pragmatica.lang.parse;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
+import org.pragmatica.lang.utils.Causes;
 
 
 /// Functional wrappers for JDK number parsing APIs that return Result<T> instead of throwing exceptions
@@ -97,6 +101,81 @@ public sealed interface Number {
     /// @return Result containing parsed Long or parsing error
     static Result<Long> parseLong(String s, int radix) {
         return Result.lift2(Long::parseLong, s, radix);
+    }
+
+    /// Parse a string as a non-negative `long` in strict decimal form.
+    ///
+    /// Accepted: one or more ASCII digits `0`-`9` and nothing else. Leading zeros are accepted
+    /// (`"007"` is 7). Rejected: the empty string, `null`, a sign (`+5`, `-1`), any whitespace (`" 5"`),
+    /// digits of other scripts (Arabic-Indic, fullwidth, ... which [Long#parseLong(String)] accepts), and
+    /// values above [Long#MAX_VALUE].
+    ///
+    /// @param s String to parse
+    ///
+    /// @return Result containing the parsed value, or a failure naming the rejected input
+    static Result<Long> parseUnsignedDecimalLong(String s) {
+        return strictLong(s, Number::notUnsignedDecimalLong);
+    }
+
+    /// Same as [#parseUnsignedDecimalLong(String)] but every rejection (format or overflow) fails with the given cause.
+    ///
+    /// @param s     String to parse
+    /// @param cause the failure for any rejected input
+    ///
+    /// @return Result containing the parsed value, or `cause`
+    static Result<Long> parseUnsignedDecimalLong(String s, Cause cause) {
+        return strictLong(s, _ -> cause);
+    }
+
+    /// Parse a string as a non-negative `int` in strict decimal form.
+    ///
+    /// Accepted: one or more ASCII digits `0`-`9` and nothing else. Leading zeros are accepted
+    /// (`"007"` is 7). Rejected: the empty string, `null`, a sign (`+5`, `-1`), any whitespace (`" 5"`),
+    /// digits of other scripts (Arabic-Indic, fullwidth, ... which [Integer#parseInt(String)] accepts), and
+    /// values above [Integer#MAX_VALUE].
+    ///
+    /// @param s String to parse
+    ///
+    /// @return Result containing the parsed value, or a failure naming the rejected input
+    static Result<Integer> parseUnsignedDecimalInt(String s) {
+        return strictInt(s, Number::notUnsignedDecimalInt);
+    }
+
+    /// Same as [#parseUnsignedDecimalInt(String)] but every rejection (format or overflow) fails with the given cause.
+    ///
+    /// @param s     String to parse
+    /// @param cause the failure for any rejected input
+    ///
+    /// @return Result containing the parsed value, or `cause`
+    static Result<Integer> parseUnsignedDecimalInt(String s, Cause cause) {
+        return strictInt(s, _ -> cause);
+    }
+
+    private static Result<Long> strictLong(String s, Fn1<? extends Cause, ? super String> cause) {
+        return Verify.ensure(s, Number::isAsciiDigits, cause)
+                     .flatMap(digits -> Result.lift1(_ -> cause.apply(digits), Long::parseLong, digits));
+    }
+
+    private static Result<Integer> strictInt(String s, Fn1<? extends Cause, ? super String> cause) {
+        return Verify.ensure(s, Number::isAsciiDigits, cause)
+                     .flatMap(digits -> Result.lift1(_ -> cause.apply(digits), Integer::parseInt, digits));
+    }
+
+    private static boolean isAsciiDigits(String s) {
+        return Verify.Is.present(s) && s.chars()
+                                        .allMatch(Number::isAsciiDigit);
+    }
+
+    private static boolean isAsciiDigit(int c) {
+        return c >= '0' && c <= '9';
+    }
+
+    private static Cause notUnsignedDecimalLong(String s) {
+        return Causes.cause("Not an unsigned decimal number in the range of long: " + s);
+    }
+
+    private static Cause notUnsignedDecimalInt(String s) {
+        return Causes.cause("Not an unsigned decimal number in the range of int: " + s);
     }
 
     /// Parse a string as a Float value

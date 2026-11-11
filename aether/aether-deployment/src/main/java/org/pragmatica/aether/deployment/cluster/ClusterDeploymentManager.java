@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.cluster;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
@@ -220,7 +221,7 @@ public interface ClusterDeploymentManager {
             }
 
             return switch (value.trim()
-                                .toLowerCase()
+                                .toLowerCase(Locale.ROOT)
                                 .replace("-", "_")) {
                 case "best_effort" -> BEST_EFFORT;
                 default -> ALL_OR_NOTHING;

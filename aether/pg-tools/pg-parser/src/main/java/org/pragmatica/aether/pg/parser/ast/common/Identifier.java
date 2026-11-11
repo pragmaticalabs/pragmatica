@@ -3,6 +3,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.pg.parser.ast.common;
 
+import java.util.Locale;
+
 import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
 
 
@@ -15,7 +17,7 @@ public record Identifier(SourceSpan span, String value, QuoteStyle style) {
 
     public String normalized() {
         return style == QuoteStyle.UNQUOTED
-               ? value.toLowerCase()
+               ? value.toLowerCase(Locale.ROOT)
                : value;
     }
 

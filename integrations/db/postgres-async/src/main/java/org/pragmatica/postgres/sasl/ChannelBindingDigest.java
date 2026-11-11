@@ -17,6 +17,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.cert.CertificateEncodingException;
 import java.security.cert.X509Certificate;
+import java.util.Locale;
 
 
 /// RFC 5929 §4.1 `tls-server-end-point` channel binding: digest of the server
@@ -47,7 +48,7 @@ public final class ChannelBindingDigest {
             return "SHA-256";
         }
 
-        var upper = sigAlgName.toUpperCase();
+        var upper = sigAlgName.toUpperCase(Locale.ROOT);
         // JCA names look like "SHA256withRSA", "SHA384withECDSA", "MD5withRSA", etc.
         // Some forms use hyphens: "SHA-256/withRSA". Normalize.
         var withIndex = upper.indexOf("WITH");

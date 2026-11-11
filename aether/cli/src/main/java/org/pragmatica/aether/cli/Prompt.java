@@ -9,6 +9,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.util.List;
+import java.util.Locale;
 import java.util.function.Function;
 
 import org.pragmatica.lang.Cause;
@@ -87,7 +88,7 @@ public class Prompt {
 
         out.print(question + " " + hint + " ");
         out.flush();
-        var input = readLine().toLowerCase();
+        var input = readLine().toLowerCase(Locale.ROOT);
 
         if (input.isEmpty()) {
             return defaultYes;

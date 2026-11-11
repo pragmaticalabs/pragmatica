@@ -3,6 +3,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.config;
 
+import java.util.Locale;
+
 import org.pragmatica.lang.Option;
 
 
@@ -21,7 +23,7 @@ public enum ApiVersioningDetection {
     public static Option<ApiVersioningDetection> apiVersioningDetection(String value) {
         return Option.option(value)
                      .map(String::trim)
-                     .map(String::toLowerCase)
+                     .map(text -> text.toLowerCase(Locale.ROOT))
                      .flatMap(ApiVersioningDetection::fromNormalized);
     }
     public boolean isHeaderMode() {

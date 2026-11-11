@@ -3,6 +3,7 @@ package org.pragmatica.jbct.cli;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.Callable;
 import java.util.stream.Collectors;
 
@@ -208,7 +209,7 @@ public class LintCommand implements Callable<Integer> {
 
             sb.append("    {\n");
             sb.append("      \"ruleId\": \"%s\",\n".formatted(d.ruleId()));
-            sb.append("      \"severity\": \"%s\",\n".formatted(d.severity().name().toLowerCase()));
+            sb.append("      \"severity\": \"%s\",\n".formatted(d.severity().name().toLowerCase(Locale.ROOT)));
             sb.append("      \"file\": \"%s\",\n".formatted(escapeJson(d.file())));
             sb.append("      \"line\": %d,\n".formatted(d.line()));
             sb.append("      \"column\": %d,\n".formatted(d.column()));

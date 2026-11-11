@@ -3,6 +3,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.pg.codegen;
 
+import java.util.Locale;
+
 public final class NamingConvention {
     private NamingConvention() {}
 
@@ -42,7 +44,7 @@ public final class NamingConvention {
     }
 
     public static String toEnumConstant(String value) {
-        return value.toUpperCase()
+        return value.toUpperCase(Locale.ROOT)
                     .replace('-', '_')
                     .replace(' ', '_')
                     .replaceAll("[^A-Z0-9_]", "_");

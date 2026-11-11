@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.derive.pipeline;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.stream.Stream;
 
 import org.pragmatica.jbct.derive.model.AnswerRow;
@@ -198,7 +199,7 @@ public sealed interface Resolve permits Resolve.unused {
     }
 
     private static boolean isSystemClock(AnswerRow row) {
-        return row.shape().map(String::toLowerCase).filter("system-clock"::equals).isPresent();
+        return row.shape().map(text -> text.toLowerCase(Locale.ROOT)).filter("system-clock"::equals).isPresent();
     }
 
     private static boolean isSplitSource(Pressure pressure, Option<String> primary) {
@@ -351,7 +352,7 @@ public sealed interface Resolve permits Resolve.unused {
     }
 
     private static boolean reshapesToSafe(DomainShape shape) {
-        return shape.reshapeable().stream().map(String::toLowerCase).anyMatch(Resolve::isSafeReshape);
+        return shape.reshapeable().stream().map(text -> text.toLowerCase(Locale.ROOT)).anyMatch(Resolve::isSafeReshape);
     }
 
     /// Safe reshapes that design the failure out. `status-transition` is the schema-v0.2 vocabulary
@@ -404,7 +405,7 @@ public sealed interface Resolve permits Resolve.unused {
 
     private static boolean isSystemMandateWithoutStrike(AnswerRow row) {
         return row.question() == QuestionId.Q6
-            && row.kind().map(String::toLowerCase).filter("mandate"::equals).isPresent()
+            && row.kind().map(text -> text.toLowerCase(Locale.ROOT)).filter("mandate"::equals).isPresent()
             && row.strikes().isEmpty()
             && row.scope().isSystem();
     }

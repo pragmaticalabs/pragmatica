@@ -5,6 +5,7 @@
 package org.pragmatica.aether.node;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -817,7 +818,7 @@ public final class NodeReplacementWiring {
             var external = chosen.isPresent();
             var now = in.clock().getAsLong();
             var record = new NodeReplacementValue(replacement,
-                                                  role.toLowerCase(),
+                                                  role.toLowerCase(Locale.ROOT),
                                                   NodeReplacementPhase.PROVISIONING,
                                                   now + in.timings().provisioningMs(),
                                                   source,

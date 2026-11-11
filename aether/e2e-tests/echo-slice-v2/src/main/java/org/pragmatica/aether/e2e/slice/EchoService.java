@@ -6,6 +6,7 @@ package org.pragmatica.aether.e2e.slice;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.HexFormat;
+import java.util.Locale;
 import java.util.Set;
 
 import org.pragmatica.aether.slice.annotation.Slice;
@@ -70,11 +71,11 @@ public interface EchoService {
 
         @SuppressWarnings("JBCT-UTIL-02")
         private static Result<String> parseOperation(String operation) {
-            if (Option.option(operation).map(String::toLowerCase).filter(VALID_OPERATIONS::contains).isEmpty()) {
+            if (Option.option(operation).map(txt -> txt.toLowerCase(Locale.ROOT)).filter(VALID_OPERATIONS::contains).isEmpty()) {
                 return INVALID_OPERATION.apply(operation).result();
             }
 
-            return success(operation.toLowerCase());
+            return success(operation.toLowerCase(Locale.ROOT));
         }
 
         private static Result<String> parseValue(String value) {
@@ -209,8 +210,8 @@ public interface EchoService {
         private String convertValue(TransformRequest request) {
             return switch (request.operation()) {
                 case "reverse" -> reverse(request.value());
-                case "upper" -> request.value().toUpperCase();
-                case "lower" -> request.value().toLowerCase();
+                case "upper" -> request.value().toUpperCase(Locale.ROOT);
+                case "lower" -> request.value().toLowerCase(Locale.ROOT);
                 case "hash" -> computeHash(request.value());
                 default -> request.value();
             };

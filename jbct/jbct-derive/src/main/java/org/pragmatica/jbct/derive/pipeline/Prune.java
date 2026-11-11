@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.derive.pipeline;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.stream.Stream;
 
 import org.pragmatica.jbct.derive.model.AnswerRow;
@@ -27,7 +28,7 @@ public sealed interface Prune permits Prune.unused {
 
     private static boolean isMandate(AnswerRow row) {
         return row.question() == QuestionId.Q6
-            && row.kind().map(String::toLowerCase).filter("mandate"::equals).isPresent();
+            && row.kind().map(text -> text.toLowerCase(Locale.ROOT)).filter("mandate"::equals).isPresent();
     }
 
     private static Stream<Strike> strikesOf(AnswerRow row) {

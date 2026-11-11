@@ -3,6 +3,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.config;
 
+import java.util.Locale;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
@@ -61,7 +63,7 @@ public enum Environment {
                            Environment::fromNormalized);
     }
     private static Result<Environment> fromNormalized(String value) {
-        return switch (value.toLowerCase()) {
+        return switch (value.toLowerCase(Locale.ROOT)) {
             case "local" -> success(LOCAL);
             case "docker" -> success(DOCKER);
             case "kubernetes", "k8s" -> success(KUBERNETES);

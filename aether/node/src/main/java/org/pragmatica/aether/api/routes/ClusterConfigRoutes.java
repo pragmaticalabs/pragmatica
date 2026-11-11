@@ -6,6 +6,7 @@ package org.pragmatica.aether.api.routes;
 
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.function.Supplier;
@@ -349,7 +350,7 @@ public final class ClusterConfigRoutes implements RouteSource {
         var label = topology.get(nid).flatMap(info -> Option.option(info.labels().get(NodeInfo.LABEL_ROLE)));
 
         return override.orElse(label)
-                       .map(String::toLowerCase)
+                       .map(text -> text.toLowerCase(Locale.ROOT))
                        .or("core");
     }
 

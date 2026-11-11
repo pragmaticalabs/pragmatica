@@ -6,6 +6,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -165,7 +166,7 @@ public final class SliceProjectInitializer {
             Files.createDirectories(slicesDir);
             Files.createDirectories(schemaDir);
             var packagePath = basePackage.replace(".", "/");
-            var sliceSubPackage = sliceName.toLowerCase();
+            var sliceSubPackage = sliceName.toLowerCase(Locale.ROOT);
 
             Files.createDirectories(srcMainJava.resolve(packagePath + "/" + sliceSubPackage));
             Files.createDirectories(srcTestJava.resolve(packagePath + "/" + sliceSubPackage));
@@ -216,7 +217,7 @@ public final class SliceProjectInitializer {
     }
 
     private Result<List<Path>> createSourceFiles() {
-        var sliceSubPackage = sliceName.toLowerCase();
+        var sliceSubPackage = sliceName.toLowerCase(Locale.ROOT);
         var packagePath = basePackage.replace(".", "/") + "/" + sliceSubPackage;
         var srcMainJava = projectDir.resolve("src/main/java");
         var srcTestJava = projectDir.resolve("src/test/java");
@@ -260,7 +261,7 @@ public final class SliceProjectInitializer {
     }
 
     private Result<List<Path>> createRoutes() {
-        var sliceSubPackage = sliceName.toLowerCase();
+        var sliceSubPackage = sliceName.toLowerCase(Locale.ROOT);
         var packagePath = basePackage.replace(".", "/") + "/" + sliceSubPackage;
         var routesDir = projectDir.resolve("src/main/resources/" + packagePath);
 
@@ -274,7 +275,7 @@ public final class SliceProjectInitializer {
     private Result<Path> createDependencyManifest() {
         try {
             var resources = projectDir.resolve("src/main/resources/META-INF/dependencies");
-            var dependencyFile = resources.resolve(basePackage + "." + sliceName.toLowerCase() + "." + sliceName);
+            var dependencyFile = resources.resolve(basePackage + "." + sliceName.toLowerCase(Locale.ROOT) + "." + sliceName);
 
             Files.writeString(dependencyFile, "# Slice dependencies (one artifact per line)\n");
 
@@ -347,7 +348,7 @@ public final class SliceProjectInitializer {
     }
 
     private String substituteVariables(String content) {
-        var slicePackage = basePackage + "." + sliceName.toLowerCase();
+        var slicePackage = basePackage + "." + sliceName.toLowerCase(Locale.ROOT);
 
         return content.replace("{{groupId}}", groupId)
                       .replace("{{artifactId}}", artifactId)

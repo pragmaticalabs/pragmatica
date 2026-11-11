@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.pg.schema.linter.rules;
 
+import java.util.Locale;
 import java.util.Set;
 
 import org.pragmatica.aether.pg.schema.model.PgType;
@@ -19,8 +20,8 @@ public final class SafeTypeChanges {
                                                                     Set.of("bit", "bit varying", "varbit"));
 
     public static boolean isSafe(PgType oldType, PgType newType) {
-        var oldName = baseTypeName(oldType).toLowerCase();
-        var newName = baseTypeName(newType).toLowerCase();
+        var oldName = baseTypeName(oldType).toLowerCase(Locale.ROOT);
+        var newName = baseTypeName(newType).toLowerCase(Locale.ROOT);
 
         if (oldName.equals(newName)) {
             return isModifierChangeSafe(oldType, newType);

@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.derive.emit;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.function.Function;
 
 import org.pragmatica.jbct.derive.model.AnswerRow;
@@ -124,6 +125,6 @@ public sealed interface JsonReport permits JsonReport.unused {
     }
 
     private static String kebab(String enumName) {
-        return enumName.toLowerCase().replace('_', '-');
+        return enumName.toLowerCase(Locale.ROOT).replace('_', '-');
     }
 }

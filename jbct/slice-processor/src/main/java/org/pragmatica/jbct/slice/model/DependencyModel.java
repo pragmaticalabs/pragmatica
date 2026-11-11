@@ -3,6 +3,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.jbct.slice.model;
 
+import java.util.Locale;
+
 import javax.annotation.processing.ProcessingEnvironment;
 import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.TypeElement;
@@ -278,10 +280,10 @@ public record DependencyModel(String parameterName,
         // Acronym handling: "HTTPService" -> "httpService"
         if (i < interfaceSimpleName.length()) {
             return interfaceSimpleName.substring(0, i - 1)
-                                      .toLowerCase() + interfaceSimpleName.substring(i - 1);
+                                      .toLowerCase(Locale.ROOT) + interfaceSimpleName.substring(i - 1);
         }
 
-        return interfaceSimpleName.toLowerCase();
+        return interfaceSimpleName.toLowerCase(Locale.ROOT);
     }
 
     private static boolean hasSliceAnnotation(TypeElement typeElement) {

@@ -10,6 +10,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Collection;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Executor;
@@ -4505,7 +4506,7 @@ public interface AetherNode extends ManageableNode {
         var raw = Option.option(System.getenv("AETHER_PROVISIONED_BY"))
                         .filter(v -> !v.isBlank())
                         .map(String::trim)
-                        .map(String::toLowerCase);
+                        .map(text -> text.toLowerCase(Locale.ROOT));
 
         return raw.map(AetherNode::provisioningSourceFrom)
                   .or(AetherValue.ProvisioningSource.MANUAL);

@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.derive.emit;
 
 import java.util.List;
+import java.util.Locale;
 
 import org.pragmatica.jbct.derive.result.Combination;
 import org.pragmatica.jbct.derive.result.DecisionRecord;
@@ -128,6 +129,6 @@ public sealed interface MarkdownReport permits MarkdownReport.unused {
     }
 
     private static String kebab(String enumName) {
-        return enumName.toLowerCase().replace('_', '-');
+        return enumName.toLowerCase(Locale.ROOT).replace('_', '-');
     }
 }

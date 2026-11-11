@@ -7,6 +7,7 @@ package org.pragmatica.aether.http;
 import java.nio.charset.StandardCharsets;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
@@ -2632,7 +2633,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private static org.pragmatica.http.ContentCategory guessCategory(String headerText) {
-        var lower = headerText.toLowerCase();
+        var lower = headerText.toLowerCase(Locale.ROOT);
 
         if (lower.contains("json")) {
             return org.pragmatica.http.ContentCategory.JSON;

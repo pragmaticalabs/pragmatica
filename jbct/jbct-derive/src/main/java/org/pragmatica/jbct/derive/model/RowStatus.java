@@ -1,5 +1,7 @@
 package org.pragmatica.jbct.derive.model;
 
+import java.util.Locale;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
@@ -25,7 +27,7 @@ public enum RowStatus {
     }
 
     private static Result<RowStatus> parse(String trimmed) {
-        return switch (trimmed.toLowerCase()) {
+        return switch (trimmed.toLowerCase(Locale.ROOT)) {
             case "answered" -> Result.success(ANSWERED);
             case "unknown" -> Result.success(UNKNOWN);
             default -> INVALID_STATUS.apply(trimmed).result();

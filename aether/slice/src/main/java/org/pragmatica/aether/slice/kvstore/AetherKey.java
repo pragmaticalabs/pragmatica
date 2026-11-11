@@ -3,6 +3,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.kvstore;
 
+import java.util.Locale;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.slice.MethodName;
@@ -398,7 +400,7 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
 
         public static HttpNodeRouteKey httpNodeRouteKey(String httpMethod, String pathPrefix, NodeId nodeId) {
-            return new HttpNodeRouteKey(httpMethod.toUpperCase(), normalizePrefix(pathPrefix), nodeId);
+            return new HttpNodeRouteKey(httpMethod.toUpperCase(Locale.ROOT), normalizePrefix(pathPrefix), nodeId);
         }
 
         public static Result<HttpNodeRouteKey> httpNodeRouteKey(String key) {
