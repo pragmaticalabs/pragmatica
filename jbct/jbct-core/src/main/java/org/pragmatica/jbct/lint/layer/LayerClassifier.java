@@ -53,7 +53,6 @@ public final class LayerClassifier {
 
     /// The book's wiring package; classifies as bootstrap only when no layer segment precedes it.
     private static final String CONFIG_SEGMENT = "config";
-
     /// Convention slice-root marker: the immediate child of a `usecase` segment is a slice root.
     private static final String SLICE_CONVENTION_SEGMENT = "usecase";
 
@@ -79,11 +78,7 @@ public final class LayerClassifier {
         addRules(rules, config.applicationGlobs(), Layer.APPLICATION);
         addRules(rules, config.adapterGlobs(), Layer.ADAPTER);
         addRules(rules, config.bootstrapGlobs(), Layer.BOOTSTRAP);
-
-        var slices = config.sliceGlobs()
-                           .stream()
-                           .map(PackageGlob::compile)
-                           .toList();
+        var slices = config.sliceGlobs().stream().map(PackageGlob::compile).toList();
 
         return new LayerClassifier(List.copyOf(rules), slices, !config.isEmpty());
     }
@@ -133,9 +128,7 @@ public final class LayerClassifier {
         var bestScore = -1;
 
         for (var rule : layerRules) {
-            if (rule.specificity() > bestScore && rule.pattern()
-                                                      .matcher(packageName)
-                                                      .matches()) {
+            if (rule.specificity() > bestScore && rule.pattern().matcher(packageName).matches()) {
                 bestScore = rule.specificity();
                 bestLayer = rule.layer();
             }
@@ -198,8 +191,7 @@ public final class LayerClassifier {
 
     private boolean matchesAnySlice(String prefix) {
         for (var glob : sliceGlobs) {
-            if (glob.matcher(prefix)
-                    .matches()) {
+            if (glob.matcher(prefix).matches()) {
                 return true;
             }
         }
@@ -227,5 +219,4 @@ public final class LayerClassifier {
     private static String joinSegments(String[] segments, int endInclusive) {
         return String.join(".", Arrays.copyOfRange(segments, 0, endInclusive + 1));
     }
-
 }

@@ -218,8 +218,8 @@ public final class ErrorTypeDiscovery {
             mappingResult.onSuccess(mappings::add)
                          .onFailure(cause -> {
                              if (cause instanceof ConflictCause cc) {
-                             conflicts.add(cc.conflict());
-                         }
+                                 conflicts.add(cc.conflict());
+                             }
                          });
         }
 

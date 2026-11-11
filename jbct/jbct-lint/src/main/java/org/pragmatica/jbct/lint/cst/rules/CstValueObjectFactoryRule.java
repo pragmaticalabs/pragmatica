@@ -25,6 +25,7 @@ public class CstValueObjectFactoryRule implements CstLintRule {
     private static final Pattern RECORD_NAME_PATTERN = Pattern.compile("\\brecord\\s+(\\w+)");
     private static final Pattern INTERFACE_NAME_PATTERN = Pattern.compile("\\binterface\\s+(\\w+)");
     private static final Pattern IDENTIFIER_PATTERN = Pattern.compile("\\b([A-Za-z_$][A-Za-z0-9_$]*)\\b");
+
     private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
 
     /// Records nested in an interface carrying one of these annotations are framework shapes,
@@ -119,8 +120,8 @@ public class CstValueObjectFactoryRule implements CstLintRule {
     /// declared DIRECTLY by the record count, so a nested type's topic does not exempt its outer.
     private boolean declaresSelfTopic(Cursor root, Cursor record, String recordName) {
         return findAll(record, CstNodes::isFieldDecl).stream()
-                     .filter(field -> FileTypeClassifier.directlyEncloses(root, record, field))
-                     .anyMatch(field -> isSelfTopicConstant(field, recordName));
+                      .filter(field -> FileTypeClassifier.directlyEncloses(root, record, field))
+                      .anyMatch(field -> isSelfTopicConstant(field, recordName));
     }
 
     private boolean isSelfTopicConstant(Cursor field, String recordName) {

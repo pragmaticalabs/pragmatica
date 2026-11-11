@@ -48,9 +48,13 @@ public class CstParameterReassignmentRule implements CstLintRule {
         }
 
         var methodDiagnostics = findAllMethods(root).stream()
-                                              .flatMap(method -> scope(method, methodParamNames(method), ctx));
+                                              .flatMap(method -> scope(method,
+                                                                       methodParamNames(method),
+                                                                       ctx));
         var lambdaDiagnostics = findAllLambdas(root).stream()
-                                              .flatMap(lambda -> scope(lambda, lambdaParamNames(lambda), ctx));
+                                              .flatMap(lambda -> scope(lambda,
+                                                                       lambdaParamNames(lambda),
+                                                                       ctx));
 
         return Stream.concat(methodDiagnostics, lambdaDiagnostics);
     }
@@ -77,15 +81,13 @@ public class CstParameterReassignmentRule implements CstLintRule {
                                     Stream.Builder<Diagnostic> diagnostics,
                                     LintContext ctx) {
         var names = alternation(paramNames);
-        var assignMatcher = Pattern.compile("(?<![.\\w$])(" + names + ")\\s*(?:" + ASSIGN_OP + ")")
-                                   .matcher(masked);
+        var assignMatcher = Pattern.compile("(?<![.\\w$])(" + names + ")\\s*(?:" + ASSIGN_OP + ")").matcher(masked);
 
         while (assignMatcher.find()) {
             addReassignment(assignMatcher.group(1), assignMatcher.start(), masked, baseLine, reported, diagnostics, ctx);
         }
 
-        var preIncrementMatcher = Pattern.compile("(?:\\+\\+|--)\\s*(" + names + ")(?![.\\w$])")
-                                         .matcher(masked);
+        var preIncrementMatcher = Pattern.compile("(?:\\+\\+|--)\\s*(" + names + ")(?![.\\w$])").matcher(masked);
 
         while (preIncrementMatcher.find()) {
             addReassignment(preIncrementMatcher.group(1),

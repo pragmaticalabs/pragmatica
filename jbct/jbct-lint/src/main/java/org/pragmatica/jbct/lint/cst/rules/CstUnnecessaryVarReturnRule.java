@@ -80,7 +80,7 @@ public class CstUnnecessaryVarReturnRule implements CstLintRule {
 
     private Diagnostic createDiagnostic(Cursor root, Cursor stmt, String varName, LintContext ctx) {
         var methodName = enclosingMethodMember(root, stmt).map(member -> extractMethodName(memberDeclText(member)))
-                                     .or("(unknown)");
+                                              .or("(unknown)");
 
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),

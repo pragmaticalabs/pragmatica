@@ -6,6 +6,7 @@ import java.util.Map;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.lang.Option;
 
+
 /// Low-level, null-safe accessors over the raw `Map`/`Object` shapes the [TomlParser] produces.
 ///
 /// [org.pragmatica.config.toml.TomlDocument] exposes typed getters for scalar section values, but
@@ -17,7 +18,9 @@ public sealed interface TomlAccess {
 
     /// A trimmed string value from a row map, if present.
     static Option<String> str(Map<String, Object> row, String key) {
-        return Option.option(row.get(key)).map(Object::toString).map(String::trim);
+        return Option.option(row.get(key))
+                     .map(Object::toString)
+                     .map(String::trim);
     }
 
     /// A boolean value from a row map, if present and boolean-typed.
@@ -54,7 +57,7 @@ public sealed interface TomlAccess {
     /// View an object as a list, if it is one.
     static Option<List<Object>> asList(Object value) {
         return value instanceof List<?> list
-               ? Option.some(List.<Object>copyOf(list))
+               ? Option.some(List.<Object> copyOf(list))
                : Option.none();
     }
 
@@ -73,6 +76,8 @@ public sealed interface TomlAccess {
     }
 
     private static List<String> toStrings(List<Object> list) {
-        return list.stream().map(Object::toString).toList();
+        return list.stream()
+                   .map(Object::toString)
+                   .toList();
     }
 }
