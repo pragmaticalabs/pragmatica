@@ -20,7 +20,7 @@ import java.util.Set;
 
 import org.pragmatica.consensus.ConsensusError;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Fn1;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
