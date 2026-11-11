@@ -294,10 +294,11 @@ final class DeparturePushRun {
         var chains = plan(stamps);
 
         raiseAtPlan();
-        SharedScheduler.schedule(this::reevaluate, remainingUntil(baseDeadline));
+        var reevaluation = SharedScheduler.schedule(this::reevaluate, remainingUntil(baseDeadline));
 
         return Promise.allOf(chains)
                       .timeout(remainingUntil(backstopDeadline()))
+                      .withResult(_ -> reevaluation.cancel(false))
                       .fold(_ -> finish());
     }
 
