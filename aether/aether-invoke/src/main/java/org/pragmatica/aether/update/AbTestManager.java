@@ -454,12 +454,35 @@ public interface AbTestManager {
             private Promise<AbTestDeployment> claimInMemory(AbTestDeployment before,
                                                             AbTestDeployment claimed,
                                                             Supplier<Promise<AbTestDeployment>> write) {
-                tests.put(claimed.testId(), claimed);
+                if (!tests.replace(claimed.testId(), before, claimed)) {
+                    return refusedClaim(before, claimed).promise();
+                }
 
                 return write.get()
-                            .onFailure(_ -> tests.replace(claimed.testId(),
-                                                          claimed,
-                                                          before));
+                            .fold(result -> release(result, before, claimed));
+            }
+
+            private Cause refusedClaim(AbTestDeployment before, AbTestDeployment claimed) {
+                return AbTestDeploymentError.InvalidTestState.invalidTestState(Option.option(tests.get(claimed.testId()))
+                                                                                     .map(AbTestDeployment::state)
+                                                                                     .or(before.state()),
+                                                                               claimed.state());
+            }
+
+            /// The release runs inside the fold, before the caller can observe the failure. It is a CAS: if another writer replaced the claimed
+            /// value meanwhile (activation, restore), their value stays.
+            private Promise<AbTestDeployment> release(Result<AbTestDeployment> result,
+                                                      AbTestDeployment before,
+                                                      AbTestDeployment claimed) {
+                return result.onFailure(_ -> releaseClaim(before, claimed))
+                             .async();
+            }
+
+            @SuppressWarnings("JBCT-RET-01")
+            private void releaseClaim(AbTestDeployment before, AbTestDeployment claimed) {
+                if (!tests.replace(claimed.testId(), claimed, before)) {
+                    log.info("A/B test {} changed during the {} claim; keeping the newer value", claimed.testId(), claimed.state());
+                }
             }
 
             /// #2662: a fenced write. A target that is not committed, or whose owning blueprint is not, is not restored: writing it would
