@@ -23,9 +23,4 @@ public interface RouteSource {
     static RouteSource routeSource(RouteSource... routes) {
         return () -> Stream.of(routes).flatMap(RouteSource::routes);
     }
-
-    @Deprecated(forRemoval = true)
-    static RouteSource routeSource(RouteSource... routes) {
-        return routeSource(routes);
-    }
 }
