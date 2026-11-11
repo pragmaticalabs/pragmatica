@@ -73,6 +73,24 @@ class LeaderDeactivationTest {
         assertThat(delivered.await(AWAIT).isSuccess()).as("the late deactivation is awaited").isTrue();
     }
 
+    /// The remaining residual of #2688: a LeaderChange(self) is queued, undelivered, behind a held reaction when the wait is taken (so the
+    /// node is not yet recorded as leader), and its deactivation is enqueued after the wait's marker. The wait must still cover it.
+    @Test
+    void delivered_whenLeadershipIsQueuedUndelivered_waitsForTheDeactivationEnqueuedAfterTheMarker() throws InterruptedException {
+        var release = hold();
+
+        executor.undo("LeaderChange(self)", () -> deactivation.onLeaderChange(SELF));
+        var delivered = deactivation.delivered(executor, LONG_BOUND);
+
+        release.countDown();
+        assertThat(executor.drained().await(AWAIT).isSuccess()).as("the queued leadership and the earlier reactions ran").isTrue();
+        assertThat(delivered.isResolved()).as("leadership delivered, deactivation not yet").isFalse();
+
+        executor.undo("LeaderChange(other)", () -> deactivation.onLeaderChange(NONE));
+
+        assertThat(delivered.await(AWAIT).isSuccess()).as("the deactivation enqueued after the marker is awaited").isTrue();
+    }
+
     /// The deactivation is recorded on the route the toggles share, and toggles registered after the record still run in that route.
     @Test
     void delivered_waitsForTheRestOfTheRouteThatDeliveredTheDeactivation() throws InterruptedException {
