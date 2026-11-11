@@ -58,22 +58,20 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
 
     /// `Receiver::method` — group 1 receiver (possibly dotted: `java.util.List`, `Outer.Inner`; a type-argument list after it,
     /// as in `List<String>::getFirst`, is matched and dropped), group 2 referenced method.
-    private static final String REFERENCE =
-        "((?:[A-Za-z_$][\\w$]*\\s*\\.\\s*)*[A-Za-z_$][\\w$]*)\\s*(?:<[^<>()]*(?:<[^<>()]*>[^<>()]*)*>)?\\s*::\\s*([A-Za-z_$][\\w$]*)";
+    private static final String REFERENCE = "((?:[A-Za-z_$][\\w$]*\\s*\\.\\s*)*[A-Za-z_$][\\w$]*)\\s*(?:<[^<>()]*(?:<[^<>()]*>[^<>()]*)*>)?\\s*::\\s*([A-Za-z_$][\\w$]*)";
 
     /// `.<mapper>( Receiver::method )` — group 1 mapper, group 2 receiver, group 3 referenced method.
-    private static final Pattern METHOD_REF_IN_MAPPER =
-        Pattern.compile("\\.(map|flatMap|filter|replaceResult|fold)\\s*\\(\\s*" + REFERENCE + "\\s*\\)");
+    private static final Pattern METHOD_REF_IN_MAPPER = Pattern.compile("\\.(map|flatMap|filter|replaceResult|fold)\\s*\\(\\s*" + REFERENCE
+                                                                       + "\\s*\\)");
 
     /// `.fold( failureMapper, Receiver::method )` — the success mapper is the SECOND argument, so the first pattern, which wants
     /// the reference right after the opening parenthesis, never sees it. Same group layout as [#METHOD_REF_IN_MAPPER].
-    private static final Pattern FOLD_SECOND_ARGUMENT =
-        Pattern.compile("\\.(fold)\\s*\\([^;]*?,\\s*" + REFERENCE + "\\s*\\)");
+    private static final Pattern FOLD_SECOND_ARGUMENT = Pattern.compile("\\.(fold)\\s*\\([^;]*?,\\s*" + REFERENCE
+                                                                       + "\\s*\\)");
 
     private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
 
-    private static final Pattern TYPE_NAME_PATTERN =
-        Pattern.compile("\\b(?:class|interface|record|enum)\\s+([A-Za-z_$][\\w$]*)");
+    private static final Pattern TYPE_NAME_PATTERN = Pattern.compile("\\b(?:class|interface|record|enum)\\s+([A-Za-z_$][\\w$]*)");
 
     @Override
     public String ruleId() {
@@ -88,23 +86,22 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
 
         var typeIdxByName = typeIdxByName(root);
         var partialSingletons = partialSingletonsByType(root);
-
         // A method nested in another (an anonymous-class or local-class method) is scanned once on its own and again as part of
         // the enclosing method's text, so the same reference is found twice (#1568). Each reference is identified by its
         // absolute offset in the file, so two identical references on one line stay two findings.
         var seen = new HashSet<Integer>();
-
         // methods, and field declarations too: `static final X = opt.map(List::getFirst)` has no method around it
-        var members = Stream.concat(findAllMethods(root).stream(), findAll(root, CstMapperMethodReferenceRule::isFieldMember).stream());
+        var members = Stream.concat(findAllMethods(root).stream(),
+                                    findAll(root, CstMapperMethodReferenceRule::isFieldMember).stream());
 
         return members.flatMap(method -> checkMethod(root, method, typeIdxByName, partialSingletons, seen, ctx));
     }
 
     /// A member that declares a field: the member node (the one `findAllMethods` yields for a method) holding a field declaration.
     private static boolean isFieldMember(Cursor node) {
-        return isMemberDecl(node) && (hasChildOfRule(node, RuleKind.FIELD_DECL)
-                                      || hasChildOfRule(node, RuleKind.INTERFACE_FIELD_DECL)
-                                      || hasChildOfRule(node, RuleKind.RECORD_STATIC_FIELD));
+        return isMemberDecl(node) && (hasChildOfRule(node, RuleKind.FIELD_DECL) || hasChildOfRule(node,
+                                                                                                  RuleKind.INTERFACE_FIELD_DECL) || hasChildOfRule(node,
+                                                                                                                                                   RuleKind.RECORD_STATIC_FIELD));
     }
 
     /// Declared name → CST index for every type in the file (used to resolve an `X::m` receiver).
@@ -148,7 +145,6 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
             }
 
             counts.merge(name, 1, Integer::sum);
-
             if (MapperSafety.containsPartialOperation(bodyText(method))) {
                 partialNames.add(name);
             }
@@ -157,7 +153,10 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
         addSingletons(typeIdx, counts, partialNames, result);
     }
 
-    private void addSingletons(int typeIdx, Map<String, Integer> counts, Set<String> partialNames, Map<Integer, Set<String>> result) {
+    private void addSingletons(int typeIdx,
+                               Map<String, Integer> counts,
+                               Set<String> partialNames,
+                               Map<Integer, Set<String>> result) {
         var singletons = new HashSet<String>();
 
         for (var name : partialNames) {
@@ -175,12 +174,12 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
     /// nested type declared inside it).
     private boolean isDirectMethod(Cursor root, Cursor method, int typeIdx) {
         return enclosingTypeIdx(root, method).map(idx -> idx == typeIdx)
-                                             .or(false);
+                               .or(false);
     }
 
     private String bodyText(Cursor method) {
         return methodBody(method).map(CstNodes::text)
-                                 .or("");
+                         .or("");
     }
 
     private Stream<Diagnostic> checkMethod(Cursor root,
@@ -201,9 +200,9 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
                 var refName = matcher.group(3);
                 var offset = anchorOf(method).spanStart() + matcher.start(2);
 
-                if (isPartialReference(receiver, refName, enclosingType, typeIdxByName, partialSingletons)
-                    && !streamExempt(matcher.group(1), methodText, matcher.start())
-                    && seen.add(offset)) {
+                if (isPartialReference(receiver, refName, enclosingType, typeIdxByName, partialSingletons) && !streamExempt(matcher.group(1),
+                                                                                                                            methodText,
+                                                                                                                            matcher.start()) && seen.add(offset)) {
                     var line = startLine(anchorOf(method)) + MapperSafety.newlinesBefore(methodText, matcher.start(2));
 
                     diagnostics.add(createDiagnostic(method, receiver, refName, line, ctx));
@@ -218,19 +217,25 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
     /// the Iteration pattern, not a carrier mapper, so it is exempt. The pipeline is the enclosing statement, approximated by
     /// the text between the nearest `;` / `{` / `}` before the match and the next `;`; a Stream marker anywhere in it exempts.
     private static boolean streamExempt(String mapper, String methodText, int matchStart) {
-        return MapperSafety.STREAM_SHARED.contains(mapper) && MapperSafety.isStreamPipeline(statementAround(methodText, matchStart));
+        return MapperSafety.STREAM_SHARED.contains(mapper) && MapperSafety.isStreamPipeline(statementAround(methodText,
+                                                                                                            matchStart));
     }
 
     private static String statementAround(String code, int offset) {
-        var start = Math.max(Math.max(code.lastIndexOf(';', offset), code.lastIndexOf('{', offset)), code.lastIndexOf('}', offset)) + 1;
+        var start = Math.max(Math.max(code.lastIndexOf(';', offset), code.lastIndexOf('{', offset)),
+                             code.lastIndexOf('}', offset)) + 1;
         var end = code.indexOf(';', offset);
 
-        return code.substring(start, end < 0 ? code.length() : end);
+        return code.substring(start,
+                              end < 0
+                              ? code.length()
+                              : end);
     }
 
     /// The last segment of a possibly dotted receiver: `java.util.List` -> `List`, `Outer.Inner` -> `Inner`, `this.field` -> `field`.
     private static String simpleName(String receiver) {
-        return receiver.substring(receiver.lastIndexOf('.') + 1).trim();
+        return receiver.substring(receiver.lastIndexOf('.') + 1)
+                       .trim();
     }
 
     /// A reference is partial when its name marks a throwing accessor, or when the type its receiver
@@ -249,12 +254,15 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
             return true;
         }
 
-        return targetType(receiver, enclosingType, typeIdxByName).map(typeIdx -> partialSingletons.getOrDefault(typeIdx, Set.of())
+        return targetType(receiver, enclosingType, typeIdxByName).map(typeIdx -> partialSingletons.getOrDefault(typeIdx,
+                                                                                                                Set.of())
                                                                                                   .contains(refName))
-                                                                 .or(false);
+                         .or(false);
     }
 
-    private Option<Integer> targetType(String receiver, Option<Integer> enclosingType, Map<String, Integer> typeIdxByName) {
+    private Option<Integer> targetType(String receiver,
+                                       Option<Integer> enclosingType,
+                                       Map<String, Integer> typeIdxByName) {
         return "this".equals(receiver)
                ? enclosingType
                : Option.option(typeIdxByName.get(receiver));
@@ -266,8 +274,7 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
     /// unknown receiver is not guessed at (`Pair::getFirst` from another package stays clean). `next` is only partial on an
     /// iterator.
     private boolean isPartialAccessorReference(String receiver, String refName) {
-        return MapperSafety.PARTIAL_ACCESSOR_NAMES.contains(refName) && MapperSafety.PARTIAL_ACCESSOR_RECEIVERS.contains(receiver)
-               || MapperSafety.ITERATOR_RECEIVERS.contains(receiver) && "next".equals(refName);
+        return MapperSafety.PARTIAL_ACCESSOR_NAMES.contains(refName) && MapperSafety.PARTIAL_ACCESSOR_RECEIVERS.contains(receiver) || MapperSafety.ITERATOR_RECEIVERS.contains(receiver) && "next".equals(refName);
     }
 
     /// `*OrThrow` (container convention) or the JDK `orElseThrow`, matched case-insensitively so
@@ -288,7 +295,8 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
                                      ctx.fileName(),
                                      line,
                                      startColumn(anchorOf(method)),
-                                     "Partial method reference '" + receiver + "::" + refName
+                                     "Partial method reference '" + receiver
+                                    + "::" + refName
                                     + "' in mapper - make the mapper total or lift to a typed Cause",
                                      "A method reference in map/flatMap/filter/replaceResult/fold whose target throws "
                                     + "(name ends with OrThrow, is getFirst/getLast, or its same-type body uses a partial accessor) can hang "

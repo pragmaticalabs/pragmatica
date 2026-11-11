@@ -83,6 +83,7 @@ public record DescribeInstancesResponse(@JacksonXmlProperty(localName = "reserva
             return List.of();
         }
 
-        return reservation.instancesSet().items();
+        return reservation.instancesSet()
+                          .items();
     }
 }

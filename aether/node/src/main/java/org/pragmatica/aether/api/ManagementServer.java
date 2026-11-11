@@ -58,6 +58,7 @@ import org.pragmatica.aether.api.routes.LogLevelRoutes;
 import org.pragmatica.aether.api.routes.ManagementRouter;
 import org.pragmatica.aether.api.routes.MavenProtocolRoutes;
 import org.pragmatica.aether.api.routes.MetricsRoutes;
+import org.pragmatica.aether.api.routes.NodeIdRoutes;
 import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.api.routes.NodeReplacementRoutes;
 import org.pragmatica.aether.api.routes.UpgradeRunRoutes;
@@ -448,6 +449,7 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(org.pragmatica.aether.api.routes.VersionRoutes.versionRoutes(nodeSupplier));
         routeSources.add(org.pragmatica.aether.api.routes.WorkerRoutes.workerRoutes(nodeSupplier));
         routeSources.add(org.pragmatica.aether.api.routes.CommunityRoutes.communityRoutes(nodeSupplier));
+        routeSources.add(NodeIdRoutes.nodeIdRoutes(nodeSupplier));
         // #525: turns declared-but-unbuilt routes into an honest 501 instead of a bare 404.
         // Registration order is irrelevant (route names are unique); registration itself is not —
         // dropping this source silently resurrects the dead-route class. Reasons live per-route in

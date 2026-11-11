@@ -51,8 +51,9 @@ public sealed interface MigrationDialects {
     /// (`ddlTransactional=false`), so the whole migration file runs in autocommit.
     ExecutionDialect ORACLE = new ExecutionDialect(Dialects.ORACLE, false);
 
-    /// H2 descriptor: the splitter's H2 spec, DDL-transactional.
-    ExecutionDialect H2 = new ExecutionDialect(Dialects.H2, true);
+    /// H2 descriptor: the splitter's H2 spec, DDL auto-committing (`ddlTransactional=false`): T12 (FDB-2b) showed
+    /// `CREATE TABLE` then `ROLLBACK` leaves the table in place, so H2 runs the file in autocommit with checkpoints.
+    ExecutionDialect H2 = new ExecutionDialect(Dialects.H2, false);
 
     /// Resolves the execution descriptor for a database type.
     ///

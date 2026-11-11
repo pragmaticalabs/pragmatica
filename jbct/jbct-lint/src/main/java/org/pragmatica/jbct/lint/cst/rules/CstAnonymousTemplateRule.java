@@ -34,7 +34,7 @@ public class CstAnonymousTemplateRule implements CstLintRule {
         }
 
         var masked = MapperSafety.blankNonCode(source);
-        var diagnostics = Stream.<Diagnostic>builder();
+        var diagnostics = Stream.<Diagnostic> builder();
 
         for (var call : CauseHierarchies.factoryCalls(source, masked)) {
             if (call.args().size() != 1) {

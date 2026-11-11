@@ -4,6 +4,7 @@ import java.util.List;
 
 import org.pragmatica.jbct.derive.model.Axis;
 
+
 /// One position on the derived vector (SPEC.md §4 emit): the value the engine landed on for an
 /// axis, the answers that cite it (F10), and *how* it was reached.
 ///

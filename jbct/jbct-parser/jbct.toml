@@ -1,0 +1,11 @@
+# #3029: this module entered the CI JBCT gate. Format and every lint rule not listed here are enforced.
+# The rules below are pinned to warning (visible, non-failing) for the stated reason, the same way the root
+# jbct.toml pins CAUSE-01/02 (#720). Burn down by removing a line when its findings reach zero.
+
+[lint.rules]
+# BND-01: java.util.Optional crosses the boundary of javac / CST cursor APIs in this module; migration to Option pending
+JBCT-BND-01 = "warning"
+# RET-01: void return mandated by the host API or inherent to mutable emit state (Mojo.execute, Processor.init, main, AutoCloseable.close, visitor callbacks); the signature is the API where it is not our choice
+JBCT-RET-01 = "warning"
+# TOT-02: mapper returns Option (total by shape); suspected false positive in the rule, unverified
+JBCT-TOT-02 = "warning"

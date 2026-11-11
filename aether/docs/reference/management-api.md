@@ -4837,6 +4837,23 @@ The clear is audited: the cluster raises `community-placement-cleared` naming th
 committed (read the operation again before retrying), or the node is not the leader; `401`/`403` when the caller is not authorized.
 CLI: `aether cluster clear-placement <community> --reason <text>`; exit 0 cleared, 3 no such operation, 1 any other refusal or failure, 64 a missing or blank `--reason`.
 
+### POST /api/v1/cluster/node-ids/reserve
+
+Reserves `count` node ids `<source>-<role>-<n>` (#1715). Body `{"source": "<name>", "role": "<role>", "count": <1..1000>}`; `source` and `role` are
+names of letters, digits, `.`, `_` and `-`. Route target is `LEADER`, authorization OPERATOR.
+
+The leader advances the committed per-`(source, role)` high-water (`NodeIdHighWaterKey`, part of the backed-up cluster state, so a restore keeps it) in ONE
+compare-and-set leader transaction and answers only after that transaction is accepted. An id in the answer is therefore never returned again, to this or
+another caller; a caller that dies before it provisions leaves a gap in the ordinals, never a reuse. The first reservation for a pair has no stored
+value and starts above the larger of the persisted configuration's desired count for that source and role (bootstrap named `<source>-<role>-0..count-1`)
+and one past the highest `<source>-<role>-<n>` among the node identities ever admitted (identity records are never deleted). An id that bootstrap used and
+that is in neither of the two is not covered.
+
+The response is `{"source", "role", "ids", "highWater"}`: `ids` ascending, `highWater` the committed counter after the advance. `400` for an invalid
+`source`, `role` or `count`; `409` when this node is not the committed core leader, or when the compare-and-set was lost three times to concurrent
+reservations (nothing is reserved; retry); `503` while no core leader is committed; `401`/`403` when the caller is not authorized.
+CLI: `aether cluster node-ids reserve --source <name> [--role <role>] --count <N>`.
+
 ### POST /api/v1/nodes/promote/{id}
 
 This compatibility endpoint acknowledges an existing immutable role. It never changes an

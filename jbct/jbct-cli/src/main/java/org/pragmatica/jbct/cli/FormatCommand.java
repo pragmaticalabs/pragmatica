@@ -141,8 +141,8 @@ public class FormatCommand implements Callable<Integer> {
                               .onSuccess(_ -> {
                                              counters[0]++;
                                              if (verbose) {
-                                             System.out.println("  formatted: " + file);
-                                         }
+                                                 System.out.println("  formatted: " + file);
+                                             }
                                          });
     }
 

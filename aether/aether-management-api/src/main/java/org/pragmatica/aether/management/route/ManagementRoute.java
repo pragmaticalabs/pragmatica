@@ -77,6 +77,8 @@ public enum ManagementRoute {
     CLUSTER_STATUS(GET, "/cluster/status", List.of(), LEADER),
     CLUSTER_CONFIG_APPLY(POST, "/cluster/config", List.of(), taskGroup(DEPLOYMENT)),
     CLUSTER_SCALE(POST, "/cluster/scale", List.of(), LEADER),
+    // #1715: reserve `<source>-<role>-<n>` node ids from the committed per-(source, role) high-water; the leader commits the advance.
+    CLUSTER_NODE_IDS_RESERVE(POST, "/cluster/node-ids/reserve", List.of(), LEADER),
     CLUSTER_CIRCUIT_BREAKER_STATUS(GET, "/cluster/topology/circuit-breaker", List.of(), LEADER),
     CLUSTER_CIRCUIT_BREAKER_RESET(POST, "/cluster/topology/circuit-breaker/reset", List.of(), LEADER),
     CLUSTER_AUTO_HEAL_STATUS(GET, "/cluster/topology/auto-heal", List.of(), LEADER),

@@ -45,7 +45,6 @@ public record MethodModel(String name,
     /// Matched by exact FQN: a same-named type from another package is an ordinary business
     /// parameter, not the envelope context.
     public static final String MESSAGE_CONTEXT_TYPE = "org.pragmatica.aether.slice.topic.MessageContext";
-
     private static final String SUBSCRIBER_TYPE = "org.pragmatica.aether.slice.Subscriber";
     private static final String SCHEDULED_TYPE = "org.pragmatica.aether.slice.Scheduled";
     private static final String STREAM_SUBSCRIBER_TYPE = "org.pragmatica.aether.slice.StreamSubscriber";
@@ -125,9 +124,7 @@ public record MethodModel(String name,
     /// The event type a subscription method consumes is its first parameter in both the 1-arg and
     /// the 2-arg context-carrying shape — see [#payloadParameters].
     private static boolean isContextualSubscription(List<MethodParameterInfo> params) {
-        return params.size() == 2 && MESSAGE_CONTEXT_TYPE.equals(params.get(1)
-                                                                       .type()
-                                                                       .toString());
+        return params.size() == 2 && MESSAGE_CONTEXT_TYPE.equals(params.get(1).type().toString());
     }
 
     /// Check if this method has any scheduled invocations.
@@ -634,8 +631,8 @@ public record MethodModel(String name,
         // Subscription methods take the message type alone, or the message type plus a MessageContext
         if (params.size() != 1 && !isContextualSubscription(params)) {
             return Causes.cause("Subscription method '" + methodName
-                               + "' must have exactly one parameter (the message type), or two whose second is "
-                               + MESSAGE_CONTEXT_TYPE + ", found: " + params.size()).result();
+                               + "' must have exactly one parameter (the message type), or two whose second is " + MESSAGE_CONTEXT_TYPE
+                               + ", found: " + params.size()).result();
         }
         // Return type must be Promise<Unit>
         if (returnType instanceof DeclaredType dt && !dt.getTypeArguments().isEmpty()) {
@@ -772,8 +769,7 @@ public record MethodModel(String name,
             return Result.success(Option.none());
         }
 
-        return AnnotatedComponent.annotatedComponent(paramType, KEY_ANNOTATION)
-                                 .flatMap(MethodModel::toKeyExtractor);
+        return AnnotatedComponent.annotatedComponent(paramType, KEY_ANNOTATION).flatMap(MethodModel::toKeyExtractor);
     }
 
     private static Result<Option<KeyExtractorInfo>> toKeyExtractor(Option<AnnotatedComponent> keyComponent) {

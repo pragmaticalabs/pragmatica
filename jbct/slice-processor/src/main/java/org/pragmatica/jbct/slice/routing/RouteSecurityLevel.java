@@ -61,7 +61,7 @@ public sealed interface RouteSecurityLevel {
             case OptionalAuth _ -> 1;
             case Authenticated _ -> 2;
             case Role _ -> 3;
-            case Unspecified _ -> -1;
+            case Unspecified _ -> - 1;
         };
     }
 
