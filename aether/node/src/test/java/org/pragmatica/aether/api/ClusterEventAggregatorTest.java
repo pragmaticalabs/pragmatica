@@ -2040,6 +2040,18 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.DEPARTURE_INFERRED_REVERSED,
                 OperatorWarningCode.DEPARTURE_INFERRED_CONFIRMED,
                 OperatorWarningCode.SLICE_UNRESPONSIVE_EXPIRED,
+                // #2834: the leader-local FSM2 families commit their open set (FsmWarningKey)
+                OperatorWarningCode.DEPARTURE_BREAKER_CLEARED,
+                OperatorWarningCode.PLACEMENT_VALID,
+                OperatorWarningCode.JOIN_MATCHED,
+                OperatorWarningCode.RETRY_EXHAUSTED_SETTLED,
+                OperatorWarningCode.SCHEMA_HOLD_CLEARED,
+                OperatorWarningCode.SCHEMA_STATUS_READABLE,
+                OperatorWarningCode.STRAY_INSTANCE_REMOVED,
+                OperatorWarningCode.WORKER_ABSENCE_JUDGEABLE,
+                OperatorWarningCode.WORKER_COMMUNITY_POLICY_MATCHED,
+                OperatorWarningCode.COMMUNITY_GROWTH_RESUMED,
+                OperatorWarningCode.COMMUNITY_ASSIGNMENT_PLACED,
             });
     }
 

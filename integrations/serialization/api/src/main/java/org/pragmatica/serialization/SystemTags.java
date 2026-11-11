@@ -774,6 +774,10 @@ public interface SystemTags {
         pin(table, 2890, "org.pragmatica.aether.http.handler.ObjectHandle");
         pin(table, 2891, "org.pragmatica.aether.http.handler.FileHandle");
         pin(table, 2892, "org.pragmatica.aether.http.handler.UploadHandle");
+        // #2834: the committed open set of the cluster FSM's leader-local warnings. Inside the fix2834 reservation 2902..2903 of
+        // wire-tag-ranges.txt (2900..2901 are fix2635's, PR #3025).
+        pin(table, 2902, "org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey");
+        pin(table, 2903, "org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue");
         // ---- unpinned numbers up to 16383 RESERVED: reserve a range in wire-tag-ranges.txt first ----
         rejectDuplicateTags(table);
 

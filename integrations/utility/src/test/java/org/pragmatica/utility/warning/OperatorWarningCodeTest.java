@@ -477,15 +477,25 @@ class OperatorWarningCodeTest {
                                                                                      .isEqualTo(23);
     }
 
-    /// CTO ruling A2 on #2831 (O3): of the D.6 recoveries, exactly those whose open condition is committed state close across nodes (rows 6/7,
-    /// the inferred-departure record; row 19, the committed exclusions), so a successor leader publishes them. The leader-local families do
-    /// not; their stale opens after a leader change are #2834. Red when: a committed-family recovery is refused by a successor, or a
-    /// leader-local recovery is published by a node that never raised its warning.
+    /// CTO ruling A2 on #2831 (O3), extended by #2834: of the D.6 recoveries, exactly those whose open condition is committed state close
+    /// across nodes, so a successor leader publishes them. Rows 6/7 (the inferred-departure record) and row 19 (the committed exclusions)
+    /// always were; the leader-local families commit their open set (`FsmWarningKey`) since #2834. `deployment-engine-matched` is raised by
+    /// each node about itself, so it does not. Red when: a committed-family recovery is refused by a successor, or the node-local recovery is
+    /// published by a node that never raised its warning.
     @Test
-    void d6Ruling_onlyTheCommittedStateRecoveries_closeAcrossNodes() {
+    void d6Ruling_theCommittedStateRecoveries_closeAcrossNodes() {
         assertThat(D6_RECOVERIES.keySet().stream().filter(OperatorWarningCode::closesAcrossNodes)).containsExactlyInAnyOrder(OperatorWarningCode.DEPARTURE_INFERRED_REVERSED,
                                                                                                                           OperatorWarningCode.DEPARTURE_INFERRED_CONFIRMED,
-                                                                                                                          OperatorWarningCode.SLICE_UNRESPONSIVE_EXPIRED);
+                                                                                                                          OperatorWarningCode.SLICE_UNRESPONSIVE_EXPIRED,
+                                                                                                                          OperatorWarningCode.DEPARTURE_BREAKER_CLEARED,
+                                                                                                                          OperatorWarningCode.PLACEMENT_VALID,
+                                                                                                                          OperatorWarningCode.JOIN_MATCHED,
+                                                                                                                          OperatorWarningCode.RETRY_EXHAUSTED_SETTLED,
+                                                                                                                          OperatorWarningCode.SCHEMA_HOLD_CLEARED,
+                                                                                                                          OperatorWarningCode.SCHEMA_STATUS_READABLE,
+                                                                                                                          OperatorWarningCode.STRAY_INSTANCE_REMOVED,
+                                                                                                                          OperatorWarningCode.WORKER_ABSENCE_JUDGEABLE,
+                                                                                                                          OperatorWarningCode.WORKER_COMMUNITY_POLICY_MATCHED);
     }
 
     /// #752: a recovery code closes a condition of its own subsystem, and a condition is not itself a recovery, so a

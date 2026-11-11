@@ -210,7 +210,7 @@ public final class ClusterFsm {
     /// One input against a copy of the model, then the end-of-step bookkeeping: a flush is queued if the handlers left
     /// intents (R-5.7.4).
     private ClusterModel apply(ClusterModel model, ClusterInput input, Ctx ctx) {
-        var next = Outbox.requestFlush(Handlers.handle(model.copy(), ctx, input),
+        var next = Outbox.requestFlush(Warnings.noteRaised(Handlers.handle(model.copy(), ctx, input), ctx),
                                        ctx);
 
         return reportScans(next, ctx, next.scans.count());

@@ -10,14 +10,13 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 /// 18/19 and 20: the artifact) is closed only when the last of them leaves. A recovery whose opener leaves a leader-local mark is raised
 /// only for a subject in this leader's open set; rows 18/19 are raised from the committed exclusions (`Judgments`).
 ///
-/// Across a leader change (CTO ruling A2 on #2831): the recoveries of rows 6/7 and 19 close across nodes (`closesAcrossNodes`), because
-/// their open condition is committed state (the inferred-departure record, the committed exclusions); a successor raises them from that
-/// state and its event layer publishes them although it never saw the warning. The other families are leader-local: a successor raises
-/// their warning again where it re-evaluates the condition and finds it holding, and then closes it itself.
-///
-/// Limit (#2834): the open sets of the leader-local families are not committed. A warning a deposed leader raised is never closed by its
-/// successor when the condition ended before the successor saw it, or when the successor does not raise it again (a family raised only at
-/// an event, such as an exhaustion or a join).
+/// Across a leader change (CTO ruling A2 on #2831, and #2834): every D.6 recovery closes across nodes (`closesAcrossNodes`), because
+/// every open condition is committed state. Rows 6/7 and 19 read theirs from the inferred-departure record and the committed exclusions;
+/// the leader-local families commit their open set (`FsmWarningKey`, `Warnings`), and a successor inherits it at `Rebuild`. A successor
+/// never raises an inherited open warning again, closes one whose subject left the model between the leaders with [#SUBJECT_GONE], and
+/// closes the rest when its own level-triggered checks find the condition ended; its event layer publishes those recoveries although it
+/// never saw the warning. Residual: a warning published in a drain whose leader was deposed before the drain's WARNINGS write committed
+/// is not in the inherited set.
 public sealed interface Recoveries {
     /// The reason text of a recovery raised because its subject left the FSM's model.
     String SUBJECT_GONE = "subject-gone";

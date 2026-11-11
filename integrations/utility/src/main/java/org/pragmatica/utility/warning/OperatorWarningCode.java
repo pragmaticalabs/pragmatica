@@ -196,7 +196,9 @@ public enum OperatorWarningCode {
     /// [#SCHEMA_HOLD_CLEARED].
     SCHEMA_HOLD("schema-hold", "deployment", WarningLevel.WARNING),
     /// D.6 row 16: the recovery of [#SCHEMA_HOLD], same subject: the hold was released, or its slice left the model.
-    SCHEMA_HOLD_CLEARED("schema-hold-cleared", "deployment", WarningLevel.INFO, SCHEMA_HOLD),
+    /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`), so a successor leader raises
+    /// it only for a subject in the inherited open set and publishes it without holding that warning's open mark.
+    SCHEMA_HOLD_CLEARED("schema-hold-cleared", "deployment", WarningLevel.INFO, SCHEMA_HOLD, true),
     /// D.6 row 17: a datasource's schema status does not decode (#964). Subject is the datasource. Closed by [#SCHEMA_STATUS_READABLE].
     SCHEMA_STATUS_UNKNOWN("schema-status-unknown", "deployment", WarningLevel.WARNING),
     /// D.6 row 18: a goal went unanswered in time; the node is excluded for the artifact. Closed by [#SLICE_UNRESPONSIVE_EXPIRED].
@@ -228,27 +230,45 @@ public enum OperatorWarningCode {
                                  true),
     /// D.6 row 8: the recovery of [#DEPARTURE_INFERRED_SUPPRESSED], same subject: the community's breaker cleared, or the community left the
     /// model.
+    /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`), so a successor leader raises
+    /// it only for a subject in the inherited open set and publishes it without holding that warning's open mark.
     DEPARTURE_BREAKER_CLEARED("departure-breaker-cleared",
                               "deployment",
                               WarningLevel.INFO,
-                              DEPARTURE_INFERRED_SUPPRESSED),
+                              DEPARTURE_INFERRED_SUPPRESSED,
+                              true),
     /// D.6 row 10: the recovery of [#INVALID_PLACEMENT], same subject: the placement parses, or the artifact's target was removed.
-    PLACEMENT_VALID("placement-valid", "deployment", WarningLevel.INFO, INVALID_PLACEMENT),
+    /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`), so a successor leader raises
+    /// it only for a subject in the inherited open set and publishes it without holding that warning's open mark.
+    PLACEMENT_VALID("placement-valid", "deployment", WarningLevel.INFO, INVALID_PLACEMENT, true),
     /// D.6 row 13: the recovery of [#JOIN_UNMATCHED], same subject: the pending join matched a row, or it was dropped.
-    JOIN_MATCHED("join-matched", "deployment", WarningLevel.INFO, JOIN_UNMATCHED),
+    /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`), so a successor leader raises
+    /// it only for a subject in the inherited open set and publishes it without holding that warning's open mark.
+    JOIN_MATCHED("join-matched", "deployment", WarningLevel.INFO, JOIN_UNMATCHED, true),
     /// D.6 row 14: the recovery of [#RETRY_EXHAUSTED_UNSETTLED], same subject: the judgment settled, or the artifact's target was removed.
-    RETRY_EXHAUSTED_SETTLED("retry-exhausted-settled", "deployment", WarningLevel.INFO, RETRY_EXHAUSTED_UNSETTLED),
+    /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`), so a successor leader raises
+    /// it only for a subject in the inherited open set and publishes it without holding that warning's open mark.
+    RETRY_EXHAUSTED_SETTLED("retry-exhausted-settled", "deployment", WarningLevel.INFO, RETRY_EXHAUSTED_UNSETTLED, true),
     /// D.6 row 17: the recovery of [#SCHEMA_STATUS_UNKNOWN], same subject: the status decodes, or the datasource's record was removed.
-    SCHEMA_STATUS_READABLE("schema-status-readable", "deployment", WarningLevel.INFO, SCHEMA_STATUS_UNKNOWN),
+    /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`), so a successor leader raises
+    /// it only for a subject in the inherited open set and publishes it without holding that warning's open mark.
+    SCHEMA_STATUS_READABLE("schema-status-readable", "deployment", WarningLevel.INFO, SCHEMA_STATUS_UNKNOWN, true),
     /// D.6 row 20: the recovery of [#STRAY_INSTANCE], same subject: the condemned observed row disappeared.
-    STRAY_INSTANCE_REMOVED("stray-instance-removed", "deployment", WarningLevel.INFO, STRAY_INSTANCE),
+    /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`), so a successor leader raises
+    /// it only for a subject in the inherited open set and publishes it without holding that warning's open mark.
+    STRAY_INSTANCE_REMOVED("stray-instance-removed", "deployment", WarningLevel.INFO, STRAY_INSTANCE, true),
     /// D.6 row 21: the recovery of [#WORKER_ABSENCE_UNJUDGEABLE], same subject: absence can be judged again for the class.
-    WORKER_ABSENCE_JUDGEABLE("worker-absence-judgeable", "deployment", WarningLevel.INFO, WORKER_ABSENCE_UNJUDGEABLE),
+    /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`), so a successor leader raises
+    /// it only for a subject in the inherited open set and publishes it without holding that warning's open mark.
+    WORKER_ABSENCE_JUDGEABLE("worker-absence-judgeable", "deployment", WarningLevel.INFO, WORKER_ABSENCE_UNJUDGEABLE, true),
     /// D.6 row 22: the recovery of [#WORKER_NO_COMMUNITY_POLICY], same subject: a later J5 placed the worker, or it departed first.
+    /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`), so a successor leader raises
+    /// it only for a subject in the inherited open set and publishes it without holding that warning's open mark.
     WORKER_COMMUNITY_POLICY_MATCHED("worker-community-policy-matched",
                                     "deployment",
                                     WarningLevel.INFO,
-                                    WORKER_NO_COMMUNITY_POLICY),
+                                    WORKER_NO_COMMUNITY_POLICY,
+                                    true),
     /// A deployment FSM's mailbox holds more than 10,000 inputs (phase-3 design 3.1, N-5): the mailboxes are unbounded by design, so a consumer that
     /// cannot keep up is reported here and nowhere else. The subject is `<node>/<fsm>`, the message names the depth. Closed by
     /// [#DEPLOYMENT_FSM_BACKLOG_CLEARED].
@@ -616,8 +636,9 @@ public enum OperatorWarningCode {
     /// worker takes a community when it rejoins. Closed by [#COMMUNITY_GROWTH_RESUMED].
     COMMUNITY_GROWTH_BLOCKED("community-growth-blocked", "community-growth", WarningLevel.WARNING),
     /// The recovery of [#COMMUNITY_GROWTH_BLOCKED], same subject (#241): a worker of the source was admitted to a community again (the bound
-    /// was raised, or a community has room). INFO, published only after a published blocked event for the source (#752 mechanism).
-    COMMUNITY_GROWTH_RESUMED("community-growth-resumed", "community-growth", WarningLevel.INFO, COMMUNITY_GROWTH_BLOCKED),
+    /// was raised, or a community has room). INFO. Closes across nodes (#2834): the cluster FSM commits its open set, so a successor leader
+    /// closes a blocked event the deposed leader published; each raiser raises it only for a subject it holds open.
+    COMMUNITY_GROWTH_RESUMED("community-growth-resumed", "community-growth", WarningLevel.INFO, COMMUNITY_GROWTH_BLOCKED, true),
     /// A community placement operation (a worker replacement, a scale-down, a community retirement) is parked and needs an operator (#241): its
     /// drain acknowledgement deadline passed (DRAIN_UNCERTAIN), so the previous worker may or may not be drained, or it is BLOCKED by a
     /// conflict the reconciler cannot resolve by itself. Subject is the community; the message names the operation, the phase, both nodes
@@ -653,12 +674,14 @@ public enum OperatorWarningCode {
                                     "deployment",
                                     WarningLevel.INFO,
                                     TERMINATION_RETIREMENT_OVERDUE),
-    /// The recovery of [#COMMUNITY_ASSIGNMENT_UNPLACED], same subject (#241): the worker was assigned a community. INFO, published only after a
-    /// published unplaced event for the worker (#752 mechanism).
+    /// The recovery of [#COMMUNITY_ASSIGNMENT_UNPLACED], same subject (#241): the worker was assigned a community. INFO. Closes across
+    /// nodes (#2834): the cluster FSM commits its open set, so a successor leader closes an unplaced event the deposed leader published; each
+    /// raiser raises it only for a subject it holds open.
     COMMUNITY_ASSIGNMENT_PLACED("community-assignment-placed",
                                 "community-assignment",
                                 WarningLevel.INFO,
-                                COMMUNITY_ASSIGNMENT_UNPLACED),
+                                COMMUNITY_ASSIGNMENT_UNPLACED,
+                                true),
     /// Auto-heal is disabled, so the cluster did NOT delete the instance of a node it would otherwise have reaped (#1038): a departed node,
     /// an orphan the sweep found, a surplus trim, the reap of a never-joined (join-grace) zombie, or the retry or re-check of any of them.
     /// A retirement directed from outside (the node-replacement protocol, a community-placement retirement) is operator intent and is not held;
