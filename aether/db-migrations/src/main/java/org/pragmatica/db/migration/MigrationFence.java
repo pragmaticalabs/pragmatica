@@ -112,13 +112,14 @@ public sealed interface MigrationFence {
     /// unchanged.
     static Cause refusedAtConnect(String datasource, DatabaseType type, Cause cause) {
         return type == DatabaseType.H2 && namesExclusiveRefusal(cause)
-               ? migrationFencedInDatabase(datasource, "H2: another connection holds the database in exclusive mode (SET EXCLUSIVE)")
+               ? migrationFencedInDatabase(datasource,
+                                           "H2: another connection holds the database in exclusive mode (SET EXCLUSIVE)")
                : cause;
     }
 
     private static boolean namesExclusiveRefusal(Cause cause) {
-        return cause instanceof DatabaseConnectorError error
-               && (error.sqlState().equals(some(H2Fence.EXCLUSIVE_REFUSED)) || driverChainNamesIt(throwableOf(error)));
+        return cause instanceof DatabaseConnectorError error && (error.sqlState()
+                                                                      .equals(some(H2Fence.EXCLUSIVE_REFUSED)) || driverChainNamesIt(throwableOf(error)));
     }
 
     private static Option<Throwable> throwableOf(DatabaseConnectorError error) {
@@ -130,8 +131,7 @@ public sealed interface MigrationFence {
     }
 
     private static boolean driverChainNamesIt(Option<Throwable> thrown) {
-        return thrown.map(first -> Stream.iterate(first, Objects::nonNull, Throwable::getCause)
-                                         .anyMatch(MigrationFence::isExclusiveRefusal))
+        return thrown.map(first -> Stream.iterate(first, Objects::nonNull, Throwable::getCause).anyMatch(MigrationFence::isExclusiveRefusal))
                      .or(false);
     }
 
@@ -151,6 +151,7 @@ public sealed interface MigrationFence {
     }
 
     RowMapper<Unit> IGNORED = _ -> Result.unitResult();
+
     RowMapper<Integer> COUNT = row -> row.getInt("n");
 
     /// The tier-3 fence (CockroachDB, DB2, SQLite): a lock taken as the FIRST statement of each script's transaction
@@ -164,7 +165,9 @@ public sealed interface MigrationFence {
         /// CockroachDB: `FOR UPDATE` on the owner row, which exists from the first completed bootstrap on. Works on every
         /// supported version, unlike the transaction-scoped advisory lock (F2).
         static ScriptLock cockroach() {
-            return new ScriptLock("CockroachDB", "SELECT 1 FROM " + SchemaHistoryEvolution.OWNER_TABLE + " FOR UPDATE", true);
+            return new ScriptLock("CockroachDB",
+                                  "SELECT 1 FROM " + SchemaHistoryEvolution.OWNER_TABLE + " FOR UPDATE",
+                                  true);
         }
 
         static ScriptLock db2() {
@@ -176,7 +179,8 @@ public sealed interface MigrationFence {
         /// that statement) `[unverified: engine; pinned by MigrationFenceSqliteTest]`.
         static ScriptLock sqlite() {
             return new ScriptLock("SQLite",
-                                  "UPDATE " + SchemaHistoryEvolution.OWNER_TABLE + " SET blueprint_base = blueprint_base",
+                                  "UPDATE " + SchemaHistoryEvolution.OWNER_TABLE
+                                 + " SET blueprint_base = blueprint_base",
                                   false);
         }
 
@@ -205,11 +209,13 @@ public sealed interface MigrationFence {
     /// already open are paused, so a competing runner never reaches a statement.
     record H2Fence(String datasource) implements MigrationFence {
         static final String EXCLUSIVE_REFUSED = "90135";
+
         private static final String VERIFY = "SELECT SETTING_VALUE AS v FROM INFORMATION_SCHEMA.SETTINGS WHERE SETTING_NAME = 'EXCLUSIVE'";
 
         static Promise<MigrationFence> acquire(SqlConnector session, String datasource) {
             return session.update("SET EXCLUSIVE 1")
-                          .flatMap(_ -> verified(session, new H2Fence(datasource)));
+                          .flatMap(_ -> verified(session,
+                                                 new H2Fence(datasource)));
         }
 
         @Override
@@ -223,7 +229,7 @@ public sealed interface MigrationFence {
         }
 
         private static boolean isExclusive(String value) {
-            return !value.equalsIgnoreCase("FALSE") && !value.equals("0");
+            return ! value.equalsIgnoreCase("FALSE") && !value.equals("0");
         }
     }
 
@@ -232,8 +238,11 @@ public sealed interface MigrationFence {
     record SqlServerFence(String datasource) implements MigrationFence {
         private static final String TRY_LOCK = "DECLARE @r INT; EXEC @r = sp_getapplock @Resource = 'aether_schema_migration', @LockMode = 'Exclusive',"
                                              + " @LockOwner = 'Session', @LockTimeout = 0; SELECT @r AS granted";
+
         private static final String VERIFY = "SELECT CASE WHEN APPLOCK_MODE('public', 'aether_schema_migration', 'Session') = 'Exclusive' THEN 1 ELSE 0 END AS n";
+
         private static final String RELEASE = "EXEC sp_releaseapplock @Resource = 'aether_schema_migration', @LockOwner = 'Session'";
+
         private static final String HOLDER = "SELECT TOP 1 CONCAT('session_id=', l.request_session_id, ', program=', COALESCE(s.program_name, ''),"
                                            + " ', host=', COALESCE(s.host_name, '')) AS holder FROM sys.dm_tran_locks l"
                                            + " LEFT JOIN sys.dm_exec_sessions s ON s.session_id = l.request_session_id"
@@ -243,7 +252,8 @@ public sealed interface MigrationFence {
             return session.queryOne(TRY_LOCK,
                                     row -> row.getInt("granted"))
                           .flatMap(granted -> granted >= 0
-                                              ? verified(session, new SqlServerFence(datasource))
+                                              ? verified(session,
+                                                         new SqlServerFence(datasource))
                                               : heldBy(session, datasource));
         }
 
@@ -275,7 +285,9 @@ public sealed interface MigrationFence {
     record OracleFence(String datasource) implements MigrationFence {
         private static final String HELD_CODE = "ORA-20931";
         private static final String REENTERED_CODE = "ORA-20932";
+
         private static final String ALLOCATE = "DECLARE h VARCHAR2(128); r INTEGER; BEGIN DBMS_LOCK.ALLOCATE_UNIQUE('AETHER_MIG_' || SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA'), h); ";
+
         private static final String TRY_LOCK = "DECLARE h VARCHAR2(128); r INTEGER; BEGIN DBMS_APPLICATION_INFO.SET_MODULE(?, 'migration');"
                                              + " DBMS_LOCK.ALLOCATE_UNIQUE('AETHER_MIG_' || SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA'), h);"
                                              + " r := DBMS_LOCK.REQUEST(h, DBMS_LOCK.X_MODE, 0, FALSE);"
@@ -283,15 +295,18 @@ public sealed interface MigrationFence {
                                              + " ELSIF r = 4 THEN RAISE_APPLICATION_ERROR(-20932, 'reentered');"
                                              + " ELSIF r <> 0 THEN RAISE_APPLICATION_ERROR(-20934, 'request failed ' || r);"
                                              + " END IF; END;";
+
         private static final String VERIFY = ALLOCATE
                                            + "r := DBMS_LOCK.REQUEST(h, DBMS_LOCK.X_MODE, 0, FALSE);"
                                            + " IF r <> 4 THEN RAISE_APPLICATION_ERROR(-20933, 'not held'); END IF; END;";
+
         private static final String RELEASE = ALLOCATE + "r := DBMS_LOCK.RELEASE(h); END;";
 
         static Promise<MigrationFence> acquire(SqlConnector session, String datasource, String nodeId) {
             return session.update(TRY_LOCK, "aether-mig:" + nodeId)
                           .mapError(cause -> refusal(datasource, cause))
-                          .flatMap(_ -> verified(session, new OracleFence(datasource)));
+                          .flatMap(_ -> verified(session,
+                                                 new OracleFence(datasource)));
         }
 
         private static Cause refusal(String datasource, Cause cause) {
@@ -323,8 +338,9 @@ public sealed interface MigrationFence {
             return session.update(VERIFY)
                           .mapError(cause -> cause.message()
                                                   .contains("ORA-20933")
-                                            ? fenceUnavailable(datasource, "this session does not hold the fence it took")
-                                            : cause)
+                                             ? fenceUnavailable(datasource,
+                                                                "this session does not hold the fence it took")
+                                             : cause)
                           .mapToUnit();
         }
 
@@ -464,7 +480,8 @@ public sealed interface MigrationFence {
 
         @Override
         public Promise<Unit> release(SqlConnector session) {
-            return session.queryList("SELECT pg_advisory_unlock_all()", IGNORED)
+            return session.queryList("SELECT pg_advisory_unlock_all()",
+                                     IGNORED)
                           .mapToUnit();
         }
     }
@@ -564,7 +581,8 @@ public sealed interface MigrationFence {
 
         @Override
         public Promise<Unit> release(SqlConnector session) {
-            return session.queryList("SELECT RELEASE_ALL_LOCKS()", IGNORED)
+            return session.queryList("SELECT RELEASE_ALL_LOCKS()",
+                                     IGNORED)
                           .mapToUnit();
         }
     }

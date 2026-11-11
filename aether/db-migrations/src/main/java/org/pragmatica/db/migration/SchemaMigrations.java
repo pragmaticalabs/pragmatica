@@ -165,8 +165,7 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
     /// The per-script lock of a tier-3 run; none on a session-fenced run and on a bare connector.
     private static Option<MigrationFence.ScriptLock> scriptLockOf(SqlConnector connector) {
         return switch (connector) {
-            case FencedSession fenced -> fenced.fence()
-                                               .scriptLock();
+            case FencedSession fenced -> fenced.fence().scriptLock();
             default -> Option.none();
         };
     }
@@ -188,9 +187,7 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
     /// `RELEASE_ALL_LOCKS()` there would drop the lock of the client that does hold it, when a pooler shares the session
     /// (CTO ruling, FDB-2a fix round 1). Design-out of the unlock's own failure: closing the session is the release, so
     /// a failed courtesy unlock never changes the run's outcome.
-    private static <T> Promise<T> releaseIfStillHeld(MigrationFence fence,
-                                                         SqlConnector session,
-                                                         Result<T> outcome) {
+    private static <T> Promise<T> releaseIfStillHeld(MigrationFence fence, SqlConnector session, Result<T> outcome) {
         return lostTheFence(outcome)
                ? outcome.async()
                : fence.release(session)
@@ -511,16 +508,14 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
                                                   SqlConnector connector,
                                                   List<Statement> statements,
                                                   ExecutionDialect dialect) {
-        return scriptLockOf(connector).flatMap(lock -> firstNonTransactional(statements,
-                                                                             dialect).map(text -> refusal(lock,
-                                                                                                          migration,
-                                                                                                          text)));
+        return scriptLockOf(connector).flatMap(lock -> firstNonTransactional(statements, dialect).map(text -> refusal(lock,
+                                                                                                                      migration,
+                                                                                                                      text)));
     }
 
     private static Cause refusal(MigrationFence.ScriptLock lock, ParsedMigration migration, String statement) {
         return nonTransactionalScriptUnfenced(lock.engine(),
-                                              migration.entry()
-                                                       .filename(),
+                                              migration.entry().filename(),
                                               statement);
     }
 
@@ -575,21 +570,21 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
                                         SqlConnector tx,
                                         SqlConnector.TransactionCallback<Unit> body) {
         return appliedAlready(migration, tx).flatMap(applied -> applied
-                                                               ? Promise.unitPromise()
-                                                               : body.execute(tx));
+                                                                ? Promise.unitPromise()
+                                                                : body.execute(tx));
     }
 
     /// The history row, as the lock holder sees it now: applied means a `SUCCESS` row with this script's checksum
     /// (a repeatable: the stored checksum of its description). A row with another checksum is NOT a skip: the insert
     /// meets it and ends [MigrationError.HistoryRowCollision].
     private Promise<Boolean> appliedAlready(ParsedMigration migration, SqlConnector tx) {
-        var checksum = migration.entry()
-                                .checksum();
+        var checksum = migration.entry().checksum();
 
         return migration.type() == MigrationType.REPEATABLE
                ? historyRepo.queryRepeatableChecksum(tx,
                                                      migration.description())
-                            .map(stored -> stored.fold(() -> false, current -> current == checksum))
+                            .map(stored -> stored.fold(() -> false,
+                                                       current -> current == checksum))
                : historyRepo.queryProgress(tx,
                                            migration.version(),
                                            migration.type())
@@ -903,22 +898,24 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
 
         return naiveRefusal(migration, connector, statements).fold(() -> transactionally(migration,
                                                                                          connector,
-                                                                                         tx -> applyAll(tx,
-                                                                                                        statements).flatMap(_ -> recordExecution(migration,
-                                                                                                                                                 tx,
-                                                                                                                                                 nodeId,
-                                                                                                                                                 startNanos))),
+                                                                                         tx -> applyAll(tx, statements).flatMap(_ -> recordExecution(migration,
+                                                                                                                                                     tx,
+                                                                                                                                                     nodeId,
+                                                                                                                                                     startNanos))),
                                                                    Cause::promise);
     }
 
     /// SQLite (tier 3, naive path): `VACUUM` cannot run inside a transaction, so a script holding it is refused.
     /// `[marked guess: VACUUM is the statement the SQLite path can name as non-transactional]`
-    private static Option<Cause> naiveRefusal(ParsedMigration migration, SqlConnector connector, List<String> statements) {
+    private static Option<Cause> naiveRefusal(ParsedMigration migration,
+                                              SqlConnector connector,
+                                              List<String> statements) {
         return scriptLockOf(connector).flatMap(lock -> Option.from(statements.stream()
                                                                              .filter(text -> text.toUpperCase(Locale.ROOT)
                                                                                                  .startsWith("VACUUM"))
-                                                                             .findFirst())
-                                                             .map(text -> refusal(lock, migration, text)));
+                                                                             .findFirst()).map(text -> refusal(lock,
+                                                                                                               migration,
+                                                                                                               text)));
     }
 
     private static List<String> naiveStatements(String sql) {
@@ -927,7 +924,10 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
                                                   .startsWith("--"))
                              .collect(Collectors.joining("\n"));
 
-        return Arrays.stream(stripped.split(";")).map(String::strip).filter(s -> !s.isEmpty()).toList();
+        return Arrays.stream(stripped.split(";"))
+                     .map(String::strip)
+                     .filter(s -> !s.isEmpty())
+                     .toList();
     }
 
     private static Promise<Unit> applyAll(SqlConnector executor, List<String> statements) {
@@ -999,21 +999,21 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
                                                                                       .flatMap(_ -> undoIfRecorded(undoScript,
                                                                                                                    version,
                                                                                                                    tx))))
-                            .map(_ -> 1);
+                           .map(_ -> 1);
     }
 
     /// FDB-2b (design §0.5): the undo script and the removal of its history row commit as ONE unit, so a crash
     /// between them leaves neither or both.
     private Promise<Unit> undoAndForget(ParsedMigration undoScript, int version, SqlConnector tx) {
-        return tx.update(undoScript.entry()
-                                   .sql())
+        return tx.update(undoScript.entry().sql())
                  .flatMap(_ -> historyRepo.removeMigration(tx, version, MigrationType.VERSIONED));
     }
 
     /// Tier 3: under the lock the row is read again; a serialized second runner finds it already gone and skips.
     private Promise<Unit> undoIfRecorded(ParsedMigration undoScript, int version, SqlConnector tx) {
         return historyRepo.queryProgress(tx, version, MigrationType.VERSIONED)
-                          .flatMap(row -> row.fold(Promise::unitPromise, _ -> undoAndForget(undoScript, version, tx)));
+                          .flatMap(row -> row.fold(Promise::unitPromise,
+                                                   _ -> undoAndForget(undoScript, version, tx)));
     }
 
     private Promise<SchemaResult> executeBaseline(String datasource,

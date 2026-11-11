@@ -234,7 +234,10 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
 
     private Promise<Unit> persistSchemaVersion(SqlConnector connector, int previousVersion) {
         return previousVersion == 0
-               ? connector.update(insertIfAbsent(INSERT_META_SQL, SchemaHistoryEvolution.META_TABLE, "INTEGER", connector.databaseType()),
+               ? connector.update(insertIfAbsent(INSERT_META_SQL,
+                                                 SchemaHistoryEvolution.META_TABLE,
+                                                 "INTEGER",
+                                                 connector.databaseType()),
                                   SchemaHistoryEvolution.LATEST_VERSION)
                           .mapToUnit()
                : connector.update(UPDATE_META_SQL, SchemaHistoryEvolution.LATEST_VERSION)
@@ -259,11 +262,15 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
                                        String datasourceName,
                                        String owner,
                                        Option<String> stored) {
-        return stored.fold(() -> insertOwner(connector, owner, datasourceName), current -> matchOwner(datasourceName, owner, current));
+        return stored.fold(() -> insertOwner(connector, owner, datasourceName),
+                           current -> matchOwner(datasourceName, owner, current));
     }
 
     private Promise<Unit> insertOwner(SqlConnector connector, String owner, String datasourceName) {
-        return connector.update(insertIfAbsent(INSERT_OWNER_SQL, SchemaHistoryEvolution.OWNER_TABLE, "VARCHAR(256)", connector.databaseType()),
+        return connector.update(insertIfAbsent(INSERT_OWNER_SQL,
+                                               SchemaHistoryEvolution.OWNER_TABLE,
+                                               "VARCHAR(256)",
+                                               connector.databaseType()),
                                 owner)
                         .flatMap(_ -> reconcileAfterInsert(connector, owner, datasourceName));
     }
@@ -276,7 +283,9 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
         return MigrationFence.isSessionFenced(connector.databaseType())
                ? Promise.unitPromise()
                : readOwnerBase(connector).flatMap(stored -> stored.fold(Promise::unitPromise,
-                                                                        current -> matchOwner(datasourceName, owner, current)));
+                                                                        current -> matchOwner(datasourceName,
+                                                                                              owner,
+                                                                                              current)));
     }
 
     /// `INSERT INTO t (c) VALUES (?)` becomes `INSERT INTO t (c) SELECT CAST(? AS type) [FROM dummy] WHERE NOT EXISTS
@@ -285,9 +294,12 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
         return MigrationFence.isSessionFenced(type)
                ? plainInsert
                : plainInsert.substring(0, plainInsert.indexOf(" VALUES"))
-                 + " SELECT CAST(? AS " + sqlType + ")"
-                 + (type == DatabaseType.DB2 ? " FROM SYSIBM.SYSDUMMY1" : "")
-                 + " WHERE NOT EXISTS (SELECT 1 FROM " + table + ")";
+                + " SELECT CAST(? AS " + sqlType
+                + ")" + (type == DatabaseType.DB2
+                         ? " FROM SYSIBM.SYSDUMMY1"
+                         : "")
+                + " WHERE NOT EXISTS (SELECT 1 FROM " + table
+                + ")";
     }
 
     /// Compared on `ArtifactBase` (version stripped), so a republished version of the SAME blueprint
@@ -323,15 +335,17 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
     /// SQLite's driver reports no SQLSTATE, so its message is read.
     private static Cause collisionOr(Cause cause, SchemaHistoryRepository.AppliedMigration migration) {
         return isUniqueViolation(cause)
-               ? historyRowCollision(migration.version(), migration.type().name(), cause.message())
+               ? historyRowCollision(migration.version(),
+                                     migration.type().name(),
+                                     cause.message())
                : cause;
     }
 
     private static boolean isUniqueViolation(Cause cause) {
-        return cause instanceof DatabaseConnectorError error
-               && (error instanceof DatabaseConnectorError.ConstraintViolation
-                   || error.sqlState().map(state -> state.startsWith("23")).or(false)
-                   || error.message().contains("UNIQUE constraint failed"));
+        return cause instanceof DatabaseConnectorError error && (error instanceof DatabaseConnectorError.ConstraintViolation || error.sqlState()
+                                                                                                                                     .map(state -> state.startsWith("23"))
+                                                                                                                                     .or(false) || error.message()
+                                                                                                                                                        .contains("UNIQUE constraint failed"));
     }
 
     /// UPSERT the `IN_PROGRESS` checkpoint row for `(version, type)` via delete-then-insert so a
