@@ -629,8 +629,8 @@ public sealed interface TopologyAssembly {
                                                                                                                      .collect(Collectors.toUnmodifiableSet()),
                                                                                             stableCdmReadyNodesSupplier,
                                                                                             id -> AdvertisedVersion.advertisedVersion(id,
-                                                                                                                       clusterNode.topologyManager(),
-                                                                                                                       Option.option(membershipFsmRef.get())),
+                                                                                                                                      clusterNode.topologyManager(),
+                                                                                                                                      Option.option(membershipFsmRef.get())),
                                                                                             clusterTopologyManager,
                                                                                             id -> managementServerRef.get()
                                                                                                                      .fold(() -> Promise.success(NodeReplacementWiring.DrainOutcome.pending("management server not ready")),
@@ -667,8 +667,8 @@ public sealed interface TopologyAssembly {
                                                                               upgradeRuns,
                                                                               membershipFsmRef::get,
                                                                               id -> AdvertisedVersion.advertisedVersion(id,
-                                                                                                         clusterNode.topologyManager(),
-                                                                                                         Option.option(membershipFsmRef.get())),
+                                                                                                                        clusterNode.topologyManager(),
+                                                                                                                        Option.option(membershipFsmRef.get())),
                                                                               replacementWiring.service(),
                                                                               System::currentTimeMillis));
 

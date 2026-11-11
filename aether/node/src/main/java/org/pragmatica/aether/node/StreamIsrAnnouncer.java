@@ -151,7 +151,9 @@ public interface StreamIsrAnnouncer {
                                    int after,
                                    StreamPartitionOwnershipKey key,
                                    StreamPartitionOwnershipValue record) {
-        return StreamEventIds.streamEventIds("stream-isr-cf:" + value.createdAt() + ":" + before + ">" + after, key, record);
+        return StreamEventIds.streamEventIds("stream-isr-cf:" + value.createdAt() + ":" + before + ">" + after,
+                                             key,
+                                             record);
     }
 
     /// The event a committed change from `before` to `after` calls for: falling below `confirmationFactor` is a
@@ -170,10 +172,10 @@ public interface StreamIsrAnnouncer {
                                    confirmationFactor,
                                    isBelow,
                                    StreamEventIds.streamEventIds(isBelow
-                                                     ? "stream-isr-below"
-                                                     : "stream-isr-restored",
-                                                     key,
-                                                     after)));
+                                                                 ? "stream-isr-below"
+                                                                 : "stream-isr-restored",
+                                                                 key,
+                                                                 after)));
     }
 
     /// A record minted before #1730 (`isrVersion` 0) carries no committed ISR, so it is never below anything.

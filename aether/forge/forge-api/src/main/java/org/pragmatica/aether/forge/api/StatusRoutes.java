@@ -27,10 +27,10 @@ public final class StatusRoutes {
                                            long startTime,
                                            ConfigurableLoadRunner loadRunner) {
         return RouteSource.routeSource(statusRoute(cluster, metrics, startTime, loadRunner),
-                              nodeMetricsRoute(cluster),
-                              eventsRoute(events),
-                              healthRoute(),
-                              forgeStatusRoute());
+                                       nodeMetricsRoute(cluster),
+                                       eventsRoute(events),
+                                       healthRoute(),
+                                       forgeStatusRoute());
     }
 
     private static Route<FullStatusResponse> statusRoute(EmberCluster cluster,

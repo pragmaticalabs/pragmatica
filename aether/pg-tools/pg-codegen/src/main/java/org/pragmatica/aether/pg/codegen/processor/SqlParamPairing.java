@@ -481,8 +481,8 @@ public final class SqlParamPairing {
                                                                                                                     hit))));
                     if ("IsExpr".equals(nt.ruleName())) {
                         columnOf(CstNavigator.cstNavigator(nt), scope).onPresent(known -> paramOf(CstNavigator.cstNavigator(first)).onPresent(hit -> addPair(known.table(),
-                                                                                                                                         known.name(),
-                                                                                                                                         hit)));
+                                                                                                                                                             known.name(),
+                                                                                                                                                             hit)));
                     }
                 }
             }

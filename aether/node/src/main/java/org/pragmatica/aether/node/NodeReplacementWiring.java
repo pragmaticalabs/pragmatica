@@ -337,11 +337,11 @@ public final class NodeReplacementWiring {
                                 Option<NodeReplacementValue> before,
                                 NodeReplacementValue after) {
         NodeReplacementAnnouncements.nodeReplacementAnnouncements(original, before, after).forEach(a -> OperatorWarnings.raise(LOG,
-                                                                                                     warnings,
-                                                                                                     a.code(),
-                                                                                                     a.subject(),
-                                                                                                     "{}",
-                                                                                                     a.message()));
+                                                                                                                               warnings,
+                                                                                                                               a.code(),
+                                                                                                                               a.subject(),
+                                                                                                                               "{}",
+                                                                                                                               a.message()));
 
         return Unit.unit();
     }

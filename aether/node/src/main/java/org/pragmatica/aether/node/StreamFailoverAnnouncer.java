@@ -72,8 +72,8 @@ public interface StreamFailoverAnnouncer {
                                                                               liveIds,
                                                                               "owner not live and no in-sync replica live; unclean failover is off",
                                                                               StreamEventIds.streamEventIds("stream-failover-refused",
-                                                                                                key,
-                                                                                                record))
+                                                                                                            key,
+                                                                                                            record))
                : OperationalEvent.StreamFailoverResolved.streamFailoverResolved(key.stream(),
                                                                                 key.partition(),
                                                                                 record.owner().id(),
@@ -81,8 +81,8 @@ public interface StreamFailoverAnnouncer {
                                                                                 liveIds,
                                                                                 "owner live again or an in-sync replica elected",
                                                                                 StreamEventIds.streamEventIds("stream-failover-resolved",
-                                                                                                  key,
-                                                                                                  record));
+                                                                                                              key,
+                                                                                                              record));
     }
 
     private static List<String> ids(List<NodeId> nodes) {
