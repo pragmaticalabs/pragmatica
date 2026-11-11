@@ -36,7 +36,7 @@ sealed interface PortWait {
     }
 
     private static long remainingMs(long deadline) {
-        return Math.max(0L, (deadline - System.nanoTime()) / 1_000_000L);
+        return Math.max(1L, (deadline - System.nanoTime()) / 1_000_000L);
     }
 
     private static <T> boolean pending(Result<Option<T>> current) {
