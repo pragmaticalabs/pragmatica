@@ -506,7 +506,8 @@ public final class StatusRoutes implements RouteSource {
                                   List.of(storageMaintenanceHealth(node.storageMaintenanceDegradation())));
     }
 
-    /// #800: storage maintenance on this node, DEGRADED while ticks in a row fail or a pass is overdue. Served on
+    /// #800: storage maintenance of the leader (`/health` is forwarded to the leader, where the passes run; a follower's own
+    /// failures surface in its per-node metrics and operator warnings), DEGRADED while ticks in a row fail or a pass is overdue. Served on
     /// `/api/health` only and read by neither `status` nor `ready`: maintenance shrinks and warms tiers, so a fault in it must
     /// not pull a node that still serves; `/health/ready` does not carry it.
     static ComponentHealth storageMaintenanceHealth(Option<String> degradation) {

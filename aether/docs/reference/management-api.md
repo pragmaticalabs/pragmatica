@@ -271,7 +271,7 @@ Get node health status including readiness and quorum.
 }
 ```
 
-- `components` (#800): one entry, `storage-maintenance`. Its `status` is `DEGRADED` while the latest maintenance ticks in a
+- `components` (#800): one entry, `storage-maintenance`, which reports the leader's maintenance (`/health` is forwarded to the leader, where the passes run; a follower's own failures surface in its per-node metrics and operator warnings). Its `status` is `DEGRADED` while the latest maintenance ticks in a
   row had a failed pass, while no maintenance tick completed within three maintenance intervals (counted from node assembly
   before the first tick), or while one promotion cycle has been running that long; `detail` names which. Otherwise `UP`.
   It is informational: neither `status` nor `ready` here reads it, and `/health/ready` does not carry it, so a maintenance
