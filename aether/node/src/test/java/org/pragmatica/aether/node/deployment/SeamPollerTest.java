@@ -150,7 +150,7 @@ class SeamPollerTest {
         assertThat(seams.superseded()).isEqualTo(supersededSet);
         assertThat(seams.memberSource()).isEqualTo(sources);
         assertThat(seams.communityPolicies()).isEqualTo(policies);
-        assertThat(seams.committedCores()).isEqualTo(Set.of(PEER));
+        assertThat(seams.coreRoleMembers()).isEqualTo(Set.of(PEER));
     }
 
     /// `MembershipInputs` delivers the input FIRST and samples behind it (review M1; v-2204 V06): a sample that already lacks a node must never be

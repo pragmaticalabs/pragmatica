@@ -22,9 +22,9 @@ import org.pragmatica.lang.Option;
 /// - `superseded`: ids whose retirement tombstone carries `supersededBy` (J1).
 /// - `memberSource`: the membership `source` label per node, for the worker community choice (B-070).
 /// - `communityPolicies`: the configured community placement policies, parsed from the cluster config (B-070).
-/// - `committedCores`: the consensus-installed voter set, the cores the cluster committed (#2887). It survives restart and leader change, and
-///   `Absence.classOf` unions it with the boot-time `Settings.seedCores`, so a seed core absent from the boot topology snapshot (cloud discovery)
-///   is still classed CORE once consensus installs it.
+/// - `coreRoleMembers`: every member tracked with `role=core`, voter or not (#2887): a surplus core is never a voter, a swapped-out core stops being
+///   one and a joining core is not yet one. `Absence.classOf` unions it with the boot-time `Settings.seedCores`, so a core absent from the boot
+///   topology snapshot (cloud discovery) is classed CORE once the cluster admits it, and stays CORE after it departs (DEAD members stay tracked).
 public record Seams(Set<NodeId> countedCores,
                     Set<NodeId> ready,
                     Set<NodeId> draining,
@@ -33,7 +33,7 @@ public record Seams(Set<NodeId> countedCores,
                     Set<NodeId> superseded,
                     Map<NodeId, String> memberSource,
                     Map<String, CommunityPlacement> communityPolicies,
-                    Set<NodeId> committedCores) {
+                    Set<NodeId> coreRoleMembers) {
     public static final Seams UNWIRED = new Seams(Set.of(),
                                                   Set.of(),
                                                   Set.of(),
@@ -53,7 +53,7 @@ public record Seams(Set<NodeId> countedCores,
         superseded = Set.copyOf(superseded);
         memberSource = Map.copyOf(memberSource);
         communityPolicies = Map.copyOf(communityPolicies);
-        committedCores = Set.copyOf(committedCores);
+        coreRoleMembers = Set.copyOf(coreRoleMembers);
     }
 
     public static Seams seams(Set<NodeId> countedCores,
@@ -64,7 +64,7 @@ public record Seams(Set<NodeId> countedCores,
                               Set<NodeId> superseded,
                               Map<NodeId, String> memberSource,
                               Map<String, CommunityPlacement> communityPolicies,
-                              Set<NodeId> committedCores) {
+                              Set<NodeId> coreRoleMembers) {
         return new Seams(countedCores,
                          ready,
                          draining,
@@ -73,7 +73,7 @@ public record Seams(Set<NodeId> countedCores,
                          superseded,
                          memberSource,
                          communityPolicies,
-                         committedCores);
+                         coreRoleMembers);
     }
 
     public Seams withCountedCores(Set<NodeId> value) {
@@ -85,7 +85,7 @@ public record Seams(Set<NodeId> countedCores,
                          superseded,
                          memberSource,
                          communityPolicies,
-                         committedCores);
+                         coreRoleMembers);
     }
 
     public Seams withReady(Set<NodeId> value) {
@@ -97,7 +97,7 @@ public record Seams(Set<NodeId> countedCores,
                          superseded,
                          memberSource,
                          communityPolicies,
-                         committedCores);
+                         coreRoleMembers);
     }
 
     public Seams withDraining(Set<NodeId> value) {
@@ -109,7 +109,7 @@ public record Seams(Set<NodeId> countedCores,
                          superseded,
                          memberSource,
                          communityPolicies,
-                         committedCores);
+                         coreRoleMembers);
     }
 
     public Seams withCoreView(Option<Set<NodeId>> value) {
@@ -121,7 +121,7 @@ public record Seams(Set<NodeId> countedCores,
                          superseded,
                          memberSource,
                          communityPolicies,
-                         committedCores);
+                         coreRoleMembers);
     }
 
     public Seams withLocalAlive(Option<Set<NodeId>> value) {
@@ -133,7 +133,7 @@ public record Seams(Set<NodeId> countedCores,
                          superseded,
                          memberSource,
                          communityPolicies,
-                         committedCores);
+                         coreRoleMembers);
     }
 
     public Seams withSuperseded(Set<NodeId> value) {
@@ -145,7 +145,7 @@ public record Seams(Set<NodeId> countedCores,
                          value,
                          memberSource,
                          communityPolicies,
-                         committedCores);
+                         coreRoleMembers);
     }
 
     public Seams withMemberSource(Map<NodeId, String> value) {
@@ -157,7 +157,7 @@ public record Seams(Set<NodeId> countedCores,
                          superseded,
                          value,
                          communityPolicies,
-                         committedCores);
+                         coreRoleMembers);
     }
 
     public Seams withCommunityPolicies(Map<String, CommunityPlacement> value) {
@@ -169,10 +169,10 @@ public record Seams(Set<NodeId> countedCores,
                          superseded,
                          memberSource,
                          value,
-                         committedCores);
+                         coreRoleMembers);
     }
 
-    public Seams withCommittedCores(Set<NodeId> value) {
+    public Seams withCoreRoleMembers(Set<NodeId> value) {
         return new Seams(countedCores,
                          ready,
                          draining,

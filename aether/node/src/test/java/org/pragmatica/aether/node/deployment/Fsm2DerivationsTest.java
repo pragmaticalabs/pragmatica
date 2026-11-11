@@ -111,6 +111,17 @@ class Fsm2DerivationsTest {
         assertThat(settings.seedNodes()).as("J5 (Directory.assignCore) unchanged").isEmpty();
     }
 
+    // #2887 item 4: the boot seed cores apply the same role=core rule as the poller's coreRoleMembers seam. Red when: seedCores takes every
+    // topology entry, so a listed role=worker node is classed CORE and judged by the core rule instead of the worker rule.
+    @Test
+    void theClusterFsmSeedCores_excludeAListedWorker_andKeepAnUnlabelledEntry() {
+        var worker = NodeInfo.nodeInfo(NodeId.nodeId("worker-1").unwrap(), NodeAddress.nodeAddress("localhost", 8094).unwrap(), Map.of(NodeInfo.LABEL_ROLE, "worker"));
+        var cores = List.of(core("core-1", 8091), core("core-2", 8092), worker);
+        var settings = Fsm2System.clusterSettings(configuredWith(TimeSpan.timeSpan(30).seconds(), cores), PROCESS, SwimConfig.DEFAULT, TimeSpan.timeSpan(15).seconds());
+
+        assertThat(settings.seedCores()).containsExactlyInAnyOrder(cores.get(0).id(), cores.get(1).id());
+    }
+
     private static NodeInfo core(String id, int port) {
         return NodeInfo.nodeInfo(NodeId.nodeId(id).unwrap(), NodeAddress.nodeAddress("localhost", port).unwrap());
     }

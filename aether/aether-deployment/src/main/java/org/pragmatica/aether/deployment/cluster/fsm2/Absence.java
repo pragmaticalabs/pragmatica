@@ -68,11 +68,11 @@ public sealed interface Absence {
         return ActivationDirectiveValue.CORE.equals(directive.role());
     }
 
-    /// The boot-time configured cores, or the cores consensus committed since (#2887): a seed core a cloud-discovery boot missed is still known.
+    /// The boot-time configured cores, or the role-core members the cluster admitted since (#2887): a seed core a cloud-discovery boot missed is still known.
     private static boolean isSeedCore(ClusterModel m, Ctx ctx, NodeId node) {
         return ctx.settings()
                   .seedCores()
-                  .contains(node) || m.seams.committedCores()
+                  .contains(node) || m.seams.coreRoleMembers()
                                             .contains(node);
     }
 
