@@ -10,7 +10,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.pragmatica.aether.artifact.Artifact;
@@ -63,8 +62,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// key). The design names `SliceNodeKey`; the deployment manager here writes `NodeArtifactKey`, and the check covers both key types.
 ///
 /// Arms B and F (gap 1, on and off the burst path) were RED at the probe head 1d9732e247 and are GREEN since the root fix (design 4 rule 1).
-/// Arm C is RED at the base (gap 2): it is pinned by an ENABLED tripwire asserting today's behaviour, with the real assertion `@Disabled` beside
-/// it; the C3 sweep work enables the real assertion and deletes the tripwire.
+/// Arm C (gap 2) was RED at 02c10270c0 (its tripwire held: the slice stayed loaded) and is GREEN since the `CatchUpSwept` sweep and the
+/// reactivation filter (design 4 rules 2-3). The worker store tells the manager each delivered replay burst, as `AetherNode` wires it.
 class FalseDeathWorkerCatchUpTest {
     private static final NodeId SELF = NodeId.nodeId("worker-1").unwrap();
     private static final NodeId CORE = NodeId.nodeId("core-1").unwrap();
@@ -112,6 +111,7 @@ class FalseDeathWorkerCatchUpTest {
                             .asRouteEntries()
                             .forEach(entry -> entry.entries()
                                                    .forEach(route -> router.addRoute((Class) route.first(), (Consumer) route.last())));
+        worker.onReplayEnd(manager::onReplayDelivered);
         manager.onQuorumStateChange(ClusterStateNotification.active());
         commit(new KVCommand.Put<AetherKey, AetherValue>(ClusterIncarnationKey.clusterIncarnationKey(),
                                                          ClusterIncarnationValue.genesis("lineage", "inc-1")));
@@ -246,17 +246,6 @@ class FalseDeathWorkerCatchUpTest {
     }
 
     @Test
-    void armC_tripwire_dormantDropsTheRemove_sliceStaysLoadedToday() {
-        armCRun();
-
-        assertThat(sliceStore.loaded()).as("gap 2 is still open (Dormant drops the replayed remove and reactivation keeps the slice); when the "
-                                           + "sweep lands, enable armC_dormantDrop_isUnloaded and delete this tripwire")
-                                       .extracting(SliceStore.LoadedSlice::artifact)
-                                       .containsExactly(GONE);
-    }
-
-    @Test
-    @Disabled("C3 sweep + reactivation filter (design 4 rules 2-3): enable when CatchUpSwept lands")
     void armC_dormantDrop_isUnloaded() {
         var mark = armCRun();
 
@@ -279,18 +268,23 @@ class FalseDeathWorkerCatchUpTest {
         assertThat(sliceStore.deactivateCalls).doesNotContain(KEPT);
     }
 
-    // --- Arm E: a put for the same key arrives right after the removal (the LOAD-waits-for-cleanup ordering pin) ---
+    // --- Arm E: a put for the same key arrives while the removal's cleanup is in flight (the LOAD-waits-for-cleanup ordering pin) ---
 
+    /// The cleanup is held at its deactivation step, so the LOAD lands while the slice is still loaded (design 4 rule 4 iii). Without the wait the
+    /// LOAD finds the slice "already loaded", the released cleanup then unloads it, and the assigned slice is left not running.
     @Test
-    void armE_putAfterTheRemove_endsLoadedAndNeverFailed() {
+    void armE_putDuringTheCleanup_endsLoadedAndNeverFailed() {
         sliceActive(GONE);
         resync();
         var mark = writesBefore();
+        var deactivation = sliceStore.holdDeactivation();
 
         leaderRemoves(GONE);
         resync();
         feed(new KVCommand.Put<AetherKey, AetherValue>(NodeArtifactKey.nodeArtifactKey(SELF, GONE), NodeArtifactValue.nodeArtifactValue(SliceState.LOAD)));
+        deactivation.succeed(new TestSliceStore.Loaded(GONE, null));
 
+        assertThat(sliceStore.unloadCalls).as("the removal's cleanup ran").containsExactly(GONE);
         assertThat(sliceStore.loaded()).extracting(SliceStore.LoadedSlice::artifact).containsExactly(GONE);
         assertThat(clusterNode.appliedCommands.stream()
                                               .skip(mark)
@@ -323,12 +317,31 @@ class FalseDeathWorkerCatchUpTest {
 
         record Loaded(Artifact artifact, Slice slice) implements LoadedSlice {}
 
+        private Option<Promise<LoadedSlice>> deactivationGate = Option.none();
+
+        /// As the real store: a load of an artifact already loaded returns the loaded slice and loads nothing.
         @Override
         public Promise<LoadedSlice> loadSlice(Artifact artifact) {
+            return Option.from(loadedSlices.stream()
+                                           .filter(slice -> slice.artifact().equals(artifact))
+                                           .findFirst())
+                         .map(Promise::success)
+                         .or(() -> freshLoad(artifact));
+        }
+
+        private Promise<LoadedSlice> freshLoad(Artifact artifact) {
             var loaded = new Loaded(artifact, new IdleSlice());
 
             loadedSlices.add(loaded);
             return Promise.success(loaded);
+        }
+
+        /// The next deactivations wait for the returned promise; the test resolves it to release them.
+        Promise<LoadedSlice> holdDeactivation() {
+            var gate = Promise.<LoadedSlice>promise();
+
+            deactivationGate = Option.some(gate);
+            return gate;
         }
 
         @Override
@@ -339,7 +352,7 @@ class FalseDeathWorkerCatchUpTest {
         @Override
         public Promise<LoadedSlice> deactivateSlice(Artifact artifact) {
             deactivateCalls.add(artifact);
-            return Promise.success(new Loaded(artifact, null));
+            return deactivationGate.or(() -> Promise.success(new Loaded(artifact, null)));
         }
 
         @Override

@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.Map;
 import java.util.Properties;
@@ -22,6 +23,7 @@ import org.pragmatica.aether.deployment.drain.DrainReason;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager.SliceDeployment;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager.SuspendedSlice;
 import org.pragmatica.aether.deployment.node.RoutingEpochAckTracker;
+import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.CatchUpSwept;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.ConfigChanged;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.LeavingRequested;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactPutReceived;
@@ -200,12 +202,52 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             seedEpochAckExpectationsFromKvStore();
             dropStaleDeferredStarts();
             processPendingLoadCommands();
-            if (!pendingReactivation.isEmpty()) {
+            var reactivation = withoutSwept(pendingReactivation, sweepUncommittedSlices());
+
+            if (!reactivation.isEmpty()) {
                 log.info("Node {} has {} suspended slices to reactivate",
                          ctx.self().id(),
-                         pendingReactivation.size());
-                reactivateSuspendedSlices(pendingReactivation);
+                         reactivation.size());
+                reactivateSuspendedSlices(reactivation);
             }
+        }
+
+        /// #3028 design 4 rule 3 (D2): a slice the sweep unloaded is never reactivated. Reactivating it would find no loaded slice and write
+        /// FAILED for a key the leader removed, resurrecting the key and drawing a redeploy; while its unload is still in flight it would
+        /// republish the routes of a slice the cluster re-placed.
+        private static List<SuspendedSlice> withoutSwept(List<SuspendedSlice> suspended, Set<Artifact> swept) {
+            return suspended.stream()
+                            .filter(slice -> !swept.contains(slice.key()
+                                                                  .artifact()))
+                            .toList();
+        }
+
+        /// #3028 design 4 rule 2: every slice this node holds loaded without a delivered `NodeArtifactKey` for this node goes through
+        /// [#forceCleanupSlice]. Runs from `onEntry` (a remove replayed while Dormant was dropped) and on [CatchUpSwept] after each delivered
+        /// replay burst. The committed set is the KV DELIVERED view, never storage mid-install (rule 4 i). Returns the swept artifacts.
+        private Set<Artifact> sweepUncommittedSlices() {
+            var swept = ctx.sliceStore()
+                           .loaded()
+                           .stream()
+                           .map(SliceStore.LoadedSlice::artifact)
+                           .filter(this::noDeliveredEntry)
+                           .collect(Collectors.toUnmodifiableSet());
+
+            swept.forEach(this::sweepSlice);
+            return swept;
+        }
+
+        private boolean noDeliveredEntry(Artifact artifact) {
+            return ctx.kvStore()
+                      .delivered(NodeArtifactKey.nodeArtifactKey(ctx.self(), artifact))
+                      .isEmpty();
+        }
+
+        private void sweepSlice(Artifact artifact) {
+            log.info("Node {} unloads {}: loaded, but the delivered view holds no entry for it (#3028 catch-up sweep)",
+                     ctx.self().id(),
+                     artifact);
+            forceCleanupSlice(SliceNodeKey.sliceNodeKey(artifact, ctx.self()));
         }
 
         @Override
@@ -223,6 +265,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 case VersionRoutingPutReceived(var valuePut) -> tx.handle(() -> redriveDeferredStarts(valuePut.cause()
                                                                                                               .key()
                                                                                                               .artifactBase()));
+                case CatchUpSwept _ -> tx.handle(this::sweepUncommittedSlices);
                 case LeavingRequested(DrainReason reason) -> tx.transitionTo(ctx.newLeaving(reason));
                 case QuorumDisappeared _ -> handleQuorumDisappeared(tx);
                 case Shutdown _ -> handleShutdown(tx);
@@ -414,8 +457,17 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             return findLoadedSlice(sliceKey.artifact()).isPresent();
         }
 
+        /// One cleanup per artifact at a time: a second request while one is in flight (a replayed remove, then the post-burst sweep) joins it.
         private void forceCleanupSlice(SliceNodeKey sliceKey) {
-            unpublishTopicSubscriptions(sliceKey).flatMap(this::unpublishStreamSubscriptions)
+            if (ctx.cleanupInFlight(sliceKey.artifact())) {
+                return;
+            }
+
+            ctx.trackCleanup(sliceKey.artifact(), cleanupChain(sliceKey));
+        }
+
+        private Promise<Unit> cleanupChain(SliceNodeKey sliceKey) {
+            return unpublishTopicSubscriptions(sliceKey).flatMap(this::unpublishStreamSubscriptions)
                                        .flatMap(key -> releaseStreamReferences(key).map(_ -> key))
                                        .flatMap(this::unpublishScheduledTasks)
                                        .flatMap(this::unpublishHttpRoutes)
@@ -460,7 +512,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 return;
             }
 
-            transitionForLoad(sliceKey, SliceState.LOADING).flatMap(this::loadSliceWithTimeout)
+            transitionForLoad(sliceKey, SliceState.LOADING).flatMap(this::afterCleanupSettled)
+                             .flatMap(this::loadSliceWithTimeout)
                              .flatMap(key -> transitionForLoad(key, SliceState.LOADED))
                              .withFailure(cause -> handleLoadingFailure(sliceKey, cause));
         }
@@ -472,6 +525,13 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         private Promise<SliceNodeKey> transitionForLoad(SliceNodeKey sliceKey, SliceState newState) {
             return transitionTo(sliceKey, newState).mapError(cause -> new SliceLoadingFailure.Intermittent.Timeout("consensus write of " + newState,
                                                                                                                    cause));
+        }
+
+        /// #3028 design 4 rule 4 (iii): a load waits for an in-flight [#forceCleanupSlice] of the same artifact. Otherwise the load finds the
+        /// slice "already loaded", the cleanup then unloads it, and an assigned slice is left not running.
+        private Promise<SliceNodeKey> afterCleanupSettled(SliceNodeKey sliceKey) {
+            return ctx.cleanupSettled(sliceKey.artifact())
+                      .map(_ -> sliceKey);
         }
 
         private Promise<SliceNodeKey> loadSliceWithTimeout(SliceNodeKey sliceKey) {
@@ -913,7 +973,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             log.info("Node {} KV claims ACTIVE for {} but the slice is not loaded locally — redeploying (KV convergence)",
                      ctx.self().id(),
                      sliceKey.artifact());
-            transitionForLoad(sliceKey, SliceState.LOADING).flatMap(this::loadSliceWithTimeout)
+            transitionForLoad(sliceKey, SliceState.LOADING).flatMap(this::afterCleanupSettled)
+                             .flatMap(this::loadSliceWithTimeout)
                              .flatMap(key -> transitionForLoad(key, SliceState.LOADED))
                              .onSuccess(key -> processStateTransition(key, SliceState.ACTIVATE))
                              .onFailure(cause -> handleLoadingFailure(sliceKey, cause));

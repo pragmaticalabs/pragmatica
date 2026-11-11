@@ -10,6 +10,7 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentContext;
+import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.CatchUpSwept;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.ConfigChanged;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactRemoveReceived;
@@ -98,6 +99,10 @@ public interface NodeDeploymentManager {
     @Contract
     @MessageReceiver
     void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
+
+    /// #3028: a KV replay burst was delivered (`KVStore.onReplayEnd`); raises the catch-up sweep on the FSM.
+    @Contract
+    void onReplayDelivered(long revision);
 
     /// #381 — a `ConfigKey` change applied to this node's dynamic config overlay (`DynamicConfigManager`
     /// calls this after the overlay is updated, so a slice reading through its facade sees the new
@@ -595,6 +600,12 @@ public interface NodeDeploymentManager {
         @Override
         public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
             ctx.dispatch(new NodeRoutesPutReceived(valuePut));
+        }
+
+        @Contract
+        @Override
+        public void onReplayDelivered(long revision) {
+            ctx.dispatch(new CatchUpSwept());
         }
 
         @Contract

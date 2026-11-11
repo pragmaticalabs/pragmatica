@@ -2958,6 +2958,9 @@ public interface AetherNode extends ManageableNode {
         // #1935: a declared stream consumer that cannot be registered reaches THIS node's event log.
         nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);
         configChangeFeed.setOperatorWarningSink(operatorWarningSink);
+        // #3028 (design 4 rule 2): after every delivered replay burst the legacy NDM sweeps the slices it holds without a delivered entry.
+        Consumer<Long> catchUpSweep = deploymentWiring.legacy("C3.ndm.ReplayEnd", nodeDeploymentManager::onReplayDelivered);
+        kvStore.onReplayEnd(catchUpSweep::accept);
         // B4, B10, B11 (design 8.3): B10 and B11 reach a FSM2 core's cluster FSM as `WorkerJoin` (#2762); B4 is a FSM2 worker's entry edge (F3). B12 is bound to the cluster FSM2 below.
         var passiveClientActivation = deploymentWiring.passiveClientSwitch(() -> reconcileNodeActivation(() -> runtimeReady(clusterNode),
                                                                                                          nodeDeploymentManager));
