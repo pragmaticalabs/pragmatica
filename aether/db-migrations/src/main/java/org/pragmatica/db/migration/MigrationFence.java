@@ -22,6 +22,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
 import org.slf4j.Logger;
@@ -161,17 +162,22 @@ public sealed interface MigrationFence {
     /// @param engine      the engine's name, for the refusal of a script that cannot run in a transaction
     /// @param statement   the locking statement
     /// @param returnsRows whether the statement is a query (`SELECT ... FOR UPDATE`) rather than an update
-    record ScriptLock(String engine, String statement, boolean returnsRows) implements MigrationFence {
+    /// @param busyWait    whether the engine answers a held lock with an immediate `BUSY` unless the connection is told
+    ///                    how long to wait (SQLite: `busy_timeout`, 3 s by default in the driver)
+    record ScriptLock(String engine, String statement, boolean returnsRows, boolean busyWait) implements MigrationFence {
+        private static final String BUSY_TIMEOUT = "PRAGMA busy_timeout = ";
+
         /// CockroachDB: `FOR UPDATE` on the owner row, which exists from the first completed bootstrap on. Works on every
         /// supported version, unlike the transaction-scoped advisory lock (F2).
         static ScriptLock cockroach() {
             return new ScriptLock("CockroachDB",
                                   "SELECT 1 FROM " + SchemaHistoryEvolution.OWNER_TABLE + " FOR UPDATE",
-                                  true);
+                                  true,
+                                  false);
         }
 
         static ScriptLock db2() {
-            return new ScriptLock("DB2", "LOCK TABLE aether_schema_history IN EXCLUSIVE MODE", false);
+            return new ScriptLock("DB2", "LOCK TABLE aether_schema_history IN EXCLUSIVE MODE", false, false);
         }
 
         /// SQLite: a write that changes nothing. A deferred transaction takes the database write lock at its first write,
@@ -181,11 +187,26 @@ public sealed interface MigrationFence {
             return new ScriptLock("SQLite",
                                   "UPDATE " + SchemaHistoryEvolution.OWNER_TABLE
                                  + " SET blueprint_base = blueprint_base",
-                                  false);
+                                  false,
+                                  true);
         }
 
-        /// Takes the lock on the script's transaction connector `tx`.
-        Promise<Unit> take(SqlConnector tx) {
+        /// Takes the lock on the script's transaction connector `tx`. A lock held elsewhere is waited for up to `wait`
+        /// (the migration's own timeout): the serialized runner then re-reads the history and skips, instead of failing
+        /// after the driver's default busy timeout.
+        Promise<Unit> take(SqlConnector tx, TimeSpan wait) {
+            return waitFor(tx, wait).flatMap(_ -> lockStatement(tx));
+        }
+
+        private Promise<Unit> waitFor(SqlConnector tx, TimeSpan wait) {
+            return busyWait
+                   ? tx.update(BUSY_TIMEOUT + wait.duration()
+                                                  .toMillis())
+                       .mapToUnit()
+                   : Promise.unitPromise();
+        }
+
+        private Promise<Unit> lockStatement(SqlConnector tx) {
             return returnsRows
                    ? tx.queryList(statement, IGNORED)
                        .mapToUnit()
@@ -206,7 +227,9 @@ public sealed interface MigrationFence {
 
     /// H2 (ruled (a), design §7 Q5; T12): exclusive mode on the pinned session. It lasts until that session closes;
     /// every other new connection is rejected at connect (error 90135, see [#refusedAtConnect]) and the connections
-    /// already open are paused, so a competing runner never reaches a statement.
+    /// already open are paused, so a competing runner never reaches a statement. Side effect: the application's OWN
+    /// connections to that H2 database (an already-open pool) stall for the whole migration and resume when the pinned
+    /// session closes; H2 is a dev/test engine, so the stall is accepted and documented, not worked around.
     record H2Fence(String datasource) implements MigrationFence {
         static final String EXCLUSIVE_REFUSED = "90135";
 
@@ -234,7 +257,7 @@ public sealed interface MigrationFence {
     }
 
     /// SQL Server (tier 2): an application lock owned by the session, never by a transaction, so it outlives every
-    /// commit and goes with the session. `[unverified engine: nightly heavy-db only]`
+    /// commit and goes with the session. `[verified: MigrationFenceSqlServerTest, heavy-db profile: excluded from the default build]`
     record SqlServerFence(String datasource) implements MigrationFence {
         private static final String TRY_LOCK = "DECLARE @r INT; EXEC @r = sp_getapplock @Resource = 'aether_schema_migration', @LockMode = 'Exclusive',"
                                              + " @LockOwner = 'Session', @LockTimeout = 0; SELECT @r AS granted";
@@ -280,8 +303,8 @@ public sealed interface MigrationFence {
     /// Oracle (tier 2): `DBMS_LOCK` with `release_on_commit => FALSE`, so the lock outlives every commit and goes with
     /// the session. It needs `EXECUTE ON SYS.DBMS_LOCK`; without it the fence cannot be held and every migration is
     /// refused naming the GRANT (fails closed, owner ruling Q2). `REQUEST` on a lock this session already holds answers 4,
-    /// which is how a pooler's shared server session shows and how [#verifyHeld] asks. `[unverified engine: nightly
-    /// heavy-db only]`
+    /// which is how a pooler's shared server session shows and how [#verifyHeld] asks. `[verified: MigrationFenceOracleTest,
+    /// heavy-db profile: excluded from the default build]`
     record OracleFence(String datasource) implements MigrationFence {
         private static final String HELD_CODE = "ORA-20931";
         private static final String REENTERED_CODE = "ORA-20932";

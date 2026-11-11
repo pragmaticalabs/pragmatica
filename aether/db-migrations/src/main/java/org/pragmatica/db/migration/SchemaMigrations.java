@@ -560,7 +560,7 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
                                           SqlConnector connector,
                                           SqlConnector.TransactionCallback<Unit> body) {
         return scriptLockOf(connector).fold(() -> connector.transactional(body),
-                                            lock -> connector.transactional(tx -> lock.take(tx)
+                                            lock -> connector.transactional(tx -> lock.take(tx, statementTimeout)
                                                                                       .flatMap(_ -> skipIfApplied(migration,
                                                                                                                   tx,
                                                                                                                   body))));
@@ -995,15 +995,19 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
                                              SqlConnector connector,
                                              String nodeId) {
         return scriptLockOf(connector).fold(() -> connector.transactional(tx -> undoAndForget(undoScript, version, tx)),
-                                            lock -> connector.transactional(tx -> lock.take(tx)
+                                            lock -> connector.transactional(tx -> lock.take(tx, statementTimeout)
                                                                                       .flatMap(_ -> undoIfRecorded(undoScript,
                                                                                                                    version,
                                                                                                                    tx))))
                            .map(_ -> 1);
     }
 
-    /// FDB-2b (design §0.5): the undo script and the removal of its history row commit as ONE unit, so a crash
-    /// between them leaves neither or both.
+    /// FDB-2b (design §0.5): the undo script and the removal of its history row run on ONE transaction connector.
+    /// On a transactional-DDL engine (PostgreSQL, CockroachDB, DB2, SQL Server, SQLite) they commit as ONE unit, so
+    /// a crash between them leaves neither or both. On an engine whose DDL commits implicitly (MySQL, Oracle, H2)
+    /// the undo DDL is already committed when the history row is removed: a failure or crash between the two leaves
+    /// the DDL undone and the history row present. Nothing is rolled back there, and the undo script must be written
+    /// to be re-runnable.
     private Promise<Unit> undoAndForget(ParsedMigration undoScript, int version, SqlConnector tx) {
         return tx.update(undoScript.entry().sql())
                  .flatMap(_ -> historyRepo.removeMigration(tx, version, MigrationType.VERSIONED));
