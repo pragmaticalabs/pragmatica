@@ -135,10 +135,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// #1873: where a consumer's re-seek after a replaced lineage, and #1934's run of escaped delivery passes and its
     /// end, are reported to the operator, late-bound.
     private volatile OperatorWarningSink operatorWarnings = OperatorWarningSink.logOnly();
-    /// #1934: the clock the escape backoff is measured on (milliseconds), and where the pass after the backoff is
+    /// #1934: the clock the escape backoff is measured on (milliseconds), and where the pass after the backoff and the dead-letter append retry (#2914) are
     /// scheduled. Seams so the backoff's growth is pinned without waiting for it.
     private final LongSupplier clockMs;
-    private final DelayedTask escapeScheduler;
+    private final DelayedTask delayedTasks;
     /// #2574: the refused-read hold of each consumer loop ([#parkAfterRefusal]).
     private final RefusalBackoff<ConsumerKey> refusalBackoff = RefusalBackoff.refusalBackoff();
     private final ConcurrentHashMap<ConsumerKey, ConsumerState> consumers = new ConcurrentHashMap<>();
@@ -254,7 +254,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                          PartitionReader reader,
                          TimeSpan deadLetterAppendTimeout,
                          LongSupplier clockMs,
-                         DelayedTask escapeScheduler) {
+                         DelayedTask delayedTasks) {
         this.partitionManager = partitionManager;
         this.dlHandler = dlHandler;
         this.cursorStore = cursorStore;
@@ -262,7 +262,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         this.reader = reader;
         this.deadLetterAppendTimeout = deadLetterAppendTimeout;
         this.clockMs = clockMs;
-        this.escapeScheduler = escapeScheduler;
+        this.delayedTasks = delayedTasks;
         this.idleConsumerChecker = SharedScheduler.scheduleAtFixedRate(this::periodicConsumerCheck,
                                                                        TimeSpan.timeSpan(IDLE_CHECK_INTERVAL_MS).millis());
     }
@@ -1362,7 +1362,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         reportEscape(key, state, escape, escapes, delayMs);
         state.finishDrain();
         if (!state.isCancelled() && !closed.get()) {
-            escapeScheduler.schedule(() -> resumeAfterEscapeBackoff(key, state),
+            delayedTasks.schedule(() -> resumeAfterEscapeBackoff(key, state),
                                      TimeSpan.timeSpan(delayMs).millis());
         }
     }
@@ -1380,7 +1380,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         state.escapeBackoffUntil(untilMs);
         state.finishDrain();
         if (!state.isCancelled() && !closed.get()) {
-            escapeScheduler.schedule(() -> resumeAfterRefusalPark(key, state, untilMs), hold);
+            delayedTasks.schedule(() -> resumeAfterRefusalPark(key, state, untilMs), hold);
         }
     }
 
@@ -2269,8 +2269,21 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                              int attemptCount,
                                              int appendAttempt) {
         state.markDeadLetterInFlight();
-        var inFlight = state.beginAdvance(event.offset());
+        appendClaimed(key, state, event, errorMessage, attemptCount, appendAttempt, state.beginAdvance(event.offset()));
+    }
 
+    /// #2914: runs only under a slot claimed in one step with the cancel check ([ConsumerState#claimAdvance]), as
+    /// [#retryClaimed]. A cancelled consumer therefore appends no dead letter, whether the call came from a delivery
+    /// failure or from the backoff timer of [#retryDeadLetterAppend]: after `cancel()` returns, the detach flush has seen
+    /// every append that will still run, and a timer firing later does nothing.
+    @Contract
+    private void appendClaimed(ConsumerKey key,
+                               ConsumerState state,
+                               OffHeapRingBuffer.RawEvent event,
+                               String errorMessage,
+                               int attemptCount,
+                               int appendAttempt,
+                               ConsumerState.InFlightAdvance inFlight) {
         appendDeadLetter(key, event, errorMessage, attemptCount).onSuccess(_ -> settledAfter(inFlight,
                                                                                              () -> completeDeadLetter(key,
                                                                                                                       state,
@@ -2351,13 +2364,13 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         // at 64 and the min() then picks the negative product, so the argument is clamped below it.
         var cappedAttempt = Math.min(appendAttempt, 30);
 
-        SharedScheduler.schedule(() -> appendDeadLetterThenAdvance(key,
-                                                                   state,
-                                                                   event,
-                                                                   errorMessage,
-                                                                   attemptCount,
-                                                                   appendAttempt + 1),
-                                 TimeSpan.timeSpan(computeBackoff(cappedAttempt)).millis());
+        delayedTasks.schedule(() -> appendDeadLetterThenAdvance(key,
+                                                                state,
+                                                                event,
+                                                                errorMessage,
+                                                                attemptCount,
+                                                                appendAttempt + 1),
+                              TimeSpan.timeSpan(computeBackoff(cappedAttempt)).millis());
     }
 
     private static long computeBackoff(int attempt) {
@@ -2374,7 +2387,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                 cause.message());
     }
 
-    /// #1934: schedules the pass after an escape backoff; [SharedScheduler#schedule] in production.
+    /// #1934: schedules the pass after an escape backoff and (#2914) the dead-letter append retry; [SharedScheduler#schedule] in production.
     @FunctionalInterface
     interface DelayedTask {
         @Contract
