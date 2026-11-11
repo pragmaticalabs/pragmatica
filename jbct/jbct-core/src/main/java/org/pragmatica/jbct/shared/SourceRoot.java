@@ -32,11 +32,11 @@ public record SourceRoot(Path path) {
         return lift(Causes::fromThrowable,
                     () -> {
                         try (Stream<Path> walk = Files.walk(path)) {
-                        return walk.filter(Files::isRegularFile)
-                                   .filter(p -> p.toString()
-                                                 .endsWith(".java"))
-                                   .toList();
-                    }
+                            return walk.filter(Files::isRegularFile)
+                                       .filter(p -> p.toString()
+                                                     .endsWith(".java"))
+                                       .toList();
+                        }
                     });
     }
 

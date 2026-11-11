@@ -163,49 +163,40 @@ record PartialConfig(PartialFormatter formatter,
         }
 
         private Map<String, RuleSetting> mergedRules(Map<String, RuleSetting> nearer) {
-            return Stream.concat(rules.entrySet()
-                                      .stream(),
-                                 nearer.entrySet()
-                                       .stream())
+            return Stream.concat(rules.entrySet().stream(),
+                                 nearer.entrySet().stream())
                          .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
                                                                Map.Entry::getValue,
                                                                (inherited, nearest) -> nearest));
         }
 
         private Map<String, DiagnosticSeverity> materializedSeverities() {
-            return Stream.concat(LintConfig.DEFAULT.ruleSeverities()
-                                                   .entrySet()
-                                                   .stream(),
+            return Stream.concat(LintConfig.DEFAULT.ruleSeverities().entrySet().stream(),
                                  rules.entrySet()
                                       .stream()
-                                      .flatMap(entry -> severityEntry(entry.getKey(), entry.getValue())))
+                                      .flatMap(entry -> severityEntry(entry.getKey(),
+                                                                      entry.getValue())))
                          .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
                                                                Map.Entry::getValue,
                                                                (builtIn, configured) -> configured));
         }
 
-        private static Stream<Map.Entry<String, DiagnosticSeverity>> severityEntry(String ruleId,
-                                                                                   RuleSetting setting) {
+        private static Stream<Map.Entry<String, DiagnosticSeverity>> severityEntry(String ruleId, RuleSetting setting) {
             return setting.severity()
                           .map(severity -> Map.entry(ruleId, severity))
                           .stream();
         }
 
         private Set<String> materializedDisabledRules() {
-            return Stream.concat(LintConfig.DEFAULT.disabledRules()
-                                                   .stream()
-                                                   .filter(this::staysDisabled),
-                                 rules.entrySet()
-                                      .stream()
-                                      .filter(PartialLint::isOff)
-                                      .map(Map.Entry::getKey))
+            return Stream.concat(LintConfig.DEFAULT.disabledRules().stream().filter(this::staysDisabled),
+                                 rules.entrySet().stream().filter(PartialLint::isOff).map(Map.Entry::getKey))
                          .collect(Collectors.toUnmodifiableSet());
         }
 
         /// A rule disabled by default stays disabled unless some layer explicitly re-enabled it.
         private boolean staysDisabled(String ruleId) {
             return option(rules.get(ruleId)).map(RuleSetting::isOff)
-                                            .or(true);
+                         .or(true);
         }
 
         private static boolean isOff(Map.Entry<String, RuleSetting> entry) {
@@ -294,15 +285,11 @@ record PartialConfig(PartialFormatter formatter,
         WARNING(some(DiagnosticSeverity.WARNING)),
         INFO(some(DiagnosticSeverity.INFO)),
         OFF(none());
-
         static final String ALLOWED = "one of: error, warning (warn), info, off (disabled)";
-
         private final Option<DiagnosticSeverity> severity;
-
         RuleSetting(Option<DiagnosticSeverity> severity) {
             this.severity = severity;
         }
-
         /// Parse a TOML severity token. An unrecognised token yields [Option#none()]; the layer parser
         /// refuses it (see [PartialLint]) rather than treating the rule as unset.
         static Option<RuleSetting> ruleSetting(String raw) {
@@ -314,11 +301,9 @@ record PartialConfig(PartialFormatter formatter,
                 default -> none();
             };
         }
-
         Option<DiagnosticSeverity> severity() {
             return severity;
         }
-
         boolean isOff() {
             return this == OFF;
         }

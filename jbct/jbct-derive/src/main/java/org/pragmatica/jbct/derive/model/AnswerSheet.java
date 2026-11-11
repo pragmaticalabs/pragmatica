@@ -4,6 +4,7 @@ import java.util.List;
 
 import org.pragmatica.lang.Option;
 
+
 /// A parsed architecture answer sheet (SPEC.md §3): the fully-typed result of parsing one TOML
 /// document. The entry gate ([org.pragmatica.jbct.derive.gate.EntryGate]) validates it; Phase B
 /// will derive a vector from it.

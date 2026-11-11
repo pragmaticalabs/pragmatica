@@ -124,33 +124,31 @@ public final class TlsContextFactory {
 
     // ===== Client Context Building =====
     private static Result<SslContext> buildClientContext(TlsConfig.Trust trust, Option<TlsConfig.Identity> identity) {
-        return identity.fold(
-        // No identity - just build client context with trust
-        () -> {
+        return identity.fold(() -> {
                                  try {
-                                 var builder = SslContextBuilder.forClient();
+                                     var builder = SslContextBuilder.forClient();
 
-                                 configureTrust(builder, trust);
+                                     configureTrust(builder, trust);
 
-                                 return Result.success(builder.build());
-                             } catch (Exception e) {
-                                 return new TlsError.ContextBuildFailed(e).result();
-                             }
+                                     return Result.success(builder.build());
+                                 } catch (Exception e) {
+                                     return new TlsError.ContextBuildFailed(e).result();
+                                 }
                              },
-
-        // Has identity - load it and configure
-        id -> loadIdentity(id).flatMap(keyMaterial -> {
+                             id -> loadIdentity(id).flatMap(keyMaterial -> {
                                  try {
-                                 var builder = SslContextBuilder.forClient();
+                                     var builder = SslContextBuilder.forClient();
 
-                                 configureTrust(builder, trust);
-                                 configureClientIdentity(builder, keyMaterial);
+                                     configureTrust(builder, trust);
+                                     configureClientIdentity(builder, keyMaterial);
 
-                                 return Result.success(builder.build());
-                             } catch (Exception e) {
-                                 return new TlsError.ContextBuildFailed(e).result();
-                             }
-                             }));
+                                     return Result.success(builder.build());
+                                 } catch (Exception e) {
+                                     return new TlsError.ContextBuildFailed(e).result();
+                                 }
+                             })
+                             // Has identity - load it and configure
+                            );
     }
 
     private static Result<SslContext> buildClientContextWithIdentity(TlsConfig.Identity identity,
