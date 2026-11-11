@@ -556,10 +556,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                           RabiaEngine.DEFAULT_PHASE_STALL_CHECK,
                                           consensusBridge);
 
-        consensus.preSyncCheck(() -> JoinGenerationGuard.admit(joinDecisionSet(topologyManager),
-                                                               network::peerHelloLabels,
-                                                               config.joinGenerationWait(),
-                                                               JoinGenerationGuard.WIRE_GENERATION));
+        consensus.preSyncCheck(joinGuard(topologyManager, network, config.joinGenerationWait()));
         network.setProposalRelayMembership(id -> consensus.voterConfiguration()
                                                           .map(voters -> voters.contains(id))
                                                           .or(false));
@@ -1062,9 +1059,16 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     /// election cascades retry-loops under chaos.
     TimeSpan DEFAULT_PROPOSAL_TIMEOUT = timeSpan(8).seconds();
 
-    @SuppressWarnings("unchecked")
+    /// The pre-sync check the engine runs on a cluster ACTIVE edge: the wire-generation join guard (#2981 step 6).
+    static Supplier<Promise<Unit>> joinGuard(TopologyObserver topologyManager, ClusterNetwork network, TimeSpan wait) {
+        return () -> JoinGenerationGuard.admit(joinDecisionSet(topologyManager),
+                                               network::peerHelloLabels,
+                                               wait,
+                                               JoinGenerationGuard.WIRE_GENERATION);
+    }
+
     /// The wire-generation join guard decides over the core voters other than this node (#2981 step 6).
-    private static Set<NodeId> joinDecisionSet(TopologyObserver topologyManager) {
+    static Set<NodeId> joinDecisionSet(TopologyObserver topologyManager) {
         var self = topologyManager.self().id();
 
         return topologyManager.coreNodes()
@@ -1073,6 +1077,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                               .collect(Collectors.toUnmodifiableSet());
     }
 
+    @SuppressWarnings("unchecked")
     private static <C extends Command> Promise<Unit> submitLeaderProposal(RabiaEngine<C> consensus,
                                                                           NodeId candidate,
                                                                           long viewSequence,

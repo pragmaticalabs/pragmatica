@@ -25,6 +25,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.SharedScheduler;
 
 
@@ -55,8 +56,8 @@ public interface JoinGenerationGuard {
     }
 
     private static Option<Integer> parseGeneration(String raw) {
-        return org.pragmatica.lang.parse.Number.parseInt(raw)
-                                               .option();
+        return Number.parseInt(raw)
+              .option();
     }
 
     /// Waits until every member in `members` has handshaken or `wait` elapses, whichever is first, failing at

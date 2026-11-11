@@ -85,6 +85,16 @@ class JoinGenerationGuardTest {
     }
 
     @Test
+    void handshakenMemberWithNonIntegerLabel_isTreatedAsGenerationOne_andRefused() {
+        handshaken.put(A, generation("two"));
+
+        JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, LONG, 2)
+                           .await(AWAIT)
+                           .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("must be refused"))
+                           .onFailure(cause -> assertThat(cause).isEqualTo(new ConsensusError.WireGenerationRefused(A, 1, 2)));
+    }
+
+    @Test
     void everyMemberAtSameOrHigherGeneration_completesWellBeforeTheWait() {
         handshaken.put(A, generation("2"));
         handshaken.put(B, generation("3"));

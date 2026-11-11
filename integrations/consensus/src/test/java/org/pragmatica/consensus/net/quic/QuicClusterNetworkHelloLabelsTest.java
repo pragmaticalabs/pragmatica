@@ -49,6 +49,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.locks.LockSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -132,6 +133,56 @@ class QuicClusterNetworkHelloLabelsTest {
         assertThat(network.peerHelloLabels(peerId).isEmpty()).as("departed peer is no longer handshaken").isTrue();
     }
 
+    @Test
+    void peerHelloLabels_afterShutdown_areCleared() {
+        var self = new NodeId("aaa-self");
+        var peerId = new NodeId("zzz-peer");
+        var network = createNetwork(self, Set.of(self, peerId));
+
+        network.onPeerConnectedForTests(activeConnection(peerId),
+                                        addressOf("127.0.0.1", 5000),
+                                        Map.of(NodeInfo.LABEL_WIRE_GENERATION, "2"));
+        network.stop().await(AWAIT_TIMEOUT);
+
+        assertThat(network.peerHelloLabels(peerId).isEmpty()).as("a stopped network holds no handshake record").isTrue();
+    }
+
+    @Test
+    void peerHelloLabels_realDial_dialerCapturesAcceptorLabels_acceptorCapturesDialerLabels() {
+        var dialerId = new NodeId("aaa-dialer");
+        var acceptorId = new NodeId("zzz-acceptor");
+        var both = Set.of(dialerId, acceptorId);
+        var acceptor = createNetwork(labelledSelf(acceptorId, "7"), both);
+        var dialer = createNetwork(labelledSelf(dialerId, "9"), both);
+        var acceptorInfo = NodeInfo.nodeInfo(acceptorId, addressOf("127.0.0.1", acceptor.boundPort().unwrap()));
+
+        dialer.dialForTests(acceptorInfo, true);
+
+        awaitLabels(dialer, acceptorId);
+        awaitLabels(acceptor, dialerId);
+        assertThat(dialer.peerHelloLabels(acceptorId).or(Map.of()))
+            .as("dial side: labels come from the Hello response")
+            .containsEntry(NodeInfo.LABEL_WIRE_GENERATION, "7");
+        assertThat(acceptor.peerHelloLabels(dialerId).or(Map.of()))
+            .as("accept side: labels come from the inbound Hello")
+            .containsEntry(NodeInfo.LABEL_WIRE_GENERATION, "9");
+    }
+
+    private static NodeInfo labelledSelf(NodeId id, String generation) {
+        return NodeInfo.nodeInfo(id,
+                                 addressOf("127.0.0.1", 19998),
+                                 Map.of(NodeInfo.LABEL_WIRE_GENERATION, generation));
+    }
+
+    private static void awaitLabels(QuicClusterNetwork network, NodeId peer) {
+        var deadline = System.nanoTime() + AWAIT_TIMEOUT.nanos();
+
+        while (network.peerHelloLabels(peer).isEmpty() && System.nanoTime() < deadline) {
+            LockSupport.parkNanos(20_000_000L);
+        }
+        assertThat(network.peerHelloLabels(peer).isPresent()).as("handshake completed with " + peer).isTrue();
+    }
+
     private QuicPeerConnection activeConnection(NodeId peerId) {
         var chan = mock(QuicChannel.class);
         when(chan.isActive()).thenReturn(true);
@@ -150,7 +201,14 @@ class QuicClusterNetworkHelloLabelsTest {
     }
 
     private QuicClusterNetwork createNetwork(NodeId selfId, Set<NodeId> coreNodes, MessageRouter router) {
-        var selfInfo = NodeInfo.nodeInfo(selfId, addressOf("127.0.0.1", 19998));
+        return createNetwork(NodeInfo.nodeInfo(selfId, addressOf("127.0.0.1", 19998)), coreNodes, router);
+    }
+
+    private QuicClusterNetwork createNetwork(NodeInfo selfInfo, Set<NodeId> coreNodes) {
+        return createNetwork(selfInfo, coreNodes, MessageRouter.mutable());
+    }
+
+    private QuicClusterNetwork createNetwork(NodeInfo selfInfo, Set<NodeId> coreNodes, MessageRouter router) {
         var topology = new OverridableTopology(selfInfo, coreNodes);
         var network = new QuicClusterNetwork(topology, codec, codec, router,
                                              serverSsl, clientSsl);
