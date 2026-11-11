@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -123,22 +122,24 @@ public interface AbandonedStreamData {
     }
 
     private static Result<Unit> writeMarker(Path marker, String selfId) {
-        return lift(Causes::fromThrowable, () -> Files.writeString(marker, idsWith(marker, selfId))).mapToUnit()
-                   .onFailure(cause -> log.warn("Cannot write marker {}, the warning will not be cleared by a later boot: {}",
-                                                marker,
-                                                cause.message()));
+        return existingIds(marker).map(ids -> idsWith(ids, selfId))
+                         .flatMap(content -> lift(Causes::fromThrowable, () -> Files.writeString(marker, content)))
+                         .mapToUnit()
+                         .onFailure(cause -> log.warn("Cannot write marker {}, the warning will not be cleared by a later boot: {}",
+                                                      marker,
+                                                      cause.message()));
     }
 
-    private static String idsWith(Path marker, String selfId) throws IOException {
-        return Stream.concat(existingIds(marker).stream(), Stream.of(selfId))
+    private static String idsWith(List<String> existing, String selfId) {
+        return Stream.concat(existing.stream(), Stream.of(selfId))
                      .distinct()
                      .collect(Collectors.joining("\n", "", "\n"));
     }
 
-    private static List<String> existingIds(Path marker) throws IOException {
+    private static Result<List<String>> existingIds(Path marker) {
         return Files.exists(marker)
-               ? Files.readAllLines(marker)
-               : List.of();
+               ? lift(Causes::fromThrowable, () -> Files.readAllLines(marker))
+               : Result.success(List.of());
     }
 
     private static String unclearable(Path marker, Cause cause) {
