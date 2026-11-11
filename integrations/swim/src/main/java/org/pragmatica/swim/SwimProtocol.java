@@ -2230,20 +2230,22 @@ public final class SwimProtocol implements SwimMessageHandler {
         return List.copyOf(ordered);
     }
 
-    /// The death notice a Ping earns (#3028 design §3.2): only the pinger's own self-`Alive` is the claim compared with
-    /// the record. A third-party `Alive` in the piggyback is gossip, already refused by the death-record gate, and earns
-    /// no notice. Consequence (FINDING, CTO ruled a notice for the relayed requester entry too): the requester entry a
-    /// relayer appends (D3, [#withRequesterIdentity]) is third-party to the target, and a relayed Ping does not carry the
-    /// requester id (`Ping(from, sequence, piggyback)`, [#relayPingReq] builds it with `from` = relayer), so the target
-    /// cannot tell that entry from other gossip without a new wire field. None is added (ruling), so a relayed Ping earns
-    /// no notice for the requester.
+    /// The death notice a Ping earns (#3028 design §3.2): the pinger's own self-`Alive` is the claim compared with the
+    /// record, and so is the entry for the requester a relayer names in `onBehalfOf` (D3, [#withRequesterIdentity]).
+    /// Every other third-party `Alive` in the piggyback is gossip, already refused by the death-record gate, and earns
+    /// no notice.
     private Option<MembershipUpdate> pingDeathNotice(Ping ping) {
         return Option.from(ping.piggyback()
                                .stream()
-                               .filter(update -> update.nodeId()
-                                                       .equals(ping.from()))
+                               .filter(update -> isAnswerable(ping, update.nodeId()))
                                .flatMap(update -> deathNoticeFor(update).stream())
                                .findFirst());
+    }
+
+    private static boolean isAnswerable(Ping ping, NodeId claimant) {
+        return claimant.equals(ping.from()) || ping.onBehalfOf()
+                                                   .filter(claimant::equals)
+                                                   .isPresent();
     }
 
     /// `Faulty(X, record.incarnation, record.bootToken)` for an `Alive` claim the death record answers with a notice
@@ -3007,14 +3009,14 @@ public final class SwimProtocol implements SwimMessageHandler {
                                         System.currentTimeMillis()));
         var piggyback = withRequesterIdentity(piggybackBuffer.peekUpdates(config.maxPiggyback(), piggybackBudgetBytes),
                                               pingReq.from());
-        var ping = Ping.ping(selfId, relaySeq, piggyback);
+        var ping = Ping.relayedPing(selfId, relaySeq, piggyback, pingReq.from());
 
         transport.send(target.address(), ping);
     }
 
     /// The relayed Ping carries the requester's identity entry as this node holds it (#3028 design §3.2, D3), so the
     /// target's death-record gate applies to it. Appended beyond `maxPiggyback` ([#appendBeyondCap]). The entry is
-    /// third-party to the target (this node is the pinger), so it earns no death notice ([#pingDeathNotice]).
+    /// third-party to the target (this node is the pinger); the Ping's `onBehalfOf` marks it so it earns a death notice ([#pingDeathNotice]).
     private List<MembershipUpdate> withRequesterIdentity(List<MembershipUpdate> gossip, NodeId requester) {
         return option(members.get(requester)).map(this::snapshotUpdate)
                      .map(entry -> appendBeyondCap(gossip, 0, entry))

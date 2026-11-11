@@ -53,6 +53,7 @@ class SwimDeathNoticeTest {
     private static final NodeId SELF_ID = new NodeId("node-self");
     private static final NodeId NODE_A = new NodeId("node-a");
     private static final NodeId NODE_B = new NodeId("node-b");
+    private static final NodeId NODE_C = new NodeId("node-c");
     private static final InetSocketAddress SELF_ADDR = new InetSocketAddress("127.0.0.1", 9000);
     private static final InetSocketAddress ADDR_A = new InetSocketAddress("127.0.0.1", 9001);
     private static final InetSocketAddress ADDR_B = new InetSocketAddress("127.0.0.1", 9002);
@@ -61,6 +62,7 @@ class SwimDeathNoticeTest {
     private static final long SELF_TOKEN = 0x5E1FL;
     private static final long TOKEN_A = 0x3028AL;
     private static final long TOKEN_B = 0x3028CL;
+    private static final long TOKEN_C = 0x3028DL;
     private static final long OTHER_TOKEN = 0x3028BL;
 
     private RecordingTransport transport;
@@ -243,6 +245,64 @@ class SwimDeathNoticeTest {
         assertThat(ackOf(transport, 8L).piggyback()).as("the pinger's own claim earns the notice, the third-party one none")
                                                     .anyMatch(noticeOf(NODE_B, 1L, TOKEN_B))
                                                     .noneMatch(noticeOf(NODE_A, 1L, TOKEN_A));
+    }
+
+    /// CTO ruling (2026-11-11, wire marker): a relayed Ping names the requester in `onBehalfOf`; the entry for that
+    /// id is answered like the pinger's own claim, every other third-party entry still earns none.
+    @Test
+    void deathNotice_relayedPing_onBehalfOfRequester_earnsNoticeForTheRequesterOnly() {
+        protocol.putDeathRecordForTest(NODE_A, 1L, TOKEN_A, System.currentTimeMillis());
+        protocol.putDeathRecordForTest(NODE_C, 1L, TOKEN_C, System.currentTimeMillis());
+
+        protocol.onMessage(ADDR_B,
+                           Ping.relayedPing(NODE_B,
+                                            7L,
+                                            List.of(updateOf(NODE_C, MemberState.ALIVE, 1L, TOKEN_C),
+                                                    updateOf(NODE_A, MemberState.ALIVE, 1L, TOKEN_A)),
+                                            NODE_A));
+
+        assertThat(ackOf(transport, 7L).piggyback()).as("the named requester's claim earns the notice")
+                                                    .anyMatch(noticeOf(NODE_A, 1L, TOKEN_A))
+                                                    .as("a third-party entry other than the requester earns none")
+                                                    .noneMatch(noticeOf(NODE_C, 1L, TOKEN_C));
+    }
+
+    @Test
+    void deathNotice_relayedPing_onBehalfOfNamesOther_noNoticeForTheEntryHeld() {
+        protocol.putDeathRecordForTest(NODE_A, 1L, TOKEN_A, System.currentTimeMillis());
+
+        protocol.onMessage(ADDR_B,
+                           Ping.relayedPing(NODE_B, 7L, List.of(updateOf(NODE_A, MemberState.ALIVE, 1L, TOKEN_A)), NODE_C));
+
+        assertThat(carriesFaultyOf(ackOf(transport, 7L), NODE_A)).as("onBehalfOf names C, the entry for A is gossip")
+                                                                 .isFalse();
+    }
+
+    @Test
+    void deathNotice_pingReqRelay_marksTheRequesterOnTheRelayedPing_directPingsCarryNone() {
+        protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.ALIVE);
+        protocol.putMemberForTest(NODE_B, ADDR_B, MemberState.ALIVE);
+
+        protocol.onMessage(ADDR_A, new PingReq(NODE_A, NODE_B, 9L));
+
+        var relayed = transport.sentMessages.stream()
+                                            .filter(Ping.class::isInstance)
+                                            .map(Ping.class::cast)
+                                            .reduce((first, last) -> last)
+                                            .orElseThrow();
+
+        assertThat(relayed.onBehalfOf().isPresent()).isTrue();
+        assertThat(relayed.onBehalfOf().or(NODE_B)).as("names the PingReq requester").isEqualTo(NODE_A);
+        assertThat(Ping.ping(NODE_A, 1L, List.of()).onBehalfOf().isEmpty()).as("a direct ping names none").isTrue();
+    }
+
+    @Test
+    void deathNotice_directPing_emptyOnBehalfOf_unchanged() {
+        protocol.putDeathRecordForTest(NODE_A, 1L, TOKEN_A, System.currentTimeMillis());
+
+        ping(NODE_A, 7L, List.of(updateOf(NODE_A, MemberState.ALIVE, 1L, TOKEN_A)));
+
+        assertThat(carriesFaultyOf(ackOf(transport, 7L), NODE_A)).as("the pinger's own claim, no marker").isTrue();
     }
 
     // ---- Announce (D1c): the refused ANNOUNCE still gets the snapshot, with the notice ----
