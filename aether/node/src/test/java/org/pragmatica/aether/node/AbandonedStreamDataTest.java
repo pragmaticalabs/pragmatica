@@ -62,6 +62,18 @@ class AbandonedStreamDataTest {
     }
 
     @Test
+    void bothBasesUnderOneRoot_reportEachDirectoryOnce() throws Exception {
+        var segments = root.resolve("stream-segments");
+
+        write(segments.resolve("node-old").resolve("a.blk"),
+              7);
+        AbandonedStreamData.check(sink, segments.resolve(SELF), segments.resolve(SELF), SELF);
+        var message = next().message();
+
+        assertThat(message.split("node-old", -1)).as("one mention of the directory").hasSize(2);
+    }
+
+    @Test
     void ownDirectoryOnly_raisesNoWarning() throws Exception {
         var segments = root.resolve("stream-segments");
 
