@@ -105,12 +105,6 @@ sealed interface PortLockFile {
                                          : success(channel));
     }
 
-    private static Result<FileChannel> withMode(FileChannel channel, Path file, boolean created) {
-        return created
-               ? chmod(file, FILE_MODE).map(_ -> channel)
-               : success(channel);
-    }
-
     private static Result<Path> ensureDirectory(Path lockDir) {
         return Files.isDirectory(lockDir)
                ? success(lockDir)
