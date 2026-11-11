@@ -261,11 +261,14 @@ class PeerObservationOrderTest {
         assertThat(node.suspectsTheLeader()).as("the leader stays suspected").isTrue();
     }
 
-    /// #3044 3b: a leader that loses eligibility is removed view-free: exactly one `PeerRemovedFromView(leader)` is
-    /// dispatched, no view-carrying event, and the follower leaves `Led` (no pre-vote: the leader is ineligible).
+    /// #3044 3b: a leader that loses eligibility is removed view-free. The harness records no event for a
+    /// transition (`Fsm` is final, `Transition` carries none), so the removal is read from what only it does: the
+    /// follower leaves `Led` exactly once and names NO suspect (a view-carrying `NodeGone` of the leader names it), and
+    /// no view-carrying event reaches the FSM. No pre-vote: the leader is ineligible.
     @Test
     void installVoterConfiguration_inLed_leaderDropped_dispatchesOneViewFreeRemoval_andLeavesLed() {
         node = Node.following(false);
+        var transitionsBefore = node.harness.transitions().size();
         var handledBefore = node.harness.handled().size();
         var ignoredBefore = node.harness.ignored().size();
 
@@ -274,9 +277,12 @@ class PeerObservationOrderTest {
         var dispatched = Stream.concat(node.harness.handled().stream().skip(handledBefore).map(FsmTestHarness.Handled::event),
                                        node.harness.ignored().stream().skip(ignoredBefore).map(FsmTestHarness.Ignored::event))
                                .toList();
-        assertThat(dispatched).as("exactly one view-free removal of the old leader").containsOnlyOnce(new PeerRemovedFromView(N1));
+        assertThat(node.harness.transitions().stream().skip(transitionsBefore).filter(transition -> transition.from() instanceof LeaderElectionState.Led))
+            .as("the follower leaves Led exactly once").hasSize(1);
+        assertThat(node.harness.state()).as("a view-free removal loses the leader naming no suspect")
+                                        .isInstanceOfSatisfying(LeaderElectionState.ReElecting.class,
+                                                                reElecting -> assertThat(reElecting.suspect()).isEqualTo(Option.none()));
         assertThat(dispatched).as("no view-carrying event").noneMatch(ClusterFsmEvent.TopologyChange.class::isInstance);
-        assertThat(node.harness.state()).as("the follower leaves Led").isNotInstanceOf(LeaderElectionState.Led.class);
     }
 
     /// #3044 S2: whatever SWIM's snapshots carry, interleaved with sequenced transport views, the stored view after

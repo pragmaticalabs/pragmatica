@@ -49,6 +49,8 @@ import org.slf4j.LoggerFactory;
 /// Thread safety: atomic fields are thread-safe on their own. The context is referenced by all
 /// state instances for a given FSM; states mutate atomic fields directly inside their handlers.
 public final class LeaderElectionContext {
+    private static final Logger log = LoggerFactory.getLogger(LeaderElectionContext.class);
+
     public static final TimeSpan DEFAULT_PROPOSAL_RETRY_DELAY = TimeSpan.timeSpan(500).millis();
     public static final TimeSpan DEFAULT_BASE_ELECTION_DELAY = TimeSpan.timeSpan(2).seconds();
     public static final TimeSpan DEFAULT_PER_RANK_DELAY = TimeSpan.timeSpan(1).seconds();
@@ -196,7 +198,6 @@ public final class LeaderElectionContext {
     private final AtomicReference<ReactExecutor> reactExecutor = new AtomicReference<>(ReactExecutor.inline("LeaderManager"));
 
     /// The replay source of a node that installed none.
-    private static final Logger log = LoggerFactory.getLogger(LeaderElectionContext.class);
     private static final BooleanSupplier NEVER_REPLAYING = () -> false;
 
     /// R3 (v-2653 F3): the node store's replay bit, read where a `LeaderChange` is raised. Never replaying until a node
