@@ -107,7 +107,7 @@ public sealed interface Resolve permits Resolve.unused {
     private static List<Halt> collisionsFor(AxisOutcome outcome, List<Strike> strikes) {
         return strikes.stream()
                       .filter(strike -> strikeHits(outcome, strike))
-                      .map(strike -> Halt.of(Halt.Kind.CONTRADICTION,
+                      .map(strike -> Halt.halt(Halt.Kind.CONTRADICTION,
                                              "a mandate strikes " + strike.display() + " but the derivation forces it on "
                                              + outcome.position().axis().label()))
                       .toList();
@@ -174,7 +174,7 @@ public sealed interface Resolve permits Resolve.unused {
                            "event-sourced — priced: full event history + projection rebuild; re-enters the derivation");
         var halt = Halt.contradiction("STATE pressed toward both audit-log and event-sourced at one scope — decompose or choose",
                                       menu);
-        var judgment = JudgmentPoint.of(JudgmentPoint.Kind.CONTRADICTION_CHOICE,
+        var judgment = JudgmentPoint.judgmentPoint(JudgmentPoint.Kind.CONTRADICTION_CHOICE,
                                         Axis.STATE.label(),
                                         "audit (current-state + log) versus replay (event-sourced) at the same scope — the choice is judgment");
         var position = new VectorPosition(Axis.STATE, "CONTRADICTION — see renegotiation menu", citeStrings(members), Resolution.DEFERRED);
@@ -240,7 +240,7 @@ public sealed interface Resolve permits Resolve.unused {
     }
 
     private static JudgmentPoint topologyShapeJudgment(String scope) {
-        return JudgmentPoint.of(JudgmentPoint.Kind.TOPOLOGY_SHAPE,
+        return JudgmentPoint.judgmentPoint(JudgmentPoint.Kind.TOPOLOGY_SHAPE,
                                 scope,
                                 "the split boundary is mechanical (F24); what the '" + scope + "' component becomes — its model/product — is judgment");
     }
@@ -261,7 +261,7 @@ public sealed interface Resolve permits Resolve.unused {
     }
 
     private static List<JudgmentPoint> readWriteJudgments(List<Pressure> moving) {
-        return List.of(JudgmentPoint.of(JudgmentPoint.Kind.RUNG_DEPTH,
+        return List.of(JudgmentPoint.judgmentPoint(JudgmentPoint.Kind.RUNG_DEPTH,
                                         Axis.READ_WRITE.label(),
                                         "how far up the read-path chain (cache / coalescing / replicas / separated) — the ceiling is judgment (F12/F13): " + citations(moving)));
     }
@@ -282,13 +282,13 @@ public sealed interface Resolve permits Resolve.unused {
     }
 
     private static List<JudgmentPoint> persistenceJudgments(List<Pressure> moving) {
-        var rungDepth = JudgmentPoint.of(JudgmentPoint.Kind.RUNG_DEPTH,
+        var rungDepth = JudgmentPoint.judgmentPoint(JudgmentPoint.Kind.RUNG_DEPTH,
                                          Axis.PERSISTENCE.label(),
                                          "how far along the store-scaling chain — the F12 ceiling is judgment: " + citations(moving));
 
         return hasMechanism(moving, "volume-containment")
                ? List.of(rungDepth,
-                         JudgmentPoint.of(JudgmentPoint.Kind.PARTITION_KEY,
+                         JudgmentPoint.judgmentPoint(JudgmentPoint.Kind.PARTITION_KEY,
                                           Axis.PERSISTENCE.label(),
                                           "sharding needs a partition key — a domain gift the engine will not guess (Q9)"))
                : List.of(rungDepth);
@@ -314,7 +314,7 @@ public sealed interface Resolve permits Resolve.unused {
 
     private static RecoveryAssignment recoveryFor(DomainShape shape) {
         if (reshapesToSafe(shape)) {
-            return RecoveryAssignment.of(shape.operation(),
+            return RecoveryAssignment.recoveryAssignment(shape.operation(),
                                          RecoveryAssignment.RecoveryClass.DESIGN_OUT,
                                          "reshapeable " + shape.reshapeable() + " — the failure is designed out (checked first)");
         }
@@ -327,16 +327,16 @@ public sealed interface Resolve permits Resolve.unused {
                                           "a defined inverse ('" + shape.inverse() + "') AND decay — BER versus FER is a judgment");
         }
         if (ber) {
-            return RecoveryAssignment.of(shape.operation(),
+            return RecoveryAssignment.recoveryAssignment(shape.operation(),
                                          RecoveryAssignment.RecoveryClass.BER,
                                          "a defined inverse ('" + shape.inverse() + "') — per-case, residuals remain");
         }
 
         return fer
-               ? RecoveryAssignment.of(shape.operation(),
+               ? RecoveryAssignment.recoveryAssignment(shape.operation(),
                                        RecoveryAssignment.RecoveryClass.FER,
                                        "decays — a bounded, visible degraded window")
-               : RecoveryAssignment.of(shape.operation(),
+               : RecoveryAssignment.recoveryAssignment(shape.operation(),
                                        RecoveryAssignment.RecoveryClass.DESIGN_OUT,
                                        "no inverse and does not decay — structurally nothing to recover");
     }
@@ -344,7 +344,7 @@ public sealed interface Resolve permits Resolve.unused {
     private static List<JudgmentPoint> recoveryJudgments(AnswerSheet sheet) {
         return recovery(sheet).stream()
                               .filter(RecoveryAssignment::isTie)
-                              .map(assignment -> JudgmentPoint.of(JudgmentPoint.Kind.RECOVERY_TIE,
+                              .map(assignment -> JudgmentPoint.judgmentPoint(JudgmentPoint.Kind.RECOVERY_TIE,
                                                                   assignment.operation(),
                                                                   assignment.rationale()))
                               .toList();
@@ -388,7 +388,7 @@ public sealed interface Resolve permits Resolve.unused {
     }
 
     private static JudgmentPoint targetJudgment(AnswerRow row) {
-        return JudgmentPoint.of(JudgmentPoint.Kind.TARGET_SETTING,
+        return JudgmentPoint.judgmentPoint(JudgmentPoint.Kind.TARGET_SETTING,
                                 row.cite(),
                                 "the budget is UNKNOWN — setting it is judgment, never guessed (ch. 7 register)");
     }
@@ -410,7 +410,7 @@ public sealed interface Resolve permits Resolve.unused {
     }
 
     private static JudgmentPoint constraintJudgment(AnswerRow row) {
-        return JudgmentPoint.of(JudgmentPoint.Kind.CONSTRAINT_SHAPE,
+        return JudgmentPoint.judgmentPoint(JudgmentPoint.Kind.CONSTRAINT_SHAPE,
                                 row.cite(),
                                 "a system-scoped mandate names no strike and no narrower scope — how it constrains the vector is judgment");
     }

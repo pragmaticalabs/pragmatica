@@ -162,7 +162,7 @@ public record CstNavigator(CstNode.NonTerminal node) {
         return source.substring(start, end);
     }
 
-    public static CstNavigator of(CstNode.NonTerminal node) {
+    public static CstNavigator cstNavigator(CstNode.NonTerminal node) {
         return new CstNavigator(node);
     }
 

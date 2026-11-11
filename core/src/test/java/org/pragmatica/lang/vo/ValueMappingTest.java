@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
-package org.pragmatica.aether.slice.mapping;
+package org.pragmatica.lang.vo;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -24,7 +24,7 @@ class ValueMappingTest {
         }
 
         static ValueMapping<Score, Integer> valueMapping() {
-            return ValueMapping.of(Score::value, Score::score);
+            return ValueMapping.valueMapping(Score::value, Score::score);
         }
     }
 

@@ -538,7 +538,7 @@ public class ObservabilityConfigRegistry implements ObservabilityCellRegistrar {
 
         record Darkened(AspectObservabilityConfig config) implements ObservabilityState {}
 
-        static ObservabilityState of(AspectObservabilityConfig config) {
+        static ObservabilityState observabilityState(AspectObservabilityConfig config) {
             return config.allOff()
                    ? new Darkened(config)
                    : new Configured(config);

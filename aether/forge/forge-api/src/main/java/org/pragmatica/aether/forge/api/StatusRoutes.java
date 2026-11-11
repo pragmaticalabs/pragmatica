@@ -26,7 +26,7 @@ public final class StatusRoutes {
                                            Deque<ForgeEvent> events,
                                            long startTime,
                                            ConfigurableLoadRunner loadRunner) {
-        return RouteSource.of(statusRoute(cluster, metrics, startTime, loadRunner),
+        return RouteSource.routeSource(statusRoute(cluster, metrics, startTime, loadRunner),
                               nodeMetricsRoute(cluster),
                               eventsRoute(events),
                               healthRoute(),

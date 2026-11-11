@@ -88,7 +88,7 @@ public final class UpgradeRunWiring {
 
     /// The operator events of one committed run transition.
     static Unit announce(OperatorWarningSink warnings, Option<UpgradeRunValue> before, UpgradeRunValue after) {
-        UpgradeRunAnnouncements.of(before, after).forEach(a -> OperatorWarnings.raise(LOG,
+        UpgradeRunAnnouncements.upgradeRunAnnouncements(before, after).forEach(a -> OperatorWarnings.raise(LOG,
                                                                                       warnings,
                                                                                       a.code(),
                                                                                       a.subject(),

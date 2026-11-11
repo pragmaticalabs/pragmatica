@@ -25,7 +25,7 @@ public interface RouteSource {
     }
 
     @Deprecated(forRemoval = true)
-    static RouteSource of(RouteSource... routes) {
+    static RouteSource routeSource(RouteSource... routes) {
         return routeSource(routes);
     }
 }

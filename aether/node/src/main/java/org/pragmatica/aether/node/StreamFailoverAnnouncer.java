@@ -71,7 +71,7 @@ public interface StreamFailoverAnnouncer {
                                                                               isr,
                                                                               liveIds,
                                                                               "owner not live and no in-sync replica live; unclean failover is off",
-                                                                              StreamEventIds.of("stream-failover-refused",
+                                                                              StreamEventIds.streamEventIds("stream-failover-refused",
                                                                                                 key,
                                                                                                 record))
                : OperationalEvent.StreamFailoverResolved.streamFailoverResolved(key.stream(),
@@ -80,7 +80,7 @@ public interface StreamFailoverAnnouncer {
                                                                                 isr,
                                                                                 liveIds,
                                                                                 "owner live again or an in-sync replica elected",
-                                                                                StreamEventIds.of("stream-failover-resolved",
+                                                                                StreamEventIds.streamEventIds("stream-failover-resolved",
                                                                                                   key,
                                                                                                   record));
     }

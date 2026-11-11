@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
-package org.pragmatica.aether.slice.mapping;
+package org.pragmatica.lang.vo;
 
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
@@ -45,7 +45,7 @@ import org.pragmatica.lang.Result;
 /// @param <P> the primitive representation (e.g. `UUID`, `String`, `Long`)
 public record ValueMapping<T, P>(Fn1<P, T> lower, Fn1<Result<T>, P> lift) {
     /// Builds a descriptor from the value object's total accessor and fallible factory.
-    public static <T, P> ValueMapping<T, P> of(Fn1<P, T> lower, Fn1<Result<T>, P> lift) {
+    public static <T, P> ValueMapping<T, P> valueMapping(Fn1<P, T> lower, Fn1<Result<T>, P> lift) {
         return new ValueMapping<>(lower, lift);
     }
 

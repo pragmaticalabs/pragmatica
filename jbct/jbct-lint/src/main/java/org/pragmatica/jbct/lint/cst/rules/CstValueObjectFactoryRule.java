@@ -34,7 +34,7 @@ public class CstValueObjectFactoryRule implements CstLintRule {
     /// but it does carry an in-file marker: a `Topic<Self>` constant, see [#declaresSelfTopic].)
     private static final Set<String> FRAMEWORK_SHAPE_ANNOTATIONS = Set.of("Slice", "PgSql");
 
-    /// A pub-sub fact record's marker constant: `static final Topic<Self> TOPIC = Topic.of(...)`.
+    /// A pub-sub fact record's marker constant: `static final Topic<Self> TOPIC = Topic.topic(...)`.
     /// Group 1 is the topic's payload type, which must be the DECLARING record — a `Topic<Other>`
     /// constant makes the record a publisher's holder, not the fact itself, and is not exempt.
     private static final Pattern TOPIC_TYPE_PATTERN = Pattern.compile("(?:[A-Za-z_$][\\w$]*\\s*\\.\\s*)*Topic\\s*<\\s*([A-Za-z_$][\\w$]*)\\s*>");
@@ -113,7 +113,7 @@ public class CstValueObjectFactoryRule implements CstLintRule {
     }
 
     /// Whether the record declares a `Topic` constant parameterized by ITSELF — the pub-sub fact
-    /// contract (`public static final Topic<SeatReleased> TOPIC = Topic.of(...)` inside
+    /// contract (`public static final Topic<SeatReleased> TOPIC = Topic.topic(...)` inside
     /// `SeatReleased`). Such a record is a message on a topic, published and consumed through the
     /// slice runtime rather than constructed by a validating factory (#647). Only constants
     /// declared DIRECTLY by the record count, so a nested type's topic does not exempt its outer.

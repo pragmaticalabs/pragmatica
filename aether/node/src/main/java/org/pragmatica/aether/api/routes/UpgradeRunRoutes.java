@@ -42,7 +42,7 @@ public final class UpgradeRunRoutes implements RouteSource {
             return new UpgradeRunResponse(false, "", "NONE", "NONE", 0, 0, "", List.of(), "", 0L, 0L, 0L);
         }
 
-        static UpgradeRunResponse of(UpgradeRunValue run) {
+        static UpgradeRunResponse upgradeRunResponse(UpgradeRunValue run) {
             return new UpgradeRunResponse(true,
                                           run.targetVersion(),
                                           run.state().name(),

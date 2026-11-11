@@ -6349,7 +6349,7 @@ class SliceProcessorTest {
             import org.pragmatica.aether.slice.topic.Topic;
             import test.dto.OrderEvent;
             public interface Topics {
-                Topic<OrderEvent> ORDER_EVENTS = Topic.of("order-events", OrderEvent.class);
+                Topic<OrderEvent> ORDER_EVENTS = Topic.topic("order-events", OrderEvent.class);
             }
             """);
 

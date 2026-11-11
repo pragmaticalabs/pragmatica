@@ -211,7 +211,7 @@ public final class SASLResponse implements FrontendMessage {
         }
     }
 
-    public static SASLResponse of(String password,
+    public static SASLResponse saslResponse(String password,
                                   String serverFirstMessage,
                                   String clientNonce,
                                   String gs2Header,

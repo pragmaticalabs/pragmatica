@@ -910,7 +910,7 @@ public class RabiaEngine<C extends Command> {
             this.rosterPresent = rosterPresent;
             this.member = member;
         }
-        static Role of(boolean declared, boolean rosterPresent, boolean member) {
+        static Role role(boolean declared, boolean rosterPresent, boolean member) {
             if (!rosterPresent) {
                 return declared
                        ? PRE_GENESIS_OBSERVER
@@ -955,7 +955,7 @@ public class RabiaEngine<C extends Command> {
     Role role() {
         var roster = voters;
 
-        return Role.of(observerMode,
+        return Role.role(observerMode,
                        roster.isPresent(),
                        roster.map(v -> v.contains(self)).or(false));
     }
@@ -1050,7 +1050,7 @@ public class RabiaEngine<C extends Command> {
         PASSIVE,
         OBSERVING,
         ACTIVE;
-        static PublishedSense of(EngineState state) {
+        static PublishedSense publishedSense(EngineState state) {
             if (state.isActive()) {
                 return ACTIVE;
             }
@@ -3432,7 +3432,7 @@ public class RabiaEngine<C extends Command> {
     /// `ClusterStateNotification.ACTIVE` / `PASSIVE` on the cluster `MessageRouter`.
     @Contract
     private void notifyConsensusStateTransition() {
-        var next = PublishedSense.of(engineState.get());
+        var next = PublishedSense.publishedSense(engineState.get());
         var prev = lastPublishedSense.get();
 
         if (next == prev) {

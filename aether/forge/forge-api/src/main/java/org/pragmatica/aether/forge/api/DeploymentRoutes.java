@@ -66,7 +66,7 @@ public sealed interface DeploymentRoutes {
                                         OperatorKey operatorKey) {
         var http = NodeHttp.nodeHttp(operatorKey);
 
-        return RouteSource.of(blueprintRoute(cluster, http, eventLogger), repositoryPutRoute(cluster, eventLogger));
+        return RouteSource.routeSource(blueprintRoute(cluster, http, eventLogger), repositoryPutRoute(cluster, eventLogger));
     }
 
     private static Route<ProxyResponse> blueprintRoute(EmberCluster cluster,

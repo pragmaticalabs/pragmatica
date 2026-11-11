@@ -151,7 +151,7 @@ public interface StreamIsrAnnouncer {
                                    int after,
                                    StreamPartitionOwnershipKey key,
                                    StreamPartitionOwnershipValue record) {
-        return StreamEventIds.of("stream-isr-cf:" + value.createdAt() + ":" + before + ">" + after, key, record);
+        return StreamEventIds.streamEventIds("stream-isr-cf:" + value.createdAt() + ":" + before + ">" + after, key, record);
     }
 
     /// The event a committed change from `before` to `after` calls for: falling below `confirmationFactor` is a
@@ -169,7 +169,7 @@ public interface StreamIsrAnnouncer {
                                    after,
                                    confirmationFactor,
                                    isBelow,
-                                   StreamEventIds.of(isBelow
+                                   StreamEventIds.streamEventIds(isBelow
                                                      ? "stream-isr-below"
                                                      : "stream-isr-restored",
                                                      key,

@@ -48,7 +48,7 @@ import com.sun.source.util.Trees;
 /// @param holderQualifiedName  fully-qualified name of the type declaring the constant (for import)
 /// @param fieldName            the constant's field name
 /// @param payloadTypeName      canonical name of the constant's declared `Topic<T>` payload type `T`
-/// @param topicName            the topic name string extracted from the constant's `Topic.of("...", ...)`
+/// @param topicName            the topic name string extracted from the constant's `Topic.topic("...", ...)`
 ///                             initializer, when the constant's source is in the current round;
 ///                             empty for an already-compiled cross-module constant (its name literal
 ///                             is not readable from the element model)
@@ -206,10 +206,10 @@ public record ResolvedTopicConstant(String configIdentifier,
                                          extractTopicName(field, env));
     }
 
-    /// Extract the topic name literal from the constant's `Topic.of("<name>", ...)` initializer using
+    /// Extract the topic name literal from the constant's `Topic.topic("<name>", ...)` initializer using
     /// the Compiler Tree API. Available only when the constant's source is in the current compilation
     /// round (same module / reactor); an already-compiled cross-module constant has no source tree and
-    /// yields an empty name (its `Topic.of(...)` call is not a compile-time constant expression, so the
+    /// yields an empty name (its `Topic.topic(...)` call is not a compile-time constant expression, so the
     /// element model cannot read the literal either).
     private static Option<String> extractTopicName(VariableElement field, ProcessingEnvironment env) {
         return Result.lift(TREE_FAILURE, () -> topicNameFromTree(field, env)).or(Option.none());

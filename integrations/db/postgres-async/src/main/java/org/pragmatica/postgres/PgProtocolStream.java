@@ -147,7 +147,7 @@ public abstract class PgProtocolStream implements ProtocolStream {
             var serverFirstMessage = authentication.saslContinueData();
 
             if (serverFirstMessage != null) {
-                return send(SASLResponse.of(password,
+                return send(SASLResponse.saslResponse(password,
                                             serverFirstMessage,
                                             clientNonce,
                                             saslInitialResponse.gs2Header(),

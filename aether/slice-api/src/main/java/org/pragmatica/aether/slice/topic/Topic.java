@@ -23,10 +23,10 @@ import org.pragmatica.lang.type.TypeToken;
 ///
 /// Declared once, reused everywhere:
 /// ```
-/// static final Topic<SeatSold> SEAT_SOLD = Topic.of("seat-sold", SeatSold.class);
+/// static final Topic<SeatSold> SEAT_SOLD = Topic.topic("seat-sold", SeatSold.class);
 /// ```
 ///
-/// Like [org.pragmatica.aether.slice.mapping.ValueMapping], this is a descriptor, not a validated value
+/// Like [org.pragmatica.lang.vo.ValueMapping], this is a descriptor, not a validated value
 /// object: [#of] returns the topic directly. A blank name is a declaration-time programming error,
 /// not a runtime failure to be recovered from.
 ///
@@ -34,13 +34,13 @@ import org.pragmatica.lang.type.TypeToken;
 public record Topic<T>(String name, TypeToken<T> payloadType) {
     /// Declares a topic from its name and a captured generic payload type. Use the [TypeToken]
     /// overload when the payload is itself generic (`new TypeToken<Event<SeatSold>>() {}`).
-    public static <T> Topic<T> of(String name, TypeToken<T> payloadType) {
+    public static <T> Topic<T> topic(String name, TypeToken<T> payloadType) {
         return new Topic<>(name, payloadType);
     }
 
     /// Declares a topic from its name and a non-generic payload class — the common case
-    /// (`Topic.of("seat-sold", SeatSold.class)`).
-    public static <T> Topic<T> of(String name, Class<T> payloadType) {
+    /// (`Topic.topic("seat-sold", SeatSold.class)`).
+    public static <T> Topic<T> topic(String name, Class<T> payloadType) {
         return new Topic<>(name, TypeToken.typeToken(payloadType));
     }
 }

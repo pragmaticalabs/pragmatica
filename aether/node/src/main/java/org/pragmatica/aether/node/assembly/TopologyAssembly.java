@@ -628,7 +628,7 @@ public sealed interface TopologyAssembly {
                                                                                                                      .filter(coreAdmission::isAllowed)
                                                                                                                      .collect(Collectors.toUnmodifiableSet()),
                                                                                             stableCdmReadyNodesSupplier,
-                                                                                            id -> AdvertisedVersion.of(id,
+                                                                                            id -> AdvertisedVersion.advertisedVersion(id,
                                                                                                                        clusterNode.topologyManager(),
                                                                                                                        Option.option(membershipFsmRef.get())),
                                                                                             clusterTopologyManager,
@@ -666,7 +666,7 @@ public sealed interface TopologyAssembly {
                                                                               commands -> clusterNode.apply(commands),
                                                                               upgradeRuns,
                                                                               membershipFsmRef::get,
-                                                                              id -> AdvertisedVersion.of(id,
+                                                                              id -> AdvertisedVersion.advertisedVersion(id,
                                                                                                          clusterNode.topologyManager(),
                                                                                                          Option.option(membershipFsmRef.get())),
                                                                               replacementWiring.service(),

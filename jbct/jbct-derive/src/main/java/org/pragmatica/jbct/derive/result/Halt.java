@@ -25,7 +25,7 @@ public record Halt(Kind kind, String detail, List<String> renegotiationMenu) {
     }
 
     /// A halt with no renegotiation menu (every kind except contradiction).
-    public static Halt of(Kind kind, String detail) {
+    public static Halt halt(Kind kind, String detail) {
         return new Halt(kind, detail, List.of());
     }
 

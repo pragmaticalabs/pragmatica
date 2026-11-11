@@ -46,7 +46,7 @@ public sealed interface SheetParser {
 
     /// Parse a sheet from raw TOML text with an explicit source label.
     static Result<AnswerSheet> parse(String content, String source) {
-        var lines = SheetLines.of(content);
+        var lines = SheetLines.sheetLines(content);
 
         return TomlParser.parse(content)
                          .mapError(SheetParser::toSheetError)
