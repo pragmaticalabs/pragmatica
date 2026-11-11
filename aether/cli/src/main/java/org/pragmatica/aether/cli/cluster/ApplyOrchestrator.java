@@ -39,14 +39,19 @@ public final class ApplyOrchestrator {
     /// commit the desired config to the cluster ([ApplyCommit]). `storedVersion` is the cluster's config version the plan was
     /// computed against: the ledger records it and the commit is fenced by it. `executor` is the waves (`WaveExecutor::execute`).
     public static Result<ApplyResult> apply(ClusterBootstrapConfig desired,
-                                     ClusterBootstrapConfig currentStored,
-                                     boolean skipConfirmation,
-                                     long storedVersion,
-                                     Fn1<Result<String>, Long> commit,
-                                     Fn4<Result<ApplyResult>, DiffPlan, ClusterBootstrapConfig, ClusterBootstrapConfig, ApplyRecorder> executor) {
+                                            ClusterBootstrapConfig currentStored,
+                                            boolean skipConfirmation,
+                                            long storedVersion,
+                                            Fn1<Result<String>, Long> commit,
+                                            Fn4<Result<ApplyResult>, DiffPlan, ClusterBootstrapConfig, ClusterBootstrapConfig, ApplyRecorder> executor) {
         return checkClusterHealth(currentStored).flatMap(_ -> computeValidPlan(desired, currentStored))
                                  .flatMap(plan -> presentPlanAndConfirm(plan, currentStored, desired, skipConfirmation))
-                                 .flatMap(plan -> executeWithState(plan, currentStored, desired, storedVersion, commit, executor));
+                                 .flatMap(plan -> executeWithState(plan,
+                                                                   currentStored,
+                                                                   desired,
+                                                                   storedVersion,
+                                                                   commit,
+                                                                   executor));
     }
 
     public static Result<String> dryRun(ClusterBootstrapConfig desired, ClusterBootstrapConfig currentStored) {
@@ -79,7 +84,12 @@ public final class ApplyOrchestrator {
 
         return loadRequiredState(clusterName).flatMap(state -> validateResumeState(state, desired))
                                 .flatMap(state -> gate(state, ApplyCommitRecovery.Verb.RESUME, view))
-                                .flatMap(state -> continueApply(state, desired, currentStored, commit, computeFor, executor));
+                                .flatMap(state -> continueApply(state,
+                                                                desired,
+                                                                currentStored,
+                                                                commit,
+                                                                computeFor,
+                                                                executor));
     }
 
     private static Result<ApplyResult> continueApply(ApplyState state,

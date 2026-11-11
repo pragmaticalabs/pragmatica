@@ -93,12 +93,16 @@ class ClusterApplyCommand implements Callable<Integer> {
     }
 
     private Result<Integer> planAndApply(String rawToml) {
-        return fetchStoredConfig().flatMap(stored -> parseResolved(rawToml).flatMap(desired -> applyOrDryRun(rawToml, desired, stored)));
+        return fetchStoredConfig().flatMap(stored -> parseResolved(rawToml).flatMap(desired -> applyOrDryRun(rawToml,
+                                                                                                             desired,
+                                                                                                             stored)));
     }
 
     private Result<Integer> applyOrDryRun(String rawToml, ClusterBootstrapConfig desired, StoredConfig stored) {
         return dryRun
-               ? ApplyOrchestrator.dryRun(desired, stored.config()).map(this::printDryRun)
+               ? ApplyOrchestrator.dryRun(desired,
+                                          stored.config())
+                                  .map(this::printDryRun)
                : ApplyOrchestrator.apply(desired,
                                          stored.config(),
                                          skipConfirmation,
@@ -141,9 +145,9 @@ class ClusterApplyCommand implements Callable<Integer> {
 
     private Result<Integer> resumeApply(String rawToml) {
         return parseResolved(rawToml).flatMap(desired -> fetchStoredConfig().flatMap(stored -> ApplyOrchestrator.resume(desired,
-                                                                                                                       stored.config(),
-                                                                                                                       ApplyCommit.toCluster(rawToml))))
-                                     .map(this::printApplyResult);
+                                                                                                                        stored.config(),
+                                                                                                                        ApplyCommit.toCluster(rawToml))))
+                            .map(this::printApplyResult);
     }
 
     private int printApplyResult(ApplyResult result) {
@@ -180,8 +184,7 @@ class ClusterApplyCommand implements Callable<Integer> {
     private static Result<StoredConfig> storedConfig(JsonNode node) {
         return extractStoredToml(node).flatMap(ClusterApplyCommand::parseResolved)
                                 .map(config -> new StoredConfig(config,
-                                                                node.path("configVersion")
-                                                                    .asLong(0)));
+                                                                node.path("configVersion").asLong(0)));
     }
 
     /// The cluster's stored config and the version a commit against it is fenced by.

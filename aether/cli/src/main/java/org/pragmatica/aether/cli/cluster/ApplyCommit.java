@@ -10,6 +10,7 @@ import org.pragmatica.lang.Result;
 
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CONFIG_APPLY;
 
+
 /// The commit of an apply (cluster-apply spec 4.6): once the waves have run, the desired config is persisted on the cluster with
 /// the version the apply started from as its fence. The ledger moves to `COMMITTING` BEFORE the request is sent, so a crash or a
 /// timeout anywhere inside it leaves exactly the state [ApplyCommitRecovery] decides on.
@@ -33,26 +34,31 @@ final class ApplyCommit {
     }
 
     /// A config change that needs no wave: nothing was provisioned, so there is no ledger to protect.
-    static Result<ApplyResult> commitWithoutLedger(Fn1<Result<String>, Long> commit, long expectedVersion, ApplyResult result) {
-        return commit.apply(expectedVersion).map(_ -> result);
+    static Result<ApplyResult> commitWithoutLedger(Fn1<Result<String>, Long> commit,
+                                                   long expectedVersion,
+                                                   ApplyResult result) {
+        return commit.apply(expectedVersion)
+                     .map(_ -> result);
     }
 
     private static Cause classify(ApplyState state, Cause cause) {
         return isDefinitiveRefusal(cause)
                ? refused(state, cause)
                : new ApplyOrchestrator.ApplyAborted("The commit of the new config was not confirmed (" + cause.message()
-                                                    + "). The nodes the apply created are kept and recorded; run `aether cluster apply --resume` to retry the commit.");
+                                                   + "). The nodes the apply created are kept and recorded; run `aether cluster apply --resume` to retry the commit.");
     }
 
     private static Cause refused(ApplyState state, Cause cause) {
-        ApplyState.save(ApplyCommitRecovery.afterDefinitiveRefusal(state))
-                  .onFailure(failure -> System.err.println("Warning: the ledger could not be marked ABORTED: " + failure.message()));
+        ApplyState.save(ApplyCommitRecovery.afterDefinitiveRefusal(state)).onFailure(failure -> System.err.println("Warning: the ledger could not be marked ABORTED: " + failure.message()));
+
         return new ApplyOrchestrator.ApplyAborted("The cluster refused the new config (" + cause.message()
-                                                  + "). The nodes the apply created are recorded; run `aether cluster apply --rollback` to remove them, then re-plan.");
+                                                 + "). The nodes the apply created are recorded; run `aether cluster apply --rollback` to remove them, then re-plan.");
     }
 
     private static boolean isDefinitiveRefusal(Cause cause) {
-        return cause instanceof ClusterHttpClient.HttpError.ApiError error && error.statusCode() >= 400 && error.statusCode() < 500;
+        return cause instanceof ClusterHttpClient.HttpError.ApiError error
+               && error.statusCode() >= 400
+               && error.statusCode() < 500;
     }
 
     // FER: the apply and its commit succeeded, so a ledger that cannot be removed is reported, not failed. Guarantee earned:
@@ -60,8 +66,8 @@ final class ApplyCommit {
     // gate sees the committed config and finalises it.
     @Contract
     private static Result<ApplyResult> clear(ApplyState state, ApplyResult result) {
-        ApplyState.delete(state.clusterName())
-                  .onFailure(cause -> System.err.println("Warning: the apply succeeded but its state file could not be removed: " + cause.message()));
+        ApplyState.delete(state.clusterName()).onFailure(cause -> System.err.println("Warning: the apply succeeded but its state file could not be removed: " + cause.message()));
+
         return Result.success(result);
     }
 
