@@ -73,7 +73,8 @@ public final class ProcessorError {
              + "' returns row record '" + recordName
              + "', which has no type-named static factory; generated code builds records through it, never 'new'. "
              + "Declare: " + expectedSignature
-             + " (return Result<" + recordName + "> when the record has an invariant)";
+             + " (return Result<" + recordName
+             + "> when the record has an invariant)";
     }
 
     public static String recordFactoryReturnType(String methodName, String factoryName, String recordName) {
@@ -81,7 +82,9 @@ public final class ProcessorError {
              + "Method '" + methodName
              + "': factory '" + factoryName
              + "' of row record '" + recordName
-             + "' must return " + recordName + " or Result<" + recordName + ">";
+             + "' must return " + recordName
+             + " or Result<" + recordName
+             + ">";
     }
 
     public static String cannotInferTable(String methodName) {

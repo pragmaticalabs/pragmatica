@@ -123,7 +123,11 @@ public final class RecordGenerator {
             exprs.add(renderAccessor(field));
         }
 
-        BatchedAllRenderer.appendReturn(sb, "Result", BatchedAllRenderer.Factory.factory(className, false), exprs, "        ");
+        BatchedAllRenderer.appendReturn(sb,
+                                        "Result",
+                                        BatchedAllRenderer.Factory.factory(className, false),
+                                        exprs,
+                                        "        ");
         sb.append("    }\n");
     }
 

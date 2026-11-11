@@ -413,10 +413,10 @@ public final class SqlParamPairing {
                   .flatMap(SqlParamPairing::valuesRows)
                   .onPresent(rows -> {
                                  for (var row : rows.allChildren("ExprOrDefaultList")) {
-                                     pairList(table,
-                                              columns,
-                                              row.allChildren("ExprOrDefault"));
-                                 }
+                                 pairList(table,
+                                          columns,
+                                          row.allChildren("ExprOrDefault"));
+                             }
                              });
         }
 
@@ -424,8 +424,8 @@ public final class SqlParamPairing {
             owner.child("UpdateSetList")
                  .onPresent(list -> {
                      for (var item : list.allChildren("UpdateSetItem")) {
-                         pairSetItem(item, table);
-                     }
+                     pairSetItem(item, table);
+                 }
                  });
         }
 
