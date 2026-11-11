@@ -15,6 +15,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
 
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
@@ -268,6 +269,70 @@ class MigrationFenceInJvmTest {
         assertThat(causeOf(again)).isInstanceOf(MigrationError.HistoryRowCollision.class);
     }
 
+    // ---------------------------------------------------------------- survivors of the first mutation run
+
+    /// M9b: a serialized runner that finds a row for ITS script with ANOTHER checksum does not skip: the insert meets
+    /// the row and the run ends [MigrationError.HistoryRowCollision], the script rolled back.
+    @Test
+    void t8_serializedRunnerFindingARowWithAnotherChecksum_isCollisionNotSkip() {
+        var file = dir.resolve("t8sum.db");
+        var connector = sqlite(file);
+        SchemaHistoryRepository.schemaHistoryRepository().bootstrap(connector).await().unwrap();
+        var probe = Probe.over(connector, DatabaseType.SQLITE, new CopyOnWriteArrayList<>())
+                         .afterHistoryRead(() -> execute(file, "INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms, status, statements_completed)"
+                                                              + " VALUES (1, 'VERSIONED', 'a', 'V1__a.sql', 999, 'other', 0, 0, 'SUCCESS', 1)"));
+
+        var cause = causeOf(migrate(probe, MARK_SCRIPT).await());
+
+        assertThat(cause).isInstanceOf(MigrationError.HistoryRowCollision.class);
+        assertThat(scalar("jdbc:sqlite:" + file, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'applied_marks'")).isZero();
+    }
+
+    /// B2: a tier-3 bootstrap whose owner insert lost to a competitor (the NOT EXISTS insert wrote nothing) reads the
+    /// owner again and compares it: another owner is a conflict, not a silent success.
+    @Test
+    void t8_tierThreeOwnerInsertLosingToAnotherOwner_isOwnershipConflict() {
+        var file = dir.resolve("t8owner.db");
+        var raced = new AtomicBoolean();
+        var probe = Probe.over(sqlite(file), DatabaseType.SQLITE, new CopyOnWriteArrayList<>())
+                         .afterOwnerRead(() -> insertOtherOwnerOnce(file, raced));
+
+        var cause = causeOf(migrate(probe, MARK_SCRIPT).await());
+
+        assertThat(cause).isInstanceOf(MigrationError.PhysicalDatasourceOwnershipConflict.class);
+    }
+
+    /// U2: a serialized second undo finds its history row already gone under the lock and skips: it neither reruns
+    /// the undo script nor fails.
+    @Test
+    void undo_secondRunAfterTheRowIsGone_skipsTheScript() {
+        var file = dir.resolve("undoTwice.db");
+        var connector = sqlite(file);
+        var scripts = List.of(MigrationScript.migrationScript("V1__a.sql", MARK_SCRIPT, 1L),
+                              MigrationScript.migrationScript("U1__a.sql", "DROP TABLE applied_marks", 2L));
+        var migrations = SchemaMigrations.schemaMigrations(timeSpan(1).minutes());
+
+        assertThat(migrate(connector, MARK_SCRIPT).await().isSuccess()).isTrue();
+        assertThat(migrations.undo(DATASOURCE, 0, scripts, connector, "node", OWNER).await().isSuccess()).isTrue();
+
+        assertThat(migrations.undo(DATASOURCE, 0, scripts, connector, "node", OWNER).await().isSuccess()).isTrue();
+    }
+
+    private static void insertOtherOwnerOnce(Path file, AtomicBoolean raced) {
+        if (raced.compareAndSet(false, true)) {
+            execute(file, "INSERT INTO aether_schema_owner (blueprint_base) VALUES ('other')");
+        }
+    }
+
+    private static void execute(Path file, String sql) {
+        try (var conn = DriverManager.getConnection("jdbc:sqlite:" + file);
+             var statement = conn.createStatement()) {
+            statement.execute(sql);
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
     // ---------------------------------------------------------------- atomic undo
 
     /// Undo and the removal of its history row commit as one unit: a failing undo script leaves the row.
@@ -396,6 +461,7 @@ class MigrationFenceInJvmTest {
         private final List<String> statements;
         private final Predicate<String> historyRead = sql -> sql.contains("status = 'SUCCESS'");
         private Runnable afterHistoryRead = () -> {};
+        private Runnable afterOwnerRead = () -> {};
 
         private Probe(SqlConnector delegate, DatabaseType type, List<String> statements) {
             this.delegate = delegate;
@@ -418,10 +484,24 @@ class MigrationFenceInJvmTest {
             return delegate.queryOne(sql, mapper, params);
         }
 
+        Probe afterOwnerRead(Runnable hook) {
+            afterOwnerRead = hook;
+            return this;
+        }
+
         @Override
         public <T> Promise<Option<T>> queryOptional(String sql, RowMapper<T> mapper, Object... params) {
             statements.add(sql);
-            return delegate.queryOptional(sql, mapper, params);
+            return delegate.queryOptional(sql, mapper, params)
+                           .map(row -> hookedOwner(sql, row));
+        }
+
+        private <T> Option<T> hookedOwner(String sql, Option<T> row) {
+            if (sql.startsWith("SELECT blueprint_base")) {
+                afterOwnerRead.run();
+            }
+
+            return row;
         }
 
         @Override
