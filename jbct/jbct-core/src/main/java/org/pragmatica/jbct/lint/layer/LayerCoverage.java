@@ -64,8 +64,10 @@ public record LayerCoverage(int evaluated, int unclassified, int excluded) {
     /// excluded count is appended only when `excludePackages` actually skipped something, so the
     /// arithmetic on the line always closes.
     public String render() {
-        var summary = "layering: evaluated " + evaluated + " of " + total() + " files, " + unclassified
-                     + " unclassified";
+        var summary = "layering: evaluated " + evaluated
+                    + " of " + total()
+                    + " files, " + unclassified
+                    + " unclassified";
 
         return excluded == 0
                ? summary
@@ -76,20 +78,18 @@ public record LayerCoverage(int evaluated, int unclassified, int excluded) {
     /// gate is checked first, so a run without explicit layer config reads nothing); an unreadable
     /// file contributes to no bucket.
     public static Option<LayerCoverage> coverage(Collection<Path> paths, LintContext ctx) {
-        return census(paths.stream()
-                           .flatMap(LayerCoverage::readPackage), ctx);
+        return census(paths.stream().flatMap(LayerCoverage::readPackage),
+                      ctx);
     }
 
     /// Census over already-loaded sources — the in-memory entry point.
     public static Option<LayerCoverage> coverageOfSources(Collection<SourceFile> files, LintContext ctx) {
-        return census(files.stream()
-                           .map(SourceFile::content)
-                           .map(LayerCoverage::packageOf), ctx);
+        return census(files.stream().map(SourceFile::content).map(LayerCoverage::packageOf),
+                      ctx);
     }
 
     private static Option<LayerCoverage> census(Stream<String> packageNames, LintContext ctx) {
-        if (!ctx.layers()
-                .isExplicitlyConfigured()) {
+        if (!ctx.layers().isExplicitlyConfigured()) {
             return Option.none();
         }
 
@@ -135,13 +135,11 @@ public record LayerCoverage(int evaluated, int unclassified, int excluded) {
 
             if (inBlockComment) {
                 inBlockComment = !line.contains("*/");
-
                 continue;
             }
 
             if (line.startsWith("/*")) {
                 inBlockComment = !line.contains("*/");
-
                 continue;
             }
 

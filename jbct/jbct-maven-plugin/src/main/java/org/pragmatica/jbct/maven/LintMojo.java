@@ -59,9 +59,7 @@ public class LintMojo extends AbstractJbctMojo {
             processFile(file, linter, allDiagnostics, errors, warnings, infos, parseErrors);
         }
 
-        LayerCoverage.coverage(filesToProcess, context)
-                     .map(LayerCoverage::render)
-                     .onPresent(getLog()::info);
+        LayerCoverage.coverage(filesToProcess, context).map(LayerCoverage::render).onPresent(getLog()::info);
         var coverage = AnalysisCoverage.analysisCoverage(filesToProcess.size(), parseErrors.get());
         // Print diagnostics
         for (var d : allDiagnostics) {
@@ -113,12 +111,12 @@ public class LintMojo extends AbstractJbctMojo {
                   .onSuccess(diagnostics -> {
                                  allDiagnostics.addAll(diagnostics);
                                  for (var d : diagnostics) {
-                                 switch (d.severity()) {
-            case ERROR -> errors.incrementAndGet();
-            case WARNING -> warnings.incrementAndGet();
-            case INFO -> infos.incrementAndGet();
-        }
-                             }
+                                     switch (d.severity()) {
+                                         case ERROR -> errors.incrementAndGet();
+                                         case WARNING -> warnings.incrementAndGet();
+                                         case INFO -> infos.incrementAndGet();
+                                     }
+                                 }
                              })
                   .onFailure(cause -> {
                                  parseErrors.incrementAndGet();

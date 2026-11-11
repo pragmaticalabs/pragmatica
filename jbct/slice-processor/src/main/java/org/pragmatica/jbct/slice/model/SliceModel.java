@@ -315,8 +315,8 @@ public record SliceModel(String packageName,
                                if (!rq.resourceType()
                                       .toString()
                                       .equals(dep.interfaceQualifiedName())) {
-                               return Result.unitResult();
-                           }
+                                   return Result.unitResult();
+                               }
 
                                return checkDuplicate(rq,
                                                      dep.parameterName(),

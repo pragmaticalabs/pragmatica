@@ -8,13 +8,10 @@ public enum ScopeKind {
     PATH("path"),
     POLICY("policy"),
     SYSTEM("system");
-
     private final String prefix;
-
     ScopeKind(String prefix) {
         this.prefix = prefix;
     }
-
     /// The literal prefix used in a sheet (e.g. `operation`, `data-class`).
     public String prefix() {
         return prefix;

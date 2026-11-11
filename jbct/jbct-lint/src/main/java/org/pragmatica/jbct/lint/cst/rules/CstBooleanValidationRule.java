@@ -45,8 +45,8 @@ public class CstBooleanValidationRule implements CstLintRule {
         }
 
         return findAllMethods(root).stream()
-                      .filter(this::isBooleanValidator)
-                      .map(method -> createDiagnostic(method, ctx));
+                             .filter(this::isBooleanValidator)
+                             .map(method -> createDiagnostic(method, ctx));
     }
 
     private boolean isDomainType(FileType fileType) {
@@ -59,7 +59,7 @@ public class CstBooleanValidationRule implements CstLintRule {
 
     private boolean returnsBoolean(Cursor method) {
         return methodReturnType(method).map(type -> BOOLEAN_TYPES.contains(text(type).trim()))
-                                       .or(false);
+                               .or(false);
     }
 
     private Diagnostic createDiagnostic(Cursor method, LintContext ctx) {

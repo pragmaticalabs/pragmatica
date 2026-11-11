@@ -133,7 +133,6 @@ sealed interface ArchSupport permits ArchSupport.unused {
         }
 
         head = head.trim();
-
         var lastSpace = Math.max(head.lastIndexOf(' '), head.lastIndexOf('\t'));
 
         if (lastSpace >= 0) {
