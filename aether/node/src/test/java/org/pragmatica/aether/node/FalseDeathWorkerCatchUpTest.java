@@ -417,6 +417,11 @@ class FalseDeathWorkerCatchUpTest {
             return gate;
         }
 
+        private Unit finalizeUnload(Artifact artifact) {
+            loadedSlices.removeIf(slice -> slice.artifact().equals(artifact));
+            return Unit.unit();
+        }
+
         /// The next unload takes the slice out of `loaded()` at once, and finalizes (drops whatever of that artifact is loaded then) only when the
         /// returned promise is resolved: a cleanup still in flight after the slice already reads as not loaded.
         Promise<Unit> holdUnload() {
@@ -442,7 +447,7 @@ class FalseDeathWorkerCatchUpTest {
             unloadCalls.add(artifact);
             loadedSlices.removeIf(slice -> slice.artifact().equals(artifact));
             return unloadGate.or(Promise::unitPromise)
-                             .onSuccess(_ -> loadedSlices.removeIf(slice -> slice.artifact().equals(artifact)));
+                             .map(_ -> finalizeUnload(artifact));
         }
 
         @Override
