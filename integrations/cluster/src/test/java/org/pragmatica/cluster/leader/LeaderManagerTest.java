@@ -19,6 +19,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -30,6 +31,10 @@ import static org.pragmatica.consensus.topology.TransportObservation.peerDisconn
 import static org.pragmatica.consensus.topology.TransportObservation.peerJoined;
 
 class LeaderManagerTest {
+    /// Leader election drops unsequenced wholesale view writes (#3044), so every transport observation here carries a
+    /// sequence from one JVM-wide counter: monotone in routing order for every node's context.
+    private static final AtomicLong SEQUENCE = new AtomicLong();
+
     record Watcher<T>(List<T> collected) {
         @MessageReceiver
         public void watch(T notification) {
@@ -149,7 +154,7 @@ class LeaderManagerTest {
             for (var nodeId : nodes) {
                 list.add(nodeId);
                 var topology = list.stream().sorted().toList();
-                localRouter.route(peerJoined(nodeId, topology, QUIC));
+                localRouter.route(peerJoined(nodeId, topology, QUIC, SEQUENCE.incrementAndGet()));
             }
 
             // Establish quorum (sets active=true but does NOT auto-trigger initial election)
@@ -176,7 +181,7 @@ class LeaderManagerTest {
             for (var nodeId : nodes) {
                 list.add(nodeId);
                 var topology = list.stream().sorted().toList();
-                router.route(peerJoined(nodeId, topology, QUIC));
+                router.route(peerJoined(nodeId, topology, QUIC, SEQUENCE.incrementAndGet()));
             }
             router.route(ClusterStateNotification.active());
 
@@ -204,7 +209,7 @@ class LeaderManagerTest {
             for (var nodeId : nodes) {
                 list.add(nodeId);
                 var topology = list.stream().sorted().toList();
-                router.route(peerJoined(nodeId, topology, QUIC));
+                router.route(peerJoined(nodeId, topology, QUIC, SEQUENCE.incrementAndGet()));
             }
             router.route(ClusterStateNotification.active());
 
@@ -243,7 +248,7 @@ class LeaderManagerTest {
             var list = new ArrayList<NodeId>();
             for (var nodeId : nodes) {
                 list.add(nodeId);
-                localRouter.route(peerJoined(nodeId, list.stream().sorted().toList(), QUIC));
+                localRouter.route(peerJoined(nodeId, list.stream().sorted().toList(), QUIC, SEQUENCE.incrementAndGet()));
             }
 
             // Establish quorum (sets active=true)
@@ -280,7 +285,7 @@ class LeaderManagerTest {
             var list = new ArrayList<NodeId>();
             for (var nodeId : nodes) {
                 list.add(nodeId);
-                localRouter.route(peerJoined(nodeId, list.stream().sorted().toList(), QUIC));
+                localRouter.route(peerJoined(nodeId, list.stream().sorted().toList(), QUIC, SEQUENCE.incrementAndGet()));
             }
 
             // Simulate rapid quorum flapping: ESTABLISHED -> DISAPPEARED -> ESTABLISHED -> DISAPPEARED -> ESTABLISHED
@@ -323,7 +328,7 @@ class LeaderManagerTest {
             var list = new ArrayList<NodeId>();
             for (var nodeId : nodes) {
                 list.add(nodeId);
-                localRouter.route(peerJoined(nodeId, list.stream().sorted().toList(), QUIC));
+                localRouter.route(peerJoined(nodeId, list.stream().sorted().toList(), QUIC, SEQUENCE.incrementAndGet()));
             }
 
             // Establish quorum and trigger election (simulating AetherNode)
@@ -379,7 +384,7 @@ class LeaderManagerTest {
             var list = new ArrayList<NodeId>();
             for (var nodeId : nodes) {
                 list.add(nodeId);
-                localRouter.route(peerJoined(nodeId, list.stream().sorted().toList(), QUIC));
+                localRouter.route(peerJoined(nodeId, list.stream().sorted().toList(), QUIC, SEQUENCE.incrementAndGet()));
             }
 
             // Establish quorum (sets active=true)
@@ -424,8 +429,8 @@ class LeaderManagerTest {
             localRouter.addRoute(ClusterStateNotification.class, localManager::watchClusterState);
 
             // Topology only contains [a, b] — NOT node-c
-            localRouter.route(peerJoined(minNode, List.of(minNode), QUIC));
-            localRouter.route(peerJoined(self, List.of(minNode, self), QUIC));
+            localRouter.route(peerJoined(minNode, List.of(minNode), QUIC, SEQUENCE.incrementAndGet()));
+            localRouter.route(peerJoined(self, List.of(minNode, self), QUIC, SEQUENCE.incrementAndGet()));
             localRouter.route(ClusterStateNotification.active());
 
             // Committed leader = node-c which is NOT in our transport topology
@@ -461,7 +466,7 @@ class LeaderManagerTest {
             var list = new ArrayList<NodeId>();
             for (var n : nodes) {
                 list.add(n);
-                localRouter.route(peerJoined(n, list.stream().sorted().toList(), QUIC));
+                localRouter.route(peerJoined(n, list.stream().sorted().toList(), QUIC, SEQUENCE.incrementAndGet()));
             }
             localRouter.route(ClusterStateNotification.active());
 
@@ -473,7 +478,7 @@ class LeaderManagerTest {
 
             // Leader (node-a) removed
             var survivors = List.of(follower, nodes.getLast());
-            localRouter.route(peerDisconnected(leaderNode, survivors, QUIC));
+            localRouter.route(peerDisconnected(leaderNode, survivors, QUIC, SEQUENCE.incrementAndGet()));
 
             // Wait for re-election: leader cleared, no-leader notification emitted, follower
             // submits a proposal. Path: Led → ReElecting (NodeGone of leader) → propose. The
@@ -504,7 +509,7 @@ class LeaderManagerTest {
 
             localManager.stop();
 
-            localRouter.route(peerJoined(self, List.of(self), QUIC));
+            localRouter.route(peerJoined(self, List.of(self), QUIC, SEQUENCE.incrementAndGet()));
             localRouter.route(ClusterStateNotification.active());
             localManager.onLeaderCommitted(self);
 
@@ -539,7 +544,7 @@ class LeaderManagerTest {
             var list = new ArrayList<NodeId>();
             for (var n : nodes) {
                 list.add(n);
-                localRouter.route(peerJoined(n, list.stream().sorted().toList(), QUIC));
+                localRouter.route(peerJoined(n, list.stream().sorted().toList(), QUIC, SEQUENCE.incrementAndGet()));
             }
 
             // Establish quorum — QuorumWaiting.onEntry queries the supplier (true) and
@@ -561,7 +566,7 @@ class LeaderManagerTest {
             for (var nodeId : nodes) {
                 list.add(nodeId);
                 var topology = list.stream().sorted().toList();
-                router.route(peerJoined(nodeId, topology, QUIC));
+                router.route(peerJoined(nodeId, topology, QUIC, SEQUENCE.incrementAndGet()));
             }
             router.route(ClusterStateNotification.active());
 
@@ -590,7 +595,7 @@ class LeaderManagerTest {
                              .sorted()
                              .toList();
 
-        router.route(peerJoined(nodeId, topology, QUIC));
+        router.route(peerJoined(nodeId, topology, QUIC, SEQUENCE.incrementAndGet()));
     }
 
     private void sendNodeRemoved(MessageRouter router, NodeId nodeId) {
@@ -599,7 +604,7 @@ class LeaderManagerTest {
                             .sorted()
                             .toList();
 
-        router.route(peerDisconnected(nodeId, topology, QUIC));
+        router.route(peerDisconnected(nodeId, topology, QUIC, SEQUENCE.incrementAndGet()));
     }
 
     private List<LeaderNotification> simulateClusterStart(MessageRouter router,
@@ -620,7 +625,7 @@ class LeaderManagerTest {
                 router.route(ClusterStateNotification.active());
             }
 
-            router.route(peerJoined(nodeId, topology, QUIC));
+            router.route(peerJoined(nodeId, topology, QUIC, SEQUENCE.incrementAndGet()));
         }
 
         return expected;

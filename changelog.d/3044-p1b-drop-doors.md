@@ -1,0 +1,1 @@
+- Leader election: only sequenced transport views replace the stored view; unsequenced wholesale `NodeAdded`/`NodeGone` writes are dropped. SWIM Faulty and a leader losing eligibility now remove exactly that node, view-free (`PeerRemovedFromView`). `LeaderElectionContext.setCurrentTopology` removed (#3044).

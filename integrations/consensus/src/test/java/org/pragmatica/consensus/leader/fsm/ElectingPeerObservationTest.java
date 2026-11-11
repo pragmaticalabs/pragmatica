@@ -26,6 +26,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// Verifies Fix A: `Electing` and `ReElecting` schedule an independent peer-observation
@@ -113,7 +114,7 @@ class ElectingPeerObservationTest {
 
         // Drive Dormant → QuorumWaiting → AwaitingKvSync → (via grace timeout) → Electing.
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, PEER_A, PEER_B)));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, PEER_A, PEER_B), seq()));
         h.dispatch(new ConsensusReady());
         // Manually drive the AwaitingKvSync → Electing fall-through (long grace timer
         // suppressed). With hasEverHadLeader=false we land in Electing, not ReElecting.

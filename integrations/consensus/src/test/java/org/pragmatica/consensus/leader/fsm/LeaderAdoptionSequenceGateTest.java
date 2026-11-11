@@ -23,6 +23,7 @@ import org.pragmatica.statemachine.FsmTestHarness;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// Leader-adoption gating (FIX 1 + FIX-1 refinement). Adoption of a COMMITTED `LeaderKey` is:
@@ -71,7 +72,7 @@ class LeaderAdoptionSequenceGateTest {
 
     private void driveToElecting(FsmTestHarness<LeaderElectionState, ClusterFsmEvent> h, List<NodeId> topology) {
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, topology));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, topology, seq()));
         h.dispatch(new ConsensusReady());
         h.dispatch(new KvSyncGraceTimeout());
         assertThat(h.state())
@@ -138,7 +139,7 @@ class LeaderAdoptionSequenceGateTest {
 
         // The dead leader was committed at viewSequence N=5 before this node decided to elect.
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, SUCCESSOR)));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, SUCCESSOR), seq()));
         ctxOf(h).observeViewSequence(5L);
         h.dispatch(new ConsensusReady());
         h.dispatch(new KvSyncGraceTimeout());
@@ -169,7 +170,7 @@ class LeaderAdoptionSequenceGateTest {
 
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
         // Topology deliberately excludes the healthy LEADER — the transport-absent FIX-1 condition.
-        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF)));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF), seq()));
         h.dispatch(new ConsensusReady());
 
         assertThat(h.state())
@@ -187,7 +188,7 @@ class LeaderAdoptionSequenceGateTest {
 
         // Both electors decided to elect off baseline N=2.
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, SUCCESSOR)));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, SUCCESSOR), seq()));
         ctxOf(h).observeViewSequence(2L);
         h.dispatch(new ConsensusReady());
         h.dispatch(new KvSyncGraceTimeout());

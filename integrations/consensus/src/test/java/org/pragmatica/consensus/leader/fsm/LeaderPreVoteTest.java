@@ -39,6 +39,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 
+import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #1748: a follower that loses ONLY its own view of a healthy leader must not depose it. The tests wire
@@ -165,7 +166,7 @@ class LeaderPreVoteTest {
 
         private void wire(Node node) {
             node.harness.dispatch(new ClusterFsmEvent.QuorumEstablished());
-            node.harness.dispatch(new ClusterFsmEvent.NodeAdded(node.id, ALL));
+            node.harness.dispatch(new ClusterFsmEvent.NodeAdded(node.id, ALL, seq()));
             node.harness.dispatch(new ConsensusReady());
             node.harness.dispatch(new LeaderCommitted(believes.getOrDefault(node.id, N1), 1L));
         }
@@ -221,7 +222,7 @@ class LeaderPreVoteTest {
 
             removed.add(gone);
             view.removeAll(removed);
-            node(node).harness.dispatch(new ClusterFsmEvent.NodeGone(gone, view));
+            node(node).harness.dispatch(new ClusterFsmEvent.NodeGone(gone, view, seq()));
         }
 
         void stop() {
@@ -495,10 +496,10 @@ class LeaderPreVoteTest {
             });
 
             h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-            h.dispatch(new ClusterFsmEvent.NodeAdded(N3, List.of(N3, N1)));
+            h.dispatch(new ClusterFsmEvent.NodeAdded(N3, List.of(N3, N1), seq()));
             h.dispatch(new ConsensusReady());
             h.dispatch(new LeaderCommitted(N1, 1L));
-            h.dispatch(new ClusterFsmEvent.NodeGone(N1, List.of(N3)));
+            h.dispatch(new ClusterFsmEvent.NodeGone(N1, List.of(N3), seq()));
 
             assertThat(h.state()).isInstanceOf(LeaderElectionState.ReElecting.class);
             assertThat(requests).isEmpty();
@@ -573,7 +574,7 @@ class LeaderPreVoteTest {
         @Test
         void followerThatLostTheLeaderFromItsView_doubts() {
             stanceNode(true);
-            cluster.node(N2).ctx.setCurrentTopology(List.of(N2, N3, N4, N5));
+            cluster.node(N2).ctx.applyTopology(new ClusterFsmEvent.NodeAdded(cluster.node(N2).ctx.self(), List.of(N2, N3, N4, N5), seq()));
 
             assertThat(askAbout(N2, N1)).singleElement().satisfies(r -> assertThat(r.leaderHealthy()).isFalse());
         }

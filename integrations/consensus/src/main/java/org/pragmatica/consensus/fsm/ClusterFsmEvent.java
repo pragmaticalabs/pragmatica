@@ -34,7 +34,8 @@ public interface ClusterFsmEvent {
     /// A peer-set change carrying the observer's whole view (#2971). `sequence` is the transport observation's
     /// sequence (`TransportObservation#sequence`): a consumer that replaces its view wholesale drops an event whose
     /// sequence is not above the last one it applied, so a delayed older view cannot overwrite a newer one.
-    /// [`#NO_SEQUENCE`] marks an unordered event, applied unconditionally.
+    /// [`#NO_SEQUENCE`] marks an unordered event: FSMs without a fence apply it unconditionally, while leader election
+    /// drops it, because only sequenced transport views may replace its view (#3044).
     sealed interface TopologyChange extends ClusterFsmEvent {
         long NO_SEQUENCE = 0L;
         NodeId node();
