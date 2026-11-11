@@ -53,3 +53,4 @@
 2870..2879 ahse-A2b 2026-11-07 ahse lane A2b
 2880..2889 ahse-A3-1 2026-11-07 #2450
 2890..2899 ahse-U2 2026-11-07 ahse lane U2
+2910..2911 impl2981s1 2026-11-11 #2981 NodeLeaseKey and NodeLeaseValue (2908..2909 left free)

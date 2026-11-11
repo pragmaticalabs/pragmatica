@@ -2236,6 +2236,40 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// The node lease renewal row of one node (#2981 §2.1): the node Puts [AetherValue.NodeLeaseValue] here every
+    /// renewal period, and the ordered delivery of that Put is what extends its lease. One row per node.
+    record NodeLeaseKey(NodeId nodeId) implements RuntimeKey {
+        private static final String PREFIX = "node-lease/";
+
+        @Override
+        public String asString() {
+            return PREFIX + nodeId.id();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static NodeLeaseKey nodeLeaseKey(NodeId nodeId) {
+            return new NodeLeaseKey(nodeId);
+        }
+
+        public static Result<NodeLeaseKey> nodeLeaseKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return NODE_LEASE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var nodeIdPart = key.substring(PREFIX.length());
+
+            if (nodeIdPart.isEmpty()) {
+                return NODE_LEASE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return NodeId.nodeId(nodeIdPart).map(NodeLeaseKey::new);
+        }
+    }
+
     record SpokesmanKey(NodeId coreNodeId) implements RuntimeKey {
         private static final String PREFIX = "spokesman/";
 
@@ -2316,6 +2350,8 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     Fn1<Cause, String> STREAM_PARTITION_RECOVERY_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-partition-recovery key format: %s");
 
     Fn1<Cause, String> SPOKESMAN_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid spokesman key format: %s");
+
+    Fn1<Cause, String> NODE_LEASE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-lease key format: %s");
 
     Fn1<Cause, String> PROVISIONING_SLOT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid provisioning-slot key format: %s");
 
