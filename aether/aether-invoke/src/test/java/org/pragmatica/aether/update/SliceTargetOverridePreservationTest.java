@@ -376,7 +376,7 @@ class SliceTargetOverridePreservationTest {
         volatile boolean refuseTransactions;
         /// When set, every apply holding a leader transaction fails as consensus failing to commit it (the write may or may not have landed).
         volatile boolean failTransactions;
-        /// When set, every apply holding a removal fails as consensus failing to commit it.
+        /// When set, every apply holding a removal fails as consensus failing to commit it; a failed apply is not recorded in `appliedCommands`.
         volatile boolean failRemovals;
 
         CapturingRabiaNode(NodeId self) {
@@ -406,12 +406,12 @@ class SliceTargetOverridePreservationTest {
         @Override
         @SuppressWarnings("unchecked")
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
-            appliedCommands.addAll(commands);
-
             if (failTransactions && commands.stream().anyMatch(KVCommand.LeaderTransaction.class::isInstance)
                 || failRemovals && commands.stream().anyMatch(KVCommand.Remove.class::isInstance)) {
                 return Causes.cause("consensus did not commit").promise();
             }
+
+            appliedCommands.addAll(commands);
 
             return Promise.success((List<R>) (refuseTransactions
                                               ? refusedResults(commands)
