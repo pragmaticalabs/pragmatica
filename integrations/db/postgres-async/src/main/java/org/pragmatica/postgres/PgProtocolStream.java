@@ -148,11 +148,11 @@ public abstract class PgProtocolStream implements ProtocolStream {
 
             if (serverFirstMessage != null) {
                 return send(SASLResponse.saslResponse(password,
-                                            serverFirstMessage,
-                                            clientNonce,
-                                            saslInitialResponse.gs2Header(),
-                                            saslInitialResponse.clientFirstMessageBare(),
-                                            channelBindingData));
+                                                      serverFirstMessage,
+                                                      clientNonce,
+                                                      saslInitialResponse.gs2Header(),
+                                                      saslInitialResponse.clientFirstMessageBare(),
+                                                      channelBindingData));
             } else {
                 return Promise.failure(new SqlError.BadAuthenticationSequence("Bad SASL authentication sequence message detected on 'server-first-message' step"));
             }

@@ -955,8 +955,8 @@ public class RabiaEngine<C extends Command> {
         var roster = voters;
 
         return Role.role(observerMode,
-                       roster.isPresent(),
-                       roster.map(v -> v.contains(self)).or(false));
+                         roster.isPresent(),
+                         roster.map(v -> v.contains(self)).or(false));
     }
 
     /// Ballots count only from installed voters at the current epoch. An old-epoch ballot for a slot at
