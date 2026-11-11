@@ -24,7 +24,18 @@ public interface CrudPersistence {
                        Instant createdAt,
                        Instant deletedAt,
                        String tier,
-                       Preferences preferences) {}
+                       Preferences preferences) {
+        static CustomerRow customerRow(long id,
+                                       String name,
+                                       String email,
+                                       boolean active,
+                                       Instant createdAt,
+                                       Instant deletedAt,
+                                       String tier,
+                                       Preferences preferences) {
+            return new CustomerRow(id, name, email, active, createdAt, deletedAt, tier, preferences);
+        }
+    }
 
     Promise<CustomerRow> save(CustomerRow customer);
 

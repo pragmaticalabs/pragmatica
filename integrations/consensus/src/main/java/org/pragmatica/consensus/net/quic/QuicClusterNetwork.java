@@ -2821,11 +2821,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
         evicted.onPresent(this::closeDroppedConnection);
         // Close the per-peer ephemeral UDP socket. Without this, every reconnect leaks
         // one datagram channel because the client previously held a single volatile field
-        // and overwrote it on each `bind(0)`. See QuicClusterClient#closeDatagramChannel.
+        // and overwrote it on each `bind(0)`. Only the socket this link runs over (#3033): the socket of a
+        // concurrent own dial of the same peer is not this link's. See QuicClusterClient#closeDatagramChannelOf.
         var clientRef = client;
 
         if (clientRef != null) {
-            clientRef.closeDatagramChannel(peerId);
+            clientRef.closeDatagramChannelOf(peerId, connection);
         }
 
         log.warn("Node {} evicted stale (inactive) link — peer remains in topology, offline buffer preserved for reconnect",
@@ -3482,6 +3483,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// in CONNECTING nor marked REMOVED after an unresolvable dial.
     Option<PeerState.Phase> peerPhaseForTests(NodeId peerId) {
         return Option.option(peers.get(peerId)).map(PeerState::phase);
+    }
+
+    /// Package-private test seam (#3033) — the dial client, so a test can run a dial that is not attached by this network.
+    QuicClusterClient clientForTests() {
+        return client;
     }
 
     /// Package-private test seam (#1578) — the connection a peer is currently bound to, or empty when

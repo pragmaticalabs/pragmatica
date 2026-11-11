@@ -14,7 +14,11 @@ import org.pragmatica.lang.Unit;
 /// Persistence adapter for key-value store backed by PostgreSQL.
 @TestPersistenceDb
 public interface KvPersistence {
-    record KvRow(String key, String value) {}
+    record KvRow(String key, String value) {
+        static KvRow kvRow(String key, String value) {
+            return new KvRow(key, value);
+        }
+    }
 
     @Query("SELECT key, value FROM kv_store WHERE key = :key")
     Promise<Option<KvRow>> findByKey(String key);

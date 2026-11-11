@@ -13,7 +13,9 @@ import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /// Shared compilation infrastructure for annotation processor tests.
 final class TestCompilationHelper {
@@ -42,6 +44,22 @@ final class TestCompilationHelper {
     }
 
     record SourceEntry(String fileName, String sourceCode) {}
+
+    /// Completes an empty-bodied fixture record with its type-named static factory: generated row mappers build records
+    /// through `Type.type(...)`, never `new` (#3018). `fields` are the plain components, e.g. `long id, String name`.
+    static String rowRecord(String name, String fields) {
+        var names = Arrays.stream(fields.split(","))
+                          .map(field -> field.trim().substring(field.trim().lastIndexOf(' ') + 1))
+                          .collect(Collectors.joining(", "));
+
+        return "record %s(%s) { static %s %s(%s) { return new %s(%s); } }".formatted(name,
+                                                                                    fields,
+                                                                                    name,
+                                                                                    Character.toLowerCase(name.charAt(0)) + name.substring(1),
+                                                                                    fields,
+                                                                                    name,
+                                                                                    names);
+    }
 
     /// Several sources, compiled with the processor and the generated sources all the way to bytecode.
     static CompilationResult compileAndCompileGenerated(List<SourceEntry> sources, Path tempDir) throws Exception {
