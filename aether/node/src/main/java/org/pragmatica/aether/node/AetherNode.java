@@ -2796,7 +2796,10 @@ public interface AetherNode extends ManageableNode {
         var eventAggregator = eventAggregatorOut.eventAggregator();
         var operatorWarningSink = eventAggregatorOut.operatorWarningSink();
         // #2825: stream data of an earlier NodeId under the data root is reported, never touched
-        AbandonedStreamData.check(operatorWarningSink, streamDataDir(config), streamWalBaseDir(config), config.self().id());
+        AbandonedStreamData.check(operatorWarningSink,
+                                  streamDataDir(config),
+                                  streamWalBaseDir(config),
+                                  config.self().id());
         // A0b: the storage instances were built before this sink existed; hand it to them now.
         StorageFactory.bindOperatorWarnings(storageSetups, operatorWarningSink);
         // D1 (KVStore dispatcher design §3.6): so was the node's store; its dispatcher events reach this node's sink from here on.
