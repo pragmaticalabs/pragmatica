@@ -611,7 +611,7 @@ class ClusterConfigRoutesApplyTest {
         void workerScaleUp_leaderRoute_multiSourceCore_accepted() {
             var store = storeWith(committed(WITH_EDGE_CORE_TOML));
 
-            var result = routed(store, AUTO_HEAL_ON, WITH_EDGE_CORE_TOML.replace("count = 2", "count = 4"), ApplyRoute.LEADER);
+            var result = routed(store, AUTO_HEAL_ON, SCALED_TOML + EDGE_SOURCE + EDGE_CORE, ApplyRoute.LEADER);
 
             assertThat(result.isSuccess()).as("only a core scale-up is refused over several core sources: %s", result).isTrue();
         }
