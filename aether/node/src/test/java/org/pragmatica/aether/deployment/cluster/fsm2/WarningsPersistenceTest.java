@@ -170,6 +170,7 @@ class WarningsPersistenceTest {
     void reconcilePass_marksTheOpenSetDirty() {
         var m = new ClusterModel();
 
+        m.leader = Option.some(LEADER);
         Reconcile.run(m, SurvivorPinSupport.ctx(1_000L, 0L));
 
         assertThat(m.warningsDirty).isTrue();
