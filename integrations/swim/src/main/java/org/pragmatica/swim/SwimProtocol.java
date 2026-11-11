@@ -4017,6 +4017,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     /// Test-only: whether the self-isolation latch (P2) is currently set.
+    @Contract
     void joinAcknowledgedForTest() {
         joinAckReceived = true;
     }
