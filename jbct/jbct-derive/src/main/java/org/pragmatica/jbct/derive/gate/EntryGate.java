@@ -21,6 +21,7 @@ import org.pragmatica.lang.Option;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
+
 /// The entry gate — normalize stage of the pipeline (SPEC.md §4), implemented as validation over a
 /// parsed [AnswerSheet]. It rejects the book's named fake-answer forms ([GateErrorCode]) using the
 /// book's vocabulary; each finding is a generic [Diagnostic] anchored at the offending sheet line.
@@ -34,6 +35,7 @@ public sealed interface EntryGate permits EntryGate.unused {
     Set<String> LOAD_SHAPES = Set.of("volume", "contention", "burst", "deadline");
     Set<String> Q6_KINDS = Set.of("audit", "replay", "residency", "mandate");
     List<String> BUNDLED_PHRASES = List.of("full history", "team independence", "everything");
+
     Set<String> BARE_ILITIES = Set.of("scalability",
                                       "scalable",
                                       "availability",
@@ -71,7 +73,9 @@ public sealed interface EntryGate permits EntryGate.unused {
 
     /// Run the gate and wrap the outcome in a [Verdict] (findings plus rows-checked count).
     static Verdict verdict(AnswerSheet sheet) {
-        return new Verdict(sheet.source(), sheet.rows().size(), check(sheet));
+        return new Verdict(sheet.source(),
+                           sheet.rows().size(),
+                           check(sheet));
     }
 
     private static Stream<Diagnostic> rowFindings(AnswerSheet sheet, AnswerRow row) {
@@ -86,28 +90,32 @@ public sealed interface EntryGate permits EntryGate.unused {
                          untriaged(sheet, row),
                          missingShape(sheet, row),
                          bareIlity(sheet, row),
-                         undecomposed(sheet, row))
-                     .flatMap(Option::stream);
+                         undecomposed(sheet, row)).flatMap(Option::stream);
     }
 
     // ---- UNPRICED: Q1/Q2 answer without a price (SPEC.md §4) ----
-
     private static Option<Diagnostic> unpriced(AnswerSheet sheet, AnswerRow row) {
-        return requiresPrice(row.question()) && row.price().isEmpty()
-               ? some(finding(sheet, row, GateErrorCode.UNPRICED, row.question().name() + " " + row.scope().display()))
+        return requiresPrice(row.question()) && row.price()
+                                                   .isEmpty()
+               ? some(finding(sheet,
+                              row,
+                              GateErrorCode.UNPRICED,
+                              row.question().name() + " " + row.scope().display()))
                : none();
     }
 
     // ---- UNSCOPED: system scope where a narrower scope is demanded ----
-
     private static Option<Diagnostic> unscoped(AnswerSheet sheet, AnswerRow row) {
-        return requiresNarrowScope(row.question()) && row.scope().isSystem()
-               ? some(finding(sheet, row, GateErrorCode.UNSCOPED, row.question().name() + " answered at 'system' scope"))
+        return requiresNarrowScope(row.question()) && row.scope()
+                                                         .isSystem()
+               ? some(finding(sheet,
+                              row,
+                              GateErrorCode.UNSCOPED,
+                              row.question().name() + " answered at 'system' scope"))
                : none();
     }
 
     // ---- UNTRIAGED: time answer without clock (F22); failure answer not target-vs-observed (F23) ----
-
     private static Option<Diagnostic> untriaged(AnswerSheet sheet, AnswerRow row) {
         return switch (row.question()) {
             case Q1 -> untriagedClock(sheet, row);
@@ -119,7 +127,10 @@ public sealed interface EntryGate permits EntryGate.unused {
     private static Option<Diagnostic> untriagedClock(AnswerSheet sheet, AnswerRow row) {
         return hasShapeIn(row, CLOCK_SHAPES)
                ? none()
-               : some(finding(sheet, row, GateErrorCode.UNTRIAGED, "Q1 time answer lacks requester-vs-system clock (F22)"));
+               : some(finding(sheet,
+                              row,
+                              GateErrorCode.UNTRIAGED,
+                              "Q1 time answer lacks requester-vs-system clock (F22)"));
     }
 
     private static Option<Diagnostic> untriagedFailure(AnswerSheet sheet, AnswerRow row) {
@@ -135,7 +146,6 @@ public sealed interface EntryGate permits EntryGate.unused {
     }
 
     // ---- MISSING_SHAPE: Q5 load answer without volume/contention/burst/deadline ----
-
     private static Option<Diagnostic> missingShape(AnswerSheet sheet, AnswerRow row) {
         return row.question() == QuestionId.Q5 && !hasShapeIn(row, LOAD_SHAPES)
                ? some(finding(sheet, row, GateErrorCode.MISSING_SHAPE, "Q5 load answer without a demand shape"))
@@ -143,7 +153,6 @@ public sealed interface EntryGate permits EntryGate.unused {
     }
 
     // ---- BARE_ILITY: a bare quality word is not an answer ----
-
     private static Option<Diagnostic> bareIlity(AnswerSheet sheet, AnswerRow row) {
         return BARE_ILITIES.contains(normalize(row.statement()))
                ? some(finding(sheet, row, GateErrorCode.BARE_ILITY, "'" + row.statement() + "'"))
@@ -151,10 +160,12 @@ public sealed interface EntryGate permits EntryGate.unused {
     }
 
     // ---- UNDECOMPOSED: Q6 without audit/replay/residency/mandate kind; bundled answers ----
-
     private static Option<Diagnostic> undecomposed(AnswerSheet sheet, AnswerRow row) {
         return needsKind(row)
-               ? some(finding(sheet, row, GateErrorCode.UNDECOMPOSED, "Q6 external-constraint row without a kind (audit/replay/residency/mandate)"))
+               ? some(finding(sheet,
+                              row,
+                              GateErrorCode.UNDECOMPOSED,
+                              "Q6 external-constraint row without a kind (audit/replay/residency/mandate)"))
                : bundled(sheet, row);
     }
 
@@ -165,32 +176,32 @@ public sealed interface EntryGate permits EntryGate.unused {
     }
 
     // ---- MISSING_DOMAIN_SHAPE: an effectful (operation-scoped) row without its domain-shape row ----
-
     private static List<Diagnostic> missingDomainShapes(AnswerSheet sheet) {
         var declared = sheet.domainShapes().stream().map(DomainShape::operation).collect(Collectors.toSet());
 
         return firstByOperation(sheet).entrySet()
-                                      .stream()
-                                      .filter(entry -> !declared.contains(entry.getKey()))
-                                      .map(entry -> finding(sheet,
-                                                            entry.getValue(),
-                                                            GateErrorCode.MISSING_DOMAIN_SHAPE,
-                                                            "operation:" + entry.getKey()))
-                                      .toList();
+                               .stream()
+                               .filter(entry -> !declared.contains(entry.getKey()))
+                               .map(entry -> finding(sheet,
+                                                     entry.getValue(),
+                                                     GateErrorCode.MISSING_DOMAIN_SHAPE,
+                                                     "operation:" + entry.getKey()))
+                               .toList();
     }
 
     private static Map<String, AnswerRow> firstByOperation(AnswerSheet sheet) {
         return sheet.rows()
                     .stream()
-                    .filter(row -> row.scope().kind() == ScopeKind.OPERATION)
-                    .collect(Collectors.toMap(row -> row.scope().name(),
+                    .filter(row -> row.scope()
+                                      .kind() == ScopeKind.OPERATION)
+                    .collect(Collectors.toMap(row -> row.scope()
+                                                        .name(),
                                               row -> row,
                                               (first, second) -> first,
                                               LinkedHashMap::new));
     }
 
     // ---- shared predicates ----
-
     private static boolean requiresPrice(QuestionId question) {
         return question == QuestionId.Q1 || question == QuestionId.Q2;
     }
@@ -207,19 +218,31 @@ public sealed interface EntryGate permits EntryGate.unused {
     }
 
     private static boolean hasKind(AnswerRow row) {
-        return row.kind().map(text -> text.toLowerCase(Locale.ROOT)).filter(Q6_KINDS::contains).isPresent();
+        return row.kind()
+                  .map(text -> text.toLowerCase(Locale.ROOT))
+                  .filter(Q6_KINDS::contains)
+                  .isPresent();
     }
 
     private static boolean hasShapeIn(AnswerRow row, Set<String> allowed) {
-        return row.shape().map(text -> text.toLowerCase(Locale.ROOT)).filter(allowed::contains).isPresent();
+        return row.shape()
+                  .map(text -> text.toLowerCase(Locale.ROOT))
+                  .filter(allowed::contains)
+                  .isPresent();
     }
 
     private static boolean hasTargetBasis(AnswerRow row) {
-        return row.basis().map(text -> text.toLowerCase(Locale.ROOT)).filter("target"::equals).isPresent();
+        return row.basis()
+                  .map(text -> text.toLowerCase(Locale.ROOT))
+                  .filter("target"::equals)
+                  .isPresent();
     }
 
     private static boolean isObservedBasis(AnswerRow row) {
-        return row.basis().map(text -> text.toLowerCase(Locale.ROOT)).filter("observed"::equals).isPresent();
+        return row.basis()
+                  .map(text -> text.toLowerCase(Locale.ROOT))
+                  .filter("observed"::equals)
+                  .isPresent();
     }
 
     private static boolean isBundled(String statement) {
@@ -229,7 +252,9 @@ public sealed interface EntryGate permits EntryGate.unused {
     }
 
     private static String normalize(String statement) {
-        return statement.trim().toLowerCase(Locale.ROOT).replaceAll("[.!]+$", "");
+        return statement.trim()
+                        .toLowerCase(Locale.ROOT)
+                        .replaceAll("[.!]+$", "");
     }
 
     private static Diagnostic finding(AnswerSheet sheet, AnswerRow row, GateErrorCode code, String context) {

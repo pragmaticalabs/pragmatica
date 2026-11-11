@@ -2,6 +2,7 @@ package org.pragmatica.jbct.derive.model;
 
 import java.util.Locale;
 
+
 /// The nine questions of the architecture answer sheet (SPEC.md §3).
 ///
 /// Each question sources a set of scoped rows in the TOML sheet under the
