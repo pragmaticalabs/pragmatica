@@ -87,6 +87,8 @@ class OwnerActivationTest {
 
     /// #3071: the first offset of a peer's deposed-epoch tail, which a catch-up from it refuses (I-27 clip); absent = none.
     private final Map<NodeId, Long> refusedFrom = new ConcurrentHashMap<>();
+    /// The first offset a node still holds in its ring and tier (none below it); absent = holds everything.
+    private final Map<NodeId, Long> evictedBelow = new ConcurrentHashMap<>();
     /// The committed-lineage end a clipped catch-up learned per peer, as `PartitionBackfill` remembers it.
     private final Map<NodeId, Long> learnedEnds = new ConcurrentHashMap<>();
 
@@ -115,7 +117,7 @@ class OwnerActivationTest {
     }
 
     private Promise<List<OffHeapRingBuffer.RawEvent>> range(NodeId node, String stream, int partition, long from, long to) {
-        return Promise.success(LongStream.rangeClosed(from, to)
+        return Promise.success(LongStream.rangeClosed(Math.max(from, evictedBelow.getOrDefault(node, 0L)), to)
                                          .mapToObj(offset -> OffHeapRingBuffer.RawEvent.rawEvent(offset,
                                                                                                  ((divergent.contains(node) && offset >= divergentFrom.get() ? "div-" : "rec-") + offset).getBytes(StandardCharsets.UTF_8),
                                                                                                  1L))
@@ -627,6 +629,58 @@ class OwnerActivationTest {
         assertThat(activate()).isTrue();
         assertThat(localWatermark).hasValue(3L);
         assertThat(catchUps).containsExactly("peer-b@5", "peer-a@3");
+    }
+
+    /// #3071: two peers ahead; B's raw watermark is the highest but its committed-lineage end (4) is below A's (6). A is the source,
+    /// and B is compared with A only up to B's bound, so B's refused tail (from 5) neither wins the ranking nor refuses the pull.
+    @Test
+    void activate_twoPeersAhead_rankedAndComparedByLineageEnd_notRawWatermark() {
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        localWatermark.set(2L);
+        peerWatermarks.put(PEER_A, 6L);
+        peerWatermarks.put(PEER_B, 8L);
+        refusedFrom.put(PEER_B, 5L);
+        learnedEnds.put(PEER_B, 4L);
+        divergent.add(PEER_B);
+        divergentFrom.set(5L);
+
+        assertThat(activate()).isTrue();
+        assertThat(localWatermark).hasValue(6L);
+        assertThat(catchUps).containsExactly("peer-a@6");
+        assertThat(alarms).isEmpty();
+    }
+
+    /// #3071: a peer whose committed-lineage end is at or below the owner's head is not compared pairwise with the source, even
+    /// when its raw watermark is above that head: the source may have evicted that lower range, and the peer is checked against
+    /// the owner's own records instead.
+    @Test
+    void activate_peerAboveHeadOnlyByARefusedTail_isNotComparedWithTheSource() {
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        localWatermark.set(2000L);
+        peerWatermarks.put(PEER_A, 2100L);
+        peerWatermarks.put(PEER_B, 2050L);
+        learnedEnds.put(PEER_B, 500L);
+        evictedBelow.put(PEER_A, 900L);
+
+        assertThat(activate()).isTrue();
+        assertThat(catchUps).containsExactly("peer-a@2100");
+        assertThat(alarms).isEmpty();
+    }
+
+    /// #3071: a candidate outside a committed ISR compares a lower peer with its own records only up to the peer's bound: a refused
+    /// tail that differs from the owner's committed records above that bound does not block the promotion.
+    @Test
+    void activate_lowerPeerDivergingOnlyAboveItsBound_doesNotBlock() {
+        members.set(List.of(SELF, PEER_B));
+        localWatermark.set(3L);
+        peerWatermarks.put(PEER_B, 4L);
+        learnedEnds.put(PEER_B, 2L);
+        divergent.add(PEER_B);
+        divergentFrom.set(3L);
+
+        assertThat(activate()).isTrue();
+        assertThat(catchUps).isEmpty();
+        assertThat(alarms).isEmpty();
     }
 
     /// TRIPWIRE (#3071 residual, current behaviour): B's refused tail starts at the offset A holds in the lineage and its bound is

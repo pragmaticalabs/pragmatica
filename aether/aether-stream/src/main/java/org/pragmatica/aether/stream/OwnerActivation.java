@@ -1429,7 +1429,7 @@ public final class OwnerActivation {
     /// The first offset, within the overlap, at which `peer` holds a record that differs from the candidate's, or none. A peer
     /// that cannot be read is not judged here; the existing comparisons report it as they did before.
     private Promise<Option<Long>> divergesFromCandidate(String stream, int partition, long local, PeerWatermark peer) {
-        var to = Math.min(local, lineageEnd(stream, partition, peer));
+        var to = Math.min(local, peer.watermark());
 
         if (to < 0) {
             return Promise.success(Option.none());
@@ -1710,7 +1710,7 @@ public final class OwnerActivation {
     /// of the window (its ring and tier start above the candidate's head) cannot be verified, so it is refused
     /// rather than trusted; a lower peer nobody pulls from stays lenient.
     private Promise<Unit> verifySourceOverlap(String stream, int partition, long local, PeerWatermark source) {
-        var to = Math.min(local, lineageEnd(stream, partition, source));
+        var to = Math.min(local, source.watermark());
 
         if (to < 0) {
             return Promise.success(Unit.unit());
