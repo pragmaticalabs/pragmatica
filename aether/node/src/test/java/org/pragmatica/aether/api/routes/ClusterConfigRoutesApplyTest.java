@@ -489,9 +489,10 @@ class ClusterConfigRoutesApplyTest {
 
         @Test
         void countOneCoreAddRole_autoHealOff_leaderClaim_stillRoutedToApply() {
-            var store = storeWith(committed(OPERATOR_TOML));
+            var twoCoreBase = OPERATOR_TOML.replace("count = 3", "count = 2");
+            var store = storeWith(committed(twoCoreBase));
 
-            var cause = refusedWith(routed(store, AUTO_HEAL_OFF, OPERATOR_TOML + EDGE_SOURCE + EDGE_CORE.replace("count = 2", "count = 1"), ApplyRoute.LEADER),
+            var cause = refusedWith(routed(store, AUTO_HEAL_OFF, twoCoreBase + EDGE_SOURCE + EDGE_CORE.replace("count = 2", "count = 1"), ApplyRoute.LEADER),
                                     ClusterConfigError.RouteMismatch.class);
 
             assertThat(cause.required()).isEqualTo(ApplyRoute.APPLY);
