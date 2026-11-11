@@ -4,10 +4,12 @@
 package org.pragmatica.aether.config;
 
 import java.nio.file.Path;
+import java.util.HashSet;
 import java.util.List;
 
 import org.pragmatica.aether.artifact.Artifact;
 
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -30,14 +32,14 @@ class RepositoryTypeStagedTest {
         var staged = RepositoryType.Staged.staged(Path.of("root"), List.of(MODULE));
 
         staged.refuseShared(List.of(OTHER, MODULE))
-              .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("a [shared] module coordinate must be refused"))
+              .onSuccess(_ -> Assertions.fail("a [shared] module coordinate must be refused"))
               .onFailure(cause -> assertThat(cause.message()).contains(MODULE.asString())
                                             .doesNotContain(OTHER.asString()));
     }
 
     @Test
     void staged_copiesTheCoordinateSet() {
-        var coordinates = new java.util.ArrayList<>(List.of(MODULE));
+        var coordinates = new HashSet<>(List.of(MODULE));
         var staged = RepositoryType.Staged.staged(Path.of("root"), coordinates);
 
         coordinates.add(OTHER);
