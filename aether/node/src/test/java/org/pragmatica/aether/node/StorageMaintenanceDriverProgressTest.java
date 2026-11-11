@@ -83,6 +83,17 @@ class StorageMaintenanceDriverProgressTest {
     }
 
     @Test
+    void progress_failedGarbageCollectionAloneFailsTheTick() {
+        var driver = driver();
+
+        doThrow(new IllegalStateException("gc boom")).when(gc).collectGarbage();
+        driver.tick();
+
+        assertThat(driver.progress().outcome()).isEqualTo(Outcome.FAILED);
+        assertThat(driver.progress().lastFailure().fold(() -> "", message -> message)).contains("gc boom");
+    }
+
+    @Test
     void failingDemotion_raisesOnceThenRecovers_andGarbageCollectionStillRuns() throws InterruptedException {
         var driver = driver();
 
