@@ -5,6 +5,7 @@ import java.util.List;
 import org.pragmatica.jbct.derive.model.AnswerRow;
 import org.pragmatica.jbct.derive.model.Axis;
 
+
 /// One row of the pressure matrix (SPEC.md §4 press): what a single answer does to one axis.
 ///
 /// A [Mode#PRESS] pressure pushes the axis in a direction; a [Mode#EXCLUDE] pressure narrows a
@@ -48,6 +49,7 @@ public record Pressure(Axis axis, Mode mode, String direction, String mechanism,
 
     /// The citations rendered as a compact comma-separated list (F10).
     public String citations() {
-        return String.join(", ", citing.stream().map(AnswerRow::cite).toList());
+        return String.join(", ",
+                           citing.stream().map(AnswerRow::cite).toList());
     }
 }

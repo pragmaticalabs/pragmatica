@@ -33,7 +33,6 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
 
     String PROJECT_CONFIG_NAME = "jbct.toml";
     String USER_CONFIG_DIR = ".jbct";
-
     String USER_CONFIG_NAME = "config.toml";
 
     /// Repository boundary marker — a directory in a normal clone, a file in a git worktree.
@@ -75,8 +74,7 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
     /// The walk climbs from `startDir` and stops at the first directory holding [#REPOSITORY_MARKER],
     /// including that directory's own config.
     static List<Path> findProjectConfigChain(Path startDir) {
-        return collectChain(Option.some(startDir.toAbsolutePath()
-                                                .normalize()));
+        return collectChain(Option.some(startDir.toAbsolutePath().normalize()));
     }
 
     /// Get the default user config directory path.
@@ -125,8 +123,9 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
     }
 
     private static Option<Path> userConfigCandidate() {
-        return Option.option(System.getProperty("user.home"))
-                     .map(home -> Path.of(home, USER_CONFIG_DIR, USER_CONFIG_NAME));
+        return Option.option(System.getProperty("user.home")).map(home -> Path.of(home,
+                                                                                  USER_CONFIG_DIR,
+                                                                                  USER_CONFIG_NAME));
     }
 
     private static Result<Option<PartialConfig>> parseLayer(Path path) {
@@ -157,7 +156,8 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
     private static List<Path> collectChainFrom(Path dir) {
         return isRepositoryRoot(dir)
                ? configIn(dir)
-               : concat(collectChain(Option.option(dir.getParent())), configIn(dir));
+               : concat(collectChain(Option.option(dir.getParent())),
+                        configIn(dir));
     }
 
     private static boolean isRepositoryRoot(Path dir) {
@@ -173,7 +173,8 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
     }
 
     private static List<Path> concat(List<Path> outer, List<Path> inner) {
-        return Stream.concat(outer.stream(), inner.stream())
+        return Stream.concat(outer.stream(),
+                             inner.stream())
                      .toList();
     }
 }

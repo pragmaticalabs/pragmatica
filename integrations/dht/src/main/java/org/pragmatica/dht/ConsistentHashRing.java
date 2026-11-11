@@ -127,9 +127,10 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
 
     /// Removes `node` from `point` only; the point stays while another node still holds it.
     private void removeFromPoint(int point, N node) {
-        ring.computeIfPresent(point, (_, holders) -> holders.remove(node) && holders.isEmpty()
-                                                     ? null
-                                                     : holders);
+        ring.computeIfPresent(point,
+                              (_, holders) -> holders.remove(node) && holders.isEmpty()
+                                              ? null
+                                              : holders);
     }
 
     /// Get the partition for a given key.
@@ -295,7 +296,8 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
     Set<N> nodesAtPoint(int point) {
         lock.readLock().lock();
         try {
-            return Option.option(ring.get(point)).<Set<N>>map(holders -> new LinkedHashSet<>(holders))
+            return Option.option(ring.get(point))
+                         .<Set<N>> map(holders -> new LinkedHashSet<>(holders))
                          .or(Set.of());
         } finally {
             lock.readLock().unlock();
@@ -305,7 +307,8 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
     private N getNodeForHash(int hash) {
         int key = Option.option(ring.ceilingKey(hash)).or(ring::firstKey);
 
-        return ring.get(key).first();
+        return ring.get(key)
+                   .first();
     }
 
     /// The ring position of a partition — the one place the partition-to-position mapping lives.

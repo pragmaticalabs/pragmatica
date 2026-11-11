@@ -101,10 +101,10 @@ public interface SystemTags {
                                                        entry.getKey());
 
                           if (previousName != null) {
-                          throw new IllegalStateException("Tag %d is pinned to both %s and %s".formatted(entry.getValue(),
-                                                                                                         previousName,
-                                                                                                         entry.getKey()));
-                      }
+                              throw new IllegalStateException("Tag %d is pinned to both %s and %s".formatted(entry.getValue(),
+                                                                                                             previousName,
+                                                                                                             entry.getKey()));
+                          }
                       });
     }
 
@@ -774,6 +774,8 @@ public interface SystemTags {
         pin(table, 2890, "org.pragmatica.aether.http.handler.ObjectHandle");
         pin(table, 2891, "org.pragmatica.aether.http.handler.FileHandle");
         pin(table, 2892, "org.pragmatica.aether.http.handler.UploadHandle");
+        // #2635: the empty consumer group's per-partition tombstone, inside the fix2635 reservation 2900..2901.
+        pin(table, 2900, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerGroupTombstone");
         // ---- unpinned numbers up to 16383 RESERVED: reserve a range in wire-tag-ranges.txt first ----
         rejectDuplicateTags(table);
 

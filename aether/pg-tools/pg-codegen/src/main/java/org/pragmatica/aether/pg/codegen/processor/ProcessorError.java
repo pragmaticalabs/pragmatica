@@ -67,6 +67,26 @@ public final class ProcessorError {
              + "Double, Float.";
     }
 
+    public static String missingRecordFactory(String methodName, String recordName, String expectedSignature) {
+        return PREFIX
+             + "Method '" + methodName
+             + "' returns row record '" + recordName
+             + "', which has no type-named static factory; generated code builds records through it, never 'new'. "
+             + "Declare: " + expectedSignature
+             + " (return Result<" + recordName
+             + "> when the record has an invariant)";
+    }
+
+    public static String recordFactoryReturnType(String methodName, String factoryName, String recordName) {
+        return PREFIX
+             + "Method '" + methodName
+             + "': factory '" + factoryName
+             + "' of row record '" + recordName
+             + "' must return " + recordName
+             + " or Result<" + recordName
+             + ">";
+    }
+
     public static String cannotInferTable(String methodName) {
         return PREFIX + "Cannot infer table for method '" + methodName + "'; add @Table annotation";
     }

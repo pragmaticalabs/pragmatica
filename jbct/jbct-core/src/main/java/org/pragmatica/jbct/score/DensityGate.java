@@ -18,7 +18,6 @@ public sealed interface DensityGate permits DensityGate.unused {
 
     /// Maven property carrying the maximum acceptable density.
     String MAX_DENSITY_PROPERTY = "jbct.density.maxPerKloc";
-
     /// CLI option carrying the maximum acceptable density.
     String MAX_DENSITY_OPTION = "--max-density";
 
@@ -38,9 +37,6 @@ public sealed interface DensityGate permits DensityGate.unused {
 
     /// Failure message naming both densities, so a breach reads as the comparison it is.
     static String breachMessage(double densityPerKloc, double maxPerKloc) {
-        return String.format(Locale.ROOT,
-                             "Density %.1f/KLOC exceeds maximum %.1f/KLOC",
-                             densityPerKloc,
-                             maxPerKloc);
+        return String.format(Locale.ROOT, "Density %.1f/KLOC exceeds maximum %.1f/KLOC", densityPerKloc, maxPerKloc);
     }
 }

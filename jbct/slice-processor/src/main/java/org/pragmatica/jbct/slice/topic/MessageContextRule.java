@@ -69,7 +69,8 @@ public final class MessageContextRule {
                         ? ""
                         : " (inherited by dependency " + dependencyInterface + ")";
 
-        return "Slice dependency method " + declaringInterface + "." + methodName
+        return "Slice dependency method " + declaringInterface
+             + "." + methodName
              + " takes a " + MethodModel.MESSAGE_CONTEXT_TYPE
              + " parameter" + inherited
              + ". Delivery context is supplied by the dispatcher from the envelope of an actual"

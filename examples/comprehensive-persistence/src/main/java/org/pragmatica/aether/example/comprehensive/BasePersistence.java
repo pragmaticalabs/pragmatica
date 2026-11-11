@@ -18,20 +18,53 @@ public interface BasePersistence {
                          String customerEmail,
                          BigDecimal orderTotal,
                          String orderStatus,
-                         Instant orderCreatedAt) {}
+                         Instant orderCreatedAt) {
+        static CustomerOrder customerOrder(long orderId,
+                                           long customerId,
+                                           String customerName,
+                                           String customerEmail,
+                                           BigDecimal orderTotal,
+                                           String orderStatus,
+                                           Instant orderCreatedAt) {
+            return new CustomerOrder(orderId,
+                                     customerId,
+                                     customerName,
+                                     customerEmail,
+                                     orderTotal,
+                                     orderStatus,
+                                     orderCreatedAt);
+        }
+    }
 
     record CustomerRevenue(long customerId,
                            String customerName,
                            Long orderCount,
                            BigDecimal totalRevenue,
                            BigDecimal minOrderValue,
-                           BigDecimal maxOrderValue) {}
+                           BigDecimal maxOrderValue) {
+        static CustomerRevenue customerRevenue(long customerId,
+                                               String customerName,
+                                               Long orderCount,
+                                               BigDecimal totalRevenue,
+                                               BigDecimal minOrderValue,
+                                               BigDecimal maxOrderValue) {
+            return new CustomerRevenue(customerId, customerName, orderCount, totalRevenue, minOrderValue, maxOrderValue);
+        }
+    }
 
     record ProductSales(long productId,
                         String productSku,
                         String productName,
                         Long unitsSold,
-                        BigDecimal totalRevenue) {}
+                        BigDecimal totalRevenue) {
+        static ProductSales productSales(long productId,
+                                         String productSku,
+                                         String productName,
+                                         Long unitsSold,
+                                         BigDecimal totalRevenue) {
+            return new ProductSales(productId, productSku, productName, unitsSold, totalRevenue);
+        }
+    }
 
     record OrderDetail(long id,
                        long customerId,
@@ -39,9 +72,23 @@ public interface BasePersistence {
                        BigDecimal totalWithTax,
                        String status,
                        String metadata,
-                       UUID correlationId) {}
+                       UUID correlationId) {
+        static OrderDetail orderDetail(long id,
+                                       long customerId,
+                                       BigDecimal total,
+                                       BigDecimal totalWithTax,
+                                       String status,
+                                       String metadata,
+                                       UUID correlationId) {
+            return new OrderDetail(id, customerId, total, totalWithTax, status, metadata, correlationId);
+        }
+    }
 
-    record ProductWithTags(long id, String sku, String name, BigDecimal price, String[] tags) {}
+    record ProductWithTags(long id, String sku, String name, BigDecimal price, String[] tags) {
+        static ProductWithTags productWithTags(long id, String sku, String name, BigDecimal price, String[] tags) {
+            return new ProductWithTags(id, sku, name, price, tags);
+        }
+    }
 
     @Query("SELECT o.id AS order_id, c.id AS customer_id, c.name AS customer_name, "
           + "c.email AS customer_email, o.total AS order_total, o.status AS order_status, "

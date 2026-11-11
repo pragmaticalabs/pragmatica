@@ -230,7 +230,8 @@ public final class LeaderElectionContext {
 
     private final AtomicReference<Option<NodeId>> lastNotifiedLeader = new AtomicReference<>(Option.none());
 
-    private final AtomicReference<List<NodeId>> currentTopology = new AtomicReference<>(List.of());
+    private final AtomicReference<SequencedTopology> currentTopology = new AtomicReference<>(SequencedTopology.INITIAL);
+
     private final AtomicBoolean hasEverHadLeader = new AtomicBoolean(false);
     /// Whether this node's KV state still trails the cluster's committed frontier (#1803). Consulted by
     /// [`LeaderElectionState.AwaitingKvSync`] so a joiner whose state is still being delivered waits for
@@ -776,6 +777,7 @@ public final class LeaderElectionContext {
 
     public List<NodeId> currentTopology() {
         return currentTopology.get()
+                              .topology()
                               .stream()
                               .filter(this::isEligible)
                               .toList();
@@ -783,14 +785,107 @@ public final class LeaderElectionContext {
 
     @Contract
     public void setCurrentTopology(List<NodeId> topology) {
-        if (topology.isEmpty()) {
-            return;
+        applyTopology(topology, ClusterFsmEvent.TopologyChange.NO_SEQUENCE);
+    }
+
+    /// Applies the event's view unless it is stale (#2971): a sequenced event whose sequence is not above the last
+    /// applied one is dropped, because the newer view already reflects every change the older one observed. The
+    /// ordering holds among the transport's own sequenced observations only: unsequenced writes (SWIM-observed
+    /// faults, `installLeaderEligibility`, local mode, `setCurrentTopology`) replace the view unconditionally and are
+    /// not fenced (#3044). The check and the write are one atomic step (`getAndUpdate`), so a delayed older
+    /// transport event cannot overwrite a newer view however its handler interleaves. Returns `false` only for a
+    /// dropped stale event.
+    public boolean applyTopology(ClusterFsmEvent.TopologyChange event) {
+        return applyTopology(event.topology(), event.sequence());
+    }
+
+    /// Removes exactly `node` from the stored view, view-free (#3044): the one write that carries no sequenced view.
+    /// It is applied iff the node is present, is not this node, and is not the last node left (an empty view is
+    /// never stored, and removing self would skew [#rankOfSelf(Option)]). It never adds a node and never moves the
+    /// sequence, so only a newer transport view undoes it. The check and the write are one atomic step with every
+    /// other view write. Returns `true` iff the node was removed.
+    public boolean removeFromView(NodeId node) {
+        return advanceView(new ViewCandidate.Remove(node));
+    }
+
+    private boolean applyTopology(List<NodeId> topology, long sequence) {
+        return advanceView(ViewCandidate.Replace.replace(topology, sequence));
+    }
+
+    /// The single write path of the stored view: `advance` is pure, so `getAndUpdate` may retry it under contention,
+    /// and `applies` is evaluated against the exact value the winning update read.
+    private boolean advanceView(ViewCandidate candidate) {
+        var previous = currentTopology.getAndUpdate(current -> current.advance(candidate, self));
+
+        return previous.applies(candidate, self);
+    }
+
+    /// What a write asks of the stored view: replace it wholesale with a transport observation, or remove one node.
+    private sealed interface ViewCandidate {
+        record Replace(List<NodeId> topology, long sequence) implements ViewCandidate {
+            static Replace replace(List<NodeId> topology, long sequence) {
+                var sorted = new ArrayList<>(topology);
+
+                Collections.sort(sorted);
+
+                return new Replace(List.copyOf(sorted), sequence);
+            }
+
+            boolean isStaleAgainst(SequencedTopology current) {
+                return sequence > ClusterFsmEvent.TopologyChange.NO_SEQUENCE && sequence <= current.sequence();
+            }
         }
 
-        var sorted = new ArrayList<>(topology);
+        record Remove(NodeId node) implements ViewCandidate {}
+    }
 
-        Collections.sort(sorted);
-        currentTopology.set(List.copyOf(sorted));
+    /// The stored view and the sequence of the last sequenced event that wrote it. An empty view is never stored
+    /// (the previous one is kept), but its sequence still advances the fence. A removal keeps the sequence.
+    private record SequencedTopology(List<NodeId> topology, long sequence) {
+        static final SequencedTopology INITIAL = new SequencedTopology(List.of(),
+                                                                       ClusterFsmEvent.TopologyChange.NO_SEQUENCE);
+
+        SequencedTopology advance(ViewCandidate candidate, NodeId self) {
+            return switch (candidate) {
+                case ViewCandidate.Replace replace -> replacedBy(replace);
+                case ViewCandidate.Remove remove -> without(remove.node(), self);
+            };
+        }
+
+        /// Replace: `true` unless the candidate is stale (a newer empty view counts as applied: its sequence advances
+        /// the fence). Remove: `true` iff the node was removed.
+        boolean applies(ViewCandidate candidate, NodeId self) {
+            return switch (candidate) {
+                case ViewCandidate.Replace replace -> !replace.isStaleAgainst(this);
+                case ViewCandidate.Remove remove -> admitsRemovalOf(remove.node(), self);
+            };
+        }
+
+        private SequencedTopology replacedBy(ViewCandidate.Replace candidate) {
+            if (candidate.isStaleAgainst(this)) {
+                return this;
+            }
+
+            var replacement = candidate.topology().isEmpty()
+                              ? topology
+                              : candidate.topology();
+
+            return new SequencedTopology(replacement,
+                                         Math.max(sequence, candidate.sequence()));
+        }
+
+        private SequencedTopology without(NodeId node, NodeId self) {
+            return admitsRemovalOf(node, self)
+                   ? new SequencedTopology(topology.stream().filter(member -> !member.equals(node)).toList(),
+                                           sequence)
+                   : this;
+        }
+
+        private boolean admitsRemovalOf(NodeId node, NodeId self) {
+            return ! node.equals(self)
+                   && topology.size() > 1
+                   && topology.contains(node);
+        }
     }
 
     /// Live accessor for the consensus-engine readiness state — the SSOT consulted by

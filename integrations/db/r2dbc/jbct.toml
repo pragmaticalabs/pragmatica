@@ -1,0 +1,7 @@
+# #3029: this module entered the CI JBCT gate. Format and every lint rule not listed here are enforced.
+# The rules below are pinned to warning (visible, non-failing) for the stated reason, the same way the root
+# jbct.toml pins CAUSE-01/02 (#720). Burn down by removing a line when its findings reach zero.
+
+[lint.rules]
+# RET-01: void return mandated by the host API (JDK/Netty/JDBC/jOOQ/R2DBC/Jackson callbacks, AutoCloseable.close, annotation-processor init) or fire-and-forget I/O; the signature is the API where it is not our choice
+JBCT-RET-01 = "warning"
