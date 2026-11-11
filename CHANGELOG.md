@@ -6,9 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc5] - Unreleased
 
-### Fixed (2026-11-11 — #3083 LeaderManagerTest waited for the election with fixed sleeps)
-- **`LeaderManagerTest` slept a fixed 6.5-8 s for proposals and 50-100 ms for async notifications.** A host stall (a 15 s test with an 8 s sleep, ticket 1794425741064944126-910660) let the test thread wake before the due election timer ran, giving "Expecting actual not to be empty". Every positive wait is now an Awaitility condition poll under a bounded deadline (30 s election, 10 s notification); the assertions are unchanged, and the two absence checks (no proposal, duplicate commit skipped) keep their sleeps. Test-only; no product change. `[mechanism: timer task vs. sleeping test thread race after a JVM stall]`
-
 ## [1.0.0-rc4] - 2026-10-17
 
 ### Fixed (2026-10-17 — disruption-budget suite mistook the slice-floor 409 for the quorum budget)
