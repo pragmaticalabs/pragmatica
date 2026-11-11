@@ -188,11 +188,13 @@ class PeerObservationOrderTest {
     void unsequencedObservations_applyInArrivalOrder() {
         node = Node.following();
 
-        node.manager.peerDisconnected(new PeerDisconnected(N1, WITHOUT_N1, ObservationSource.QUIC, 2L));
+        node.manager.peerDisconnected(new PeerDisconnected(N1, WITHOUT_N1, ObservationSource.QUIC, Long.MAX_VALUE));
         node.manager.peerJoined(new PeerJoined(N1, ALL, ObservationSource.QUIC));
 
-        assertThat(node.ctx.currentTopology()).as("an unordered observation is applied unconditionally").contains(N1);
+        assertThat(node.ctx.currentTopology()).as("an unordered join is applied unconditionally").contains(N1);
         assertThat(node.suspectsTheLeader()).isFalse();
+        node.manager.peerDisconnected(new PeerDisconnected(N1, WITHOUT_N1, ObservationSource.QUIC));
+        assertThat(node.ctx.currentTopology()).as("an unordered eviction is applied unconditionally").doesNotContain(N1);
     }
 
     @Test
@@ -215,6 +217,8 @@ class PeerObservationOrderTest {
         assertThat(node.ctx.currentTopology()).containsExactly(N1, N2);
         node.ctx.setCurrentTopology(List.of(N1, N3));
         assertThat(node.ctx.currentTopology()).as("setCurrentTopology is an unordered write").containsExactly(N1, N3);
+        assertThat(node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N2, ALL, 6L))).as("an unordered write does not raise the fence").isTrue();
+        assertThat(node.ctx.currentTopology()).containsExactly(N1, N2, N3);
     }
 
     /// Every state that stores the view: started there directly, fed a newer event and then an older one in both
