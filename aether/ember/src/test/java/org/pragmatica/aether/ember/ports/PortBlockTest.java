@@ -5,6 +5,7 @@
 package org.pragmatica.aether.ember.ports;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Cause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -12,7 +13,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class PortBlockTest {
     @Test
     void checkSlots_poolAboveTheBlock_isRefusedNamingBothNumbers() {
-        var failure = PortBlock.checkSlots(32).fold(cause -> cause, _ -> null);
+        var failure = failureOf(32);
 
         assertThat(failure).isInstanceOf(PortError.SlotPoolTooLarge.class);
         assertThat(failure.message()).contains("32").contains("28");
@@ -22,7 +23,7 @@ class PortBlockTest {
     void checkSlots_pools_fitUpToTheBlock_andMustBePositive() {
         assertThat(PortBlock.checkSlots(28).isSuccess()).isTrue();
         assertThat(PortBlock.checkSlots(1).isSuccess()).isTrue();
-        assertThat(PortBlock.checkSlots(0).fold(cause -> cause, _ -> null)).isInstanceOf(PortError.SlotsNotPositive.class);
+        assertThat(failureOf(0)).isInstanceOf(PortError.SlotsNotPositive.class);
         assertThat(PortBlock.checkSlots(29).isFailure()).isTrue();
     }
 
@@ -36,5 +37,9 @@ class PortBlockTest {
         assertThat(block.mgmtBase() + PortBlock.MAX_SLOTS - 1).isLessThan(block.appBase());
         assertThat(block.appBase() + PortBlock.MAX_SLOTS - 1).isLessThan(block.swimBase());
         assertThat(block.swimBase() + PortBlock.MAX_SLOTS - 1).isEqualTo(20_000 + 127);
+    }
+
+    private static Cause failureOf(int slots) {
+        return PortBlock.checkSlots(slots).fold(cause -> cause, _ -> null);
     }
 }
