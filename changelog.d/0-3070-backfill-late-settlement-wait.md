@@ -1,0 +1,2 @@
+### Fixed (2026-11-11 — #3070: PartitionBackfillTest late-settlement tests waited wall-clock inside the next flight's idle bound)
+- **Three `PartitionBackfillTest$SingleFlight` tests slept 200 ms after starting the next flight, inside its 500 ms idle bound** (#3070). A stall of more than 300 ms (GC, host steal) timed the next flight out and failed the test; they now wait on the release hook, under a deadline. Test-only, no production change. [verified: ungated-ack and registry-gate mutants red 200/200 on their tests; a 700 ms wait in the old shape red 200/200]
