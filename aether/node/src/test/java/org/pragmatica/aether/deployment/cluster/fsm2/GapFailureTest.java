@@ -9,6 +9,8 @@ import java.util.Map;
 
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentApplyKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
@@ -73,6 +75,26 @@ class GapFailureTest {
         node(h, CORE_1, 11L).fails(ORDERS, false);
         h.drain();
         assertThat(h.warns("retry-exhausted-unsettled")).as("still one open warning").hasSize(1);
+    }
+
+    /// #2834 (v3078a): an inherited open `retry-exhausted-unsettled` is not raised again by the successor's own exhaustion. Red when: the
+    /// once-per-episode guard in `Failures.exhausted` is removed, so the successor publishes a second opener for a warning still open.
+    @Test
+    void exhaustion_inheritedOpen_isNotRaisedAgain() {
+        var h = LcSupport.leader(DeploymentAtomicity.ALL_OR_NOTHING, 0.5d, CORE_1);
+
+        SlFixtures.seedTarget(h, ORDERS, 1, 1);
+        SlFixtures.seedGoal(h, CORE_1, ORDERS, SliceGoal.LOADED, SlFixtures.G1);
+        SlFixtures.seedRow(h, CORE_1, ORDERS, SliceObservedState.LOADING, SlFixtures.G1, 11L);
+        SlFixtures.seedJudgment(h,
+                                ORDERS,
+                                new ArtifactJudgmentValue(false, Map.of(CORE_1, 5), Map.of(), Set.of()));
+        h.seed(FsmWarningKey.fsmWarningKey("retry-exhausted-unsettled", ORDERS.asString()), FsmWarningValue.fsmWarningValue(Map.of()));
+        h.activate();
+        node(h, CORE_1, 11L).fails(ORDERS, false);
+        h.drain();
+        assertThat(h.warns("retry-exhausted-settled")).as("precondition: the inherited warning is not closed").isEmpty();
+        assertThat(h.warns("retry-exhausted-unsettled")).as("inherited open warning raised again").isEmpty();
     }
 
     private FsmHarness exhaustedOrders() {

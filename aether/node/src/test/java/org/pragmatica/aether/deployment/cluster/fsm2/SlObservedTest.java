@@ -15,6 +15,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.Generation;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceDesiredValue;
@@ -141,6 +143,22 @@ class SlObservedTest {
             assertThat(goalOf(h, CORE_2, ORDERS)).as("the surplus is condemned")
                       .isEqualTo(Option.some(SliceGoal.UNLOADED));
             assertThat(h.warns("stray-instance")).hasSize(1);
+        }
+
+        /// #2834 (v3078a): an inherited open `stray-instance` (both instances in its members) is not raised again when the successor
+        /// condemns the stray. Red when: the once-per-instance guard in `Strays` is removed.
+        @Test
+        void condemnedStray_inheritedOpen_isNotRaisedAgain() {
+            var h = threeCores();
+
+            seedTarget(h, ORDERS, 1, 1);
+            seedRow(h, CORE_1, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
+            seedRow(h, CORE_2, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
+            h.seed(FsmWarningKey.fsmWarningKey("stray-instance", ORDERS.asString()),
+                   FsmWarningValue.fsmWarningValue(java.util.Map.of(CORE_1.id(), "", CORE_2.id(), "")));
+            h.activate();
+            assertThat(h.submitsBesides(ClusterModel.SubmitKind.WARNINGS)).as("precondition: the successor condemned a stray").isNotEmpty();
+            assertThat(h.warns("stray-instance")).as("inherited open warning raised again").isEmpty();
         }
 
         /// #2834: once per condemned instance. Red when: the same stray is condemned again after its goal write was lost and raises `stray-instance` again.
