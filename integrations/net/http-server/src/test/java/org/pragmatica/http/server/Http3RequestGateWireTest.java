@@ -45,6 +45,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class Http3RequestGateWireTest {
     private static final int MIB = 1024 * 1024;
     private static final long TIMED_BOUND_MS = 300;
+    private static final long DURATION_BOUND_MS = 700;
+    /// A bound's 408 may be late by scheduling and a starved host, never by the 10 s to 25 s the client now waits (#2873).
+    private static final long MARGIN_MS = 5_000;
 
     private final AtomicInteger invocations = new AtomicInteger();
     private final AtomicInteger releases = new AtomicInteger();
@@ -70,7 +73,7 @@ class Http3RequestGateWireTest {
         case "/duration" -> Disposition.aggregate(MIB,
                                                   BodyBounds.bodyBounds(timeSpan(10).seconds(),
                                                                         BodyRateLimit.bodyRateLimit(1, timeSpan(10).seconds(), timeSpan(10).seconds()),
-                                                                        timeSpan(700).millis()),
+                                                                        timeSpan(DURATION_BOUND_MS).millis()),
                                                   releases::incrementAndGet);
         default -> Disposition.aggregate(MIB);
     };
@@ -157,6 +160,7 @@ class Http3RequestGateWireTest {
         var answer = Http3TestClient.exchange(port, stream -> pace(stream, "/timed", 1, 100, 60));
 
         assertThat(answer.status()).isEqualTo("408");
+        assertThat(answer.statusAfterMs()).isLessThan(2 * TIMED_BOUND_MS + MARGIN_MS);
         assertThat(answer.body()).contains("minimum rate");
         assertThat(invocations.get()).isZero();
         assertThat(releases.get()).as("the permit of the refused upload was released").isEqualTo(1);
@@ -172,6 +176,7 @@ class Http3RequestGateWireTest {
         });
 
         assertThat(answer.status()).isEqualTo("408");
+        assertThat(answer.statusAfterMs()).isLessThan(TIMED_BOUND_MS + MARGIN_MS);
         assertThat(answer.body()).contains("idle");
         assertThat(invocations.get()).isZero();
     }
@@ -183,6 +188,7 @@ class Http3RequestGateWireTest {
         var answer = Http3TestClient.exchange(port, stream -> pace(stream, "/duration", 8, 50, 100));
 
         assertThat(answer.status()).isEqualTo("408");
+        assertThat(answer.statusAfterMs()).isLessThan(DURATION_BOUND_MS + MARGIN_MS);
         assertThat(answer.body()).contains("max_duration");
         assertThat(invocations.get()).isZero();
     }

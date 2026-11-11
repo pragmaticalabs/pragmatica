@@ -42,6 +42,10 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// the rate bound off, so a stalled body can meet only the read timeout.
 class Http3ServerBoundsTest {
     private static final int LIMIT = 1024;
+    /// A bound's 408 may be late by scheduling and a starved host, never by the 10 s to 25 s the client now waits (#2873).
+    private static final long MARGIN_MS = 5_000;
+    private static final long READ_TIMEOUT_MS = 1_000;
+    private static final long RATE_BOUND_MS = 3_000;
     private static final int TRICKLE_CHUNK = 20;
     private static final int TRICKLE_CHUNKS = 15;
     private static final long TRICKLE_INTERVAL_MS = 200;
@@ -111,6 +115,7 @@ class Http3ServerBoundsTest {
         var answer = Http3TestClient.exchange(port, this::stall);
 
         assertThat(answer.status()).isEqualTo("408");
+        assertThat(answer.statusAfterMs()).as("the 1 s read timeout, not the connection's idle timeout").isLessThan(READ_TIMEOUT_MS + MARGIN_MS);
         assertThat(answer.body()).contains("idle");
     }
 
@@ -121,6 +126,7 @@ class Http3ServerBoundsTest {
         var answer = Http3TestClient.exchange(port, this::trickle);
 
         assertThat(answer.status()).isEqualTo("408");
+        assertThat(answer.statusAfterMs()).as("the 2 s grace and one 1 s window").isLessThan(RATE_BOUND_MS + MARGIN_MS);
         assertThat(answer.body()).as("the rate bound, not the read timeout: a frame arrives every 200 ms")
                                  .contains("minimum rate");
     }
