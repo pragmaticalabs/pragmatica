@@ -20,6 +20,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AbTestValue;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
@@ -125,12 +126,16 @@ class AbTestClaimTest {
         assertThat(wrongRefusals.get()).as("a loser refused with the exact in-flight state and its own target").isZero();
     }
 
-    /// A winner passes; a loser is refused with the winner's state (in flight or already terminal, never ACTIVE) as `from` and its own target as `to`.
+    /// A winner passes; a loser is refused from the winner's state (in flight or already terminal, never ACTIVE) to its own target: by the claim
+    /// or the state check as an `InvalidTestState`, or by the state machine (a rollback over an in-flight claim) as an invalid transition.
     private static boolean isCorrectLoser(Result<AbTestDeployment> result, AbTestState target) {
-        return result.fold(cause -> cause instanceof AbTestDeploymentError.InvalidTestState refusal
-                                    && refusal.from() != AbTestState.ACTIVE
-                                    && refusal.to() == target,
-                           _ -> true);
+        return result.fold(cause -> isRefusalToTarget(cause, target), _ -> true);
+    }
+
+    private static boolean isRefusalToTarget(Cause cause, AbTestState target) {
+        return cause instanceof AbTestDeploymentError.InvalidTestState refusal
+               ? refusal.from() != AbTestState.ACTIVE && refusal.to() == target
+               : cause.message().matches("Invalid A/B test state transition: (?!ACTIVE )\\w+ -> " + target);
     }
 
     private void releaseIsVisibleWithTheFailure(BiFunction<AbTestManager, String, Promise<AbTestDeployment>> call) {
