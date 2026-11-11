@@ -67,13 +67,15 @@ class OwedWarningCodesTripwireTest {
     }
 
     /// Count what must not be there: every declared code with no raise site is in the owed map, so a new unraised code
-    /// cannot slip in unowed and a map entry cannot be dropped silently.
+    /// cannot slip in unowed and a map entry cannot be dropped silently. The `deployment` subsystem is excluded: its codes
+    /// are raised through the FSM warning catalogue by name, which `FsmWarningCatalogueTest` owns, not by constant reference.
     @Test
     void everyUnraisedCode_isInTheOwedMap() throws IOException {
         var sources = productionSources();
         var unraised = EnumSet.noneOf(OperatorWarningCode.class);
 
         Arrays.stream(OperatorWarningCode.values())
+              .filter(code -> !"deployment".equals(code.subsystem()))
               .filter(code -> !isReferenced(sources, code))
               .forEach(unraised::add);
         assertThat(unraised).as("declared codes with no production raise site must each have an owing step in the owed map")

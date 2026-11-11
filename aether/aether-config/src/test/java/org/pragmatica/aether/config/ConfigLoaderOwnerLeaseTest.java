@@ -97,11 +97,12 @@ class ConfigLoaderOwnerLeaseTest {
     }
 
     /// A refused drift bound makes `W` undefined, so it must be the only error: the suspect-timeout bound is not evaluated
-    /// from a `W` computed out of an invalid `rho`. At rho = 1 the wait divides by zero and would exceed any suspect timeout.
+    /// from a `W` computed out of an invalid `rho`. The suspect timeout equals the lease, so any positive `W` the early
+    /// return does not skip would add a second, misleading error.
     @Test
     void invalidClockDriftBound_isTheOnlyError_noSuspectTimeoutError() {
-        for (var rho : new String[]{"1.0", "1.5"}) {
-            ConfigLoader.loadFromString(streaming("clock_drift_bound = " + rho, "10s"))
+        for (var rho : new String[]{"0.0009", "-0.1", "1.5"}) {
+            ConfigLoader.loadFromString(streaming("clock_drift_bound = " + rho, "3s"))
                         .onSuccess(config -> Assertions.fail("must be refused: rho " + rho))
                         .onFailure(cause -> assertOnlyDriftError(cause.message(), rho));
         }
