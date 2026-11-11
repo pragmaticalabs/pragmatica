@@ -119,6 +119,24 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.TERMINATION_RETIREMENT_RESOLVED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.TERMINATION_RETIREMENT_OVERDUE);
     }
 
+    /// #2981 step 5: the lease and clock codes are operator-visible literals, each WARNING closed by an INFO recovery; the
+    /// truncation code is an INFO point event. A change would orphan open alerts or silence the lease signal.
+    @Test
+    void ownerLeaseCodes_arePinned() {
+        assertThat(OperatorWarningCode.STREAM_OWNER_LEASE_LAPSED.code()).isEqualTo("stream-owner-lease-lapsed");
+        assertThat(OperatorWarningCode.STREAM_OWNER_LEASE_LAPSED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.STREAM_OWNER_LEASE_RESTORED.code()).isEqualTo("stream-owner-lease-restored");
+        assertThat(OperatorWarningCode.STREAM_OWNER_LEASE_RESTORED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STREAM_OWNER_LEASE_RESTORED.recoveryOf()).isEqualTo(Option.some(OperatorWarningCode.STREAM_OWNER_LEASE_LAPSED));
+        assertThat(OperatorWarningCode.NODE_CLOCK_RATE_DIVERGENCE.code()).isEqualTo("node-clock-rate-divergence");
+        assertThat(OperatorWarningCode.NODE_CLOCK_RATE_DIVERGENCE.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.NODE_CLOCK_RATE_NORMAL.code()).isEqualTo("node-clock-rate-normal");
+        assertThat(OperatorWarningCode.NODE_CLOCK_RATE_NORMAL.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.NODE_CLOCK_RATE_NORMAL.recoveryOf()).isEqualTo(Option.some(OperatorWarningCode.NODE_CLOCK_RATE_DIVERGENCE));
+        assertThat(OperatorWarningCode.STREAM_TRUNCATION_BELOW_VISIBLE.code()).isEqualTo("stream-truncation-below-visible");
+        assertThat(OperatorWarningCode.STREAM_TRUNCATION_BELOW_VISIBLE.level()).isEqualTo(WarningLevel.INFO);
+    }
+
     @Test
     void codes_areKebabCase() {
         assertThat(Arrays.stream(OperatorWarningCode.values())

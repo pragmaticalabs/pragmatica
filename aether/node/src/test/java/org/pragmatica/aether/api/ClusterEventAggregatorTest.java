@@ -2861,6 +2861,8 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED,
                 OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING,
                 OperatorWarningCode.STREAM_OWNER_LINEAGE_COMMITTED,
+                OperatorWarningCode.STREAM_OWNER_LEASE_RESTORED,
+                OperatorWarningCode.NODE_CLOCK_RATE_NORMAL,
                 OperatorWarningCode.STREAM_OWNER_CATCHUP_PROGRESSING,
                 OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED,
                 OperatorWarningCode.STREAM_CATCHUP_SOURCE_ANSWERING_RESTORED,
@@ -2965,6 +2967,8 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
                 OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE,
                 OperatorWarningCode.STREAM_OWNER_LINEAGE_REFUSED,
+                OperatorWarningCode.STREAM_OWNER_LEASE_LAPSED,
+                OperatorWarningCode.NODE_CLOCK_RATE_DIVERGENCE,
                 OperatorWarningCode.STREAM_OWNER_CATCHUP_STALLED,
                 OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_REFUSED,
                 OperatorWarningCode.STREAM_CATCHUP_SOURCE_NOT_ANSWERING,
@@ -3018,6 +3022,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STRAY_INSTANCE,
                 OperatorWarningCode.WORKER_ABSENCE_UNJUDGEABLE,
                 OperatorWarningCode.WORKER_NO_COMMUNITY_POLICY,
+                OperatorWarningCode.STREAM_TRUNCATION_BELOW_VISIBLE,
             });
         var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);

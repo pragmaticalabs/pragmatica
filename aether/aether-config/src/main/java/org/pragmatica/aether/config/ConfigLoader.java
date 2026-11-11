@@ -287,6 +287,10 @@ public final class ConfigLoader {
                                                      "streaming",
                                                      "replication_batch_max_delay",
                                                      defaults.replicationBatchMaxDelay());
+        var ownerLease = parseTimeSpan(doc, "streaming", "owner_lease", defaults.ownerLease());
+        var ownerLeaseRenewal = parseTimeSpan(doc, "streaming", "owner_lease_renewal", defaults.ownerLeaseRenewal());
+        var clockDriftBound = doc.getDouble("streaming", "clock_drift_bound")
+                                 .or(defaults.clockDriftBound());
 
         builder.streaming(StreamingConfig.streamingConfig(publishTimeout,
                                                           readTimeout,
@@ -300,7 +304,8 @@ public final class ConfigLoader {
                                          .withPromotionEscapeAfter(promotionEscapeAfter)
                                          .withSealRun(sealRunBytes, sealRunEvents, sealRunAge, sealMergeBytes)
                                          .withMemoryBudget(maxMemoryBytes, sealPendingCapBytes)
-                                         .withReplicationBatch(replicationBatchMaxEvents, replicationBatchMaxDelay));
+                                         .withReplicationBatch(replicationBatchMaxEvents, replicationBatchMaxDelay)
+                                         .withOwnerLease(ownerLease, ownerLeaseRenewal, clockDriftBound));
     }
 
     /// #2201 C-03 (spec 4.4 items 1 and 3, D-12): a written `[streaming] max_memory_bytes` or `seal_pending_cap_bytes` must be

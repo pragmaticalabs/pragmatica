@@ -494,6 +494,32 @@ public enum OperatorWarningCode {
                                    "stream-replication",
                                    WarningLevel.INFO,
                                    STREAM_OWNER_LINEAGE_REFUSED),
+    /// A node's ownership lease lapsed (#2981, fence-lease design 7): a renewal round took more than `T - R`, so the node stops
+    /// completing publishes "ok" for every CF >= 2 partition it owns until a renewal lands. Raised once per lapse edge; the
+    /// subject is the node. Registered by step 5 and raised by the lease steps (1-2), not by the config step. Closed by
+    /// [#STREAM_OWNER_LEASE_RESTORED].
+    STREAM_OWNER_LEASE_LAPSED("stream-owner-lease-lapsed", "stream-replication", WarningLevel.WARNING),
+    /// The recovery of a [#STREAM_OWNER_LEASE_LAPSED] (#2981), same subject: a renewal landed and the node's lease is valid again.
+    STREAM_OWNER_LEASE_RESTORED("stream-owner-lease-restored",
+                                "stream-replication",
+                                WarningLevel.INFO,
+                                STREAM_OWNER_LEASE_LAPSED),
+    /// A node's monotonic and wall clocks diverged by more than `clock_drift_bound` over a renewal interval (#2981, design 4,
+    /// A-CLK-1): the lease arithmetic assumes the monotonic clock is within that bound, so an acknowledged write can be
+    /// lost beyond it. Detection only, weak: a clock daemon that slews both clocks together is not seen. The subject is the node.
+    /// Registered by step 5 and raised by the lease steps. Closed by [#NODE_CLOCK_RATE_NORMAL].
+    NODE_CLOCK_RATE_DIVERGENCE("node-clock-rate-divergence", "node-clock", WarningLevel.WARNING),
+    /// The recovery of a [#NODE_CLOCK_RATE_DIVERGENCE] (#2981), same subject: the clock rates agree within the bound again.
+    NODE_CLOCK_RATE_NORMAL("node-clock-rate-normal",
+                           "node-clock",
+                           WarningLevel.INFO,
+                           NODE_CLOCK_RATE_DIVERGENCE),
+    /// A truncation of a partition's ring was asked to cut below its visible offset (#2981, design 2.2 check 3, r7.1 C2): with
+    /// CF >= 2 lineage the cut is refused (a defect, since the owner's lineage rule makes it unreachable), otherwise it proceeds as
+    /// a counted retraction. The message names stream, partition, `keep`, `visible` and the outcome (`refused` or `retracted`).
+    /// A point event that opens nothing, so INFO [guess: level; a refused cut leaves the quarantine standing and may deserve WARNING].
+    /// Registered by step 5 and raised by step 2's truncation check.
+    STREAM_TRUNCATION_BELOW_VISIBLE("stream-truncation-below-visible", "stream-replication", WarningLevel.INFO),
     /// A promoted owner's catch-up cannot progress (#2960): every source it could read for the partition answered short without
     /// advancing the owner for three consecutive rounds, so the round ends demoted-source after demoted-source. The owner stays SYNCING and
     /// never activates below the target; the redrive retries every tick and nothing else bounds it. CRITICAL: the partition has no
