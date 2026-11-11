@@ -20,6 +20,7 @@ package org.pragmatica.lang.utils;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.io.TimeSpan;
 
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -27,6 +28,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -56,6 +58,43 @@ class VirtualThreadSchedulerTest {
         } finally {
             scheduler.shutdown();
         }
+    }
+
+    // ---- #3049: a cancelled task stays queued until its deadline but must not pin its body ----
+
+    @Test
+    void cancel_longBeforeDeadline_releasesTheBody() {
+        var scheduler = new VirtualThreadScheduler();
+        try {
+            var bodyRef = scheduleAndCancel(scheduler);
+
+            assertThat(collected(bodyRef)).as("a cancelled task must not keep its body reachable until the deadline")
+                                          .isTrue();
+        } finally {
+            scheduler.shutdown();
+        }
+    }
+
+    private static WeakReference<Runnable> scheduleAndCancel(VirtualThreadScheduler scheduler) {
+        Runnable body = new Runnable() {
+            @Override
+            public void run() {}
+        };
+
+        scheduler.schedule(body, timeSpan(60).seconds()).cancel(false);
+
+        return new WeakReference<>(body);
+    }
+
+    private static boolean collected(WeakReference<?> reference) {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4);
+
+        while (reference.get() != null && System.nanoTime() < deadline) {
+            System.gc();
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(50));
+        }
+
+        return reference.get() == null;
     }
 
     // ---- G2: cancel stops all future occurrences -----------------------------------------
