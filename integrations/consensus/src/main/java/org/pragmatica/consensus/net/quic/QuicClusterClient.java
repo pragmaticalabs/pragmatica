@@ -647,8 +647,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
 
     @Override
     public Promise<Unit> closeDatagramChannelOf(NodeId peerId, QuicPeerConnection link) {
-        return option(link.connection()
-                          .parent()).filter(carrier -> datagramChannels.remove(peerId, carrier))
+        return option(link.connection().parent()).filter(carrier -> datagramChannels.remove(peerId, carrier))
                      .map(QuicClusterClientInstance::closeChannel)
                      .or(Promise::unitPromise);
     }
