@@ -67,6 +67,9 @@ class CrossProcessDisjointnessReaderTest {
 
         for (int i = 0; i < children; i++) {
             processes.add(spawn(mode, parties, i == 0 ? "a" : "b"));
+            if (mode.equals("OFF")) {
+                awaitFirstProbe();
+            }
         }
 
         var exits = new ArrayList<Integer>();
@@ -76,6 +79,24 @@ class CrossProcessDisjointnessReaderTest {
             exits.add(process.exitValue());
         }
         return exits;
+    }
+
+    /// With claims OFF the bind probe is the only guard, and two probes running at the same moment can fail each other's
+    /// transient bind, sending one child to another block. The second child therefore starts after the first has passed its
+    /// probe (marker written), so the OFF arm deterministically shows the overlap the locks would have prevented.
+    private void awaitFirstProbe() throws Exception {
+        var deadline = System.nanoTime() + 30_000_000_000L;
+
+        while (probedMarkers() == 0 && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertThat(probedMarkers()).as("the first child passed its probe").isPositive();
+    }
+
+    private long probedMarkers() throws IOException {
+        try (var files = Files.list(meetDir)) {
+            return files.filter(file -> file.getFileName().toString().startsWith(EmberPortRendezvous.MARKER_PREFIX)).count();
+        }
     }
 
     private Process spawn(String mode, int parties, String label) throws IOException {
