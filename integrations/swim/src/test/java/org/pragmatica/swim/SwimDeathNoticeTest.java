@@ -178,13 +178,22 @@ class SwimDeathNoticeTest {
                                                     .anyMatch(noticeOf(NODE_A, 3L, TOKEN_A));
     }
 
+    /// The reachable shape of the comparison guard: the resident FAULTY member sits ABOVE the record (Faulty(A,3) gossip
+    /// raises it; the record is written once, at the FAULTY edge), so a claim above the record but below the resident
+    /// returns early in the member update, never meets the death-record gate, and only the notice's own incarnation
+    /// comparison stops an answer.
     @Test
-    void deathNotice_pingClaimAboveTheRecord_noNotice() {
+    void deathNotice_pingClaimAboveTheRecordBelowTheResident_noNotice() {
         driveToFaultyResident();
+        ping(NODE_B, 5L, List.of(updateOf(NODE_A, MemberState.FAULTY, 3L, TOKEN_A)));
+
+        assertThat(protocol.members().get(NODE_A).incarnation()).as("precondition: the resident is above the record").isEqualTo(3L);
+        assertThat(protocol.deathRecordForTest(NODE_A).map(record -> record[0]).or(-1L)).as("precondition: the record stays at its edge incarnation").isEqualTo(1L);
 
         ping(NODE_A, 7L, List.of(updateOf(NODE_A, MemberState.ALIVE, 2L, TOKEN_A)));
 
-        assertThat(carriesFaultyOf(ackOf(transport, 7L), NODE_A)).as("a refutation earns no notice").isFalse();
+        assertThat(protocol.deathRecordForTest(NODE_A).isPresent()).as("the claim did not clear the record").isTrue();
+        assertThat(carriesFaultyOf(ackOf(transport, 7L), NODE_A)).as("a claim above the record earns no notice").isFalse();
     }
 
     @Test
@@ -293,7 +302,15 @@ class SwimDeathNoticeTest {
 
         assertThat(relayed.onBehalfOf().isPresent()).isTrue();
         assertThat(relayed.onBehalfOf().or(NODE_B)).as("names the PingReq requester").isEqualTo(NODE_A);
-        assertThat(Ping.ping(NODE_A, 1L, List.of()).onBehalfOf().isEmpty()).as("a direct ping names none").isTrue();
+
+        transport.sentMessages.clear();
+        protocol.probeRoundForTest();
+
+        var probes = transport.sentMessages.stream().filter(Ping.class::isInstance).map(Ping.class::cast).toList();
+
+        assertThat(probes).as("precondition: the protocol sent a probe Ping").isNotEmpty();
+        assertThat(probes).as("a Ping the protocol sends directly names no requester")
+                          .allMatch(probe -> probe.onBehalfOf().isEmpty());
     }
 
     @Test

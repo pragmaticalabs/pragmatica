@@ -239,6 +239,28 @@ class SwimIsolationProbeTest {
     }
 
     @Test
+    void isolationProbe_allPeersSwept_seedsRegisteredOnlyViaAddSeedMember_announcesToASeed() {
+        var seed = new InetSocketAddress("127.0.0.1", 9101);
+        var seedNode = new NodeId("seed-only");
+
+        protocol.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of());
+        protocol.addSeedMember(seedNode, seed);
+        protocol.joinAcknowledgedForTest();
+        protocol.latchSelfIsolation(() -> true);
+        protocol.removeMemberForTest(NODE_A);
+        protocol.removeMemberForTest(NODE_B);
+        protocol.removeMemberForTest(seedNode);
+        transport.sent.clear();
+
+        protocol.probeRoundForTest();
+
+        await().atMost(Duration.ofSeconds(2))
+               .untilAsserted(() -> assertThat(transport.sent).as("production registers seeds via addSeedMember only; the swept seed is still asked")
+                                                              .anyMatch(entry -> entry.target().equals(seed)
+                                                                                 && entry.message() instanceof SwimMessage.Announce));
+    }
+
+    @Test
     void isolationProbe_peersRemain_noAnnounceToASeed() {
         var seed = new InetSocketAddress("127.0.0.1", 9100);
 

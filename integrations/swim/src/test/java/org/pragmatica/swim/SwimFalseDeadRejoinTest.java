@@ -20,12 +20,15 @@ import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -62,6 +65,14 @@ class SwimFalseDeadRejoinTest {
     private final AtomicBoolean inboundOnly = new AtomicBoolean(false);
     /// true: drop datagrams between the live node and the observer only (the helper still reaches both).
     private final AtomicBoolean pairCut = new AtomicBoolean(false);
+    /// true (with `pairCut`): the observer's gossip about the live node never reaches the helper, and the observer sends
+    /// no PingReq, so the observer alone declares the live node dead and nobody else hears of it.
+    private final AtomicBoolean observerVerdictPrivate = new AtomicBoolean(false);
+    /// Sequences of the Pings the helper relayed to the observer on behalf of a requester (D3): the observer's Acks to
+    /// them carry the death notice and are exempt from the gossip filter.
+    private final Set<Long> relayedSequences = ConcurrentHashMap.newKeySet();
+    /// Datagrams the live node sent while it was inbound-isolated (`inboundOnly`).
+    private final AtomicInteger liveSpoke = new AtomicInteger();
     private final CopyOnWriteArrayList<SwimObservation> observed = new CopyOnWriteArrayList<>();
 
     @AfterEach
@@ -76,13 +87,41 @@ class SwimFalseDeadRejoinTest {
         runScenario(false);
     }
 
-    /// #3028 arm 1e: after the full isolation every peer holds a death record for the live node X; X heals toward
-    /// the helper I only, the X<->T link (T = observer) stays cut. T can learn X is alive only through the relay
-    /// (X's PingReq via I): the relayed Ping names X in `onBehalfOf`, so T answers X's entry with a death notice, X
-    /// refutes and T re-admits it. RED without the marker: the entry is third-party gossip at T and earns no notice.
+    /// #3028 arm 1e (the ruled scenario): X<->T is cut, X<->I<->T is up. T alone declares X dead at k: T sends no PingReq
+    /// and its gossip about X never reaches I, so I keeps X ALIVE at k and X (hearing from I) never bumps its incarnation.
+    /// T's Faulty(X,k) is not circulating and I's Alive(X,k) is refused by T's death-record gate, so the ONLY path by
+    /// which X can learn of its death is the notice T answers to the Ping I relays for X's PingReq (`onBehalfOf` = X):
+    /// X refutes with k+1 and T re-admits it. RED without the notice (relay marker ignored): X stays dead at T.
     @Test
     void liveNodeReachableOnlyViaTheHelper_isReadmittedByTheObserverThroughTheRelay() {
-        runScenario(true);
+        var observer = node(OBSERVER, OBSERVER_PORT, 1L);
+        var helper = node(HELPER, HELPER_PORT, 1L);
+        var live = node(LIVE, LIVE_PORT, 1L);
+
+        observer.addObservationListener(this::captureAtTheVerdict);
+        seed(observer, HELPER, HELPER_PORT, LIVE, LIVE_PORT);
+        seed(helper, OBSERVER, OBSERVER_PORT, LIVE, LIVE_PORT);
+        seed(live, OBSERVER, OBSERVER_PORT, HELPER, HELPER_PORT);
+        awaitHealthyOnObserver();
+        observerVerdictPrivate.set(true);
+        pairCut.set(true);
+
+        await().atMost(30, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(verdictSnapshot.get()).as("instrument: the observer alone declared the live node dead")
+                                                                     .isNotNull());
+        var verdict = verdictSnapshot.get();
+
+        assertThat(verdict.observerRecord()).as("instrument: the observer holds a death record for the live node at incarnation 1")
+                                            .isEqualTo(1L);
+        assertThat(verdict.helperView()).as("instrument: the helper still holds the live node ALIVE at the same incarnation")
+                                        .isEqualTo(MemberState.ALIVE + "@1");
+        assertThat(verdict.liveIncarnation()).as("instrument: the live node has not advanced its incarnation (nothing told it of the verdict)")
+                                             .isEqualTo(1L);
+        await().atMost(30, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(forLive(SwimObservation.HealthyObserved.class).size()).as("T must re-admit X through the relayed notice alone (selfIncarnation=%s, observer view=%s)",
+                                                                                                         live.selfIncarnation(),
+                                                                                                         observer.members().get(LIVE))
+                                                                                                     .isGreaterThan(verdict.healthyAtVerdict()));
     }
 
     /// The Ember shape: every peer's writes TO the live node are refused (backpressure), while its own
@@ -90,11 +129,17 @@ class SwimFalseDeadRejoinTest {
     /// keeps receiving reachability evidence.
     @Test
     void liveNodeDeclaredFaultyByDroppedInboundOnly_isReadmittedAfterTheDropsStop() {
-        inboundOnly.set(true);
-        runScenario(false);
+        runScenario(true);
     }
 
-    private void runScenario(boolean healOnlyViaHelper) {
+    private record VerdictSnapshot(long observerRecord, String helperView, long liveIncarnation, int healthyAtVerdict) {}
+
+    private final AtomicReference<VerdictSnapshot> verdictSnapshot = new AtomicReference<>();
+    private SwimProtocol observerNode;
+    private SwimProtocol helperNode;
+    private SwimProtocol liveNode;
+
+    private void runScenario(boolean inboundOnlyAfterTheVerdict) {
         var observer = node(OBSERVER, OBSERVER_PORT, 1L);
         var helper = node(HELPER, HELPER_PORT, 1L);
         var live = node(LIVE, LIVE_PORT, 1L);
@@ -114,7 +159,10 @@ class SwimFalseDeadRejoinTest {
                                                                                              .isNotEmpty());
         var healthyBeforeHeal = forLive(SwimObservation.HealthyObserved.class).size();
 
-        pairCut.set(healOnlyViaHelper);
+        if (inboundOnlyAfterTheVerdict) {
+            holdInboundOnlyUntilTheLiveNodeSpeaks();
+        }
+
         liveIsolated.set(false);
 
         await().atMost(30, TimeUnit.SECONDS)
@@ -122,6 +170,43 @@ class SwimFalseDeadRejoinTest {
                                                                                                 live.selfIncarnation(),
                                                                                                 observer.members().get(LIVE))
                                                                                              .hasSizeGreaterThan(healthyBeforeHeal));
+    }
+
+    /// The Ember shape after the verdict: the live node's own datagrams flow again while everything addressed to it is
+    /// still refused. The barrier is the live node's own traffic (>= 3 datagrams), never a sleep.
+    private void holdInboundOnlyUntilTheLiveNodeSpeaks() {
+        inboundOnly.set(true);
+        await().atMost(15, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(liveSpoke.get()).as("instrument: the live node spoke while inbound-isolated")
+                                                               .isGreaterThanOrEqualTo(3));
+    }
+
+    private void awaitHealthyOnObserver() {
+        await().atMost(15, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(forLive(SwimObservation.HealthyObserved.class)).as("instrument: the observer saw the live node HEALTHY before the fault")
+                                                                                            .isNotEmpty());
+    }
+
+    /// Runs on the observer's observation thread at the verdict edge, before any relay round trip can undo it.
+    private void captureAtTheVerdict(SwimObservation observation) {
+        observed.add(observation);
+        if (observation instanceof SwimObservation.DepartedObserved departed && departed.peer().equals(LIVE)) {
+            verdictSnapshot.compareAndSet(null,
+                                          new VerdictSnapshot(observerNode.deathRecordForTest(LIVE).map(record -> record[0]).or(-1L),
+                                                              helperNode.members().get(LIVE).state() + "@" + helperNode.members().get(LIVE).incarnation(),
+                                                              liveNode.selfIncarnation(),
+                                                              forLive(SwimObservation.HealthyObserved.class).size()));
+        }
+    }
+
+    private void rememberNode(NodeId id, SwimProtocol protocol) {
+        if (id.equals(OBSERVER)) {
+            observerNode = protocol;
+        } else if (id.equals(HELPER)) {
+            helperNode = protocol;
+        } else {
+            liveNode = protocol;
+        }
     }
 
     private <T extends SwimObservation> List<T> forLive(Class<T> type) {
@@ -171,6 +256,7 @@ class SwimFalseDeadRejoinTest {
                               List.of());
         protocol.start();
         started.add(protocol);
+        rememberNode(id, protocol);
 
         return protocol;
     }
@@ -201,15 +287,60 @@ class SwimFalseDeadRejoinTest {
                 return;
             }
 
+            if (observerVerdictPrivate.get() && selfPort == OBSERVER_PORT && message instanceof SwimMessage.PingReq) {
+                return;
+            }
+
             if (liveIsolated.get() && (target.getPort() == LIVE_PORT || (!inboundOnly.get() && selfPort == LIVE_PORT))) {
                 return;
             }
 
+            noteRelayedPing(target, message);
+            countLiveSpeech(message);
             var handler = net.get(new InetSocketAddress("127.0.0.1", target.getPort()));
 
             if (handler != null) {
-                handler.onMessage(self, message);
+                handler.onMessage(self, filtered(target, message));
             }
+        }
+
+        private void countLiveSpeech(SwimMessage message) {
+            if (liveIsolated.get() && inboundOnly.get() && selfPort == LIVE_PORT) {
+                liveSpoke.incrementAndGet();
+            }
+        }
+
+        private void noteRelayedPing(InetSocketAddress target, SwimMessage message) {
+            if (selfPort == HELPER_PORT && target.getPort() == OBSERVER_PORT && message instanceof SwimMessage.Ping ping
+                && ping.onBehalfOf().isPresent()) {
+                relayedSequences.add(ping.sequence());
+            }
+        }
+
+        /// While the observer's verdict is private, what the observer sends the helper carries nothing about the live
+        /// node, except its Ack to a relayed Ping (that Ack carries the death notice).
+        private SwimMessage filtered(InetSocketAddress target, SwimMessage message) {
+            return observerVerdictPrivate.get() && selfPort == OBSERVER_PORT && target.getPort() == HELPER_PORT
+                   ? withoutLiveEntries(message)
+                   : message;
+        }
+
+        private SwimMessage withoutLiveEntries(SwimMessage message) {
+            return switch (message) {
+                case SwimMessage.Ping ping -> new SwimMessage.Ping(ping.from(),
+                                                                   ping.sequence(),
+                                                                   aboutOthers(ping.piggyback()),
+                                                                   ping.onBehalfOf());
+                case SwimMessage.Ack ack when !relayedSequences.contains(ack.sequence()) ->
+                SwimMessage.Ack.ack(ack.from(), ack.sequence(), aboutOthers(ack.piggyback()));
+                default -> message;
+            };
+        }
+
+        private static List<SwimMessage.MembershipUpdate> aboutOthers(List<SwimMessage.MembershipUpdate> piggyback) {
+            return piggyback.stream()
+                            .filter(update -> !update.nodeId().equals(LIVE))
+                            .toList();
         }
 
         @Override

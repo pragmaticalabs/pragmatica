@@ -342,8 +342,12 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// local to [#announceJoin] and a stopped protocol kept announcing for up to 30 s.
     private final AtomicReference<Option<ScheduledFuture<?>>> announceFuture = new AtomicReference<>(none());
 
-    /// Seeds and identity retained from [#announceJoin] for the isolated-and-alone ANNOUNCE ([#announceWhileAlone]).
-    private volatile Option<SeedAnnounce> seedAnnounce = none();
+    /// Identity retained from [#announceJoin] for the isolated-and-alone ANNOUNCE ([#announceWhileAlone]).
+    private volatile Option<AnnounceIdentity> announceIdentity = none();
+    /// Every seed address this node was given, by [#announceJoin]'s `seeds` or by [#addSeedMember] (production registers
+    /// its seeds only through the latter). Kept after a seed is swept from the member map: the isolated-and-alone ANNOUNCE
+    /// ([#announceWhileAlone]) draws on it.
+    private final Set<InetSocketAddress> seedAddresses = ConcurrentHashMap.newKeySet();
     /// #501: `true` from [#stop] until the next [#start]. Cancelling [#announceFuture] is not on its
     /// own enough to tie the announce loop's lifetime to [#stop], because two announces can still
     /// escape a stopped protocol: an [#announceJoin] that resolved this protocol before the stop and
@@ -532,9 +536,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// incarnation supersedes it. `createdAtMs` bounds map growth via the TTL sweep.
     private record Tombstone(long incarnation, long createdAtMs) {}
 
-    /// What a node alone in the cluster needs to ask a seed for the view again (#3028 D4b): the identity and seeds of
-    /// [#announceJoin].
-    private record SeedAnnounce(NodeInfo self, String clusterName, List<InetSocketAddress> seeds) {}
+    /// What a node alone in the cluster needs to ask a seed for the view again (#3028 D4b): the identity of
+    /// [#announceJoin]. The seed addresses are [#seedAddresses].
+    private record AnnounceIdentity(NodeInfo self, String clusterName) {}
 
     /// A [#deathRecords] entry: the FAULTY incarnation and the non-zero boot token snapshotted at the FAULTY edge.
     /// `createdAtMs` orders eviction at the cap.
@@ -699,6 +703,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         if (!inMembershipScope(nodeId) || selfId.equals(nodeId)) {
             return;
         }
+
+        seedAddresses.add(address);
         // Mirror the ANNOUNCE guard (`if (!members.containsKey(...))`): only introduce
         // an UNKNOWN id. A re-seed of a member already tracked (notably a SUSPECT victim
         // whose suspect-window is counting down to FAULTY) must be a no-op — otherwise
@@ -1081,11 +1087,17 @@ public final class SwimProtocol implements SwimMessageHandler {
             return;
         }
 
-        seedAnnounce.onPresent(this::scheduleSeedAnnounce);
+        announceIdentity.onPresent(this::scheduleSeedAnnounce);
     }
 
-    private void scheduleSeedAnnounce(SeedAnnounce target) {
-        var seed = target.seeds().get(ThreadLocalRandom.current().nextInt(target.seeds().size()));
+    private void scheduleSeedAnnounce(AnnounceIdentity target) {
+        var seeds = List.copyOf(seedAddresses);
+
+        if (seeds.isEmpty()) {
+            return;
+        }
+
+        var seed = seeds.get(ThreadLocalRandom.current().nextInt(seeds.size()));
         var delayMs = ThreadLocalRandom.current().nextLong(Math.max(1L,
                                                                     config.period().millis()));
 
@@ -1093,7 +1105,7 @@ public final class SwimProtocol implements SwimMessageHandler {
                                  TimeSpan.timeSpan(delayMs).millis());
     }
 
-    private void sendSeedAnnounce(SeedAnnounce target, InetSocketAddress seed) {
+    private void sendSeedAnnounce(AnnounceIdentity target, InetSocketAddress seed) {
         if (!announceStopped.get()) {
             transport.send(seed,
                            Announce.announce(target.self(),
@@ -2765,9 +2777,8 @@ public final class SwimProtocol implements SwimMessageHandler {
             selfIncarnation.updateAndGet(cur -> Math.max(cur, incarnation));
             selfBootToken.compareAndSet(0L, bootToken);
             selfLabels = withQuorumReport(gossipLabels(self.labels()), selfLabels);
-            seedAnnounce = seeds.isEmpty()
-                           ? none()
-                           : option(new SeedAnnounce(self, clusterName, List.copyOf(seeds)));
+            announceIdentity = option(new AnnounceIdentity(self, clusterName));
+            seedAddresses.addAll(seeds);
             if (seeds.isEmpty()) {
                 return;
             }
