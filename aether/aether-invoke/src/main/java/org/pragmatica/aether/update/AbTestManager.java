@@ -410,7 +410,9 @@ public interface AbTestManager {
 
                 return test.transitionTo(AbTestState.CONCLUDING)
                            .async()
-                           .flatMap(concluding -> claimInMemory(test, concluding, () -> promoteWinner(concluding, winningVariant)));
+                           .flatMap(concluding -> claimInMemory(test,
+                                                                concluding,
+                                                                () -> promoteWinner(concluding, winningVariant)));
             }
 
             /// #2662: a fenced write; a target that is no longer committed is refused. #2964: the fenced write is decided BEFORE the test's
@@ -440,7 +442,9 @@ public interface AbTestManager {
 
                 return withOldRouting.transitionTo(AbTestState.ROLLING_BACK)
                                      .async()
-                                     .flatMap(rolling -> claimInMemory(test, rolling, () -> restoreBaseline(rolling)));
+                                     .flatMap(rolling -> claimInMemory(test,
+                                                                       rolling,
+                                                                       () -> restoreBaseline(rolling)));
             }
 
             /// #2964: the in-memory claim of a conclude or a rollback. `CONCLUDING` / `ROLLING_BACK` is put in the `tests` map BEFORE the fenced
@@ -453,7 +457,9 @@ public interface AbTestManager {
                 tests.put(claimed.testId(), claimed);
 
                 return write.get()
-                            .onFailure(_ -> tests.replace(claimed.testId(), claimed, before));
+                            .onFailure(_ -> tests.replace(claimed.testId(),
+                                                          claimed,
+                                                          before));
             }
 
             /// #2662: a fenced write. A target that is not committed, or whose owning blueprint is not, is not restored: writing it would
