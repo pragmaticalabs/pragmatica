@@ -19,11 +19,10 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.lang.Option;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import org.pragmatica.lang.Option;
 
 import static org.pragmatica.lang.Option.option;
 
@@ -32,7 +31,6 @@ import static org.pragmatica.lang.Option.option;
 public sealed interface ConsumerGroupRegistry {
     Map<Integer, ConsumerGroupValue> assignmentsFor(String groupId, String streamName);
     List<Integer> partitionsFor(String groupId, String streamName, NodeId nodeId);
-
     /// The newest epoch committed for the group, assignments and tombstones alike (#2635): a tombstone owns no
     /// partition, but it still fences, so the coordinator must mint above it.
     Option<Epoch> committedEpoch(String groupId, String streamName);
@@ -50,7 +48,7 @@ public sealed interface ConsumerGroupRegistry {
     record GroupStreamKey(String groupId, String streamName) {}
 
     record DefaultConsumerGroupRegistry(ConcurrentHashMap<GroupStreamKey, ConcurrentHashMap<Integer, ConsumerGroupValue>> state,
-                                           ConcurrentHashMap<GroupStreamKey, Epoch> tombstoneEpochs) implements ConsumerGroupRegistry {
+                                        ConcurrentHashMap<GroupStreamKey, Epoch> tombstoneEpochs) implements ConsumerGroupRegistry {
         private static final Logger log = LoggerFactory.getLogger(DefaultConsumerGroupRegistry.class);
 
         @Override
@@ -78,8 +76,8 @@ public sealed interface ConsumerGroupRegistry {
             var key = new GroupStreamKey(groupId, streamName);
 
             return Option.from(Stream.concat(assignmentsFor(groupId, streamName).values()
-                                                                                .stream()
-                                                                                .map(ConsumerGroupValue::epoch),
+                                                           .stream()
+                                                           .map(ConsumerGroupValue::epoch),
                                              option(tombstoneEpochs.get(key)).stream())
                                      .max(Comparator.naturalOrder()));
         }

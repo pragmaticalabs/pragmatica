@@ -324,11 +324,17 @@ public sealed interface ConsumerGroupCoordinator {
                 var tombstone = ConsumerGroupTombstone.consumerGroupTombstone(epoch);
 
                 return partitions.stream()
-                                 .<KVCommand<AetherKey>> map(partition -> new KVCommand.Put<AetherKey, AetherValue>(ConsumerGroupKey.consumerGroupKey(groupId,
-                                                                                                                                                     streamName,
-                                                                                                                                                     partition),
-                                                                                                                    tombstone))
+                                 .map(partition -> tombstoneCommand(groupId, streamName, partition, tombstone))
                                  .toList();
+            }
+
+            private static KVCommand<AetherKey> tombstoneCommand(String groupId,
+                                                                 String streamName,
+                                                                 int partition,
+                                                                 ConsumerGroupTombstone tombstone) {
+                var key = ConsumerGroupKey.consumerGroupKey(groupId, streamName, partition);
+
+                return new KVCommand.Put<AetherKey, AetherValue>(key, tombstone);
             }
 
             private static List<KVCommand<AetherKey>> buildAssignmentCommands(String groupId,
