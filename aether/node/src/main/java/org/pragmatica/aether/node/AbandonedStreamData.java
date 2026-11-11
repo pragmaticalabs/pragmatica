@@ -46,7 +46,11 @@ public interface AbandonedStreamData {
     /// Scans both bases and raises the warning, or the recovery when nothing is abandoned.
     @Contract
     static void check(OperatorWarningSink sink, Path streamSegmentsDir, Path walBaseDir, String selfId) {
-        var roots = Stream.of(streamSegmentsDir, walBaseDir).map(AbandonedStreamData::parentOf).distinct().toList();
+        var roots = Stream.of(streamSegmentsDir, walBaseDir)
+                          .filter(base -> isKeyedBy(base, selfId))
+                          .map(AbandonedStreamData::parentOf)
+                          .distinct()
+                          .toList();
         var found = roots.stream().flatMap(root -> foreignDirectories(root, selfId).stream()).toList();
         var subject = parentOf(streamSegmentsDir).toString();
 
@@ -81,6 +85,14 @@ public interface AbandonedStreamData {
         return abandoned.bytes() < 0
                ? abandoned.path() + " (size unknown)"
                : abandoned.path() + " (" + abandoned.bytes() + " bytes)";
+    }
+
+    /// A base is `<root>/<nodeId>` only when its last segment is this node's id. A derived WAL base (`<own dir>/wal`) is not: its
+    /// parent is this node's own directory, whose children are not other nodes'.
+    private static boolean isKeyedBy(Path base, String selfId) {
+        return base.getFileName()
+                   .toString()
+                   .equals(selfId);
     }
 
     private static Path parentOf(Path base) {
