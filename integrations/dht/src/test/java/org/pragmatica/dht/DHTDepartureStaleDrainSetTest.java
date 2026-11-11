@@ -21,7 +21,6 @@ import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -43,17 +42,17 @@ class DHTDepartureStaleDrainSetTest {
     private static final TimeSpan BUDGET = TimeSpan.timeSpan(30).seconds();
     /// The legacy budget, kept to prove the instrument sees a stalled page lost.
     private static final TimeSpan LEGACY_BUDGET = TimeSpan.timeSpan(50).millis();
-    /// A first page read delayed past [#LEGACY_BUDGET], injected deterministically: the delay is fixed, never a race.
+    /// Every page read delayed past [#LEGACY_BUDGET], injected deterministically: the delay is fixed, never a race.
     private static final long STALL_MS = 300L;
     private static final byte[] DEPOSED = "deposed".getBytes(StandardCharsets.UTF_8);
 
     @Test
-    void coDrain_firstPageReadStalledPastLegacyBudget_losesNothing_controlWithLegacyBudgetDoes() {
+    void coDrain_pageReadsStalledPastLegacyBudget_losesNothing_controlWithLegacyBudgetDoes() {
         var names = List.of("n-a", "n-b", "n-c", "n-d", "n-e", "n-f");
         var drainers = Set.of(new NodeId("n-a"), new NodeId("n-b"));
 
         assertThat(losses(names, drainers, drainers, LEGACY_BUDGET, STALL_MS))
-            .as("positive control: a first read stalled past the legacy budget abandons the page").isPositive();
+            .as("positive control: reads stalled past the legacy budget abandon the pages").isPositive();
         assertThat(losses(names, drainers, drainers, BUDGET, STALL_MS))
             .as("the stall is within the budget: nothing is lost").isZero();
     }
@@ -97,8 +96,8 @@ class DHTDepartureStaleDrainSetTest {
 
     /// Concurrent drain: every drainer pushes from its own pre-drain storage with `coDeparting` as the
     /// drain set it saw; pushes landing on any drainer die with it. Returns keys with no surviving holder.
-    private static int losses(List<String> names, Set<NodeId> drainers, Set<NodeId> coDeparting, TimeSpan budget, long firstReadStallMs) {
-        var cluster = new Cluster(names, Set.of(), firstReadStallMs);
+    private static int losses(List<String> names, Set<NodeId> drainers, Set<NodeId> coDeparting, TimeSpan budget, long readStallMs) {
+        var cluster = new Cluster(names, Set.of(), readStallMs);
         cluster.hold();
         var rf = CONFIG.effectiveReplicationFactor(names.size());
         var keys = new ArrayList<byte[]>();
@@ -191,9 +190,8 @@ class DHTDepartureStaleDrainSetTest {
         };
     }
 
-    /// Delegates everything; the first entry read answers only after `stallMs`, as a starved host would.
-    private static StorageEngine stallingFirstRead(StorageEngine d, long stallMs) {
-        var stalled = new AtomicBoolean(false);
+    /// Delegates everything; every entry read answers only after `stallMs`, as a starved host would.
+    private static StorageEngine stallingReads(StorageEngine d, long stallMs) {
         return new StorageEngine() {
             public Promise<Option<byte[]>> get(byte[] key) { return d.get(key); }
             public Promise<Unit> put(byte[] key, byte[] value) { return d.put(key, value); }
@@ -206,9 +204,7 @@ class DHTDepartureStaleDrainSetTest {
                 return d.putReplica(k, v, ver, i, t, c);
             }
             public Promise<Option<DHTMessage.KeyValue>> getEntry(byte[] key) {
-                return stalled.compareAndSet(false, true)
-                       ? Promise.promise(TimeSpan.timeSpan(stallMs).millis(), p -> d.getEntry(key).onResult(p::resolve))
-                       : d.getEntry(key);
+                return Promise.promise(TimeSpan.timeSpan(stallMs).millis(), p -> d.getEntry(key).onResult(p::resolve));
             }
             public long size() { return d.size(); }
             public Promise<Unit> clear() { return d.clear(); }
@@ -233,7 +229,7 @@ class DHTDepartureStaleDrainSetTest {
             this(names, partialRefusers, 0L);
         }
 
-        Cluster(List<String> names, Set<String> partialRefusers, long firstReadStallMs) {
+        Cluster(List<String> names, Set<String> partialRefusers, long readStallMs) {
             var ids = names.stream().map(NodeId::new).toList();
             ids.forEach(id -> {
                 var ring = ConsistentHashRing.<NodeId>consistentHashRing();
@@ -242,7 +238,7 @@ class DHTDepartureStaleDrainSetTest {
                 StorageEngine plain = partialRefusers.contains(id.id())
                                       ? refusingBadPrefix(memoryStorageEngine(gate))
                                       : memoryStorageEngine(gate);
-                StorageEngine storage = firstReadStallMs > 0 ? stallingFirstRead(plain, firstReadStallMs) : plain;
+                StorageEngine storage = readStallMs > 0 ? stallingReads(plain, readStallMs) : plain;
                 var node = dhtNode(id, storage, ring, CONFIG);
                 DHTNetwork net = AcceptingNetwork.accepting(this::deliver);
                 members.put(id, new Member(id, node, dhtRebalancer(node, net, CONFIG), dhtAntiEntropy(node, net, CONFIG, departing::contains), gate));
