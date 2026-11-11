@@ -2894,6 +2894,8 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STORAGE_WAL_RETIRED,
                 OperatorWarningCode.STORAGE_DHT_MARKER_VERIFIED,
                 OperatorWarningCode.STORAGE_MAINTENANCE_STARTED,
+                OperatorWarningCode.STORAGE_MAINTENANCE_STOPPED,
+                OperatorWarningCode.STORAGE_MAINTENANCE_PASS_RECOVERED,
                 OperatorWarningCode.STORAGE_PREFETCH_STARTED,
                 OperatorWarningCode.STORAGE_WRITE_BEHIND_FLUSHED,
                 OperatorWarningCode.STORAGE_ANCHOR_READABLE,
