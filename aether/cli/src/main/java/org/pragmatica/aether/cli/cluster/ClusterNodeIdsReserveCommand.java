@@ -55,10 +55,8 @@ class ClusterNodeIdsReserveCommand implements Callable<Integer> {
     /// Field names MUST match `ManagementApiResponses.ReserveNodeIdsRequest`; the CLI cannot depend on `aether/node`, so
     /// `ClusterNodeIdsReserveCommandTest` and `NodeIdRoutesTest` pin the two spellings.
     static String buildReserveJson(String source, String role, int count) {
-        return "{\"source\":" + MAPPER.writeAsString(source)
-                                      .or("\"\"")
-             + ",\"role\":" + MAPPER.writeAsString(role)
-                                    .or("\"\"")
+        return "{\"source\":" + MAPPER.writeAsString(source).or("\"\"")
+             + ",\"role\":" + MAPPER.writeAsString(role).or("\"\"")
              + ",\"count\":" + count
              + "}";
     }
@@ -71,8 +69,7 @@ class ClusterNodeIdsReserveCommand implements Callable<Integer> {
 
     private static String idsLine(JsonNode response) {
         return "Reserved: " + String.join(", ",
-                                          StreamSupport.stream(response.path("ids")
-                                                                       .spliterator(),
+                                          StreamSupport.stream(response.path("ids").spliterator(),
                                                                false)
                                                        .map(JsonNode::asText)
                                                        .toList());
