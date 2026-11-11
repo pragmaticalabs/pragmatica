@@ -41,7 +41,6 @@ import static org.pragmatica.lang.Unit.unit;
 /// unreadable directory is logged and skipped (forward recovery at the boot boundary: the check is advisory and must not stop a node).
 public interface AbandonedStreamData {
     Logger log = LoggerFactory.getLogger(AbandonedStreamData.class);
-
     /// Name of the marker file written beside the stream data root while an abandoned-data warning may be open.
     String MARKER = ".stream-data-abandoned";
 
@@ -74,7 +73,12 @@ public interface AbandonedStreamData {
     @Contract
     private static void warn(OperatorWarningSink sink, List<Abandoned> found, Path root) {
         writeMarker(root.resolve(MARKER));
-        OperatorWarnings.raise(log, sink, OperatorWarningCode.STREAM_DATA_ABANDONED, root.toString(), "{}", message(found));
+        OperatorWarnings.raise(log,
+                               sink,
+                               OperatorWarningCode.STREAM_DATA_ABANDONED,
+                               root.toString(),
+                               "{}",
+                               message(found));
     }
 
     /// Raises the clear only for a marker an earlier boot left, and deletes the marker after the raise.
