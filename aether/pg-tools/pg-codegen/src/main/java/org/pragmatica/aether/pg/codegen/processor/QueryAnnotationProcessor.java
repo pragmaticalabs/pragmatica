@@ -31,11 +31,13 @@ import javax.lang.model.SourceVersion;
 import javax.lang.model.element.Element;
 import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.ExecutableElement;
+import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.element.VariableElement;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.MirroredTypeException;
 import javax.lang.model.type.TypeMirror;
+import javax.lang.model.util.Types;
 import javax.tools.Diagnostic;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -46,6 +48,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.regex.Pattern;
 
 /// Main annotation processor for PostgreSQL persistence interfaces.
@@ -347,16 +350,18 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                resolved.needsMapper(),
                                                resolved.scalarAccessor(),
                                                documentColumn,
-                                               scalarColumn);
+                                               scalarColumn,
+                                               fallibleRecordFactory(execElement, methodName, resolved));
     }
 
-    /// The document handling of a `@Jsonb` method's result: empty for an unmarked method, a failure (already
-    /// reported) when the return type cannot be a document.
+    /// The single-column handling of a method's result: a `@Jsonb` document, or a value object that declares
+    /// `valueMapping()` (#3015). Empty for any other unmarked method, a failure (already reported) when a marked
+    /// return type cannot be a document.
     private Result<Option<ColumnRepr>> documentReturn(ExecutableElement execElement,
                                                       String methodName,
                                                       TypeMirrorResolver.ResolvedReturn resolved) {
         if (!isMarked(execElement)) {
-            return Result.success(Option.empty());
+            return Result.success(valueObjectReturn(execElement, resolved));
         }
         var kind = resolved.kind();
         if (kind != MethodAnalyzer.ReturnKind.SINGLE && kind != MethodAnalyzer.ReturnKind.OPTIONAL
@@ -372,6 +377,112 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                                                         cause.message()),
                                                     execElement))
                           .mapError(_ -> REPORTED);
+    }
+
+    /// A value object in `T`, `Option<T>` or `List<T>` position reads its one column and decodes it through
+    /// `valueMapping().lift()`, the way a value-object record component does. It is never a row record.
+    private static Option<ColumnRepr> valueObjectReturn(ExecutableElement execElement,
+                                                        TypeMirrorResolver.ResolvedReturn resolved) {
+        var kind = resolved.kind();
+        var rowKind = kind == MethodAnalyzer.ReturnKind.SINGLE || kind == MethodAnalyzer.ReturnKind.OPTIONAL
+                      || kind == MethodAnalyzer.ReturnKind.LIST;
+        var element = TypeMirrorResolver.innerTypeElement(execElement.getReturnType());
+
+        return rowKind && element != null
+               ? ValueMappingResolver.resolve(element.asType()).map(ColumnRepr.class::cast)
+               : Option.empty();
+    }
+
+    /// Whether the row record's type-named static factory returns `Result` (the record has an invariant) rather than
+    /// the record (#3018). The generated mapper builds the record through `Row.row(components...)`, never `new`, so
+    /// the invariants run at the decode boundary; a record without such a factory is reported (the placeholder keeps
+    /// the generated source well-formed while the reported error fails the compilation).
+    private boolean fallibleRecordFactory(ExecutableElement execElement,
+                                          String methodName,
+                                          TypeMirrorResolver.ResolvedReturn resolved) {
+        var record = TypeMirrorResolver.innerTypeElement(execElement.getReturnType());
+
+        if (!resolved.needsMapper() || record == null) {
+            return false;
+        }
+
+        var factory = recordFactory(record);
+
+        if (factory.isEmpty()) {
+            error(ProcessorError.missingRecordFactory(methodName,
+                                                      record.getSimpleName().toString(),
+                                                      expectedFactorySignature(record)),
+                  execElement);
+            return false;
+        }
+
+        return factory.map(method -> isFallibleFactory(execElement, methodName, record, method))
+                      .or(false);
+    }
+
+    private boolean isFallibleFactory(ExecutableElement execElement,
+                                      String methodName,
+                                      TypeElement record,
+                                      ExecutableElement factory) {
+        var types = processingEnv.getTypeUtils();
+        var returned = factory.getReturnType();
+
+        if (types.isSameType(returned, record.asType())) {
+            return false;
+        }
+
+        if (isResultOf(returned, record, types)) {
+            return true;
+        }
+
+        error(ProcessorError.recordFactoryReturnType(methodName, factory.getSimpleName().toString(), record.getSimpleName().toString()),
+              execElement);
+        return false;
+    }
+
+    private static boolean isResultOf(TypeMirror returned, TypeElement record, Types types) {
+        return returned instanceof DeclaredType declared
+               && ((TypeElement) declared.asElement()).getQualifiedName().contentEquals(RESULT_TYPE)
+               && declared.getTypeArguments().size() == 1
+               && types.isSameType(declared.getTypeArguments().getFirst(), record.asType());
+    }
+
+    private static final String RESULT_TYPE = "org.pragmatica.lang.Result";
+
+    /// The static method named after the record (`Row` -> `row`) whose parameters are the record's components, in order.
+    private static Option<ExecutableElement> recordFactory(TypeElement record) {
+        var name = factoryName(record);
+        var componentTypes = componentTypeNames(record);
+
+        return Option.from(record.getEnclosedElements()
+                                 .stream()
+                                 .filter(enclosed -> enclosed.getKind() == ElementKind.METHOD)
+                                 .map(ExecutableElement.class::cast)
+                                 .filter(method -> method.getSimpleName().contentEquals(name))
+                                 .filter(method -> method.getModifiers().contains(Modifier.STATIC))
+                                 .filter(method -> parameterTypeNames(method).equals(componentTypes))
+                                 .findFirst());
+    }
+
+    private static String factoryName(TypeElement record) {
+        return NamingConvention.toFactoryMethodName(record.getSimpleName().toString());
+    }
+
+    private static List<String> componentTypeNames(TypeElement record) {
+        return record.getRecordComponents().stream().map(component -> component.asType().toString()).toList();
+    }
+
+    private static List<String> parameterTypeNames(ExecutableElement method) {
+        return method.getParameters().stream().map(param -> param.asType().toString()).toList();
+    }
+
+    private static String expectedFactorySignature(TypeElement record) {
+        var params = record.getRecordComponents()
+                           .stream()
+                           .map(component -> component.asType() + " " + component.getSimpleName())
+                           .collect(Collectors.joining(", "));
+
+        return "static " + record.getSimpleName() + " " + factoryName(record) + "(" + params + ")";
     }
 
     // `T` of `Promise<T>`, `Promise<Option<T>>` or `Promise<List<T>>`.
@@ -585,7 +696,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                resolved.needsMapper(),
                                                resolved.scalarAccessor(),
                                                Option.empty(),
-                                               scalarColumn);
+                                               scalarColumn,
+                                               fallibleRecordFactory(execElement, methodName, resolved));
     }
 
     private FactoryGenerator.MethodInfo buildCrudMethodInfoWithoutSchema(
@@ -621,7 +733,8 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                resolved.needsMapper(),
                                                resolved.scalarAccessor(),
                                                Option.empty(),
-                                               scalarColumn);
+                                               scalarColumn,
+                                               fallibleRecordFactory(execElement, methodName, resolved));
     }
 
     private String generateCrudSqlWithoutSchema(

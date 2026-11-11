@@ -507,7 +507,7 @@ public interface LeaderManager {
         @Contract
         @Override
         public void peerJoined(PeerJoined peerJoined) {
-            dispatchNodeAdded(peerJoined.nodeId(), peerJoined.topology());
+            dispatchNodeAdded(peerJoined.nodeId(), peerJoined.topology(), peerJoined.sequence());
             if (localMode) {
                 electLocallyIfPossible();
             }
@@ -527,7 +527,8 @@ public interface LeaderManager {
                                                       peerDisconnected.topology()
                                                                       .stream()
                                                                       .filter(context::isEligible)
-                                                                      .toList()));
+                                                                      .toList(),
+                                                      peerDisconnected.sequence()));
         }
 
         @Contract
@@ -552,9 +553,15 @@ public interface LeaderManager {
             // FSM replaces its topology wholesale from the last event, so a reconnect must restore it the way a join
             // does; otherwise a follower keeps suspecting a leader whose link is back (leader not in topology).
             // A reconnect that changes nothing (supersede, stale replace) dispatches nothing: an event would
-            // reschedule an Electing node's rank staircase for no reason.
+            // reschedule an Electing node's rank staircase for no reason. Its sequence is still recorded (#2971): the
+            // stored view already equals this reconnect's, so the write changes no content, but an older eviction
+            // routed late must find the fence moved past it, or its view would drop a peer whose link is back.
             if (restoresTheView(peerReconnected.nodeId(), peerReconnected.topology())) {
-                dispatchNodeAdded(peerReconnected.nodeId(), peerReconnected.topology());
+                dispatchNodeAdded(peerReconnected.nodeId(), peerReconnected.topology(), peerReconnected.sequence());
+            } else {
+                context.applyTopology(nodeAdded(peerReconnected.nodeId(),
+                                                peerReconnected.topology(),
+                                                peerReconnected.sequence()));
             }
         }
 
@@ -566,9 +573,14 @@ public interface LeaderManager {
             return peerMissing || !stored.equals(eligibleView);
         }
 
-        private void dispatchNodeAdded(NodeId nodeId, List<NodeId> topology) {
-            fsm.dispatch(new ClusterFsmEvent.NodeAdded(nodeId,
-                                                       topology.stream().filter(context::isEligible).toList()));
+        private void dispatchNodeAdded(NodeId nodeId, List<NodeId> topology, long sequence) {
+            fsm.dispatch(nodeAdded(nodeId, topology, sequence));
+        }
+
+        private ClusterFsmEvent.NodeAdded nodeAdded(NodeId nodeId, List<NodeId> topology, long sequence) {
+            return new ClusterFsmEvent.NodeAdded(nodeId,
+                                                 topology.stream().filter(context::isEligible).toList(),
+                                                 sequence);
         }
 
         @Contract

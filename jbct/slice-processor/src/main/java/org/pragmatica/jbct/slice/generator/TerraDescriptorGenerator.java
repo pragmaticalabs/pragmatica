@@ -214,8 +214,8 @@ public final class TerraDescriptorGenerator {
                                                                             "",
                                                                             "META-INF/services/org.pragmatica.terra.TerraFactory")
                                                             .openWriter()) {
-                               writer.write(String.join("\n", services) + "\n");
-                           }
+                                   writer.write(String.join("\n", services) + "\n");
+                               }
 
                                return Unit.unit();
                            });

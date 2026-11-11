@@ -48,6 +48,7 @@ import org.pragmatica.net.tcp.TlsConfig;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
@@ -106,7 +107,10 @@ class AetherNodeKvDispatcherFailureStopBootTest {
         var store = node.kvStore();
         var dispatcher = store.dispatcherThreadName();
 
-        assertThat(liveThreadNamed(dispatcher)).as("control: the started node has a live dispatcher thread").isTrue();
+        store.process(store.createBatch(List.of(blueprintPut())));
+        await().atMost(30, SECONDS)
+               .untilAsserted(() -> assertThat(liveThreadNamed(dispatcher)).as("control: the started node has a live dispatcher thread")
+                                                                           .isTrue());
         armed.set(true);
         node.kvStore().process(store.createBatch(List.of(blueprintPut())));
 

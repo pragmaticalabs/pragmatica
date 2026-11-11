@@ -12,7 +12,11 @@ import org.pragmatica.lang.Unit;
 /// Manages short code to URL mappings in PostgreSQL.
 @PgSql
 public interface UrlPersistence {
-    record UrlRow(String shortCode, String originalUrl) {}
+    record UrlRow(String shortCode, String originalUrl) {
+        static UrlRow urlRow(String shortCode, String originalUrl) {
+            return new UrlRow(shortCode, originalUrl);
+        }
+    }
 
     @Query("SELECT short_code, original_url FROM urls WHERE original_url = :originalUrl")
     Promise<Option<UrlRow>> findByOriginalUrl(String originalUrl);

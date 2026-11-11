@@ -172,7 +172,9 @@ public final class SuppressionExtractor {
                 return Option.some(outermostClassMember(path, i));
             }
 
-            if (node.kindIs(RuleKind.LOCAL_VAR) || node.kindIsAny(RuleKind.PLAIN_PARAM, RuleKind.LAST_PARAM, RuleKind.RECEIVER_PARAM)) {
+            if (node.kindIs(RuleKind.LOCAL_VAR) || node.kindIsAny(RuleKind.PLAIN_PARAM,
+                                                                  RuleKind.LAST_PARAM,
+                                                                  RuleKind.RECEIVER_PARAM)) {
                 return Option.some(node);
             }
         }

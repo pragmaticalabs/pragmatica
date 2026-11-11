@@ -1,6 +1,5 @@
 package org.pragmatica.jbct.lint.cst.filetype;
 
-
 /// The JBCT role a compilation unit plays, inferred from its own syntax (issue #453).
 ///
 /// A file is routed to exactly one role by [FileTypeClassifier]. The roles mirror the book's

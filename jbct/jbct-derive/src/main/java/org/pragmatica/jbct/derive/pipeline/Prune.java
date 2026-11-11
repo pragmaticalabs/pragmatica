@@ -8,6 +8,7 @@ import org.pragmatica.jbct.derive.model.AnswerSheet;
 import org.pragmatica.jbct.derive.model.QuestionId;
 import org.pragmatica.jbct.derive.result.Strike;
 
+
 /// Prune — the first derivation stage (SPEC.md §4). Mechanical and binary: a Q6 `mandate` row
 /// carries explicit `strikes = ["axis:value", ...]`, and each struck pair leaves the menu with its
 /// striking answer recorded. No weights, no judgment; a mandate that names no strike does not prune
@@ -26,11 +27,15 @@ public sealed interface Prune permits Prune.unused {
     }
 
     private static boolean isMandate(AnswerRow row) {
-        return row.question() == QuestionId.Q6
-            && row.kind().map(String::toLowerCase).filter("mandate"::equals).isPresent();
+        return row.question() == QuestionId.Q6 && row.kind()
+                                                     .map(String::toLowerCase)
+                                                     .filter("mandate"::equals)
+                                                     .isPresent();
     }
 
     private static Stream<Strike> strikesOf(AnswerRow row) {
-        return row.strikes().stream().flatMap(token -> Strike.strike(token, row).stream());
+        return row.strikes()
+                  .stream()
+                  .flatMap(token -> Strike.strike(token, row).stream());
     }
 }

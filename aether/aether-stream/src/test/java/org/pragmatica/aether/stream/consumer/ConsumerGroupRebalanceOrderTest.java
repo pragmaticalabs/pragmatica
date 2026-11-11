@@ -20,6 +20,7 @@ import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.consensus.topology.TopologyManager;
@@ -67,13 +68,21 @@ class ConsumerGroupRebalanceOrderTest {
         store = new KVStore<>(router, stubSerializer(), stubDeserializer());
         registry = ConsumerGroupRegistry.consumerGroupRegistry();
         router.addRoute(ValuePut.class, this::route);
+        router.addRoute(ValueRemove.class, this::routeRemove);
         coordinator = newCoordinator(1L);
     }
 
     @SuppressWarnings("unchecked")
     private void route(ValuePut<?, ?> event) {
         if (event.cause().key() instanceof ConsumerGroupKey) {
-            registry.onConsumerGroupPut((ValuePut<ConsumerGroupKey, ConsumerGroupValue>) event);
+            registry.onConsumerGroupPut((ValuePut<ConsumerGroupKey, AetherValue>) event);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void routeRemove(ValueRemove<?, ?> event) {
+        if (event.cause().key() instanceof ConsumerGroupKey) {
+            registry.onConsumerGroupRemove((ValueRemove<ConsumerGroupKey, ConsumerGroupValue>) event);
         }
     }
 
@@ -135,7 +144,13 @@ class ConsumerGroupRebalanceOrderTest {
 
     private void recordOwner(Map<Integer, String> owners, int partition) {
         store.get(ConsumerGroupKey.consumerGroupKey(GROUP, STREAM, partition))
-             .onPresent(value -> owners.put(partition, ((ConsumerGroupValue) value).consumerId()));
+             .onPresent(value -> recordIfAssignment(owners, partition, value));
+    }
+
+    private static void recordIfAssignment(Map<Integer, String> owners, int partition, AetherValue value) {
+        if (value instanceof ConsumerGroupValue assignment) {
+            owners.put(partition, assignment.consumerId());
+        }
     }
 
     @Nested
@@ -182,6 +197,291 @@ class ConsumerGroupRebalanceOrderTest {
             assertThat(committedOwners().values()).as("c1 left; the newest batch gives every partition to c2")
                                                   .containsOnly("c2")
                                                   .hasSize(PARTITIONS);
+        }
+    }
+
+    /// #2635: the last member leaving used to submit nothing, so the committed assignments kept naming it.
+    @Nested
+    class LastMemberLeaves {
+        @Test
+        void leaveGroup_lastMember_unassignsEveryCommittedPartition() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            commit(0);
+            assertThat(committedOwners().values()).as("precondition: c1 owns every partition").containsOnly("c1");
+
+            coordinator.leaveGroup(GROUP, STREAM, "c1")
+                       .onFailure(cause -> Assertions.fail("Expected success, got: " + cause.message()));
+            commit(1);
+
+            assertThat(committedOwners()).as("no committed assignment names the departed member").isEmpty();
+            assertThat(registry.assignmentsFor(GROUP, STREAM)).as("no ghost owner for status and metrics").isEmpty();
+            assertThat(registry.partitionsFor(GROUP, STREAM, NODE_A)).isEmpty();
+        }
+
+        @Test
+        void joinGroup_afterTheLastMemberLeft_receivesEveryPartition() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            commit(0);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+            commit(1);
+
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+            commit(2);
+
+            assertThat(committedOwners().values()).containsOnly("c2").hasSize(PARTITIONS);
+        }
+
+        /// v3025d probe D5: tombstone epoch OLDER than live assignments: a fresh activation must seed its mint from the
+        /// NEWEST committed epoch (assignments and tombstones alike), not the oldest.
+        @Test
+        void v3025d_tombstoneOlderThanLiveAssignments_freshActivationMintsAboveTheAssignments() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+            for (var name : List.of("c2", "c3", "c4")) {
+                coordinator.joinGroup(GROUP, STREAM, PARTITIONS, name, NODE_B);
+            }
+            for (var i = 0; i < held.size(); i++) {
+                commit(i);
+            }
+            var before = held.size();
+
+            newCoordinator(1L).joinGroup(GROUP, STREAM, PARTITIONS, "c5", NODE_A);
+            for (var i = before; i < held.size(); i++) {
+                commit(i);
+            }
+
+            assertThat(committedOwners().values()).as("c5 joined last and must own its share").contains("c5");
+        }
+
+        /// v3025e probe G1: committed keys {0..3} but a larger-count join (8) still in flight: the tombstones must
+        /// cover the in-flight range 4..7 too, or the late join batch commits c1 as owner of 4..7 after the leave.
+        @Test
+        void v3025e_inFlightLargerJoinAfterSmallerCommitted_leaveFencesTheWholeRange() {
+            coordinator.joinGroup(GROUP, STREAM, 4, "c1", NODE_A);
+            commit(0);
+            coordinator.joinGroup(GROUP, STREAM, 8, "c1", NODE_A);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+            commit(2);
+            commit(1);
+
+            assertThat(registry.assignmentsFor(GROUP, STREAM)).as("no assignment may name the departed c1").isEmpty();
+        }
+
+        /// v3025d probe E1: the join request carries the partition count (StreamRoutes.JoinGroupRequest), so a later
+        /// join with a SMALLER count leaves the higher partitions' committed assignments outside 0..count-1; the last
+        /// leave must still release every committed assignment of the departed member.
+        @Test
+        void v3025d_countShrinksBeforeLastLeave_committedHigherPartitionsMustNotKeepTheOwner() {
+            coordinator.joinGroup(GROUP, STREAM, 8, "c1", NODE_A);
+            commit(0);
+            coordinator.joinGroup(GROUP, STREAM, 4, "c1", NODE_A);
+            commit(1);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+            commit(2);
+
+            assertThat(registry.assignmentsFor(GROUP, STREAM)).as("no committed assignment may name the departed c1")
+                                                              .isEmpty();
+        }
+
+        /// v3025d probe D1: a FRESH activation (counter 0, same term) joins after the tombstones committed: its mint
+        /// must start above the committed tombstone epoch (registry.committedEpoch), or its Puts are refused.
+        @Test
+        void v3025d_freshActivationSameTerm_joinAfterTombstones_ownsEveryPartition() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            commit(0);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+            commit(1);
+            var before = held.size();
+
+            newCoordinator(1L).joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+            for (var i = before; i < held.size(); i++) {
+                commit(i);
+            }
+
+            assertThat(committedOwners().values()).containsOnly("c2").hasSize(PARTITIONS);
+        }
+
+        /// v3025d probe D2: a newer term joins after tombstones.
+        @Test
+        void v3025d_newerTermJoinAfterTombstones_ownsEveryPartition() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            commit(0);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+            commit(1);
+            var before = held.size();
+
+            newCoordinator(2L).joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+            for (var i = before; i < held.size(); i++) {
+                commit(i);
+            }
+
+            assertThat(committedOwners().values()).containsOnly("c2").hasSize(PARTITIONS);
+        }
+
+        /// v3025d probe D3: join/leave/join/leave cycle, in order: second tombstone overwrites the assignments.
+        @Test
+        void v3025d_secondClearOverAnAssignmentsLayer_leavesNoOwner() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+            coordinator.leaveGroup(GROUP, STREAM, "c2");
+            for (var i = 0; i < held.size(); i++) {
+                commit(i);
+            }
+
+            assertThat(committedOwners()).isEmpty();
+            assertThat(registry.assignmentsFor(GROUP, STREAM)).isEmpty();
+        }
+
+        /// v3025d probe D4: the whole four-batch cycle committed in REVERSE order: last word (leave c2) wins.
+        @Test
+        void v3025d_fourBatchCycleCommittedInReverse_lastLeaveWins() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+            coordinator.leaveGroup(GROUP, STREAM, "c2");
+            for (var i = held.size() - 1; i >= 0; i--) {
+                commit(i);
+            }
+
+            assertThat(committedOwners()).isEmpty();
+        }
+
+        /// Nothing committed yet is not nothing to fence: the join's batch is in flight, so the leave still writes a
+        /// tombstone for every partition.
+        @Test
+        void leaveGroup_lastMemberWithNothingCommitted_submitsATombstonePerPartition() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            held.clear();
+
+            coordinator.leaveGroup(GROUP, STREAM, "c1")
+                       .onFailure(cause -> Assertions.fail("Expected success, got: " + cause.message()));
+
+            assertThat(held).hasSize(1);
+            assertThat(held.get(0)).hasSize(PARTITIONS);
+        }
+
+        /// A group that never learned its partition count and committed nothing has nothing to fence.
+        @Test
+        void leaveGroup_unknownMember_ofAnEmptyGroup_submitsNothing() {
+            coordinator.leaveGroup(GROUP, STREAM, "ghost");
+
+            assertThat(held).isEmpty();
+        }
+
+        /// A group registered with zero partitions has nothing to clear, so its last leave mints nothing and cannot
+        /// be refused for a lagging term: the no-partition guard is what separates this from the refusal below.
+        /// (Only tombstones are committed, which carry the newer term but are not assignments.)
+        /// (The lagging join is itself refused, but the member stays registered, which is what reaches the leave.)
+        @Test
+        void leaveGroup_lastMemberOfAZeroPartitionGroup_isNotRefusedByALaggingTerm() {
+            var leader = newCoordinator(2L);
+            leader.joinGroup(GROUP, STREAM, PARTITIONS, "c3", NODE_A);
+            leader.leaveGroup(GROUP, STREAM, "c3");
+            for (var i = 0; i < held.size(); i++) {
+                commit(i);
+            }
+            held.clear();
+            var lagging = newCoordinator(1L);
+            lagging.joinGroup(GROUP, STREAM, 0, "c4", NODE_B);
+
+            var result = lagging.leaveGroup(GROUP, STREAM, "c4");
+
+            result.onFailure(cause -> Assertions.fail("nothing to clear must not be refused: " + cause.message()));
+            assertThat(held).isEmpty();
+        }
+
+        /// The tombstone is epoch-bearing, so it is overwritten by the next join and the group is owned again.
+        @Test
+        void joinGroup_afterTheLastMemberLeft_overwritesTheTombstonesEvenWhenCommittedInOrder() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+
+            commit(0);
+            commit(1);
+            commit(2);
+
+            assertThat(committedOwners().values()).containsOnly("c2").hasSize(PARTITIONS);
+            assertThat(registry.partitionsFor(GROUP, STREAM, NODE_B)).hasSize(PARTITIONS);
+        }
+
+        /// The tombstones carry the epoch they were minted under, so a clear committing AFTER a newer join's
+        /// assignments is refused by the applier instead of overwriting them.
+        @Test
+        void leaveGroup_lastMember_staleClearCommittingAfterANewerJoinDoesNotOverwriteIt() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            commit(0);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+
+            commit(2);
+            commit(1);
+
+            assertThat(committedOwners().values()).containsOnly("c2").hasSize(PARTITIONS);
+        }
+
+        /// The tombstones are stamped with the clear's OWN epoch, not the one it read: an older rebalance that commits
+        /// between the read and the clear must not make the applier refuse the newer, empty-group clear.
+        @Test
+        void leaveGroup_lastMember_clearWinsOverAnOlderRebalanceThatCommittedAfterItWasDerived() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            commit(0);
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+            coordinator.leaveGroup(GROUP, STREAM, "c2");
+
+            commit(1);
+            commit(3);
+
+            assertThat(committedOwners()).as("the empty group's clear is the newest word").isEmpty();
+        }
+
+        /// The join's batch is still in flight when the last member leaves; the join then commits, and the leave's
+        /// tombstones must still win.
+        @Test
+        void leaveGroup_lastMemberBeforeTheJoinCommits_departedMemberNeverOwnsAfterTheJoinCommits() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+
+            for (var i = 0; i < held.size(); i++) {
+                commit(i);
+            }
+
+            assertThat(committedOwners()).as("group is empty; no partition may name c1").isEmpty();
+        }
+
+        /// Rebalance Puts derived before the empty-group clear commit AFTER it (Rabia may order batches freely): the
+        /// committed tombstones refuse them.
+        @Test
+        void leaveGroup_lastMember_rebalancePutsCommittingAfterTheClearDoNotResurrectOwners() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            commit(0);
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+            coordinator.leaveGroup(GROUP, STREAM, "c2");
+
+            commit(3);
+            commit(1);
+            commit(2);
+
+            assertThat(committedOwners()).as("the empty group's clear is the newest word").isEmpty();
+        }
+
+        @Test
+        void leaveGroup_lastMember_isRefusedLoudly_whenCommittedAssignmentsCarryANewerTerm() {
+            newCoordinator(2L).joinGroup(GROUP, STREAM, PARTITIONS, "c3", NODE_A);
+            commit(0);
+            held.clear();
+            var lagging = newCoordinator(1L);
+
+            lagging.joinGroup(GROUP, STREAM, PARTITIONS, "c4", NODE_B);
+            var result = lagging.leaveGroup(GROUP, STREAM, "c4");
+
+            result.onSuccess(_ -> Assertions.fail("a deposed leader must not clear a newer term's assignments"))
+                  .onFailure(cause -> assertThat(cause).isEqualTo(ConsumerGroupCoordinator.CoordinatorError.SUPERSEDED));
+            assertThat(held).isEmpty();
+            assertThat(committedOwners().values()).containsOnly("c3").hasSize(PARTITIONS);
         }
     }
 

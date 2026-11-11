@@ -205,7 +205,6 @@ public class RabiaEngine<C extends Command> {
     /// refused as a whole and never decoded row by row). Cleared by any successful restore. It is not a fence: only candidate
     /// selection ([#adoptableCandidate]) and the status read it.
     private volatile Option<RestoreFailures> restoreFailures = Option.none();
-
     /// Why the re-persist of a restored or adopted state failed (#1516): the second permanent fence the watchdog
     /// bounds. Set only by [#recordRestoredStateSaveFailure], and like `ownRestoreFailure` never cleared in-process:
     /// that arm too runs only after a genesis has resolved. It is deliberately NOT `authorityFailure` itself, which

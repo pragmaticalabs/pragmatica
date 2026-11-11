@@ -101,10 +101,10 @@ public interface SystemTags {
                                                        entry.getKey());
 
                           if (previousName != null) {
-                          throw new IllegalStateException("Tag %d is pinned to both %s and %s".formatted(entry.getValue(),
-                                                                                                         previousName,
-                                                                                                         entry.getKey()));
-                      }
+                              throw new IllegalStateException("Tag %d is pinned to both %s and %s".formatted(entry.getValue(),
+                                                                                                             previousName,
+                                                                                                             entry.getKey()));
+                          }
                       });
     }
 
@@ -774,6 +774,8 @@ public interface SystemTags {
         pin(table, 2890, "org.pragmatica.aether.http.handler.ObjectHandle");
         pin(table, 2891, "org.pragmatica.aether.http.handler.FileHandle");
         pin(table, 2892, "org.pragmatica.aether.http.handler.UploadHandle");
+        // #2635: the empty consumer group's per-partition tombstone, inside the fix2635 reservation 2900..2901.
+        pin(table, 2900, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerGroupTombstone");
         // #2834: the committed open set of the cluster FSM's leader-local warnings. Inside the fix2834 reservation 2902..2903 of
         // wire-tag-ranges.txt (2900..2901 are fix2635's, PR #3025).
         pin(table, 2902, "org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey");
