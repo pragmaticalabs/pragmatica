@@ -6,8 +6,6 @@ package org.pragmatica.aether.ember;
 
 import java.io.IOException;
 import java.net.DatagramSocket;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -18,6 +16,7 @@ import java.util.function.Function;
 import java.util.function.IntFunction;
 import java.util.function.ToIntFunction;
 
+import org.pragmatica.aether.ember.ports.BindProbe;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
@@ -271,7 +270,7 @@ final class EmberTestPorts {
     }
 
     static boolean isBindCollision(String startFailure) {
-        return startFailure.contains("Address already in use") || startFailure.contains("BindException");
+        return BindProbe.isBindCollision(startFailure);
     }
 
     static boolean isFree(Block block, int base) {
@@ -298,28 +297,10 @@ final class EmberTestPorts {
     }
 
     private static boolean tcpFree(int port) {
-        try (var socket = new ServerSocket()) {
-            socket.setReuseAddress(false);
-            socket.bind(loopback(port));
-
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
+        return BindProbe.tcpFree(port);
     }
 
     private static boolean udpFree(int port) {
-        try (var socket = new DatagramSocket(null)) {
-            socket.setReuseAddress(false);
-            socket.bind(loopback(port));
-
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    private static InetSocketAddress loopback(int port) {
-        return new InetSocketAddress(InetAddress.getLoopbackAddress(), port);
+        return BindProbe.udpFree(port);
     }
 }
