@@ -28,11 +28,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Unit.unit;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// #2914: the backoff timer of a failed dead-letter append runs under the same cancel-and-claim step as a delivery
 /// ([ConsumerRuntimeState.ConsumerState#claimAdvance]). The timer is the runtime's scheduler seam: a test fires it by
@@ -44,7 +45,6 @@ class DeadLetterTimerAfterCancelTest {
     /// Ordered record of what the sink and the cursor store saw: `append:<group>` and `commit:<group>`.
     private final List<String> log = new CopyOnWriteArrayList<>();
     private final ConcurrentHashMap<String, AtomicInteger> appends = new ConcurrentHashMap<>();
-
     private StreamPartitionManager manager;
     private ConsumerRuntimeState runtime;
 
@@ -59,7 +59,9 @@ class DeadLetterTimerAfterCancelTest {
                                     int attemptCount) {
             log.add("append:" + failingGroup);
 
-            return appends.computeIfAbsent(failingGroup, _ -> new AtomicInteger()).incrementAndGet() == 1
+            return appends.computeIfAbsent(failingGroup,
+                                           _ -> new AtomicInteger())
+                          .incrementAndGet() == 1
                    ? StreamError.General.BUFFER_EMPTY.promise()
                    : Promise.unitPromise();
         }
@@ -87,7 +89,10 @@ class DeadLetterTimerAfterCancelTest {
     @BeforeEach
     void setUp() {
         manager = streamPartitionManager();
-        manager.createStream(StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 60_000), "earliest"));
+        manager.createStream(StreamConfig.streamConfig(STREAM,
+                                                       1,
+                                                       RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 60_000),
+                                                       "earliest"));
         runtime = new ConsumerRuntimeState(manager,
                                            sink,
                                            some(store),
@@ -114,9 +119,8 @@ class DeadLetterTimerAfterCancelTest {
 
         runtime.unsubscribe(STREAM, 0, "g");
         timer.run();
-
         assertThat(log).as("one failed append, then the detach flush; the timer adds nothing")
-                       .containsExactly("append:g", "commit:g");
+                  .containsExactly("append:g", "commit:g");
         assertThat(appends.get("g").get()).isEqualTo(1);
     }
 
@@ -126,7 +130,6 @@ class DeadLetterTimerAfterCancelTest {
         var timer = armedTimer("g");
 
         timer.run();
-
         assertThat(appends.get("g").get()).as("the retried append reached the sink").isEqualTo(2);
     }
 
@@ -151,6 +154,7 @@ class DeadLetterTimerAfterCancelTest {
             for (var s = 0; s < spins; s++) {
                 Thread.onSpinWait();
             }
+
             runtime.unsubscribe(STREAM, 0, group);
             firing.join(5_000);
             judge(group, late);
@@ -165,6 +169,7 @@ class DeadLetterTimerAfterCancelTest {
         while (!go.get()) {
             Thread.onSpinWait();
         }
+
         timer.run();
     }
 

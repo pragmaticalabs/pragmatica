@@ -1363,7 +1363,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         state.finishDrain();
         if (!state.isCancelled() && !closed.get()) {
             delayedTasks.schedule(() -> resumeAfterEscapeBackoff(key, state),
-                                     TimeSpan.timeSpan(delayMs).millis());
+                                  TimeSpan.timeSpan(delayMs).millis());
         }
     }
 
@@ -1395,7 +1395,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
     /// The backoff after the `escapes`th consecutive escaped pass.
     static long escapeBackoffMs(int escapes) {
-        return Math.min(ESCAPE_BACKOFF_FIRST_MS << Math.min(escapes - 1, 20), ESCAPE_BACKOFF_CAP_MS);
+        return Math.min(ESCAPE_BACKOFF_FIRST_MS<< Math.min(escapes - 1, 20), ESCAPE_BACKOFF_CAP_MS);
     }
 
     /// Ends the backoff explicitly rather than by the clock, so a scheduler that wakes a millisecond early cannot leave
@@ -2269,7 +2269,13 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                              int attemptCount,
                                              int appendAttempt) {
         state.markDeadLetterInFlight();
-        appendClaimed(key, state, event, errorMessage, attemptCount, appendAttempt, state.beginAdvance(event.offset()));
+        appendClaimed(key,
+                      state,
+                      event,
+                      errorMessage,
+                      attemptCount,
+                      appendAttempt,
+                      state.beginAdvance(event.offset()));
     }
 
     /// #2914: runs only under a slot claimed in one step with the cancel check ([ConsumerState#claimAdvance]), as
@@ -2374,7 +2380,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     }
 
     private static long computeBackoff(int attempt) {
-        var base = Math.min(BASE_BACKOFF_MS * (1L << (attempt - 1)), MAX_BACKOFF_MS);
+        var base = Math.min(BASE_BACKOFF_MS * (1L<< (attempt - 1)), MAX_BACKOFF_MS);
 
         return JitterUtil.applyJitter(base, JitterUtil.MIN_FACTOR_DEFAULT, JitterUtil.MAX_FACTOR_DEFAULT);
     }
