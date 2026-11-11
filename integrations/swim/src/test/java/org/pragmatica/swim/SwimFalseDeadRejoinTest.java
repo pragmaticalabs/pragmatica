@@ -36,6 +36,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.swim.SwimMember.MemberState;
 
@@ -89,6 +90,8 @@ class SwimFalseDeadRejoinTest {
 
     /// #3028 arm 1e (the ruled scenario): X<->T is cut, X<->I<->T is up. T alone declares X dead at k: T sends no PingReq
     /// and its gossip about X never reaches I, so I keeps X ALIVE at k and X (hearing from I) never bumps its incarnation.
+    /// The co-confirmation kill-gate holds a lone accuser's verdict (no FaultyObserved, no death record), so T's
+    /// transport reports the link to X lost: the transport-veto corroboration lets T's verdict through.
     /// T's Faulty(X,k) is not circulating and I's Alive(X,k) is refused by T's death-record gate, so the ONLY path by
     /// which X can learn of its death is the notice T answers to the Ping I relays for X's PingReq (`onBehalfOf` = X):
     /// X refutes with k+1 and T re-admits it. RED without the notice (relay marker ignored): X stays dead at T.
@@ -105,6 +108,10 @@ class SwimFalseDeadRejoinTest {
         awaitHealthyOnObserver();
         observerVerdictPrivate.set(true);
         pairCut.set(true);
+        observer.recordTransportHint(LIVE,
+                                     new TransportObservation.PeerUnreachable(LIVE,
+                                                                              Causes.cause("link to the live node lost"),
+                                                                              TransportObservation.HintOrigin.LINK_LOST));
 
         await().atMost(30, TimeUnit.SECONDS)
                .untilAsserted(() -> assertThat(verdictSnapshot.get()).as("instrument: the observer alone declared the live node dead")
@@ -187,7 +194,7 @@ class SwimFalseDeadRejoinTest {
                                                                                             .isNotEmpty());
     }
 
-    /// Runs on the observer's observation thread at the FAULTY edge (the terminal Departed edge is held back by the co-confirmation kill-gate: one accuser), before any relay round trip can undo it.
+    /// Runs on the observer's observation thread at the FAULTY edge, before any relay round trip can undo it.
     private void captureAtTheVerdict(SwimObservation observation) {
         observed.add(observation);
         if (observation instanceof SwimObservation.FaultyObserved faulty && faulty.peer().equals(LIVE)) {
