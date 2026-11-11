@@ -525,6 +525,46 @@ class PeerObservationOrderTest {
         assertThat(node.harness.state()).as("the leader is lost all the same").isInstanceOf(LeaderElectionState.ReElecting.class);
     }
 
+    /// n3: with the pre-vote enabled a removal of the leader goes through `loseLeader`'s pre-vote path. The leader is the
+    /// last node of the stored view (kept, so still eligible), so the pre-vote asks the electorate and the node stays in
+    /// `Led`; a bypass straight to `ReElecting` sends no question.
+    @Test
+    void removalOfLeader_inLed_withPreVote_asksTheElectorate_andStaysInLed() {
+        node = Node.following(true);
+        node.ctx.applyTopology(new ClusterFsmEvent.NodeGone(N3, List.of(N1), 5L));
+        var before = node.sends.get();
+
+        node.harness.dispatch(new PeerRemovedFromView(N1));
+
+        assertThat(node.sends.get()).as("the pre-vote question went out").isGreaterThan(before);
+        assertThat(node.followsTheLeader()).as("the pre-vote keeps Led until the verdict").isTrue();
+    }
+
+    /// n6 (design 3.1): a removal-driven loss of the leader names no suspect.
+    @Test
+    void removalOfLeader_inLed_leavesNoSuspect() {
+        node = Node.following(false);
+
+        node.harness.dispatch(new PeerRemovedFromView(N1));
+
+        assertThat(node.harness.state()).isInstanceOfSatisfying(LeaderElectionState.ReElecting.class,
+                                                                reElecting -> assertThat(reElecting.suspect()).isEqualTo(Option.none()));
+    }
+
+    /// n1: a leader removed as SELF still steps down, the same end state as the base `NodeGone(self)`; the pre-vote
+    /// filter excludes self, so even with the pre-vote enabled the node goes to `ReElecting`.
+    @Test
+    void removalOfSelf_asLeader_inLed_stepsDown() {
+        node = Node.following(true);
+        node.harness.dispatch(new LeaderCommitted(N2, 2L));
+        assertThat(node.harness.state()).as("control: self leads")
+                  .isInstanceOfSatisfying(LeaderElectionState.Led.class, led -> assertThat(led.leader()).isEqualTo(N2));
+
+        node.harness.dispatch(new PeerRemovedFromView(N2));
+
+        assertThat(node.harness.state()).isInstanceOf(LeaderElectionState.ReElecting.class);
+    }
+
     @ParameterizedTest
     @EnumSource(value = RemovingState.class, names = {"ELECTING", "RE_ELECTING"})
     void removalInAnElectingState_reschedulesOnlyWhenApplied(RemovingState state) {
