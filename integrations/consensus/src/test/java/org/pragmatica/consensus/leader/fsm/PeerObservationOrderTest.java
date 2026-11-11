@@ -153,6 +153,28 @@ class PeerObservationOrderTest {
     }
 
     @Test
+    void lateEviction_afterANewerReconnectThatRestoredThePeer_keepsThePeer() {
+        node = Node.following();
+
+        node.manager.peerDisconnected(new PeerDisconnected(N1, WITHOUT_N1, ObservationSource.QUIC, 1L));
+        node.manager.peerReconnected(new PeerReconnected(N1, ALL, ObservationSource.QUIC, 3L));
+        assertThat(node.ctx.currentTopology()).as("control: the reconnect restored the leader").contains(N1);
+        node.manager.peerDisconnected(new PeerDisconnected(N1, WITHOUT_N1, ObservationSource.QUIC, 2L));
+
+        assertThat(node.ctx.currentTopology()).as("the older eviction's view does not overwrite the reconnect's").contains(N1);
+        assertThat(node.suspectsTheLeader()).isFalse();
+    }
+
+    @Test
+    void applyTopology_storesTheViewSorted() {
+        node = Node.following();
+
+        node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N1, List.of(N3, N1, N2), 7L));
+
+        assertThat(node.ctx.currentTopology()).containsExactly(N1, N2, N3);
+    }
+
+    @Test
     void equalSequence_isStale() {
         node = Node.following();
 
@@ -191,6 +213,8 @@ class PeerObservationOrderTest {
         assertThat(node.ctx.applyTopology(new ClusterFsmEvent.NodeGone(N3, List.of(N1, N2)))).isTrue();
         assertThat(node.ctx.applyTopology(new ClusterFsmEvent.NodeGone(N1, WITHOUT_N1, 4L))).as("still older than 5").isFalse();
         assertThat(node.ctx.currentTopology()).containsExactly(N1, N2);
+        node.ctx.setCurrentTopology(List.of(N1, N3));
+        assertThat(node.ctx.currentTopology()).as("setCurrentTopology is an unordered write").containsExactly(N1, N3);
     }
 
     /// Every state that stores the view: started there directly, fed a newer event and then an older one in both
