@@ -86,9 +86,7 @@ public record LeaderDeactivation(AtomicReference<Promise<Unit>> next,
     /// registered after this record's. Never fails: past `bound` it warns and resolves, so a wedged reaction or a leader that
     /// never steps down cannot hold the stop.
     public Promise<Unit> delivered(ReactExecutor executor, TimeSpan bound) {
-        return deadline.apply(executor.drained()
-                                      .flatMap(_ -> next.get())
-                                      .flatMap(executor::drained),
+        return deadline.apply(executor.drained().flatMap(_ -> next.get()).flatMap(executor::drained),
                               bound)
                        .recover(cause -> undelivered(executor, bound, cause));
     }
