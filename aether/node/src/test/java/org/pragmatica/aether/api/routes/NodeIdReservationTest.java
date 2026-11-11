@@ -26,6 +26,11 @@ class NodeIdReservationTest {
     }
 
     @Test
+    void ordinalOf_prefixOccurringOnlyInsideTheId_isNone() {
+        assertThat(NodeIdReservation.ordinalOf("x-eu-core-3", "eu", "core")).isEqualTo(Option.none());
+    }
+
+    @Test
     void ordinalOf_dashedSourceDoesNotCaptureANeighbour() {
         assertThat(NodeIdReservation.ordinalOf("a-b-core-1", "a", "b-core")).isEqualTo(Option.some(1));
         assertThat(NodeIdReservation.ordinalOf("a-b-core-1", "a-b", "core")).isEqualTo(Option.some(1));
