@@ -51,13 +51,4 @@ class MainNodeLabelsTest {
 
         assertThat(labels.get(NodeInfo.LABEL_VERSION)).isEqualTo(org.pragmatica.aether.node.AetherNode.VERSION).isNotBlank();
     }
-
-    /// #2981 step 6: the node always advertises its wire generation, the label the join guard reads.
-    @Test
-    void collectNodeLabels_alwaysAdvertisesTheWireGeneration() {
-        var labels = Main.collectNodeLabels("host-1", _ -> Option.none());
-
-        assertThat(labels.get(NodeInfo.LABEL_WIRE_GENERATION))
-            .isEqualTo(Integer.toString(org.pragmatica.consensus.net.JoinGenerationGuard.WIRE_GENERATION));
-    }
 }

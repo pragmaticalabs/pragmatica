@@ -49,6 +49,23 @@ class JoinGenerationGuardTest {
     }
 
     @Test
+    void advertised_noLabel_stampsThisBinarysGeneration_keepingTheOtherLabels() {
+        var advertised = JoinGenerationGuard.advertised(Map.of(NodeInfo.LABEL_VERSION, "1.0.0"));
+
+        assertThat(advertised).containsEntry(NodeInfo.LABEL_WIRE_GENERATION,
+                                             Integer.toString(JoinGenerationGuard.WIRE_GENERATION))
+                              .containsEntry(NodeInfo.LABEL_VERSION, "1.0.0")
+                              .hasSize(2);
+        assertThat(JoinGenerationGuard.ownGeneration(Map.of())).isEqualTo(JoinGenerationGuard.WIRE_GENERATION);
+    }
+
+    @Test
+    void advertised_explicitLabel_wins_andIsTheOwnGeneration() {
+        assertThat(JoinGenerationGuard.advertised(generation("1"))).isEqualTo(generation("1"));
+        assertThat(JoinGenerationGuard.ownGeneration(generation("1"))).isEqualTo(1);
+    }
+
+    @Test
     void coldStart_noMemberHandshaken_neverRefused_proceedsWhenTheWaitEnds() {
         var result = JoinGenerationGuard.admit(Set.of(A, B), this::labelsOf, SHORT, 2).await(AWAIT);
 

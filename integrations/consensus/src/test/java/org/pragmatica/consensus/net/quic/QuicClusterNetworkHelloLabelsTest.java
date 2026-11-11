@@ -31,6 +31,7 @@ import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.NetCodecs;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
+import org.pragmatica.consensus.net.JoinGenerationGuard;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
@@ -166,6 +167,34 @@ class QuicClusterNetworkHelloLabelsTest {
         assertThat(acceptor.peerHelloLabels(dialerId).or(Map.of()))
             .as("accept side: labels come from the inbound Hello")
             .containsEntry(NodeInfo.LABEL_WIRE_GENERATION, "9");
+    }
+
+    /// MF1: the consensus layer stamps this binary's generation into both Hellos, so an assembly that sets no label (Ember, forge, a
+    /// test) still advertises it; a dialer and an acceptor with NO labels each see the other at [JoinGenerationGuard#WIRE_GENERATION].
+    @Test
+    void peerHelloLabels_realDialWithoutLabels_bothSidesSeeTheStampedGeneration() {
+        var dialerId = new NodeId("aaa-plain-dialer");
+        var acceptorId = new NodeId("zzz-plain-acceptor");
+        var both = Set.of(dialerId, acceptorId);
+        var acceptor = createNetwork(plainSelf(acceptorId), both);
+        var dialer = createNetwork(plainSelf(dialerId), both);
+        var acceptorInfo = NodeInfo.nodeInfo(acceptorId, addressOf("127.0.0.1", acceptor.boundPort().unwrap()));
+        var stamped = Integer.toString(JoinGenerationGuard.WIRE_GENERATION);
+
+        dialer.dialForTests(acceptorInfo, true);
+
+        awaitLabels(dialer, acceptorId);
+        awaitLabels(acceptor, dialerId);
+        assertThat(dialer.peerHelloLabels(acceptorId).or(Map.of()))
+            .as("the acceptor's Hello response is stamped")
+            .containsEntry(NodeInfo.LABEL_WIRE_GENERATION, stamped);
+        assertThat(acceptor.peerHelloLabels(dialerId).or(Map.of()))
+            .as("the dialer's Hello is stamped")
+            .containsEntry(NodeInfo.LABEL_WIRE_GENERATION, stamped);
+    }
+
+    private static NodeInfo plainSelf(NodeId id) {
+        return NodeInfo.nodeInfo(id, addressOf("127.0.0.1", 19998));
     }
 
     private static NodeInfo labelledSelf(NodeId id, String generation) {

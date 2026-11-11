@@ -1097,9 +1097,10 @@ public class RabiaEngine<C extends Command> {
     /// request opens a round ([#openSyncRound]); an activation completes it and a quorum-loss pause invalidates it ([#closeSyncRound]).
     /// A response is accepted only into an open round, so input that crosses a pause (answers to a request sent before it) or arrives
     /// after the adoption it was meant for cannot take a `Paused` engine to `Active` without a quorum ACTIVE, nor re-adopt on a
-    /// settled one. The flag starts open: a cold engine takes responses before its first request, as it always did. The rounds are
-    /// local; the protocol carries no round id, so answers to an earlier request of the SAME open round are still accepted.
-    private volatile boolean syncRoundOpen = true;
+    /// settled one. The flag starts CLOSED (#2981 step 6): only this engine's own request opens a round, so an unsolicited or stale
+    /// response cannot install state on an engine that has not yet passed its pre-sync check. The rounds are local; the protocol
+    /// carries no round id, so answers to an earlier request of the SAME open round are still accepted.
+    private volatile boolean syncRoundOpen = false;
     private final RabiaPersistence<C> persistence;
     /// Consecutive sync rounds that failed to reach the response threshold, driving the periodic
     /// stuck-in-`Syncing` WARN (#660). Reset when a sync round starts fresh, when state is adopted, and

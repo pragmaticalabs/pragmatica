@@ -1064,7 +1064,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         return () -> JoinGenerationGuard.admit(joinDecisionSet(topologyManager),
                                                network::peerHelloLabels,
                                                wait,
-                                               JoinGenerationGuard.WIRE_GENERATION);
+                                               JoinGenerationGuard.ownGeneration(topologyManager.self().labels()));
     }
 
     /// The wire-generation join guard decides over the core voters other than this node (#2981 step 6).

@@ -15,6 +15,7 @@
  */
 package org.pragmatica.consensus.net;
 
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
@@ -47,6 +48,25 @@ public interface JoinGenerationGuard {
     TimeSpan JOIN_GENERATION_WAIT = TimeSpan.timeSpan(10).seconds();
     /// Handshake poll cadence while waiting.
     TimeSpan POLL_INTERVAL = TimeSpan.timeSpan(50).millis();
+
+    /// The labels this node's Hello carries: `labels` with [#WIRE_GENERATION] stamped, so no assembly can omit it.
+    /// A label the assembly set itself wins (the Ember seam that boots an older generation); production sets none.
+    static Map<String, String> advertised(Map<String, String> labels) {
+        return labels.containsKey(NodeInfo.LABEL_WIRE_GENERATION)
+               ? Map.copyOf(labels)
+               : stamped(labels);
+    }
+
+    /// The generation this node runs: the one its Hello advertises (see [#advertised]).
+    static int ownGeneration(Map<String, String> selfLabels) {
+        return generationOf(advertised(selfLabels));
+    }
+
+    private static Map<String, String> stamped(Map<String, String> labels) {
+        var stamped = new HashMap<>(labels);
+        stamped.put(NodeInfo.LABEL_WIRE_GENERATION, Integer.toString(WIRE_GENERATION));
+        return Map.copyOf(stamped);
+    }
 
     /// The wire generation a handshaken peer advertises: its label, or 1 when absent or unreadable.
     static int generationOf(Map<String, String> labels) {
