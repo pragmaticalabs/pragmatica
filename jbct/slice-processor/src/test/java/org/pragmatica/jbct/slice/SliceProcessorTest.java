@@ -946,8 +946,8 @@ class SliceProcessorTest {
                                          + "    Promise<java.util.List<Note>> listed();",
                                           List.of(record("Note", "String id, String text")));
 
-        assertThat(diagnostics.split("Route 'merged' \\(PUT /notes/\\{id\\}\\): component 'id' of upload.Note", -1)).hasSize(2);
-        assertThat(diagnostics.split("stays required in the JSON body", -1)).hasSize(2);
+        assertThat(occurrences(diagnostics, "Route 'merged' (PUT /notes/{id}): component 'id' of upload.Note")).isEqualTo(1);
+        assertThat(occurrences(diagnostics, "stays required in the JSON body")).isEqualTo(1);
     }
 
     /// Negative control for the three above: the same record on a merged route alone is relaxed, and draws no warning.
@@ -962,6 +962,10 @@ class SliceProcessorTest {
         assertThat(joinMessages(diagnostics.stream())).contains("Generated routes: UploadService");
         assertThat(joinMessages(diagnostics.stream().filter(SliceProcessorTest::isWarning)))
             .doesNotContain("stays required in the JSON body");
+    }
+
+    private static int occurrences(String text, String needle) {
+        return text.split(java.util.regex.Pattern.quote(needle), -1).length - 1;
     }
 
     private static JavaFileObject record(String name, String components) {
