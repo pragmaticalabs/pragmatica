@@ -162,6 +162,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private record BackpressureEpisode(long startedNanos, AtomicLong writes) {}
 
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
+    /// Orders this transport's view-carrying observations (#2971). Each `processViewChange` takes the next value
+    /// BEFORE it reads `currentView()`, so the observation holding the highest sequence carries a view taken after
+    /// every lower-sequence observation's peer transition: a consumer that drops an observation older than the last
+    /// one it applied never loses a change, and a delayed older view cannot overwrite a newer one.
+    private final AtomicLong observationSequence = new AtomicLong(TransportObservation.NO_SEQUENCE);
     /// #1461: set by the first `stop()`, whether or not the network had started, and never cleared. A stop that
     /// arrived before `startOnPort` used to be a silent no-op (its CAS on `isRunning` failed), and the later start
     /// then armed a server, reconciler and keepalive nothing could stop. `isRunning` still says whether the
@@ -299,6 +304,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// Test hook (transport overhaul N33): told of every attach decision, DUPLICATE and REJECTED included, which
     /// no [PeerTransitionRecord] reports. Defaults to a no-op; set only through [#attachObserverForTests].
     private volatile Consumer<AttachObservation> attachObserver = ignored -> {};
+
+    /// Test hook (#2971): told of every view `currentView()` reads, on the reading thread, before the read returns to
+    /// the observation it builds. Lets a test hold an observation between its view read and anything after it, the
+    /// window the observation sequence must not depend on. Defaults to a no-op; set only through
+    /// [#viewReadObserverForTests].
+    private volatile Consumer<List<NodeId>> viewReadObserver = ignored -> {};
 
     /// REMOVE view-changes report a connectivity observation upstream via
     /// `PeerConnectivityReporter` on leader and follower alike (#691 removed the leader-only
@@ -3521,6 +3532,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
                               : observer;
     }
 
+    /// Package-private test hook (#2971) — observe every view read for a view-carrying observation, on the reading
+    /// thread, before the observation is built. A null observer restores the no-op.
+    @Contract
+    void viewReadObserverForTests(Consumer<List<NodeId>> observer) {
+        this.viewReadObserver = observer == null
+                                ? ignored -> {}
+                                : observer;
+    }
+
     /// Package-private test seam (#1578) — dial `peer` through the production dial path, optionally
     /// as the non-designated initiator, so a test can force BOTH ends of a pair to dial at once.
     @Contract
@@ -3681,7 +3701,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
             return;
         }
-
+        // #2971: taken before any currentView() read below — see `observationSequence`.
+        var sequence = observationSequence.incrementAndGet();
         var activePeerCount = activeConnectedCount();
         var quorumSize = topologyManager.quorumSize();
         var clusterSize = topologyManager.clusterSize();
@@ -3705,7 +3726,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 // Connectivity observation feeds ReachabilityAggregator via the
                 // PeerObservationBuffer drain path. Symmetric to REMOVE below.
                 reportPeerConnection(peerId);
-                yield TransportObservation.peerJoined(peerId, currentView(), ObservationSource.QUIC);
+                yield TransportObservation.peerJoined(peerId, currentView(), ObservationSource.QUIC, sequence);
             }
             case REMOVE -> {
                 // Advisory QUIC-level disconnect signal, pushed into the local
@@ -3719,7 +3740,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 // `MembershipDecision.NodeRemoved` on the FSM's REMOVED delta edge; subscribers
                 // distinguish between the local (transport) and global (membership) facts.
                 peerStateListener.onPeerLeft(peerId);
-                yield TransportObservation.peerDisconnected(peerId, currentView(), ObservationSource.QUIC);
+                yield TransportObservation.peerDisconnected(peerId, currentView(), ObservationSource.QUIC, sequence);
             }
             case RECONNECT -> {
                 // Transparent reconnect — peer is already known to upstream consumers; no
@@ -3738,7 +3759,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 peerStateListener.onPeerReconnected(peerId);
                 log.debug("processViewChange RECONNECT for {} — emitting PeerReconnected (no connectivity observation)",
                           peerId);
-                yield TransportObservation.peerReconnected(peerId, currentView(), ObservationSource.QUIC);
+                yield TransportObservation.peerReconnected(peerId, currentView(), ObservationSource.QUIC, sequence);
             }
         };
 
@@ -3791,13 +3812,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     private List<NodeId> currentView() {
-        return Stream.concat(Stream.of(self.id()),
-                             peers.values()
-                                  .stream()
-                                  .filter(p -> p.phase() == PeerState.Phase.CONNECTED)
-                                  .map(PeerState::peerId))
-                     .sorted()
-                     .toList();
+        var view = Stream.concat(Stream.of(self.id()),
+                                 peers.values()
+                                      .stream()
+                                      .filter(p -> p.phase() == PeerState.Phase.CONNECTED)
+                                      .map(PeerState::peerId))
+                         .sorted()
+                         .toList();
+
+        viewReadObserver.accept(view);
+
+        return view;
     }
 
     // --- Internal: shutdown ---
