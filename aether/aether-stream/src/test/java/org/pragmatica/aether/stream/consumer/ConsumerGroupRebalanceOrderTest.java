@@ -253,6 +253,20 @@ class ConsumerGroupRebalanceOrderTest {
             assertThat(committedOwners().values()).as("c5 joined last and must own its share").contains("c5");
         }
 
+        /// v3025e probe G1: committed keys {0..3} but a larger-count join (8) still in flight: the tombstones must
+        /// cover the in-flight range 4..7 too, or the late join batch commits c1 as owner of 4..7 after the leave.
+        @Test
+        void v3025e_inFlightLargerJoinAfterSmallerCommitted_leaveFencesTheWholeRange() {
+            coordinator.joinGroup(GROUP, STREAM, 4, "c1", NODE_A);
+            commit(0);
+            coordinator.joinGroup(GROUP, STREAM, 8, "c1", NODE_A);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+            commit(2);
+            commit(1);
+
+            assertThat(registry.assignmentsFor(GROUP, STREAM)).as("no assignment may name the departed c1").isEmpty();
+        }
+
         /// v3025d probe E1: the join request carries the partition count (StreamRoutes.JoinGroupRequest), so a later
         /// join with a SMALLER count leaves the higher partitions' committed assignments outside 0..count-1; the last
         /// leave must still release every committed assignment of the departed member.
