@@ -62,7 +62,7 @@ class ValueMappingMappingTest {
                     static ValueMapping<AccountId, UUID> valueMapping() { return ValueMapping.valueMapping(AccountId::value, AccountId::accountId); }
                 }
 
-                record LedgerEntry(AccountId accountId, java.math.BigDecimal amount) {}
+                record LedgerEntry(AccountId accountId, java.math.BigDecimal amount) { static LedgerEntry ledgerEntry(AccountId accountId, java.math.BigDecimal amount) { return new LedgerEntry(accountId, amount); } }
 
                 @PgSql
                 public interface LedgerRepo {
@@ -152,7 +152,7 @@ class ValueMappingMappingTest {
                 import org.pragmatica.aether.resource.db.PgSql;
                 import org.pragmatica.lang.Promise;
 
-                record PlainId(UUID value) {}
+                record PlainId(UUID value) { static PlainId plainId(UUID value) { return new PlainId(value); } }
 
                 @PgSql
                 public interface PlainParamRepo {
@@ -180,8 +180,8 @@ class ValueMappingMappingTest {
                 import org.pragmatica.lang.Option;
                 import org.pragmatica.lang.Promise;
 
-                record PlainId(UUID value) {}
-                record BadRow(PlainId id, java.math.BigDecimal amount) {}
+                record PlainId(UUID value) { static PlainId plainId(UUID value) { return new PlainId(value); } }
+                record BadRow(PlainId id, java.math.BigDecimal amount) { static BadRow badRow(PlainId id, java.math.BigDecimal amount) { return new BadRow(id, amount); } }
 
                 @PgSql
                 public interface PlainFieldRepo {
@@ -279,7 +279,7 @@ class ValueMappingMappingTest {
                 import org.pragmatica.lang.Option;
                 import org.pragmatica.lang.Promise;
 
-                record RawRow(UUID id, java.math.BigDecimal amount) {}
+                record RawRow(UUID id, java.math.BigDecimal amount) { static RawRow rawRow(UUID id, java.math.BigDecimal amount) { return new RawRow(id, amount); } }
 
                 @PgSql
                 public interface RawRepo {
@@ -320,7 +320,7 @@ class ValueMappingMappingTest {
             static ValueMapping<EventId, UUID> valueMapping() { return ValueMapping.valueMapping(EventId::value, EventId::eventId); }
         }
 
-        record EventRow(EventId id, java.math.BigDecimal amount) {}
+        record EventRow(EventId id, java.math.BigDecimal amount) { static EventRow eventRow(EventId id, java.math.BigDecimal amount) { return new EventRow(id, amount); } }
 
         @PgSql
         public interface EventRepo {
@@ -351,7 +351,7 @@ class ValueMappingMappingTest {
             static ValueMapping<OrderStatus, String> valueMapping() { return ValueMapping.valueMapping(OrderStatus::value, OrderStatus::orderStatus); }
         }
 
-        record StatusRow(OrderStatus status) {}
+        record StatusRow(OrderStatus status) { static StatusRow statusRow(OrderStatus status) { return new StatusRow(status); } }
 
         @PgSql
         public interface OrderStatusRepo {
