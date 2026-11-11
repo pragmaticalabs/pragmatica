@@ -1084,6 +1084,17 @@ public enum OperatorWarningCode {
                                             "datasource",
                                             WarningLevel.INFO,
                                             DATASOURCE_SERVER_REFUSED_CONNECTION),
+    /// At boot, the data root holds stream or WAL directories of another (earlier) NodeId (#2825, D7): every restart mints a fresh
+    /// NodeId, so after a whole-cluster restart the previous run's `stream-segments/<nodeId>/` and `wal/<nodeId>` are not read, and
+    /// stream records and durable-entity state are lost even though the disks survived. Subject is the data root holding the
+    /// directories (stable across restarts); the message names each directory and its size. Nothing is deleted or moved.
+    /// Recovery action: republish the stream records from their source; when nothing needs the directories, remove them by hand.
+    /// The real fix is #1569. Closed by [#STREAM_DATA_ABANDONED_CLEARED].
+    STREAM_DATA_ABANDONED("stream-data-abandoned", "stream-storage", WarningLevel.WARNING),
+    /// The recovery of [#STREAM_DATA_ABANDONED], same subject, the data root (#2825): a later boot found no stream or WAL directory
+    /// of another NodeId under it. INFO, published only after a published abandoned-data warning for the subject (#752 mechanism);
+    /// a boot over a clean root publishes nothing the log shows.
+    STREAM_DATA_ABANDONED_CLEARED("stream-data-abandoned-cleared", "stream-storage", WarningLevel.INFO, STREAM_DATA_ABANDONED),
     /// The recovery of [#DHT_DEPARTURE_SOLE_COPY_AT_RISK], same subject (#2034): every sole-copy key was acknowledged by a target in its
     /// post-departure responsible set before the node halted. INFO, published by the draining node itself, only after its published
     /// at-risk event (#752 mechanism).

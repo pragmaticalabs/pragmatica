@@ -292,7 +292,21 @@ CF == RF (losing any one replica refuses writes); CF == 1 (the owner's death los
 not replicated).
 
 **Scope:** node loss in a RUNNING cluster. It does NOT cover a whole-cluster cold restart (stream data is keyed by
-NodeId; see the cold-restart work).
+NodeId; real fix: #1569, rc6).
+
+**Restart guarantees per operation (D7, #2825).** Every restart mints a fresh NodeId (#1543) and stream state lives under
+`stream-segments/<nodeId>/` and `wal/<nodeId>`, so a restarted node does not read its previous directories.
+
+| Operation | Stream records and durable-entity state | Mechanism |
+|---|---|---|
+| Replica loss in a running cluster | survives while a confirmation-factor set of replicas remains | CF replicas hold every acknowledged record |
+| Rolling replacement (one node at a time) | survives | the replacement is re-replicated from the replicas that stayed up |
+| Whole-cluster restart | **lost**, even when the disks survive; KV state is restored from `[backup]` | the new NodeIds do not match the old directories |
+
+Recovery after a whole-cluster restart: republish the stream records from their source. A node that boots over a data root
+holding directories of another NodeId raises the operator warning `stream-data-abandoned` (naming each directory and its
+size) and deletes nothing; remove the directories by hand once nothing needs them. See
+[known limitations](known-limitations.md#streams-and-durable-entities).
 
 | Kind | Operation | What the caller gets | Mechanism | Evidence |
 |---|---|---|---|---|
