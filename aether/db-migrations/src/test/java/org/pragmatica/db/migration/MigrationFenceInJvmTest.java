@@ -30,6 +30,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.parse.TimeSpan;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -334,7 +335,7 @@ class MigrationFenceInJvmTest {
         var pool = PoolConfig.poolConfigBuilder()
                              .withMinConnections(0)
                              .withMaxConnections(poolSize)
-                             .withConnectionTimeout(timeSpan(1).seconds())
+                             .withConnectionTimeout(TimeSpan.timeSpan("1s").unwrap())
                              .build()
                              .unwrap();
         var config = databaseConnectorConfigBuilder().withName(DATASOURCE)
