@@ -120,7 +120,7 @@ class OperatorWarningCodeTest {
     }
 
     /// #2981 step 5: the lease and clock codes are operator-visible literals, each WARNING closed by an INFO recovery; the
-    /// truncation code is an INFO point event. A change would orphan open alerts or silence the lease signal.
+    /// truncation codes split by outcome (refused WARNING with recovery, retracted INFO). A change would orphan open alerts or silence the lease signal.
     @Test
     void ownerLeaseCodes_arePinned() {
         assertThat(OperatorWarningCode.STREAM_OWNER_LEASE_LAPSED.code()).isEqualTo("stream-owner-lease-lapsed");
@@ -133,8 +133,13 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.NODE_CLOCK_RATE_NORMAL.code()).isEqualTo("node-clock-rate-normal");
         assertThat(OperatorWarningCode.NODE_CLOCK_RATE_NORMAL.level()).isEqualTo(WarningLevel.INFO);
         assertThat(OperatorWarningCode.NODE_CLOCK_RATE_NORMAL.recoveryOf()).isEqualTo(Option.some(OperatorWarningCode.NODE_CLOCK_RATE_DIVERGENCE));
-        assertThat(OperatorWarningCode.STREAM_TRUNCATION_BELOW_VISIBLE.code()).isEqualTo("stream-truncation-below-visible");
-        assertThat(OperatorWarningCode.STREAM_TRUNCATION_BELOW_VISIBLE.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STREAM_TRUNCATION_REFUSED.code()).isEqualTo("stream-truncation-refused");
+        assertThat(OperatorWarningCode.STREAM_TRUNCATION_REFUSED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.STREAM_TRUNCATION_QUARANTINE_CLEARED.code()).isEqualTo("stream-truncation-quarantine-cleared");
+        assertThat(OperatorWarningCode.STREAM_TRUNCATION_QUARANTINE_CLEARED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STREAM_TRUNCATION_QUARANTINE_CLEARED.recoveryOf()).isEqualTo(Option.some(OperatorWarningCode.STREAM_TRUNCATION_REFUSED));
+        assertThat(OperatorWarningCode.STREAM_TRUNCATION_RETRACTED.code()).isEqualTo("stream-truncation-retracted");
+        assertThat(OperatorWarningCode.STREAM_TRUNCATION_RETRACTED.level()).isEqualTo(WarningLevel.INFO);
     }
 
     @Test
