@@ -856,7 +856,7 @@ public final class LeaderElectionContext {
         /// the fence). Remove: `true` iff the node was removed.
         boolean applies(ViewCandidate candidate, NodeId self) {
             return switch (candidate) {
-                case ViewCandidate.Replace replace -> ! replace.isStaleAgainst(this);
+                case ViewCandidate.Replace replace -> !replace.isStaleAgainst(this);
                 case ViewCandidate.Remove remove -> admitsRemovalOf(remove.node(), self);
             };
         }
@@ -870,20 +870,21 @@ public final class LeaderElectionContext {
                               ? topology
                               : candidate.topology();
 
-            return new SequencedTopology(replacement, Math.max(sequence, candidate.sequence()));
+            return new SequencedTopology(replacement,
+                                         Math.max(sequence, candidate.sequence()));
         }
 
         private SequencedTopology without(NodeId node, NodeId self) {
             return admitsRemovalOf(node, self)
-                   ? new SequencedTopology(topology.stream()
-                                                   .filter(member -> ! member.equals(node))
-                                                   .toList(),
+                   ? new SequencedTopology(topology.stream().filter(member -> !member.equals(node)).toList(),
                                            sequence)
                    : this;
         }
 
         private boolean admitsRemovalOf(NodeId node, NodeId self) {
-            return ! node.equals(self) && topology.size() > 1 && topology.contains(node);
+            return ! node.equals(self)
+                   && topology.size() > 1
+                   && topology.contains(node);
         }
     }
 
