@@ -178,31 +178,36 @@ class SwimDeathRecordTest {
         assertThat(hasRecord()).isTrue();
     }
 
-    @Test
-    void deathRecord_staleAliveGossip_afterAnnounceClearedTombstone_doesNotReAdmitResident() {
-        driveToFaultyResident(TOKEN_A);
-        protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(INFO_A, "", DEATH_INCARNATION, TOKEN_A));
-        assertThat(protocol.tombstonedForTest(NODE_A)).as("precondition: the ANNOUNCE cleared the tombstone").isFalse();
+    /// After the tombstone TTL, a bare channel re-seed brings NODE_A back as a resident OBSERVED member (the re-seed
+    /// carries no claim and is not an aliveness promotion). The protocol is stopped so no tick escalates it.
+    private void driveToReSeededObserved() {
+        driveToDeathPastTombstoneTtl(TOKEN_A);
+        protocol.stop();
+        protocol.addSeedMember(NODE_A, ADDR_A);
+        assertThat(protocol.members().get(NODE_A).state()).as("precondition: re-seeded OBSERVED")
+                                                           .isEqualTo(MemberState.OBSERVED);
         observations.all.clear();
+    }
+
+    @Test
+    void deathRecord_staleAliveGossip_doesNotPromoteReSeededMember() {
+        driveToReSeededObserved();
 
         gossip(3L, updateOfA(MemberState.ALIVE, DEATH_INCARNATION, TOKEN_A));
 
-        assertThat(protocol.members().get(NODE_A).state()).as("the record refuses the re-admit the tombstone no longer does")
-                                                           .isEqualTo(MemberState.FAULTY);
+        assertThat(protocol.members().get(NODE_A).state()).as("the record refuses the promotion the tombstone no longer does")
+                                                           .isEqualTo(MemberState.OBSERVED);
         assertThat(observations.byType(SwimObservation.HealthyObserved.class)).isEmpty();
     }
 
     @Test
-    void deathRecord_strayAck_afterAnnounceClearedTombstone_doesNotFlipAlive() {
-        driveToFaultyResident(TOKEN_A);
-        protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(INFO_A, "", DEATH_INCARNATION, TOKEN_A));
-        assertThat(protocol.tombstonedForTest(NODE_A)).as("precondition: the ANNOUNCE cleared the tombstone").isFalse();
-        observations.all.clear();
+    void deathRecord_strayAck_doesNotPromoteReSeededMember() {
+        driveToReSeededObserved();
 
         protocol.onMessage(ADDR_A, new Ack(NODE_A, 99L, List.of()));
 
         assertThat(protocol.members().get(NODE_A).state()).as("an Ack carries no incarnation and is refused by the record")
-                                                           .isEqualTo(MemberState.FAULTY);
+                                                           .isEqualTo(MemberState.OBSERVED);
         assertThat(observations.byType(SwimObservation.HealthyObserved.class)).isEmpty();
     }
 
@@ -287,13 +292,14 @@ class SwimDeathRecordTest {
         driveToFaultyResident(0L);
         gossip(3L, updateOfA(MemberState.FAULTY, DEATH_INCARNATION, TOKEN_A));
         assertThat(tokens.tokenOf(NODE_A)).as("precondition: the token is learned after the edge").isEqualTo(TOKEN_A);
-        protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(INFO_A, "", 0, 0L));
-        assertThat(protocol.tombstonedForTest(NODE_A)).as("precondition: tombstone cleared").isFalse();
+        protocol.start();
+        await().atMost(Duration.ofSeconds(4))
+               .until(() -> !protocol.members().containsKey(NODE_A) && !protocol.tombstonedForTest(NODE_A));
 
         gossip(4L, updateOfA(MemberState.ALIVE, DEATH_INCARNATION, 0L));
 
-        assertThat(protocol.members().get(NODE_A).state()).as("the token is snapshotted at the edge, never read live later (M3)")
-                                                           .isEqualTo(MemberState.ALIVE);
+        assertThat(protocol.members()).as("the token is snapshotted at the edge, never read live later (M3)")
+                                      .containsKey(NODE_A);
     }
 
     // ---- bound ----
