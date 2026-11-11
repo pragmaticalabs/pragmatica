@@ -49,6 +49,8 @@ class NodeLeaseTest {
                                     replaying::get,
                                     new FakeClock(),
                                     new RecordingEvents());
+        // A renewal submitted at the very instant of creation would not post-date the initial revocation.
+        advance(1);
     }
 
     @Test
@@ -242,6 +244,80 @@ class NodeLeaseTest {
         assertThat(events).isEmpty();
     }
 
+    @Test
+    void renew_detectsALapseWithoutAnyOwnerCheck() {
+        lease.renew();
+        deliverOwn(0);
+        advance(3_000);
+        lease.renew();
+
+        assertThat(events).containsExactly("lapsed EXPIRED 0");
+    }
+
+    @Test
+    void lapse_afterARegrant_isReportedAgain() {
+        lease.renew();
+        deliverOwn(0);
+        advance(3_000);
+
+        assertThat(lease.valid()).isFalse();
+
+        lease.renew();
+        deliverOwn(1);
+
+        assertThat(lease.valid()).isTrue();
+
+        advance(3_000);
+
+        assertThat(lease.valid()).isFalse();
+        assertThat(events).containsExactly("lapsed EXPIRED 0", "lapsed EXPIRED 0");
+    }
+
+    @Test
+    void rateDivergence_isMeasuredFromTheNewestAnchor_notFromALateOlderRenewal() {
+        lease.renew();
+        advance(1_000);
+        lease.renew();
+        deliverOwn(1);
+        deliverOwn(0);
+        mono.addAndGet(1_000 * MS);
+        wall.addAndGet(1_150);
+        lease.renew();
+        deliverOwn(2);
+
+        assertThat(events).containsExactly("divergence 1000000000 1150000000");
+    }
+
+    @Test
+    void start_runsTheRenewalLoopUntilStop() throws InterruptedException {
+        var looping = NodeLease.nodeLease(SELF,
+                                          timeSpan(3).seconds(),
+                                          timeSpan(10).millis(),
+                                          0.1,
+                                          this::submit,
+                                          replaying::get,
+                                          new FakeClock(),
+                                          new RecordingEvents());
+
+        looping.start();
+        Thread.sleep(300);
+        looping.stop();
+        Thread.sleep(50);
+
+        var afterStop = submittedCount();
+
+        Thread.sleep(200);
+
+        assertThat(afterStop).isGreaterThanOrEqualTo(2);
+        assertThat(submittedCount()).isEqualTo(afterStop);
+    }
+
+    private int submittedCount() {
+        synchronized (submitted) {
+            return submitted.size();
+        }
+    }
+
     private void advance(long millis) {
         mono.addAndGet(millis * MS);
         wall.addAndGet(millis);
@@ -265,7 +341,9 @@ class NodeLeaseTest {
 
     private void record(KVCommand<AetherKey> command) {
         if (command instanceof KVCommand.Put<AetherKey, ?> put && put.value() instanceof NodeLeaseValue value) {
-            submitted.add(value.seq());
+            synchronized (submitted) {
+                submitted.add(value.seq());
+            }
         }
     }
 
