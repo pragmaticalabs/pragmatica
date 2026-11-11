@@ -72,7 +72,8 @@ public record Seams(Set<NodeId> countedCores,
                          localAlive,
                          superseded,
                          memberSource,
-                         communityPolicies);
+                         communityPolicies,
+                         committedCores);
     }
 
     public Seams withCountedCores(Set<NodeId> value) {
