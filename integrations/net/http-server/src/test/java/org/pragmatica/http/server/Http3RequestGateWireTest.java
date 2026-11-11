@@ -47,7 +47,7 @@ class Http3RequestGateWireTest {
     private static final long TIMED_BOUND_MS = 300;
     private static final long DURATION_BOUND_MS = 700;
     /// A bound's 408 may be late by scheduling and a starved host, never by the 10 s to 25 s the client now waits (#2873).
-    private static final long MARGIN_MS = 5_000;
+    private static final long MARGIN_MS = 3_000;
 
     private final AtomicInteger invocations = new AtomicInteger();
     private final AtomicInteger releases = new AtomicInteger();
