@@ -32,10 +32,10 @@ import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
-import org.pragmatica.lang.Causes;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 import org.junit.jupiter.api.Test;
 
