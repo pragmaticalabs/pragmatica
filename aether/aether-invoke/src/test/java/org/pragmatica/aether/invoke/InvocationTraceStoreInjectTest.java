@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
+import java.util.Locale;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.invoke.InvocationTraceStore.ClusterTraceEvent;
@@ -138,7 +139,7 @@ class InvocationTraceStoreInjectTest {
                                         Option.empty(),
                                         Option.empty())
                                 .onSuccess(_ -> fail("Blank operation must be rejected"))
-                                .onFailure(cause -> assertTrue(cause.message().toLowerCase().contains("operation"),
+                                .onFailure(cause -> assertTrue(cause.message().toLowerCase(Locale.ROOT).contains("operation"),
                                                                "Failure message must mention operation: " + cause.message()));
         }
 
@@ -151,7 +152,7 @@ class InvocationTraceStoreInjectTest {
                                         Option.empty(),
                                         Option.empty())
                                 .onSuccess(_ -> fail("Whitespace-only operation must be rejected"))
-                                .onFailure(cause -> assertTrue(cause.message().toLowerCase().contains("operation"),
+                                .onFailure(cause -> assertTrue(cause.message().toLowerCase(Locale.ROOT).contains("operation"),
                                                                "Failure message must mention operation: " + cause.message()));
         }
     }

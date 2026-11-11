@@ -4,6 +4,7 @@
 
 package org.pragmatica.aether.pg.schema.validator;
 
+import java.util.Locale;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -842,13 +843,13 @@ class QueryValidatorTest {
                                 "boolean", "int", "integer", "bigint", "numeric", "json", "jsonb", "bit"})
         void selectOutputColumnNames_keywordLikeAlias_isTheAliasLexeme(String alias) {
             assertThat(outputColumns("SELECT lower(name) AS " + alias + " FROM users"))
-                .isEqualTo(Option.present(List.of(alias.toLowerCase())));
+                .isEqualTo(Option.present(List.of(alias.toLowerCase(Locale.ROOT))));
         }
 
         @ParameterizedTest
         @ValueSource(strings = {"name", "text", "user", "timestamp", "int", "json"})
         void selectOutputColumnNames_quotedKeywordLikeAlias_keepsCase(String alias) {
-            var quoted = alias.substring(0, 1).toUpperCase() + alias.substring(1);
+            var quoted = alias.substring(0, 1).toUpperCase(Locale.ROOT) + alias.substring(1);
 
             assertThat(outputColumns("SELECT lower(name) AS \"" + quoted + "\" FROM users"))
                 .isEqualTo(Option.present(List.of(quoted)));

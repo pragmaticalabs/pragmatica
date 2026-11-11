@@ -1,5 +1,6 @@
 package org.pragmatica.jbct.derive.parse;
 
+import java.util.Locale;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.jbct.derive.Sheets;
 import org.pragmatica.jbct.derive.model.Mode;
@@ -95,7 +96,7 @@ class SheetParserTest {
 
         assertThat(cause).isInstanceOf(SheetError.class);
         assertThat(((SheetError) cause).line()).isEqualTo(5);
-        assertThat(cause.message().toLowerCase()).contains("quote");
+        assertThat(cause.message().toLowerCase(Locale.ROOT)).contains("quote");
         assertThat(cause.message()).contains("date");
     }
 

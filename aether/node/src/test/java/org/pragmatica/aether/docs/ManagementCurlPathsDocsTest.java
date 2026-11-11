@@ -10,6 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -182,7 +183,7 @@ class ManagementCurlPathsDocsTest {
         var out = new ArrayList<Finding>();
         var methodMatch = METHOD.matcher(command);
         var method = methodMatch.find()
-                     ? methodMatch.group(1).toUpperCase()
+                     ? methodMatch.group(1).toUpperCase(Locale.ROOT)
                      : impliedMethod(command);
         var urls = URL.matcher(command);
 

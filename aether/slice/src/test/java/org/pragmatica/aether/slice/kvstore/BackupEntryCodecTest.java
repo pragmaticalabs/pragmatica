@@ -11,6 +11,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.UnaryOperator;
 import java.util.stream.Collectors;
@@ -437,7 +438,7 @@ class BackupEntryCodecTest {
                                                             line -> line.replace("=", ""),
                                                             line -> line.replace("=", "=0"),
                                                             line -> line.replace("/", "//"),
-                                                            line -> line.toUpperCase(),
+                                                            line -> line.toUpperCase(Locale.ROOT),
                                                             line -> line.replace(" ", "  "),
                                                             line -> line + "\r");
             var accepted = new ArrayList<String>();

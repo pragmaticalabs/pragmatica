@@ -8,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.List;
+import java.util.Locale;
 import java.util.function.Function;
 
 import org.junit.jupiter.api.AfterEach;
@@ -93,7 +94,7 @@ class ApplyStateDurabilityTest {
         ApplyLedger.trace = events::add;
         ApplyState.save(ApplyStateFixtures.state(CLUSTER)).onFailure(cause -> fail(cause.message()));
 
-        var expected = System.getProperty("os.name", "").toLowerCase().contains("win")
+        var expected = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win")
                        ? List.of("force-file:metadata=true", "move:[ATOMIC_MOVE]")
                        : List.of("force-file:metadata=true", "move:[ATOMIC_MOVE]", "force-directory:metadata=true");
 
