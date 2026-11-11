@@ -210,7 +210,7 @@ public final class VirtualThreadScheduler {
     /// Queue element AND returned handle: a single object is both the [DelayQueue]
     /// entry and the [ScheduledFuture] given back to the caller.
     static final class ScheduledTask implements ScheduledFuture<Void> {
-        private final Runnable body;
+        private volatile Runnable body;
         private final long periodNanos;
         private final AtomicBoolean running = new AtomicBoolean(false);
         private volatile boolean cancelled;
@@ -234,10 +234,18 @@ public final class VirtualThreadScheduler {
         @Contract
         void runGuarded() {
             try {
-                body.run();
+                runBody(body);
             } catch (Throwable e) {
                 log.warn("Scheduled task body threw; task recurrence preserved", e);
                 Causes.rethrowIfFatal(e);
+            }
+        }
+
+        // A cancel racing the dispatch may have dropped the body already: nothing to run then.
+        @Contract
+        private static void runBody(Runnable body) {
+            if (body != null) {
+                body.run();
             }
         }
 
@@ -262,6 +270,9 @@ public final class VirtualThreadScheduler {
             }
 
             cancelled = true;
+            // The cancelled entry stays in the DelayQueue until its deadline; without this it would pin the body's whole
+            // object graph (a promise timeout's failure lambda holds its promise) for the full delay (#3049).
+            body = null;
             if (mayInterruptIfRunning) {
                 var f = inFlight;
 
