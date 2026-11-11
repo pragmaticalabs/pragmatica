@@ -1007,6 +1007,12 @@ public sealed interface ManagementApiResponses {
                                 int newCount,
                                 long configVersion) {}
 
+    /// #1715: reserve `count` node ids `<source>-<role>-<n>` for `cluster apply`. `source` and `role` are required: an id names both.
+    record ReserveNodeIdsRequest(String source, String role, int count) {}
+
+    /// #1715: the reserved ids, in ascending ordinal, and the committed high-water they end at. The advance is committed before this answers.
+    record ReserveNodeIdsResponse(String source, String role, List<String> ids, int highWater) {}
+
     /// `expectedVersion` is the committed `configVersion` the operator read before asking (#1424), the same
     /// optimistic fence apply-config and scale carry. A primitive `long`, so an omitted or `null` field is
     /// refused at decode (400) rather than read as the `0` wildcard; an explicit `0` against a populated config

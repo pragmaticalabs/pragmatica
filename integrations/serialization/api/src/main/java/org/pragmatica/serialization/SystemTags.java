@@ -774,6 +774,9 @@ public interface SystemTags {
         pin(table, 2890, "org.pragmatica.aether.http.handler.ObjectHandle");
         pin(table, 2891, "org.pragmatica.aether.http.handler.FileHandle");
         pin(table, 2892, "org.pragmatica.aether.http.handler.UploadHandle");
+        // #1715: the per-(source, role) node-id high-water. Inside the fix1715 reservation 2904..2907 of wire-tag-ranges.txt.
+        pin(table, 2904, "org.pragmatica.aether.slice.kvstore.AetherKey.NodeIdHighWaterKey");
+        pin(table, 2905, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeIdHighWaterValue");
         // ---- unpinned numbers up to 16383 RESERVED: reserve a range in wire-tag-ranges.txt first ----
         rejectDuplicateTags(table);
 

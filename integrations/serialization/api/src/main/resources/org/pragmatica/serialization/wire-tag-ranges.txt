@@ -53,3 +53,4 @@
 2870..2879 ahse-A2b 2026-11-07 ahse lane A2b
 2880..2889 ahse-A3-1 2026-11-07 #2450
 2890..2899 ahse-U2 2026-11-07 ahse lane U2
+2904..2907 fix1715 2026-11-11 #1715 node-id high-water key and value (2904, 2905 pinned; 2906..2907 spare)

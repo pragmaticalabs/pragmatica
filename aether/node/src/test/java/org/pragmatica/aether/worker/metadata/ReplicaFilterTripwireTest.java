@@ -66,6 +66,7 @@ class ReplicaFilterTripwireTest {
         keys.put("CommunityPlacementAvailabilityKey", new AetherKey.CommunityPlacementAvailabilityKey("community-1", "source-1", Option.none()));
         keys.put("ProvisioningSlotKey", new AetherKey.ProvisioningSlotKey("slot-1"));
         keys.put("AutoHealStateKey", new AetherKey.AutoHealStateKey());
+        keys.put("NodeIdHighWaterKey", new AetherKey.NodeIdHighWaterKey("src", "core"));
 
         return keys;
     }

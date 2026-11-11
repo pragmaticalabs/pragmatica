@@ -2420,6 +2420,44 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
 
     Fn1<Cause, String> AUTO_HEAL_STATE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid auto-heal-state key format: %s");
 
+    Fn1<Cause, String> NODE_ID_HIGH_WATER_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-id-high-water key format: %s");
+
+    /// Cluster state (#1715): the highest ordinal `n` ever reserved for one (source, role), from which `cluster apply` mints
+    /// `<source>-<role>-<n>` ids. Cluster state and backed up, so a restore keeps the high-water instead of handing the same ids out again.
+    /// An id is never derived from the live roster: a departed node's id would be handed back (#1467, #1543).
+    record NodeIdHighWaterKey(String source, String role) implements ClusterStateKey {
+        private static final String PREFIX = "node-id-high-water/";
+
+        @Override
+        public String asString() {
+            return PREFIX + source + "/" + role;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static NodeIdHighWaterKey nodeIdHighWaterKey(String source, String role) {
+            return new NodeIdHighWaterKey(source, role);
+        }
+
+        public static Result<NodeIdHighWaterKey> nodeIdHighWaterKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return NODE_ID_HIGH_WATER_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var content = key.substring(PREFIX.length());
+            var slashIndex = content.lastIndexOf('/');
+
+            if (slashIndex <= 0 || slashIndex == content.length() - 1) {
+                return NODE_ID_HIGH_WATER_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return success(new NodeIdHighWaterKey(content.substring(0, slashIndex), content.substring(slashIndex + 1)));
+        }
+    }
+
     /// Cluster state (#1529 part 1): the cluster's lineage and incarnation — the single authority every
     /// other component reads it from. The leader mints it at genesis if absent (incarnation 1, a fresh
     /// lineage); a restore keeps the restored lineage and commits an incarnation above every one the
