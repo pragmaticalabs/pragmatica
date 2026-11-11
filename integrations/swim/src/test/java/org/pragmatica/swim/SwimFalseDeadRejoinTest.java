@@ -111,8 +111,8 @@ class SwimFalseDeadRejoinTest {
                                                                      .isNotNull());
         var verdict = verdictSnapshot.get();
 
-        assertThat(verdict.observerRecord()).as("instrument: the observer holds a death record for the live node at incarnation 1")
-                                            .isEqualTo(1L);
+        assertThat(verdict.observerView()).as("instrument: the observer holds the live node FAULTY at incarnation 1")
+                                          .isEqualTo(MemberState.FAULTY + "@1");
         assertThat(verdict.helperView()).as("instrument: the helper still holds the live node ALIVE at the same incarnation")
                                         .isEqualTo(MemberState.ALIVE + "@1");
         assertThat(verdict.liveIncarnation()).as("instrument: the live node has not advanced its incarnation (nothing told it of the verdict)")
@@ -132,7 +132,7 @@ class SwimFalseDeadRejoinTest {
         runScenario(true);
     }
 
-    private record VerdictSnapshot(long observerRecord, String helperView, long liveIncarnation, int healthyAtVerdict) {}
+    private record VerdictSnapshot(String observerView, String helperView, long liveIncarnation, int healthyAtVerdict) {}
 
     private final AtomicReference<VerdictSnapshot> verdictSnapshot = new AtomicReference<>();
     private SwimProtocol observerNode;
@@ -187,12 +187,12 @@ class SwimFalseDeadRejoinTest {
                                                                                             .isNotEmpty());
     }
 
-    /// Runs on the observer's observation thread at the verdict edge, before any relay round trip can undo it.
+    /// Runs on the observer's observation thread at the FAULTY edge (the terminal Departed edge is held back by the co-confirmation kill-gate: one accuser), before any relay round trip can undo it.
     private void captureAtTheVerdict(SwimObservation observation) {
         observed.add(observation);
-        if (observation instanceof SwimObservation.DepartedObserved departed && departed.peer().equals(LIVE)) {
+        if (observation instanceof SwimObservation.FaultyObserved faulty && faulty.peer().equals(LIVE)) {
             verdictSnapshot.compareAndSet(null,
-                                          new VerdictSnapshot(observerNode.deathRecordForTest(LIVE).map(record -> record[0]).or(-1L),
+                                          new VerdictSnapshot(observerNode.members().get(LIVE).state() + "@" + observerNode.members().get(LIVE).incarnation(),
                                                               helperNode.members().get(LIVE).state() + "@" + helperNode.members().get(LIVE).incarnation(),
                                                               liveNode.selfIncarnation(),
                                                               forLive(SwimObservation.HealthyObserved.class).size()));
