@@ -74,7 +74,7 @@ public interface FactorySlice {
 
             @Override
             public Promise<ShortResponse> byTag(QueryItemRequest request) {
-                return Promise.success(new ShortResponse(request.tag()));
+                return Promise.success(new ShortResponse(request.tag().or("")));
             }
 
             @Override
@@ -84,7 +84,7 @@ public interface FactorySlice {
 
             @Override
             public Promise<ShortResponse> pathTag(PathQueryRequest request) {
-                return Promise.success(new ShortResponse(request.tag()));
+                return Promise.success(new ShortResponse(request.tag().or("")));
             }
 
             @Override

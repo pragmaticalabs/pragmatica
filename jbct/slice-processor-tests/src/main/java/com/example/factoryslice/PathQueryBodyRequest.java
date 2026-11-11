@@ -3,16 +3,27 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package com.example.factoryslice;
 
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
+import org.pragmatica.lang.utils.Causes;
 
 
-/// Path + query + body request record whose factory rejects blank components (#3019).
-public record PathQueryBodyRequest(String code, String tag, String name) {
-    public static Result<PathQueryBodyRequest> pathQueryBodyRequest(String code, String tag, String name) {
+/// Path + query + body request record (#3019). Its factory rejects a missing or blank tag and blank string components, so a
+/// request carrying one is answered 400 at the HTTP boundary instead of reaching the slice.
+public record PathQueryBodyRequest(String code, Option<String> tag, String name) {
+    private static final Cause BLANK_TAG = Causes.cause("tag must be present and not blank");
+
+    public static Result<PathQueryBodyRequest> pathQueryBodyRequest(String code, Option<String> tag, String name) {
         return Result.all(Verify.ensure(code, Verify.Is::present),
-                          Verify.ensure(tag, Verify.Is::present),
+                          requiredTag(tag),
                           Verify.ensure(name, Verify.Is::present))
-                     .map(PathQueryBodyRequest::new);
+                     .map((validCode, _, validName) -> new PathQueryBodyRequest(validCode, tag, validName));
+    }
+
+    private static Result<String> requiredTag(Option<String> tag) {
+        return tag.filter(Verify.Is::present)
+                  .toResult(BLANK_TAG);
     }
 }
