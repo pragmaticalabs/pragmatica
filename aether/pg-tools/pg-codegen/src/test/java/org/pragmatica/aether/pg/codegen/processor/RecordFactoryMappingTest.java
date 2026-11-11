@@ -33,6 +33,7 @@ class RecordFactoryMappingTest {
         import org.pragmatica.aether.pg.codegen.annotation.Query;
         import org.pragmatica.aether.resource.db.PgSql;
         import org.pragmatica.aether.slice.mapping.ValueMapping;
+        import org.pragmatica.lang.Cause;
         import org.pragmatica.lang.Option;
         import org.pragmatica.lang.Promise;
         import org.pragmatica.lang.Result;
@@ -61,10 +62,12 @@ class RecordFactoryMappingTest {
         """;
 
     private static final String RESULT_REPO = HEADER + """
+        record FactoryRejection(String message) implements Cause {}
+
         record StatusRow(String status) {
             static Result<StatusRow> statusRow(String status) {
                 return "BAD".equals(status)
-                       ? Causes.cause("bad status").result()
+                       ? new FactoryRejection("bad status").result()
                        : Result.success(new StatusRow(status));
             }
         }
@@ -80,7 +83,7 @@ class RecordFactoryMappingTest {
             record IdStatus(long id, String status) {
                 static Result<IdStatus> idStatus(long id, String status) {
                     return "BAD".equals(status)
-                           ? Causes.cause("bad pair").result()
+                           ? new FactoryRejection("bad pair").result()
                            : Result.success(new IdStatus(id, status));
                 }
             }
@@ -197,12 +200,41 @@ class RecordFactoryMappingTest {
 
         @Test
         void singleColumn_factoryFailure_isTheMapperFailure() throws Exception {
-            assertThat(failure(decode(RESULT_REPO, "ResultRepo", "statusOf", "BAD", 1L)).message()).contains("bad status");
+            assertOwnCause(failure(decode(RESULT_REPO, "ResultRepo", "statusOf", "BAD", 1L)), "bad status");
         }
 
         @Test
         void multiColumn_factoryFailure_isTheMapperFailure() throws Exception {
-            assertThat(failure(decode(RESULT_REPO, "ResultRepo", "idStatusOf", "BAD", 1L)).message()).contains("bad pair");
+            assertOwnCause(failure(decode(RESULT_REPO, "ResultRepo", "idStatusOf", "BAD", 1L)), "bad pair");
+        }
+    }
+
+    @Nested
+    class CrudFactory {
+        private static final String CRUD_REPO = HEADER + """
+            @PgSql
+            public interface CrudRepo {
+                record FactoryRejection(String message) implements Cause {}
+
+                record OrderRow(long id, String status) {
+                    static Result<OrderRow> orderRow(long id, String status) {
+                        return "BAD".equals(status)
+                               ? new FactoryRejection("bad order").result()
+                               : Result.success(new OrderRow(id, status));
+                    }
+                }
+
+                Promise<Option<OrderRow>> findById(Long id);
+            }
+            """;
+
+        @Test
+        void findById_resultFactory_flatMapsAndKeepsTheFactoryFailure() throws Exception {
+            var generated = generated(CRUD_REPO, "CrudRepo");
+
+            assertThat(generated).contains("CrudRepo.OrderRow.orderRow(").doesNotContain("::new");
+            assertThat(decode(CRUD_REPO, "CrudRepo", "findById", "OK", 1L).isSuccess()).isTrue();
+            assertOwnCause(failure(decode(CRUD_REPO, "CrudRepo", "findById", "BAD", 1L)), "bad order");
         }
     }
 
@@ -225,7 +257,7 @@ class RecordFactoryMappingTest {
             var source = wideSource();
 
             assertThat(decode(source, "WideRepo", "findWide", "-", 1L).isSuccess()).isTrue();
-            assertThat(failure(decode(source, "WideRepo", "findWide", "-", -1L)).message()).contains("negative f0");
+            assertOwnCause(failure(decode(source, "WideRepo", "findWide", "-", -1L)), "negative f0");
         }
 
         private String wideSource() {
@@ -235,10 +267,12 @@ class RecordFactoryMappingTest {
             return HEADER + """
                 @PgSql
                 public interface WideRepo {
+                    record FactoryRejection(String message) implements Cause {}
+
                     record WideRow(%s) {
                         static Result<WideRow> wideRow(%s) {
                             return f0 < 0
-                                   ? Causes.cause("negative f0").result()
+                                   ? new FactoryRejection("negative f0").result()
                                    : Result.success(new WideRow(%s));
                         }
                     }
@@ -252,6 +286,39 @@ class RecordFactoryMappingTest {
 
     @Nested
     class FactoryContract {
+        @Test
+        void instanceFactory_isNotTheRecordFactory() throws Exception {
+            assertNoFactory("""
+                record StatusRow(String status) {
+                    StatusRow statusRow(String status) { return new StatusRow(status); }
+                }
+                """);
+        }
+
+        @Test
+        void staticFactoryWithOtherParameterTypes_isNotTheRecordFactory() throws Exception {
+            assertNoFactory("""
+                record StatusRow(String status) {
+                    static StatusRow statusRow(Integer status) { return new StatusRow(String.valueOf(status)); }
+                }
+                """);
+        }
+
+        private void assertNoFactory(String record) throws Exception {
+            var source = HEADER + record + """
+
+                @PgSql
+                public interface ShapeRepo {
+                    @Query("SELECT status FROM orders WHERE id = :id")
+                    Promise<Option<StatusRow>> statusOf(long id);
+                }
+                """;
+            var result = TestCompilationHelper.compileWithProcessor(source, "test/ShapeRepo.java", tempDir);
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.diagnostics()).contains("no type-named static factory");
+        }
+
         @Test
         void missingFactory_isCompileError_namingTheExpectedFactory() throws Exception {
             var result = TestCompilationHelper.compileWithProcessor(NO_FACTORY_REPO, "test/NoFactoryRepo.java", tempDir);
@@ -318,6 +385,13 @@ class RecordFactoryMappingTest {
     }
 
     // --- helpers ---
+
+    /// The factory's own cause reaches the caller: the user's `FactoryRejection` type with the unchanged message,
+    /// not a wrapper around it.
+    private static void assertOwnCause(Cause cause, String message) {
+        assertThat(cause.getClass().getSimpleName()).isEqualTo("FactoryRejection");
+        assertThat(cause.message()).isEqualTo(message);
+    }
 
     private String generated(String source, String repoName) throws Exception {
         var result = TestCompilationHelper.compileAndCompileGenerated(source, "test/" + repoName + ".java", tempDir);
