@@ -295,7 +295,8 @@ class PartitionBackfillTest {
             var before = descriptorFor(SELF);
 
             served.requestCatchup(SOURCE, requests.getFirst()).onResult(pending.getFirst()::resolve);
-            Promise.<Long>promise(TimeSpan.timeSpan(200).millis(), () -> org.pragmatica.lang.Result.success(0L)).await();
+            // synchronous: resolving the pull runs the old run's whole continuation chain on this thread; a wall-clock wait here would
+            // eat into the next flight's 500 ms idle bound (#3070)
 
             assertThat(descriptorFor(SELF)).as("the late run changed no replica row").isEqualTo(before);
             assertThat(descriptorFor(SELF).state()).isEqualTo(ReplicationState.SYNCING);
@@ -339,7 +340,8 @@ class PartitionBackfillTest {
             var next = backfill.backfill(STREAM, PARTITION);
 
             served.requestCatchup(SOURCE, requests.getFirst()).onResult(pending.getFirst()::resolve);
-            Promise.<Long>promise(TimeSpan.timeSpan(200).millis(), () -> org.pragmatica.lang.Result.success(0L)).await();
+            // synchronous: resolving the pull runs the old run's whole continuation chain on this thread; a wall-clock wait here would
+            // eat into the next flight's 500 ms idle bound (#3070)
 
             assertThat(acks).as("the late run acked nothing").isEmpty();
 
@@ -407,7 +409,8 @@ class PartitionBackfillTest {
 
             pending.getFirst().fail(ReplicationError.General.REPLICATION_TIMEOUT);
             // let the old run's failure travel through its continuations to `land`
-            Promise.<Long>promise(TimeSpan.timeSpan(200).millis(), () -> org.pragmatica.lang.Result.success(0L)).await();
+            // synchronous: resolving the pull runs the old run's whole continuation chain on this thread; a wall-clock wait here would
+            // eat into the next flight's 500 ms idle bound (#3070)
 
             var joined = backfill.backfill(STREAM, PARTITION);
 
