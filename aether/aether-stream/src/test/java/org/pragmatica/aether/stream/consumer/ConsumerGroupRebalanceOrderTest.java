@@ -357,11 +357,16 @@ class ConsumerGroupRebalanceOrderTest {
 
         /// A group registered with zero partitions has nothing to clear, so its last leave mints nothing and cannot
         /// be refused for a lagging term: the no-partition guard is what separates this from the refusal below.
+        /// (Only tombstones are committed, which carry the newer term but are not assignments.)
         /// (The lagging join is itself refused, but the member stays registered, which is what reaches the leave.)
         @Test
         void leaveGroup_lastMemberOfAZeroPartitionGroup_isNotRefusedByALaggingTerm() {
-            newCoordinator(2L).joinGroup(GROUP, STREAM, PARTITIONS, "c3", NODE_A);
-            commit(0);
+            var leader = newCoordinator(2L);
+            leader.joinGroup(GROUP, STREAM, PARTITIONS, "c3", NODE_A);
+            leader.leaveGroup(GROUP, STREAM, "c3");
+            for (var i = 0; i < held.size(); i++) {
+                commit(i);
+            }
             held.clear();
             var lagging = newCoordinator(1L);
             lagging.joinGroup(GROUP, STREAM, 0, "c4", NODE_B);
