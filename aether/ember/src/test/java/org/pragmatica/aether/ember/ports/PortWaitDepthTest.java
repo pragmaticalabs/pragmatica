@@ -5,12 +5,16 @@
 package org.pragmatica.aether.ember.ports;
 
 import java.nio.file.Path;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -57,6 +61,24 @@ class PortWaitDepthTest {
             assertThat(held.block().base()).isEqualTo(BASE + 100);
             assertThat(outcome.get()).isInstanceOf(PortError.NoFreeBlock.class);
         }
+    }
+
+    @Test
+    @Timeout(30)
+    void poll_sleepsTheIntervalBetweenPolls_insteadOfSpinning() {
+        var polls = new AtomicInteger();
+        var deadline = System.nanoTime() + 400_000_000L;
+
+        var outcome = PortWait.poll(deadline,
+                                    50,
+                                    () -> {
+                                        polls.incrementAndGet();
+                                        return Result.success(Option.<String> none());
+                                    },
+                                    () -> Causes.cause("timed out"));
+
+        assertThat(outcome.isFailure()).isTrue();
+        assertThat(polls.get()).as("about 400 ms / 50 ms polls, not a spin").isBetween(2, 20);
     }
 
     private Supplier<Object> rendezvous(long boundMs) {
