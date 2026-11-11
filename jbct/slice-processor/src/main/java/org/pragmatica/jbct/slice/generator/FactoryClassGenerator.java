@@ -1434,7 +1434,6 @@ public class FactoryClassGenerator {
         }
 
         var argList = wire.stream().map(p -> callArgument(p, importTracker)).collect(Collectors.joining(", "));
-
         // `new` is deliberate (owner ruling on #3019, 2026-11-10): the record is processor-synthesised and only wraps the call's parameters as they are, so it cannot fail.
         return "new " + method.requestRecordName() + "(" + argList + ")";
     }
