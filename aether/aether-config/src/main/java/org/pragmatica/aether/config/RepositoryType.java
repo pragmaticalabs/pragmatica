@@ -3,6 +3,11 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.config;
 
+import java.nio.file.Path;
+import java.util.Collection;
+import java.util.Set;
+
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
@@ -16,6 +21,30 @@ public sealed interface RepositoryType {
     record Builtin() implements RepositoryType {}
 
     record Remote(String id, String url) implements RepositoryType {}
+
+    /// A module's own packaged slices (Ember JUnit extension, #3021): a coordinate in `moduleSet` is located under
+    /// `root` ALONE, never in a Maven repository; every other coordinate goes to the Maven local repository. Constructed
+    /// only in code, never parsed from TOML. As the node's ONLY repository entry it makes a staged miss a not-found.
+    record Staged(Path root, Set<Artifact> moduleSet) implements RepositoryType {
+        public static Staged staged(Path root, Collection<Artifact> moduleSet) {
+            return new Staged(root, Set.copyOf(moduleSet));
+        }
+
+        /// This staging, or a refusal naming every module coordinate that is also declared `[shared]`: a failed locate of
+        /// such a coordinate would be taken for a runtime-provided library instead of a missing artifact.
+        public Result<Staged> refuseShared(Collection<Artifact> sharedCoordinates) {
+            var clashes = sharedCoordinates.stream()
+                                           .filter(moduleSet::contains)
+                                           .map(Artifact::asString)
+                                           .sorted()
+                                           .toList();
+
+            return clashes.isEmpty()
+                   ? success(this)
+                   : RepositoryTypeError.InvalidRepositoryType.invalidRepositoryType("module coordinate declared [shared]: "
+                                                                                    + String.join(", ", clashes)).result();
+        }
+    }
 
     String CENTRAL_URL = "https://repo1.maven.org/maven2/";
 

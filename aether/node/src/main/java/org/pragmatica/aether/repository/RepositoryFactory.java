@@ -12,6 +12,7 @@ import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.repository.Repository;
+import org.pragmatica.aether.slice.repository.StagedRepository;
 import org.pragmatica.aether.slice.repository.maven.RemoteRepository;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -59,6 +60,16 @@ public interface RepositoryFactory {
             case RepositoryType.Local _ -> localRepository();
             case RepositoryType.Builtin _ -> BuiltinRepository.builtinRepository(artifactStore);
             case RepositoryType.Remote remote -> RemoteRepository.remoteRepository(remote.id(), remote.url());
+            case RepositoryType.Staged staged -> stagedRepository(staged);
         };
+    }
+
+    /// The router a `Staged` entry builds (#3021): module coordinates from the staged root ALONE, everything else from the
+    /// Maven local repository. The ONE place the routing is decided, so the Ember pre-check locates through the same
+    /// router the node's loader does and the two cannot disagree on a path.
+    static Repository stagedRepository(RepositoryType.Staged staged) {
+        return StagedRepository.stagedRepository(staged.moduleSet(),
+                                                 localRepository(staged.root()),
+                                                 localRepository());
     }
 }

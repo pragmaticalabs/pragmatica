@@ -125,6 +125,19 @@ public interface HttpRoutePublisher {
         return Unit.unit();
     }
 
+    /// TEST SEAM (#3021 probe 2): make the routes of every slice published AFTER this call appear `delay` after the
+    /// slice's publication step returns, instead of with it. The publication step itself completes at once, so slice
+    /// activation is NOT held back: only the route table lags, which is the window a readiness condition on routes must
+    /// close. Zero (the default) is today's behaviour. The default is for publishers that publish no routes (test doubles).
+    default Unit setRoutePublicationDelay(TimeSpan delay) {
+        return Unit.unit();
+    }
+
+    /// The delay [#setRoutePublicationDelay] last set; zero for publishers that publish no routes.
+    default TimeSpan routePublicationDelay() {
+        return TimeSpan.timeSpan(0).millis();
+    }
+
     /// #1573 B1: receives one [ExecutionOutcome] per finished HTTP route execution, into the SAME per-node
     /// counters the slice bridge feeds (`InvocationHandler.recordExecution`), so the leader's
     /// all-instances-failed detector sees HTTP traffic.
@@ -237,6 +250,8 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
 
     private final AtomicReference<RouteOutcomeRecorder> routeOutcomeRecorder = new AtomicReference<>(RouteOutcomeRecorder.NONE);
 
+    private final AtomicReference<TimeSpan> routePublicationDelay = new AtomicReference<>(TimeSpan.timeSpan(0).millis());
+
     HttpRoutePublisherImpl(NodeId selfNodeId,
                            ClusterNode<KVCommand<AetherKey>> cluster,
                            GenerationSnapshotSource snapshotSource,
@@ -328,15 +343,39 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                 return Promise.unitPromise();
             }
 
-            publishedRoutes.put(artifact, routes);
-
-            return publishRoutesToCluster(routes, artifact);
+            return publishAfterConfiguredDelay(routes, artifact);
         }
 
         log.warn("SliceRouterFactory {} does not implement RouteSource, no routes published",
                  factory.getClass().getName());
 
         return Promise.unitPromise();
+    }
+
+    private Promise<Unit> publishAfterConfiguredDelay(List<HttpRouteDefinition> routes, Artifact artifact) {
+        var delay = routePublicationDelay.get();
+
+        if (delay.nanos() == 0) {
+            return recordAndPublish(routes, artifact);
+        }
+
+        publishLater(delay, routes, artifact);
+        return Promise.unitPromise();
+    }
+
+    @Contract
+    private void publishLater(TimeSpan delay, List<HttpRouteDefinition> routes, Artifact artifact) {
+        Promise.<Unit>promise(delay,
+                              promise -> recordAndPublish(routes, artifact).onResult(promise::resolve))
+               .onFailure(cause -> log.warn("Delayed route publication for {} failed: {}",
+                                            artifact,
+                                            cause.message()));
+    }
+
+    private Promise<Unit> recordAndPublish(List<HttpRouteDefinition> routes, Artifact artifact) {
+        publishedRoutes.put(artifact, routes);
+
+        return publishRoutesToCluster(routes, artifact);
     }
 
     private static Option<SliceLoadingFailure.Fatal.RouteSecurityContractStale> staleContractRefusal(Artifact artifact,
@@ -551,6 +590,18 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         versioningMetricsSink.set(sink);
 
         return Unit.unit();
+    }
+
+    @Override
+    public Unit setRoutePublicationDelay(TimeSpan delay) {
+        routePublicationDelay.set(delay);
+
+        return Unit.unit();
+    }
+
+    @Override
+    public TimeSpan routePublicationDelay() {
+        return routePublicationDelay.get();
     }
 
     @Override
