@@ -4,6 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
+import java.util.function.Function;
+
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLeaseKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -18,17 +27,9 @@ import org.pragmatica.lang.concurrent.CancellableTask;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BooleanSupplier;
-import java.util.function.Function;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 
 /// The node lease of #2981 (design §2.1, §4): one lease per node, covering every CF>=2 partition the node owns.
 ///
@@ -87,7 +88,6 @@ public interface NodeLease {
     /// The node's two clocks, a seam for tests.
     interface LeaseClock {
         long nanoTime();
-
         long wallMillis();
 
         static LeaseClock systemClock() {
@@ -154,7 +154,7 @@ public interface NodeLease {
         }
 
         boolean validAt(long now) {
-            return !revoked && now - expiry < 0;
+            return ! revoked && now - expiry < 0;
         }
 
         /// How far wall time ran ahead of monotonic time since the anchor (A-CLK-2).
@@ -197,19 +197,19 @@ public interface NodeLease {
         }
 
         boolean anchorMovedFrom(LeaseState before) {
-            return anchored && before.anchored && anchorNanos - before.anchorNanos > 0;
+            return anchored
+                   && before.anchored
+                   && anchorNanos - before.anchorNanos > 0;
         }
     }
 }
 
 enum SystemLeaseClock implements NodeLease.LeaseClock {
     INSTANCE;
-
     @Override
     public long nanoTime() {
         return System.nanoTime();
     }
-
     @Override
     public long wallMillis() {
         return System.currentTimeMillis();
@@ -218,19 +218,18 @@ enum SystemLeaseClock implements NodeLease.LeaseClock {
 
 enum LoggingEvents implements NodeLease.Events {
     INSTANCE;
-
     private static final Logger log = LoggerFactory.getLogger(NodeLease.class);
-
     @Contract
     @Override
     public void lapsed(NodeLease.LapseReason reason, long nanos) {
         log.warn("Node lease lapsed ({}), {} ms", reason, TimeUnit.NANOSECONDS.toMillis(nanos));
     }
-
     @Contract
     @Override
     public void clockRateDivergence(long monotonicNanos, long wallNanos) {
-        log.warn("Node clock rate divergence: monotonic advanced {} ns while wall advanced {} ns", monotonicNanos, wallNanos);
+        log.warn("Node clock rate divergence: monotonic advanced {} ns while wall advanced {} ns",
+                 monotonicNanos,
+                 wallNanos);
     }
 }
 
@@ -287,16 +286,16 @@ record LiveNodeLease(NodeId self,
     @Override
     public void renew() {
         valid();
-
         var anchor = new NodeLease.Anchor(clock.nanoTime(), clock.wallMillis());
         var next = seq.incrementAndGet();
 
-        pending.values()
-               .removeIf(old -> anchor.monotonicNanos() - (old.monotonicNanos() + durationNanos) >= 0);
+        pending.values().removeIf(old -> anchor.monotonicNanos() - (old.monotonicNanos() + durationNanos) >= 0);
         pending.put(next, anchor);
         applier.apply(List.of(new KVCommand.Put<AetherKey, AetherValue>(NodeLeaseKey.nodeLeaseKey(self),
                                                                         NodeLeaseValue.nodeLeaseValue(next))))
-               .onFailure(cause -> log.debug("Node lease renewal {} not applied: {}", next, cause.message()));
+               .onFailure(cause -> log.debug("Node lease renewal {} not applied: {}",
+                                             next,
+                                             cause.message()));
     }
 
     @Contract
@@ -306,16 +305,11 @@ record LiveNodeLease(NodeId self,
             return;
         }
 
-        var submitter = put.cause()
-                           .key()
-                           .nodeId();
+        var submitter = put.cause().key().nodeId();
 
         applied.put(submitter, clock.nanoTime());
-
         if (submitter.equals(self)) {
-            applyOwn(put.cause()
-                        .value()
-                        .seq());
+            applyOwn(put.cause().value().seq());
         }
     }
 
@@ -333,8 +327,7 @@ record LiveNodeLease(NodeId self,
 
     @Contract
     private void applyOwn(long delivered) {
-        Option.option(pending.remove(delivered))
-              .onPresent(this::extendFrom);
+        Option.option(pending.remove(delivered)).onPresent(this::extendFrom);
     }
 
     @Contract

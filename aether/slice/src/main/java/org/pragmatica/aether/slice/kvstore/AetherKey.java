@@ -2350,7 +2350,6 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     Fn1<Cause, String> STREAM_PARTITION_RECOVERY_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid stream-partition-recovery key format: %s");
 
     Fn1<Cause, String> SPOKESMAN_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid spokesman key format: %s");
-
     Fn1<Cause, String> NODE_LEASE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-lease key format: %s");
 
     Fn1<Cause, String> PROVISIONING_SLOT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid provisioning-slot key format: %s");
