@@ -52,7 +52,6 @@ public sealed interface TransportObservation extends Message.Local {
     /// observations, tests. A consumer applies it unconditionally and never fences on it. Producer sequences
     /// start above it.
     long NO_SEQUENCE = 0L;
-
     /// The peer that was observed.
     NodeId nodeId();
     /// Local view of the connected peer set after this observation, as known to THIS node.
@@ -136,7 +135,10 @@ public sealed interface TransportObservation extends Message.Local {
     }
 
     /// Sequenced variant: `sequence` is the producer's order of this observation among its view-carrying ones.
-    static PeerDisconnected peerDisconnected(NodeId nodeId, List<NodeId> view, ObservationSource source, long sequence) {
+    static PeerDisconnected peerDisconnected(NodeId nodeId,
+                                             List<NodeId> view,
+                                             ObservationSource source,
+                                             long sequence) {
         return new PeerDisconnected(nodeId, view, source, sequence);
     }
 

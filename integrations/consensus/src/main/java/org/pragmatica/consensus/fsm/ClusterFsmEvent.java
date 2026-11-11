@@ -37,11 +37,8 @@ public interface ClusterFsmEvent {
     /// [`#NO_SEQUENCE`] marks an unordered event, applied unconditionally.
     sealed interface TopologyChange extends ClusterFsmEvent {
         long NO_SEQUENCE = 0L;
-
         NodeId node();
-
         List<NodeId> topology();
-
         long sequence();
     }
 

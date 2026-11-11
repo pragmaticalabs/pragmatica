@@ -231,6 +231,7 @@ public final class LeaderElectionContext {
     private final AtomicReference<Option<NodeId>> lastNotifiedLeader = new AtomicReference<>(Option.none());
 
     private final AtomicReference<SequencedTopology> currentTopology = new AtomicReference<>(SequencedTopology.INITIAL);
+
     private final AtomicBoolean hasEverHadLeader = new AtomicBoolean(false);
     /// Whether this node's KV state still trails the cluster's committed frontier (#1803). Consulted by
     /// [`LeaderElectionState.AwaitingKvSync`] so a joiner whose state is still being delivered waits for
@@ -799,13 +800,14 @@ public final class LeaderElectionContext {
         var candidate = SequencedTopology.sequencedTopology(topology, sequence);
         var previous = currentTopology.getAndAccumulate(candidate, SequencedTopology::advance);
 
-        return !candidate.isStaleAgainst(previous);
+        return ! candidate.isStaleAgainst(previous);
     }
 
     /// The stored view and the sequence of the last sequenced event that wrote it. An empty view is never stored
     /// (the previous one is kept), but its sequence still advances the fence.
     private record SequencedTopology(List<NodeId> topology, long sequence) {
-        static final SequencedTopology INITIAL = new SequencedTopology(List.of(), ClusterFsmEvent.TopologyChange.NO_SEQUENCE);
+        static final SequencedTopology INITIAL = new SequencedTopology(List.of(),
+                                                                       ClusterFsmEvent.TopologyChange.NO_SEQUENCE);
 
         static SequencedTopology sequencedTopology(List<NodeId> topology, long sequence) {
             var sorted = new ArrayList<>(topology);
@@ -828,7 +830,8 @@ public final class LeaderElectionContext {
                            ? current.topology()
                            : candidate.topology();
 
-            return new SequencedTopology(topology, Math.max(current.sequence(), candidate.sequence()));
+            return new SequencedTopology(topology,
+                                         Math.max(current.sequence(), candidate.sequence()));
         }
     }
 
