@@ -3527,13 +3527,49 @@ applicable through this route; a plan containing any of them is rejected in full
 including any scale in the same plan. A rollout of the other changes needs a new cluster. This is the
 same statement the CLI reference makes for `aether cluster apply`, which calls this route.
 
+**Routed apply (#686).** A request may carry `route`, the client's claim of who fills the pools the plan
+changes: `LEADER` (the leader's reconcilers, after the commit) or `APPLY` (the CLI, before the commit).
+Without `route` the rule above holds unchanged. With `route`:
+
+- `expectedVersion` must be the stored `configVersion`; `0` is refused (`UnfencedOverwrite`), and a moved
+  config is refused (`VersionConflict`).
+- The server recomputes the diff and decides the route of every pool-changing action itself, from the
+  committed auto-heal value (an absent record counts as enabled): a worker or spot pool is `LEADER`, a core
+  pool is `LEADER` with auto-heal on and `APPLY` with it off. The claim never decides; it only has to match.
+- Config-only actions (community placement, non-version cluster-level fields, a new source's declaration,
+  and the removal of a role or source whose committed counts are all 0) are admitted on either route.
+- Version, runtime, runtime-profile and immutable-field changes stay refused, whatever `route` says.
+
+Refusals with `route` present, each a 409 unless noted, checked before the route comparison:
+
+| `code` | When | Next step in the message |
+|---|---|---|
+| `SourceReplaceRefused` | A source-level field changes (it replaces every node of the source) on a source with a non-core role above 0, or while auto-heal is on. | Disable auto-heal, or move the roles to a new source and remove the old one. |
+| `LivePoolRemovalRefused` | A worker or spot role, or a source holding one, is removed while its committed count is above 0. | Set the count to 0, apply, wait until `aether cluster status` shows 0 live, then remove the entry. |
+| `CoreFillRefused` | A core role is added with nodes while auto-heal is on. | Disable auto-heal, apply, re-enable. |
+| `MultiSourceCoreScaleRefused` | A core scale-up while auto-heal is on and several sources declare the core role. | Disable auto-heal, apply, re-enable. |
+| `ParseFailed` (400) | Explicit communities are configured and the plan adds or rescales a worker role. | Change `community.target_size` instead. |
+| `RouteMismatch` | An action's route differs from the claim. A plan mixing `LEADER` and `APPLY` actions always gets it. | Re-plan against the current state. |
+
+**Error codes.** Every config refusal carries a `code` member in its `application/problem+json` body,
+alongside the RFC 9457 members. Classify a refusal by `code`, never by the status alone: a 409 is both
+the definitive `RouteMismatch` and the transient "Current core leader required for config update".
+
+| Class | `code` / response |
+|---|---|
+| Definitive (do not retry the same request) | `VersionConflict`, `UnfencedOverwrite`, `RouteMismatch`, `SourceReplaceRefused`, `LivePoolRemovalRefused`, `CoreFillRefused`, `MultiSourceCoreScaleRefused`, `UnsupportedApplyAction` (501), `ImmutableFieldChange`, `ValidationFailed`, `VersionChangeViaApply`, `RuntimeChangeViaApply`, `RuntimeProfileChangeViaApply`, `ParseFailed` (community guards and the community-retirement guard), `ClusterEventsFactorsRefused` |
+| Transient (retry) | 409 "Current core leader required for config update" and 503 during an election: no `code`. `ClusterTopologyManagerUnavailable` (503) is typed and also transient. |
+
 **Request:**
 ```json
 {
   "tomlContent": "[cluster]\nname = \"production\"\n...",
-  "expectedVersion": 7
+  "expectedVersion": 7,
+  "route": "LEADER"
 }
 ```
+
+`route` is optional.
 
 **Response (applied):**
 ```json

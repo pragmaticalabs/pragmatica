@@ -6,6 +6,7 @@ package org.pragmatica.aether.api.routes;
 
 import java.nio.charset.StandardCharsets;
 
+import org.pragmatica.aether.config.cluster.TypedRefusal;
 import org.pragmatica.http.ContentCategory;
 import org.pragmatica.http.ContentType;
 import org.pragmatica.http.HttpError;
@@ -15,6 +16,8 @@ import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 
 /// Canonical RFC 9457 ProblemDetail emission helper for the management plane.
@@ -43,7 +46,10 @@ public final class ProblemResponses {
     /// @param requestId request identifier (extension member)
     @Contract
     public static void writeProblem(ResponseWriter response, Cause cause, String instance, String requestId) {
-        writeProblem(response, resolveStatus(cause), HttpError.clientMessage(cause), instance, requestId);
+        var status = resolveStatus(cause);
+        var detail = HttpError.clientMessage(cause);
+
+        write(response, status, detail, requestId, problemJson(cause, status, detail, instance, requestId));
     }
 
     /// Write a ProblemDetail response with explicit status and detail.
@@ -59,15 +65,52 @@ public final class ProblemResponses {
                                     String detail,
                                     String instance,
                                     String requestId) {
+        write(response,
+              status,
+              detail,
+              requestId,
+              MAPPER.writeAsString(ProblemDetail.problemDetail(status, detail, instance, requestId)));
+    }
+
+    /// The problem body for a cause: the RFC 9457 members, plus the `code` extension member when the cause is a
+    /// [TypedRefusal] (#686), so a client classifies the refusal by its code rather than by the status alone.
+    static Result<String> problemJson(Cause cause, HttpStatus status, String detail, String instance, String requestId) {
         var problem = ProblemDetail.problemDetail(status, detail, instance, requestId);
+
+        return switch (cause) {
+            case TypedRefusal typed -> MAPPER.writeAsString(CodedProblem.codedProblem(problem, typed.code()));
+            default -> MAPPER.writeAsString(problem);
+        };
+    }
+
+    @Contract
+    private static void write(ResponseWriter response, HttpStatus status, String detail, String requestId, Result<String> body) {
         var serverStatus = toServerStatus(status.code());
 
-        MAPPER.writeAsString(problem)
-              .onSuccess(json -> response.header(ResponseWriter.X_REQUEST_ID, requestId)
-                                         .write(serverStatus,
-                                                json.getBytes(StandardCharsets.UTF_8),
-                                                CONTENT_TYPE_PROBLEM))
-              .onFailure(_ -> response.error(serverStatus, detail));
+        body.onSuccess(json -> response.header(ResponseWriter.X_REQUEST_ID, requestId)
+                                       .write(serverStatus,
+                                              json.getBytes(StandardCharsets.UTF_8),
+                                              CONTENT_TYPE_PROBLEM))
+            .onFailure(_ -> response.error(serverStatus, detail));
+    }
+
+    /// [ProblemDetail] with the `code` extension member (RFC 9457 section 3.2).
+    record CodedProblem(String type,
+                        String title,
+                        int status,
+                        Option<String> detail,
+                        Option<String> instance,
+                        String requestId,
+                        String code) {
+        static CodedProblem codedProblem(ProblemDetail problem, String code) {
+            return new CodedProblem(problem.type(),
+                                    problem.title(),
+                                    problem.status(),
+                                    problem.detail(),
+                                    problem.instance(),
+                                    problem.requestId(),
+                                    code);
+        }
     }
 
     /// Render a ProblemDetail as JSON bytes — used by paths that must bypass `ResponseWriter`

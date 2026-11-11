@@ -10,13 +10,20 @@ import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Cause;
 
 
-public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
+public sealed interface ClusterConfigError extends Cause, HttpStatusAware, TypedRefusal {
     /// Default HTTP status for config errors is 400 (Bad Request) — most variants are
     /// input validation failures. Variants with state-conflict, not-found, server-side,
     /// or timeout semantics override.
     @Override
     default HttpStatus httpStatus() {
         return HttpStatus.BAD_REQUEST;
+    }
+
+    /// #686: the variant's simple name, so every config refusal is typed on the wire and a new variant cannot be added
+    /// untyped. The names are a client contract (`management-api.md`); `ClusterConfigRoutesApplyTest` pins them.
+    @Override
+    default String code() {
+        return getClass().getSimpleName();
     }
 
     record InvalidDeploymentType(String value) implements ClusterConfigError {
@@ -605,6 +612,83 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
         @Override
         public HttpStatus httpStatus() {
             return HttpStatus.SERVICE_UNAVAILABLE;
+        }
+    }
+
+    /// #686: the route the client claimed for an apply is not the route the committed auto-heal value names for one of the
+    /// plan's pool-changing actions. The client's view of who fills the pool is stale: it must re-plan, not retry.
+    record RouteMismatch(ApplyRoute claimed, ApplyRoute required, DiffAction action) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Apply route mismatch: the request claims " + claimed + " but " + action.symbol() + " " + action.description()
+                 + " resolves to " + required
+                 + " under the committed auto-heal setting. Re-run `aether cluster apply` so it re-plans against the current state.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// #686 M4: a source-level field change reprovisions every node of the source with a count above zero. In a pool the
+    /// leader owns, that surge is retired by the leader, so the change is admitted only for a core-only source with
+    /// auto-heal off.
+    record SourceReplaceRefused(String sourceName, String field) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return field + " on " + sourceName + " replaces every node of the source. That is possible only for a core-only source"
+                 + " with auto-heal off: disable auto-heal, or move the roles to a new source and remove the old one.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// #686 M5: removing a worker or spot entry whose committed count is above zero would strand its live nodes, because
+    /// the worker reconciler walks only the entries that remain. The operator scales the entry to zero first.
+    record LivePoolRemovalRefused(String sourceName, String role, int count) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Removing " + sourceName + "." + role + " with committed count " + count + " would strand its nodes. Set "
+                 + sourceName + "." + role + " count to 0, apply, wait until `aether cluster status` shows 0 live, then remove the entry.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// #686 M9: with auto-heal on, nothing fills core nodes on a newly declared core role, so the commit would land and no
+    /// node would follow.
+    record CoreFillRefused(String sourceName, int count) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Adding " + count + " core nodes on " + sourceName + " with auto-heal on: core nodes on a new source are created"
+                 + " by apply only with auto-heal off: disable auto-heal, apply, re-enable.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// #686 N2: with auto-heal on and several sources declaring the core role, the leader's core heal cannot pick the
+    /// source of a new core node, so a core scale-up would commit and never fill.
+    record MultiSourceCoreScaleRefused(String sourceName, List<String> coreSources) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Scaling core on " + sourceName + " with auto-heal on while several sources declare the core role " + coreSources
+                 + ": with several core sources, apply creates the cores itself only with auto-heal off: disable auto-heal, apply, re-enable.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
         }
     }
 
