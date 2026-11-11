@@ -54,6 +54,10 @@ class SwimFalseDeadRejoinTest {
     private static final NodeId OBSERVER = new NodeId("obs");
     private static final NodeId HELPER = new NodeId("helper");
     private static final NodeId LIVE = new NodeId("live");
+    private static final int DEFAULT_SUSPECT_MS = 800;
+    /// Arm 1e waits for the observer's Faulty gossip to be exhausted (24 transmissions) before the relay starts; the
+    /// FAULTY residency (3 x suspect timeout) must outlast that, or the observer sweeps the live node first.
+    private static final int ARM_1E_SUSPECT_MS = 3000;
     private static final int OBSERVER_PORT = 29201;
     private static final int HELPER_PORT = 29202;
     private static final int LIVE_PORT = 29203;
@@ -100,9 +104,9 @@ class SwimFalseDeadRejoinTest {
     /// X refutes with k+1 and T re-admits it. RED without the notice (relay marker ignored): X stays dead at T.
     @Test
     void liveNodeReachableOnlyViaTheHelper_isReadmittedByTheObserverThroughTheRelay() {
-        var observer = node(OBSERVER, OBSERVER_PORT, 1L);
-        var helper = node(HELPER, HELPER_PORT, 1L);
-        var live = node(LIVE, LIVE_PORT, 1L);
+        var observer = node(OBSERVER, OBSERVER_PORT, 1L, ARM_1E_SUSPECT_MS);
+        var helper = node(HELPER, HELPER_PORT, 1L, ARM_1E_SUSPECT_MS);
+        var live = node(LIVE, LIVE_PORT, 1L, ARM_1E_SUSPECT_MS);
 
         observer.addObservationListener(this::captureAtTheVerdict);
         seed(observer, HELPER, HELPER_PORT, LIVE, LIVE_PORT);
@@ -246,10 +250,14 @@ class SwimFalseDeadRejoinTest {
     }
 
     private SwimProtocol node(NodeId id, int port, long incarnation) {
+        return node(id, port, incarnation, DEFAULT_SUSPECT_MS);
+    }
+
+    private SwimProtocol node(NodeId id, int port, long incarnation, int suspectMs) {
         var config = SwimConfig.swimConfig(timeSpan(100).millis(),
                                            timeSpan(80).millis(),
                                            2,
-                                           timeSpan(800).millis(),
+                                           timeSpan(suspectMs).millis(),
                                            8,
                                            timeSpan(200).millis(),
                                            "c",
