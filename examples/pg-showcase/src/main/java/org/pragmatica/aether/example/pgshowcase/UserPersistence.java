@@ -18,7 +18,11 @@ public interface UserPersistence {
                    boolean active,
                    Instant createdAt,
                    Instant updatedAt,
-                   Instant deletedAt) {}
+                   Instant deletedAt) {
+        static UserRow userRow(long id, String name, String email, boolean active, Instant createdAt, Instant updatedAt, Instant deletedAt) {
+            return new UserRow(id, name, email, active, createdAt, updatedAt, deletedAt);
+        }
+    }
 
     @Table(UserRow.class)
     Promise<Option<UserRow>> findById(Long id);

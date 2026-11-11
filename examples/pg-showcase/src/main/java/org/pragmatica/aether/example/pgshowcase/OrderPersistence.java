@@ -28,11 +28,23 @@ public interface OrderPersistence {
                     Instant createdAt,
                     @Jsonb OrderMetadata metadata,
                     UUID correlationId,
-                    BigDecimal totalWithTax) {}
+                    BigDecimal totalWithTax) {
+        static OrderRow orderRow(long id, long userId, BigDecimal total, String status, Instant createdAt, OrderMetadata metadata, UUID correlationId, BigDecimal totalWithTax) {
+            return new OrderRow(id, userId, total, status, createdAt, metadata, correlationId, totalWithTax);
+        }
+    }
 
-    record OrderSummary(long id, long userId, BigDecimal total, String status) {}
+    record OrderSummary(long id, long userId, BigDecimal total, String status) {
+        static OrderSummary orderSummary(long id, long userId, BigDecimal total, String status) {
+            return new OrderSummary(id, userId, total, status);
+        }
+    }
 
-    record OrderWithUserName(long id, String userName, BigDecimal total, String status) {}
+    record OrderWithUserName(long id, String userName, BigDecimal total, String status) {
+        static OrderWithUserName orderWithUserName(long id, String userName, BigDecimal total, String status) {
+            return new OrderWithUserName(id, userName, total, status);
+        }
+    }
 
     @Query("SELECT o.id, u.name AS user_name, o.total, o.status "
           + "FROM orders o JOIN users u ON o.user_id = u.id "
