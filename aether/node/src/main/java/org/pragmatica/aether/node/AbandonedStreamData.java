@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -38,18 +37,17 @@ public interface AbandonedStreamData {
     Logger log = LoggerFactory.getLogger(AbandonedStreamData.class);
 
     /// A directory of another NodeId; `bytes` is -1 when its size could not be read.
-    record Abandoned(Path path, long bytes) {}
+    record Abandoned(Path path, long bytes) {
+        public static Abandoned abandoned(Path path, long bytes) {
+            return new Abandoned(path, bytes);
+        }
+    }
 
     /// Scans both bases and raises the warning, or the recovery when nothing is abandoned.
     @Contract
     static void check(OperatorWarningSink sink, Path streamSegmentsDir, Path walBaseDir, String selfId) {
-        var roots = Stream.of(streamSegmentsDir, walBaseDir)
-                          .map(AbandonedStreamData::parentOf)
-                          .distinct()
-                          .toList();
-        var found = roots.stream()
-                         .flatMap(root -> foreignDirectories(root, selfId).stream())
-                         .toList();
+        var roots = Stream.of(streamSegmentsDir, walBaseDir).map(AbandonedStreamData::parentOf).distinct().toList();
+        var found = roots.stream().flatMap(root -> foreignDirectories(root, selfId).stream()).toList();
         var subject = parentOf(streamSegmentsDir).toString();
 
         raise(sink, found, subject);
@@ -58,8 +56,12 @@ public interface AbandonedStreamData {
     @Contract
     private static void raise(OperatorWarningSink sink, List<Abandoned> found, String subject) {
         if (found.isEmpty()) {
-            OperatorWarnings.raise(log, sink, OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED, subject,
-                                   "No stream data of another NodeId under {}", subject);
+            OperatorWarnings.raise(log,
+                                   sink,
+                                   OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED,
+                                   subject,
+                                   "No stream data of another NodeId under {}",
+                                   subject);
         } else {
             OperatorWarnings.raise(log, sink, OperatorWarningCode.STREAM_DATA_ABANDONED, subject, "{}", message(found));
         }
@@ -67,14 +69,12 @@ public interface AbandonedStreamData {
 
     /// The warning text: what was found, that nothing was touched, and the operator action.
     static String message(List<Abandoned> found) {
-        var listing = found.stream()
-                           .map(AbandonedStreamData::describe)
-                           .collect(Collectors.joining(", "));
+        var listing = found.stream().map(AbandonedStreamData::describe).collect(Collectors.joining(", "));
 
         return "Stream data of an earlier NodeId was found and is NOT read by this node: " + listing
-               + ". After a whole-cluster restart stream records and durable-entity state are lost even when the disks survive"
-               + " (every restart mints a fresh NodeId; fix: #1569). Nothing was deleted or moved. Recover by republishing from the"
-               + " source; once nothing needs these directories, remove them by hand to reclaim the space.";
+             + ". After a whole-cluster restart stream records and durable-entity state are lost even when the disks survive"
+             + " (every restart mints a fresh NodeId; fix: #1569). Nothing was deleted or moved. Recover by republishing from the"
+             + " source; once nothing needs these directories, remove them by hand to reclaim the space.";
     }
 
     private static String describe(Abandoned abandoned) {
@@ -90,33 +90,43 @@ public interface AbandonedStreamData {
     }
 
     private static List<Abandoned> foreignDirectories(Path root, String selfId) {
-        return lift(Causes::fromThrowable, () -> listForeign(root, selfId))
-                   .onFailure(cause -> log.warn("Cannot scan {} for abandoned stream data, skipping it: {}", root, cause.message()))
+        return Files.isDirectory(root)
+               ? scan(root, selfId)
+               : List.of();
+    }
+
+    private static List<Abandoned> scan(Path root, String selfId) {
+        return lift(Causes::fromThrowable,
+                    () -> Files.list(root)).flatMap(entries -> lift(Causes::fromThrowable,
+                                                                    () -> foreign(entries, selfId)))
+                   .onFailure(cause -> log.warn("Cannot scan {} for abandoned stream data, skipping it: {}",
+                                                root,
+                                                cause.message()))
                    .or(List.of());
     }
 
-    private static List<Abandoned> listForeign(Path root, String selfId) throws IOException {
-        if (!Files.isDirectory(root)) {
-            return List.of();
-        }
-
-        try (var entries = Files.list(root)) {
+    private static List<Abandoned> foreign(Stream<Path> entries, String selfId) {
+        try (entries) {
             return entries.filter(Files::isDirectory)
                           .filter(dir -> !dir.getFileName()
                                              .toString()
                                              .equals(selfId))
                           .sorted()
-                          .map(dir -> new Abandoned(dir, sizeOf(dir)))
+                          .map(dir -> Abandoned.abandoned(dir,
+                                                          sizeOf(dir)))
                           .toList();
         }
     }
 
     private static long sizeOf(Path dir) {
-        return lift(Causes::fromThrowable, () -> walkSize(dir)).or(-1L);
+        return lift(Causes::fromThrowable,
+                    () -> Files.walk(dir)).flatMap(files -> lift(Causes::fromThrowable,
+                                                                 () -> sumOfFiles(files)))
+                   .or(-1L);
     }
 
-    private static long walkSize(Path dir) throws IOException {
-        try (var files = Files.walk(dir)) {
+    private static long sumOfFiles(Stream<Path> files) {
+        try (files) {
             return files.filter(Files::isRegularFile)
                         .mapToLong(AbandonedStreamData::lengthOf)
                         .sum();
