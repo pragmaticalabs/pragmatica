@@ -4,6 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.ember.ports;
 
+import java.util.function.Supplier;
+
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
@@ -12,6 +16,27 @@ import org.pragmatica.lang.Unit;
 sealed interface PortWait {
     static Result<Unit> sleep(long millis) {
         return Result.lift(_ -> PortError.General.INTERRUPTED, () -> Thread.sleep(millis));
+    }
+
+    /// Polls `step` until it yields a value, fails, or `deadline` (a `System.nanoTime()` reading) passes, sleeping `intervalMs`
+    /// between polls. Iterative, so stack depth is constant however long the wait; a timeout yields `onTimeout`.
+    static <T> Result<T> poll(long deadline,
+                              long intervalMs,
+                              Supplier<Result<Option<T>>> step,
+                              Supplier<Cause> onTimeout) {
+        var current = step.get();
+
+        while (pending(current) && System.nanoTime() < deadline) {
+            current = sleep(intervalMs).flatMap(_ -> step.get());
+        }
+
+        return current.flatMap(found -> found.map(Result::success)
+                                             .or(() -> onTimeout.get()
+                                                                .result()));
+    }
+
+    private static <T> boolean pending(Result<Option<T>> current) {
+        return current.fold(_ -> false, Option::isEmpty);
     }
 
     record unused() implements PortWait {}

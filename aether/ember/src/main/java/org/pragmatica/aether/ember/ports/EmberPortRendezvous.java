@@ -9,11 +9,13 @@ import java.nio.file.Path;
 import java.util.function.Function;
 import java.util.stream.Stream;
 
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
-import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Unit.unit;
 
 
@@ -54,19 +56,16 @@ public record EmberPortRendezvous(Path dir, int parties, long boundMs, String la
     }
 
     private Result<Unit> awaitParties(long deadline, String marker) {
-        return markerCount().flatMap(count -> decide(count, deadline, marker));
+        return PortWait.poll(deadline,
+                             POLL_MS,
+                             () -> markerCount().map(this::partiesMet),
+                             () -> PortError.RendezvousTimedOut.FACTORY.apply(marker, boundMs));
     }
 
-    private Result<Unit> decide(long count, long deadline, String marker) {
+    private Option<Unit> partiesMet(long count) {
         return count >= parties
-               ? success(unit())
-               : waitOrTimeOut(deadline, marker);
-    }
-
-    private Result<Unit> waitOrTimeOut(long deadline, String marker) {
-        return System.nanoTime() >= deadline
-               ? PortError.RendezvousTimedOut.FACTORY.apply(marker, boundMs).result()
-               : PortWait.sleep(POLL_MS).flatMap(_ -> awaitParties(deadline, marker));
+               ? some(unit())
+               : none();
     }
 
     private Result<Long> markerCount() {

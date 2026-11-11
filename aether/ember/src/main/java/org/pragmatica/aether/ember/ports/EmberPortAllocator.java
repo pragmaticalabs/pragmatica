@@ -228,14 +228,10 @@ public record EmberPortAllocator(Path lockDir,
     }
 
     private Result<PortClaim> scan(int slots, Set<Integer> excluded, long deadline) {
-        return scanRange(slots, excluded).flatMap(found -> found.map(Result::success)
-                                                                .or(() -> backOff(slots, excluded, deadline)));
-    }
-
-    private Result<PortClaim> backOff(int slots, Set<Integer> excluded, long deadline) {
-        return System.nanoTime() >= deadline
-               ? PortError.NoFreeBlock.FACTORY.apply(first, last, budgetMs).result()
-               : PortWait.sleep(rescanMs).flatMap(_ -> scan(slots, excluded, deadline));
+        return PortWait.poll(deadline,
+                             rescanMs,
+                             () -> scanRange(slots, excluded),
+                             () -> PortError.NoFreeBlock.FACTORY.apply(first, last, budgetMs));
     }
 
     private Result<Option<PortClaim>> scanRange(int slots, Set<Integer> excluded) {
