@@ -2638,18 +2638,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// No `isEmpty` shortcut here: the map's size is updated after a new entry is visible, so the shortcut can miss
     /// an episode opened concurrently, and departure and channel close are the only events that would close it.
     private void closeBackpressureEpisode(NodeId peerId, StreamType streamType) {
-        Option.option(backpressureEpisodes.remove(new BackpressureLane(peerId, streamType)))
-              .onPresent(episode -> log.info("Backpressure on peer {} lane {} cleared: {} write(s) found it unwritable over {} ms",
-                                             peerId,
-                                             streamType,
-                                             episode.writes().get(),
-                                             TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - episode.startedNanos())));
+        Option.option(backpressureEpisodes.remove(new BackpressureLane(peerId, streamType))).onPresent(episode -> log.info("Backpressure on peer {} lane {} cleared: {} write(s) found it unwritable over {} ms",
+                                                                                                                           peerId,
+                                                                                                                           streamType,
+                                                                                                                           episode.writes()
+                                                                                                                                  .get(),
+                                                                                                                           TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - episode.startedNanos())));
     }
 
     /// Closes every open episode of a peer whose channel closed or who departed, each with its summary line.
     private void endBackpressureEpisodes(NodeId peerId) {
-        Stream.of(StreamType.values())
-              .forEach(streamType -> closeBackpressureEpisode(peerId, streamType));
+        Stream.of(StreamType.values()).forEach(streamType -> closeBackpressureEpisode(peerId, streamType));
     }
 
     /// Package-private test seam: the number of open backpressure episodes, so tests can show an entry is gone.

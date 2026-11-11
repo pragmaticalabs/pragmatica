@@ -13,7 +13,6 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-
 package org.pragmatica.consensus.net;
 
 import java.util.Map;
@@ -27,6 +26,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
+
 
 /// Wire-generation join guard (#2981 step 6): a node refuses to start when a core member that has already
 /// completed its handshake advertises a LOWER wire generation, because an older node cannot decode the records
@@ -42,10 +42,8 @@ import org.pragmatica.lang.utils.SharedScheduler;
 public interface JoinGenerationGuard {
     /// This binary's wire generation. Bump on every wire/codec change that an older node cannot decode.
     int WIRE_GENERATION = 2;
-
     /// Bound on waiting for core members to handshake [guess: taste; a constant, not configuration].
     TimeSpan JOIN_GENERATION_WAIT = TimeSpan.timeSpan(10).seconds();
-
     /// Handshake poll cadence while waiting.
     TimeSpan POLL_INTERVAL = TimeSpan.timeSpan(50).millis();
 
@@ -70,7 +68,11 @@ public interface JoinGenerationGuard {
                                Fn1<Option<Map<String, String>>, NodeId> labelsOf,
                                TimeSpan wait,
                                int own) {
-        return poll(members, labelsOf, System.nanoTime() + wait.nanos(), own, Promise.promise());
+        return poll(members,
+                    labelsOf,
+                    System.nanoTime() + wait.nanos(),
+                    own,
+                    Promise.promise());
     }
 
     private static Promise<Unit> poll(Set<NodeId> members,
@@ -87,9 +89,8 @@ public interface JoinGenerationGuard {
                                               long deadlineNanos,
                                               int own,
                                               Promise<Unit> promise) {
-        var allHandshaken = members.stream()
-                                   .allMatch(member -> labelsOf.apply(member)
-                                                               .isPresent());
+        var allHandshaken = members.stream().allMatch(member -> labelsOf.apply(member)
+                                                                        .isPresent());
 
         return allHandshaken || System.nanoTime() - deadlineNanos >= 0
                ? promise.succeed(Unit.unit())
@@ -102,6 +103,7 @@ public interface JoinGenerationGuard {
                                             int own,
                                             Promise<Unit> promise) {
         var _ = SharedScheduler.schedule(() -> poll(members, labelsOf, deadlineNanos, own, promise), POLL_INTERVAL);
+
         return promise;
     }
 
@@ -120,7 +122,7 @@ public interface JoinGenerationGuard {
         return labels.map(JoinGenerationGuard::generationOf)
                      .filter(generation -> generation < own)
                      .map(generation -> (ConsensusError) new ConsensusError.WireGenerationRefused(member,
-                                                                                                    generation,
-                                                                                                    own));
+                                                                                                  generation,
+                                                                                                  own));
     }
 }

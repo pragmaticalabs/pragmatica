@@ -205,7 +205,6 @@ public class RabiaEngine<C extends Command> {
     /// refused as a whole and never decoded row by row). Cleared by any successful restore. It is not a fence: only candidate
     /// selection ([#adoptableCandidate]) and the status read it.
     private volatile Option<RestoreFailures> restoreFailures = Option.none();
-
     /// Why the re-persist of a restored or adopted state failed (#1516): the second permanent fence the watchdog
     /// bounds. Set only by [#recordRestoredStateSaveFailure], and like `ownRestoreFailure` never cleared in-process:
     /// that arm too runs only after a genesis has resolved. It is deliberately NOT `authorityFailure` itself, which
@@ -1028,7 +1027,6 @@ public class RabiaEngine<C extends Command> {
     private final ParticipationMarker participationMarker;
     private final ConsensusMetrics metrics;
     private final boolean activationGated;
-
     /// #2981 step 6: runs once per engine start, after quorum is first established and before the node's first
     /// consensus apply (sync). Default no-op; failure refuses startup. NOT the `activationGated` authorizer.
     private volatile Supplier<Promise<Unit>> preSyncCheck = () -> Promise.success(Unit.unit());
@@ -1441,15 +1439,13 @@ public class RabiaEngine<C extends Command> {
     /// edges, and the completion re-enters on the engine thread.
     private void runPreSyncCheck() {
         if (preSyncRunning.compareAndSet(false, true)) {
-            preSyncCheck.get()
-                        .onResult(result -> safeExecute(() -> preSyncCompleted(result)));
+            preSyncCheck.get().onResult(result -> safeExecute(() -> preSyncCompleted(result)));
         }
     }
 
     private void preSyncCompleted(Result<Unit> result) {
         preSyncRunning.set(false);
-        result.onSuccess(_ -> preSyncPassed())
-              .onFailure(this::refuseStartup);
+        result.onSuccess(_ -> preSyncPassed()).onFailure(this::refuseStartup);
     }
 
     private void preSyncPassed() {
@@ -1461,8 +1457,7 @@ public class RabiaEngine<C extends Command> {
 
     private void refuseStartup(Cause cause) {
         log.error("Node {}: refusing to start consensus: {}", self, cause.message());
-        startPromise.get()
-                    .fail(cause);
+        startPromise.get().fail(cause);
         var _ = stop();
     }
 
