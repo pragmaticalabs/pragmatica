@@ -2934,6 +2934,7 @@ class ClusterEventAggregatorTest {
             .containsExactlyInAnyOrder(new OperatorWarningCode[]{
                 OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER,
                 OperatorWarningCode.BACKUP_STOP_FLUSH_FAILED,
+                OperatorWarningCode.STREAM_DATA_ABANDONED,
                 OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED,
                 OperatorWarningCode.NODE_REPLACEMENT_STARTED,
                 OperatorWarningCode.NODE_REPLACEMENT_JOIN_OVERDUE,
