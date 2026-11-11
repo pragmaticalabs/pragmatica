@@ -37,7 +37,12 @@ public interface AccountPersistence {
                       String currency,
                       String status,
                       Instant createdAt) {
-        static AccountRow accountRow(String accountId, String holderName, String email, String currency, String status, Instant createdAt) {
+        static AccountRow accountRow(String accountId,
+                                     String holderName,
+                                     String email,
+                                     String currency,
+                                     String status,
+                                     Instant createdAt) {
             return new AccountRow(accountId, holderName, email, currency, status, createdAt);
         }
     }

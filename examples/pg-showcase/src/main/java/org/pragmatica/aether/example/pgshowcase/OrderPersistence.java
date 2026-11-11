@@ -29,7 +29,14 @@ public interface OrderPersistence {
                     @Jsonb OrderMetadata metadata,
                     UUID correlationId,
                     BigDecimal totalWithTax) {
-        static OrderRow orderRow(long id, long userId, BigDecimal total, String status, Instant createdAt, OrderMetadata metadata, UUID correlationId, BigDecimal totalWithTax) {
+        static OrderRow orderRow(long id,
+                                 long userId,
+                                 BigDecimal total,
+                                 String status,
+                                 Instant createdAt,
+                                 OrderMetadata metadata,
+                                 UUID correlationId,
+                                 BigDecimal totalWithTax) {
             return new OrderRow(id, userId, total, status, createdAt, metadata, correlationId, totalWithTax);
         }
     }

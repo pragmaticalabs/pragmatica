@@ -19,8 +19,20 @@ public interface BasePersistence {
                          BigDecimal orderTotal,
                          String orderStatus,
                          Instant orderCreatedAt) {
-        static CustomerOrder customerOrder(long orderId, long customerId, String customerName, String customerEmail, BigDecimal orderTotal, String orderStatus, Instant orderCreatedAt) {
-            return new CustomerOrder(orderId, customerId, customerName, customerEmail, orderTotal, orderStatus, orderCreatedAt);
+        static CustomerOrder customerOrder(long orderId,
+                                           long customerId,
+                                           String customerName,
+                                           String customerEmail,
+                                           BigDecimal orderTotal,
+                                           String orderStatus,
+                                           Instant orderCreatedAt) {
+            return new CustomerOrder(orderId,
+                                     customerId,
+                                     customerName,
+                                     customerEmail,
+                                     orderTotal,
+                                     orderStatus,
+                                     orderCreatedAt);
         }
     }
 
@@ -30,7 +42,12 @@ public interface BasePersistence {
                            BigDecimal totalRevenue,
                            BigDecimal minOrderValue,
                            BigDecimal maxOrderValue) {
-        static CustomerRevenue customerRevenue(long customerId, String customerName, Long orderCount, BigDecimal totalRevenue, BigDecimal minOrderValue, BigDecimal maxOrderValue) {
+        static CustomerRevenue customerRevenue(long customerId,
+                                               String customerName,
+                                               Long orderCount,
+                                               BigDecimal totalRevenue,
+                                               BigDecimal minOrderValue,
+                                               BigDecimal maxOrderValue) {
             return new CustomerRevenue(customerId, customerName, orderCount, totalRevenue, minOrderValue, maxOrderValue);
         }
     }
@@ -40,7 +57,11 @@ public interface BasePersistence {
                         String productName,
                         Long unitsSold,
                         BigDecimal totalRevenue) {
-        static ProductSales productSales(long productId, String productSku, String productName, Long unitsSold, BigDecimal totalRevenue) {
+        static ProductSales productSales(long productId,
+                                         String productSku,
+                                         String productName,
+                                         Long unitsSold,
+                                         BigDecimal totalRevenue) {
             return new ProductSales(productId, productSku, productName, unitsSold, totalRevenue);
         }
     }
@@ -52,7 +73,13 @@ public interface BasePersistence {
                        String status,
                        String metadata,
                        UUID correlationId) {
-        static OrderDetail orderDetail(long id, long customerId, BigDecimal total, BigDecimal totalWithTax, String status, String metadata, UUID correlationId) {
+        static OrderDetail orderDetail(long id,
+                                       long customerId,
+                                       BigDecimal total,
+                                       BigDecimal totalWithTax,
+                                       String status,
+                                       String metadata,
+                                       UUID correlationId) {
             return new OrderDetail(id, customerId, total, totalWithTax, status, metadata, correlationId);
         }
     }

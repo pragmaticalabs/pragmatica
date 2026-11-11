@@ -19,7 +19,13 @@ public interface UserPersistence {
                    Instant createdAt,
                    Instant updatedAt,
                    Instant deletedAt) {
-        static UserRow userRow(long id, String name, String email, boolean active, Instant createdAt, Instant updatedAt, Instant deletedAt) {
+        static UserRow userRow(long id,
+                               String name,
+                               String email,
+                               boolean active,
+                               Instant createdAt,
+                               Instant updatedAt,
+                               Instant deletedAt) {
             return new UserRow(id, name, email, active, createdAt, updatedAt, deletedAt);
         }
     }

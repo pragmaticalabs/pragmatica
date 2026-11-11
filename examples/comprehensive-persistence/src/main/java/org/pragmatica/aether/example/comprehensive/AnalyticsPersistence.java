@@ -20,7 +20,12 @@ public interface AnalyticsPersistence {
                        int orderCount,
                        BigDecimal revenue,
                        Instant createdAt) {
-        static OrderMetric orderMetric(long id, LocalDate eventDate, long customerId, int orderCount, BigDecimal revenue, Instant createdAt) {
+        static OrderMetric orderMetric(long id,
+                                       LocalDate eventDate,
+                                       long customerId,
+                                       int orderCount,
+                                       BigDecimal revenue,
+                                       Instant createdAt) {
             return new OrderMetric(id, eventDate, customerId, orderCount, revenue, createdAt);
         }
     }
