@@ -342,34 +342,52 @@ class SwimIsolationProbeTest {
 
     /// Mutant m11 (announce ignores stop): a stop within one period of the scheduling cancels the announce. The period
     /// is 1 s so the random delay (below one period) is almost never under the time between the round and the stop.
+    /// The control arm (same setup, no stop) proves the announce is scheduled and reaches the seed.
     @Test
     void isolationProbe_stopWithinOnePeriodOfAScheduledAnnounce_sendsNoAnnounce() {
         var seed = new InetSocketAddress("127.0.0.1", 9102);
-        var slowTransport = new AddressedTransport();
+        var controlTransport = new AddressedTransport();
+        var stoppedTransport = new AddressedTransport();
+        var control = aloneAndLatched(controlTransport, seed);
 
-        holder = SwimProtocol.swimProtocol(swimConfig(timeSpan(1000).millis(),
-                                                      timeSpan(20).millis(),
-                                                      3,
-                                                      timeSpan(100).millis(),
-                                                      8,
-                                                      timeSpan(20).millis()).withJoinGrace(timeSpan(0).millis()),
-                                           slowTransport,
-                                           new RecordingListener(),
-                                           SELF_ID,
-                                           SELF_ADDR,
-                                           () -> false)
-                             .unwrap();
-        holder.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of(seed));
-        holder.joinAcknowledgedForTest();
-        holder.latchSelfIsolation(() -> true);
-        slowTransport.sent.clear();
-
+        holder = aloneAndLatched(stoppedTransport, seed);
+        control.probeRoundForTest();
         holder.probeRoundForTest();
         holder.stop();
+
+        await().atMost(Duration.ofSeconds(3))
+               .untilAsserted(() -> assertThat(controlTransport.sent).as("control: the scheduled announce reaches the seed")
+                                                                     .anyMatch(entry -> entry.message() instanceof SwimMessage.Announce));
+        control.stop();
         await().pollDelay(1300, TimeUnit.MILLISECONDS).atMost(Duration.ofSeconds(3)).until(() -> true);
 
-        assertThat(slowTransport.sent).as("the announce scheduled before the stop is never sent")
-                                      .noneMatch(entry -> entry.message() instanceof SwimMessage.Announce);
+        assertThat(stoppedTransport.sent).as("the announce scheduled before the stop is never sent")
+                                         .noneMatch(entry -> entry.message() instanceof SwimMessage.Announce);
+    }
+
+    /// A latched protocol with a 1 s period whose only peer has been swept, so the round announces to the seed.
+    private SwimProtocol aloneAndLatched(AddressedTransport recorder, InetSocketAddress seed) {
+        var alone = SwimProtocol.swimProtocol(swimConfig(timeSpan(1000).millis(),
+                                                         timeSpan(20).millis(),
+                                                         3,
+                                                         timeSpan(100).millis(),
+                                                         8,
+                                                         timeSpan(20).millis()).withJoinGrace(timeSpan(0).millis()),
+                                              recorder,
+                                              new RecordingListener(),
+                                              SELF_ID,
+                                              SELF_ADDR,
+                                              () -> false)
+                                .unwrap();
+
+        alone.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of(seed));
+        alone.joinAcknowledgedForTest();
+        alone.putMemberForTest(NODE_A, ADDR_A, MemberState.FAULTY);
+        alone.latchSelfIsolation(() -> true);
+        alone.removeMemberForTest(NODE_A);
+        recorder.sent.clear();
+
+        return alone;
     }
 
     /// Mutant m12 (any member state): an UNKNOWN peer is not probable and not FAULTY, so no Ping goes to it.
