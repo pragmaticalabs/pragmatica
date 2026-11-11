@@ -56,8 +56,7 @@ public interface JoinGenerationGuard {
     }
 
     private static Option<Integer> parseGeneration(String raw) {
-        return Number.parseInt(raw)
-              .option();
+        return Number.parseInt(raw).option();
     }
 
     /// Waits until every member in `members` has handshaken or `wait` elapses, whichever is first, failing at
