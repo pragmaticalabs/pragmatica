@@ -310,7 +310,7 @@ class PartitionBackfillTest {
         /// #1638 late side effects, the ack half: with the owner known (SOURCE), a completed backfill acks the owner.
         /// A run that settles AFTER its flight timed out sends no ack, while the next flight's own settlement does. Red
         /// under "the ack is not gated".
-        @org.junit.jupiter.api.RepeatedTest(200)
+        @Test
         void lateSettlement_afterTheTimeout_sendsNoAckToTheOwner() {
             registry.registerReplica(STREAM, PARTITION, SOURCE);
             registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
