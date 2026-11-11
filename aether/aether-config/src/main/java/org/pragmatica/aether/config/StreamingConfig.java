@@ -122,7 +122,6 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
     /// the batcher's own defaults (overhaul 7.2); the window is deliberately not lengthened to chase a better message ratio,
     /// since every event inside a window waits up to its length.
     public static final TimeSpan DEFAULT_REPLICATION_BATCH_MAX_DELAY = timeSpan(1).millis();
-
     /// #2981 `owner_lease` (`T`): how long a node's ownership lease runs from the submission time of the renewal that
     /// granted it (fence-lease design 7). A node whose lease has lapsed stops completing publishes "ok"; the next owner
     /// waits `W` (see [#ownerLeaseWait()]) before it activates. THE DEFAULT IS A GUESS (design 2.2): what would settle it
@@ -559,7 +558,9 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
     /// running fast and the old owner's running slow, each by `rho`.
     public TimeSpan ownerLeaseWait() {
         var padded = Math.round(ownerLease.nanos() * (1 + clockDriftBound) / (1 - clockDriftBound));
-        return timeSpan(padded).nanos().plus(OWNER_LEASE_WAIT_MARGIN);
+
+        return timeSpan(padded).nanos()
+                       .plus(OWNER_LEASE_WAIT_MARGIN);
     }
 
     /// Bounded wait for a caught-up source to appear before a cold-start replica self-promotes. Derived

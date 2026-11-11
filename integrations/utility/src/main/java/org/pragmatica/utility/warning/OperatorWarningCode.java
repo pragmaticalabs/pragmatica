@@ -510,10 +510,7 @@ public enum OperatorWarningCode {
     /// Registered by step 5 and raised by the lease steps. Closed by [#NODE_CLOCK_RATE_NORMAL].
     NODE_CLOCK_RATE_DIVERGENCE("node-clock-rate-divergence", "node-clock", WarningLevel.WARNING),
     /// The recovery of a [#NODE_CLOCK_RATE_DIVERGENCE] (#2981), same subject: the clock rates agree within the bound again.
-    NODE_CLOCK_RATE_NORMAL("node-clock-rate-normal",
-                           "node-clock",
-                           WarningLevel.INFO,
-                           NODE_CLOCK_RATE_DIVERGENCE),
+    NODE_CLOCK_RATE_NORMAL("node-clock-rate-normal", "node-clock", WarningLevel.INFO, NODE_CLOCK_RATE_DIVERGENCE),
     /// A truncation of a partition's ring was asked to cut below its visible offset (#2981, design 2.2 check 3, r7.1 C2): with
     /// CF >= 2 lineage the cut is refused (a defect, since the owner's lineage rule makes it unreachable), otherwise it proceeds as
     /// a counted retraction. The message names stream, partition, `keep`, `visible` and the outcome (`refused` or `retracted`).

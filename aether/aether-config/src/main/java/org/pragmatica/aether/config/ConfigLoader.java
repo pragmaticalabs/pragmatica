@@ -289,8 +289,7 @@ public final class ConfigLoader {
                                                      defaults.replicationBatchMaxDelay());
         var ownerLease = parseTimeSpan(doc, "streaming", "owner_lease", defaults.ownerLease());
         var ownerLeaseRenewal = parseTimeSpan(doc, "streaming", "owner_lease_renewal", defaults.ownerLeaseRenewal());
-        var clockDriftBound = doc.getDouble("streaming", "clock_drift_bound")
-                                 .or(defaults.clockDriftBound());
+        var clockDriftBound = doc.getDouble("streaming", "clock_drift_bound").or(defaults.clockDriftBound());
 
         builder.streaming(StreamingConfig.streamingConfig(publishTimeout,
                                                           readTimeout,

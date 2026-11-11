@@ -316,20 +316,22 @@ public final class ConfigValidator {
                                                                                                                                 .millis()));
         }
 
-        if (!(rho >= StreamingConfig.MIN_CLOCK_DRIFT_BOUND && rho < 1)) {
+        if (! (rho >= StreamingConfig.MIN_CLOCK_DRIFT_BOUND && rho < 1)) {
             errors.add("streaming.clock_drift_bound must be >= %s and < 1. Got: %s".formatted(StreamingConfig.MIN_CLOCK_DRIFT_BOUND,
-                                                                                               rho));
+                                                                                              rho));
+
             return;
         }
+
         var lease = streaming.ownerLease().nanos();
         var wait = streaming.ownerLeaseWait().nanos();
 
         if (lease + wait >= suspectTimeout.nanos()) {
             errors.add("streaming.owner_lease (%dms) plus the new owner's lease wait (%dms, owner_lease * (1 + clock_drift_bound) / (1 - clock_drift_bound) + 50ms) must be less than timeouts.swim.suspect_timeout (%dms)".formatted(streaming.ownerLease()
-                                                                                                                                                                                                                                       .millis(),
-                                                                                                                                                                                                                                   streaming.ownerLeaseWait()
-                                                                                                                                                                                                                                            .millis(),
-                                                                                                                                                                                                                                   suspectTimeout.millis()));
+                                                                                                                                                                                                                                               .millis(),
+                                                                                                                                                                                                                                      streaming.ownerLeaseWait()
+                                                                                                                                                                                                                                               .millis(),
+                                                                                                                                                                                                                                      suspectTimeout.millis()));
         }
     }
 
