@@ -238,8 +238,8 @@ class DelegatedStorageAdapterTest {
             adapter.retryPending();
         }
 
-        assertThat(gc.activateCalls.get()).as("the call itself plus the bounded retries")
-                                          .isEqualTo(1 + DelegatedStorageAdapter.MAX_RETRIES);
+        assertThat(DelegatedStorageAdapter.MAX_RETRIES).as("marked guess #800: three retries per leader-change call").isEqualTo(3);
+        assertThat(gc.activateCalls.get()).as("the call itself plus the bounded retries").isEqualTo(4);
         gc.failActivate.set(false);
         adapter.retryPending();
 

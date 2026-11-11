@@ -64,6 +64,19 @@ class OperatorWarningWiringTest {
         assertThat(assemblyCode()).containsOnlyOnce("StorageMaintenanceDriver.storageMaintenanceDriver(compositeDemotionManager,compositePromotionManager,PromotionStallWatch.promotionStallWatch(storageSetups,operatorWarningSink),compositeGarbageCollector,maintenancePasses,delegatedStorageAdapter::retryPending);");
     }
 
+    /// #800: a maintenance pass that throws reaches this node's sink through the driver's own reporter, and the node serves the
+    /// driver's progress. The driver is tested with its own sink, so leaving the reporter unbound, or not serving the progress,
+    /// left it green.
+    @Test
+    void assembly_bindsTheMaintenancePassReporterToThisNodesSink() {
+        assertThat(assemblyCode()).containsOnlyOnce("maintenancePasses=DegradeReporter.degradeReporter(StorageMaintenanceDriver.REPORT_SUBJECT);maintenancePasses.bind(operatorWarningSink);");
+    }
+
+    @Test
+    void node_servesTheMaintenanceDriversProgress() {
+        assertThat(assemblyCode()).containsOnlyOnce("returnstorageMaintenanceDriver.progress();");
+    }
+
     /// The ready signal can fire again after a drain began; the node tells it whether it is draining from the drain procedure's own
     /// state, for storage maintenance and for prefetching alike. `StoragePromotionWiringTest` and `AetherNodeReadySignalPrefetchTest`
     /// test the guards with a supplied predicate, so binding a constant here left them green.

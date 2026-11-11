@@ -140,6 +140,19 @@ class StorageMaintenanceDriverProgressTest {
     }
 
     @Test
+    void promotionCycleThatCannotStart_raisesThePromotionPassFailed() throws InterruptedException {
+        var driver = driver(_ -> {
+            throw new IllegalStateException("no thread");
+        });
+
+        driver.tick();
+
+        assertThat(codes(1)).containsExactly(FAILED);
+        assertThat(raised.getFirst().subject()).isEqualTo("storage-maintenance/promotion");
+        assertThat(raised.getFirst().message()).contains("no thread");
+    }
+
+    @Test
     void tick_asksTheAdapterToRetryPendingStateChangesOnce() {
         driver().tick();
 
@@ -162,6 +175,10 @@ class StorageMaintenanceDriverProgressTest {
     }
 
     private StorageMaintenanceDriver driver() {
+        return driver(Runnable::run);
+    }
+
+    private StorageMaintenanceDriver driver(java.util.concurrent.Executor executor) {
         var degrade = DegradeReporter.degradeReporter(StorageMaintenanceDriver.REPORT_SUBJECT);
 
         degrade.bind(OperatorWarningSink.handingOffTo(raised::add));
@@ -171,7 +188,7 @@ class StorageMaintenanceDriverProgressTest {
                                                                   PromotionStallWatch.promotionStallWatch(Map.of(),
                                                                                                           OperatorWarningSink.logOnly()),
                                                                   gc,
-                                                                  Runnable::run,
+                                                                  executor,
                                                                   degrade,
                                                                   this::countRetry);
     }
