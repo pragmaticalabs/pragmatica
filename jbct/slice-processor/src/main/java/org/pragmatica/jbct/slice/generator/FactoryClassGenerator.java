@@ -2742,7 +2742,6 @@ public class FactoryClassGenerator {
         }
 
         var ctorArgs = components.stream().map(ComponentInfo::name).collect(Collectors.joining(", "));
-
         // `new` is deliberate (CTO ruling on #3019, 2026-11-11): the invariant ran in the producing side's factory and this rebuilds a value from a trusted internal wire; decode-side re-validation needs a Result channel in the reader contract.
         out.println("                            return new " + name + "(" + ctorArgs + ");");
         out.println("                        })" + comma);
