@@ -300,13 +300,12 @@ class FalseDeathWorkerCatchUpTest {
     void armE_claimedActiveRedeployDuringTheCleanup_endsLoaded() {
         sliceActive(GONE);
         resync();
-        var deactivation = sliceStore.holdDeactivation();
+        var unload = sliceStore.holdUnload();
 
         leaderRemoves(GONE);
         resync();
-        assign(GONE, SliceState.ACTIVE);
         feed(new KVCommand.Put<AetherKey, AetherValue>(NodeArtifactKey.nodeArtifactKey(SELF, GONE), NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE)));
-        deactivation.succeed(new TestSliceStore.Loaded(GONE, null));
+        unload.succeed(Unit.unit());
 
         assertThat(sliceStore.unloadCalls).as("one cleanup, joined by the redeploy").containsExactly(GONE);
         assertThat(sliceStore.loaded()).as("the redeploy's load ran after the cleanup settled").extracting(SliceStore.LoadedSlice::artifact).containsExactly(GONE);
@@ -391,6 +390,7 @@ class FalseDeathWorkerCatchUpTest {
         record Loaded(Artifact artifact, Slice slice) implements LoadedSlice {}
 
         private Option<Promise<LoadedSlice>> deactivationGate = Option.none();
+        private Option<Promise<Unit>> unloadGate = Option.none();
 
         /// As the real store: a load of an artifact already loaded returns the loaded slice and loads nothing.
         @Override
@@ -417,6 +417,15 @@ class FalseDeathWorkerCatchUpTest {
             return gate;
         }
 
+        /// The next unload takes the slice out of `loaded()` at once, and finalizes (drops whatever of that artifact is loaded then) only when the
+        /// returned promise is resolved: a cleanup still in flight after the slice already reads as not loaded.
+        Promise<Unit> holdUnload() {
+            var gate = Promise.<Unit>promise();
+
+            unloadGate = Option.some(gate);
+            return gate;
+        }
+
         @Override
         public Promise<LoadedSlice> activateSlice(Artifact artifact) {
             return Promise.success(new Loaded(artifact, null));
@@ -432,7 +441,8 @@ class FalseDeathWorkerCatchUpTest {
         public Promise<Unit> unloadSlice(Artifact artifact) {
             unloadCalls.add(artifact);
             loadedSlices.removeIf(slice -> slice.artifact().equals(artifact));
-            return Promise.unitPromise();
+            return unloadGate.or(Promise::unitPromise)
+                             .onSuccess(_ -> loadedSlices.removeIf(slice -> slice.artifact().equals(artifact)));
         }
 
         @Override
