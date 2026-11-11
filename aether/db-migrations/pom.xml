@@ -7,6 +7,10 @@
     </parent>
     <artifactId>db-migrations</artifactId>
     <name>Shared Database Migrations</name>
+    <properties>
+        <!-- heavy-db: the live SQL Server / Oracle fence tests (see the dependencies below). The root default plus that group. -->
+        <surefire.excludedGroups>Infinite, Slow, Benchmark, S3, quarantine, heavy-db</surefire.excludedGroups>
+    </properties>
     <dependencies>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
@@ -34,6 +38,46 @@
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>resource-db-jdbc</artifactId>
             <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- FDB-2b (#2591): H2 (T12, tier 1 via SET EXCLUSIVE) and SQLite (T6, T8, T8b, tier 3) run in-JVM. TEST scope only. -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <version>2.4.240</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.xerial</groupId>
+            <artifactId>sqlite-jdbc</artifactId>
+            <version>3.54.1.0</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- FDB-2b fix round (#2591): the tier-2 fences (SQL Server sp_getapplock, Oracle DBMS_LOCK) run against LIVE engines in
+             MigrationFenceSqlServerTest / MigrationFenceOracleTest. TEST scope only, and tagged heavy-db: excluded by default
+             (images of ~1.5 GB, Oracle start-up of minutes); run with -Dsurefire.excludedGroups= -Dgroups=heavy-db. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>mssqlserver</artifactId>
+            <version>1.21.4</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.microsoft.sqlserver</groupId>
+            <artifactId>mssql-jdbc</artifactId>
+            <version>12.8.1.jre11</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>oracle-free</artifactId>
+            <version>1.21.4</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.oracle.database.jdbc</groupId>
+            <artifactId>ojdbc11</artifactId>
+            <version>23.7.0.25.01</version>
             <scope>test</scope>
         </dependency>
         <!-- the transports declare their pools optional: a test that provisions them supplies the pools -->
