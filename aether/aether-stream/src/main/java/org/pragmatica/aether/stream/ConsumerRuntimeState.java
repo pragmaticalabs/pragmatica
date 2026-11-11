@@ -2269,13 +2269,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                              int attemptCount,
                                              int appendAttempt) {
         state.markDeadLetterInFlight();
-        appendClaimed(key,
-                      state,
-                      event,
-                      errorMessage,
-                      attemptCount,
-                      appendAttempt,
-                      state.beginAdvance(event.offset()));
+        state.claimAdvance(event.offset())
+             .onPresent(inFlight -> appendClaimed(key, state, event, errorMessage, attemptCount, appendAttempt, inFlight));
     }
 
     /// #2914: runs only under a slot claimed in one step with the cancel check ([ConsumerState#claimAdvance]), as
