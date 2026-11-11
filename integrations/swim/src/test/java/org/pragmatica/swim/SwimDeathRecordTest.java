@@ -20,6 +20,7 @@ package org.pragmatica.swim;
 import java.net.InetSocketAddress;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -59,7 +60,9 @@ class SwimDeathRecordTest {
     private static final long OTHER_TOKEN = 0x3028BL;
     private static final long DEATH_INCARNATION = 1L;
 
+    private final AtomicBoolean booting = new AtomicBoolean(false);
     private BootTokens tokens;
+    private RecordingTransport transport;
     private RecordingObservationSink observations;
     private SwimProtocol protocol;
 
@@ -78,12 +81,13 @@ class SwimDeathRecordTest {
     void setUp() {
         tokens = BootTokens.bootTokens(0x5E1FL);
         observations = new RecordingObservationSink();
+        transport = new RecordingTransport();
         protocol = SwimProtocol.swimProtocol(tightConfig(),
-                                             new RecordingTransport(),
+                                             transport,
                                              new RecordingListener(),
                                              SELF_ID,
                                              SELF_ADDR,
-                                             () -> false)
+                                             booting::get)
                                .unwrap();
         protocol.addObservationListener(observations);
         protocol.setBootTokens(tokens);
@@ -201,12 +205,20 @@ class SwimDeathRecordTest {
     }
 
     @Test
-    void deathRecord_strayAck_doesNotPromoteReSeededMember() {
+    void deathRecord_verifiedProbeAck_doesNotPromoteReSeededMember() {
         driveToReSeededObserved();
+        transport.sentMessages.clear();
+        assertThat(protocol.probeOnceForTest().map(SwimMember::nodeId).or(SELF_ID)).as("precondition: NODE_A probed")
+                                                                                 .isEqualTo(NODE_A);
+        var probe = transport.sentMessages.stream()
+                                          .filter(Ping.class::isInstance)
+                                          .map(Ping.class::cast)
+                                          .findFirst()
+                                          .orElseThrow();
 
-        protocol.onMessage(ADDR_A, new Ack(NODE_A, 99L, List.of()));
+        protocol.onMessage(ADDR_A, new Ack(NODE_A, probe.sequence(), List.of()));
 
-        assertThat(protocol.members().get(NODE_A).state()).as("an Ack carries no incarnation and is refused by the record")
+        assertThat(protocol.members().get(NODE_A).state()).as("a verified probe-ack carries no incarnation and is refused by the record")
                                                            .isEqualTo(MemberState.OBSERVED);
         assertThat(observations.byType(SwimObservation.HealthyObserved.class)).isEmpty();
     }
@@ -236,15 +248,20 @@ class SwimDeathRecordTest {
         assertThat(hasRecord()).as("the new process clears the record").isFalse();
     }
 
+    /// The FAULTY gossip arrives in cold boot, so the never-HEALTHY re-introduced id gets no new death edge (it is
+    /// suppressed to UNKNOWN): any record left is the original one.
     @Test
     void deathRecord_faultyGossipAboveTheRecord_isNotAnAlivenessClaim_recordKept() {
         driveToDeathPastTombstoneTtl(TOKEN_A);
         protocol.stop();
+        booting.set(true);
 
         gossip(3L, updateOfA(MemberState.FAULTY, DEATH_INCARNATION + 5, TOKEN_A));
         gossip(4L, updateOfA(MemberState.ALIVE, DEATH_INCARNATION, TOKEN_A));
 
-        assertThat(hasRecord()).as("a FAULTY update neither meets nor clears the record").isTrue();
+        assertThat(protocol.deathRecordForTest(NODE_A).map(record -> record[0]).or(-1L))
+            .as("a FAULTY update neither meets nor clears the record")
+            .isEqualTo(DEATH_INCARNATION);
         assertThat(protocol.members().get(NODE_A).state()).as("the stale ALIVE after it is still refused")
                                                            .isNotEqualTo(MemberState.ALIVE);
     }
