@@ -125,10 +125,10 @@ class AbTestClaimTest {
         assertThat(wrongRefusals.get()).as("a loser refused with the exact in-flight state and its own target").isZero();
     }
 
-    /// A winner passes; a loser is refused with the in-flight state as `from` (never ACTIVE) and its own target as `to`.
+    /// A winner passes; a loser is refused with the winner's state (in flight or already terminal, never ACTIVE) as `from` and its own target as `to`.
     private static boolean isCorrectLoser(Result<AbTestDeployment> result, AbTestState target) {
         return result.fold(cause -> cause instanceof AbTestDeploymentError.InvalidTestState refusal
-                                    && (refusal.from() == AbTestState.CONCLUDING || refusal.from() == AbTestState.ROLLING_BACK)
+                                    && refusal.from() != AbTestState.ACTIVE
                                     && refusal.to() == target,
                            _ -> true);
     }
