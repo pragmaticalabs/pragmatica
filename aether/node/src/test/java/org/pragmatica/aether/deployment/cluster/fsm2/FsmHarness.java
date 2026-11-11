@@ -372,6 +372,25 @@ final class FsmHarness {
                       .toList();
     }
 
+    /// Every submission except those of one kind (the WARNINGS transaction rides beside the decision that raised the warning).
+    List<ClusterEffect.Submit> submitsBesides(ClusterModel.SubmitKind kind) {
+        return submits().stream()
+                      .filter(submit -> submit.kind() != kind)
+                      .toList();
+    }
+
+    /// The keys the WARNINGS transactions put (an opened warning), in submission order; removals are not listed.
+    List<AetherKey> warningPuts() {
+        return submits(ClusterModel.SubmitKind.WARNINGS).stream()
+                      .flatMap(submit -> submit.transaction()
+                                               .mutations()
+                                               .stream())
+                      .filter(mutation -> mutation.replacement()
+                                                  .isPresent())
+                      .map(mutation -> (AetherKey) mutation.key())
+                      .toList();
+    }
+
     List<ClusterEffect.Warn> warns(String code) {
         return effects(ClusterEffect.Warn.class).stream()
                       .filter(warn -> warn.code()
