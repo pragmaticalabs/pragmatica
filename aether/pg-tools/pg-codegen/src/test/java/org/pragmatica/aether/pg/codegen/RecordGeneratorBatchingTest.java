@@ -54,6 +54,17 @@ class RecordGeneratorBatchingTest {
     }
 
     @Nested
+    class FactoryEmission {
+        @Test
+        void rowMapperWithoutRequestedStaticFactory_stillEmitsTheFactoryItCalls(@TempDir Path tempDir) {
+            var config = new CodegenConfig("com.example.db", tempDir, CodegenConfig.NullableStyle.OPTION, false, true, "Row");
+            var content = new RecordGenerator(config).generate(wideTable(3)).unwrap().content();
+
+            assertThat(content).contains("static WideRow wideRow(").contains(").map(WideRow::wideRow);");
+        }
+    }
+
+    @Nested
     class FlatFastPath {
         @Test
         void twelveColumns_emitFlatResultAll_notBrokenStub(@TempDir Path tempDir) {
