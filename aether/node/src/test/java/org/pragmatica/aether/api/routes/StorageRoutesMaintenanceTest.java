@@ -11,6 +11,7 @@ import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.StorageMaintenanceProgress;
 import org.pragmatica.aether.node.StorageFactory.StorageSetup;
 import org.pragmatica.lang.Option;
 import org.pragmatica.storage.DemotionManager;
@@ -57,6 +58,30 @@ class StorageRoutesMaintenanceTest {
 
         assertThat(detail.maintenance().promotion().enabled()).as("an instance with promotion = false (or streams) never promotes").isFalse();
         assertThat(detail.maintenance().promotion().active()).isFalse();
+    }
+
+    /// #800: GET /api/storage carries the node's maintenance progress, read from the node on every call.
+    @Test
+    void list_carriesTheNodesMaintenanceProgress() {
+        var progress = new StorageMaintenanceProgress(1_700_000_000_099L,
+                                                      StorageMaintenanceProgress.Outcome.FAILED,
+                                                      2,
+                                                      Option.some("demote boom"),
+                                                      7,
+                                                      5);
+        var node = (AetherNode) Proxy.newProxyInstance(AetherNode.class.getClassLoader(),
+                                                       new Class[]{AetherNode.class},
+                                                       (_, method, _) -> listAnswer(method.getName(), progress));
+
+        assertThat(storageRoutes(() -> node).listInstances().maintenance()).isEqualTo(progress);
+    }
+
+    private static Object listAnswer(String method, StorageMaintenanceProgress progress) {
+        return switch (method) {
+            case "storageSetups" -> Map.of();
+            case "storageMaintenanceProgress" -> progress;
+            default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method);
+        };
     }
 
     private static PromotionManager promotion(boolean active, PromotionStats stats) {

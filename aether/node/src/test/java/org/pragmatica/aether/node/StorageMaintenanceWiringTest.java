@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import org.pragmatica.storage.DegradeReporter;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.config.StorageConfig;
@@ -778,7 +779,8 @@ class StorageMaintenanceWiringTest {
                                                                   PromotionStallWatch.promotionStallWatch(Map.of(),
                                                                                                           OperatorWarningSink.logOnly()),
                                                                   garbageCollector,
-                                                                  Runnable::run);
+                                                                  Runnable::run,
+                                                                  DegradeReporter.degradeReporter("test"), () -> Unit.unit());
     }
 
     /// Mirrors `LocalDiskTier`'s own private `blockPath` sharding (`{base}/{hex[0:2]}/{hex[2:4]}/{hex}`)

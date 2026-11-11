@@ -61,7 +61,7 @@ class OperatorWarningWiringTest {
     /// and managers, so un-binding either here, or handing the watch a different sink or a partial setup map, left them green.
     @Test
     void assembly_givesTheMaintenanceDriverAStallWatchOverEverySetupOnThisNodesSink() {
-        assertThat(assemblyCode()).containsOnlyOnce("StorageMaintenanceDriver.storageMaintenanceDriver(compositeDemotionManager,compositePromotionManager,PromotionStallWatch.promotionStallWatch(storageSetups,operatorWarningSink),compositeGarbageCollector);");
+        assertThat(assemblyCode()).containsOnlyOnce("StorageMaintenanceDriver.storageMaintenanceDriver(compositeDemotionManager,compositePromotionManager,PromotionStallWatch.promotionStallWatch(storageSetups,operatorWarningSink),compositeGarbageCollector,maintenancePasses,delegatedStorageAdapter::retryPending);");
     }
 
     /// The ready signal can fire again after a drain began; the node tells it whether it is draining from the drain procedure's own

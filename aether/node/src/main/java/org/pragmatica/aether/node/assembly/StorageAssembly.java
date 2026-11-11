@@ -208,11 +208,16 @@ public sealed interface StorageAssembly {
         var delegatedStorageAdapter = DelegatedStorageAdapter.delegatedStorageAdapter(compositeDemotionManager,
                                                                                       compositeGarbageCollector,
                                                                                       leaderMaintenance);
+        var maintenancePasses = DegradeReporter.degradeReporter(StorageMaintenanceDriver.REPORT_SUBJECT);
+
+        maintenancePasses.bind(operatorWarningSink);
         var storageMaintenanceDriver = StorageMaintenanceDriver.storageMaintenanceDriver(compositeDemotionManager,
                                                                                          compositePromotionManager,
                                                                                          PromotionStallWatch.promotionStallWatch(storageSetups,
                                                                                                                                  operatorWarningSink),
-                                                                                         compositeGarbageCollector);
+                                                                                         compositeGarbageCollector,
+                                                                                         maintenancePasses,
+                                                                                         delegatedStorageAdapter::retryPending);
 
         LOG.info("Storage maintenance enabled: demotion+promotion+GC cadence={}, storage setups={}",
                  config.timeouts().storageMaintenance().interval(),

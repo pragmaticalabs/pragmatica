@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import org.pragmatica.lang.Unit;
+import org.pragmatica.storage.DegradeReporter;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -121,7 +123,8 @@ class StoragePromotionTwoNodeTest {
                                                                   PromotionStallWatch.promotionStallWatch(setups,
                                                                                                           OperatorWarningSink.logOnly()),
                                                                   StorageFactory.compositeGarbageCollector(setups),
-                                                                  Runnable::run);
+                                                                  Runnable::run,
+                                                                  DegradeReporter.degradeReporter("test"), () -> Unit.unit());
     }
 
     private static boolean isResidentInMemory(StorageFactory.StorageSetup setup, BlockId id) {

@@ -182,6 +182,163 @@ class DelegatedStorageAdapterTest {
     }
 
     /// Counts activate/deactivate calls on a fake manager.
+    /// #800: a failed deactivation raises one operator warning (not just a log line); a retry that stops the group closes it.
+    @Test
+    void deactivate_failure_raisesOneWarningThenRetrySuccessClosesIt() throws InterruptedException {
+        var raised = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
+        var gc = new SwitchableCollector();
+        var adapter = adapterOver(gc, raised);
+
+        adapter.activate().await();
+        gc.failDeactivate.set(true);
+        adapter.deactivate().await();
+        adapter.retryPending();
+        awaitRaised(raised, 1);
+        gc.failDeactivate.set(false);
+        adapter.retryPending();
+        awaitRaised(raised, 2);
+
+        assertThat(raised).extracting(org.pragmatica.utility.warning.OperatorWarning::code)
+                          .containsExactly(org.pragmatica.utility.warning.OperatorWarningCode.STORAGE_MAINTENANCE_NOT_STOPPED,
+                                           org.pragmatica.utility.warning.OperatorWarningCode.STORAGE_MAINTENANCE_STOPPED);
+        assertThat(raised.getFirst().subject()).isEqualTo(DelegatedStorageAdapter.REPORT_SUBJECT);
+        assertThat(adapter.isActive()).isFalse();
+    }
+
+    /// #800: this node leads again before the stop could be retried: running the group is correct, so the warning closes.
+    @Test
+    void deactivate_failureThenLeaderAgain_closesTheWarning() throws InterruptedException {
+        var raised = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
+        var gc = new SwitchableCollector();
+        var adapter = adapterOver(gc, raised);
+
+        adapter.activate().await();
+        gc.failDeactivate.set(true);
+        adapter.deactivate().await();
+        awaitRaised(raised, 1);
+        adapter.activate().await();
+        awaitRaised(raised, 2);
+
+        assertThat(raised).extracting(org.pragmatica.utility.warning.OperatorWarning::code)
+                          .containsExactly(org.pragmatica.utility.warning.OperatorWarningCode.STORAGE_MAINTENANCE_NOT_STOPPED,
+                                           org.pragmatica.utility.warning.OperatorWarningCode.STORAGE_MAINTENANCE_STOPPED);
+    }
+
+    /// #800: a failed activation is retried from the tick, at most MAX_RETRIES times per leader-change call, and a retry that
+    /// succeeds activates the group (the already-open warning is closed by it, as by any activation).
+    @Test
+    void retryPending_failedActivation_retriesBoundedThenGivesUp() {
+        var gc = new SwitchableCollector();
+        var adapter = adapterOver(gc, new java.util.concurrent.CopyOnWriteArrayList<>());
+
+        gc.failActivate.set(true);
+        adapter.activate().await();
+
+        for (var i = 0; i < DelegatedStorageAdapter.MAX_RETRIES + 2; i++) {
+            adapter.retryPending();
+        }
+
+        assertThat(gc.activateCalls.get()).as("the call itself plus the bounded retries")
+                                          .isEqualTo(1 + DelegatedStorageAdapter.MAX_RETRIES);
+        gc.failActivate.set(false);
+        adapter.retryPending();
+
+        assertThat(adapter.isActive()).as("the budget is spent: only a new leader-change call tries again").isFalse();
+        adapter.activate().await();
+        assertThat(adapter.isActive()).isTrue();
+    }
+
+    @Test
+    void retryPending_failedActivationThatLaterWorks_activatesTheGroup() {
+        var gc = new SwitchableCollector();
+        var adapter = adapterOver(gc, new java.util.concurrent.CopyOnWriteArrayList<>());
+
+        gc.failActivate.set(true);
+        adapter.activate().await();
+        gc.failActivate.set(false);
+        adapter.retryPending();
+
+        assertThat(adapter.isActive()).isTrue();
+    }
+
+    @Test
+    void retryPending_inTheWantedState_touchesNothing() {
+        var gc = new SwitchableCollector();
+        var adapter = adapterOver(gc, new java.util.concurrent.CopyOnWriteArrayList<>());
+
+        adapter.retryPending();
+        adapter.activate().await();
+        adapter.retryPending();
+        adapter.deactivate().await();
+        adapter.retryPending();
+
+        assertThat(gc.activateCalls.get()).isEqualTo(1);
+        assertThat(gc.deactivateCalls.get()).isEqualTo(1);
+    }
+
+    /// #800: a deactivation that keeps failing is retried on the same bounded budget.
+    @Test
+    void retryPending_failedDeactivation_retriesBoundedThenGivesUp() {
+        var gc = new SwitchableCollector();
+        var adapter = adapterOver(gc, new java.util.concurrent.CopyOnWriteArrayList<>());
+
+        adapter.activate().await();
+        gc.failDeactivate.set(true);
+        adapter.deactivate().await();
+
+        for (var i = 0; i < DelegatedStorageAdapter.MAX_RETRIES + 2; i++) {
+            adapter.retryPending();
+        }
+
+        assertThat(gc.deactivateCalls.get()).isEqualTo(1 + DelegatedStorageAdapter.MAX_RETRIES);
+    }
+
+    private static DelegatedStorageAdapter adapterOver(StorageGarbageCollector gc,
+                                                       java.util.List<org.pragmatica.utility.warning.OperatorWarning> raised) {
+        var degrade = org.pragmatica.storage.DegradeReporter.degradeReporter(DelegatedStorageAdapter.REPORT_SUBJECT);
+
+        degrade.bind(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(raised::add));
+
+        return delegatedStorageAdapter(succeedingDemotionManager(), gc, degrade);
+    }
+
+    /// A collector whose activation and deactivation fail on demand, counting the calls made to each.
+    private static final class SwitchableCollector implements StorageGarbageCollector {
+        final java.util.concurrent.atomic.AtomicBoolean failActivate = new java.util.concurrent.atomic.AtomicBoolean();
+        final java.util.concurrent.atomic.AtomicBoolean failDeactivate = new java.util.concurrent.atomic.AtomicBoolean();
+        final java.util.concurrent.atomic.AtomicInteger activateCalls = new java.util.concurrent.atomic.AtomicInteger();
+        final java.util.concurrent.atomic.AtomicInteger deactivateCalls = new java.util.concurrent.atomic.AtomicInteger();
+
+        @Override
+        public int collectGarbage() {
+            return 0;
+        }
+
+        @Override
+        public GCStats stats() {
+            return new GCStats(0, 0);
+        }
+
+        @Override
+        public Result<Unit> activate() {
+            activateCalls.incrementAndGet();
+
+            return failActivate.get() ? Causes.cause("gc activate boom").<Unit> result() : Result.success(unit());
+        }
+
+        @Override
+        public Result<Unit> deactivate() {
+            deactivateCalls.incrementAndGet();
+
+            return failDeactivate.get() ? Causes.cause("gc deactivate boom").<Unit> result() : Result.success(unit());
+        }
+
+        @Override
+        public boolean isActive() {
+            return false;
+        }
+    }
+
     private static final class Recording {
         private int activations;
         private int deactivations;

@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import org.pragmatica.storage.DegradeReporter;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -256,7 +257,8 @@ class StoragePromotionWiringTest {
                                                                   PromotionStallWatch.promotionStallWatch(setups,
                                                                                                           OperatorWarningSink.logOnly()),
                                                                   StorageFactory.compositeGarbageCollector(setups),
-                                                                  Runnable::run);
+                                                                  Runnable::run,
+                                                                  DegradeReporter.degradeReporter("test"), () -> Unit.unit());
     }
 
     private static boolean maintenanceActive(StorageFactory.StorageSetup setup) {

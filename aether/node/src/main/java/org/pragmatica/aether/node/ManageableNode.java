@@ -218,6 +218,11 @@ public interface ManageableNode {
     Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver();
     Map<String, StorageFactory.StorageSetup> storageSetups();
 
+    /// What the storage maintenance tick has done on this node (#800); never run for a node without the driver.
+    default StorageMaintenanceProgress storageMaintenanceProgress() {
+        return StorageMaintenanceProgress.storageMaintenanceProgress();
+    }
+
     /// The node's prefetch gossip counters; none before SWIM runs, and on a node with no prefetch gossip at all.
     default Option<PrefetchGossipStats> prefetchGossipStats() {
         return Option.none();

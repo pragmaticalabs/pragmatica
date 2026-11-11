@@ -1754,6 +1754,7 @@ public interface AetherNode extends ManageableNode {
                           Option<ProjectionNodeSupport> projectionNodeSupport,
                           StreamNamespacesService streamNamespacesService,
                           Map<String, StorageFactory.StorageSetup> storageSetups,
+                          StorageMaintenanceDriver storageMaintenanceDriver,
                           ClusterTopologyManager clusterTopologyManagerInstance,
                           EventLoopMetricsCollector eventLoopMetricsCollector,
                           CoreSwimHealthDetector swimHealthDetector,
@@ -1806,6 +1807,11 @@ public interface AetherNode extends ManageableNode {
                           NodeReactors reactors,
                           LeaderDeactivation leaderDeactivation) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
+
+            @Override
+            public StorageMaintenanceProgress storageMaintenanceProgress() {
+                return storageMaintenanceDriver.progress();
+            }
 
             @Override
             public Option<PrefetchGossipStats> prefetchGossipStats() {
@@ -3666,6 +3672,7 @@ public interface AetherNode extends ManageableNode {
                                   Option.some(projectionNodeSupport),
                                   streamNamespacesService,
                                   storageSetups,
+                                  storageMaintenanceDriver,
                                   clusterTopologyManager,
                                   eventLoopMetricsCollector,
                                   swimHealthDetector,
