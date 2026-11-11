@@ -42,6 +42,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
@@ -64,6 +65,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// Arms B and F (gap 1, on and off the burst path) were RED at the probe head 1d9732e247 and are GREEN since the root fix (design 4 rule 1).
 /// Arm C (gap 2) was RED at 02c10270c0 (its tripwire held: the slice stayed loaded) and is GREEN since the `CatchUpSwept` sweep and the
 /// reactivation filter (design 4 rules 2-3). The worker store tells the manager each delivered replay burst, as `AetherNode` wires it.
+/// Arm G pins the post-burst raise itself (a loaded slice no remove ever reaches) and D7 (Dormant ignores the raise; `onEntry` sweeps).
 class FalseDeathWorkerCatchUpTest {
     private static final NodeId SELF = NodeId.nodeId("worker-1").unwrap();
     private static final NodeId CORE = NodeId.nodeId("core-1").unwrap();
@@ -284,14 +286,38 @@ class FalseDeathWorkerCatchUpTest {
         feed(new KVCommand.Put<AetherKey, AetherValue>(NodeArtifactKey.nodeArtifactKey(SELF, GONE), NodeArtifactValue.nodeArtifactValue(SliceState.LOAD)));
         deactivation.succeed(new TestSliceStore.Loaded(GONE, null));
 
-        assertThat(sliceStore.unloadCalls).as("the removal's cleanup ran").containsExactly(GONE);
+        assertThat(sliceStore.unloadCalls).as("one cleanup: the post-burst sweep joined the in-flight one").containsExactly(GONE);
         assertThat(sliceStore.loaded()).extracting(SliceStore.LoadedSlice::artifact).containsExactly(GONE);
-        assertThat(clusterNode.appliedCommands.stream()
-                                              .skip(mark)
-                                              .filter(command -> command instanceof KVCommand.Put<?, ?> put
-                                                                 && put.value() instanceof NodeArtifactValue value
-                                                                 && value.state() == SliceState.FAILED)
-                                              .toList()).as("the re-placed slice is never written FAILED").isEmpty();
+        assertThat(failedPutsSince(mark)).as("the re-placed slice is never written FAILED").isEmpty();
+
+        feed(new KVCommand.Remove<AetherKey>(NodeArtifactKey.nodeArtifactKey(SELF, GONE)));
+        assertThat(sliceStore.loaded()).as("a settled cleanup leaves nothing in flight: a later removal cleans up again").isEmpty();
+    }
+
+    /// FER at the wait (`NodeDeploymentContext.cleanupSettled`): a cleanup that fails is logged at its site and the LOAD still runs.
+    @Test
+    void armE_failedCleanup_loadStillRunsAndNeverFailed() {
+        sliceActive(GONE);
+        resync();
+        var mark = writesBefore();
+        var deactivation = sliceStore.holdDeactivation();
+
+        leaderRemoves(GONE);
+        resync();
+        feed(new KVCommand.Put<AetherKey, AetherValue>(NodeArtifactKey.nodeArtifactKey(SELF, GONE), NodeArtifactValue.nodeArtifactValue(SliceState.LOAD)));
+        deactivation.fail(Causes.cause("deactivation refused"));
+
+        assertThat(sliceStore.loaded()).extracting(SliceStore.LoadedSlice::artifact).containsExactly(GONE);
+        assertThat(failedPutsSince(mark)).as("a failed cleanup does not fail the LOAD that waited for it").isEmpty();
+    }
+
+    private List<KVCommand<AetherKey>> failedPutsSince(int mark) {
+        return clusterNode.appliedCommands.stream()
+                                          .skip(mark)
+                                          .filter(command -> command instanceof KVCommand.Put<?, ?> put
+                                                             && put.value() instanceof NodeArtifactValue value
+                                                             && value.state() == SliceState.FAILED)
+                                          .toList();
     }
 
     // --- Arm F (D5): incremental accept of a remove for a LOADED slice, no burst ---
@@ -305,6 +331,35 @@ class FalseDeathWorkerCatchUpTest {
 
         feed(new KVCommand.Remove<AetherKey>(NodeArtifactKey.nodeArtifactKey(SELF, GONE)));
 
+        assertUnloadedAndQuiet(GONE, mark);
+    }
+
+    // --- Arm G: a loaded slice with no entry at all, manager Active (the post-burst CatchUpSwept raise) ---
+
+    /// No remove is ever delivered for the slice, so only the sweep raised after the replay burst (design 4 rule 2) can unload it.
+    @Test
+    void armG_loadedSliceWithoutEntry_isSweptAfterTheBurst() {
+        resync();
+        sliceStore.markAsLoadedWithSlice(GONE);
+        var mark = writesBefore();
+
+        resync();
+
+        assertUnloadedAndQuiet(GONE, mark);
+    }
+
+    /// D7: Dormant ignores the post-burst raise; the slice stays loaded until quorum returns, and `Active.onEntry` sweeps it then.
+    @Test
+    void armG_dormantIgnoresTheRaise_onEntrySweeps() {
+        resync();
+        sliceStore.markAsLoadedWithSlice(GONE);
+        manager.onQuorumStateChange(ClusterStateNotification.passive());
+        var mark = writesBefore();
+
+        resync();
+        assertThat(sliceStore.loaded()).as("Dormant ignores CatchUpSwept").extracting(SliceStore.LoadedSlice::artifact).containsExactly(GONE);
+
+        manager.onQuorumStateChange(ClusterStateNotification.active());
         assertUnloadedAndQuiet(GONE, mark);
     }
 
