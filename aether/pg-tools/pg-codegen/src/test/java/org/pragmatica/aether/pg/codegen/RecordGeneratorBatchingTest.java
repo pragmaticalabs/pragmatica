@@ -64,7 +64,7 @@ class RecordGeneratorBatchingTest {
             assertThat(content).doesNotContain(".id()");
             assertThat(content).doesNotContain("var part1");
             assertThat(content).doesNotContain("TODO");
-            assertThat(content).contains(").map(WideRow::new);");
+            assertThat(content).contains(").map(WideRow::wideRow);");
         }
     }
 
@@ -81,7 +81,7 @@ class RecordGeneratorBatchingTest {
             assertThat(content).contains(".map((t1, t2) ->");
             assertThat(content).contains("t1.map((c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15) ->");
             assertThat(content).contains("t2.map((c16) ->");
-            assertThat(content).contains("new WideRow(c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16)");
+            assertThat(content).contains("WideRow.wideRow(c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16)");
             assertThat(content).doesNotContain("TODO");
         }
 
