@@ -224,7 +224,7 @@ class NodeDeploymentStateStuckReconcileTest {
 
         activeState().remediateStuckRouting(key);
 
-        assertThat(cluster.batches).as("an absent entry is a removed slice: nothing may be written").isEmpty();
+        assertThat(puts()).as("an absent entry is a removed slice: nothing may be put (only its cleanup removals, #3028)").isEmpty();
         assertThat(activeState().deployments()).as("the local entry goes with it").doesNotContainKey(key);
         assertThat(warnLog.messages(Level.WARN)).anySatisfy(line -> assertThat(line).contains("Node self")
                                                                 .contains("still ROUTING")
@@ -238,7 +238,7 @@ class NodeDeploymentStateStuckReconcileTest {
 
         activeState().remediateStuckActivating(key);
 
-        assertThat(cluster.batches).isEmpty();
+        assertThat(puts()).as("an absent entry is a removed slice: nothing may be put (only its cleanup removals, #3028)").isEmpty();
         assertThat(activeState().deployments()).doesNotContainKey(key);
     }
 
@@ -348,6 +348,15 @@ class NodeDeploymentStateStuckReconcileTest {
         serving.add(ARTIFACT);
 
         return seed(state);
+    }
+
+    /// Every `Put` written. A removed slice that is loaded locally is force-cleaned (#3028), and that cleanup's stream-ref releases are
+    /// removals; a put would resurrect state for the entry the leader removed.
+    private List<KVCommand<AetherKey>> puts() {
+        return cluster.batches.stream()
+                              .flatMap(List::stream)
+                              .filter(command -> command instanceof KVCommand.Put<AetherKey, ?>)
+                              .toList();
     }
 
     private List<NodeArtifactValue> activePuts() {
