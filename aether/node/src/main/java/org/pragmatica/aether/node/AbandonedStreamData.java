@@ -4,12 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -35,6 +37,9 @@ import static org.pragmatica.lang.Unit.unit;
 /// The warning leaves a marker file [#MARKER] beside the stream data root. A later boot that finds nothing abandoned raises
 /// [OperatorWarningCode#STREAM_DATA_ABANDONED_CLEARED] only when the marker exists, then deletes it, so a boot over a root that never
 /// warned raises nothing. The recovery closes across nodes: the warning belongs to an earlier process, whose event layer is gone.
+/// The marker holds the node ids that warned, and the aggregator key is code + node id + data root, so a clear closes only the warning
+/// of the node that raised it, even when two nodes share a data-root path. A crash between the marker write and the raise yields one clear
+/// for a never-raised warning (harmless), which is why the marker goes first. A marker that cannot be written is stated in the warning text.
 /// A crash between the raise and the marker delete raises the clear once more on the next boot, which closes an already closed
 /// warning and is harmless. The event hand-off is fire-and-forget, so "accepted" means the sink call returned; a process that dies
 /// before the hand-off publishes leaves the warning open, as does any lost event. It never deletes, moves or opens a data file; an
@@ -65,45 +70,80 @@ public interface AbandonedStreamData {
         if (found.isEmpty()) {
             recover(sink, root);
         } else {
-            warn(sink, found, root);
+            warn(sink, found, root, selfId);
         }
     }
 
-    /// The marker goes down before the warning, so a warning that may be open always has one.
+    /// The marker goes down before the warning, so a warning that may be open always has one. A crash between the marker write and the
+    /// raise leaves a marker for a warning never raised: the next clean boot raises one clear that closes nothing, which is harmless; the
+    /// opposite order could leave a warning that never clears. A marker that cannot be written does not hide the warning (data at risk
+    /// must surface): its text says the warning will not clear by itself (FER: the failure is carried to the operator in the warning).
     @Contract
-    private static void warn(OperatorWarningSink sink, List<Abandoned> found, Path root) {
-        writeMarker(root.resolve(MARKER));
-        OperatorWarnings.raise(log,
-                               sink,
-                               OperatorWarningCode.STREAM_DATA_ABANDONED,
-                               root.toString(),
-                               "{}",
-                               message(found));
+    private static void warn(OperatorWarningSink sink, List<Abandoned> found, Path root, String selfId) {
+        var marker = root.resolve(MARKER);
+        var text = writeMarker(marker, selfId).fold(cause -> message(found) + unclearable(marker, cause),
+                                                    _ -> message(found));
+
+        OperatorWarnings.raise(log, sink, OperatorWarningCode.STREAM_DATA_ABANDONED, subject(selfId, root), "{}", text);
     }
 
-    /// Raises the clear only for a marker an earlier boot left, and deletes the marker after the raise.
+    /// Raises one clear per node id the marker holds (each closes exactly the warning that node raised), then deletes the marker.
     @Contract
     private static void recover(OperatorWarningSink sink, Path root) {
         var marker = root.resolve(MARKER);
 
         if (Files.exists(marker)) {
-            OperatorWarnings.raise(log,
-                                   sink,
-                                   OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED,
-                                   root.toString(),
-                                   "No stream data of another NodeId under {}",
-                                   root);
+            markedIds(marker).forEach(id -> clear(sink, root, id));
             deleteMarker(marker);
         }
     }
 
-    private static Unit writeMarker(Path marker) {
-        return lift(Causes::fromThrowable,
-                    () -> Files.writeString(marker, "stream-data-abandoned\n")).mapToUnit()
+    @Contract
+    private static void clear(OperatorWarningSink sink, Path root, String id) {
+        OperatorWarnings.raise(log,
+                               sink,
+                               OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED,
+                               subject(id, root),
+                               "No stream data of another NodeId under {}",
+                               root);
+    }
+
+    /// The aggregator key is code + subject: the node id keeps two nodes with one data-root path from closing each other's warning.
+    private static String subject(String nodeId, Path root) {
+        return nodeId + "@" + root;
+    }
+
+    private static List<String> markedIds(Path marker) {
+        return lift(Causes::fromThrowable, () -> Files.readAllLines(marker))
+               .onFailure(cause -> log.warn("Cannot read marker {}, its warning stays open: {}", marker, cause.message()))
+               .or(List.of())
+               .stream()
+               .filter(id -> !id.isBlank())
+               .toList();
+    }
+
+    private static Result<Unit> writeMarker(Path marker, String selfId) {
+        return lift(Causes::fromThrowable, () -> Files.writeString(marker, idsWith(marker, selfId))).mapToUnit()
                    .onFailure(cause -> log.warn("Cannot write marker {}, the warning will not be cleared by a later boot: {}",
                                                 marker,
-                                                cause.message()))
-                   .or(unit());
+                                                cause.message()));
+    }
+
+    private static String idsWith(Path marker, String selfId) throws IOException {
+        return Stream.concat(existingIds(marker).stream(), Stream.of(selfId))
+                     .distinct()
+                     .collect(Collectors.joining("\n", "", "\n"));
+    }
+
+    private static List<String> existingIds(Path marker) throws IOException {
+        return Files.exists(marker)
+               ? Files.readAllLines(marker)
+               : List.of();
+    }
+
+    private static String unclearable(Path marker, Cause cause) {
+        return " The marker " + marker + " that lets a later boot close this warning could not be written (" + cause.message()
+             + "), so this warning will not clear automatically.";
     }
 
     private static Unit deleteMarker(Path marker) {

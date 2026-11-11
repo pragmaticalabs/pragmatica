@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -50,7 +51,7 @@ class AbandonedStreamDataTest {
         var warning = next();
 
         assertThat(warning.code()).isEqualTo(OperatorWarningCode.STREAM_DATA_ABANDONED);
-        assertThat(warning.subject()).isEqualTo(segments.toAbsolutePath().normalize().toString());
+        assertThat(warning.subject()).isEqualTo(SELF + "@" + segments.toAbsolutePath().normalize());
         assertThat(warning.message()).contains(segments.resolve("node-old").toAbsolutePath().normalize()
                                               + " (1000 bytes)")
                   .contains(root.resolve("wal").resolve("node-old2").toAbsolutePath().normalize() + " (234 bytes)")
@@ -75,8 +76,54 @@ class AbandonedStreamDataTest {
         var cleared = next();
 
         assertThat(cleared.code()).isEqualTo(OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED);
-        assertThat(cleared.subject()).isEqualTo(segments.toAbsolutePath().normalize().toString());
+        assertThat(cleared.subject()).as("closes the warning of the node that raised it").isEqualTo(SELF + "@" + segments.toAbsolutePath().normalize());
         assertThat(segments.resolve(AbandonedStreamData.MARKER)).doesNotExist();
+        boot(segments);
+        assertNothingRaised();
+    }
+
+    /// v3046c ruling 2: the aggregator key is code + subject. Two nodes with one data-root path must not share it, or node B's clear closes
+    /// node A's open warning. The clear of each boot names the node that warned, read from the marker.
+    @Test
+    void twoNodesOverOnePath_warnAndClearUnderTheirOwnSubjects() throws Exception {
+        var segments = root.resolve("stream-segments");
+        var old = write(segments.resolve("node-old").resolve("a.blk"), 9);
+
+        bootAs(segments, "node-a");
+        var warnedA = next();
+        bootAs(segments, "node-b");
+        var warnedB = next();
+
+        assertThat(warnedA.subject()).isNotEqualTo(warnedB.subject()).startsWith("node-a@");
+        Files.delete(old);
+        Files.delete(old.getParent());
+        bootAs(segments, "node-c");
+        var clears = List.of(next().subject(), next().subject());
+
+        assertThat(clears).containsExactlyInAnyOrder(warnedA.subject(), warnedB.subject());
+        assertThat(clears).as("one clear per warning that may be open").doesNotHaveDuplicates();
+    }
+
+    /// v3046c ruling 1: a marker that cannot be written must not hide the warning; its text says so and the next boot raises no clear.
+    @Test
+    void unwritableMarker_stillRaisesTheWarning_sayingItWillNotClear_andNothingClearsLater() throws Exception {
+        var segments = root.resolve("stream-segments");
+        var old = write(segments.resolve("node-old").resolve("a.blk"), 9);
+
+        Files.setPosixFilePermissions(segments, PosixFilePermissions.fromString("r-x------"));
+        try {
+            assumeFalse(Files.isWritable(segments), "running as a user that ignores permissions");
+            boot(segments);
+            var warning = next();
+
+            assertThat(warning.code()).isEqualTo(OperatorWarningCode.STREAM_DATA_ABANDONED);
+            assertThat(warning.message()).contains("could not be written").contains("will not clear automatically");
+            assertThat(segments.resolve(AbandonedStreamData.MARKER)).doesNotExist();
+        } finally {
+            Files.setPosixFilePermissions(segments, PosixFilePermissions.fromString("rwx------"));
+        }
+        Files.delete(old);
+        Files.delete(old.getParent());
         boot(segments);
         assertNothingRaised();
     }
@@ -94,12 +141,15 @@ class AbandonedStreamDataTest {
     @Test
     void crashBetweenRaiseAndMarkerDelete_raisesTheClearOnceMore_andThenSettles() throws Exception {
         var segments = root.resolve("stream-segments");
-        var marker = write(segments.resolve(AbandonedStreamData.MARKER), 1);
+        var marker = segments.resolve(AbandonedStreamData.MARKER);
+
+        Files.createDirectories(segments);
+        Files.writeString(marker, "node-gone\n");
 
         boot(segments);
         assertThat(next().code()).isEqualTo(OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED);
         assertThat(marker).doesNotExist();
-        Files.write(marker, new byte[1]);
+        Files.writeString(marker, "node-gone\n");
         boot(segments);
         assertThat(next().code()).isEqualTo(OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED);
         boot(segments);
@@ -124,7 +174,11 @@ class AbandonedStreamDataTest {
     }
 
     private void boot(Path segments) {
-        AbandonedStreamData.check(sink, segments.resolve(SELF), segments.resolve(SELF).resolve("wal"), SELF);
+        bootAs(segments, SELF);
+    }
+
+    private void bootAs(Path segments, String id) {
+        AbandonedStreamData.check(sink, segments.resolve(id), segments.resolve(id).resolve("wal"), id);
     }
 
     private void assertNothingRaised() throws InterruptedException {

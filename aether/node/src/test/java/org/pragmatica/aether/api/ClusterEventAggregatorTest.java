@@ -2018,6 +2018,25 @@ class ClusterEventAggregatorTest {
         assertThat(codes(laterBoot)).containsExactly("stream-data-abandoned-cleared");
     }
 
+    /// #2825 (v3046c ruling 2): the key is code + subject and the subject carries the node id, so node B's clear closes only B's warning, even when
+    /// both nodes use one data-root path; A's stays open until A's own clear.
+    @Test
+    void onOperatorWarning_anAbandonedStreamDataClearOfOneNode_leavesTheOtherNodesWarningOpen() {
+        var h = Harness.create();
+
+        h.aggregator().onOperatorWarning(abandoned(OperatorWarningCode.STREAM_DATA_ABANDONED, "node-a@/data/root"));
+        h.aggregator().onOperatorWarning(abandoned(OperatorWarningCode.STREAM_DATA_ABANDONED, "node-b@/data/root"));
+        h.aggregator().onOperatorWarning(abandoned(OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED, "node-b@/data/root"));
+
+        assertThat(h.aggregator().openRecoverableCount()).as("node-a's warning stays open").isEqualTo(1);
+        h.aggregator().onOperatorWarning(abandoned(OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED, "node-a@/data/root"));
+        assertThat(h.aggregator().openRecoverableCount()).isZero();
+    }
+
+    private static OperatorWarning abandoned(OperatorWarningCode code, String subject) {
+        return OperatorWarning.operatorWarning(code, subject, "text");
+    }
+
     /// F1 (v2803): the owner of the cluster events may have moved or restarted since the ESCALATED was raised; the successor holds no open state
     /// but the committed run state closes the incident, so the recovery is published, once.
     @Test
