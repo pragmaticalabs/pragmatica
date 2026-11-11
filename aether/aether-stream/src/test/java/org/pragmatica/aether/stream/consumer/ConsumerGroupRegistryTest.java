@@ -10,6 +10,8 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerGroupKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerGroupTombstone;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerGroupValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -155,13 +157,40 @@ class ConsumerGroupRegistryTest {
         }
     }
 
-    private static ValuePut<ConsumerGroupKey, ConsumerGroupValue> putEvent(String groupId,
-                                                                           String streamName,
-                                                                           int partition,
-                                                                           NodeId nodeId,
-                                                                           String consumerId) {
+    @Nested
+    class Tombstones {
+        @Test
+        void onConsumerGroupPut_tombstone_isTreatedAsNoOwner() {
+            var registry = consumerGroupRegistry();
+            registry.onConsumerGroupPut(putEvent(GROUP, STREAM, 0, NODE_A, "c1"));
+            registry.onConsumerGroupPut(tombstoneEvent(0, Epoch.epoch(1L, 1L, 2L)));
+
+            assertThat(registry.assignmentsFor(GROUP, STREAM)).isEmpty();
+            assertThat(registry.partitionsFor(GROUP, STREAM, NODE_A)).isEmpty();
+        }
+
+        @Test
+        void committedEpoch_afterATombstone_stillReportsItsEpoch() {
+            var registry = consumerGroupRegistry();
+            registry.onConsumerGroupPut(tombstoneEvent(0, Epoch.epoch(1L, 1L, 7L)));
+
+            assertThat(registry.committedEpoch(GROUP, STREAM).or(Epoch.ZERO)).isEqualTo(Epoch.epoch(1L, 1L, 7L));
+        }
+    }
+
+    private static ValuePut<ConsumerGroupKey, AetherValue> putEvent(String groupId,
+                                                                    String streamName,
+                                                                    int partition,
+                                                                    NodeId nodeId,
+                                                                    String consumerId) {
         var key = ConsumerGroupKey.consumerGroupKey(groupId, streamName, partition);
-        var value = ConsumerGroupValue.consumerGroupValue(nodeId, consumerId, Epoch.epoch(1L, 1L, 1L));
+        AetherValue value = ConsumerGroupValue.consumerGroupValue(nodeId, consumerId, Epoch.epoch(1L, 1L, 1L));
+        return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
+    }
+
+    private static ValuePut<ConsumerGroupKey, AetherValue> tombstoneEvent(int partition, Epoch epoch) {
+        var key = ConsumerGroupKey.consumerGroupKey(GROUP, STREAM, partition);
+        AetherValue value = ConsumerGroupTombstone.consumerGroupTombstone(epoch);
         return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
     }
 

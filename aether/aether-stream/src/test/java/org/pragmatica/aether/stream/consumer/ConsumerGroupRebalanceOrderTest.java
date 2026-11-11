@@ -75,7 +75,7 @@ class ConsumerGroupRebalanceOrderTest {
     @SuppressWarnings("unchecked")
     private void route(ValuePut<?, ?> event) {
         if (event.cause().key() instanceof ConsumerGroupKey) {
-            registry.onConsumerGroupPut((ValuePut<ConsumerGroupKey, ConsumerGroupValue>) event);
+            registry.onConsumerGroupPut((ValuePut<ConsumerGroupKey, AetherValue>) event);
         }
     }
 
@@ -144,7 +144,13 @@ class ConsumerGroupRebalanceOrderTest {
 
     private void recordOwner(Map<Integer, String> owners, int partition) {
         store.get(ConsumerGroupKey.consumerGroupKey(GROUP, STREAM, partition))
-             .onPresent(value -> owners.put(partition, ((ConsumerGroupValue) value).consumerId()));
+             .onPresent(value -> recordIfAssignment(owners, partition, value));
+    }
+
+    private static void recordIfAssignment(Map<Integer, String> owners, int partition, AetherValue value) {
+        if (value instanceof ConsumerGroupValue assignment) {
+            owners.put(partition, assignment.consumerId());
+        }
     }
 
     @Nested
@@ -225,21 +231,47 @@ class ConsumerGroupRebalanceOrderTest {
             assertThat(committedOwners().values()).containsOnly("c2").hasSize(PARTITIONS);
         }
 
+        /// Nothing committed yet is not nothing to fence: the join's batch is in flight, so the leave still writes a
+        /// tombstone for every partition.
         @Test
-        void leaveGroup_lastMemberWithNothingCommitted_submitsNothing() {
+        void leaveGroup_lastMemberWithNothingCommitted_submitsATombstonePerPartition() {
             coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
             held.clear();
 
             coordinator.leaveGroup(GROUP, STREAM, "c1")
                        .onFailure(cause -> Assertions.fail("Expected success, got: " + cause.message()));
 
+            assertThat(held).hasSize(1);
+            assertThat(held.get(0)).hasSize(PARTITIONS);
+        }
+
+        /// A group that never learned its partition count and committed nothing has nothing to fence.
+        @Test
+        void leaveGroup_unknownMember_ofAnEmptyGroup_submitsNothing() {
+            coordinator.leaveGroup(GROUP, STREAM, "ghost");
+
             assertThat(held).isEmpty();
         }
 
-        /// The removal's witness carries the epoch it was minted under, so a removal committing AFTER a newer join's
-        /// assignments is refused by the applier instead of deleting them.
+        /// The tombstone is epoch-bearing, so it is overwritten by the next join and the group is owned again.
         @Test
-        void leaveGroup_lastMember_staleRemovalCommittingAfterANewerJoinDoesNotDeleteIt() {
+        void joinGroup_afterTheLastMemberLeft_overwritesTheTombstonesEvenWhenCommittedInOrder() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+
+            commit(0);
+            commit(1);
+            commit(2);
+
+            assertThat(committedOwners().values()).containsOnly("c2").hasSize(PARTITIONS);
+            assertThat(registry.partitionsFor(GROUP, STREAM, NODE_B)).hasSize(PARTITIONS);
+        }
+
+        /// The tombstones carry the epoch they were minted under, so a clear committing AFTER a newer join's
+        /// assignments is refused by the applier instead of overwriting them.
+        @Test
+        void leaveGroup_lastMember_staleClearCommittingAfterANewerJoinDoesNotOverwriteIt() {
             coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
             commit(0);
             coordinator.leaveGroup(GROUP, STREAM, "c1");
@@ -251,10 +283,10 @@ class ConsumerGroupRebalanceOrderTest {
             assertThat(committedOwners().values()).containsOnly("c2").hasSize(PARTITIONS);
         }
 
-        /// The witness is stamped with the removal's OWN epoch, not the one it read: an older rebalance that commits
-        /// between the read and the removal must not make the applier refuse the newer, empty-group removal.
+        /// The tombstones are stamped with the clear's OWN epoch, not the one it read: an older rebalance that commits
+        /// between the read and the clear must not make the applier refuse the newer, empty-group clear.
         @Test
-        void leaveGroup_lastMember_removalWinsOverAnOlderRebalanceThatCommittedAfterItWasDerived() {
+        void leaveGroup_lastMember_clearWinsOverAnOlderRebalanceThatCommittedAfterItWasDerived() {
             coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
             commit(0);
             coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
@@ -264,13 +296,13 @@ class ConsumerGroupRebalanceOrderTest {
             commit(1);
             commit(3);
 
-            assertThat(committedOwners()).as("the empty group's removal is the newest word").isEmpty();
+            assertThat(committedOwners()).as("the empty group's clear is the newest word").isEmpty();
         }
 
-        /// V3025 probe A: the join's batch is still in flight when the last member leaves (nothing committed yet, so
-        /// the leave submits nothing); the join then commits and names the departed member.
+        /// The join's batch is still in flight when the last member leaves; the join then commits, and the leave's
+        /// tombstones must still win.
         @Test
-        void v3025_leaveBeforeTheJoinCommits_departedMemberMustNotOwnAfterTheJoinCommits() {
+        void leaveGroup_lastMemberBeforeTheJoinCommits_departedMemberNeverOwnsAfterTheJoinCommits() {
             coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
             coordinator.leaveGroup(GROUP, STREAM, "c1");
 
@@ -281,10 +313,10 @@ class ConsumerGroupRebalanceOrderTest {
             assertThat(committedOwners()).as("group is empty; no partition may name c1").isEmpty();
         }
 
-        /// V3025 probe C: rebalance Puts derived before the empty-group removal commit AFTER it (Rabia may order
-        /// batches freely): they land on absent keys and are not fenced.
+        /// Rebalance Puts derived before the empty-group clear commit AFTER it (Rabia may order batches freely): the
+        /// committed tombstones refuse them.
         @Test
-        void v3025_rebalancePutsCommittingAfterTheEmptyGroupRemoval_mustNotResurrectOwners() {
+        void leaveGroup_lastMember_rebalancePutsCommittingAfterTheClearDoNotResurrectOwners() {
             coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
             commit(0);
             coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
@@ -295,7 +327,7 @@ class ConsumerGroupRebalanceOrderTest {
             commit(1);
             commit(2);
 
-            assertThat(committedOwners()).as("the empty group's removal is the newest word").isEmpty();
+            assertThat(committedOwners()).as("the empty group's clear is the newest word").isEmpty();
         }
 
         @Test
