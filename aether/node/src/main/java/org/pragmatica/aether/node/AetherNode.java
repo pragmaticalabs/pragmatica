@@ -3888,6 +3888,7 @@ public interface AetherNode extends ManageableNode {
                                                                             Option.some(projectionNodeSupport),
                                                                             streamNamespacesService,
                                                                             storageSetups,
+                                                                            storageMaintenanceDriver,
                                                                             clusterTopologyManager,
                                                                             eventLoopMetricsCollector,
                                                                             swimHealthDetector,
