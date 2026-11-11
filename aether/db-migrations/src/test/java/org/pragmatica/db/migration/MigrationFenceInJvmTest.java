@@ -313,11 +313,12 @@ class MigrationFenceInJvmTest {
     /// constraint text) keeps its own cause; it is never relabelled a collision.
     @Test
     void t8b_historyInsertFailingWithATimeout_keepsItsCause() {
-        var probe = Probe.over(h2("jdbc:h2:mem:t8btimeout;DB_CLOSE_DELAY=-1"), DatabaseType.H2, new CopyOnWriteArrayList<>())
+        var base = h2("jdbc:h2:mem:t8btimeout;DB_CLOSE_DELAY=-1");
+        var probe = Probe.over(base, DatabaseType.H2, new CopyOnWriteArrayList<>())
                          .failingUpdate(sql -> sql.startsWith("INSERT INTO aether_schema_history"), DatabaseConnectorError.timeout("insert"));
         var repository = SchemaHistoryRepository.schemaHistoryRepository();
         var row = AppliedMigration.appliedMigration(1, MigrationType.VERSIONED, "a", "V1__a.sql", 1L, "node", 0L, 0);
-        repository.bootstrap(probe).await().unwrap();
+        repository.bootstrap(base).await().unwrap();
 
         var failed = repository.recordMigration(probe, row).await();
 
@@ -328,11 +329,12 @@ class MigrationFenceInJvmTest {
     @Test
     void t8b_historyInsertFailingWithSqlStateClass23_isHistoryRowCollision() {
         var cause = DatabaseConnectorError.queryFailed("INSERT", "boom", Option.none(), Option.some("23505"));
-        var probe = Probe.over(h2("jdbc:h2:mem:t8b23;DB_CLOSE_DELAY=-1"), DatabaseType.H2, new CopyOnWriteArrayList<>())
+        var base = h2("jdbc:h2:mem:t8b23;DB_CLOSE_DELAY=-1");
+        var probe = Probe.over(base, DatabaseType.H2, new CopyOnWriteArrayList<>())
                          .failingUpdate(sql -> sql.startsWith("INSERT INTO aether_schema_history"), cause);
         var repository = SchemaHistoryRepository.schemaHistoryRepository();
         var row = AppliedMigration.appliedMigration(1, MigrationType.VERSIONED, "a", "V1__a.sql", 1L, "node", 0L, 0);
-        repository.bootstrap(probe).await().unwrap();
+        repository.bootstrap(base).await().unwrap();
 
         assertThat(causeOf(repository.recordMigration(probe, row).await())).isInstanceOf(MigrationError.HistoryRowCollision.class);
     }
