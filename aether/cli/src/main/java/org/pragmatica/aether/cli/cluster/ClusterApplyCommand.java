@@ -8,15 +8,15 @@ import java.nio.file.Path;
 import java.util.concurrent.Callable;
 
 import org.pragmatica.aether.cli.ExitCode;
-import org.pragmatica.aether.cli.OutputFormatter;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
+import org.pragmatica.aether.config.cluster.DiffPlan;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn4;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
-import org.pragmatica.lang.utils.Causes;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -24,7 +24,6 @@ import picocli.CommandLine.Mixin;
 import picocli.CommandLine.Parameters;
 import tools.jackson.databind.JsonNode;
 
-import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CONFIG_APPLY;
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CONFIG_GET;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
@@ -53,11 +52,19 @@ class ClusterApplyCommand implements Callable<Integer> {
     @CommandLine.Option(names = "--full-check", description = "Run full network pre-flight checks before apply")
     private boolean fullCheck;
 
-    @CommandLine.ParentCommand
-    private ClusterCommand parent;
-
     @Mixin
     ClusterTargetMixin clusterTarget = new ClusterTargetMixin();
+
+    private final Fn4<Result<ApplyResult>, DiffPlan, ClusterBootstrapConfig, ClusterBootstrapConfig, ApplyRecorder> executor;
+
+    ClusterApplyCommand() {
+        this(WaveExecutor::execute);
+    }
+
+    /// Package-visible so a test can stand in for the waves (the orchestrator, the ledger and the commit are the real ones).
+    ClusterApplyCommand(Fn4<Result<ApplyResult>, DiffPlan, ClusterBootstrapConfig, ClusterBootstrapConfig, ApplyRecorder> executor) {
+        this.executor = executor;
+    }
 
     @Override
     public Integer call() {
@@ -73,17 +80,44 @@ class ClusterApplyCommand implements Callable<Integer> {
     }
 
     private int dispatch() {
-        if (resume) {
-            return handleResume();
-        }
+        return resume
+               ? handleResume()
+               : handleApply();
+    }
 
-        return readConfigFile().flatMap(this::executeApply)
+    /// The default dispatch (#686): the plan is computed against the config the cluster holds and executed by the orchestrator under
+    /// its ledger; the new config is committed to the cluster only after the waves.
+    private int handleApply() {
+        return readConfigFile().flatMap(this::planAndApply)
                              .fold(ClusterApplyCommand::onFailure, v -> v);
     }
 
+    private Result<Integer> planAndApply(String rawToml) {
+        return fetchStoredConfig().flatMap(stored -> parseResolved(rawToml).flatMap(desired -> applyOrDryRun(rawToml, desired, stored)));
+    }
+
+    private Result<Integer> applyOrDryRun(String rawToml, ClusterBootstrapConfig desired, StoredConfig stored) {
+        return dryRun
+               ? ApplyOrchestrator.dryRun(desired, stored.config()).map(this::printDryRun)
+               : ApplyOrchestrator.apply(desired,
+                                         stored.config(),
+                                         skipConfirmation,
+                                         stored.version(),
+                                         ApplyCommit.toCluster(rawToml),
+                                         executor)
+                                  .map(this::printApplyResult);
+    }
+
+    private int printDryRun(String plan) {
+        System.out.println(plan);
+        System.out.println("Dry-run complete.");
+
+        return ExitCode.SUCCESS;
+    }
+
     private int handleResume() {
-        return readAndResolveConfig().flatMap(this::resumeApply)
-                                   .fold(ClusterApplyCommand::onFailure, v -> v);
+        return readConfigFile().flatMap(this::resumeApply)
+                             .fold(ClusterApplyCommand::onFailure, v -> v);
     }
 
     private Integer rollbackWithTarget() {
@@ -105,9 +139,11 @@ class ClusterApplyCommand implements Callable<Integer> {
         return ExitCode.SUCCESS;
     }
 
-    private Result<Integer> resumeApply(ClusterBootstrapConfig desired) {
-        return fetchAndParseStoredConfig().flatMap(stored -> ApplyOrchestrator.resume(desired, stored))
-                                        .map(this::printApplyResult);
+    private Result<Integer> resumeApply(String rawToml) {
+        return parseResolved(rawToml).flatMap(desired -> fetchStoredConfig().flatMap(stored -> ApplyOrchestrator.resume(desired,
+                                                                                                                       stored.config(),
+                                                                                                                       ApplyCommit.toCluster(rawToml))))
+                                     .map(this::printApplyResult);
     }
 
     private int printApplyResult(ApplyResult result) {
@@ -125,13 +161,9 @@ class ClusterApplyCommand implements Callable<Integer> {
         return readConfigFile().flatMap(ClusterBootstrapConfigParser::parse);
     }
 
-    /// The config the wave ACTS on: references resolved from the operator's environment, exactly as `aether cluster bootstrap`
-    /// resolves them. The scalar `credentials` is the provider's `api_token` verbatim, so an unresolved reference would be sent
-    /// to the provider as the token (a 401 at the first call of `--resume`).
-    private Result<ClusterBootstrapConfig> readAndResolveConfig() {
-        return readConfigFile().flatMap(ClusterApplyCommand::parseResolved);
-    }
-
+    /// The config the wave ACTS on is [#parseResolved]: references resolved from the operator's environment, exactly as `aether cluster
+    /// bootstrap` resolves them. The scalar `credentials` is the provider's `api_token` verbatim, so an unresolved reference would be
+    /// sent to the provider as the token (a 401 at the first call).
     static Result<ClusterBootstrapConfig> parseResolved(String rawToml) {
         return ConfigReferenceResolver.resolveAll(rawToml).flatMap(ClusterBootstrapConfigParser::parse);
     }
@@ -139,12 +171,21 @@ class ClusterApplyCommand implements Callable<Integer> {
     /// The cluster stores the TOML as the operator sent it, references unresolved (resolved values are never sent to or kept by the
     /// cluster), so the stored config is resolved the same way as the desired one: the diff must compare like with like, and a
     /// stored source the wave removes is reached with its own credentials.
-    private Result<ClusterBootstrapConfig> fetchAndParseStoredConfig() {
+    private Result<StoredConfig> fetchStoredConfig() {
         return ClusterHttpClient.fetch(CLUSTER_CONFIG_GET)
                                 .flatMap(MAPPER::readTree)
-                                .flatMap(ClusterApplyCommand::extractStoredToml)
-                                .flatMap(ClusterApplyCommand::parseResolved);
+                                .flatMap(ClusterApplyCommand::storedConfig);
     }
+
+    private static Result<StoredConfig> storedConfig(JsonNode node) {
+        return extractStoredToml(node).flatMap(ClusterApplyCommand::parseResolved)
+                                .map(config -> new StoredConfig(config,
+                                                                node.path("configVersion")
+                                                                    .asLong(0)));
+    }
+
+    /// The cluster's stored config and the version a commit against it is fenced by.
+    private record StoredConfig(ClusterBootstrapConfig config, long version) {}
 
     private static Result<String> extractStoredToml(JsonNode node) {
         var toml = node.path("tomlContent").asText("");
@@ -168,48 +209,6 @@ class ClusterApplyCommand implements Callable<Integer> {
         return override.filter(Verify.Is::notBlank)
                        .map(name -> ClusterNameToml.withClusterName(rawToml, name))
                        .or(success(rawToml));
-    }
-
-    private Result<Integer> executeApply(String tomlContent) {
-        return fetchCurrentVersion().flatMap(version -> sendApplyRequest(tomlContent, version));
-    }
-
-    private Result<Long> fetchCurrentVersion() {
-        return ClusterHttpClient.fetch(CLUSTER_CONFIG_GET)
-                                .flatMap(MAPPER::readTree)
-                                .map(node -> node.path("configVersion")
-                                                 .asLong(0));
-    }
-
-    private Result<Integer> sendApplyRequest(String tomlContent, long expectedVersion) {
-        var jsonBody = buildApplyJson(tomlContent,
-                                      dryRun
-                                      ? 0
-                                      : expectedVersion);
-
-        return ClusterHttpClient.post(CLUSTER_CONFIG_APPLY, jsonBody).map(this::printResult);
-    }
-
-    private int printResult(String json) {
-        return OutputFormatter.printAction(json,
-                                           parent.outputOptions(),
-                                           dryRun
-                                           ? "Dry-run complete."
-                                           : "Applied successfully.");
-    }
-
-    private static String buildApplyJson(String tomlContent, long expectedVersion) {
-        var escapedToml = escapeJsonString(tomlContent);
-
-        return "{\"tomlContent\":\"" + escapedToml + "\",\"expectedVersion\":" + expectedVersion + "}";
-    }
-
-    private static String escapeJsonString(String value) {
-        return value.replace("\\", "\\\\")
-                    .replace("\"", "\\\"")
-                    .replace("\n", "\\n")
-                    .replace("\r", "\\r")
-                    .replace("\t", "\\t");
     }
 
     private static int onFailure(Cause cause) {

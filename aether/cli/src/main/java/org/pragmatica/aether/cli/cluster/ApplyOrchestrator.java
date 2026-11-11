@@ -21,6 +21,7 @@ import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn4;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -34,16 +35,18 @@ import static org.pragmatica.lang.Result.success;
 public final class ApplyOrchestrator {
     private ApplyOrchestrator() {}
 
+    /// A fresh apply (the default dispatch of `aether cluster apply`): plan, confirm, run the waves under a write-ahead ledger, then
+    /// commit the desired config to the cluster ([ApplyCommit]). `storedVersion` is the cluster's config version the plan was
+    /// computed against: the ledger records it and the commit is fenced by it. `executor` is the waves (`WaveExecutor::execute`).
     public static Result<ApplyResult> apply(ClusterBootstrapConfig desired,
-                                            ClusterBootstrapConfig currentStored,
-                                            boolean skipConfirmation) {
+                                     ClusterBootstrapConfig currentStored,
+                                     boolean skipConfirmation,
+                                     long storedVersion,
+                                     Fn1<Result<String>, Long> commit,
+                                     Fn4<Result<ApplyResult>, DiffPlan, ClusterBootstrapConfig, ClusterBootstrapConfig, ApplyRecorder> executor) {
         return checkClusterHealth(currentStored).flatMap(_ -> computeValidPlan(desired, currentStored))
                                  .flatMap(plan -> presentPlanAndConfirm(plan, currentStored, desired, skipConfirmation))
-                                 .flatMap(plan -> executeWithState(plan, currentStored, desired));
-    }
-
-    public static Result<ApplyResult> apply(ClusterBootstrapConfig desired, ClusterBootstrapConfig currentStored) {
-        return apply(desired, currentStored, true);
+                                 .flatMap(plan -> executeWithState(plan, currentStored, desired, storedVersion, commit, executor));
     }
 
     public static Result<String> dryRun(ClusterBootstrapConfig desired, ClusterBootstrapConfig currentStored) {
@@ -55,9 +58,12 @@ public final class ApplyOrchestrator {
     /// Continues a halted apply from its ledger (spec 4.3): the cluster's commit state decides whether `--resume` may run,
     /// every INTENDED row is looked up at its provider (adopted when found, created never twice), DONE actions are skipped,
     /// a partly done action creates only the remainder, and the apply-label audit runs before the ledger is closed.
-    public static Result<ApplyResult> resume(ClusterBootstrapConfig desired, ClusterBootstrapConfig currentStored) {
+    public static Result<ApplyResult> resume(ClusterBootstrapConfig desired,
+                                             ClusterBootstrapConfig currentStored,
+                                             Fn1<Result<String>, Long> commit) {
         return resume(desired,
                       currentStored,
+                      commit,
                       productionComputes(desired.cluster().name()),
                       WaveExecutor::execute,
                       ApplyOrchestrator::clusterView);
@@ -65,6 +71,7 @@ public final class ApplyOrchestrator {
 
     static Result<ApplyResult> resume(ClusterBootstrapConfig desired,
                                       ClusterBootstrapConfig currentStored,
+                                      Fn1<Result<String>, Long> commit,
                                       Function<String, Result<ComputeProvider>> computeFor,
                                       Fn4<Result<ApplyResult>, DiffPlan, ClusterBootstrapConfig, ClusterBootstrapConfig, ApplyRecorder> executor,
                                       Supplier<Result<Option<ApplyCommitRecovery.ClusterConfigView>>> view) {
@@ -72,12 +79,13 @@ public final class ApplyOrchestrator {
 
         return loadRequiredState(clusterName).flatMap(state -> validateResumeState(state, desired))
                                 .flatMap(state -> gate(state, ApplyCommitRecovery.Verb.RESUME, view))
-                                .flatMap(state -> continueApply(state, desired, currentStored, computeFor, executor));
+                                .flatMap(state -> continueApply(state, desired, currentStored, commit, computeFor, executor));
     }
 
     private static Result<ApplyResult> continueApply(ApplyState state,
                                                      ClusterBootstrapConfig desired,
                                                      ClusterBootstrapConfig currentStored,
+                                                     Fn1<Result<String>, Long> commit,
                                                      Function<String, Result<ComputeProvider>> computeFor,
                                                      Fn4<Result<ApplyResult>, DiffPlan, ClusterBootstrapConfig, ClusterBootstrapConfig, ApplyRecorder> executor) {
         var clusterName = desired.cluster().name();
@@ -98,7 +106,7 @@ public final class ApplyOrchestrator {
                               .flatMap(plan -> executor.apply(plan, currentStored, desired, recorder))
                               .flatMap(result -> ApplyReconciler.audit(recorder, clusterName, computeFor).map(audit -> reported(audit,
                                                                                                                                 result)))
-                              .onSuccess(_ -> clearFinishedState(clusterName));
+                              .flatMap(result -> ApplyCommit.finish(state, commit, result));
     }
 
     private static ApplyResult reported(ApplyReconciler.AuditReport audit, ApplyResult result) {
@@ -301,16 +309,13 @@ public final class ApplyOrchestrator {
 
     private static Result<ApplyResult> executeWithState(DiffPlan plan,
                                                         ClusterBootstrapConfig stored,
-                                                        ClusterBootstrapConfig desired) {
+                                                        ClusterBootstrapConfig desired,
+                                                        long storedVersion,
+                                                        Fn1<Result<String>, Long> commit,
+                                                        Fn4<Result<ApplyResult>, DiffPlan, ClusterBootstrapConfig, ClusterBootstrapConfig, ApplyRecorder> executor) {
         return plan.isEmpty()
-               ? success(applyResult(plan, 0, 0, 0))
-               : executeAndPersist(plan, stored, desired);
-    }
-
-    private static Result<ApplyResult> executeAndPersist(DiffPlan plan,
-                                                         ClusterBootstrapConfig stored,
-                                                         ClusterBootstrapConfig desired) {
-        return executeAndPersist(plan, stored, desired, WaveExecutor::execute);
+               ? ApplyCommit.commitWithoutLedger(commit, storedVersion, applyResult(plan, 0, 0, 0))
+               : executeAndPersist(plan, stored, desired, storedVersion, commit, executor);
     }
 
     /// A fresh apply replaces a halted apply's state, but only one it could READ: an unreadable file may
@@ -319,12 +324,14 @@ public final class ApplyOrchestrator {
     static Result<ApplyResult> executeAndPersist(DiffPlan plan,
                                                  ClusterBootstrapConfig stored,
                                                  ClusterBootstrapConfig desired,
+                                                 long storedVersion,
+                                                 Fn1<Result<String>, Long> commit,
                                                  Fn4<Result<ApplyResult>, DiffPlan, ClusterBootstrapConfig, ClusterBootstrapConfig, ApplyRecorder> executor) {
         var clusterName = desired.cluster().name();
 
         return ApplyState.read(clusterName)
                          .mapError(cause -> unreadableState(clusterName, cause))
-                         .flatMap(_ -> persistInitialAndExecute(plan, stored, desired, executor));
+                         .flatMap(_ -> persistInitialAndExecute(plan, stored, desired, storedVersion, commit, executor));
     }
 
     /// The ledger is written BEFORE the executor runs and a failed write stops the apply: VMs created with no
@@ -333,9 +340,10 @@ public final class ApplyOrchestrator {
     private static Result<ApplyResult> persistInitialAndExecute(DiffPlan plan,
                                                                 ClusterBootstrapConfig stored,
                                                                 ClusterBootstrapConfig desired,
+                                                                long storedVersion,
+                                                                Fn1<Result<String>, Long> commit,
                                                                 Fn4<Result<ApplyResult>, DiffPlan, ClusterBootstrapConfig, ClusterBootstrapConfig, ApplyRecorder> executor) {
-        var clusterName = desired.cluster().name();
-        var started = startedState(plan, desired);
+        var started = startedState(plan, desired, storedVersion);
         // Plan time: a cluster name whose minted node ids cannot be provider labels refuses the whole apply before the ledger exists.
         return ApplyLabels.requireMintable(desired,
                                            started.applyId())
@@ -344,23 +352,15 @@ public final class ApplyOrchestrator {
                                                        stored,
                                                        desired,
                                                        ApplyRecorder.applyRecorder(started)))
-                          .onSuccess(_ -> clearFinishedState(clusterName));
+                          .flatMap(result -> ApplyCommit.finish(started, commit, result));
     }
 
-    private static ApplyState startedState(DiffPlan plan, ClusterBootstrapConfig desired) {
+    private static ApplyState startedState(DiffPlan plan, ClusterBootstrapConfig desired, long storedVersion) {
         return ApplyState.startedApply(desired.cluster().name(),
                                        ClusterBootstrapOrchestrator.computeConfigHash(desired),
-                                       0L,
+                                       storedVersion,
                                        Instant.now().toString(),
                                        ApplyAction.fromPlan(plan));
-    }
-
-    // FER: the apply already succeeded, so a state file that cannot be removed is reported, not failed. Guarantee
-    // earned: the exit status tells the truth about the VMs. Mechanism: the leftover file is readable, and the
-    // next apply replaces it (executeAndPersist refuses only an UNREADABLE one).
-    @Contract
-    private static void clearFinishedState(ClusterName clusterName) {
-        ApplyState.delete(clusterName).onFailure(cause -> System.err.println("Warning: the apply succeeded but its state file could not be removed: " + cause.message()));
     }
 
     private static Result<ApplyState> validateResumeState(ApplyState state, ClusterBootstrapConfig desired) {

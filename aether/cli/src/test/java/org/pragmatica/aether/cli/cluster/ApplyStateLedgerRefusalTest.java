@@ -189,7 +189,7 @@ class ApplyStateLedgerRefusalTest {
         void resume_unreadableApplyState_failsNamingTheRefusal_notNothingToResume() throws Exception {
             writeApplyState(applyStateJson(clusterName.value(), FUTURE_ENTRY));
 
-            ApplyOrchestrator.resume(config(3), config(3))
+            ApplyOrchestrator.resume(config(3), config(3), ApplyTestCommits.ok())
                              .onSuccess(result -> fail("resume must not proceed past a refused state"))
                              .onFailure(cause -> assertThat(cause.message()).contains("unreadable")
                                                                              .contains("FutureThing")
@@ -200,10 +200,12 @@ class ApplyStateLedgerRefusalTest {
         void resume_refusedLedger_saysItWasLeftUntouchedExactlyOnce_andNamesTheFile() throws Exception {
             writeApplyState(applyStateJson(clusterName.value(), "").replace("\"schemaVersion\": 2", "\"schemaVersion\": 3"));
 
-            for (var outcome : List.of(ApplyOrchestrator.resume(config(3), config(3)),
+            for (var outcome : List.of(ApplyOrchestrator.resume(config(3), config(3), ApplyTestCommits.ok()),
                                        ApplyOrchestrator.executeAndPersist(ClusterBootstrapConfigDiff.diff(config(3), config(5)),
                                                                            config(3),
                                                                            config(5),
+                                                                           0L,
+                                                                           ApplyTestCommits.ok(),
                                                                            (plan, stored, desired, recorder) -> fail("must not execute")))) {
                 outcome.onSuccess(result -> fail("a refused ledger must stop the apply"))
                        .onFailure(cause -> {
@@ -216,7 +218,7 @@ class ApplyStateLedgerRefusalTest {
 
         @Test
         void resume_absentApplyState_stillReportsNothingToResume() {
-            ApplyOrchestrator.resume(config(3), config(3))
+            ApplyOrchestrator.resume(config(3), config(3), ApplyTestCommits.ok())
                              .onSuccess(result -> fail("nothing to resume"))
                              .onFailure(cause -> assertThat(cause.message()).contains("Nothing to resume"));
         }
@@ -232,7 +234,7 @@ class ApplyStateLedgerRefusalTest {
             var desired = config(5);
             var plan = ClusterBootstrapConfigDiff.diff(stored, desired);
 
-            return ApplyOrchestrator.executeAndPersist(plan, stored, desired, this::stubExecutor);
+            return ApplyOrchestrator.executeAndPersist(plan, stored, desired, 0L, ApplyTestCommits.ok(), this::stubExecutor);
         }
 
         private org.pragmatica.lang.Result<ApplyResult> stubExecutor(org.pragmatica.aether.config.cluster.DiffPlan plan,

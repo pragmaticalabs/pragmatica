@@ -84,14 +84,14 @@ class ApplyCommitViewTest {
     /// An apply started the normal way (its ledger carries the resolved config's hash), moved to COMMITTING, with the cluster
     /// holding `stored` at a later version (the commit landed), then resumed with the real `clusterView()`.
     private Result<ApplyResult> committingThenResume(String stored, ClusterBootstrapConfig started) {
-        ApplyOrchestrator.executeAndPersist(EMPTY, started, started, (plan, from, to, recorder) -> Causes.cause("halt").result());
+        ApplyOrchestrator.executeAndPersist(EMPTY, started, started, 0L, ApplyTestCommits.ok(), (plan, from, to, recorder) -> Causes.cause("halt").result());
 
         var state = ApplyState.read(CLUSTER).unwrap().unwrap();
 
         ApplyState.save(state.withPhase(ApplyPhase.COMMITTING)).unwrap();
         storedToml = stored;
 
-        return ApplyOrchestrator.resume(started, started, _ -> Causes.cause("no provider").result(),
+        return ApplyOrchestrator.resume(started, started, ApplyTestCommits.ok(), _ -> Causes.cause("no provider").result(),
                                         (plan, from, to, recorder) -> Result.success(ApplyResult.applyResult(plan, 0, 0, 0)),
                                         ApplyOrchestrator::clusterView);
     }
@@ -122,11 +122,11 @@ class ApplyCommitViewTest {
 
     @Test
     void aClusterThatCannotBeReached_stillMeansRetry_notAnError() {
-        ApplyOrchestrator.executeAndPersist(EMPTY, resolved(REF), resolved(REF), (plan, from, to, recorder) -> Causes.cause("halt").result());
+        ApplyOrchestrator.executeAndPersist(EMPTY, resolved(REF), resolved(REF), 0L, ApplyTestCommits.ok(), (plan, from, to, recorder) -> Causes.cause("halt").result());
         ApplyState.save(ApplyState.read(CLUSTER).unwrap().unwrap().withPhase(ApplyPhase.COMMITTING)).unwrap();
         cluster.stop(0);
 
-        ApplyOrchestrator.resume(resolved(REF), resolved(REF), _ -> Causes.cause("no provider").result(),
+        ApplyOrchestrator.resume(resolved(REF), resolved(REF), ApplyTestCommits.ok(), _ -> Causes.cause("no provider").result(),
                                  (plan, from, to, recorder) -> Result.success(ApplyResult.applyResult(plan, 0, 0, 0)), ApplyOrchestrator::clusterView)
                          .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("cannot decide"))
                          .onFailure(cause -> assertThat(cause.message()).contains("could not be read").contains("retry"));

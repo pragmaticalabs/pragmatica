@@ -102,7 +102,7 @@ class WaveExecutorLongClusterNameTest {
                 count = 3
                 """.formatted(THIRTY)).unwrap());
 
-        ApplyOrchestrator.executeAndPersist(plan, desired, desired, (p, stored, wanted, recorder) -> {
+        ApplyOrchestrator.executeAndPersist(plan, desired, desired, 0L, ApplyTestCommits.ok(), (p, stored, wanted, recorder) -> {
             executed.incrementAndGet();
 
             return Result.success(ApplyResult.applyResult(p, 0, 0, 0));

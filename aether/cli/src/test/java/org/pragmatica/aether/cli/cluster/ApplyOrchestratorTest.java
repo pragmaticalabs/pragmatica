@@ -131,7 +131,7 @@ class ApplyOrchestratorTest {
         void apply_identicalConfigs_returnsZeroCounts() {
             var config = forgeConfig(3);
 
-            ApplyOrchestrator.apply(config, config)
+            ApplyOrchestrator.apply(config, config, true, 0L, ApplyTestCommits.ok())
                 .onFailure(_ -> fail("Expected success"))
                 .onSuccess(ApplyOrchestratorTest::assertZeroCounts);
         }
@@ -141,7 +141,7 @@ class ApplyOrchestratorTest {
             var stored = forgeConfig(3);
             var desired = forgeConfig(5);
 
-            ApplyOrchestrator.apply(desired, stored)
+            ApplyOrchestrator.apply(desired, stored, true, 0L, ApplyTestCommits.ok())
                 .onFailure(_ -> fail("Expected success"))
                 .onSuccess(ApplyOrchestratorTest::assertScaleUpCounts);
         }
@@ -151,7 +151,7 @@ class ApplyOrchestratorTest {
             var stored = configWithName("cluster-a", 3);
             var desired = configWithName("cluster-b", 3);
 
-            ApplyOrchestrator.apply(desired, stored)
+            ApplyOrchestrator.apply(desired, stored, true, 0L, ApplyTestCommits.ok())
                 .onSuccess(_ -> fail("Expected failure"))
                 .onFailure(cause -> assertInstanceOf(ClusterConfigError.ImmutableFieldChange.class, cause));
         }
@@ -164,7 +164,7 @@ class ApplyOrchestratorTest {
                 "cloud-a", sourceWithRole("cloud-a", NodeRole.WORKER, 5)
             ));
 
-            ApplyOrchestrator.apply(desired, stored)
+            ApplyOrchestrator.apply(desired, stored, true, 0L, ApplyTestCommits.ok())
                 .onFailure(_ -> fail("Expected success"))
                 .onSuccess(result -> assertEquals(5, result.nodesAdded()));
         }
@@ -177,7 +177,7 @@ class ApplyOrchestratorTest {
             ));
             var desired = forgeConfig(3);
 
-            ApplyOrchestrator.apply(desired, stored)
+            ApplyOrchestrator.apply(desired, stored, true, 0L, ApplyTestCommits.ok())
                 .onFailure(_ -> fail("Expected success"))
                 .onSuccess(result -> assertTrue(result.executedPlan().removals().size() > 0));
         }
@@ -214,7 +214,7 @@ class ApplyOrchestratorTest {
             var stored = forgeConfig(3);
             var desired = forgeConfig(5);
 
-            return ApplyOrchestrator.executeAndPersist(ClusterBootstrapConfigDiff.diff(stored, desired), stored, desired, executor);
+            return ApplyOrchestrator.executeAndPersist(ClusterBootstrapConfigDiff.diff(stored, desired), stored, desired, 0L, ApplyTestCommits.ok(), executor);
         }
 
         private Result<ApplyResult> countingSuccess(DiffPlan plan, ClusterBootstrapConfig stored, ClusterBootstrapConfig desired, ApplyRecorder recorder) {

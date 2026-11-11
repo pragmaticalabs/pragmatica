@@ -84,7 +84,7 @@ class ApplyResumeTest {
     private Result<ApplyResult> resume(ApplyScenario scenario, java.util.function.Supplier<Result<Option<ClusterConfigView>>> view) {
         var desired = desired();
 
-        return ApplyOrchestrator.resume(desired, desired, scenario.computes(), (plan, stored, wanted, recorder) -> {
+        return ApplyOrchestrator.resume(desired, desired, ApplyTestCommits.ok(), scenario.computes(), (plan, stored, wanted, recorder) -> {
             executions.incrementAndGet();
 
             return Result.success(ApplyResult.applyResult(plan, 0, 0, 0));
@@ -101,7 +101,7 @@ class ApplyResumeTest {
 
         var desired = desired();
 
-        ApplyOrchestrator.resume(desired, desired, scenario.computes(), (plan, stored, wanted, recorder) -> {
+        ApplyOrchestrator.resume(desired, desired, ApplyTestCommits.ok(), scenario.computes(), (plan, stored, wanted, recorder) -> {
             applyId.set(recorder.applyId());
             rowsSeen.set(recorder.snapshot().resources().size());
 
@@ -151,7 +151,7 @@ class ApplyResumeTest {
 
         System.setOut(new java.io.PrintStream(captured, true));
         try {
-            ApplyOrchestrator.resume(desired, desired, scenario.computes(), (plan, stored, wanted, recorder) -> {
+            ApplyOrchestrator.resume(desired, desired, ApplyTestCommits.ok(), scenario.computes(), (plan, stored, wanted, recorder) -> {
                 scenario.harness.provider.create("late-node", scenario.labels());
 
                 return Result.success(ApplyResult.applyResult(plan, 0, 0, 0));
@@ -223,7 +223,7 @@ class ApplyResumeTest {
         var scenario = scenarioWithMatchingHash();
         var other = ClusterBootstrapConfigParser.parse(DOCKER.replace("count = 1", "count = 2")).unwrap();
 
-        ApplyOrchestrator.resume(other, other, scenario.computes(), (plan, stored, wanted, recorder) -> Result.success(ApplyResult.applyResult(plan, 0, 0, 0)), () -> Result.success(Option.none()))
+        ApplyOrchestrator.resume(other, other, ApplyTestCommits.ok(), scenario.computes(), (plan, stored, wanted, recorder) -> Result.success(ApplyResult.applyResult(plan, 0, 0, 0)), () -> Result.success(Option.none()))
                          .onSuccess(_ -> fail("hash mismatch"))
                          .onFailure(cause -> assertThat(cause.message()).contains("hash mismatch"));
     }
