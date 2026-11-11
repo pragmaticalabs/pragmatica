@@ -4,6 +4,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected;
@@ -104,10 +105,13 @@ class LeaderManagerTest {
 
     @Nested
     class ConsensusElectionMode {
-        // Bounded deadlines for condition polls; far above the nominal 3s KvSync grace + 2-3s staircase delay,
-        // so a stalled host cannot turn a late-but-correct proposal into a failure.
+        // Bounded deadlines for condition polls; far above the nominal 3s KvSync grace + 2-3s staircase delay
+        // (and above a 9s grace stall), so a stalled host cannot turn a late-but-correct outcome into a failure.
         private static final Duration ELECTION_DEADLINE = Duration.ofSeconds(30);
-        private static final Duration NOTIFICATION_DEADLINE = Duration.ofSeconds(10);
+        private static final Duration NOTIFICATION_DEADLINE = Duration.ofSeconds(30);
+        // Observation window for stale-timer proposals after a fenced decision point: KvSync grace (3s) +
+        // base election delay (2s) + rank stagger + margin. A window is only an extra net; the fence is the event.
+        private static final Duration NO_PROPOSAL_WINDOW = Duration.ofMillis(6_500);
 
         private final MessageRouter.MutableRouter router = MessageRouter.mutable();
         private final Watcher<LeaderNotification> watcher = new Watcher<>(new CopyOnWriteArrayList<>());
@@ -222,12 +226,23 @@ class LeaderManagerTest {
 
             // Second commit with same leader (should skip notification)
             leaderManager.onLeaderCommitted(nodes.getFirst());
-            Thread.sleep(50);
 
-            // Only one notification (duplicate skipped)
-            assertThat(watcher.collected()).hasSize(1);
-            var notification = (LeaderChange) watcher.collected().getFirst();
-            assertThat(notification.leaderId()).isEqualTo(Option.some(nodes.getFirst()));
+            // Positive fence: a later, sequence-less commit of a different leader is a distinct
+            // observable event dispatched after the duplicate. Once its notification is seen, the
+            // duplicate has had its chance to notify.
+            var otherLeader = nodes.getLast();
+            leaderManager.onLeaderCommitted(otherLeader);
+            await("async notification for the fencing commit").atMost(NOTIFICATION_DEADLINE)
+                   .until(() -> watcher.collected().stream()
+                                       .anyMatch(n -> n instanceof LeaderChange lc
+                                                      && lc.leaderId().equals(Option.some(otherLeader))));
+
+            // Exactly one notification for the first leader (duplicate skipped), one for the fence
+            assertThat(watcher.collected()).hasSize(2);
+            assertThat(watcher.collected().stream()
+                              .filter(n -> n instanceof LeaderChange lc
+                                           && lc.leaderId().equals(Option.some(nodes.getFirst())))
+                              .count()).isEqualTo(1);
         }
 
         @Test
@@ -344,7 +359,7 @@ class LeaderManagerTest {
             // before the AwaitingKvSync grace window expires; LeaderCommitted is handled in
             // AwaitingKvSync (transitioning straight to Led without entering Electing).
             localManager.onLeaderCommitted(minNode);
-            await().atMost(Duration.ofSeconds(2))
+            await("min node adopted as leader").atMost(ELECTION_DEADLINE)
                    .until(() -> localManager.leader().equals(Option.some(minNode)));
 
             // Record proposal count after initial election (after the leader-commit takes hold)
@@ -357,7 +372,7 @@ class LeaderManagerTest {
             // Wait for re-election proposal. Path: QuorumLost → AwaitingKvSync (grace 3s) →
             // Electing → propose (base 2s + rank 0 + jitter). Cap generously to absorb staircase
             // + KvSync grace + retry tick under CI load.
-            await().atMost(Duration.ofSeconds(10))
+            await("re-election proposal submitted").atMost(ELECTION_DEADLINE)
                    .until(() -> localProposals.size() > proposalsAfterInitial);
 
             // Min node should submit a new proposal for re-election
@@ -403,12 +418,17 @@ class LeaderManagerTest {
             // Now trigger election (as AetherNode does after adoption)
             localManager.triggerElection();
 
-            // Wait past KvSync grace (3s) + base election delay (2s) + rank stagger + margin.
-            Thread.sleep(6_500);
+            // Positive fence: the adopt path ran (FSM holds Led(existingLeader)). The dispatch is
+            // synchronous, so this proves the decision point was reached, independent of host speed.
+            await("adopted leader held in Led").atMost(ELECTION_DEADLINE)
+                   .until(() -> isLedBy(localManager, existingLeader));
 
             // The min node must NOT submit a proposal because a leader was already adopted.
             // Without the adoption fix, hasEverHadLeader=false and min-rank would propose itself,
-            // causing leader churn.
+            // causing leader churn. The window catches a stale grace/election timer proposing late.
+            await("no proposal while Led").during(NO_PROPOSAL_WINDOW)
+                   .atMost(ELECTION_DEADLINE)
+                   .until(() -> localProposals.isEmpty() && isLedBy(localManager, existingLeader));
             assertThat(localProposals).isEmpty();
             assertThat(localManager.leader()).isEqualTo(Option.some(existingLeader));
         }
@@ -477,7 +497,7 @@ class LeaderManagerTest {
             localRouter.route(ClusterStateNotification.active());
 
             localManager.onLeaderCommitted(leaderNode);
-            await().atMost(Duration.ofSeconds(2))
+            await("leader node adopted").atMost(ELECTION_DEADLINE)
                    .until(() -> localManager.leader().equals(Option.some(leaderNode)));
             localWatcher.collected().clear();
             localProposals.clear();
@@ -490,8 +510,8 @@ class LeaderManagerTest {
             // submits a proposal. Path: Led → ReElecting (NodeGone of leader) → propose. The
             // ReElecting state passes through AwaitingKvSync only on the cold-boot path; here
             // we reach it from Led, which short-circuits the grace and uses the proposal-retry
-            // tick (~500ms + jitter). Cap at 10s to absorb staircase + jitter under CI load.
-            await().atMost(Duration.ofSeconds(10))
+            // tick (~500ms + jitter). Cap at ELECTION_DEADLINE to absorb a host stall.
+            await("re-election after leader removal").atMost(ELECTION_DEADLINE)
                    .until(() -> localManager.leader().isEmpty()
                                 && localWatcher.collected().stream()
                                                .anyMatch(n -> n instanceof LeaderChange lc && lc.leaderId().isEmpty())
@@ -597,6 +617,12 @@ class LeaderManagerTest {
     }
 
     // Helper methods shared between test classes
+
+    private static boolean isLedBy(LeaderManager manager, NodeId leader) {
+        return manager instanceof LeaderManager.FsmBackedLeaderManager fsmBacked
+               && fsmBacked.fsm().current() instanceof LeaderElectionState.Led led
+               && led.leader().equals(leader);
+    }
 
     private void sendNodeAdded(MessageRouter router, NodeId nodeId) {
         var topology = Stream.concat(nodes.stream(), Stream.of(nodeId))
