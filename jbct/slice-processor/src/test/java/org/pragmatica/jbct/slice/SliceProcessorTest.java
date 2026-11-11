@@ -6368,8 +6368,8 @@ class SliceProcessorTest {
             import org.pragmatica.lang.type.TypeToken;
 
             public record Topic<T>(String name, TypeToken<T> payloadType) {
-                public static <T> Topic<T> of(String name, TypeToken<T> payloadType) { return new Topic<>(name, payloadType); }
-                public static <T> Topic<T> of(String name, Class<T> payloadType) { return new Topic<>(name, null); }
+                public static <T> Topic<T> topic(String name, TypeToken<T> payloadType) { return new Topic<>(name, payloadType); }
+                public static <T> Topic<T> topic(String name, Class<T> payloadType) { return new Topic<>(name, null); }
             }
             """);
 
