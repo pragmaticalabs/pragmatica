@@ -919,6 +919,9 @@ public sealed interface StreamAssembly {
         // #1730 phase 2: the gate's relaxation for a divergent peer respects the candidate's durable sealed floor, and a peer it
         // leaves out loses the row this registry kept for it from an earlier tenure.
         ownerActivation.sealedFloor(streamSegmentIndex::lastSealedOffset);
+        // #3071: the gate ranks a peer only up to the committed-lineage end its clipped catch-up learned (I-27), so a deposed
+        // epoch's tail the catch-up refuses never counts as ahead and cannot keep the owner un-activated.
+        ownerActivation.peerLineageEnd(streamPartitionBackfill::lineageEnd);
         ownerActivation.peerRingTail((node, stream, partition) -> node.equals(config.self())
                                                                   ? Promise.success(streamPartitionManager.visibleBounds(stream,
                                                                                                                          partition)
