@@ -1,6 +1,7 @@
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.List;
+import java.util.Map;
 
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.Submitted;
@@ -8,7 +9,11 @@ import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.TxDraft;
 import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 
+import org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue;
+import org.pragmatica.lang.Option;
+
 import org.junit.jupiter.api.Test;
+
 
 import static org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind.WARNINGS;
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
@@ -156,5 +161,29 @@ class WarningsPersistenceTest {
         Outbox.expire(m, SurvivorPinSupport.ctx(1_000L, 5L + bound));
 
         assertThat(m.warningsDirty).isTrue();
+    }
+
+    /// Red when: the reconcile pass does not mark the open set dirty (the level-triggered backstop that drafts a failed WARNINGS write again).
+    @Test
+    void reconcilePass_marksTheOpenSetDirty() {
+        var m = new ClusterModel();
+
+        Reconcile.run(m, SurvivorPinSupport.ctx(1_000L, 0L));
+
+        assertThat(m.warningsDirty).isTrue();
+    }
+
+    /// Red when: the mirror view the refusal logic compares against (`Outbox.mirrored`) does not read the committed open set: a write whose
+    /// expected value is the mirror's own would count as moved, and a refusal would never correct the mirror.
+    @Test
+    void mirroredView_readsTheCommittedOpenSet() {
+        var m = new ClusterModel();
+        var row = FsmWarningValue.fsmWarningValue(Map.of());
+
+        assertThat(Outbox.mirrored(m, KEY)).as("absent row").isEqualTo(Option.none());
+
+        Warnings.indexRow(m, KEY, row);
+
+        assertThat(Outbox.mirrored(m, KEY)).as("held row").isEqualTo(Option.some(row));
     }
 }
