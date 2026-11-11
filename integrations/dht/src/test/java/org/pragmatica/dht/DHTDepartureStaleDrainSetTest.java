@@ -21,6 +21,7 @@ import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -36,10 +37,29 @@ import static org.pragmatica.dht.storage.MemoryStorageEngine.memoryStorageEngine
 class DHTDepartureStaleDrainSetTest {
     private static final DHTConfig CONFIG = new DHTConfig(3, 2, 2, DHTConfig.DEFAULT_TIMEOUT);
     private static final byte[] V0 = "v0".getBytes(StandardCharsets.UTF_8);
+    /// Resend window of the push under test. Generous on purpose (#3049): the push ends as soon as every page is acknowledged,
+    /// so the budget only decides how long a stalled host may delay a page before it is abandoned (the 50 ms it replaced let a
+    /// CI thread stall past the window lose a page: DeparturePushRun abandons a page whose window ended before its first send).
+    private static final TimeSpan BUDGET = TimeSpan.timeSpan(30).seconds();
+    /// The legacy budget, kept to prove the instrument sees a stalled page lost.
+    private static final TimeSpan LEGACY_BUDGET = TimeSpan.timeSpan(50).millis();
+    /// A first page read delayed past [#LEGACY_BUDGET], injected deterministically: the delay is fixed, never a race.
+    private static final long STALL_MS = 300L;
     private static final byte[] DEPOSED = "deposed".getBytes(StandardCharsets.UTF_8);
 
+    @Test
+    void coDrain_firstPageReadStalledPastLegacyBudget_losesNothing_controlWithLegacyBudgetDoes() {
+        var names = List.of("n-a", "n-b", "n-c", "n-d", "n-e", "n-f");
+        var drainers = Set.of(new NodeId("n-a"), new NodeId("n-b"));
+
+        assertThat(losses(names, drainers, drainers, LEGACY_BUDGET, STALL_MS))
+            .as("positive control: a first read stalled past the legacy budget abandons the page").isPositive();
+        assertThat(losses(names, drainers, drainers, BUDGET, STALL_MS))
+            .as("the stall is within the budget: nothing is lost").isZero();
+    }
+
     // ---- 4. (a): co-drain with a stale or missing drain-set entry, real ring ----
-    @org.junit.jupiter.api.RepeatedTest(5)
+    @Test
     void coDrain_realRing_staleEntryNeverLosesALastCopy_controlWithoutTheSetDoes() {
         var rnd = new Random(1820);
         int lossWithStale = 0, lossWithExact = 0, lossWithEmpty = 0, trials = 0;
@@ -63,9 +83,9 @@ class DHTDepartureStaleDrainSetTest {
             staleSet.add(stale);
 
             trials++;
-            lossWithStale += losses(names, drainers, Set.copyOf(staleSet));
-            lossWithExact += losses(names, drainers, drainers);
-            lossWithEmpty += losses(names, drainers, Set.of());
+            lossWithStale += losses(names, drainers, Set.copyOf(staleSet), BUDGET, 0L);
+            lossWithExact += losses(names, drainers, drainers, BUDGET, 0L);
+            lossWithEmpty += losses(names, drainers, Set.of(), BUDGET, 0L);
         }
 
         System.out.printf("coDrain trials=%d lossStale=%d lossExact=%d lossEmpty(base behaviour)=%d%n",
@@ -77,9 +97,9 @@ class DHTDepartureStaleDrainSetTest {
 
     /// Concurrent drain: every drainer pushes from its own pre-drain storage with `coDeparting` as the
     /// drain set it saw; pushes landing on any drainer die with it. Returns keys with no surviving holder.
-    private static int losses(List<String> names, Set<NodeId> drainers, Set<NodeId> coDeparting) {
-        var cluster = new Cluster(names, Set.of());
-        cluster.queueing = true;
+    private static int losses(List<String> names, Set<NodeId> drainers, Set<NodeId> coDeparting, TimeSpan budget, long firstReadStallMs) {
+        var cluster = new Cluster(names, Set.of(), firstReadStallMs);
+        cluster.hold();
         var rf = CONFIG.effectiveReplicationFactor(names.size());
         var keys = new ArrayList<byte[]>();
 
@@ -97,10 +117,9 @@ class DHTDepartureStaleDrainSetTest {
         cluster.departing.addAll(coDeparting);
         var pushes = new ArrayList<Promise<Unit>>();
         drainers.forEach(d -> pushes.add(cluster.members.get(d).rebalancer()
-                                                .pushOnDeparture(TimeSpan.timeSpan(Long.getLong("dht3049.budgetMs", 50L)).millis(), coDeparting,
+                                                .pushOnDeparture(budget, coDeparting,
                                                                  DeparturePushObserver.noop())));
-        cluster.queueing = false;
-        cluster.flush(drainers);
+        cluster.flush();
         pushes.forEach(Promise::await);
 
         int lost = 0;
@@ -172,23 +191,58 @@ class DHTDepartureStaleDrainSetTest {
         };
     }
 
+    /// Delegates everything; the first entry read answers only after `stallMs`, as a starved host would.
+    private static StorageEngine stallingFirstRead(StorageEngine d, long stallMs) {
+        var stalled = new AtomicBoolean(false);
+        return new StorageEngine() {
+            public Promise<Option<byte[]>> get(byte[] key) { return d.get(key); }
+            public Promise<Unit> put(byte[] key, byte[] value) { return d.put(key, value); }
+            public Promise<Boolean> remove(byte[] key) { return d.remove(key); }
+            public Promise<Boolean> exists(byte[] key) { return d.exists(key); }
+            public Promise<Boolean> putVersioned(byte[] k, byte[] v, long ver, long i, long t, long c) {
+                return d.putVersioned(k, v, ver, i, t, c);
+            }
+            public Promise<Boolean> putReplica(byte[] k, byte[] v, long ver, long i, long t, long c) {
+                return d.putReplica(k, v, ver, i, t, c);
+            }
+            public Promise<Option<DHTMessage.KeyValue>> getEntry(byte[] key) {
+                return stalled.compareAndSet(false, true)
+                       ? Promise.promise(TimeSpan.timeSpan(stallMs).millis(), p -> d.getEntry(key).onResult(p::resolve))
+                       : d.getEntry(key);
+            }
+            public long size() { return d.size(); }
+            public Promise<Unit> clear() { return d.clear(); }
+            public Promise<Unit> shutdown() { return d.shutdown(); }
+            public Promise<List<byte[]>> keys() { return d.keys(); }
+            public Promise<List<DHTMessage.KeyValue>> entries() { return d.entries(); }
+            public Promise<List<DHTMessage.KeyValue>> entriesForPartition(ConsistentHashRing<?> ring, Partition p) {
+                return d.entriesForPartition(ring, p);
+            }
+        };
+    }
+
     private static final class Cluster {
         final Map<NodeId, Member> members = new LinkedHashMap<>();
         final List<ProtocolMessage> delivered = new CopyOnWriteArrayList<>();
         final List<Map.Entry<NodeId, ProtocolMessage>> queue = new CopyOnWriteArrayList<>();
         /// What the leader's drain set tells every receiver: the set the drainers pushed with.
         final Set<NodeId> departing = new HashSet<>();
-        volatile boolean queueing = false;
+        private boolean queueing = false;
 
         Cluster(List<String> names, Set<String> partialRefusers) {
+            this(names, partialRefusers, 0L);
+        }
+
+        Cluster(List<String> names, Set<String> partialRefusers, long firstReadStallMs) {
             var ids = names.stream().map(NodeId::new).toList();
             ids.forEach(id -> {
                 var ring = ConsistentHashRing.<NodeId>consistentHashRing();
                 ids.forEach(ring::addNode);
                 var gate = new Gate();
-                StorageEngine storage = partialRefusers.contains(id.id())
-                                        ? refusingBadPrefix(memoryStorageEngine(gate))
-                                        : memoryStorageEngine(gate);
+                StorageEngine plain = partialRefusers.contains(id.id())
+                                      ? refusingBadPrefix(memoryStorageEngine(gate))
+                                      : memoryStorageEngine(gate);
+                StorageEngine storage = firstReadStallMs > 0 ? stallingFirstRead(plain, firstReadStallMs) : plain;
                 var node = dhtNode(id, storage, ring, CONFIG);
                 DHTNetwork net = AcceptingNetwork.accepting(this::deliver);
                 members.put(id, new Member(id, node, dhtRebalancer(node, net, CONFIG), dhtAntiEntropy(node, net, CONFIG, departing::contains), gate));
@@ -199,24 +253,38 @@ class DHTDepartureStaleDrainSetTest {
             return members.get(new NodeId(name));
         }
 
-        void flush(Set<NodeId> dead) {
-            try { Thread.sleep(Long.getLong("dht3049.stallMs", 0L)); } catch (InterruptedException e) { throw new IllegalStateException(e); }
+        /// Starts holding every message instead of routing it.
+        synchronized void hold() {
+            queueing = true;
+        }
+
+        /// Stops holding and routes every held message, to drainers too: a message to a drained node dies with it, and the
+        /// push still completes on its ack, so no page waits for a resend. Held messages are taken under the same monitor as
+        /// [#hold(NodeId, ProtocolMessage)], so a message sent by the resend timer cannot be added after the take and orphaned.
+        void flush() {
+            release().forEach(e -> route(e.getKey(), e.getValue()));
+        }
+
+        private synchronized List<Map.Entry<NodeId, ProtocolMessage>> release() {
+            queueing = false;
             var pending = new ArrayList<>(queue);
             queue.clear();
-            pending.forEach(e -> {
-                if (!dead.contains(e.getKey())) {
-                    deliver(e.getKey(), e.getValue());
-                }
-            });
+            return pending;
+        }
+
+        private synchronized boolean hold(NodeId target, ProtocolMessage message) {
+            return queueing && queue.add(Map.entry(target, message));
+        }
+
+        private void route(NodeId target, ProtocolMessage message) {
+            delivered.add(message);
+            Option.option(members.get(target)).onPresent(m -> route(m, message));
         }
 
         private void deliver(NodeId target, ProtocolMessage message) {
-            if (queueing) {
-                queue.add(Map.entry(target, message));
-                return;
+            if (!hold(target, message)) {
+                route(target, message);
             }
-            delivered.add(message);
-            Option.option(members.get(target)).onPresent(m -> route(m, message));
         }
 
         boolean ackFor(String requestId) {
