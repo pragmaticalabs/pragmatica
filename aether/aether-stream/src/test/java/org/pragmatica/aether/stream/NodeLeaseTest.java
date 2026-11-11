@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -180,6 +181,126 @@ class NodeLeaseTest {
         deliverOwn(2);
 
         assertThat(lease.valid()).isTrue();
+    }
+
+    @Test
+    void crossCheck_gapExactlyT_doesNotRevoke_gapOneMillisecondOverTDoes() {
+        lease.renew();
+        deliverOwn(0);
+        advance(500);
+        wall.addAndGet(3_000);
+
+        assertThat(lease.valid()).isTrue();
+        assertThat(events).isEmpty();
+
+        wall.addAndGet(1);
+
+        assertThat(lease.valid()).isFalse();
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst()).startsWith("lapsed CLOCK_SUSPEND");
+    }
+
+    @Test
+    void crossCheck_afterADetectedSuspend_aWallStepBackDoesNotRevalidate_andReportsOnce() {
+        lease.renew();
+        deliverOwn(0);
+        advance(500);
+        wall.addAndGet(10_000);
+
+        assertThat(lease.valid()).isFalse();
+
+        wall.addAndGet(-9_000);
+
+        assertThat(lease.valid()).isFalse();
+        assertThat(lease.valid()).isFalse();
+        assertThat(events).hasSize(1);
+
+        advance(1);
+        lease.renew();
+        deliverOwn(1);
+
+        assertThat(lease.valid()).isTrue();
+    }
+
+    @Test
+    void renew_neverDelivered_keepsThePendingMapWithinOneLeaseDuration() {
+        for (var i = 0; i < 100; i++) {
+            lease.renew();
+            advance(1_000);
+        }
+
+        assertThat(((LiveNodeLease) lease).pending().size()).isLessThanOrEqualTo(4);
+    }
+
+    @Test
+    void revoke_concurrentRevokes_neverMoveRevokedAtBack() throws InterruptedException {
+        var stamp = new ThreadLocal<Long>();
+        var racing = NodeLease.nodeLease(SELF,
+                                         timeSpan(3).seconds(),
+                                         timeSpan(1).seconds(),
+                                         0.1,
+                                         this::submit,
+                                         replaying::get,
+                                         new NodeLease.LeaseClock() {
+                                             @Override
+                                             public long nanoTime() {
+                                                 return stamp.get() == null
+                                                        ? mono.get()
+                                                        : stamp.get();
+                                             }
+
+                                             @Override
+                                             public long wallMillis() {
+                                                 return wall.get();
+                                             }
+                                         },
+                                         new RecordingEvents());
+        var rounds = 2_000;
+        var base = mono.get() + 1_000;
+        var go = new AtomicInteger();
+        var done = new AtomicInteger();
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+        var workers = new Thread[2];
+
+        for (var w = 0; w < 2; w++) {
+            var offset = w;
+
+            workers[w] = new Thread(() -> revokeRounds(racing, stamp, go, done, rounds, base, offset, deadline));
+            workers[w].setDaemon(true);
+            workers[w].start();
+        }
+
+        for (var r = 1; r <= rounds; r++) {
+            go.set(r);
+            while (done.get() < 2 * r && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+
+            assertThat(((LiveNodeLease) racing).state().get().revokedAt()).as("round %d", r).isEqualTo(base + 2L * r + 1);
+        }
+
+        for (var worker : workers) {
+            worker.join(5_000);
+        }
+    }
+
+    private static void revokeRounds(NodeLease lease,
+                                     ThreadLocal<Long> stamp,
+                                     AtomicInteger go,
+                                     AtomicInteger done,
+                                     int rounds,
+                                     long base,
+                                     int offset,
+                                     long deadline) {
+        for (var r = 1; r <= rounds; r++) {
+            while (go.get() < r && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+
+            stamp.set(base + 2L * r + offset);
+            lease.revoke();
+            done.incrementAndGet();
+        }
     }
 
     @Test

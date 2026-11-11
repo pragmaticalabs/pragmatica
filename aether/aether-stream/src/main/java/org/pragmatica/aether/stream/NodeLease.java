@@ -162,8 +162,13 @@ public interface NodeLease {
             return TimeUnit.MILLISECONDS.toNanos(wallMillis - anchorWallMillis) - (now - anchorNanos);
         }
 
+        /// Re-stamps the revocation; `revokedAt` never moves back, so concurrent revokes commit in any order (C4(a)).
         LeaseState revokedAt(long now) {
-            return new LeaseState(expiry, true, now, anchored, anchorNanos, anchorWallMillis, lapseReported);
+            var stamp = revoked && now - revokedAt < 0
+                        ? revokedAt
+                        : now;
+
+            return new LeaseState(expiry, true, stamp, anchored, anchorNanos, anchorWallMillis, lapseReported);
         }
 
         LeaseState lapseNoted() {
@@ -250,6 +255,8 @@ record LiveNodeLease(NodeId self,
 
     @Override
     public boolean valid() {
+        // Read order: monotonic, then wall. A pause between the two reads inflates the gap, a spurious revoke that fails
+        // closed and clears with the next renewal.
         var now = clock.nanoTime();
         var wallMillis = clock.wallMillis();
         var current = state.get();
