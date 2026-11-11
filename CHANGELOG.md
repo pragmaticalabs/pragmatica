@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc5] - Unreleased
 
+### Fixed (2026-11-11 — #3076: transitive version ranges bcutil/bcprov [1.80,1.81) failed CI dependency resolution)
+
+- Root `dependencyManagement` pins `bcutil-jdk18on` and `bcprov-jdk18on` to 1.80 (declared as ranges by `bcpkix-jdk18on` 1.80 and `bcutil-jdk18on` 1.80), so resolution no longer fetches remote `maven-metadata.xml` for them.
+
 ## [1.0.0-rc4] - 2026-10-17
 
 ### Fixed (2026-10-17 — disruption-budget suite mistook the slice-floor 409 for the quorum budget)
