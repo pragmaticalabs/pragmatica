@@ -4,6 +4,7 @@ import java.util.List;
 
 import org.pragmatica.jbct.lint.Diagnostic;
 
+
 /// The outcome of running the entry gate over a sheet: the findings plus the number of rows
 /// checked. This is the Phase-A result object and the documented seam for machine output — a
 /// future JSON emitter (Phase B, once the full derive result exists) serializes a superset of it.

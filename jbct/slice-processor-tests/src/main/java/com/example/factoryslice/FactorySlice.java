@@ -27,10 +27,8 @@ public interface FactorySlice {
     Promise<ShortResponse> lookup(LookupRequest request);
     // Path only, request record declares NO factory and its constructor throws on bad input (#1573 R2-2)
     Promise<ShortResponse> strict(StrictRequest request);
-
     // POST bound ENTIRELY from the path: no body parameter exists, so none may be demanded (#1214)
     Promise<ShortResponse> openCode(LookupRequest request);
-
     // Query only, validating factory (#3019)
     Promise<ShortResponse> byTag(QueryItemRequest request);
     // Query + body merged, validating factory (#3019)

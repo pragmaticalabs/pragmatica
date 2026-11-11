@@ -385,9 +385,9 @@ public class ManifestGenerator {
                                                                   .toString();
 
                                   if (!resourceTypeName.equals(dep.interfaceQualifiedName())) {
-                                  classes.add(dep.interfaceQualifiedName());
-                                  classes.add(dep.interfaceQualifiedName() + "Factory");
-                              }
+                                      classes.add(dep.interfaceQualifiedName());
+                                      classes.add(dep.interfaceQualifiedName() + "Factory");
+                                  }
                               });
             }
         }

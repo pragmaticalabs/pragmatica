@@ -61,7 +61,9 @@ public final class QuicSslContextFactory {
     /// @param config               TLS configuration (must be Server or Mutual mode)
     /// @param applicationProtocols ALPN protocol identifiers advertised to clients
     /// @return QUIC SSL context or error
-    public static Result<QuicSslContext> createServer(TlsConfig config, ClientAuthPolicy clientAuthPolicy, String... applicationProtocols) {
+    public static Result<QuicSslContext> createServer(TlsConfig config,
+                                                      ClientAuthPolicy clientAuthPolicy,
+                                                      String... applicationProtocols) {
         return switch (config) {
             case TlsConfig.Server(var identity, var clientAuth) -> loadIdentityAndBuild(identity,
                                                                                         clientAuth,
@@ -94,9 +96,9 @@ public final class QuicSslContextFactory {
                                                                ClientAuthPolicy clientAuthPolicy,
                                                                String[] applicationProtocols) {
         return loadKeyMaterial(identity).flatMap(keyMaterial -> buildContext(keyMaterial,
-                                                                            trust,
-                                                                            clientAuthPolicy,
-                                                                            applicationProtocols));
+                                                                             trust,
+                                                                             clientAuthPolicy,
+                                                                             applicationProtocols));
     }
 
     @SuppressWarnings("JBCT-UTIL-01")
@@ -110,14 +112,13 @@ public final class QuicSslContextFactory {
         // than shipping a context whose handshakes mysteriously time out.
         if (clientAuthPolicy == ClientAuthPolicy.REQUIRED && trust.isEmpty()) {
             return TlsError.wrongMode("ClientAuthPolicy.REQUIRED needs a trust anchor to verify peer "
-                                      + "certificates against; this config carries none").result();
+                                     + "certificates against; this config carries none").result();
         }
 
         try {
             var builder = configureIdentity(keyMaterial);
 
             trust.onPresent(t -> configureTrust(builder, t));
-
             // Netty defaults to ClientAuth.NONE, so a trust manager alone never causes the server
             // to ASK for a peer certificate. Cluster admission was reachability-only for exactly
             // this reason (#715).
@@ -237,9 +238,8 @@ public final class QuicSslContextFactory {
     public static Result<QuicSslContext> createInsecureClient() {
         try {
             log.warn("Creating insecure QUIC client context - FOR DEVELOPMENT ONLY!");
-            var context = withoutHostnameVerification(QuicSslContextBuilder.forClient())
-                .trustManager(InsecureTrustManagerFactory.INSTANCE)
-                .build();
+            var context = withoutHostnameVerification(QuicSslContextBuilder.forClient()).trustManager(InsecureTrustManagerFactory.INSTANCE)
+                                                     .build();
 
             return Result.success(context);
         } catch (Exception e) {
@@ -300,10 +300,12 @@ public final class QuicSslContextFactory {
     @SuppressWarnings("JBCT-NULL-01")  // Netty API requires nullable password parameter
     private static void configureClientIdentity(QuicSslContextBuilder builder, KeyMaterial keyMaterial) {
         switch (keyMaterial) {
-            case KeyMaterial.FromFile(var certFile, var keyFile, var password) ->
-                builder.keyManager(keyFile, password.or((String) null), certFile);
-            case KeyMaterial.FromCerts(var key, var password, var chain) ->
-                builder.keyManager(key, password.or((String) null), chain);
+            case KeyMaterial.FromFile(var certFile, var keyFile, var password) -> builder.keyManager(keyFile,
+                                                                                                     password.or((String) null),
+                                                                                                     certFile);
+            case KeyMaterial.FromCerts(var key, var password, var chain) -> builder.keyManager(key,
+                                                                                               password.or((String) null),
+                                                                                               chain);
         }
     }
 

@@ -14,18 +14,14 @@ public enum QuestionId {
     Q7("Release structure"),
     Q8("Cost & capacity envelope"),
     Q9("Multi-X");
-
     private final String label;
-
     QuestionId(String label) {
         this.label = label;
     }
-
     /// Human-readable question title.
     public String label() {
         return label;
     }
-
     /// The TOML array-of-tables key that holds this question's rows (e.g. `answers.q1`).
     public String tableName() {
         return "answers." + name().toLowerCase();

@@ -50,7 +50,8 @@ public record ScoreResult(double totalDensityPerKloc,
     public int totalViolations() {
         return ScoreCategory.countedCategories()
                             .stream()
-                            .mapToInt(category -> breakdown.get(category).violations())
+                            .mapToInt(category -> breakdown.get(category)
+                                                           .violations())
                             .sum();
     }
 

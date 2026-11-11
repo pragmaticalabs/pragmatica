@@ -25,7 +25,6 @@ public sealed interface MapperSafety permits MapperSafety.unused {
 
     /// Carrier combinators whose lambda / method-ref argument sits in "mapper position".
     Set<String> MAPPER_METHODS = Set.of("map", "flatMap", "filter", "replaceResult", "fold");
-
     /// The subset of [#MAPPER_METHODS] whose names collide with `java.util.stream.Stream`.
     /// Only these need the Stream-pipeline exemption; `replaceResult` / `fold` are carrier-only.
     Set<String> STREAM_SHARED = Set.of("map", "flatMap", "filter");
@@ -61,14 +60,14 @@ public sealed interface MapperSafety permits MapperSafety.unused {
     /// negative: an `Optional` held in a plain variable (`opt.get()`) escapes — acceptable; the
     /// report / `@SuppressWarnings` remain the hatch.
     Pattern PARTIAL_OP = Pattern.compile("\\bthrow\\b"
-                                         + "|\\.getFirst\\s*\\(\\s*\\)"
-                                         + "|\\.getLast\\s*\\(\\s*\\)"
-                                         + "|\\.get\\s*\\(\\s*\\d+\\s*\\)"
-                                         + "|\\.findFirst\\s*\\(\\s*\\)\\s*\\.get\\s*\\(\\s*\\)"
-                                         + "|\\.findAny\\s*\\(\\s*\\)\\s*\\.get\\s*\\(\\s*\\)"
-                                         + "|\\bOptional\\s*\\.\\s*\\w+\\s*\\([^;{}]*\\)\\s*\\.get\\s*\\(\\s*\\)"
-                                         + "|\\.orElseThrow\\s*\\("
-                                         + "|\\.iterator\\s*\\(\\s*\\)\\s*\\.next\\s*\\(\\s*\\)");
+                                        + "|\\.getFirst\\s*\\(\\s*\\)"
+                                        + "|\\.getLast\\s*\\(\\s*\\)"
+                                        + "|\\.get\\s*\\(\\s*\\d+\\s*\\)"
+                                        + "|\\.findFirst\\s*\\(\\s*\\)\\s*\\.get\\s*\\(\\s*\\)"
+                                        + "|\\.findAny\\s*\\(\\s*\\)\\s*\\.get\\s*\\(\\s*\\)"
+                                        + "|\\bOptional\\s*\\.\\s*\\w+\\s*\\([^;{}]*\\)\\s*\\.get\\s*\\(\\s*\\)"
+                                        + "|\\.orElseThrow\\s*\\("
+                                        + "|\\.iterator\\s*\\(\\s*\\)\\s*\\.next\\s*\\(\\s*\\)");
 
     /// Container partial accessors that take no argument, so a method REFERENCE to them (`List::getFirst`) is as partial as the
     /// lambda `xs -> xs.getFirst()`. Shared by JBCT-TOT-02 (flags the reference by name) and JBCT-STY-05 (must not suggest
@@ -121,7 +120,8 @@ public sealed interface MapperSafety permits MapperSafety.unused {
     Pattern COMMENT = Pattern.compile("//[^\\n]*|/\\*.*?\\*/", Pattern.DOTALL);
 
     /// A string literal or a comment, whichever starts first: lets one scan tell the two apart.
-    Pattern STRING_OR_COMMENT = Pattern.compile(STRING_LITERAL.pattern() + "|" + COMMENT.pattern(), Pattern.DOTALL);
+    Pattern STRING_OR_COMMENT = Pattern.compile(STRING_LITERAL.pattern() + "|" + COMMENT.pattern(),
+                                                Pattern.DOTALL);
 
     /// True when the given code fragment contains a partial operation.
     ///
@@ -129,8 +129,7 @@ public sealed interface MapperSafety permits MapperSafety.unused {
     /// string to spaces would turn `get("key")` into `get(   )` and false-match the empty-parens
     /// shape, so string content is filled with `#` — present but non-empty and non-numeric.
     static boolean containsPartialOperation(String code) {
-        return PARTIAL_OP.matcher(maskForOps(code))
-                         .find();
+        return PARTIAL_OP.matcher(maskForOps(code)).find();
     }
 
     /// True when the given chain fragment is a `Stream` pipeline (carries a collector / source
@@ -141,8 +140,7 @@ public sealed interface MapperSafety permits MapperSafety.unused {
     static boolean isStreamPipeline(String enclosing) {
         var code = blankNonCode(enclosing);
 
-        return STREAM_MARKERS.stream()
-                             .anyMatch(code::contains);
+        return STREAM_MARKERS.stream().anyMatch(code::contains);
     }
 
     /// Name of the call whose argument list directly encloses the offset `start` in `source`,

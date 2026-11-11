@@ -43,7 +43,8 @@ public class CstPartialOperationMapperRule implements CstLintRule {
             return Stream.empty();
         }
 
-        return MapperSafety.enclosingCallName(source, lambda.spanStart())
+        return MapperSafety.enclosingCallName(source,
+                                              lambda.spanStart())
                            .filter(MapperSafety.MAPPER_METHODS::contains)
                            .filter(callName -> !streamExempt(callName, root, lambda))
                            .map(callName -> createDiagnostic(lambda, ctx))
@@ -51,7 +52,8 @@ public class CstPartialOperationMapperRule implements CstLintRule {
     }
 
     private boolean streamExempt(String callName, Cursor root, Cursor lambda) {
-        return MapperSafety.STREAM_SHARED.contains(callName) && MapperSafety.isStreamPipeline(enclosingChain(root, lambda));
+        return MapperSafety.STREAM_SHARED.contains(callName) && MapperSafety.isStreamPipeline(enclosingChain(root,
+                                                                                                             lambda));
     }
 
     /// Lambda-free chain spine of the nearest enclosing statement, falling back to the enclosing
@@ -62,8 +64,8 @@ public class CstPartialOperationMapperRule implements CstLintRule {
     /// Empty string when neither ancestor exists (never exempt).
     private String enclosingChain(Cursor root, Cursor lambda) {
         return findAncestor(root, lambda, RuleKind.BLOCK_STMT).orElse(enclosingMethodMember(root, lambda))
-                             .map(this::chainSpine)
-                             .or("");
+                           .map(this::chainSpine)
+                           .or("");
     }
 
     private String chainSpine(Cursor scope) {
