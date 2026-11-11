@@ -10,6 +10,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 
 import org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
@@ -23,6 +24,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// #2834: the open set of the leader-local warnings is a committed KV mirror (`FsmWarningKey`), reconciled by one WARNINGS transaction per
 /// drain. Scenario: an unparsable placement opens `invalid-placement`; fixing it closes it.
 class WarningsPersistenceTest {
+    private static final LeaderValue LEADER = new LeaderValue(FsmHarness.SELF, 1L);
     private static final FsmWarningKey KEY = new FsmWarningKey("invalid-placement", ORDERS.asString());
 
     private static FsmHarness opened() {
