@@ -423,7 +423,7 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
 
         /// The serving node's bounds, or none when it held no ring (or the read failed).
         public Option<VisibleBounds> bounds() {
-            return VisibleBounds.visibleBounds(earliestRetained, visibleHead);
+            return VisibleBounds.decodeWire(earliestRetained, visibleHead);
         }
     }
 
