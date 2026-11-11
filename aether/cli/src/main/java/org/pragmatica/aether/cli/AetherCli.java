@@ -993,7 +993,9 @@ public class AetherCli implements Runnable {
 
                 return OutputFormatter.printAction(response,
                                                    nodesParent.parent.outputOptions(),
-                                                   "acknowledge node " + nodeId + " role " + role.trim().toUpperCase(Locale.ROOT));
+                                                   "acknowledge node " + nodeId
+                                                  + " role " + role.trim()
+                                                                   .toUpperCase(Locale.ROOT));
             }
         }
 

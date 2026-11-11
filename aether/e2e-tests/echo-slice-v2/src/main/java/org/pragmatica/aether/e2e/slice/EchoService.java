@@ -71,7 +71,10 @@ public interface EchoService {
 
         @SuppressWarnings("JBCT-UTIL-02")
         private static Result<String> parseOperation(String operation) {
-            if (Option.option(operation).map(txt -> txt.toLowerCase(Locale.ROOT)).filter(VALID_OPERATIONS::contains).isEmpty()) {
+            if (Option.option(operation)
+                      .map(txt -> txt.toLowerCase(Locale.ROOT))
+                      .filter(VALID_OPERATIONS::contains)
+                      .isEmpty()) {
                 return INVALID_OPERATION.apply(operation).result();
             }
 

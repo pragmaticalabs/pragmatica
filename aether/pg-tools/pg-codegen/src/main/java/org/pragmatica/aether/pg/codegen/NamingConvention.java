@@ -5,6 +5,7 @@ package org.pragmatica.aether.pg.codegen;
 
 import java.util.Locale;
 
+
 public final class NamingConvention {
     private NamingConvention() {}
 

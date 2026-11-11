@@ -468,7 +468,8 @@ public final class NettyHttpOperations implements HttpOperations, AsyncCloseable
 
             for (var entry : response.headers()) {
                 headerMap.computeIfAbsent(entry.getKey().toLowerCase(Locale.ROOT),
-                                          _ -> new ArrayList<>()).add(entry.getValue());
+                                          _ -> new ArrayList<>())
+                         .add(entry.getValue());
             }
 
             return headerMap;

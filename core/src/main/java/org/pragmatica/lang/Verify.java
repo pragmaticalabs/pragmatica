@@ -457,8 +457,7 @@ public sealed interface Verify {
     ///
     /// @return success with the value if present and valid, failure with `cause` if absent or present and invalid
     static <T> Result<T> ensureSome(Option<T> value, Predicate<T> predicate, Cause cause) {
-        return value.fold(cause::result,
-                          v -> ensure(v, predicate, cause));
+        return value.fold(cause::result, v -> ensure(v, predicate, cause));
     }
 
     /// Requires an optional value to be present and to satisfy a predicate, with a separate cause for a
@@ -476,8 +475,7 @@ public sealed interface Verify {
                                     Predicate<T> predicate,
                                     Cause absent,
                                     Fn1<? extends Cause, ? super T> causeProvider) {
-        return value.fold(absent::result,
-                          v -> ensure(v, predicate, causeProvider));
+        return value.fold(absent::result, v -> ensure(v, predicate, causeProvider));
     }
 
     /// Requires an optional value to be present and to satisfy a binary predicate.
@@ -491,8 +489,7 @@ public sealed interface Verify {
     ///
     /// @return success with the value if present and valid, failure with `cause` if absent or present and invalid
     static <T, P1> Result<T> ensureSome(Option<T> value, Fn2<Boolean, T, P1> predicate, P1 param1, Cause cause) {
-        return value.fold(cause::result,
-                          v -> ensure(v, predicate, param1, cause));
+        return value.fold(cause::result, v -> ensure(v, predicate, param1, cause));
     }
 
     /// Requires an optional value to be present and to satisfy a binary predicate, with a separate cause for
@@ -513,8 +510,7 @@ public sealed interface Verify {
                                         P1 param1,
                                         Cause absent,
                                         Fn1<? extends Cause, ? super T> causeProvider) {
-        return value.fold(absent::result,
-                          v -> ensure(v, predicate, param1, causeProvider));
+        return value.fold(absent::result, v -> ensure(v, predicate, param1, causeProvider));
     }
 
     /// Requires an optional value to be present and to satisfy a ternary predicate.
@@ -534,8 +530,7 @@ public sealed interface Verify {
                                             P1 param1,
                                             P2 param2,
                                             Cause cause) {
-        return value.fold(cause::result,
-                          v -> ensure(v, predicate, param1, param2, cause));
+        return value.fold(cause::result, v -> ensure(v, predicate, param1, param2, cause));
     }
 
     /// Requires an optional value to be present and to satisfy a ternary predicate, with a separate cause
@@ -559,8 +554,7 @@ public sealed interface Verify {
                                             P2 param2,
                                             Cause absent,
                                             Fn1<? extends Cause, ? super T> causeProvider) {
-        return value.fold(absent::result,
-                          v -> ensure(v, predicate, param1, param2, causeProvider));
+        return value.fold(absent::result, v -> ensure(v, predicate, param1, param2, causeProvider));
     }
 
     /// Requires an optional value to be absent. Use it for a field that must not be supplied in an operation.
@@ -571,8 +565,7 @@ public sealed interface Verify {
     ///
     /// @return success with `Unit` if absent, failure with `cause` if present
     static <T> Result<Unit> ensureNone(Option<T> value, Cause cause) {
-        return value.fold(Result::unitResult,
-                          _ -> cause.result());
+        return value.fold(Result::unitResult, _ -> cause.result());
     }
 
     /// Requires an optional value to be absent, building the failure from the unexpected value.

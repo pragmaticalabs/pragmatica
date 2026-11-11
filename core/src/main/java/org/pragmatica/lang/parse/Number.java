@@ -152,13 +152,15 @@ public sealed interface Number {
     }
 
     private static Result<Long> strictLong(String s, Fn1<? extends Cause, ? super String> cause) {
-        return Verify.ensure(s, Number::isAsciiDigits, cause)
-                     .flatMap(digits -> Result.lift1(_ -> cause.apply(digits), Long::parseLong, digits));
+        return Verify.ensure(s, Number::isAsciiDigits, cause).flatMap(digits -> Result.lift1(_ -> cause.apply(digits),
+                                                                                             Long::parseLong,
+                                                                                             digits));
     }
 
     private static Result<Integer> strictInt(String s, Fn1<? extends Cause, ? super String> cause) {
-        return Verify.ensure(s, Number::isAsciiDigits, cause)
-                     .flatMap(digits -> Result.lift1(_ -> cause.apply(digits), Integer::parseInt, digits));
+        return Verify.ensure(s, Number::isAsciiDigits, cause).flatMap(digits -> Result.lift1(_ -> cause.apply(digits),
+                                                                                             Integer::parseInt,
+                                                                                             digits));
     }
 
     private static boolean isAsciiDigits(String s) {
