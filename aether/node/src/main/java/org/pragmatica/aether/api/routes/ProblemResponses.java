@@ -74,7 +74,7 @@ public final class ProblemResponses {
 
     /// The problem body for a cause: the RFC 9457 members, plus the `code` extension member when the cause is a
     /// [TypedRefusal] (#686), so a client classifies the refusal by its code rather than by the status alone.
-    static Result<String> problemJson(Cause cause,
+    private static Result<String> problemJson(Cause cause,
                                       HttpStatus status,
                                       String detail,
                                       String instance,

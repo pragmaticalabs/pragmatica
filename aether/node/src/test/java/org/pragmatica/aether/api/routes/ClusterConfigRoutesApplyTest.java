@@ -10,15 +10,20 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.BiConsumer;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import org.pragmatica.aether.api.ManagementApiResponses.ApplyConfigRequest;
+import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.api.ManagementApiResponses.ApplyConfigResponse;
 import org.pragmatica.aether.config.cluster.ApplyRoute;
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
 import org.pragmatica.aether.config.cluster.DiffAction;
+import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.aether.deployment.cluster.ClusterConfigApplier;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.node.ManageableNode;
@@ -30,11 +35,15 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopologyEntry;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.http.ContentType;
 import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.routing.JsonCodecAdapter;
+import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.type.TypeToken;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -306,7 +315,10 @@ class ClusterConfigRoutesApplyTest {
             count = 1
             runtime = "node"
             """;
+        private static final String EDGE_WORKER_ZERO = EDGE_WORKER.replace("count = 1", "count = 0");
         private static final String WITH_EDGE_CORE_TOML = OPERATOR_TOML + EDGE_SOURCE + EDGE_CORE;
+        private static final String WITH_EDGE_CORE_AND_IDLE_WORKER_TOML = WITH_EDGE_CORE_TOML + EDGE_WORKER_ZERO;
+        private static final String WITH_EDGE_IDLE_WORKER_TOML = OPERATOR_TOML + EDGE_SOURCE + EDGE_WORKER_ZERO;
         private static final String WITH_EDGE_WORKER_TOML = OPERATOR_TOML + EDGE_SOURCE + EDGE_WORKER;
         private static final long STORED_VERSION = 5;
 
@@ -381,6 +393,79 @@ class ClusterConfigRoutesApplyTest {
         }
 
         @Test
+        void applyRoute_workerAddRole_refused() {
+            var store = storeWith(committed(CORE_ONLY_TOML));
+
+            var cause = refusedWith(routed(store, AUTO_HEAL_OFF, OPERATOR_TOML, ApplyRoute.APPLY), ClusterConfigError.RouteMismatch.class);
+
+            assertThat(cause.required()).isEqualTo(ApplyRoute.LEADER);
+            assertThat(cause.action()).isInstanceOf(DiffAction.AddRole.class);
+            assertUnchanged(store);
+        }
+
+        @Test
+        void leaderRoute_coreScaleDown_autoHealOff_refused409() {
+            var store = storeWith(committed(CORE_SCALED_TOML));
+
+            var cause = refusedWith(routed(store, AUTO_HEAL_OFF, OPERATOR_TOML, ApplyRoute.LEADER), ClusterConfigError.RouteMismatch.class);
+
+            assertThat(cause.required()).isEqualTo(ApplyRoute.APPLY);
+            assertThat(cause.action()).isInstanceOf(DiffAction.ScaleDown.class);
+            assertUnchanged(store);
+        }
+
+        @Test
+        void leaderRoute_coreRemoveRole_autoHealOff_refused() {
+            var store = storeWith(committed(WITH_EDGE_CORE_AND_IDLE_WORKER_TOML));
+
+            var cause = refusedWith(routed(store, AUTO_HEAL_OFF, WITH_EDGE_IDLE_WORKER_TOML, ApplyRoute.LEADER),
+                                    ClusterConfigError.RouteMismatch.class);
+
+            assertThat(cause.required()).as("removing live core nodes with auto-heal off is apply's").isEqualTo(ApplyRoute.APPLY);
+            assertThat(cause.action()).isInstanceOf(DiffAction.RemoveRole.class);
+            assertUnchanged(store);
+        }
+
+        @Test
+        void coreRemoveRole_zeroCount_admittedOnEitherRoute() {
+            var store = storeWith(committed(WITH_EDGE_CORE_AND_IDLE_WORKER_TOML.replace("count = 2\nruntime = \"node\"\n\n[source.edge.worker]",
+                                                                                        "count = 0\nruntime = \"node\"\n\n[source.edge.worker]")));
+
+            var result = routed(store, AUTO_HEAL_OFF, WITH_EDGE_IDLE_WORKER_TOML, ApplyRoute.LEADER);
+
+            assertThat(result.isSuccess()).as("a zero-count core removal changes no pool: %s", result).isTrue();
+        }
+
+        @Test
+        void leaderRoute_coreRemoveSource_autoHealOff_refused() {
+            var store = storeWith(committed(WITH_EDGE_CORE_TOML));
+
+            var cause = refusedWith(routed(store, AUTO_HEAL_OFF, OPERATOR_TOML, ApplyRoute.LEADER), ClusterConfigError.RouteMismatch.class);
+
+            assertThat(cause.required()).isEqualTo(ApplyRoute.APPLY);
+            assertThat(cause.action()).isInstanceOf(DiffAction.RemoveSource.class);
+            assertUnchanged(store);
+        }
+
+        @Test
+        void coreAddRole_zeroCount_autoHealOn_accepted() {
+            var store = storeWith(committed(OPERATOR_TOML));
+
+            var result = routed(store, AUTO_HEAL_ON, OPERATOR_TOML + EDGE_SOURCE + EDGE_CORE.replace("count = 2", "count = 0"), ApplyRoute.LEADER);
+
+            assertThat(result.isSuccess()).as("a core role declared with no nodes has nothing to fill: %s", result).isTrue();
+        }
+
+        @Test
+        void coreScaleUp_multiSource_autoHealOff_acceptedOnApply() {
+            var store = storeWith(committed(WITH_EDGE_CORE_TOML));
+
+            var result = routed(store, AUTO_HEAL_OFF, WITH_EDGE_CORE_TOML.replace("count = 3", "count = 5"), ApplyRoute.APPLY);
+
+            assertThat(result.isSuccess()).as("with auto-heal off apply creates the cores, whatever the source count: %s", result).isTrue();
+        }
+
+        @Test
         void noRoute_structuralStillRefused() {
             var store = storeWith(committed(CORE_ONLY_TOML));
 
@@ -394,9 +479,14 @@ class ClusterConfigRoutesApplyTest {
         void wildcardVersionWithRoute_refused() {
             var store = storeWith(committed(OPERATOR_TOML));
 
-            var result = applyWith(store, AUTO_HEAL_ON, NO_EXPLICIT_COMMUNITIES, new ApplyConfigRequest(SCALED_TOML, 0, Option.some(ApplyRoute.LEADER)));
+            var scale = applyWith(store, AUTO_HEAL_ON, NO_EXPLICIT_COMMUNITIES, new ApplyConfigRequest(SCALED_TOML, 0, Option.some(ApplyRoute.LEADER)));
+            var identical = applyWith(store,
+                                      AUTO_HEAL_ON,
+                                      NO_EXPLICIT_COMMUNITIES,
+                                      new ApplyConfigRequest(OPERATOR_TOML, 0, Option.some(ApplyRoute.LEADER)));
 
-            refusedWith(result, ClusterConfigError.UnfencedOverwrite.class);
+            refusedWith(scale, ClusterConfigError.UnfencedOverwrite.class);
+            refusedWith(identical, ClusterConfigError.UnfencedOverwrite.class);
             assertUnchanged(store);
         }
 
@@ -418,6 +508,26 @@ class ClusterConfigRoutesApplyTest {
 
             refusedWith(routed(store, AUTO_HEAL_ON, CORE_ONLY_TOML.replace("eu-central", "eu-west"), ApplyRoute.LEADER),
                         ClusterConfigError.SourceReplaceRefused.class);
+            assertUnchanged(store);
+        }
+
+        @Test
+        void sourceFieldChange_coreOnlySource_autoHealOff_leaderClaim_refused() {
+            var store = storeWith(committed(CORE_ONLY_TOML));
+
+            var cause = refusedWith(routed(store, AUTO_HEAL_OFF, CORE_ONLY_TOML.replace("eu-central", "eu-west"), ApplyRoute.LEADER),
+                                    ClusterConfigError.RouteMismatch.class);
+
+            assertThat(cause.required()).isEqualTo(ApplyRoute.APPLY);
+            assertUnchanged(store);
+        }
+
+        /// The source gains a worker in the same plan: the replace would reprovision it too, so the desired config counts.
+        @Test
+        void sourceFieldChange_workerAddedInSamePlan_refused() {
+            var store = storeWith(committed(CORE_ONLY_TOML));
+
+            refusedWith(routed(store, AUTO_HEAL_OFF, REGION_CHANGED_TOML, ApplyRoute.APPLY), ClusterConfigError.SourceReplaceRefused.class);
             assertUnchanged(store);
         }
 
@@ -514,7 +624,7 @@ class ClusterConfigRoutesApplyTest {
         void versionChangeWithRoute_staysRefused() {
             var store = storeWith(committed(OPERATOR_TOML));
 
-            refusedWith(routed(store, AUTO_HEAL_ON, OPERATOR_TOML.replace("version = \"1.0.0\"", "version = \"1.1.0\""), ApplyRoute.LEADER),
+            refusedWith(routed(store, AUTO_HEAL_ON, OPERATOR_TOML.replace("\nversion = \"1.0.0\"", "\nversion = \"1.1.0\""), ApplyRoute.LEADER),
                         ClusterConfigError.VersionChangeViaApply.class);
             assertUnchanged(store);
         }
@@ -524,8 +634,8 @@ class ClusterConfigRoutesApplyTest {
         /// that classifies by code keeps them retryable.
         @Test
         void everyRoutePathRefusal_carriesCode() {
-            var scale = new DiffAction.ScaleUp(org.pragmatica.aether.environment.SourceName.sourceNameOrDefault("hetzner"),
-                                               org.pragmatica.aether.config.cluster.NodeRole.CORE,
+            var scale = new DiffAction.ScaleUp(SourceName.sourceNameOrDefault("hetzner"),
+                                               NodeRole.CORE,
                                                3,
                                                5);
             var refusals = Map.<Cause, String> ofEntries(Map.entry(new ClusterConfigError.ImmutableFieldChange("cluster.name"), "ImmutableFieldChange"),
@@ -546,10 +656,10 @@ class ClusterConfigRoutesApplyTest {
 
             refusals.forEach((cause, code) -> assertThat(problemBody(cause)).as("code of %s", cause.getClass().getSimpleName())
                                                                             .contains("\"code\":\"" + code + "\""));
-            assertThat(problemBody(new org.pragmatica.aether.api.ManagementServerError.Conflict("Current core leader required for config update")))
+            assertThat(problemBody(new ManagementServerError.Conflict("Current core leader required for config update")))
                 .as("the transient leader-required 409 stays untyped")
                 .doesNotContain("\"code\"");
-            assertThat(problemBody(new org.pragmatica.aether.api.ManagementServerError.ServiceUnavailable("election")))
+            assertThat(problemBody(new ManagementServerError.ServiceUnavailable("election")))
                 .as("the transient election 503 stays untyped")
                 .doesNotContain("\"code\"");
         }
@@ -569,17 +679,30 @@ class ClusterConfigRoutesApplyTest {
         }
 
         private static ApplyConfigRequest decode(String json) {
-            return org.pragmatica.http.routing.JsonCodecAdapter.defaultCodec()
-                                                               .deserialize(json.getBytes(java.nio.charset.StandardCharsets.UTF_8),
-                                                                            new org.pragmatica.lang.type.TypeToken<ApplyConfigRequest>() {})
+            return JsonCodecAdapter.defaultCodec()
+                                                               .deserialize(json.getBytes(StandardCharsets.UTF_8),
+                                                                            new TypeToken<ApplyConfigRequest>() {})
                                                                .onFailure(cause -> fail(cause.message()))
                                                                .unwrap();
         }
 
+        /// The body exactly as the management router writes a route failure.
         private static String problemBody(Cause cause) {
-            return ProblemResponses.problemJson(cause, ProblemResponses.resolveStatus(cause), cause.message(), "/api/v1/cluster/config", "req-1")
-                                   .onFailure(failure -> fail(failure.message()))
-                                   .unwrap();
+            var body = new AtomicReference<String>();
+
+            ProblemResponses.writeProblem(new ResponseWriter() {
+                @Override
+                public void write(HttpStatus status, byte[] bytes, ContentType contentType) {
+                    body.set(new String(bytes, StandardCharsets.UTF_8));
+                }
+
+                @Override
+                public ResponseWriter header(String name, String value) {
+                    return this;
+                }
+            }, cause, "/api/v1/cluster/config", "req-1");
+
+            return body.get();
         }
 
         private static ClusterConfigValue committed(String toml) {
