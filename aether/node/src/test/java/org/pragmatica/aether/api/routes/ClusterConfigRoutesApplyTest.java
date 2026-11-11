@@ -488,6 +488,18 @@ class ClusterConfigRoutesApplyTest {
         }
 
         @Test
+        void countOneCoreAddRole_autoHealOff_leaderClaim_stillRoutedToApply() {
+            var store = storeWith(committed(OPERATOR_TOML));
+
+            var cause = refusedWith(routed(store, AUTO_HEAL_OFF, OPERATOR_TOML + EDGE_SOURCE + EDGE_CORE.replace("count = 2", "count = 1"), ApplyRoute.LEADER),
+                                    ClusterConfigError.RouteMismatch.class);
+
+            assertThat(cause.required()).isEqualTo(ApplyRoute.APPLY);
+            assertThat(cause.action()).isInstanceOf(DiffAction.AddRole.class);
+            assertUnchanged(store);
+        }
+
+        @Test
         void zeroCoreAddRoleOnSecondSource_withCoreScaleUp_autoHealOn_refusedByDesiredCoreSources() {
             var store = storeWith(committed(OPERATOR_TOML));
 
