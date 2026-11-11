@@ -143,7 +143,7 @@ class SlObservedTest {
             assertThat(h.warns("stray-instance")).hasSize(1);
         }
 
-        /// #2834: once per condemned instance. Red when: a later reconcile pass condemns the same stray again and raises `stray-instance` again.
+        /// #2834: once per condemned instance. Red when: the same stray is condemned again after its goal write was lost and raises `stray-instance` again.
         @Test
         void condemnedStray_reconciledAgain_isReportedOnce() {
             var h = threeCores();
@@ -151,10 +151,11 @@ class SlObservedTest {
             seedTarget(h, ORDERS, 1, 1);
             seedRow(h, CORE_1, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
             seedRow(h, CORE_2, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
+            h.policy = FsmHarness.SettlePolicy.HOLD;
             h.activate();
+            h.settleHeld(h.submitsBesides(ClusterModel.SubmitKind.WARNINGS).getFirst(), new ClusterInput.Settlement.Failed("lost"));
             h.deliver(new ClusterInput.Reconcile());
-            h.deliver(new ClusterInput.Reconcile());
-            assertThat(h.warns("stray-instance")).hasSize(1);
+            assertThat(h.warns("stray-instance")).as("condemned again after the goal write was lost").hasSize(1);
         }
 
         /// D.6 row 20 (know 7cc9e79f61): the condemned row going is both the remediation completing and the subject leaving. Red when:

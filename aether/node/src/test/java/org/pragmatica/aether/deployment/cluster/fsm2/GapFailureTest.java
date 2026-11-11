@@ -8,6 +8,7 @@ import java.util.Set;
 import java.util.Map;
 
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentApplyKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
@@ -67,10 +68,10 @@ class GapFailureTest {
     void exhaustion_repeated_isReportedOncePerEpisode() {
         var h = exhaustedOrders();
 
-        for (var failure = 0; failure < 6; failure++) {
-            node(h, CORE_1, 11L).fails(ORDERS, false);
-            h.drain();
-        }
+        h.seed(new ArtifactJudgmentKey(ORDERS), new ArtifactJudgmentValue(false, Map.of(CORE_1, 5), Map.of(), Set.of()));
+        h.drain();
+        node(h, CORE_1, 11L).fails(ORDERS, false);
+        h.drain();
         assertThat(h.warns("retry-exhausted-unsettled")).as("still one open warning").hasSize(1);
     }
 
