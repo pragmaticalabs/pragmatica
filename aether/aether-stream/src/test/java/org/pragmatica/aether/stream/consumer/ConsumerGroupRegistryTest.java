@@ -178,6 +178,19 @@ class ConsumerGroupRegistryTest {
         }
     }
 
+    @Nested
+    class TombstoneEpochs {
+        @Test
+        void committedEpoch_keepsTheNewestTombstoneEpoch_whateverOrderTheyArrive() {
+            var registry = consumerGroupRegistry();
+
+            registry.onConsumerGroupPut(tombstoneEvent(0, Epoch.epoch(1L, 1L, 7L)));
+            registry.onConsumerGroupPut(tombstoneEvent(1, Epoch.epoch(1L, 1L, 5L)));
+
+            assertThat(registry.committedEpoch(GROUP, STREAM).or(Epoch.ZERO)).isEqualTo(Epoch.epoch(1L, 1L, 7L));
+        }
+    }
+
     private static ValuePut<ConsumerGroupKey, AetherValue> putEvent(String groupId,
                                                                     String streamName,
                                                                     int partition,
