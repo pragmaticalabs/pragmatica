@@ -294,8 +294,9 @@ public interface AbTestManager {
                                                clusterNode::apply,
                                                () -> targetTransaction(test.artifactBase(),
                                                                        current -> variantTarget(current, version)))
-                                       .mapError(cause -> committedStateRefusal(cause, AbTestState.DEPLOYING_VARIANTS))
-                                       .timeout(kvOperationTimeout);
+                                       .timeout(kvOperationTimeout)
+                                       .fold(result -> result.fold(cause -> abandonStart(test, cause),
+                                                                   _ -> Promise.unitPromise()));
             }
 
             /// The one read both A/B lifecycle writers derive from, and the reason they can.
@@ -408,11 +409,13 @@ public interface AbTestManager {
 
                 return test.transitionTo(AbTestState.CONCLUDING)
                            .async()
-                           .flatMap(this::cacheAndPersistTest)
-                           .flatMap(concluded -> promoteWinner(concluded, winningVariant));
+                           .flatMap(concluding -> promoteWinner(concluding, winningVariant));
             }
 
-            /// #2662: a fenced write; a target that is no longer committed is refused, and the test stays `CONCLUDING` (it can be rolled back).
+            /// #2662: a fenced write; a target that is no longer committed is refused. #2964: the fenced write is decided BEFORE the test's
+            /// state is persisted: `CONCLUDING` exists only in memory, on the value this method holds, so a refusal leaves the persisted test
+            /// `ACTIVE` and the same request, repeated, runs the same idempotent write (it derives from the committed target and sets the
+            /// winner's version) and completes. The test is persisted `COMPLETED` only after the write is committed.
             private Promise<AbTestDeployment> promoteWinner(AbTestDeployment test, String winningVariant) {
                 var winnerVersion = test.variantVersions().get(winningVariant);
 
@@ -420,7 +423,6 @@ public interface AbTestManager {
                                                clusterNode::apply,
                                                () -> targetTransaction(test.artifactBase(),
                                                                        current -> concludedTarget(current, winnerVersion)))
-                                       .mapError(cause -> committedStateRefusal(cause, AbTestState.CONCLUDING))
                                        .timeout(kvOperationTimeout)
                                        .flatMap(_ -> persistAndTransition(test, AbTestState.COMPLETED));
             }
@@ -437,13 +439,14 @@ public interface AbTestManager {
 
                 return withOldRouting.transitionTo(AbTestState.ROLLING_BACK)
                                      .async()
-                                     .flatMap(this::cacheAndPersistTest)
                                      .flatMap(this::restoreBaseline);
             }
 
             /// #2662: a fenced write. A target that is not committed, or whose owning blueprint is not, is not restored: writing it would
             /// re-create (or keep alive) the target of a deleted blueprint, and there is nothing left to roll back, so the test still ends.
             /// This holds whether the absence is seen by the first build or by a rebuild after a refused submission.
+            /// #2964: as in [#promoteWinner], `ROLLING_BACK` exists only in memory; the test is persisted `ROLLED_BACK` after the write, so a
+            /// refused write leaves the persisted test as it was and a repeated rollback runs the same idempotent write.
             private Promise<AbTestDeployment> restoreBaseline(AbTestDeployment test) {
                 log.info("Restoring baseline {} for A/B test {}", test.baselineVersion(), test.testId());
 
@@ -452,23 +455,52 @@ public interface AbTestManager {
                                                () -> targetTransaction(test.artifactBase(),
                                                                        current -> concludedTarget(current,
                                                                                                   test.baselineVersion())))
-                                       .mapError(cause -> committedStateRefusal(cause, AbTestState.ROLLING_BACK))
                                        .timeout(kvOperationTimeout)
                                        .replaceResult(result -> result.fold(cause -> nothingToRestore(test, cause),
                                                                             Result::success))
                                        .flatMap(_ -> persistAndTransition(test, AbTestState.ROLLED_BACK));
             }
 
-            /// The three lifecycle writes commit the test's next state BEFORE the fenced write (#2964), so a contended refusal leaves the test in
-            /// `state` and repeating the request is not safe: the refusal is re-labelled without the "retry the request" hint the CLI retries on.
-            /// Every other failure passes through unchanged.
-            private static Cause committedStateRefusal(Cause cause, AbTestState state) {
+            /// #2964: the start persists `DEPLOYING_VARIANTS` BEFORE the fenced write, so that a crash between the two leaves a test an operator
+            /// can roll back (rather than a changed target no test owns). A fence refusal ([SliceTargetFenceError]: the target was NOT written)
+            /// therefore compensates: the test's record is removed and the test forgotten, and the plain refusal (which may say "retry the
+            /// request") is returned; the repeated start finds no active test and creates exactly one. Any other failure (a timeout or a failed
+            /// apply: the write may have committed) is not compensated, and the test stays `DEPLOYING_VARIANTS` for the operator to roll back.
+            private Promise<Unit> abandonStart(AbTestDeployment test, Cause cause) {
                 return switch (cause) {
+                    case SliceTargetFenceError fenceError -> removeTestRecord(test, fenceError);
+                    default -> cause.promise();
+                };
+            }
+
+            /// If the record cannot be removed either (a double fault: the fence refused and consensus then failed), the test stays persisted
+            /// `DEPLOYING_VARIANTS` and the refusal is re-labelled without the retry hint, because a repeated start is then refused as a
+            /// duplicate: the operator must roll the test back first.
+            private Promise<Unit> removeTestRecord(AbTestDeployment test, SliceTargetFenceError refusal) {
+                return clusterNode.<Unit> apply(List.of(removeCommand(test)))
+                                  .timeout(kvOperationTimeout)
+                                  .fold(removed -> removed.fold(_ -> stayDeploying(refusal),
+                                                                _ -> forget(test, refusal)));
+            }
+
+            private Promise<Unit> forget(AbTestDeployment test, SliceTargetFenceError refusal) {
+                tests.remove(test.testId());
+
+                return refusal.promise();
+            }
+
+            private static Promise<Unit> stayDeploying(SliceTargetFenceError refusal) {
+                return switch (refusal) {
                     case SliceTargetFenceError.Contended contended -> new SliceTargetFenceError.ContendedAfterStateChange(contended.write(),
                                                                                                                           contended.submissions(),
-                                                                                                                          state.name());
-                    default -> cause;
+                                                                                                                          AbTestState.DEPLOYING_VARIANTS.name()).promise();
+                    default -> refusal.promise();
                 };
+            }
+
+            @SuppressWarnings("unchecked")
+            private static KVCommand<AetherKey> removeCommand(AbTestDeployment test) {
+                return (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(new AbTestKey(test.testId()));
             }
 
             /// FER (degrade forward): a rollback whose target, or the target's owning blueprint, is no longer committed has nothing to
