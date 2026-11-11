@@ -344,7 +344,6 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     /// Seeds and identity retained from [#announceJoin] for the isolated-and-alone ANNOUNCE ([#announceWhileAlone]).
     private volatile Option<SeedAnnounce> seedAnnounce = none();
-
     /// #501: `true` from [#stop] until the next [#start]. Cancelling [#announceFuture] is not on its
     /// own enough to tie the announce loop's lifetime to [#stop], because two announces can still
     /// escape a stopped protocol: an [#announceJoin] that resolved this protocol before the stop and
@@ -1070,8 +1069,7 @@ public final class SwimProtocol implements SwimMessageHandler {
             return;
         }
 
-        selectIsolationProbeTarget().onPresent(this::sendIsolationPing)
-                                    .onEmpty(this::announceWhileAlone);
+        selectIsolationProbeTarget().onPresent(this::sendIsolationPing).onEmpty(this::announceWhileAlone);
     }
 
     /// #3028 D4b: a latched node whose member map is empty (every peer swept) has no peer left to ping, so it asks ONE
@@ -1087,17 +1085,21 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void scheduleSeedAnnounce(SeedAnnounce target) {
-        var seed = target.seeds()
-                         .get(ThreadLocalRandom.current().nextInt(target.seeds().size()));
-        var delayMs = ThreadLocalRandom.current().nextLong(Math.max(1L, config.period().millis()));
+        var seed = target.seeds().get(ThreadLocalRandom.current().nextInt(target.seeds().size()));
+        var delayMs = ThreadLocalRandom.current().nextLong(Math.max(1L,
+                                                                    config.period().millis()));
 
-        SharedScheduler.schedule(() -> sendSeedAnnounce(target, seed), TimeSpan.timeSpan(delayMs).millis());
+        SharedScheduler.schedule(() -> sendSeedAnnounce(target, seed),
+                                 TimeSpan.timeSpan(delayMs).millis());
     }
 
     private void sendSeedAnnounce(SeedAnnounce target, InetSocketAddress seed) {
         if (!announceStopped.get()) {
             transport.send(seed,
-                           Announce.announce(target.self(), target.clusterName(), selfIncarnation.get(), selfBootToken.get()));
+                           Announce.announce(target.self(),
+                                             target.clusterName(),
+                                             selfIncarnation.get(),
+                                             selfBootToken.get()));
         }
     }
 
@@ -4015,11 +4017,11 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     /// Test-only: whether the self-isolation latch (P2) is currently set.
-void joinAcknowledgedForTest() {
+    void joinAcknowledgedForTest() {
         joinAckReceived = true;
     }
 
-        boolean selfIsolatedForTest() {
+    boolean selfIsolatedForTest() {
         return selfIsolated;
     }
 
