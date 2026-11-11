@@ -101,6 +101,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// tombstone immediately. The TTL exists purely to reclaim map entries for ids
     /// that never come back.
     private static final long TOMBSTONE_TTL_MULTIPLIER = 10L;
+    /// Bound of [#deathRecords]: one record of two longs per dead id, and ids that are never reaped (DOCKER, SSH)
+    /// accumulate. Past the cap the oldest record is evicted with a warning; an evicted id falls back to the
+    /// tombstone-only gate. `[guess: cap]` (#3028 design §3.1).
+    private static final int DEATH_RECORD_CAP = 4096;
     /// Sequence of the unsolicited `Ack`s that answer an ANNOUNCE with the membership view (#1783).
     /// The probe sequence counter starts at 1, so no pending probe ever matches it.
     private static final long SYNC_ACK_SEQUENCE = 0L;
@@ -411,6 +415,16 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// The tombstone is cleared by an authoritative self-ANNOUNCE (partition-heal) and
     /// superseded by a strictly higher incarnation (genuine restart/refutation).
     private final Map<NodeId, Tombstone> tombstones = new ConcurrentHashMap<>();
+    /// Death records (#3028 design §3.1): per dead id, the FAULTY incarnation and the boot token this node held for it,
+    /// both snapshotted at the FAULTY edge ([#emitFaultyEdgePair]) and never re-read live. Unlike [#tombstones] a
+    /// record is NOT bounded by the TTL sweep: it is cleared only by a refutation at a higher incarnation, by evidence
+    /// from a different process (a different non-zero token), or by the id's retirement ([#onRetired]). It refuses a
+    /// stale aliveness claim whatever the tombstone's age and whoever relays it ([#blockedByDeathRecord]). A record
+    /// with token `0` (the token was unknown at the edge) could never produce a notice, so it would gate only while the
+    /// id's tombstone lives, which is exactly the tombstone gate: such a record is therefore not written at all
+    /// ([#recordDeath]). Memory only: a restarted holder falls back to the tombstone gate. Capped at
+    /// [#DEATH_RECORD_CAP].
+    private final Map<NodeId, DeathRecord> deathRecords = new ConcurrentHashMap<>();
     /// Per-peer "ever observed HEALTHY at least once" flag. Cold-boot suppression:
     /// a never-healthy peer is emitted as `UnknownObserved` instead of `FaultyObserved`
     /// (spec §4.2 "Behavior contract: Cold-boot mode").
@@ -515,6 +529,17 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// is the incarnation at which the id was tombstoned; a strictly-higher incoming
     /// incarnation supersedes it. `createdAtMs` bounds map growth via the TTL sweep.
     private record Tombstone(long incarnation, long createdAtMs) {}
+
+    /// A [#deathRecords] entry: the FAULTY incarnation and the non-zero boot token snapshotted at the FAULTY edge.
+    /// `createdAtMs` orders eviction at the cap.
+    private record DeathRecord(long incarnation, long bootToken, long createdAtMs) {
+        /// A claim token of `0` is unknown (third-party gossip, a stray Ack), never different, so only the
+        /// incarnation is compared; a non-zero token equal to the record's is the same process. A non-zero claim
+        /// token that differs is another process and is not covered.
+        boolean covers(long claimToken) {
+            return claimToken == 0L || claimToken == bootToken;
+        }
+    }
 
     /// An ANNOUNCE held until its source address answers a probe.
     private record AddressCandidate(Announce announce, InetSocketAddress source, long issuedAt) {
@@ -1330,6 +1355,62 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// still supersedes and re-admits (genuine restart / partition-heal).
     private boolean blockedByTombstone(NodeId id, long incomingIncarnation) {
         return isTombstoned(id, incomingIncarnation);
+    }
+
+    /// Admission gate of the death record (#3028 design §3.1, M1 (b)): refuse an aliveness claim `Alive(id, i)`
+    /// carrying `claimToken` when a record exists, `record.incarnation >= i` and the record covers the token
+    /// ([DeathRecord#covers]), whatever the tombstone's age. Any claim the record does not refuse clears it: a higher
+    /// incarnation is a refutation (clear (a)), a different non-zero token is a new process (clear (b)).
+    private boolean blockedByDeathRecord(NodeId id, long claimIncarnation, long claimToken) {
+        return option(deathRecords.get(id)).map(record -> refuseOrClear(id, record, claimIncarnation, claimToken))
+                     .or(false);
+    }
+
+    private boolean refuseOrClear(NodeId id, DeathRecord record, long claimIncarnation, long claimToken) {
+        if (claimIncarnation <= record.incarnation() && record.covers(claimToken)) {
+            return true;
+        }
+
+        deathRecords.remove(id, record);
+
+        return false;
+    }
+
+    /// Write the death record at the FAULTY edge, snapshotting the boot token this node holds for `peer` now; it is
+    /// never re-read live (M3). No record when the token is unknown (`0`): such a record could never notify, and
+    /// would gate exactly as the tombstone does (D1b), so a token learned after the edge never turns into a
+    /// permanent refusal. A retired id gets none: retirement is itself a clear.
+    @Contract
+    private void recordDeath(NodeId peer, long incarnation) {
+        var token = bootTokenOf(peer);
+
+        if (token == 0L || isRetired(peer)) {
+            return;
+        }
+
+        putDeathRecord(peer, new DeathRecord(incarnation, token, System.currentTimeMillis()));
+    }
+
+    @Contract
+    private void putDeathRecord(NodeId peer, DeathRecord record) {
+        deathRecords.put(peer, record);
+
+        if (deathRecords.size() > DEATH_RECORD_CAP) {
+            deathRecords.entrySet()
+                        .stream()
+                        .min(Comparator.comparingLong(entry -> entry.getValue()
+                                                                    .createdAtMs()))
+                        .ifPresent(this::evictDeathRecord);
+        }
+    }
+
+    @Contract
+    private void evictDeathRecord(Map.Entry<NodeId, DeathRecord> eldest) {
+        deathRecords.remove(eldest.getKey(), eldest.getValue());
+        LOG.warn("SWIM death-record cap {} reached: evicted the record of {} (incarnation {}); that id falls back to the tombstone gate",
+                 DEATH_RECORD_CAP,
+                 eldest.getKey().id(),
+                 eldest.getValue().incarnation());
     }
 
     /// Wave-6 H8 fix: residency is measured from the FAULTY-edge stamp
@@ -2404,8 +2485,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// ALIVE. Like the gossip-SUSPECT-of-unknown path ([#applyNewSuspectMember]), an unconfirmed
     /// member is born OBSERVED; an unknown ALIVE/FAULTY gossip is still honoured in its gossiped state.
     private void introduceAnnouncedObserved(Announce announce, InetSocketAddress probeAddress) {
-        if (blockedByTombstone(announce.nodeInfo().id(),
-                               announce.incarnation())) {
+        if (blockedByDeathRecord(announce.nodeInfo().id(),
+                                 announce.incarnation(),
+                                 announce.bootToken()) || blockedByTombstone(announce.nodeInfo().id(),
+                                                                             announce.incarnation())) {
             return;
         }
 
@@ -2616,6 +2699,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// the conflicting token, the resident process is treated as dead — FAULTY now, unless it already
     /// is — so a same-address new process answering probes can never keep the old member alive.
     private void onRetired(NodeId peer) {
+        deathRecords.remove(peer);
         option(members.get(peer)).onPresent(this::declareRetiredDead);
     }
 
@@ -2769,7 +2853,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// a real return arrives via self-ANNOUNCE (clears the tombstone) or a higher
     /// incarnation (supersedes). A non-tombstoned member is promoted normally.
     private void markAliveIfNeeded(NodeId nodeId) {
-        if (blockedByTombstone(nodeId, 0L)) {
+        if (blockedByDeathRecord(nodeId, 0L, 0L) || blockedByTombstone(nodeId, 0L)) {
             return;
         }
 
@@ -2837,7 +2921,7 @@ public final class SwimProtocol implements SwimMessageHandler {
             // higher incarnation supersedes the tombstone (genuine restart). Gated at the
             // call site (not inside `applyNewMember`) so the authoritative self-ANNOUNCE
             // re-add path in `handleAnnounce` stays open.
-            if (isTombstoned(update.nodeId(), update.incarnation())) {
+            if (isAlivenessClaimBlocked(update) || isTombstoned(update.nodeId(), update.incarnation())) {
                 return;
             }
 
@@ -2902,6 +2986,14 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                           selfAddress,
                                                           selfBootToken.get(),
                                                           selfLabels));
+    }
+
+    /// The death-record gate for gossip introducing an unknown id: a FAULTY update is not an aliveness claim, so it
+    /// neither meets the gate nor clears a record.
+    private boolean isAlivenessClaimBlocked(MembershipUpdate update) {
+        return update.state() != MemberState.FAULTY && blockedByDeathRecord(update.nodeId(),
+                                                                            update.incarnation(),
+                                                                            update.bootToken());
     }
 
     private void applyNewMember(MembershipUpdate update) {
@@ -3062,7 +3154,10 @@ public final class SwimProtocol implements SwimMessageHandler {
         // to FAULTY); a strictly-higher incarnation supersedes the tombstone and is
         // allowed (genuine restart). Self-ANNOUNCE clears the tombstone via a separate
         // path (`handleAnnounce`) and is unaffected.
-        if (isReAdmitTowardAlive(existing, update) && blockedByTombstone(update.nodeId(), update.incarnation())) {
+        if (isReAdmitTowardAlive(existing, update) && (blockedByDeathRecord(update.nodeId(),
+                                                                            update.incarnation(),
+                                                                            update.bootToken())
+                                                       || blockedByTombstone(update.nodeId(), update.incarnation()))) {
             return;
         }
         // Labels are identity, not state: a resident member that has none yet adopts the labels this
@@ -3533,6 +3628,7 @@ public final class SwimProtocol implements SwimMessageHandler {
 
         deliverObservation(new SwimObservation.FaultyObserved(peer, incarnation));
         deliverObservation(new SwimObservation.DepartedObserved(peer, incarnation));
+        recordDeath(peer, incarnation);
 
         return SwimHealth.FAULTY;
     }
@@ -3749,6 +3845,22 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// anti-oscillation regression tests to assert tombstone set/clear/supersede.
     boolean tombstonedForTest(NodeId peer) {
         return tombstones.containsKey(peer);
+    }
+
+    /// Test-only: the death record held for `peer`, as `{incarnation, bootToken}`.
+    Option<long[]> deathRecordForTest(NodeId peer) {
+        return option(deathRecords.get(peer)).map(record -> new long[]{record.incarnation(), record.bootToken()});
+    }
+
+    /// Test-only: write a death record through the capped write path, with an explicit creation time.
+    @Contract
+    void putDeathRecordForTest(NodeId peer, long incarnation, long bootToken, long createdAtMs) {
+        putDeathRecord(peer, new DeathRecord(incarnation, bootToken, createdAtMs));
+    }
+
+    /// Test-only: the number of death records held.
+    int deathRecordCountForTest() {
+        return deathRecords.size();
     }
 
     /// Test-only: distinct (member, attempted address) conflicts reported so far. Synchronous, unlike the
