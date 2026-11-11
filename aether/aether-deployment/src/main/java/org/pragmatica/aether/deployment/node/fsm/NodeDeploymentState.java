@@ -217,8 +217,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// republish the routes of a slice the cluster re-placed.
         private static List<SuspendedSlice> withoutSwept(List<SuspendedSlice> suspended, Set<Artifact> swept) {
             return suspended.stream()
-                            .filter(slice -> !swept.contains(slice.key()
-                                                                  .artifact()))
+                            .filter(slice -> !swept.contains(slice.key().artifact()))
                             .toList();
         }
 
@@ -234,12 +233,14 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                            .collect(Collectors.toUnmodifiableSet());
 
             swept.forEach(this::sweepSlice);
+
             return swept;
         }
 
         private boolean noDeliveredEntry(Artifact artifact) {
             return ctx.kvStore()
-                      .delivered(NodeArtifactKey.nodeArtifactKey(ctx.self(), artifact))
+                      .delivered(NodeArtifactKey.nodeArtifactKey(ctx.self(),
+                                                                 artifact))
                       .isEmpty();
         }
 
@@ -468,15 +469,15 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private Promise<Unit> cleanupChain(SliceNodeKey sliceKey) {
             return unpublishTopicSubscriptions(sliceKey).flatMap(this::unpublishStreamSubscriptions)
-                                       .flatMap(key -> releaseStreamReferences(key).map(_ -> key))
-                                       .flatMap(this::unpublishScheduledTasks)
-                                       .flatMap(this::unpublishHttpRoutes)
-                                       .withSuccess(this::unregisterSliceFromInvocation)
-                                       .flatMap(key -> ctx.sliceStore()
-                                                          .deactivateSlice(key.artifact()))
-                                       .flatMap(_ -> ctx.sliceStore()
-                                                        .unloadSlice(sliceKey.artifact()))
-                                       .onFailure(cause -> logCleanupFailure(sliceKey, cause));
+                                              .flatMap(key -> releaseStreamReferences(key).map(_ -> key))
+                                              .flatMap(this::unpublishScheduledTasks)
+                                              .flatMap(this::unpublishHttpRoutes)
+                                              .withSuccess(this::unregisterSliceFromInvocation)
+                                              .flatMap(key -> ctx.sliceStore()
+                                                                 .deactivateSlice(key.artifact()))
+                                              .flatMap(_ -> ctx.sliceStore()
+                                                               .unloadSlice(sliceKey.artifact()))
+                                              .onFailure(cause -> logCleanupFailure(sliceKey, cause));
         }
 
         private void logCleanupFailure(SliceNodeKey sliceKey, Cause cause) {
