@@ -1523,11 +1523,7 @@ public final class OwnerActivation {
                                                                                           local,
                                                                                           source,
                                                                                           others))
-                                                                .flatMap(_ -> rerankIfClipped(stream,
-                                                                                              partition,
-                                                                                              source,
-                                                                                              sourceEnd,
-                                                                                              answered));
+                              .flatMap(_ -> rerankIfClipped(stream, partition, source, sourceEnd, answered));
     }
 
     /// #3071: a peer is ranked by its committed-lineage end ([#peerLineageEnd]), never its raw watermark, so a deposed epoch's tail
