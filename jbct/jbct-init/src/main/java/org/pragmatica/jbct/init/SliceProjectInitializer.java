@@ -275,7 +275,9 @@ public final class SliceProjectInitializer {
     private Result<Path> createDependencyManifest() {
         try {
             var resources = projectDir.resolve("src/main/resources/META-INF/dependencies");
-            var dependencyFile = resources.resolve(basePackage + "." + sliceName.toLowerCase(Locale.ROOT) + "." + sliceName);
+            var dependencyFile = resources.resolve(basePackage
+                                                  + "." + sliceName.toLowerCase(Locale.ROOT)
+                                                  + "." + sliceName);
 
             Files.writeString(dependencyFile, "# Slice dependencies (one artifact per line)\n");
 
