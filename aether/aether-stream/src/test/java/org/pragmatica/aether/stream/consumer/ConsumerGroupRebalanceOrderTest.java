@@ -267,6 +267,37 @@ class ConsumerGroupRebalanceOrderTest {
             assertThat(committedOwners()).as("the empty group's removal is the newest word").isEmpty();
         }
 
+        /// V3025 probe A: the join's batch is still in flight when the last member leaves (nothing committed yet, so
+        /// the leave submits nothing); the join then commits and names the departed member.
+        @Test
+        void v3025_leaveBeforeTheJoinCommits_departedMemberMustNotOwnAfterTheJoinCommits() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+
+            for (var i = 0; i < held.size(); i++) {
+                commit(i);
+            }
+
+            assertThat(committedOwners()).as("group is empty; no partition may name c1").isEmpty();
+        }
+
+        /// V3025 probe C: rebalance Puts derived before the empty-group removal commit AFTER it (Rabia may order
+        /// batches freely): they land on absent keys and are not fenced.
+        @Test
+        void v3025_rebalancePutsCommittingAfterTheEmptyGroupRemoval_mustNotResurrectOwners() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            commit(0);
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+            coordinator.leaveGroup(GROUP, STREAM, "c2");
+
+            commit(3);
+            commit(1);
+            commit(2);
+
+            assertThat(committedOwners()).as("the empty group's removal is the newest word").isEmpty();
+        }
+
         @Test
         void leaveGroup_lastMember_isRefusedLoudly_whenCommittedAssignmentsCarryANewerTerm() {
             newCoordinator(2L).joinGroup(GROUP, STREAM, PARTITIONS, "c3", NODE_A);
