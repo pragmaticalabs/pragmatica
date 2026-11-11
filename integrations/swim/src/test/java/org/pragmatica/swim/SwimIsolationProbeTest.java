@@ -47,6 +47,9 @@ import static org.pragmatica.swim.SwimConfig.swimConfig;
 /// #3028 PR C, design §3.4 (S1): a node latched self-isolated holds every peer FAULTY and so probes nobody. Each probe
 /// round it sends one Ping to one FAULTY peer, least-recently-probed first; a lost isolation ping raises no LHM score
 /// and sends no PingReq (D4); a peer holding the node dead answers with its death notice, which the node refutes.
+/// Design behaviour (CTO-accepted): a verified isolation Ack does not unlatch by itself, because this node's own death
+/// record for the peer refuses the peer's ack; the latch clears through the notice exchange, so probing continues while
+/// latched. With every peer swept, the node asks one seed for the view (D4b).
 class SwimIsolationProbeTest {
     private static final NodeId SELF_ID = new NodeId("node-self");
     private static final NodeId NODE_A = new NodeId("node-a");
@@ -184,5 +187,52 @@ class SwimIsolationProbeTest {
         protocol.onMessage(ADDR_A, ack);
 
         assertThat(protocol.selfIncarnation()).as("the notice in the isolation ping's Ack is refuted").isEqualTo(2L);
+    }
+
+    @Test
+    void isolationProbe_stillLatchedAfterAPeerAck_probingContinues() {
+        protocol.latchSelfIsolation(() -> true);
+
+        protocol.probeRoundForTest();
+        protocol.onMessage(ADDR_A, Ack.ack(NODE_A, transport.firstPingTo(ADDR_A).sequence(), List.of()));
+        protocol.probeRoundForTest();
+
+        assertThat(protocol.selfIsolatedForTest()).as("an isolation Ack alone does not unlatch (design behaviour)").isTrue();
+        assertThat(transport.pingTargets()).as("probing continues while latched, round-robin on").containsExactly(ADDR_A, ADDR_B);
+    }
+
+    @Test
+    void isolationProbe_allPeersSwept_announcesToASeed() {
+        var seed = new InetSocketAddress("127.0.0.1", 9100);
+
+        protocol.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of(seed));
+        protocol.joinAcknowledgedForTest();
+        protocol.latchSelfIsolation(() -> true);
+        protocol.removeMemberForTest(NODE_A);
+        protocol.removeMemberForTest(NODE_B);
+        transport.sent.clear();
+
+        protocol.probeRoundForTest();
+
+        await().atMost(Duration.ofSeconds(2))
+               .untilAsserted(() -> assertThat(transport.sent).as("one ANNOUNCE to the seed, after a jitter below the period")
+                                                              .anyMatch(entry -> entry.target().equals(seed)
+                                                                                 && entry.message() instanceof SwimMessage.Announce));
+    }
+
+    @Test
+    void isolationProbe_peersRemain_noAnnounceToASeed() {
+        var seed = new InetSocketAddress("127.0.0.1", 9100);
+
+        protocol.announceJoin(INFO_SELF, "c", 1L, SELF_TOKEN, List.of(seed));
+        protocol.joinAcknowledgedForTest();
+        protocol.latchSelfIsolation(() -> true);
+        transport.sent.clear();
+
+        protocol.probeRoundForTest();
+        await().pollDelay(300, TimeUnit.MILLISECONDS).atMost(Duration.ofSeconds(1)).until(() -> true);
+
+        assertThat(transport.sent).as("a node that still holds peers pings them and does not announce")
+                                  .noneMatch(entry -> entry.message() instanceof SwimMessage.Announce && entry.target().equals(seed));
     }
 }

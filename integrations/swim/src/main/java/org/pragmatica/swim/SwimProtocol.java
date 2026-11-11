@@ -342,6 +342,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// local to [#announceJoin] and a stopped protocol kept announcing for up to 30 s.
     private final AtomicReference<Option<ScheduledFuture<?>>> announceFuture = new AtomicReference<>(none());
 
+    /// Seeds and identity retained from [#announceJoin] for the isolated-and-alone ANNOUNCE ([#announceWhileAlone]).
+    private volatile Option<SeedAnnounce> seedAnnounce = none();
+
     /// #501: `true` from [#stop] until the next [#start]. Cancelling [#announceFuture] is not on its
     /// own enough to tie the announce loop's lifetime to [#stop], because two announces can still
     /// escape a stopped protocol: an [#announceJoin] that resolved this protocol before the stop and
@@ -529,6 +532,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// is the incarnation at which the id was tombstoned; a strictly-higher incoming
     /// incarnation supersedes it. `createdAtMs` bounds map growth via the TTL sweep.
     private record Tombstone(long incarnation, long createdAtMs) {}
+
+    /// What a node alone in the cluster needs to ask a seed for the view again (#3028 D4b): the identity and seeds of
+    /// [#announceJoin].
+    private record SeedAnnounce(NodeInfo self, String clusterName, List<InetSocketAddress> seeds) {}
 
     /// A [#deathRecords] entry: the FAULTY incarnation and the non-zero boot token snapshotted at the FAULTY edge.
     /// `createdAtMs` orders eviction at the cap.
@@ -1057,13 +1064,41 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// that holds this node dead answers with its death notice, which this node refutes; the peer then re-admits it,
     /// and the peer's own refuted claim re-admits the peer here, which clears the latch (a verified Ack alone does not
     /// while this node's death record for the peer refuses it). Peers already swept from the member map are not
-    /// reached here (D4b, the seed ANNOUNCE, is not implemented in this package).
+    /// reached here ([#announceWhileAlone], D4b, covers them).
     private void probeWhileIsolated() {
         if (!selfIsolated) {
             return;
         }
 
-        selectIsolationProbeTarget().onPresent(this::sendIsolationPing);
+        selectIsolationProbeTarget().onPresent(this::sendIsolationPing)
+                                    .onEmpty(this::announceWhileAlone);
+    }
+
+    /// #3028 D4b: a latched node whose member map is empty (every peer swept) has no peer left to ping, so it asks ONE
+    /// seed for the view again, after a random delay below one protocol period (`[guess: design rule]`: spreads
+    /// simultaneous recoveries). The reply is merged like the join ANNOUNCE's. No retry state: the next round repeats
+    /// while the node stays alone.
+    private void announceWhileAlone() {
+        if (!members.isEmpty()) {
+            return;
+        }
+
+        seedAnnounce.onPresent(this::scheduleSeedAnnounce);
+    }
+
+    private void scheduleSeedAnnounce(SeedAnnounce target) {
+        var seed = target.seeds()
+                         .get(ThreadLocalRandom.current().nextInt(target.seeds().size()));
+        var delayMs = ThreadLocalRandom.current().nextLong(Math.max(1L, config.period().millis()));
+
+        SharedScheduler.schedule(() -> sendSeedAnnounce(target, seed), TimeSpan.timeSpan(delayMs).millis());
+    }
+
+    private void sendSeedAnnounce(SeedAnnounce target, InetSocketAddress seed) {
+        if (!announceStopped.get()) {
+            transport.send(seed,
+                           Announce.announce(target.self(), target.clusterName(), selfIncarnation.get(), selfBootToken.get()));
+        }
     }
 
     private Option<SwimMember> selectIsolationProbeTarget() {
@@ -2195,8 +2230,11 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     /// The death notice a Ping earns (#3028 design §3.2): only the pinger's own self-`Alive` is the claim compared with
     /// the record. A third-party `Alive` in the piggyback is gossip, already refused by the death-record gate, and earns
-    /// no notice. Consequence (FINDING, Architect to rule): the requester entry a relayer appends (D3) is third-party
-    /// to the target, so a relayed Ping earns no notice for the requester.
+    /// no notice. Consequence (FINDING, CTO ruled a notice for the relayed requester entry too): the requester entry a
+    /// relayer appends (D3, [#withRequesterIdentity]) is third-party to the target, and a relayed Ping does not carry the
+    /// requester id (`Ping(from, sequence, piggyback)`, [#relayPingReq] builds it with `from` = relayer), so the target
+    /// cannot tell that entry from other gossip without a new wire field. None is added (ruling), so a relayed Ping earns
+    /// no notice for the requester.
     private Option<MembershipUpdate> pingDeathNotice(Ping ping) {
         return Option.from(ping.piggyback()
                                .stream()
@@ -2722,6 +2760,9 @@ public final class SwimProtocol implements SwimMessageHandler {
             selfIncarnation.updateAndGet(cur -> Math.max(cur, incarnation));
             selfBootToken.compareAndSet(0L, bootToken);
             selfLabels = withQuorumReport(gossipLabels(self.labels()), selfLabels);
+            seedAnnounce = seeds.isEmpty()
+                           ? none()
+                           : option(new SeedAnnounce(self, clusterName, List.copyOf(seeds)));
             if (seeds.isEmpty()) {
                 return;
             }
@@ -3974,7 +4015,11 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     /// Test-only: whether the self-isolation latch (P2) is currently set.
-    boolean selfIsolatedForTest() {
+void joinAcknowledgedForTest() {
+        joinAckReceived = true;
+    }
+
+        boolean selfIsolatedForTest() {
         return selfIsolated;
     }
 
