@@ -58,6 +58,8 @@ class SwimFalseDeadRejoinTest {
     private final ExecutorService wire = Executors.newSingleThreadExecutor();
     private final List<SwimProtocol> started = new ArrayList<>();
     private final AtomicBoolean liveIsolated = new AtomicBoolean(false);
+    /// true: drop only datagrams addressed TO the live node (it can still send and gets acks to its own probes).
+    private final AtomicBoolean inboundOnly = new AtomicBoolean(false);
     private final CopyOnWriteArrayList<SwimObservation> observed = new CopyOnWriteArrayList<>();
 
     @AfterEach
@@ -69,6 +71,19 @@ class SwimFalseDeadRejoinTest {
 
     @Test
     void liveNodeDeclaredFaultyByDroppedDatagrams_isReadmittedAfterTheDropsStop() {
+        runScenario();
+    }
+
+    /// The Ember shape: every peer's writes TO the live node are refused (backpressure), while its own
+    /// datagrams and the acks to its own probes still flow, so it never sees a Suspect about itself and
+    /// keeps receiving reachability evidence.
+    @Test
+    void liveNodeDeclaredFaultyByDroppedInboundOnly_isReadmittedAfterTheDropsStop() {
+        inboundOnly.set(true);
+        runScenario();
+    }
+
+    private void runScenario() {
         var observer = node(OBSERVER, OBSERVER_PORT, 1L);
         var helper = node(HELPER, HELPER_PORT, 1L);
         var live = node(LIVE, LIVE_PORT, 1L);
@@ -166,7 +181,7 @@ class SwimFalseDeadRejoinTest {
         }
 
         private void deliver(InetSocketAddress target, SwimMessage message) {
-            if (liveIsolated.get() && (selfPort == LIVE_PORT || target.getPort() == LIVE_PORT)) {
+            if (liveIsolated.get() && (target.getPort() == LIVE_PORT || (!inboundOnly.get() && selfPort == LIVE_PORT))) {
                 return;
             }
 
