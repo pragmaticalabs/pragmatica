@@ -61,6 +61,19 @@ class GapFailureTest {
                   .isEqualTo(Option.none());
     }
 
+    /// #2834: once per episode. Red when: a second exhaustion of the same artifact (its counter cleared by the first) raises
+    /// `retry-exhausted-unsettled` again while the first is still open.
+    @Test
+    void exhaustion_repeated_isReportedOncePerEpisode() {
+        var h = exhaustedOrders();
+
+        for (var failure = 0; failure < 6; failure++) {
+            node(h, CORE_1, 11L).fails(ORDERS, false);
+            h.drain();
+        }
+        assertThat(h.warns("retry-exhausted-unsettled")).as("still one open warning").hasSize(1);
+    }
+
     private FsmHarness exhaustedOrders() {
         var h = LcSupport.leader(DeploymentAtomicity.ALL_OR_NOTHING, 0.5d, CORE_1);
 

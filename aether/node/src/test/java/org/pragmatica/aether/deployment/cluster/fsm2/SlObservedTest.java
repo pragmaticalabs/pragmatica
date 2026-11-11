@@ -143,6 +143,20 @@ class SlObservedTest {
             assertThat(h.warns("stray-instance")).hasSize(1);
         }
 
+        /// #2834: once per condemned instance. Red when: a later reconcile pass condemns the same stray again and raises `stray-instance` again.
+        @Test
+        void condemnedStray_reconciledAgain_isReportedOnce() {
+            var h = threeCores();
+
+            seedTarget(h, ORDERS, 1, 1);
+            seedRow(h, CORE_1, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
+            seedRow(h, CORE_2, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
+            h.activate();
+            h.deliver(new ClusterInput.Reconcile());
+            h.deliver(new ClusterInput.Reconcile());
+            assertThat(h.warns("stray-instance")).hasSize(1);
+        }
+
         /// D.6 row 20 (know 7cc9e79f61): the condemned row going is both the remediation completing and the subject leaving. Red when:
         /// the observed row of a condemned stray disappears and `stray-instance` stays open (no `stray-instance-removed`, same subject,
         /// once); the close is raised while the row stands; or a row that was never condemned raises it.

@@ -130,6 +130,37 @@ class WarningsPersistenceTest {
         assertThat(h.submits(WARNINGS)).as("one in flight, none drafted beside it").hasSize(1);
     }
 
+    private static ClusterModel withOpenFamily() {
+        var m = new ClusterModel();
+
+        m.retryExhaustedWarned = m.retryExhaustedWarned.add(ORDERS);
+
+        return m;
+    }
+
+    /// Red when: a flush drafts a WARNINGS transaction for a set that is not marked dirty (the `pending` guard of `draft`).
+    @Test
+    void cleanOpenSet_isNotDrafted() {
+        var m = withOpenFamily();
+
+        Warnings.draft(m);
+
+        assertThat(m.outbox).as("the difference is not empty, but nothing marked it dirty").isEmpty();
+    }
+
+    /// Red when: a flush drafts a second WARNINGS transaction while the first is still in the outbox (the in-flight clause of `draft`).
+    @Test
+    void draftedWarnings_areNotDraftedBesideThemselves() {
+        var m = withOpenFamily();
+
+        m.warningsDirty = true;
+        Warnings.draft(m);
+        m.warningsDirty = true;
+        Warnings.draft(m);
+
+        assertThat(m.outbox).hasSize(1);
+    }
+
     /// Red when: a step that changed nothing leaves the open set dirty (the clean-again clause of `noteRaised`): a no-op flush would be queued.
     @Test
     void stepThatChangesNothing_leavesTheOpenSetClean() {

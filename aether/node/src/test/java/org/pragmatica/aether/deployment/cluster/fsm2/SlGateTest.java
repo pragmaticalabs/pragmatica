@@ -285,6 +285,18 @@ class SlGateTest {
             assertThat(h.warns("schema-status-unknown")).hasSize(1);
         }
 
+        /// #2834: once per episode. Red when: a second UNKNOWN status for the same datasource raises `schema-status-unknown` again.
+        @Test
+        void unknownStatus_repeated_warnsOncePerEpisode() {
+            var h = heldByPendingSchema();
+
+            h.seed(new SchemaVersionKey("orders-db"), record(SchemaStatus.UNKNOWN));
+            h.drain();
+            h.seed(new SchemaVersionKey("orders-db"), record(SchemaStatus.UNKNOWN));
+            h.drain();
+            assertThat(h.warns("schema-status-unknown")).hasSize(1);
+        }
+
         /// C12 PENDING. Red when: a PENDING record is not handed to the orchestrator.
         @Test
         void pending_dispatchesTheMigration() {
