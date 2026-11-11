@@ -57,7 +57,7 @@ class RabiaEnginePreSyncCheckTest {
 
     private boolean syncStarted() {
         return network.getMessages().stream()
-                      .anyMatch(RabiaProtocolMessage.Synchronous.SyncRequest.class::isInstance);
+                      .anyMatch(RabiaProtocolMessage.Asynchronous.SyncRequest.class::isInstance);
     }
 
     private void awaitSyncStarted() {
