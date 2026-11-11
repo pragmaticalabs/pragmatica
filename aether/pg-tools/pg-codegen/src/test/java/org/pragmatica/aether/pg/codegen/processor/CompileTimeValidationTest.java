@@ -300,7 +300,7 @@ class CompileTimeValidationTest {
                 @PgSql
                 public interface ValidationRepo {
 
-                    record UserRow(long id, String name, String email) {}
+                    record UserRow(long id, String name, String email) { static UserRow userRow(long id, String name, String email) { return new UserRow(id, name, email); } }
 
                     Promise<Option<UserRow>> findByNonexistent(String value);
                 }
@@ -325,7 +325,7 @@ class CompileTimeValidationTest {
                 @PgSql
                 public interface ValidRepo {
 
-                    record UserRow(long id, String name, String email) {}
+                    record UserRow(long id, String name, String email) { static UserRow userRow(long id, String name, String email) { return new UserRow(id, name, email); } }
 
                     Promise<Option<UserRow>> findByEmail(String email);
                 }
@@ -347,10 +347,10 @@ class CompileTimeValidationTest {
                 @PgSql
                 public interface InsertValidationRepo {
 
-                    record UserRow(long id, String name, String email) {}
+                    record UserRow(long id, String name, String email) { static UserRow userRow(long id, String name, String email) { return new UserRow(id, name, email); } }
 
                     // Missing 'name' and 'email' which are NOT NULL without DEFAULT
-                    record IncompleteUser(long id) {}
+                    record IncompleteUser(long id) { static IncompleteUser incompleteUser(long id) { return new IncompleteUser(id); } }
 
                     Promise<UserRow> insert(IncompleteUser user);
                 }
@@ -374,7 +374,7 @@ class CompileTimeValidationTest {
                 @PgSql
                 public interface TypeMismatchRepo {
 
-                    record UserRow(long id, String name, String email) {}
+                    record UserRow(long id, String name, String email) { static UserRow userRow(long id, String name, String email) { return new UserRow(id, name, email); } }
 
                     // id is bigint in schema but String param here
                     Promise<Option<UserRow>> findById(String id);
@@ -400,7 +400,7 @@ class CompileTimeValidationTest {
                 @PgSql
                 public interface ReturnFieldRepo {
 
-                    record UserSummary(long id, String name, int orderCount) {}
+                    record UserSummary(long id, String name, int orderCount) { static UserSummary userSummary(long id, String name, int orderCount) { return new UserSummary(id, name, orderCount); } }
 
                     @Query("SELECT id, name FROM users WHERE id = :id")
                     Promise<Option<UserSummary>> findSummary(long id);
@@ -426,7 +426,7 @@ class CompileTimeValidationTest {
                 @PgSql
                 public interface QueryTypeRepo {
 
-                    record UserRow(long id, String name, String email) {}
+                    record UserRow(long id, String name, String email) { static UserRow userRow(long id, String name, String email) { return new UserRow(id, name, email); } }
 
                     @Query("SELECT id, name, email FROM users WHERE id = :id")
                     Promise<List<UserRow>> findUsersById(String id);
