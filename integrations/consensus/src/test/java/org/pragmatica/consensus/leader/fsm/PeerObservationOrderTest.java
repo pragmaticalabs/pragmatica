@@ -63,6 +63,7 @@ class PeerObservationOrderTest {
     private static final NodeId N1 = new NodeId("node-1");
     private static final NodeId N2 = new NodeId("node-2");
     private static final NodeId N3 = new NodeId("node-3");
+    private static final NodeId N4 = new NodeId("node-4");
     private static final List<NodeId> ALL = List.of(N1, N2, N3);
     private static final List<NodeId> WITHOUT_N1 = List.of(N2, N3);
     private static final TimeSpan LONG = TimeSpan.timeSpan(60).seconds();
@@ -283,6 +284,24 @@ class PeerObservationOrderTest {
                                         .isInstanceOfSatisfying(LeaderElectionState.ReElecting.class,
                                                                 reElecting -> assertThat(reElecting.suspect()).isEqualTo(Option.none()));
         assertThat(dispatched).as("no view-carrying event").noneMatch(ClusterFsmEvent.TopologyChange.class::isInstance);
+    }
+
+    /// #3044 3b discriminator: the removal writes exactly the leader out of the STORED view. `currentTopology()` reads
+    /// the stored view through the installed voters, so the stored view is read back by widening the voters again.
+    /// The old wholesale rewrite stored the eligibility-filtered view and so also deleted node 4 (a voter-to-be that
+    /// the narrower voter set had filtered out); the removal deletes node 1 only.
+    @Test
+    void installVoterConfiguration_inLed_leaderDropped_removesExactlyTheLeaderFromTheStoredView() {
+        node = Node.following(false);
+        node.ctx.installVoters(List.of(N1, N2, N3, N4));
+        node.manager.peerJoined(new PeerJoined(N4, List.of(N1, N2, N3, N4), ObservationSource.QUIC, 2L));
+        assertThat(node.ctx.currentTopology()).as("control: the four-node view is stored").containsExactly(N1, N2, N3, N4);
+
+        node.manager.installVoterConfiguration(VoterConfiguration.voterConfiguration(2L, List.of(N2, N3)).unwrap());
+        node.ctx.installVoters(List.of(N2, N3, N4));
+
+        assertThat(node.ctx.currentTopology()).as("only the leader left the stored view").containsExactly(N2, N3, N4);
+        assertThat(node.harness.state()).as("the leader is lost").isInstanceOf(LeaderElectionState.ReElecting.class);
     }
 
     /// #3044 S2: whatever SWIM's snapshots carry, interleaved with sequenced transport views, the stored view after
