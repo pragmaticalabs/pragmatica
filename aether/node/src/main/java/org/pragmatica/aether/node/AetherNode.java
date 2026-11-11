@@ -3766,6 +3766,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                               Set::of,
                                                                                                               () -> deploymentMemberSources(membershipFsm),
                                                                                                               Map::of,
+                                                                                                              () -> coreRoleMembers(membershipFsm.memberDescriptors()),
                                                                                                               () -> membershipFsm.memberDescriptors()
                                                                                                                                  .keySet(),
                                                                                                               admissionSeam::tokenOf),
@@ -4202,6 +4203,17 @@ public interface AetherNode extends ManageableNode {
         return node.voterConfiguration()
                    .map(configuration -> Set.copyOf(configuration.members()))
                    .or(Set.of());
+    }
+
+    /// Every tracked member admitted with `role=core`, voter or not (#2887): a surplus core is never a voter, a swapped-out core stops being one
+    /// and a joining core is not yet one, yet each is a core. Includes DEAD members, so a departed core stays classed CORE.
+    static Set<NodeId> coreRoleMembers(Map<NodeId, MemberDescriptor> descriptors) {
+        return descriptors.entrySet()
+                          .stream()
+                          .filter(entry -> entry.getValue()
+                                                .isCore())
+                          .map(Map.Entry::getKey)
+                          .collect(Collectors.toUnmodifiableSet());
     }
 
     static Set<NodeId> configuredVoters(AetherNodeConfig config) {
