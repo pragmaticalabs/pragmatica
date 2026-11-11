@@ -114,6 +114,11 @@ class EmberPortAllocatorTest {
         claimed(first, 3);
 
         assertThat(failureOf(second, 3)).isInstanceOf(PortError.NoFreeBlock.class);
+
+        var endingOnTheClaimedFirstPort = second.range(first.first() - PortBlock.STRIDE + 1, first.first());
+
+        assertThat(failureOf(endingOnTheClaimedFirstPort, 3)).as("a refused attempt left the registry entry in place")
+                                                              .isInstanceOf(PortError.NoFreeBlock.class);
     }
 
     @Test
