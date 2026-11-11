@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc5] - Unreleased
 
+### Fixed (2026-11-11 - #3070 PartitionBackfillTest late-settlement tests waited wall-clock inside the next flight's idle bound)
+- **Three `PartitionBackfillTest$SingleFlight` tests (`lateSettlement_afterTheTimeout_sendsNoAckToTheOwner`, `..._leavesTheRegistryUnchanged`, `lateLandingOldRun_doesNotEvictTheNextFlight`) started the next flight and then slept 200 ms inside its 500 ms idle bound,** so a stall of more than 300 ms (GC, host steal) timed the next flight out and failed the test. The late run's continuation chain is synchronous, so the waits were dropped; no production change. Not reproduced natively (400/400 green idle and CPU-loaded); the gate mutants (ungated ack, registry gate) stay red 200/200 without the wait.
+
 ## [1.0.0-rc4] - 2026-10-17
 
 ### Fixed (2026-10-17 — disruption-budget suite mistook the slice-floor 409 for the quorum budget)
