@@ -318,7 +318,7 @@ class SwimFalseDeadRejoinTest {
         }
 
         /// While the observer's verdict is private, what the observer sends the helper carries nothing about the live
-        /// node, except its Ack to a relayed Ping (that Ack carries the death notice).
+        /// node, except the FAULTY entry of its Ack to a relayed Ping (the death notice).
         private SwimMessage filtered(InetSocketAddress target, SwimMessage message) {
             return observerVerdictPrivate.get() && selfPort == OBSERVER_PORT && target.getPort() == HELPER_PORT
                    ? withoutLiveEntries(message)
@@ -331,10 +331,21 @@ class SwimFalseDeadRejoinTest {
                                                                    ping.sequence(),
                                                                    aboutOthers(ping.piggyback()),
                                                                    ping.onBehalfOf());
-                case SwimMessage.Ack ack when !relayedSequences.contains(ack.sequence()) ->
-                SwimMessage.Ack.ack(ack.from(), ack.sequence(), aboutOthers(ack.piggyback()));
+                case SwimMessage.Ack ack -> SwimMessage.Ack.ack(ack.from(),
+                                                                ack.sequence(),
+                                                                relayedSequences.contains(ack.sequence())
+                                                                ? withoutLiveSuspicion(ack.piggyback())
+                                                                : aboutOthers(ack.piggyback()));
                 default -> message;
             };
+        }
+
+        /// The relayed Ack keeps the Faulty entry (the notice) and loses the live node's SUSPECT: a suspicion that reached
+        /// the helper would reach the live node and make it refute without any notice.
+        private static List<SwimMessage.MembershipUpdate> withoutLiveSuspicion(List<SwimMessage.MembershipUpdate> piggyback) {
+            return piggyback.stream()
+                            .filter(update -> !(update.nodeId().equals(LIVE) && update.state() == MemberState.SUSPECT))
+                            .toList();
         }
 
         private static List<SwimMessage.MembershipUpdate> aboutOthers(List<SwimMessage.MembershipUpdate> piggyback) {
