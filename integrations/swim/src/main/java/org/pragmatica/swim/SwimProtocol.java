@@ -539,6 +539,12 @@ public final class SwimProtocol implements SwimMessageHandler {
         boolean covers(long claimToken) {
             return claimToken == 0L || claimToken == bootToken;
         }
+
+        /// A stale aliveness claim of the recorded process itself: its own token (never `0`, unlike [#covers]) at an
+        /// incarnation the record does not lose to. Only such a claim earns a death notice (#3028 design §3.2).
+        boolean answersWithNotice(long claimIncarnation, long claimToken) {
+            return claimToken == bootToken && claimIncarnation <= incarnation;
+        }
     }
 
     /// An ANNOUNCE held until its source address answers a probe.
@@ -1855,7 +1861,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     private void handlePing(InetSocketAddress sender, Ping ping) {
         recordInboundReachability();
         processPiggyback(ping.piggyback(), ping.from(), Option.none());
-        var ack = Ack.ack(selfId, ping.sequence(), ackPiggyback());
+        var ack = Ack.ack(selfId, ping.sequence(), ackPiggybackWith(pingDeathNotice(ping)));
 
         transport.send(sender, ack);
     }
@@ -2107,6 +2113,66 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
 
         return List.copyOf(ordered);
+    }
+
+    /// [#ackPiggyback] with a death notice appended after trimming (#3028 design §3.3): one entry beyond
+    /// `maxPiggyback`, and trailing gossip trimmed again while the byte budget is exceeded, never the leading
+    /// identity. So the notice never evicts the identity and survives `maxPiggyback = 1`.
+    private List<MembershipUpdate> ackPiggybackWith(Option<MembershipUpdate> notice) {
+        var piggyback = ackPiggyback();
+
+        return notice.map(entry -> appendBeyondCap(piggyback, leadingIdentityCount(piggyback), entry))
+                     .or(piggyback);
+    }
+
+    private int leadingIdentityCount(List<MembershipUpdate> piggyback) {
+        return piggyback.isEmpty() || !piggyback.getFirst()
+                                                .nodeId()
+                                                .equals(selfId)
+               ? 0
+               : 1;
+    }
+
+    /// Append `extra` past the `maxPiggyback` count: entries after the first `floor` are trimmed from the tail while
+    /// the list with `extra` exceeds the datagram byte budget; `extra` itself is always sent.
+    private List<MembershipUpdate> appendBeyondCap(List<MembershipUpdate> entries, int floor, MembershipUpdate extra) {
+        var ordered = new ArrayList<>(entries);
+        var extraBytes = PiggybackBuffer.estimatedBytes(extra);
+
+        while (ordered.size() > floor && estimatedBytesOf(ordered) + extraBytes > piggybackBudgetBytes) {
+            ordered.removeLast();
+        }
+
+        ordered.add(extra);
+
+        return List.copyOf(ordered);
+    }
+
+    /// The death notice a Ping earns (#3028 design §3.2): the sender's own self-`Alive` is the claim compared with the
+    /// record. A relayed Ping carries the requester's identity entry appended by the relayer (D3), and the notice for
+    /// it rides back in the Ack the relayer forwards verbatim; the pinger's own entry is preferred. At most one notice.
+    private Option<MembershipUpdate> pingDeathNotice(Ping ping) {
+        return Option.from(ping.piggyback()
+                               .stream()
+                               .sorted(Comparator.comparing((MembershipUpdate update) -> !update.nodeId()
+                                                                                                 .equals(ping.from())))
+                               .flatMap(update -> deathNoticeFor(update).stream())
+                               .findFirst());
+    }
+
+    /// `Faulty(X, record.incarnation, record.bootToken)` for an `Alive` claim the death record answers with a notice
+    /// ([DeathRecord#answersWithNotice]). The claimant refutes it through [#handleSelfUpdate]: an equal incarnation
+    /// bumps to `max + 1`.
+    private Option<MembershipUpdate> deathNoticeFor(MembershipUpdate claim) {
+        return option(deathRecords.get(claim.nodeId())).filter(_ -> claim.state() == MemberState.ALIVE)
+                     .filter(record -> record.answersWithNotice(claim.incarnation(),
+                                                                claim.bootToken()))
+                     .map(record -> MembershipUpdate.membershipUpdate(claim.nodeId(),
+                                                                      MemberState.FAULTY,
+                                                                      record.incarnation(),
+                                                                      claim.address(),
+                                                                      record.bootToken(),
+                                                                      claim.labels()));
     }
 
     private static int estimatedBytesOf(List<MembershipUpdate> updates) {
@@ -2372,7 +2438,8 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                              announce.clusterName(),
                                                              announce.incarnation()));
         replyWithMembershipSnapshot(sender,
-                                    announce.nodeInfo().id());
+                                    announce.nodeInfo().id(),
+                                    announceDeathNotice(sender, announce));
     }
 
     /// Join ack: answer an accepted ANNOUNCE with this node's current view, so the joiner learns the
@@ -2388,8 +2455,12 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Bounded: at most [#SYNC_MAX_DATAGRAMS] datagrams, each within the piggyback byte budget. The member
     /// order is shuffled per reply, so the ANNOUNCE retries (every 500ms until the join ack arrives) cover a view
     /// larger than one reply.
+    ///
+    /// A death notice (#3028 design §3.2, D1c) follows the pages as one more datagram, so an ANNOUNCE the death record
+    /// refused still learns why. The refusal never goes through [#refuseAnnounce], whose `IdentityRefused` makes the
+    /// receiver exit.
     @Contract
-    private void replyWithMembershipSnapshot(InetSocketAddress sender, NodeId announcer) {
+    private void replyWithMembershipSnapshot(InetSocketAddress sender, NodeId announcer, Option<MembershipUpdate> notice) {
         var pages = PiggybackBuffer.pack(snapshotFor(announcer),
                                          config.maxPiggyback(),
                                          piggybackBudgetBytes,
@@ -2398,12 +2469,26 @@ public final class SwimProtocol implements SwimMessageHandler {
         if (pages.isEmpty()) {
             // The ack is also the joiner's stop signal: a view with nothing to tell must still answer.
             transport.send(sender,
-                           Ack.ack(selfId, SYNC_ACK_SEQUENCE, List.of()));
+                           Ack.ack(selfId,
+                                   SYNC_ACK_SEQUENCE,
+                                   notice.stream()
+                                         .toList()));
 
             return;
         }
 
         pages.forEach(page -> transport.send(sender, Ack.ack(selfId, SYNC_ACK_SEQUENCE, page)));
+        notice.onPresent(entry -> transport.send(sender, Ack.ack(selfId, SYNC_ACK_SEQUENCE, List.of(entry))));
+    }
+
+    /// The ANNOUNCE's incarnation and boot token are the claim compared with the death record (#3028 design §3.2).
+    private Option<MembershipUpdate> announceDeathNotice(InetSocketAddress sender, Announce announce) {
+        return deathNoticeFor(MembershipUpdate.membershipUpdate(announce.nodeInfo().id(),
+                                                                MemberState.ALIVE,
+                                                                announce.incarnation(),
+                                                                sender,
+                                                                announce.bootToken(),
+                                                                announce.nodeInfo().labels()));
     }
 
     /// Live members worth telling a joiner about: ALIVE and SUSPECT (hearsay the joiner's own merge rules
@@ -2829,10 +2914,21 @@ public final class SwimProtocol implements SwimMessageHandler {
                                         requesterAddress,
                                         target.nodeId(),
                                         System.currentTimeMillis()));
-        var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback(), piggybackBudgetBytes);
+        var piggyback = withRequesterIdentity(piggybackBuffer.peekUpdates(config.maxPiggyback(), piggybackBudgetBytes),
+                                              pingReq.from());
         var ping = Ping.ping(selfId, relaySeq, piggyback);
 
         transport.send(target.address(), ping);
+    }
+
+    /// The relayed Ping carries the requester's identity entry as this node holds it (#3028 design §3.2, D3), so the
+    /// target's death-record gate and notice apply as for a direct Ping from the requester. Appended beyond
+    /// `maxPiggyback` ([#appendBeyondCap]). Cost: the forwarded Ack's notice is processed here first, so this node
+    /// transiently learns the requester's death until its refutation arrives, which is ordinary dissemination.
+    private List<MembershipUpdate> withRequesterIdentity(List<MembershipUpdate> gossip, NodeId requester) {
+        return option(members.get(requester)).map(this::snapshotUpdate)
+                     .map(entry -> appendBeyondCap(gossip, 0, entry))
+                     .or(gossip);
     }
 
     /// Promote to ALIVE at the member's OBSERVED incarnation (Wave-6 C4 fix).
