@@ -24,11 +24,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// #2981 steps 4-5 registered operator codes that the lease steps (1-3) are meant to raise. This tripwire holds them in an
 /// owed map (code -> owing step) and asserts, against the production sources, that none is raised yet (current behaviour).
 /// The step that starts raising one fails this test and must remove the code from the map. The scan is validated inside the
-/// test: a code that IS raised today must be detected by the same scan, and the set of unraised codes must equal the map.
+/// test: a code that IS raised today must be detected by the same scan, and the unraised codes of the registered families must equal the map.
 class OwedWarningCodesTripwireTest {
     private static final Map<OperatorWarningCode, String> OWED = owed();
     /// A code raised today by `SwimProtocol` (static import), the positive control of the scan.
     private static final OperatorWarningCode RAISED_CONTROL = OperatorWarningCode.SWIM_KILL_GATE_HELD;
+
+    private static final List<String> FAMILY_PREFIXES = List.of("STREAM_OWNER_LEASE_", "NODE_CLOCK_", "STREAM_TRUNCATION_");
 
     private static Map<OperatorWarningCode, String> owed() {
         var map = new LinkedHashMap<OperatorWarningCode, String>();
@@ -50,7 +52,7 @@ class OwedWarningCodesTripwireTest {
 
         OWED.forEach((code, step) -> {
             if (isReferenced(sources, code)) {
-                raisedNow.add("%s now raised, %s: remove it from the owed map".formatted(code, step));
+                raisedNow.add("step(s) %s now raise(s) %s: remove it from the owed map".formatted(step, code));
             }
         });
         assertThat(raisedNow).as("a step now raises an owed code: remove it from the owed map").isEmpty();
@@ -66,20 +68,25 @@ class OwedWarningCodesTripwireTest {
                                                          .isTrue();
     }
 
-    /// Count what must not be there: every declared code with no raise site is in the owed map, so a new unraised code
-    /// cannot slip in unowed and a map entry cannot be dropped silently. The `deployment` subsystem is excluded: its codes
-    /// are raised through the FSM warning catalogue by name, which `FsmWarningCatalogueTest` owns, not by constant reference.
+    /// Count what must not be there, over the families #2981 registered (lease, clock-rate, truncation): every declared code
+    /// of those families with no raise site is in the owed map, so a new unraised sibling cannot slip in unowed and a map
+    /// entry cannot be dropped silently. Other subsystems raise codes by name through catalogues (`FsmWarningCatalogueTest`
+    /// owns the deployment ones), so a constant-reference scan over them says nothing and they are out of scope here.
     @Test
     void everyUnraisedCode_isInTheOwedMap() throws IOException {
         var sources = productionSources();
         var unraised = EnumSet.noneOf(OperatorWarningCode.class);
 
         Arrays.stream(OperatorWarningCode.values())
-              .filter(code -> !"deployment".equals(code.subsystem()))
+              .filter(OwedWarningCodesTripwireTest::isOwedFamily)
               .filter(code -> !isReferenced(sources, code))
               .forEach(unraised::add);
         assertThat(unraised).as("declared codes with no production raise site must each have an owing step in the owed map")
                             .containsExactlyInAnyOrderElementsOf(OWED.keySet());
+    }
+
+    private static boolean isOwedFamily(OperatorWarningCode code) {
+        return FAMILY_PREFIXES.stream().anyMatch(prefix -> code.name().startsWith(prefix));
     }
 
     private static boolean isReferenced(List<String> sources, OperatorWarningCode code) {
