@@ -50,7 +50,6 @@ import org.slf4j.LoggerFactory;
 /// state instances for a given FSM; states mutate atomic fields directly inside their handlers.
 public final class LeaderElectionContext {
     private static final Logger log = LoggerFactory.getLogger(LeaderElectionContext.class);
-
     public static final TimeSpan DEFAULT_PROPOSAL_RETRY_DELAY = TimeSpan.timeSpan(500).millis();
     public static final TimeSpan DEFAULT_BASE_ELECTION_DELAY = TimeSpan.timeSpan(2).seconds();
     public static final TimeSpan DEFAULT_PER_RANK_DELAY = TimeSpan.timeSpan(1).seconds();
