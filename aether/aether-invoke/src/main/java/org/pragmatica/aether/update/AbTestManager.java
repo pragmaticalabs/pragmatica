@@ -481,7 +481,9 @@ public interface AbTestManager {
             @SuppressWarnings("JBCT-RET-01")
             private void releaseClaim(AbTestDeployment before, AbTestDeployment claimed) {
                 if (!tests.replace(claimed.testId(), claimed, before)) {
-                    log.info("A/B test {} changed during the {} claim; keeping the newer value", claimed.testId(), claimed.state());
+                    log.info("A/B test {} changed during the {} claim; keeping the newer value",
+                             claimed.testId(),
+                             claimed.state());
                 }
             }
 
