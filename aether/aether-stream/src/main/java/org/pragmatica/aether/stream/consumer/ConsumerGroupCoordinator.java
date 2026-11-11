@@ -315,7 +315,7 @@ public sealed interface ConsumerGroupCoordinator {
                                                                           Epoch epoch) {
                 return committed.entrySet()
                                 .stream()
-                                .<KVCommand<AetherKey>>map(entry -> removeCommand(groupId, streamName, entry, epoch))
+                                .<KVCommand<AetherKey>> map(entry -> removeCommand(groupId, streamName, entry, epoch))
                                 .toList();
             }
 
@@ -328,7 +328,7 @@ public sealed interface ConsumerGroupCoordinator {
                                                                     entry.getValue().consumerId(),
                                                                     epoch);
 
-                return new KVCommand.Remove<>(key, Option.<Object>some(witness));
+                return new KVCommand.Remove<>(key, Option.<Object> some(witness));
             }
 
             private static List<KVCommand<AetherKey>> buildAssignmentCommands(String groupId,
