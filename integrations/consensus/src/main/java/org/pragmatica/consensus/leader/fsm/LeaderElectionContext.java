@@ -790,15 +790,18 @@ public final class LeaderElectionContext {
 
     /// Applies the event's view unless it is stale (#2971): a sequenced event whose sequence is not above the last
     /// applied one is dropped, because the newer view already reflects every change the older one observed. The
-    /// check and the write are one atomic step (`getAndAccumulate`), so a delayed older event cannot overwrite a
-    /// newer view however its handler interleaves. Returns `false` only for a dropped stale event.
+    /// ordering holds among the transport's own sequenced observations only: unsequenced writes (SWIM-observed
+    /// faults, `installLeaderEligibility`, local mode, `setCurrentTopology`) replace the view unconditionally and are
+    /// not fenced (#3044). The check and the write are one atomic step (`getAndAccumulate`), so a delayed older
+    /// transport event cannot overwrite a newer view however its handler interleaves. Returns `false` only for a
+    /// dropped stale event.
     public boolean applyTopology(ClusterFsmEvent.TopologyChange event) {
         return applyTopology(event.topology(), event.sequence());
     }
 
     private boolean applyTopology(List<NodeId> topology, long sequence) {
         var candidate = SequencedTopology.sequencedTopology(topology, sequence);
-        var previous = currentTopology.getAndAccumulate(candidate, SequencedTopology::advance);
+        var previous = currentTopology.getAndAccumulate(candidate, SequencedTopology::sequencedTopology);
 
         return ! candidate.isStaleAgainst(previous);
     }
@@ -821,7 +824,7 @@ public final class LeaderElectionContext {
             return sequence > ClusterFsmEvent.TopologyChange.NO_SEQUENCE && sequence <= current.sequence();
         }
 
-        static SequencedTopology advance(SequencedTopology current, SequencedTopology candidate) {
+        static SequencedTopology sequencedTopology(SequencedTopology current, SequencedTopology candidate) {
             if (candidate.isStaleAgainst(current)) {
                 return current;
             }

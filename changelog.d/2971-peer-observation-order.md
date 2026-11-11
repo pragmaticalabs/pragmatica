@@ -3,5 +3,7 @@
   thread that made the peer transition, so a slow join handler could land after a newer eviction and its older view
   put the evicted leader back, clearing the follower's suspicion (a delayed re-election). Each observation now carries
   a per-transport sequence taken before the view is read; the leader FSM's context drops a view older than the last
-  one applied, atomically with the write, and a stale `NodeGone` no longer suspects the leader. SWIM observations stay
-  unsequenced and apply in arrival order.
+  one applied, atomically with the write, and a stale `NodeGone` no longer suspects the leader; a dropped stale event
+  no longer reschedules an Electing node's tick. The ordering holds among the transport's own observations only: SWIM
+  observations, `installLeaderEligibility` and local mode stay unsequenced, apply in arrival order and are not fenced
+  (tracked in #3044; this change is part of #2971, not a full fix).

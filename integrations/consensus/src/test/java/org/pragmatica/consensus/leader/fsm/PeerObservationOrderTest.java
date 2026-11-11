@@ -34,6 +34,8 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.statemachine.FsmTestHarness;
 
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -219,6 +221,100 @@ class PeerObservationOrderTest {
         assertThat(node.ctx.currentTopology()).as("setCurrentTopology is an unordered write").containsExactly(N1, N3);
         assertThat(node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N2, ALL, 6L))).as("an unordered write does not raise the fence").isTrue();
         assertThat(node.ctx.currentTopology()).containsExactly(N1, N2, N3);
+    }
+
+    @Test
+    void firstSequencedObservation_appliesOnAFreshContext() {
+        node = new Node(LeaderElectionContext::dormant);
+
+        assertThat(node.ctx.applyTopology(new ClusterFsmEvent.NodeGone(N1, WITHOUT_N1, 1L))).as("sequence 1 is the first observation, not stale").isTrue();
+        assertThat(node.ctx.currentTopology()).containsExactlyElementsOf(WITHOUT_N1);
+    }
+
+    @Test
+    void staleTopologyEventInElecting_doesNotRescheduleTheTick() {
+        node = new Node(LeaderElectionContext::electing);
+
+        node.harness.dispatch(new ClusterFsmEvent.NodeAdded(N1, ALL, 5L));
+        var electing = (LeaderElectionState.Electing) node.harness.state();
+        var afterFresh = electing.tickFuture().get();
+        node.harness.dispatch(new ClusterFsmEvent.NodeGone(N1, WITHOUT_N1, 4L));
+
+        assertThat(node.ctx.currentTopology()).as("control: the stale event was dropped").contains(N1);
+        assertThat(electing.tickFuture().get()).as("a dropped event leaves the pending tick alone").isSameAs(afterFresh);
+    }
+
+    @Test
+    void viewRestoringReconnect_dispatchesNodeAdded_andANoOpReconnectDoesNot() {
+        node = new Node(LeaderElectionContext::electing);
+
+        node.manager.peerDisconnected(new PeerDisconnected(N1, WITHOUT_N1, ObservationSource.QUIC, 1L));
+        var electing = (LeaderElectionState.Electing) node.harness.state();
+        var afterEviction = electing.tickFuture().get();
+        node.manager.peerReconnected(new PeerReconnected(N1, ALL, ObservationSource.QUIC, 2L));
+
+        assertThat(node.ctx.currentTopology()).as("the reconnect restored the view").contains(N1);
+        var afterRestore = electing.tickFuture().get();
+        assertThat(afterRestore).as("a restoring reconnect reaches the FSM as NodeAdded (reschedules the tick)").isNotSameAs(afterEviction);
+
+        node.manager.peerReconnected(new PeerReconnected(N1, ALL, ObservationSource.QUIC, 4L));
+        assertThat(electing.tickFuture().get()).as("a no-op reconnect dispatches nothing").isSameAs(afterRestore);
+        node.manager.peerDisconnected(new PeerDisconnected(N1, WITHOUT_N1, ObservationSource.QUIC, 3L));
+        assertThat(node.ctx.currentTopology()).as("the no-op reconnect still advanced the fence").contains(N1);
+    }
+
+    /// Two threads released together by a spin barrier apply a sequenced pair in opposite order of sequence: whatever
+    /// the interleaving, the higher sequence's view must win. Fence update done as get-then-set loses it.
+    @Test
+    void concurrentApplyTopology_higherSequenceAlwaysWins() throws InterruptedException {
+        node = new Node(LeaderElectionContext::dormant);
+        var rounds = 20_000;
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+        var go = new AtomicInteger(-1);
+        var finished = new AtomicInteger();
+        var abort = new AtomicBoolean();
+        var older = new Thread(() -> applyEachRound(go, finished, abort, 0L, ALL), "o2971-older");
+        var newer = new Thread(() -> applyEachRound(go, finished, abort, 1L, WITHOUT_N1), "o2971-newer");
+        var lost = 0;
+        var completed = 0;
+
+        older.setDaemon(true);
+        newer.setDaemon(true);
+        older.start();
+        newer.start();
+        while (completed < rounds && System.nanoTime() < deadline) {
+            finished.set(0);
+            go.set(completed);
+            while (finished.get() < 2 && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            if (finished.get() < 2) {
+                break;
+            }
+            if (node.ctx.currentTopology().contains(N1)) {
+                lost++;
+            }
+            completed++;
+        }
+        abort.set(true);
+        older.join(5_000);
+        newer.join(5_000);
+
+        assertThat(completed).as("rounds completed before the deadline").isGreaterThanOrEqualTo(1_000);
+        assertThat(lost).as("rounds where the older sequence's view overwrote the newer one").isZero();
+    }
+
+    private void applyEachRound(AtomicInteger go, AtomicInteger finished, AtomicBoolean abort, long offset, List<NodeId> view) {
+        for (var round = 0; ! abort.get(); round++) {
+            while (go.get() < round) {
+                if (abort.get()) {
+                    return;
+                }
+                Thread.onSpinWait();
+            }
+            node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N1, view, 10L * round + 1 + offset));
+            finished.incrementAndGet();
+        }
     }
 
     /// Every state that stores the view: started there directly, fed a newer event and then an older one in both

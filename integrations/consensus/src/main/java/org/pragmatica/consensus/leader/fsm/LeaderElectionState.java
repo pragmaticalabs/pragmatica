@@ -1011,8 +1011,9 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     }
 
     private static void handleTopologyChange(LeaderElectionContext ctx, ClusterFsmEvent.TopologyChange event) {
-        ctx.applyTopology(event);
-        rescheduleCurrentTick(ctx);
+        if (ctx.applyTopology(event)) {
+            rescheduleCurrentTick(ctx);
+        }
     }
 
     /// Reschedules the election tick on the *current* Electing/ReElecting record, replacing any
