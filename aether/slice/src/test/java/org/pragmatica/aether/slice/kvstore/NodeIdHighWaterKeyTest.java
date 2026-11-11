@@ -43,6 +43,18 @@ class NodeIdHighWaterKeyTest {
     }
 
     @Test
+    void parse_wrongPrefixOfTheSameLength_fails() {
+        assertThat(NodeIdHighWaterKey.nodeIdHighWaterKey("xxxxxxxxxxxxxxxxxxx/hetzner-eu/core").isFailure()).isTrue();
+    }
+
+    @Test
+    void parse_sourceContainingSlash_splitsAtTheLastSlash() {
+        NodeIdHighWaterKey.nodeIdHighWaterKey("node-id-high-water/a/b/core")
+                          .onFailureRun(Assertions::fail)
+                          .onSuccess(parsed -> assertThat(parsed).isEqualTo(NodeIdHighWaterKey.nodeIdHighWaterKey("a/b", "core")));
+    }
+
+    @Test
     void highWater_isClusterStateAndBackedUp() {
         var key = NodeIdHighWaterKey.nodeIdHighWaterKey("hetzner-eu", "core");
 
