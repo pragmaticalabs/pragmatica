@@ -46,8 +46,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.swim.SwimConfig.swimConfig;
 
 /// #3028 PR C, design §3.2-§3.3: the death notice `Faulty(X, record.incarnation, record.bootToken)` a holder of a death
-/// record sends back to a stale aliveness claim of the recorded process itself, its triggers (Ping, Announce, the
-/// PingReq relay's appended requester entry; never an Ack) and its position in the reply. The last test closes the
+/// record sends back to a stale aliveness claim of the recorded process itself, its triggers (the pinger's own claim in
+/// a Ping, Announce; never a third-party entry or an Ack) and its position in the reply. The last test closes the
 /// loop of package 1: a falsely-dead same-token process receives the notice, refutes it and is admitted again.
 class SwimDeathNoticeTest {
     private static final NodeId SELF_ID = new NodeId("node-self");
@@ -189,7 +189,7 @@ class SwimDeathNoticeTest {
     void deathNotice_unknownTokenGossip_noNotice() {
         driveToFaultyResident();
 
-        ping(NODE_B, 7L, List.of(updateOf(NODE_A, MemberState.ALIVE, 1L, 0L)));
+        ping(NODE_A, 7L, List.of(updateOf(NODE_A, MemberState.ALIVE, 1L, 0L)));
 
         assertThat(protocol.deathRecordForTest(NODE_A).isPresent()).as("the token-0 claim is refused, the record kept")
                                                                    .isTrue();
@@ -225,8 +225,10 @@ class SwimDeathNoticeTest {
                                        .anyMatch(update -> update.nodeId().equals(NODE_A) && update.state() == MemberState.ALIVE);
     }
 
+    /// CTO ruling (2026-11-11): only the pinger's own self-`Alive` is the claim. A third-party `Alive` in a Ping,
+    /// including the requester entry a relayer appends (D3), is gossip the gate already refuses and earns no notice.
     @Test
-    void deathNotice_relayedPing_requesterEntryEarnsNotice_pingerPreferred() {
+    void deathNotice_thirdPartyAliveInPing_noNotice_pingersOwnClaimDoes() {
         protocol.putDeathRecordForTest(NODE_A, 1L, TOKEN_A, System.currentTimeMillis());
         protocol.putDeathRecordForTest(NODE_B, 1L, TOKEN_B, System.currentTimeMillis());
 
@@ -234,9 +236,11 @@ class SwimDeathNoticeTest {
         ping(NODE_B, 8L, List.of(updateOf(NODE_A, MemberState.ALIVE, 1L, TOKEN_A),
                                  updateOf(NODE_B, MemberState.ALIVE, 1L, TOKEN_B)));
 
-        assertThat(ackOf(transport, 7L).piggyback()).as("the relayed requester entry earns the notice")
-                                                    .anyMatch(noticeOf(NODE_A, 1L, TOKEN_A));
-        assertThat(ackOf(transport, 8L).piggyback()).as("one notice, the pinger's own claim first")
+        assertThat(carriesFaultyOf(ackOf(transport, 7L), NODE_A)).as("a third-party Alive earns no notice")
+                                                                 .isFalse();
+        assertThat(protocol.deathRecordForTest(NODE_A).isPresent()).as("the third-party claim is refused, the record kept")
+                                                                   .isTrue();
+        assertThat(ackOf(transport, 8L).piggyback()).as("the pinger's own claim earns the notice, the third-party one none")
                                                     .anyMatch(noticeOf(NODE_B, 1L, TOKEN_B))
                                                     .noneMatch(noticeOf(NODE_A, 1L, TOKEN_A));
     }

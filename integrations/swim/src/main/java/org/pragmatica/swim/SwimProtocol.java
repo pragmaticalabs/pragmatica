@@ -1042,8 +1042,55 @@ public final class SwimProtocol implements SwimMessageHandler {
         reevaluateColdBootSuppressedFaulty();
         reevaluateTransportVetoedFaulty();
         cleanupFaultyMembers();
-        selectNextProbeTarget().onPresent(this::probeTarget);
+        probeRound();
         sendAppGossip();
+    }
+
+    /// One probe per round: the least-recently-probed probable member, or, with none and the self-isolation latch set,
+    /// one isolation ping ([#probeWhileIsolated]).
+    private void probeRound() {
+        selectNextProbeTarget().onPresent(this::probeTarget)
+                               .onEmpty(this::probeWhileIsolated);
+    }
+
+    /// #3028 design §3.4 (S1) `[guess: design rule]`: a latched node probes nobody ([#isProbable] excludes FAULTY), so
+    /// it sends one Ping per round to one FAULTY peer it still holds, least-recently-probed first (round-robin). A peer
+    /// that holds this node dead answers with its death notice, which this node refutes; the peer then re-admits it,
+    /// and the peer's own refuted claim re-admits the peer here, which clears the latch (a verified Ack alone does not
+    /// while this node's death record for the peer refuses it). Peers already swept from the member map are not
+    /// reached here (D4b, the seed ANNOUNCE, is not implemented in this package).
+    private void probeWhileIsolated() {
+        if (!selfIsolated) {
+            return;
+        }
+
+        selectIsolationProbeTarget().onPresent(this::sendIsolationPing);
+    }
+
+    private Option<SwimMember> selectIsolationProbeTarget() {
+        return Option.from(members.values()
+                                  .stream()
+                                  .filter(member -> member.state() == MemberState.FAULTY)
+                                  .min(Comparator.comparingLong(this::lastProbedAtOf)
+                                                 .thenComparing(member -> member.nodeId()
+                                                                                .id())));
+    }
+
+    /// No pending probe is registered (D4): a lost isolation ping is the expected outcome while isolated, so its
+    /// timeout must neither raise the LHM score nor send PingReqs nor suspect the peer. Design-out: the send failure
+    /// is absorbed at debug level because the next round retries another peer.
+    private void sendIsolationPing(SwimMember target) {
+        var ping = Ping.ping(selfId,
+                             sequenceCounter.incrementAndGet(),
+                             piggybackBuffer.peekUpdates(config.maxPiggyback(), piggybackBudgetBytes));
+
+        lastProbedAt.put(target.nodeId(), probeOrdinal.incrementAndGet());
+        transport.send(target.address(),
+                       ping)
+                 .onFailure(cause -> LOG.debug("SWIM isolation ping to {} failed: {}",
+                                               target.nodeId()
+                                                     .id(),
+                                               cause.message()));
     }
 
     /// Once per probe round: each registered channel's payload goes to ONE random ALIVE member, in a datagram of its own.
@@ -2150,14 +2197,15 @@ public final class SwimProtocol implements SwimMessageHandler {
         return List.copyOf(ordered);
     }
 
-    /// The death notice a Ping earns (#3028 design §3.2): the sender's own self-`Alive` is the claim compared with the
-    /// record. A relayed Ping carries the requester's identity entry appended by the relayer (D3), and the notice for
-    /// it rides back in the Ack the relayer forwards verbatim; the pinger's own entry is preferred. At most one notice.
+    /// The death notice a Ping earns (#3028 design §3.2): only the pinger's own self-`Alive` is the claim compared with
+    /// the record. A third-party `Alive` in the piggyback is gossip, already refused by the death-record gate, and earns
+    /// no notice. Consequence (FINDING, Architect to rule): the requester entry a relayer appends (D3) is third-party
+    /// to the target, so a relayed Ping earns no notice for the requester.
     private Option<MembershipUpdate> pingDeathNotice(Ping ping) {
         return Option.from(ping.piggyback()
                                .stream()
-                               .sorted(Comparator.comparing((MembershipUpdate update) -> !update.nodeId()
-                                                                                                .equals(ping.from())))
+                               .filter(update -> update.nodeId()
+                                                       .equals(ping.from()))
                                .flatMap(update -> deathNoticeFor(update).stream())
                                .findFirst());
     }
@@ -2926,9 +2974,8 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     /// The relayed Ping carries the requester's identity entry as this node holds it (#3028 design §3.2, D3), so the
-    /// target's death-record gate and notice apply as for a direct Ping from the requester. Appended beyond
-    /// `maxPiggyback` ([#appendBeyondCap]). Cost: the forwarded Ack's notice is processed here first, so this node
-    /// transiently learns the requester's death until its refutation arrives, which is ordinary dissemination.
+    /// target's death-record gate applies to it. Appended beyond `maxPiggyback` ([#appendBeyondCap]). The entry is
+    /// third-party to the target (this node is the pinger), so it earns no death notice ([#pingDeathNotice]).
     private List<MembershipUpdate> withRequesterIdentity(List<MembershipUpdate> gossip, NodeId requester) {
         return option(members.get(requester)).map(this::snapshotUpdate)
                      .map(entry -> appendBeyondCap(gossip, 0, entry))
@@ -3714,8 +3761,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     ///
     /// Intended semantic consequence: a member refuted AFTER its FAULTY edge (within
     /// residency) is re-admitted SWIM-side (`HealthyObserved` fires), but the cluster
-    /// FSM death already broadcast here is TERMINAL by design — the rejoin path
-    /// handles the returning node with a new identity.
+    /// FSM death already broadcast here is not terminal: the same process, refuting the
+    /// death notice (#3028 §3.1-§3.2), is re-admitted under its own identity, and its
+    /// `HealthyObserved` edge drives the restore path.
     private void emitFaultyAndDeparted(NodeId peer, long incarnation) {
         lastEmittedHealth.compute(peer, (_, prev) -> emitFaultyEdgePair(peer, prev, incarnation));
     }
@@ -4065,6 +4113,12 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// `announceJoin` seeds it (pre-announce sentinel).
     public long selfIncarnation() {
         return selfIncarnation.get();
+    }
+
+    /// Test-only: one [#probeRound], including the isolation ping (#3028 §3.4).
+    @Contract
+    void probeRoundForTest() {
+        probeRound();
     }
 
     /// Test-only: run one least-recently-probed selection-and-probe cycle (the
