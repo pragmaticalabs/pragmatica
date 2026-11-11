@@ -200,6 +200,7 @@ class DHTDepartureStaleDrainSetTest {
         }
 
         void flush(Set<NodeId> dead) {
+            try { Thread.sleep(Long.getLong("dht3049.stallMs", 0L)); } catch (InterruptedException e) { throw new IllegalStateException(e); }
             var pending = new ArrayList<>(queue);
             queue.clear();
             pending.forEach(e -> {
