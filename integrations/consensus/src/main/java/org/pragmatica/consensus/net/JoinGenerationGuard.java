@@ -64,7 +64,9 @@ public interface JoinGenerationGuard {
 
     private static Map<String, String> stamped(Map<String, String> labels) {
         var stamped = new HashMap<>(labels);
+
         stamped.put(NodeInfo.LABEL_WIRE_GENERATION, Integer.toString(WIRE_GENERATION));
+
         return Map.copyOf(stamped);
     }
 
