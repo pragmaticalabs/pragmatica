@@ -96,6 +96,9 @@ public final class ConfigValidator {
         promotionEscapeErrors(config.streaming(),
                               config.timeouts().swim().suspectTimeout(),
                               errors);
+        ownerLeaseErrors(config.streaming(),
+                         config.timeouts().swim().suspectTimeout(),
+                         errors);
         archiveRetentionErrors(config.slice(), errors);
         uploadErrors(config.appHttp().upload(),
                      errors);
@@ -296,6 +299,39 @@ public final class ConfigValidator {
             errors.add("streaming.promotion_escape_after (%dms) must be at least %dms (the larger of two swim suspect_timeout windows and the replica contest's source-wait bound): an escape earlier than the alarm goes ahead before the operator is told".formatted(streaming.promotionEscapeAfter()
                                                                                                                                                                                                                                                                                 .millis(),
                                                                                                                                                                                                                                                                        floor.millis()));
+        }
+    }
+
+    /// #2981 owner lease (fence-lease design 7, step 4): `R < T` so a renewal lands before the lease it renews lapses;
+    /// `clock_drift_bound` in `[1e-3, 1)` (the wait `W = T (1 + rho) / (1 - rho) + 50 ms` is meaningless at or above 1, and a
+    /// NaN fails the range test); `T + W < suspect_timeout` keeps the lease wait inside the detection time a crash already
+    /// costs. The suspect-timeout bound is checked only when the drift bound is valid, since `W` is undefined otherwise.
+    private static void ownerLeaseErrors(StreamingConfig streaming, TimeSpan suspectTimeout, List<String> errors) {
+        var rho = streaming.clockDriftBound();
+
+        if (streaming.ownerLeaseRenewal().nanos() >= streaming.ownerLease().nanos()) {
+            errors.add("streaming.owner_lease_renewal (%dms) must be less than streaming.owner_lease (%dms)".formatted(streaming.ownerLeaseRenewal()
+                                                                                                                                .millis(),
+                                                                                                                       streaming.ownerLease()
+                                                                                                                                .millis()));
+        }
+
+        if (! (rho >= StreamingConfig.MIN_CLOCK_DRIFT_BOUND && rho < 1)) {
+            errors.add("streaming.clock_drift_bound must be >= %s and < 1. Got: %s".formatted(StreamingConfig.MIN_CLOCK_DRIFT_BOUND,
+                                                                                              rho));
+
+            return;
+        }
+
+        var lease = streaming.ownerLease().nanos();
+        var wait = streaming.ownerLeaseWait().nanos();
+
+        if (lease + wait >= suspectTimeout.nanos()) {
+            errors.add("streaming.owner_lease (%dms) plus the new owner's lease wait (%dms, owner_lease * (1 + clock_drift_bound) / (1 - clock_drift_bound) + 50ms) must be less than timeouts.swim.suspect_timeout (%dms)".formatted(streaming.ownerLease()
+                                                                                                                                                                                                                                               .millis(),
+                                                                                                                                                                                                                                      streaming.ownerLeaseWait()
+                                                                                                                                                                                                                                               .millis(),
+                                                                                                                                                                                                                                      suspectTimeout.millis()));
         }
     }
 
