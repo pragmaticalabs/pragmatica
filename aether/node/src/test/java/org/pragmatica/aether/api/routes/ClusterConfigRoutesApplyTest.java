@@ -608,6 +608,16 @@ class ClusterConfigRoutesApplyTest {
         }
 
         @Test
+        void sourceFieldChange_withWorkerRemovedInSamePlan_refusedAsSourceReplace() {
+            var store = storeWith(committed(OPERATOR_TOML));
+
+            var result = routed(store, AUTO_HEAL_OFF, WORKER_ZERO_TOML.replace("eu-central", "eu-west"), ApplyRoute.APPLY);
+
+            refusedWith(result, ClusterConfigError.SourceReplaceRefused.class);
+            assertUnchanged(store);
+        }
+
+        @Test
         void workerScaleUp_leaderRoute_multiSourceCore_accepted() {
             var store = storeWith(committed(WITH_EDGE_CORE_TOML));
 
