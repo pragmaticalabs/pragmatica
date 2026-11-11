@@ -88,7 +88,10 @@ public record JbctConfig(FormatterConfig formatter,
             if (lint.disabledRules().contains(entry.getKey())) {
                 sb.append(entry.getKey()).append(" = \"off\"\n");
             } else {
-                sb.append(entry.getKey()).append(" = \"").append(entry.getValue().name().toLowerCase(Locale.ROOT)).append("\"\n");
+                sb.append(entry.getKey())
+                  .append(" = \"")
+                  .append(entry.getValue().name().toLowerCase(Locale.ROOT))
+                  .append("\"\n");
             }
         }
 

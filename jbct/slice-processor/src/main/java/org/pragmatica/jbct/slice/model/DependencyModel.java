@@ -4,7 +4,6 @@
 package org.pragmatica.jbct.slice.model;
 
 import java.util.Locale;
-
 import javax.annotation.processing.ProcessingEnvironment;
 import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.TypeElement;
