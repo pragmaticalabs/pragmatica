@@ -560,7 +560,7 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
                                           SqlConnector connector,
                                           SqlConnector.TransactionCallback<Unit> body) {
         return scriptLockOf(connector).fold(() -> connector.transactional(body),
-                                            lock -> connector.transactional(tx -> lock.take(tx, statementTimeout)
+                                            lock -> connector.transactional(tx -> lock.take(tx)
                                                                                       .flatMap(_ -> skipIfApplied(migration,
                                                                                                                   tx,
                                                                                                                   body))));
@@ -995,7 +995,7 @@ final class DefaultSchemaMigrations implements SchemaMigrations {
                                              SqlConnector connector,
                                              String nodeId) {
         return scriptLockOf(connector).fold(() -> connector.transactional(tx -> undoAndForget(undoScript, version, tx)),
-                                            lock -> connector.transactional(tx -> lock.take(tx, statementTimeout)
+                                            lock -> connector.transactional(tx -> lock.take(tx)
                                                                                       .flatMap(_ -> undoIfRecorded(undoScript,
                                                                                                                    version,
                                                                                                                    tx))))

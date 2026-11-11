@@ -22,7 +22,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
 import org.slf4j.Logger;
@@ -162,22 +161,17 @@ public sealed interface MigrationFence {
     /// @param engine      the engine's name, for the refusal of a script that cannot run in a transaction
     /// @param statement   the locking statement
     /// @param returnsRows whether the statement is a query (`SELECT ... FOR UPDATE`) rather than an update
-    /// @param busyWait    whether the engine answers a held lock with an immediate `BUSY` unless the connection is told
-    ///                    how long to wait (SQLite: `busy_timeout`, 3 s by default in the driver)
-    record ScriptLock(String engine, String statement, boolean returnsRows, boolean busyWait) implements MigrationFence {
-        private static final String BUSY_TIMEOUT = "PRAGMA busy_timeout = ";
-
+    record ScriptLock(String engine, String statement, boolean returnsRows) implements MigrationFence {
         /// CockroachDB: `FOR UPDATE` on the owner row, which exists from the first completed bootstrap on. Works on every
         /// supported version, unlike the transaction-scoped advisory lock (F2).
         static ScriptLock cockroach() {
             return new ScriptLock("CockroachDB",
                                   "SELECT 1 FROM " + SchemaHistoryEvolution.OWNER_TABLE + " FOR UPDATE",
-                                  true,
-                                  false);
+                                  true);
         }
 
         static ScriptLock db2() {
-            return new ScriptLock("DB2", "LOCK TABLE aether_schema_history IN EXCLUSIVE MODE", false, false);
+            return new ScriptLock("DB2", "LOCK TABLE aether_schema_history IN EXCLUSIVE MODE", false);
         }
 
         /// SQLite: a write that changes nothing. A deferred transaction takes the database write lock at its first write,
@@ -187,26 +181,14 @@ public sealed interface MigrationFence {
             return new ScriptLock("SQLite",
                                   "UPDATE " + SchemaHistoryEvolution.OWNER_TABLE
                                  + " SET blueprint_base = blueprint_base",
-                                  false,
-                                  true);
+                                  false);
         }
 
-        /// Takes the lock on the script's transaction connector `tx`. A lock held elsewhere is waited for up to `wait`
-        /// (the migration's own timeout): the serialized runner then re-reads the history and skips, instead of failing
-        /// after the driver's default busy timeout.
-        Promise<Unit> take(SqlConnector tx, TimeSpan wait) {
-            return waitFor(tx, wait).flatMap(_ -> lockStatement(tx));
-        }
-
-        private Promise<Unit> waitFor(SqlConnector tx, TimeSpan wait) {
-            return busyWait
-                   ? tx.queryList(BUSY_TIMEOUT + wait.duration().toMillis(),
-                                  IGNORED)
-                       .mapToUnit()
-                   : Promise.unitPromise();
-        }
-
-        private Promise<Unit> lockStatement(SqlConnector tx) {
+        /// Takes the lock on the script's transaction connector `tx`. A lock held elsewhere is waited for up to the
+        /// connector's per-statement timeout (the JDBC driver turns a statement's query timeout into SQLite's busy
+        /// wait), after which the serialized runner re-reads the history and skips. `[verified:
+        /// MigrationFenceInJvmTest.t8c_*]`
+        Promise<Unit> take(SqlConnector tx) {
             return returnsRows
                    ? tx.queryList(statement, IGNORED)
                        .mapToUnit()

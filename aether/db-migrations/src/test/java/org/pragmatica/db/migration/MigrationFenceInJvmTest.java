@@ -419,16 +419,18 @@ class MigrationFenceInJvmTest {
     // ---------------------------------------------------------------- fix round (#2591)
 
     /// A4b: a SQLite lock held LONGER than the driver's default busy timeout (3 s) is waited for: the second runner,
-    /// which read an empty history before the winner took the lock, then re-reads under the lock and skips. Before the
-    /// fix it failed SQLITE_BUSY after about 3 s.
+    /// which read an empty history before the winner took the lock, waits (the connector's per-statement timeout, here
+    /// the pool's 10 s, is the busy wait), then re-reads under the lock and skips. The review's 3 s failure came from a
+    /// raw JDBC probe; through the connector every statement carries its query timeout, which the driver applies as the
+    /// busy wait (probed on sqlite-jdbc 3.54.1.0).
     @Test
     void t8c_sqliteLockHeldBeyondTheDriverDefault_secondRunnerWaitsThenSkips() throws Exception {
         var file = dir.resolve("t8busy.db");
         var reached = new CountDownLatch(1);
         var gate = new CountDownLatch(1);
         var locked = new CountDownLatch(1);
-        var second = Probe.over(sqlite(file), DatabaseType.SQLITE, new CopyOnWriteArrayList<>()).afterHistoryRead(() -> pause(reached, gate));
-        var winner = Probe.over(sqlite(file), DatabaseType.SQLITE, new CopyOnWriteArrayList<>()).afterLock(() -> holdTheLock(locked, 4500));
+        var second = Probe.over(sqlite(file, "10s"), DatabaseType.SQLITE, new CopyOnWriteArrayList<>()).afterHistoryRead(() -> pause(reached, gate));
+        var winner = Probe.over(sqlite(file, "10s"), DatabaseType.SQLITE, new CopyOnWriteArrayList<>()).afterLock(() -> holdTheLock(locked, 4500));
         var executor = Executors.newFixedThreadPool(2);
 
         try {
@@ -441,6 +443,7 @@ class MigrationFenceInJvmTest {
             gate.countDown();
 
             assertThat(firstRun.get(60, TimeUnit.SECONDS).isSuccess()).isTrue();
+
             var loser = secondRun.get(60, TimeUnit.SECONDS);
 
             assertThat(loser.isSuccess()).as("the loser waited and skipped: %s", loser).isTrue();
@@ -452,10 +455,11 @@ class MigrationFenceInJvmTest {
         }
     }
 
-    /// A4b (bound): the wait is bounded by the migration's own timeout: with a 1 s timeout against a lock held 2.5 s,
-    /// the second runner FAILS (a driver-default 3 s wait would have let it skip).
+    /// A4b (bound): the wait is bounded by the connector's per-statement timeout: with the pool's 1 s against a lock
+    /// held 2.5 s, the second runner FAILS with the busy error (it never serializes beyond that bound), and nothing is
+    /// applied twice. Pair of the test above: together they pin that the wait IS the statement timeout.
     @Test
-    void t8c_sqliteLockWait_isBoundedByTheMigrationTimeout() throws Exception {
+    void t8c_sqliteLockWait_isBoundedByTheConnectorStatementTimeout() throws Exception {
         var file = dir.resolve("t8bound.db");
         var reached = new CountDownLatch(1);
         var gate = new CountDownLatch(1);
@@ -465,7 +469,7 @@ class MigrationFenceInJvmTest {
         var executor = Executors.newFixedThreadPool(2);
 
         try {
-            Future<Result<SchemaResult>> secondRun = executor.submit(() -> migrate(second, MARK_SCRIPT, SchemaMigrations.schemaMigrations(timeSpan(1).seconds())).await());
+            Future<Result<SchemaResult>> secondRun = executor.submit(() -> migrate(second, MARK_SCRIPT).await());
 
             assertThat(reached.await(30, TimeUnit.SECONDS)).isTrue();
             Future<Result<SchemaResult>> firstRun = executor.submit(() -> migrate(winner, MARK_SCRIPT).await());
@@ -474,7 +478,8 @@ class MigrationFenceInJvmTest {
             gate.countDown();
 
             assertThat(firstRun.get(60, TimeUnit.SECONDS).isSuccess()).isTrue();
-            assertThat(secondRun.get(60, TimeUnit.SECONDS).isFailure()).as("the wait ended at the 1 s migration timeout").isTrue();
+            assertThat(secondRun.get(60, TimeUnit.SECONDS).isFailure()).as("the wait ended at the 1 s statement timeout").isTrue();
+            assertThat(scalar("jdbc:sqlite:" + file, "SELECT COUNT(*) FROM applied_marks")).isEqualTo(1);
         } finally {
             gate.countDown();
             executor.shutdownNow();
@@ -619,7 +624,11 @@ class MigrationFenceInJvmTest {
     }
 
     private SqlConnector sqlite(Path file) {
-        return connector(DatabaseType.SQLITE, "jdbc:sqlite:" + file, 2);
+        return sqlite(file, "1s");
+    }
+
+    private SqlConnector sqlite(Path file, String statementTimeout) {
+        return connector(DatabaseType.SQLITE, "jdbc:sqlite:" + file, 2, statementTimeout);
     }
 
     private SqlConnector h2(String url) {
@@ -627,10 +636,14 @@ class MigrationFenceInJvmTest {
     }
 
     private SqlConnector connector(DatabaseType type, String url, int poolSize) {
+        return connector(type, url, poolSize, "1s");
+    }
+
+    private SqlConnector connector(DatabaseType type, String url, int poolSize, String connectionTimeout) {
         var pool = PoolConfig.poolConfigBuilder()
                              .withMinConnections(0)
                              .withMaxConnections(poolSize)
-                             .withConnectionTimeout(TimeSpan.timeSpan("1s").unwrap())
+                             .withConnectionTimeout(TimeSpan.timeSpan(connectionTimeout).unwrap())
                              .build()
                              .unwrap();
         var config = databaseConnectorConfigBuilder().withName(DATASOURCE)

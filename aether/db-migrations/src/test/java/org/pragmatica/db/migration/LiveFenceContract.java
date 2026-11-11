@@ -16,7 +16,10 @@ import java.util.concurrent.TimeUnit;
 import org.pragmatica.aether.resource.db.SqlConnector;
 import org.pragmatica.db.migration.SchemaMigrations.SchemaResult;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.io.TimeSpan;
 
 import org.junit.jupiter.api.AfterEach;
@@ -42,7 +45,7 @@ abstract class LiveFenceContract {
 
     private final List<SqlConnector> opened = new ArrayList<>();
     private final List<Connection> held = new ArrayList<>();
-    private final ExecutorService runners = Executors.newCachedThreadPool();
+    final ExecutorService runners = Executors.newCachedThreadPool();
 
     /// Creates a fresh, isolated schema (database or user) for this test; every later call addresses it.
     abstract void freshSchema() throws SQLException;
@@ -89,95 +92,73 @@ abstract class LiveFenceContract {
         }
     }
 
-    /// No fence outlives the run: after a success and after a failing script another session can take it.
+    /// The session-owned lock survives the holder's own commits and excludes a contender for as long as the holder's
+    /// session lives (Oracle `release_on_commit => FALSE`, SQL Server `@LockOwner = 'Session'`): the holder commits a
+    /// row after taking the fence, and a second session is STILL refused; once the holder's scope ends, it is free.
     @Test
-    void migrate_leavesNoFenceBehind_onSuccessAndOnFailure() throws Exception {
-        freshSchema();
-        var connector = connector(2);
-
-        assertThat(migrate(connector, "node-a", script(1, "ok", APPLY_SCRIPT)).isSuccess()).isTrue();
-        assertThat(canTakeAndDropFence()).as("fence free after a successful run").isTrue();
-
-        assertThat(migrate(connector, "node-a", script(2, "bad", "INSERT INTO missing_table VALUES (1);\n")).isFailure()).isTrue();
-        assertThat(canTakeAndDropFence()).as("fence free after a failing run").isTrue();
-    }
-
-    /// Two concurrent migrators on a fresh schema: the script is applied exactly once; the other runner is either
-    /// fenced or, arriving after the first finished, skips what is applied. Never a double apply, never another failure.
-    @Test
-    void migrate_twoConcurrentRunners_applyTheScriptExactlyOnce() throws Exception {
-        freshSchema();
-        var first = connector(2);
-        var second = connector(2);
-        var start = new CountDownLatch(1);
-        var script = script(1, "t3", APPLY_SCRIPT);
-        var a = runners.submit(() -> awaitThenMigrate(start, first, "node-a", script));
-        var b = runners.submit(() -> awaitThenMigrate(start, second, "node-b", script));
-
-        start.countDown();
-
-        var results = List.of(a.get(WAIT_MS, TimeUnit.MILLISECONDS), b.get(WAIT_MS, TimeUnit.MILLISECONDS));
-
-        results.forEach(result -> result.onFailure(cause -> assertThat(cause).isInstanceOf(MigrationError.MigrationFencedInDatabase.class)));
-        assertThat(results.stream().filter(Result::isSuccess).count()).as("at least one runner completed: %s", results).isPositive();
-
-        try (var probe = rawConnection()) {
-            assertThat(count(probe, "entries")).as("the script ran once").isEqualTo(1);
-            assertThat(count(probe, "aether_schema_history")).as("one history row").isEqualTo(1);
-        }
-    }
-
-    /// The fence survives the runner's own commits (Oracle `release_on_commit => FALSE`, SQL Server `@LockOwner =
-    /// 'Session'`): a runner parked inside its script, after the bootstrap and history commits, still excludes a
-    /// competitor. The test parks it on a row lock it holds itself.
-    @Test
-    void migrate_fenceSurvivesTheRunnersOwnCommits_competitorIsFencedMidRun() throws Exception {
+    void fence_excludesAContenderAcrossTheHoldersCommits_andFreesWhenTheScopeEnds() throws Exception {
         freshSchema();
 
-        var blocker = held(rawConnection());
-
-        blocker.setAutoCommit(true);
-        execute(blocker, "CREATE TABLE gate (v INT)");
-        execute(blocker, "INSERT INTO gate VALUES (1)");
-        blocker.setAutoCommit(false);
-        execute(blocker, "UPDATE gate SET v = 1");
-
-        var a = runners.submit(() -> migrate(connector(2), "node-a", script(1, "t4", "UPDATE gate SET v = 2;\n")));
-
-        awaitBlocked(a);
-
-        var competitor = migrate(connector(2), "node-b", script(1, "t4", "UPDATE gate SET v = 2;\n"));
-
-        assertThat(causeOf(competitor)).as("a competitor mid-run").isInstanceOf(MigrationError.MigrationFencedInDatabase.class);
-
-        blocker.rollback();
-
-        var finished = a.get(WAIT_MS, TimeUnit.MILLISECONDS);
-
-        assertThat(finished.isSuccess()).as("the parked runner completes: %s", finished).isTrue();
-        assertThat(canTakeAndDropFence()).as("fence free after the parked run").isTrue();
-    }
-
-    private boolean canTakeAndDropFence() throws SQLException {
-        try (var session = rawConnection()) {
-            return tryHoldFence(session);
-        }
-    }
-
-    private void awaitBlocked(Future<Result<SchemaResult>> runner) throws Exception {
-        var deadline = System.currentTimeMillis() + WAIT_MS;
-
-        while (System.currentTimeMillis() < deadline) {
-            if (blockedSessions() > 0) {
-                return;
-            }
-
-            Thread.sleep(100);
+        try (var setup = rawConnection()) {
+            execute(setup, "CREATE TABLE commit_probe (id INT)");
         }
 
-        throw new AssertionError("the runner never blocked on the test's row lock; runner: " + (runner.isDone()
-                                                                                              ? runner.get()
-                                                                                              : "still running"));
+        var hold = Promise.<Unit>promise();
+        var acquired = new CountDownLatch(1);
+        var holder = runners.submit(() -> holdTheFence(connector(1), "node-a", hold, acquired).await());
+
+        assertThat(acquired.await(WAIT_MS, TimeUnit.MILLISECONDS)).as("the holder took the fence and committed").isTrue();
+
+        var contender = tryTheFence(connector(1), "node-b").await();
+
+        assertThat(causeOf(contender)).as("a contender while the holder lives").isInstanceOf(MigrationError.MigrationFencedInDatabase.class);
+
+        hold.succeed(Unit.unit());
+
+        assertThat(holder.get(WAIT_MS, TimeUnit.MILLISECONDS).isSuccess()).isTrue();
+        assertThat(tryTheFence(connector(1), "node-b").await().isSuccess()).as("free after the holder's scope ended").isTrue();
+    }
+
+    /// A holder whose body FAILS releases the fence all the same (the close is the release).
+    @Test
+    void fence_isFreedWhenTheHoldersBodyFails() {
+        freshSchemaQuietly();
+
+        var failed = connector(1).pinned(GENEROUS.duration(),
+                                         session -> MigrationFence.acquire(session, DATASOURCE, "node-a")
+                                                                  .flatMap(_ -> Causes.cause("boom").<Unit>promise()),
+                                         session -> Promise.unitPromise())
+                                 .await();
+
+        assertThat(failed.isFailure()).isTrue();
+        assertThat(tryTheFence(connector(1), "node-b").await().isSuccess()).as("free after a failing holder").isTrue();
+    }
+
+    private static Promise<Unit> holdTheFence(SqlConnector connector, String node, Promise<Unit> hold, CountDownLatch acquired) {
+        return connector.pinned(GENEROUS.duration(),
+                                session -> MigrationFence.acquire(session, DATASOURCE, node)
+                                                         .flatMap(_ -> session.update("INSERT INTO commit_probe VALUES (1)"))
+                                                         .flatMap(_ -> signalThenWait(acquired, hold)),
+                                session -> Promise.unitPromise());
+    }
+
+    private static Promise<Unit> signalThenWait(CountDownLatch acquired, Promise<Unit> hold) {
+        acquired.countDown();
+        return hold;
+    }
+
+    private static Promise<Unit> tryTheFence(SqlConnector connector, String node) {
+        return connector.pinned(GENEROUS.duration(),
+                                session -> MigrationFence.acquire(session, DATASOURCE, node).mapToUnit(),
+                                session -> Promise.unitPromise());
+    }
+
+    private void freshSchemaQuietly() {
+        try {
+            freshSchema();
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     final SqlConnector connector(int poolSize) {
@@ -201,7 +182,7 @@ abstract class LiveFenceContract {
         return SchemaMigrations.schemaMigrations(GENEROUS).migrate(DATASOURCE, List.of(script), connector, node, OWNER).await();
     }
 
-    private static Result<SchemaResult> awaitThenMigrate(CountDownLatch start, SqlConnector connector, String node, MigrationScript script)
+    static Result<SchemaResult> awaitThenMigrate(CountDownLatch start, SqlConnector connector, String node, MigrationScript script)
         throws InterruptedException {
         start.await();
         return migrate(connector, node, script);

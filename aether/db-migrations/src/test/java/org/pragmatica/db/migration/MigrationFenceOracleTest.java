@@ -27,7 +27,7 @@ import static org.pragmatica.aether.resource.db.DatabaseConnectorConfig.database
 /// against a live Oracle Free 23. Each test gets its own user, so the lock name (derived from the schema) is private to
 /// it. The raw lock block below is written independently of the production text.
 @Tag("heavy-db")
-class MigrationFenceOracleTest extends LiveFenceContract {
+class MigrationFenceOracleTest extends LiveMigrateFenceContract {
     private static final AtomicInteger USERS = new AtomicInteger();
     private static final String PASSWORD = "fencepw";
     private static final String TRY_LOCK = "DECLARE h VARCHAR2(128); r INTEGER; BEGIN"
@@ -54,10 +54,10 @@ class MigrationFenceOracleTest extends LiveFenceContract {
     void freshSchema() throws SQLException {
         user = "FENCE_" + USERS.incrementAndGet();
 
-        try (var system = system()) {
-            execute(system, "CREATE USER " + user + " IDENTIFIED BY " + PASSWORD + " QUOTA UNLIMITED ON USERS");
-            execute(system, "GRANT CREATE SESSION, CREATE TABLE, CREATE SEQUENCE TO " + user);
-            execute(system, "GRANT EXECUTE ON SYS.DBMS_LOCK TO " + user);
+        try (var sys = DriverManager.getConnection(oracle.getJdbcUrl(), "sys as sysdba", oracle.getPassword())) {
+            execute(sys, "CREATE USER " + user + " IDENTIFIED BY " + PASSWORD + " QUOTA UNLIMITED ON USERS");
+            execute(sys, "GRANT CREATE SESSION, CREATE TABLE, CREATE SEQUENCE TO " + user);
+            execute(sys, "GRANT EXECUTE ON SYS.DBMS_LOCK TO " + user);
         }
     }
 
