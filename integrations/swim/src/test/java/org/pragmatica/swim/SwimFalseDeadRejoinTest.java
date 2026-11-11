@@ -74,6 +74,9 @@ class SwimFalseDeadRejoinTest {
     private final Set<Long> relayedSequences = ConcurrentHashMap.newKeySet();
     /// Datagrams the live node sent while it was inbound-isolated (`inboundOnly`).
     private final AtomicInteger liveSpoke = new AtomicInteger();
+    /// Every datagram delivered to the live node that carried a SUSPECT or FAULTY entry about the live node itself,
+    /// as "sender-port:message-type:state": the ways the live node can learn of its death.
+    private final CopyOnWriteArrayList<String> newsOfDeathToLive = new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<SwimObservation> observed = new CopyOnWriteArrayList<>();
 
     @AfterEach
@@ -129,6 +132,10 @@ class SwimFalseDeadRejoinTest {
                                                                                                          live.selfIncarnation(),
                                                                                                          observer.members().get(LIVE))
                                                                                                      .isGreaterThan(verdict.healthyAtVerdict()));
+        assertThat(newsOfDeathToLive).as("instrument: the live node learned of its death ONLY through a FAULTY entry relayed by the helper (never a SUSPECT, never from the observer)")
+                                     .isNotEmpty()
+                                     .allSatisfy(news -> assertThat(news).startsWith(HELPER_PORT + ":")
+                                                                         .endsWith(":" + MemberState.FAULTY));
     }
 
     /// The Ember shape: every peer's writes TO the live node are refused (backpressure), while its own
@@ -303,6 +310,7 @@ class SwimFalseDeadRejoinTest {
             }
 
             noteRelayedPing(target, message);
+            noteNewsOfDeath(target, message);
             countLiveSpeech(message);
             var handler = net.get(new InetSocketAddress("127.0.0.1", target.getPort()));
 
@@ -315,6 +323,24 @@ class SwimFalseDeadRejoinTest {
             if (liveIsolated.get() && inboundOnly.get() && selfPort == LIVE_PORT) {
                 liveSpoke.incrementAndGet();
             }
+        }
+
+        private void noteNewsOfDeath(InetSocketAddress target, SwimMessage message) {
+            if (target.getPort() != LIVE_PORT) {
+                return;
+            }
+
+            switch (message) {
+                case SwimMessage.Ping ping -> noteNews("Ping", ping.piggyback());
+                case SwimMessage.Ack ack -> noteNews("Ack", ack.piggyback());
+                default -> {}
+            }
+        }
+
+        private void noteNews(String type, List<SwimMessage.MembershipUpdate> piggyback) {
+            piggyback.stream()
+                     .filter(update -> update.nodeId().equals(LIVE) && update.state() != MemberState.ALIVE)
+                     .forEach(update -> newsOfDeathToLive.add(selfPort + ":" + type + ":" + update.state()));
         }
 
         private void noteRelayedPing(InetSocketAddress target, SwimMessage message) {
