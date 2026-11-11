@@ -91,6 +91,14 @@ class SwimIsolationProbeTest {
                        .toList();
         }
 
+        boolean anyPingNamingARequester() {
+            return sent.stream()
+                       .map(Sent::message)
+                       .filter(Ping.class::isInstance)
+                       .map(Ping.class::cast)
+                       .anyMatch(ping -> ping.onBehalfOf().isPresent());
+        }
+
         boolean anyPingReq() {
             return sent.stream().anyMatch(entry -> entry.message() instanceof PingReq);
         }
@@ -141,6 +149,16 @@ class SwimIsolationProbeTest {
 
         assertThat(transport.pingTargets()).as("one Ping per round, least-recently-probed FAULTY peer first")
                                            .containsExactly(ADDR_A, ADDR_B, ADDR_A);
+    }
+
+    @Test
+    void isolationProbe_directPing_namesNoRequester() {
+        protocol.latchSelfIsolation(() -> true);
+
+        protocol.probeRoundForTest();
+
+        assertThat(transport.pingTargets()).as("precondition: the isolation ping went out").containsExactly(ADDR_A);
+        assertThat(transport.anyPingNamingARequester()).as("a direct ping is nobody's relay").isFalse();
     }
 
     @Test
