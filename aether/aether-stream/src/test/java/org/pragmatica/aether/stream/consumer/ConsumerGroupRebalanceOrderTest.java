@@ -251,6 +251,22 @@ class ConsumerGroupRebalanceOrderTest {
             assertThat(committedOwners().values()).containsOnly("c2").hasSize(PARTITIONS);
         }
 
+        /// The witness is stamped with the removal's OWN epoch, not the one it read: an older rebalance that commits
+        /// between the read and the removal must not make the applier refuse the newer, empty-group removal.
+        @Test
+        void leaveGroup_lastMember_removalWinsOverAnOlderRebalanceThatCommittedAfterItWasDerived() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            commit(0);
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+            coordinator.leaveGroup(GROUP, STREAM, "c1");
+            coordinator.leaveGroup(GROUP, STREAM, "c2");
+
+            commit(1);
+            commit(3);
+
+            assertThat(committedOwners()).as("the empty group's removal is the newest word").isEmpty();
+        }
+
         @Test
         void leaveGroup_lastMember_isRefusedLoudly_whenCommittedAssignmentsCarryANewerTerm() {
             newCoordinator(2L).joinGroup(GROUP, STREAM, PARTITIONS, "c3", NODE_A);
