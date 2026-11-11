@@ -74,6 +74,20 @@ class AbandonedStreamDataTest {
     }
 
     @Test
+    void regularFilesInTheRoot_areNotReported() throws Exception {
+        var segments = root.resolve("stream-segments");
+
+        write(segments.resolve(".encryption-enabled"), 3);
+        write(segments.resolve("node-old").resolve("a.blk"),
+              7);
+        AbandonedStreamData.check(sink,
+                                  segments.resolve(SELF),
+                                  segments.resolve(SELF).resolve("wal"),
+                                  SELF);
+        assertThat(next().message()).contains("node-old").doesNotContain(".encryption-enabled");
+    }
+
+    @Test
     void ownDirectoryOnly_raisesNoWarning() throws Exception {
         var segments = root.resolve("stream-segments");
 
