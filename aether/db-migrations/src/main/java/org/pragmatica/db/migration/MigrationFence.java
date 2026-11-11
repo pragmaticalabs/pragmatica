@@ -176,7 +176,7 @@ public sealed interface MigrationFence {
 
         /// SQLite: a write that changes nothing. A deferred transaction takes the database write lock at its first write,
         /// and nothing was read before it, so this is the lock `BEGIN IMMEDIATE` takes (the connector offers no hook for
-        /// that statement) `[unverified: engine; pinned by MigrationFenceSqliteTest]`.
+        /// that statement) `[unverified: engine; pinned by MigrationFenceInJvmTest.t8_sqliteSerializedPair_secondRunnerReReadsUnderTheLockAndSkips]`.
         static ScriptLock sqlite() {
             return new ScriptLock("SQLite",
                                   "UPDATE " + SchemaHistoryEvolution.OWNER_TABLE
