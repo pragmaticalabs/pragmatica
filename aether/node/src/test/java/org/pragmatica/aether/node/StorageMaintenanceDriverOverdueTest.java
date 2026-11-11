@@ -37,7 +37,8 @@ class StorageMaintenanceDriverOverdueTest {
     private static final OperatorWarningCode OVERDUE = OperatorWarningCode.STORAGE_MAINTENANCE_PASS_OVERDUE;
     private static final OperatorWarningCode COMPLETED = OperatorWarningCode.STORAGE_MAINTENANCE_PASS_COMPLETED;
     private static final long INTERVAL_MS = 60_000;
-    private static final long OVERDUE_MS = StorageMaintenanceDriver.OVERDUE_AFTER_INTERVALS * INTERVAL_MS;
+    /// Three intervals, as ruled; written out rather than read from the driver, so that a changed constant goes red here.
+    private static final long OVERDUE_MS = 3 * INTERVAL_MS;
 
     private final DemotionManager demotion = mock(DemotionManager.class);
     private final StorageGarbageCollector gc = mock(StorageGarbageCollector.class);
@@ -80,7 +81,13 @@ class StorageMaintenanceDriverOverdueTest {
     void checkOverdue_neverTicked_countsFromTheDriversCreation() {
         var driver = driver(Runnable::run);
 
-        clock.addAndGet(OVERDUE_MS + 1);
+        clock.addAndGet(OVERDUE_MS);
+        driver.checkOverdue();
+
+        assertThat(degrade.isDegradedFor(OVERDUE, StorageMaintenanceDriver.PART_TICK)).as("three intervals since creation")
+                                                                                      .isFalse();
+
+        clock.addAndGet(1);
         driver.checkOverdue();
 
         assertThat(degrade.isDegradedFor(OVERDUE, StorageMaintenanceDriver.PART_TICK)).isTrue();
