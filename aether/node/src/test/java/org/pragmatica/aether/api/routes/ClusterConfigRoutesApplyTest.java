@@ -456,6 +456,61 @@ class ClusterConfigRoutesApplyTest {
             assertThat(result.isSuccess()).as("a core role declared with no nodes has nothing to fill: %s", result).isTrue();
         }
 
+        private static final String WITH_EDGE_ZERO_CORE_TOML = OPERATOR_TOML + EDGE_SOURCE + EDGE_CORE.replace("count = 2", "count = 0");
+
+        @Test
+        void zeroCoreAddSource_autoHealOff_admittedOnEitherRoute() {
+            var store = storeWith(committed(OPERATOR_TOML));
+
+            var leader = routed(store, AUTO_HEAL_OFF, WITH_EDGE_ZERO_CORE_TOML, ApplyRoute.LEADER);
+            var apply = routed(store, AUTO_HEAL_OFF, WITH_EDGE_ZERO_CORE_TOML, ApplyRoute.APPLY);
+
+            assertThat(leader.isSuccess()).as("a zero-size AddRole is unrouted, the CLI's CONFIG claim is LEADER: %s", leader).isTrue();
+            assertThat(apply.isSuccess()).as("a zero-size AddRole is unrouted, either claim is admitted: %s", apply).isTrue();
+        }
+
+        @Test
+        void zeroCoreAddSource_autoHealOn_admittedOnEitherRoute() {
+            var store = storeWith(committed(OPERATOR_TOML));
+
+            var leader = routed(store, AUTO_HEAL_ON, WITH_EDGE_ZERO_CORE_TOML, ApplyRoute.LEADER);
+            var apply = routed(store, AUTO_HEAL_ON, WITH_EDGE_ZERO_CORE_TOML, ApplyRoute.APPLY);
+
+            assertThat(leader.isSuccess()).as("unrouted, LEADER admitted: %s", leader).isTrue();
+            assertThat(apply.isSuccess()).as("unrouted, APPLY admitted: %s", apply).isTrue();
+        }
+
+        @Test
+        void nonzeroCoreAddRole_autoHealOff_leaderClaim_stillRoutedToApply() {
+            var store = storeWith(committed(OPERATOR_TOML));
+
+            var cause = refusedWith(routed(store, AUTO_HEAL_OFF, WITH_EDGE_CORE_TOML, ApplyRoute.LEADER), ClusterConfigError.RouteMismatch.class);
+
+            assertThat(cause.required()).isEqualTo(ApplyRoute.APPLY);
+            assertThat(cause.action()).isInstanceOf(DiffAction.AddRole.class);
+            assertUnchanged(store);
+        }
+
+        @Test
+        void zeroCoreAddRoleOnSecondSource_withCoreScaleUp_autoHealOn_refusedByDesiredCoreSources() {
+            var store = storeWith(committed(OPERATOR_TOML));
+
+            var cause = refusedWith(routed(store, AUTO_HEAL_ON, CORE_SCALED_TOML + EDGE_SOURCE + EDGE_CORE.replace("count = 2", "count = 0"), ApplyRoute.LEADER),
+                                    ClusterConfigError.MultiSourceCoreScaleRefused.class);
+
+            assertThat(cause.coreSources()).containsExactly("edge", "hetzner");
+            assertUnchanged(store);
+        }
+
+        @Test
+        void removingSecondCoreSource_withCoreScaleUp_autoHealOn_admittedByDesiredCoreSources() {
+            var store = storeWith(committed(WITH_EDGE_ZERO_CORE_TOML));
+
+            var result = routed(store, AUTO_HEAL_ON, CORE_SCALED_TOML, ApplyRoute.LEADER);
+
+            assertThat(result.isSuccess()).as("the post-commit config has one core source: %s", result).isTrue();
+        }
+
         @Test
         void coreScaleUp_multiSource_autoHealOff_acceptedOnApply() {
             var store = storeWith(committed(WITH_EDGE_CORE_TOML));

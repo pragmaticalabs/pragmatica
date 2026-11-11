@@ -158,12 +158,12 @@ record ClusterConfigApplierRecord(ClusterTopologyManager topologyManager) implem
         }
 
         /// The route of a pool-changing action; none for an action that changes no pool (a config-only change, or a
-        /// removal of nodes the stored config already sizes at zero).
+        /// removal of nodes the stored config already sizes at zero, or an addition of a zero-size role).
         private Option<ApplyRoute> route(DiffAction action) {
             return switch (action) {
                 case DiffAction.ScaleUp scale -> Option.some(routeOf(scale.role()));
                 case DiffAction.ScaleDown scale -> Option.some(routeOf(scale.role()));
-                case DiffAction.AddRole add -> Option.some(routeOf(add.role()));
+                case DiffAction.AddRole add when add.count() > 0 -> Option.some(routeOf(add.role()));
                 case DiffAction.RemoveRole remove when remove.count() > 0 -> Option.some(routeOf(remove.role()));
                 case DiffAction.RemoveSource remove when storedRoles(remove.sourceName()).anyMatch(role -> ClusterBootstrapConfigDiff.roleSize(role.getValue()) > 0) -> Option.some(routeOf(NodeRole.CORE));
                 case DiffAction.SourceFieldChange _ -> Option.some(routeOf(NodeRole.CORE));
