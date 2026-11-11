@@ -289,14 +289,16 @@ class PartitionBackfillTest {
             };
             var backfill = partitionBackfill(registry, recovery, gated, SELF, TimeSpan.timeSpan(500).millis());
 
+            var releases = new AtomicInteger();
+
+            backfill.releaseWindowHook(releases::incrementAndGet);
             assertThat(backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds()).isFailure())
                     .as("the old flight timed out").isTrue();
             var next = backfill.backfill(STREAM, PARTITION);
             var before = descriptorFor(SELF);
 
             served.requestCatchup(SOURCE, requests.getFirst()).onResult(pending.getFirst()::resolve);
-            // synchronous: resolving the pull runs the old run's whole continuation chain on this thread; a wall-clock wait here would
-            // eat into the next flight's 500 ms idle bound (#3070)
+            awaitLanded(releases, 2);
 
             assertThat(descriptorFor(SELF)).as("the late run changed no replica row").isEqualTo(before);
             assertThat(descriptorFor(SELF).state()).isEqualTo(ReplicationState.SYNCING);
@@ -335,13 +337,15 @@ class PartitionBackfillTest {
                                              TimeSpan.timeSpan(500).millis());
 
             backfill.ownerResolver((_, _) -> Option.some(SOURCE));
+            var releases = new AtomicInteger();
+
+            backfill.releaseWindowHook(releases::incrementAndGet);
             assertThat(backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds()).isFailure())
                     .as("the old flight timed out").isTrue();
             var next = backfill.backfill(STREAM, PARTITION);
 
             served.requestCatchup(SOURCE, requests.getFirst()).onResult(pending.getFirst()::resolve);
-            // synchronous: resolving the pull runs the old run's whole continuation chain on this thread; a wall-clock wait here would
-            // eat into the next flight's 500 ms idle bound (#3070)
+            awaitLanded(releases, 2);
 
             assertThat(acks).as("the late run acked nothing").isEmpty();
 
@@ -400,6 +404,9 @@ class PartitionBackfillTest {
             };
             var backfill = partitionBackfill(registry, recovery, gated, SELF, TimeSpan.timeSpan(500).millis());
 
+            var releases = new AtomicInteger();
+
+            backfill.releaseWindowHook(releases::incrementAndGet);
             assertThat(backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds()).isFailure())
                     .as("the old flight timed out").isTrue();
 
@@ -409,8 +416,7 @@ class PartitionBackfillTest {
 
             pending.getFirst().fail(ReplicationError.General.REPLICATION_TIMEOUT);
             // let the old run's failure travel through its continuations to `land`
-            // synchronous: resolving the pull runs the old run's whole continuation chain on this thread; a wall-clock wait here would
-            // eat into the next flight's 500 ms idle bound (#3070)
+            awaitLanded(releases, 2);
 
             var joined = backfill.backfill(STREAM, PARTITION);
 
@@ -3792,6 +3798,19 @@ class PartitionBackfillTest {
         private ReplicaWatermarkProbe benignProbe() {
             return (_, _, _) -> ReplicationError.General.REPLICATION_TIMEOUT.promise();
         }
+    }
+
+    /// #3070: waits, under a deadline, until `releases` reaches `expected` -- the flight's release hook runs once for the timed-out
+    /// flight and once more when its late run lands, after every ack and registry write of that run. A wall-clock wait is wrong
+    /// here: it runs inside the next flight's idle bound.
+    private static void awaitLanded(AtomicInteger releases, int expected) {
+        var deadline = System.nanoTime() + TimeSpan.timeSpan(10).seconds().nanos();
+
+        while (releases.get() < expected && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+
+        assertThat(releases.get()).as("the late run landed").isGreaterThanOrEqualTo(expected);
     }
 
     private ReplicaDescriptor descriptorFor(NodeId nodeId) {
