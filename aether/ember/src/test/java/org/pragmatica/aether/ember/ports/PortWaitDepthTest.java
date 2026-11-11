@@ -95,7 +95,7 @@ class PortWaitDepthTest {
                                           : Result.success(Option.some("late")),
                                     () -> Causes.cause("timed out"));
 
-        assertThat(outcome.fold(cause -> cause, _ -> null)).isSameAs(failure);
+        assertThat(outcome.<Object> fold(cause -> cause, _ -> "value")).isSameAs(failure);
         assertThat(polls.get()).as("no retry after a failure").isEqualTo(1);
         assertThat(System.nanoTime() - started).as("returned well before the 10 s deadline").isLessThan(1_000_000_000L);
     }
