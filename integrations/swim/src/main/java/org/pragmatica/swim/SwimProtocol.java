@@ -1074,13 +1074,12 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                                                                                     .id())));
     }
 
-    /// No pending probe is registered (D4): a lost isolation ping is the expected outcome while isolated, so its
+    /// The piggyback leads with this node's identity entry ([#ackPiggyback]), so the self-`Alive` claim a peer's death
+    /// notice answers is always present, whatever the gossip buffer holds. No pending probe is registered (D4): a lost isolation ping is the expected outcome while isolated, so its
     /// timeout must neither raise the LHM score nor send PingReqs nor suspect the peer. Design-out: the send failure
     /// is absorbed at debug level because the next round retries another peer.
     private void sendIsolationPing(SwimMember target) {
-        var ping = Ping.ping(selfId,
-                             sequenceCounter.incrementAndGet(),
-                             piggybackBuffer.peekUpdates(config.maxPiggyback(), piggybackBudgetBytes));
+        var ping = Ping.ping(selfId, sequenceCounter.incrementAndGet(), ackPiggyback());
 
         lastProbedAt.put(target.nodeId(), probeOrdinal.incrementAndGet());
         transport.send(target.address(),

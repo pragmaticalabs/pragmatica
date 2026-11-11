@@ -172,8 +172,7 @@ class SwimIsolationProbeTest {
         holder.setBootTokens(BootTokens.bootTokens(TOKEN_A));
         holder.putDeathRecordForTest(SELF_ID, 1L, SELF_TOKEN, System.currentTimeMillis());
 
-        protocol.start();
-        await().atMost(Duration.ofSeconds(2)).until(() -> transport.pingTargets().contains(ADDR_A));
+        protocol.probeRoundForTest();
         var isolationPing = transport.firstPingTo(ADDR_A);
         holder.onMessage(SELF_ADDR, isolationPing);
         var ack = holderTransport.sentMessages.stream()
