@@ -49,7 +49,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
-import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -262,28 +261,28 @@ class PeerObservationOrderTest {
         assertThat(node.suspectsTheLeader()).as("the leader stays suspected").isTrue();
     }
 
-    /// #3044 3b: a leader that loses eligibility is removed view-free. The harness records no event for a
-    /// transition (`Fsm` is final, `Transition` carries none), so the removal is read from what only it does: the
-    /// follower leaves `Led` exactly once and names NO suspect (a view-carrying `NodeGone` of the leader names it), and
-    /// no view-carrying event reaches the FSM. No pre-vote: the leader is ineligible.
+    /// #3044 3b: a leader that loses eligibility is removed view-free. The harness records no event for a transition
+    /// (`Fsm` is final, `Transition` carries none), so the dispatched event is read from what it does to the STORED
+    /// view: a view-carrying change would rewrite the view wholesale and delete node 4 (a voter-to-be the narrower voter
+    /// set filters out), the view-free removal keeps it. The follower leaves `Led` exactly once and names NO suspect.
+    /// No pre-vote: the leader is ineligible.
     @Test
     void installVoterConfiguration_inLed_leaderDropped_dispatchesOneViewFreeRemoval_andLeavesLed() {
         node = Node.following(false);
+        node.ctx.installVoters(List.of(N1, N2, N3, N4));
+        node.manager.peerJoined(new PeerJoined(N4, List.of(N1, N2, N3, N4), ObservationSource.QUIC, 2L));
         var transitionsBefore = node.harness.transitions().size();
-        var handledBefore = node.harness.handled().size();
-        var ignoredBefore = node.harness.ignored().size();
 
         node.manager.installVoterConfiguration(VoterConfiguration.voterConfiguration(2L, List.of(N2, N3)).unwrap());
+        node.ctx.installVoters(List.of(N1, N2, N3, N4));
 
-        var dispatched = Stream.concat(node.harness.handled().stream().skip(handledBefore).map(FsmTestHarness.Handled::event),
-                                       node.harness.ignored().stream().skip(ignoredBefore).map(FsmTestHarness.Ignored::event))
-                               .toList();
         assertThat(node.harness.transitions().stream().skip(transitionsBefore).filter(transition -> transition.from() instanceof LeaderElectionState.Led))
             .as("the follower leaves Led exactly once").hasSize(1);
         assertThat(node.harness.state()).as("a view-free removal loses the leader naming no suspect")
                                         .isInstanceOfSatisfying(LeaderElectionState.ReElecting.class,
                                                                 reElecting -> assertThat(reElecting.suspect()).isEqualTo(Option.none()));
-        assertThat(dispatched).as("no view-carrying event").noneMatch(ClusterFsmEvent.TopologyChange.class::isInstance);
+        assertThat(node.ctx.currentTopology()).as("no view-carrying event: the stored view lost the leader only")
+                                              .containsExactly(N2, N3, N4);
     }
 
     /// #3044 3b discriminator: the removal writes exactly the leader out of the STORED view. `currentTopology()` reads
@@ -298,7 +297,7 @@ class PeerObservationOrderTest {
         assertThat(node.ctx.currentTopology()).as("control: the four-node view is stored").containsExactly(N1, N2, N3, N4);
 
         node.manager.installVoterConfiguration(VoterConfiguration.voterConfiguration(2L, List.of(N2, N3)).unwrap());
-        node.ctx.installVoters(List.of(N2, N3, N4));
+        node.ctx.installVoters(List.of(N1, N2, N3, N4));
 
         assertThat(node.ctx.currentTopology()).as("only the leader left the stored view").containsExactly(N2, N3, N4);
         assertThat(node.harness.state()).as("the leader is lost").isInstanceOf(LeaderElectionState.ReElecting.class);
