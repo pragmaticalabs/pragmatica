@@ -74,7 +74,11 @@ public final class ProblemResponses {
 
     /// The problem body for a cause: the RFC 9457 members, plus the `code` extension member when the cause is a
     /// [TypedRefusal] (#686), so a client classifies the refusal by its code rather than by the status alone.
-    static Result<String> problemJson(Cause cause, HttpStatus status, String detail, String instance, String requestId) {
+    static Result<String> problemJson(Cause cause,
+                                      HttpStatus status,
+                                      String detail,
+                                      String instance,
+                                      String requestId) {
         var problem = ProblemDetail.problemDetail(status, detail, instance, requestId);
 
         return switch (cause) {
@@ -84,7 +88,11 @@ public final class ProblemResponses {
     }
 
     @Contract
-    private static void write(ResponseWriter response, HttpStatus status, String detail, String requestId, Result<String> body) {
+    private static void write(ResponseWriter response,
+                              HttpStatus status,
+                              String detail,
+                              String requestId,
+                              Result<String> body) {
         var serverStatus = toServerStatus(status.code());
 
         body.onSuccess(json -> response.header(ResponseWriter.X_REQUEST_ID, requestId)

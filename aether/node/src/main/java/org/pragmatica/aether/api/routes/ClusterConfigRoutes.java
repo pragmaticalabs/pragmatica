@@ -552,7 +552,6 @@ public final class ClusterConfigRoutes implements RouteSource {
         var validationActions = !removed.isEmpty() && desired.communities().isEmpty()
                                 ? plan.allActions().stream().filter(action -> !workerCountChange(action)).toList()
                                 : plan.allActions();
-
         // #686: with a route, check 2 decides the route of every pool-changing action; without one, the pre-#686 rule.
         return request.route()
                       .fold(() -> applier.validate(validationActions),

@@ -620,7 +620,9 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware, Typed
     record RouteMismatch(ApplyRoute claimed, ApplyRoute required, DiffAction action) implements ClusterConfigError {
         @Override
         public String message() {
-            return "Apply route mismatch: the request claims " + claimed + " but " + action.symbol() + " " + action.description()
+            return "Apply route mismatch: the request claims " + claimed
+                 + " but " + action.symbol()
+                 + " " + action.description()
                  + " resolves to " + required
                  + " under the committed auto-heal setting. Re-run `aether cluster apply` so it re-plans against the current state.";
         }
@@ -637,7 +639,9 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware, Typed
     record SourceReplaceRefused(String sourceName, String field) implements ClusterConfigError {
         @Override
         public String message() {
-            return field + " on " + sourceName + " replaces every node of the source. That is possible only for a core-only source"
+            return field
+                 + " on " + sourceName
+                 + " replaces every node of the source. That is possible only for a core-only source"
                  + " with auto-heal off: disable auto-heal, or move the roles to a new source and remove the old one.";
         }
 
@@ -652,8 +656,12 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware, Typed
     record LivePoolRemovalRefused(String sourceName, String role, int count) implements ClusterConfigError {
         @Override
         public String message() {
-            return "Removing " + sourceName + "." + role + " with committed count " + count + " would strand its nodes. Set "
-                 + sourceName + "." + role + " count to 0, apply, wait until `aether cluster status` shows 0 live, then remove the entry.";
+            return "Removing " + sourceName
+                 + "." + role
+                 + " with committed count " + count
+                 + " would strand its nodes. Set " + sourceName
+                 + "." + role
+                 + " count to 0, apply, wait until `aether cluster status` shows 0 live, then remove the entry.";
         }
 
         @Override
@@ -667,7 +675,9 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware, Typed
     record CoreFillRefused(String sourceName, int count) implements ClusterConfigError {
         @Override
         public String message() {
-            return "Adding " + count + " core nodes on " + sourceName + " with auto-heal on: core nodes on a new source are created"
+            return "Adding " + count
+                 + " core nodes on " + sourceName
+                 + " with auto-heal on: core nodes on a new source are created"
                  + " by apply only with auto-heal off: disable auto-heal, apply, re-enable.";
         }
 
@@ -682,7 +692,8 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware, Typed
     record MultiSourceCoreScaleRefused(String sourceName, List<String> coreSources) implements ClusterConfigError {
         @Override
         public String message() {
-            return "Scaling core on " + sourceName + " with auto-heal on while several sources declare the core role " + coreSources
+            return "Scaling core on " + sourceName
+                 + " with auto-heal on while several sources declare the core role " + coreSources
                  + ": with several core sources, apply creates the cores itself only with auto-heal off: disable auto-heal, apply, re-enable.";
         }
 

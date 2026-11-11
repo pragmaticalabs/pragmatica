@@ -49,7 +49,6 @@ public sealed interface ClusterConfigApplier {
         public Promise<Unit> validate(List<DiffAction> actions) {
             return ClusterConfigError.ClusterTopologyManagerUnavailable.INSTANCE.promise();
         }
-
         @Override
         public Promise<Unit> validateRoute(ApplyRoute claimed,
                                            List<DiffAction> actions,
@@ -84,25 +83,23 @@ record ClusterConfigApplierRecord(ClusterTopologyManager topologyManager) implem
                                        ClusterBootstrapConfig desired) {
         var plan = new RoutedPlan(topologyManager.isAutoHealEnabled(), stored, desired);
 
-        return communityRefusal(actions).orElse(() -> firstOf(actions.stream()
-                                                                     .map(plan::refusal)))
-                                        .orElse(() -> firstOf(actions.stream()
-                                                                     .map(action -> plan.mismatch(claimed, action))))
-                                        .fold(Promise::unitPromise, cause -> cause.promise());
+        return communityRefusal(actions).orElse(() -> firstOf(actions.stream().map(plan::refusal)))
+                               .orElse(() -> firstOf(actions.stream().map(action -> plan.mismatch(claimed, action))))
+                               .fold(Promise::unitPromise,
+                                     cause -> cause.promise());
     }
 
     /// The explicit-community guard on the route path: with a route, a worker `AddRole` is no longer refused as
     /// unsupported, so it joins the worker scale changes this guard covers.
     private Option<ClusterConfigError> communityRefusal(List<DiffAction> actions) {
         return topologyManager.usesExplicitCommunities() && actions.stream()
-                                                                    .anyMatch(ClusterConfigApplierRecord::workerCapacityChange)
+                                                                   .anyMatch(ClusterConfigApplierRecord::workerCapacityChange)
                ? Option.some(new ClusterConfigError.ParseFailed("Explicit communities own worker capacity; change community.target_size instead of source worker count"))
                : Option.none();
     }
 
     private static Option<ClusterConfigError> firstOf(Stream<Option<ClusterConfigError>> verdicts) {
-        return Option.from(verdicts.flatMap(Option::stream)
-                                   .findFirst());
+        return Option.from(verdicts.flatMap(Option::stream).findFirst());
     }
 
     private static boolean workerCapacityChange(DiffAction action) {
@@ -141,31 +138,23 @@ record ClusterConfigApplierRecord(ClusterTopologyManager topologyManager) implem
     private record RoutedPlan(boolean autoHealEnabled, ClusterBootstrapConfig stored, ClusterBootstrapConfig desired) {
         Option<ClusterConfigError> refusal(DiffAction action) {
             return switch (action) {
-                case DiffAction.SourceFieldChange change when autoHealEnabled || declaresLiveNonCore(change.sourceName()) -> Option.some(new ClusterConfigError.SourceReplaceRefused(change.sourceName()
-                                                                                                                                                                                      .value(),
-                                                                                                                                                                                change.field()));
-                case DiffAction.RemoveRole remove when !remove.role()
-                                                             .equals(NodeRole.CORE) && remove.count() > 0 -> Option.some(new ClusterConfigError.LivePoolRemovalRefused(remove.sourceName()
-                                                                                                                                                                                 .value(),
-                                                                                                                                                                           remove.role()
-                                                                                                                                                                                 .value(),
-                                                                                                                                                                           remove.count()));
+                case DiffAction.SourceFieldChange change when autoHealEnabled || declaresLiveNonCore(change.sourceName()) -> Option.some(new ClusterConfigError.SourceReplaceRefused(change.sourceName().value(),
+                                                                                                                                                                                     change.field()));
+                case DiffAction.RemoveRole remove when!remove.role().equals(NodeRole.CORE) && remove.count() > 0 -> Option.some(new ClusterConfigError.LivePoolRemovalRefused(remove.sourceName().value(),
+                                                                                                                                                                              remove.role().value(),
+                                                                                                                                                                              remove.count()));
                 case DiffAction.RemoveSource remove -> liveNonCoreRemoval(remove.sourceName());
-                case DiffAction.AddRole add when add.role()
-                                                    .equals(NodeRole.CORE) && add.count() > 0 && autoHealEnabled -> Option.some(new ClusterConfigError.CoreFillRefused(add.sourceName()
-                                                                                                                                                                         .value(),
-                                                                                                                                                                   add.count()));
-                case DiffAction.ScaleUp scale when scale.role()
-                                                        .equals(NodeRole.CORE) && autoHealEnabled && coreSources().size() > 1 -> Option.some(new ClusterConfigError.MultiSourceCoreScaleRefused(scale.sourceName()
-                                                                                                                                                                                                      .value(),
-                                                                                                                                                                                                coreSources()));
+                case DiffAction.AddRole add when add.role().equals(NodeRole.CORE) && add.count() > 0 && autoHealEnabled -> Option.some(new ClusterConfigError.CoreFillRefused(add.sourceName().value(),
+                                                                                                                                                                              add.count()));
+                case DiffAction.ScaleUp scale when scale.role().equals(NodeRole.CORE) && autoHealEnabled && coreSources().size() > 1 -> Option.some(new ClusterConfigError.MultiSourceCoreScaleRefused(scale.sourceName().value(),
+                                                                                                                                                                                                       coreSources()));
                 default -> rejection(action).filter(RoutedPlan::refusedWithRoute);
             };
         }
 
         Option<ClusterConfigError> mismatch(ApplyRoute claimed, DiffAction action) {
             return route(action).filter(required -> required != claimed)
-                                .map(required -> new ClusterConfigError.RouteMismatch(claimed, required, action));
+                        .map(required -> new ClusterConfigError.RouteMismatch(claimed, required, action));
         }
 
         /// The route of a pool-changing action; none for an action that changes no pool (a config-only change, or a
@@ -191,24 +180,22 @@ record ClusterConfigApplierRecord(ClusterTopologyManager topologyManager) implem
         /// A route admits what `rejection` refuses only as unsupported without one (config-only and structural changes,
         /// which check 2 judges above); a version, runtime, runtime-profile or immutable change stays refused.
         private static boolean refusedWithRoute(ClusterConfigError cause) {
-            return !(cause instanceof ClusterConfigError.UnsupportedApplyAction);
+            return ! (cause instanceof ClusterConfigError.UnsupportedApplyAction);
         }
 
         private Option<ClusterConfigError> liveNonCoreRemoval(SourceName source) {
             return Option.from(storedRoles(source).filter(role -> !role.getKey()
-                                                                      .equals(NodeRole.CORE))
-                                                  .filter(role -> ClusterBootstrapConfigDiff.roleSize(role.getValue()) > 0)
-                                                  .findFirst())
-                         .map(role -> new ClusterConfigError.LivePoolRemovalRefused(source.value(),
-                                                                                    role.getKey()
-                                                                                        .value(),
-                                                                                    ClusterBootstrapConfigDiff.roleSize(role.getValue())));
+                                                                       .equals(NodeRole.CORE))
+                                          .filter(role -> ClusterBootstrapConfigDiff.roleSize(role.getValue()) > 0)
+                                          .findFirst()).map(role -> new ClusterConfigError.LivePoolRemovalRefused(source.value(),
+                                                                                                                  role.getKey()
+                                                                                                                      .value(),
+                                                                                                                  ClusterBootstrapConfigDiff.roleSize(role.getValue())));
         }
 
         private boolean declaresLiveNonCore(SourceName source) {
-            return Stream.concat(storedRoles(source), rolesOf(desired, source))
-                         .anyMatch(role -> !role.getKey()
-                                                .equals(NodeRole.CORE) && ClusterBootstrapConfigDiff.roleSize(role.getValue()) > 0);
+            return Stream.concat(storedRoles(source), rolesOf(desired, source)).anyMatch(role -> !role.getKey()
+                                                                                                      .equals(NodeRole.CORE) && ClusterBootstrapConfigDiff.roleSize(role.getValue()) > 0);
         }
 
         private List<String> coreSources() {
@@ -227,9 +214,9 @@ record ClusterConfigApplierRecord(ClusterTopologyManager topologyManager) implem
             return rolesOf(stored, source);
         }
 
-        private static Stream<Map.Entry<NodeRole, RoleSubTable>> rolesOf(ClusterBootstrapConfig config, SourceName source) {
-            return Option.option(config.sources()
-                                       .get(source.value()))
+        private static Stream<Map.Entry<NodeRole, RoleSubTable>> rolesOf(ClusterBootstrapConfig config,
+                                                                         SourceName source) {
+            return Option.option(config.sources().get(source.value()))
                          .stream()
                          .flatMap(profile -> profile.roles()
                                                     .entrySet()
