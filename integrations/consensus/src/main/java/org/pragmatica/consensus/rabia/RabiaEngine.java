@@ -1445,20 +1445,24 @@ public class RabiaEngine<C extends Command> {
 
     private void preSyncCompleted(Result<Unit> result) {
         preSyncRunning.set(false);
-        result.onSuccess(_ -> preSyncPassed()).onFailure(this::refuseStartup);
+        var _ = result.fold(this::refuseStartup, _ -> preSyncPassed());
     }
 
-    private void preSyncPassed() {
+    private Unit preSyncPassed() {
         preSyncDone = true;
         Option.option(latestClusterState)
               .filter(latest -> latest.state() == ClusterStateNotification.State.ACTIVE)
               .onPresent(this::handleClusterActive);
+
+        return Unit.unit();
     }
 
-    private void refuseStartup(Cause cause) {
+    private Unit refuseStartup(Cause cause) {
         log.error("Node {}: refusing to start consensus: {}", self, cause.message());
-        startPromise.get().fail(cause);
+        var _ = startPromise.get().fail(cause);
         var _ = stop();
+
+        return Unit.unit();
     }
 
     /// Authorize a gated engine to start consensus participation.
