@@ -460,10 +460,8 @@ class ClusterConfigRoutesApplyTest {
 
         @Test
         void zeroCoreAddSource_autoHealOff_admittedOnEitherRoute() {
-            var store = storeWith(committed(OPERATOR_TOML));
-
-            var leader = routed(store, AUTO_HEAL_OFF, WITH_EDGE_ZERO_CORE_TOML, ApplyRoute.LEADER);
-            var apply = routed(store, AUTO_HEAL_OFF, WITH_EDGE_ZERO_CORE_TOML, ApplyRoute.APPLY);
+            var leader = routed(storeWith(committed(OPERATOR_TOML)), AUTO_HEAL_OFF, WITH_EDGE_ZERO_CORE_TOML, ApplyRoute.LEADER);
+            var apply = routed(storeWith(committed(OPERATOR_TOML)), AUTO_HEAL_OFF, WITH_EDGE_ZERO_CORE_TOML, ApplyRoute.APPLY);
 
             assertThat(leader.isSuccess()).as("a zero-size AddRole is unrouted, the CLI's CONFIG claim is LEADER: %s", leader).isTrue();
             assertThat(apply.isSuccess()).as("a zero-size AddRole is unrouted, either claim is admitted: %s", apply).isTrue();
@@ -471,10 +469,8 @@ class ClusterConfigRoutesApplyTest {
 
         @Test
         void zeroCoreAddSource_autoHealOn_admittedOnEitherRoute() {
-            var store = storeWith(committed(OPERATOR_TOML));
-
-            var leader = routed(store, AUTO_HEAL_ON, WITH_EDGE_ZERO_CORE_TOML, ApplyRoute.LEADER);
-            var apply = routed(store, AUTO_HEAL_ON, WITH_EDGE_ZERO_CORE_TOML, ApplyRoute.APPLY);
+            var leader = routed(storeWith(committed(OPERATOR_TOML)), AUTO_HEAL_ON, WITH_EDGE_ZERO_CORE_TOML, ApplyRoute.LEADER);
+            var apply = routed(storeWith(committed(OPERATOR_TOML)), AUTO_HEAL_ON, WITH_EDGE_ZERO_CORE_TOML, ApplyRoute.APPLY);
 
             assertThat(leader.isSuccess()).as("unrouted, LEADER admitted: %s", leader).isTrue();
             assertThat(apply.isSuccess()).as("unrouted, APPLY admitted: %s", apply).isTrue();
