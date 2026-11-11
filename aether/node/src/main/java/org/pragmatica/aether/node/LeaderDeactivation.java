@@ -32,14 +32,18 @@ import static org.pragmatica.lang.Unit.unit;
 /// enters `QuorumLost` raises the change, and it can still be between its CAS and its entry action when the stop's own
 /// dispatch, finding `QuorumLost` already current, has returned).
 ///
-/// A `LeaderChange(self)` still queued and undelivered when `stop()` takes the wait leaves [#next] resolved (the node is not yet
-/// recorded as the leader), so [#delivered] first drains the executor: that delivers every change queued before the stop, and
-/// only then reads [#next], so a leadership delivered by the drain makes the wait pending and its deactivation is awaited
-/// even when it is enqueued after the drain marker.
+/// A `LeaderChange(self)` that passed the stopping gate before `markStopping` and is still running its route (toggles active,
+/// the record not yet updated) when `stop()` takes the wait leaves [#next] resolved, so [#delivered] first drains the executor:
+/// that runs the in-flight route to its end, and only then reads [#next], so the leadership it delivers makes the wait pending
+/// and its deactivation is awaited even when it is enqueued after the drain marker.
+///
+/// Covered by the stopping gate, not by this record: a `LeaderChange(self)` still queued, or not yet enqueued, when the wait is
+/// taken. The self change is submitted gated (`LeaderElectionState` `react`), the gate is read when the reaction runs, and
+/// `stop()` calls `markStopping()` before it takes the wait, so such a change runs after the gate closed and is dropped; the
+/// toggles never activate.
 ///
 /// Not covered: a toggle whose own `deactivate()` re-dispatches onto another executor (ControlLoop, RollbackManager) is
-/// stopped explicitly by `stop()` instead, and a `LeaderChange(self)` that the leader FSM has not yet enqueued when the
-/// drain marker is taken (its dispatch is between the CAS and the entry action).
+/// stopped explicitly by `stop()` instead.
 ///
 /// `deadline` arms the bound on the wait: [Promise#timeout] in production, a manual clock in the tests that pin the bound.
 public record LeaderDeactivation(AtomicReference<Promise<Unit>> next,

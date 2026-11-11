@@ -6,6 +6,7 @@ package org.pragmatica.aether.node;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.AfterEach;
@@ -38,8 +39,11 @@ class LeaderDeactivationTest {
                                                                                                 true);
     private static final LeaderNotification.LeaderChange NONE = LeaderNotification.leaderChange(Option.none(), false);
 
+    private static final TimeSpan SHORT = TimeSpan.timeSpan(300).millis();
+    private final AtomicBoolean stopping = new AtomicBoolean();
+    private final AtomicBoolean toggleActive = new AtomicBoolean();
     private final ReactExecutor executor = ReactExecutor.reactExecutor("LeaderManager",
-                                                                       ReactGate.reactGate(() -> true, () -> false),
+                                                                       ReactGate.reactGate(() -> true, stopping::get),
                                                                        ReactFailureSink.loggingOnly());
     private final LeaderDeactivation deactivation = LeaderDeactivation.leaderDeactivation();
 
@@ -73,22 +77,63 @@ class LeaderDeactivationTest {
         assertThat(delivered.await(AWAIT).isSuccess()).as("the late deactivation is awaited").isTrue();
     }
 
-    /// The remaining residual of #2688: a LeaderChange(self) is queued, undelivered, behind a held reaction when the wait is taken (so the
-    /// node is not yet recorded as leader), and its deactivation is enqueued after the wait's marker. The wait must still cover it.
+    /// The remaining window of #2688, as production runs it: LeaderChange(self) is submitted gated (`react`) on an executor whose gate closes at
+    /// `markStopping`, passed the gate BEFORE the stop began and is still inside its route (ahead of the record, after the toggles)
+    /// when the wait is taken; its deactivation is enqueued after the wait's marker. The wait must cover it. At the old eager read `next`
+    /// is still resolved here, the first marker passes and the late deactivation is dropped by the quiesce.
     @Test
-    void delivered_whenLeadershipIsQueuedUndelivered_waitsForTheDeactivationEnqueuedAfterTheMarker() throws InterruptedException {
-        var release = hold();
+    void delivered_whenLeadershipIsInFlightPastTheGate_waitsForTheDeactivationEnqueuedAfterTheMarker() throws InterruptedException {
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
 
-        executor.undo("LeaderChange(self)", () -> deactivation.onLeaderChange(SELF));
+        executor.react("LeaderChange(self)", () -> routeThenHold(SELF, started, release));
+        assertThat(started.await(10, TimeUnit.SECONDS)).as("the leadership passed the gate and is in flight").isTrue();
+
+        stopping.set(true);
         var delivered = deactivation.delivered(executor, LONG_BOUND);
 
         release.countDown();
-        assertThat(executor.drained().await(AWAIT).isSuccess()).as("the queued leadership and the earlier reactions ran").isTrue();
-        assertThat(delivered.isResolved()).as("leadership delivered, deactivation not yet").isFalse();
+        assertThat(executor.drained().await(AWAIT).isSuccess()).as("the in-flight leadership ran to its end").isTrue();
+        assertThat(toggleActive.get()).as("the in-flight leadership activated the toggles").isTrue();
+        assertThat(delivered.await(SHORT).isSuccess()).as("wait must not resolve while the toggles are active").isFalse();
 
-        executor.undo("LeaderChange(other)", () -> deactivation.onLeaderChange(NONE));
+        executor.undo("LeaderChange(other)", () -> route(NONE));
 
         assertThat(delivered.await(AWAIT).isSuccess()).as("the deactivation enqueued after the marker is awaited").isTrue();
+        assertThat(toggleActive.get()).as("toggles inactive when the wait resolves").isFalse();
+    }
+
+    /// Pins what makes the window above the only one: a LeaderChange(self) queued behind a held reaction when the stop begins is dropped by
+    /// the stopping gate at run time (the gate is read when the reaction runs), so the toggles never activate.
+    @Test
+    void delivered_whenLeadershipIsQueuedAtStop_isDroppedByTheStoppingGate() throws InterruptedException {
+        var release = hold();
+
+        executor.react("LeaderChange(self)", () -> route(SELF));
+        stopping.set(true);
+        var delivered = deactivation.delivered(executor, LONG_BOUND);
+
+        release.countDown();
+        assertThat(delivered.await(AWAIT).isSuccess()).isTrue();
+        assertThat(toggleActive.get()).as("a queued leadership that runs after markStopping is dropped").isFalse();
+        assertThat(executor.droppedEngineStopped()).isEqualTo(1);
+    }
+
+    /// A LeaderChange(self) the leader FSM enqueues only after the first marker was taken (dispatch between CAS and entry action) runs after
+    /// `markStopping` too (stop() marks first, waits second), so the gate drops it: the toggles are never active once the wait resolves.
+    @Test
+    void delivered_whenLeadershipIsEnqueuedAfterTheMarker_isDroppedByTheStoppingGate() throws InterruptedException {
+        var release = hold();
+
+        stopping.set(true);
+        var delivered = deactivation.delivered(executor, LONG_BOUND);
+        executor.react("LeaderChange(self)", () -> route(SELF));
+
+        release.countDown();
+        assertThat(delivered.await(AWAIT).isSuccess()).isTrue();
+        assertThat(executor.drained().await(AWAIT).isSuccess()).isTrue();
+        assertThat(toggleActive.get()).as("#2688 symptom: toggles active after the wait resolved").isFalse();
+        assertThat(executor.droppedEngineStopped()).isEqualTo(1);
     }
 
     /// The deactivation is recorded on the route the toggles share, and toggles registered after the record still run in that route.
@@ -202,6 +247,19 @@ class LeaderDeactivationTest {
                 armedPromise.fail(Causes.cause("manual deadline reached"));
             }
         }
+    }
+
+    /// The route as wired in AetherNode: toggles first, then the LeaderDeactivation record.
+    private Unit route(LeaderNotification.LeaderChange change) {
+        toggleActive.set(change.localNodeIsLeader());
+
+        return deactivation.onLeaderChange(change);
+    }
+
+    private void routeThenHold(LeaderNotification.LeaderChange change, CountDownLatch started, CountDownLatch release) {
+        started.countDown();
+        awaitQuietly(release);
+        route(change);
     }
 
     private void deliverThenHold(CountDownLatch recorded, CountDownLatch release) {
