@@ -1394,7 +1394,6 @@ public final class SwimProtocol implements SwimMessageHandler {
     @Contract
     private void putDeathRecord(NodeId peer, DeathRecord record) {
         deathRecords.put(peer, record);
-
         if (deathRecords.size() > DEATH_RECORD_CAP) {
             deathRecords.entrySet()
                         .stream()
@@ -3156,8 +3155,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         // path (`handleAnnounce`) and is unaffected.
         if (isReAdmitTowardAlive(existing, update) && (blockedByDeathRecord(update.nodeId(),
                                                                             update.incarnation(),
-                                                                            update.bootToken())
-                                                       || blockedByTombstone(update.nodeId(), update.incarnation()))) {
+                                                                            update.bootToken()) || blockedByTombstone(update.nodeId(),
+                                                                                                                      update.incarnation()))) {
             return;
         }
         // Labels are identity, not state: a resident member that has none yet adopts the labels this
