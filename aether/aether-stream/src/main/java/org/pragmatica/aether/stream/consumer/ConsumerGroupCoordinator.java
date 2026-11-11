@@ -8,8 +8,6 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.SortedSet;
-import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
@@ -209,11 +207,11 @@ public sealed interface ConsumerGroupCoordinator {
             /// and a rebalance batch derived earlier may commit after this one). The applier's `Put` fence refuses any
             /// assignment older than a committed tombstone, so the clear is the newest word whatever order batches
             /// commit in; a later rebalance mints higher and overwrites the tombstones. A group with no known
-            /// partitions and no committed assignments mints nothing and submits nothing.
+            /// partitions mints nothing and submits nothing.
             private Result<List<KVCommand<AetherKey>>> clearAssignmentCommands(String groupId,
                                                                                String streamName,
                                                                                int partitionCount) {
-                var partitions = releasedPartitions(groupId, streamName, partitionCount);
+                var partitions = IntStream.range(0, partitionCount).boxed().toList();
 
                 if (partitions.isEmpty()) {
                     log.info("No consumers and no partitions in group {}/{}, nothing to clear", groupId, streamName);
@@ -225,14 +223,6 @@ public sealed interface ConsumerGroupCoordinator {
                                                                                           streamName,
                                                                                           partitions,
                                                                                           epoch));
-            }
-
-            private SortedSet<Integer> releasedPartitions(String groupId, String streamName, int partitionCount) {
-                var partitions = new TreeSet<Integer>(registry.assignmentsFor(groupId, streamName).keySet());
-
-                IntStream.range(0, partitionCount).forEach(partitions::add);
-
-                return partitions;
             }
 
             /// `(incarnation, term)` come from the leader, the counter from this activation. When the committed
@@ -319,7 +309,7 @@ public sealed interface ConsumerGroupCoordinator {
 
             private static List<KVCommand<AetherKey>> buildTombstoneCommands(String groupId,
                                                                              String streamName,
-                                                                             SortedSet<Integer> partitions,
+                                                                             List<Integer> partitions,
                                                                              Epoch epoch) {
                 var tombstone = ConsumerGroupTombstone.consumerGroupTombstone(epoch);
 
