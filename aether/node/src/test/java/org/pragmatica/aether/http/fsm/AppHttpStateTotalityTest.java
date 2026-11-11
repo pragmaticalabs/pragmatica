@@ -290,7 +290,9 @@ class AppHttpStateTotalityTest {
         assertThat(rows).as("a state without a row (or a row for a removed state)").containsExactlyInAnyOrderElementsOf(states);
         MATRIX.forEach((state, cells) -> assertThat(cells).as("row of %s", state.getSimpleName()).hasSize(EVENTS.size()));
 
+        // Concrete events only: a sealed sub-interface (ClusterFsmEvent.TopologyChange, #2971) groups events, it is not one.
         var vocabulary = Stream.concat(Arrays.stream(AppHttpEvents.class.getClasses()), Arrays.stream(ClusterFsmEvent.class.getClasses()))
+                               .filter(type -> !type.isInterface())
                                .map(Class::getName)
                                .distinct()
                                .toList();
