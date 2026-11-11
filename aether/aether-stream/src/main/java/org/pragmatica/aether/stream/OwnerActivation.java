@@ -504,6 +504,24 @@ public final class OwnerActivation {
         this.peerRows = reset;
     }
 
+    /// The offset up to which `peer`, which answered the probe with `watermark`, is a source for this owner: `watermark` capped at
+    /// the committed-lineage end an earlier clipped catch-up learned for it (I-27, #1759), while its tail is still the one observed
+    /// then. Late-bound ([#peerLineageEnd]).
+    @FunctionalInterface
+    public interface PeerLineageEnd {
+        long of(String stream, int partition, NodeId peer, long watermark);
+    }
+
+    private volatile PeerLineageEnd peerLineageEnd = (_, _, _, watermark) -> watermark;
+
+    /// Late-bind the committed-lineage end of a peer (#3071, ruling 37277a904f). The gate ranks, compares and verifies a peer only up
+    /// to it: a deposed epoch's tail the catch-up refuses never counts as ahead, so the gate cannot pull it again on every demand.
+    /// The refused tail is the peer's to repair. Unknown (the default) is the raw watermark. Set once at wiring.
+    @Contract
+    public void peerLineageEnd(PeerLineageEnd end) {
+        this.peerLineageEnd = end;
+    }
+
     /// Late-bind the candidate's durable sealed floor, the bound the gate's relaxation for a divergent peer respects. Set once at
     /// wiring.
     @Contract
@@ -1411,7 +1429,7 @@ public final class OwnerActivation {
     /// The first offset, within the overlap, at which `peer` holds a record that differs from the candidate's, or none. A peer
     /// that cannot be read is not judged here; the existing comparisons report it as they did before.
     private Promise<Option<Long>> divergesFromCandidate(String stream, int partition, long local, PeerWatermark peer) {
-        var to = Math.min(local, peer.watermark());
+        var to = Math.min(local, lineageEnd(stream, partition, peer));
 
         if (to < 0) {
             return Promise.success(Option.none());
@@ -1494,8 +1512,9 @@ public final class OwnerActivation {
 
     private Promise<Unit> catchUpFromKept(String stream, int partition, long local, List<PeerWatermark> answered) {
         var source = Option.from(answered.stream()
-                                         .filter(peer -> peer.watermark() > local)
-                                         .max(Comparator.comparingLong(PeerWatermark::watermark)));
+                                         .filter(peer -> lineageEnd(stream, partition, peer) > local)
+                                         .max(Comparator.comparingLong(peer -> lineageEnd(stream, partition, peer))));
+        var sourceEnd = source.map(peer -> lineageEnd(stream, partition, peer));
         var others = answered.stream().filter(peer -> source.filter(peer::equals)
                                                             .isEmpty()).toList();
 
@@ -1503,7 +1522,36 @@ public final class OwnerActivation {
                                                                                           partition,
                                                                                           local,
                                                                                           source,
-                                                                                          others));
+                                                                                          others))
+                                                                .flatMap(_ -> rerankIfClipped(stream,
+                                                                                              partition,
+                                                                                              source,
+                                                                                              sourceEnd,
+                                                                                              answered));
+    }
+
+    /// #3071: a peer is ranked by its committed-lineage end ([#peerLineageEnd]), never its raw watermark, so a deposed epoch's tail
+    /// the catch-up refuses never counts as ahead. The end of a peer is learned by the pull that clips it: when this pull lowered
+    /// the source's end, the responders are ranked again against the new local head, since another one may hold more of the
+    /// lineage. Bounded: a re-rank needs a source whose end dropped in that very pull, and a peer's end drops at most once for the
+    /// tail it holds.
+    private Promise<Unit> rerankIfClipped(String stream,
+                                          int partition,
+                                          Option<PeerWatermark> source,
+                                          Option<Long> sourceEnd,
+                                          List<PeerWatermark> answered) {
+        return source.filter(peer -> sourceEnd.filter(end -> lineageEnd(stream, partition, peer) < end)
+                                              .isPresent())
+                     .fold(() -> Promise.success(Unit.unit()),
+                           _ -> catchUpFromKept(stream,
+                                                partition,
+                                                selfWatermark.localWatermark(stream, partition),
+                                                answered));
+    }
+
+    /// The offset up to which `peer` is a source for this owner ([#peerLineageEnd]).
+    private long lineageEnd(String stream, int partition, PeerWatermark peer) {
+        return peerLineageEnd.of(stream, partition, peer.node(), peer.watermark());
     }
 
     /// Every member answered: the unreachable run is over, and a report of it no longer describes the partition.
@@ -1582,7 +1630,7 @@ public final class OwnerActivation {
                                                    PeerWatermark source,
                                                    List<PeerWatermark> others) {
         return Promise.allOf(others.stream()
-                                   .filter(peer -> peer.watermark() > local)
+                                   .filter(peer -> lineageEnd(stream, partition, peer) > local)
                                    .map(peer -> verifyPair(stream, partition, source, peer))
                                    .toList())
                       .flatMap(results -> Result.allOf(results).async())
@@ -1591,7 +1639,7 @@ public final class OwnerActivation {
 
     /// Compare the last [#OVERLAP_WINDOW] offsets both peers' heads cover.
     private Promise<Unit> verifyPair(String stream, int partition, PeerWatermark source, PeerWatermark peer) {
-        var to = Math.min(source.watermark(), peer.watermark());
+        var to = Math.min(lineageEnd(stream, partition, source), lineageEnd(stream, partition, peer));
 
         if (to < 0) {
             return Promise.success(Unit.unit());
@@ -1644,7 +1692,7 @@ public final class OwnerActivation {
 
     /// Compare the last [#OVERLAP_WINDOW] offsets both heads cover; nothing overlaps when either side is empty.
     private Promise<Unit> verifyOverlap(String stream, int partition, long local, PeerWatermark peer) {
-        var to = Math.min(local, peer.watermark());
+        var to = Math.min(local, lineageEnd(stream, partition, peer));
 
         if (to < 0) {
             return Promise.success(Unit.unit());
@@ -1666,7 +1714,7 @@ public final class OwnerActivation {
     /// of the window (its ring and tier start above the candidate's head) cannot be verified, so it is refused
     /// rather than trusted; a lower peer nobody pulls from stays lenient.
     private Promise<Unit> verifySourceOverlap(String stream, int partition, long local, PeerWatermark source) {
-        var to = Math.min(local, source.watermark());
+        var to = Math.min(local, lineageEnd(stream, partition, source));
 
         if (to < 0) {
             return Promise.success(Unit.unit());
@@ -1760,6 +1808,8 @@ public final class OwnerActivation {
         }
     }
 
+    /// The catch-up is asked for the source's RAW tail: it clips a deposed epoch's tail itself and learns the source's
+    /// committed-lineage end from that page. The run is then verified against that end, never the raw tail (#3071).
     private Promise<Unit> pullSuffix(String stream, int partition, PeerWatermark highest) {
         log.warn("Owner activation of {}[{}]: {} holds watermark {} ahead of local {} — catching up before acting as owner",
                  stream,
@@ -1774,7 +1824,7 @@ public final class OwnerActivation {
                                highest.watermark())
                       .flatMap(_ -> verifyReached(stream,
                                                   partition,
-                                                  highest.watermark()));
+                                                  lineageEnd(stream, partition, highest)));
     }
 
     private Promise<Unit> verifyReached(String stream, int partition, long target) {
