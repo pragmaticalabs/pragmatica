@@ -236,6 +236,33 @@ class RecordFactoryMappingTest {
             assertThat(decode(CRUD_REPO, "CrudRepo", "findById", "OK", 1L).isSuccess()).isTrue();
             assertOwnCause(failure(decode(CRUD_REPO, "CrudRepo", "findById", "BAD", 1L)), "bad order");
         }
+
+        /// The same adapter when no schema is available for the qualifier's config path (`database.unvalidated` has
+        /// no `schema/unvalidated/` migrations): the CRUD method is still built through the record's factory.
+        @Test
+        void findById_withoutSchema_resultFactory_flatMapsAndKeepsTheFactoryFailure() throws Exception {
+            var source = CRUD_REPO.replace("@PgSql\n", "@UnvalidatedPgSql\n")
+                                  .replace("import java.util.List;",
+                                           """
+                                           import java.util.List;
+                                           import java.lang.annotation.ElementType;
+                                           import java.lang.annotation.Retention;
+                                           import java.lang.annotation.RetentionPolicy;
+                                           import java.lang.annotation.Target;
+                                           import org.pragmatica.aether.resource.db.PgSqlConnector;
+                                           import org.pragmatica.aether.slice.annotation.ResourceQualifier;""")
+                          + """
+
+                @ResourceQualifier(type = PgSqlConnector.class, config = "database.unvalidated")
+                @Retention(RetentionPolicy.RUNTIME)
+                @Target({ElementType.PARAMETER, ElementType.TYPE})
+                @interface UnvalidatedPgSql {}
+                """;
+            var generated = generated(source, "CrudRepo");
+
+            assertThat(generated).contains(".flatMap(CrudRepo.OrderRow::orderRow)").doesNotContain("::new");
+            assertOwnCause(failure(decode(source, "CrudRepo", "findById", "BAD", 1L)), "bad order");
+        }
     }
 
     @Nested
