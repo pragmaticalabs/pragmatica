@@ -2005,6 +2005,38 @@ class ClusterEventAggregatorTest {
         assertThat(codes(successor)).containsExactly("instance-termination-confirmed");
     }
 
+    /// #2825 (v3046 PROBE3): the abandoned-data warning is raised by boot N and the recovery by boot N+1, a fresh process whose aggregator never saw
+    /// the warning. The code closes across nodes, so the fresh aggregator publishes the recovery, once.
+    @Test
+    void onOperatorWarning_anAbandonedStreamDataRecovery_isPublishedByAFreshAggregatorOfALaterBoot() {
+        var laterBoot = Harness.create();
+
+        laterBoot.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED,
+                                                                                 "/data/root",
+                                                                                 "clear"));
+
+        assertThat(codes(laterBoot)).containsExactly("stream-data-abandoned-cleared");
+    }
+
+    /// #2825 (v3046c ruling 2): the key is code + subject and the subject carries the node id, so node B's clear closes only B's warning, even when
+    /// both nodes use one data-root path; A's stays open until A's own clear.
+    @Test
+    void onOperatorWarning_anAbandonedStreamDataClearOfOneNode_leavesTheOtherNodesWarningOpen() {
+        var h = Harness.create();
+
+        h.aggregator().onOperatorWarning(abandoned(OperatorWarningCode.STREAM_DATA_ABANDONED, "node-a@/data/root"));
+        h.aggregator().onOperatorWarning(abandoned(OperatorWarningCode.STREAM_DATA_ABANDONED, "node-b@/data/root"));
+        h.aggregator().onOperatorWarning(abandoned(OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED, "node-b@/data/root"));
+
+        assertThat(h.aggregator().openRecoverableCount()).as("node-a's warning stays open").isEqualTo(1);
+        h.aggregator().onOperatorWarning(abandoned(OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED, "node-a@/data/root"));
+        assertThat(h.aggregator().openRecoverableCount()).isZero();
+    }
+
+    private static OperatorWarning abandoned(OperatorWarningCode code, String subject) {
+        return OperatorWarning.operatorWarning(code, subject, "text");
+    }
+
     /// F1 (v2803): the owner of the cluster events may have moved or restarted since the ESCALATED was raised; the successor holds no open state
     /// but the committed run state closes the incident, so the recovery is published, once.
     @Test
@@ -2040,6 +2072,8 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.DEPARTURE_INFERRED_REVERSED,
                 OperatorWarningCode.DEPARTURE_INFERRED_CONFIRMED,
                 OperatorWarningCode.SLICE_UNRESPONSIVE_EXPIRED,
+                // #2825: the warning belongs to an earlier boot; the raiser's marker file owns "is it open"
+                OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED,
             });
     }
 
@@ -2913,6 +2947,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.SCHEMA_MIGRATION_FENCED,
                 OperatorWarningCode.KV_DISPATCH_CAUGHT_UP,
                 OperatorWarningCode.KV_DISPATCH_SLOW_HANDLER_RETURNED,
+                OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED,
                 OperatorWarningCode.DHT_DEPARTURE_SOLE_COPY_DELIVERED,
                 // the datasource recoveries of #2973: demand back within the server limit, a refused server answering again
                 OperatorWarningCode.DATASOURCE_DEMAND_WITHIN_SERVER_LIMIT,
@@ -2936,6 +2971,7 @@ class ClusterEventAggregatorTest {
             .containsExactlyInAnyOrder(new OperatorWarningCode[]{
                 OperatorWarningCode.GOSSIP_KEY_UNKNOWN_FROM_PEER,
                 OperatorWarningCode.BACKUP_STOP_FLUSH_FAILED,
+                OperatorWarningCode.STREAM_DATA_ABANDONED,
                 OperatorWarningCode.STORAGE_STREAM_WAL_ORPHANED,
                 OperatorWarningCode.NODE_REPLACEMENT_STARTED,
                 OperatorWarningCode.NODE_REPLACEMENT_JOIN_OVERDUE,
