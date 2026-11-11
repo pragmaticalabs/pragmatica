@@ -23,6 +23,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
+
 /// #2834: the committed open set of the cluster FSM's leader-local warning families (D.6), one `FsmWarningKey(code, subject)` per open
 /// warning. The family sets of the model (`invalidPlacementWarned` and its siblings) are the desired open set; `warningRows` mirrors the
 /// committed one.
@@ -114,7 +115,10 @@ public sealed interface Warnings {
 
         return mutations.isEmpty()
                ? m
-               : Outbox.direct(m, TxDraft.draft(SubmitKind.WARNINGS, mutations.getFirst().key(), mutations));
+               : Outbox.direct(m,
+                               TxDraft.draft(SubmitKind.WARNINGS,
+                                             mutations.getFirst().key(),
+                                             mutations));
     }
 
     /// A flush while suspended submits nothing: the open set is clean until the resume's reconcile marks it dirty again (`reconcile`).
@@ -136,7 +140,9 @@ public sealed interface Warnings {
         return draft.kind() == SubmitKind.WARNINGS
                ? draft.mutations()
                       .stream()
-                      .reduce(m, Warnings::landed, (left, right) -> right)
+                      .reduce(m,
+                              Warnings::landed,
+                              (left, right) -> right)
                : m;
     }
 
@@ -162,11 +168,10 @@ public sealed interface Warnings {
 
     private static ClusterModel landed(ClusterModel m, KVCommand.Mutation<AetherKey, AetherValue> mutation) {
         return switch (mutation.key()) {
-            case FsmWarningKey key -> mutation.replacement()
-                                              .fold(() -> removeRow(m, key),
-                                                    value -> value instanceof FsmWarningValue row
-                                                             ? indexRow(m, key, row)
-                                                             : m);
+            case FsmWarningKey key -> mutation.replacement().fold(() -> removeRow(m, key),
+                                                                  value -> value instanceof FsmWarningValue row
+                                                                           ? indexRow(m, key, row)
+                                                                           : m);
             default -> m;
         };
     }
@@ -184,7 +189,9 @@ public sealed interface Warnings {
         var closed = m.warningRows.keys()
                                   .stream()
                                   .filter(key -> !desired.containsKey(key))
-                                  .map(key -> mutation(m, key, Option.none()));
+                                  .map(key -> mutation(m,
+                                                       key,
+                                                       Option.none()));
 
         return Stream.concat(opened, closed)
                      .sorted(Comparator.comparing(mutation -> mutation.key()
@@ -193,25 +200,33 @@ public sealed interface Warnings {
     }
 
     private static KVCommand.Mutation<AetherKey, AetherValue> mutation(ClusterModel m,
-                                                                      FsmWarningKey key,
-                                                                      Option<AetherValue> replacement) {
+                                                                       FsmWarningKey key,
+                                                                       Option<AetherValue> replacement) {
         return new KVCommand.Mutation<>(key,
-                                        m.warningRows.get(key)
-                                         .map(value -> (AetherValue) value),
+                                        m.warningRows.get(key).map(value -> (AetherValue) value),
                                         replacement);
     }
 
     /// The open set the family sets describe.
     static Map<FsmWarningKey, FsmWarningValue> desired(ClusterModel m) {
-        return Stream.of(single(INVALID_PLACEMENT, m.invalidPlacementWarned.toList().stream().map(Artifact::asString)),
-                         single(RETRY_EXHAUSTED, m.retryExhaustedWarned.toList().stream().map(Artifact::asString)),
-                         single(SCHEMA_UNKNOWN, m.schemaUnknownWarned.toList().stream()),
-                         single(JOIN_UNMATCHED, m.unmatchedWarned.toList().stream().map(NodeId::id)),
-                         single(NO_POLICY, m.noPolicyWarned.toList().stream().map(NodeId::id)),
-                         single(UNPLACED, m.unplacedWarned.toList().stream().map(NodeId::id)),
-                         single(UNJUDGEABLE, m.unjudgeableWarned.toList().stream()),
-                         single(SUPPRESSED, m.suppressedWarned.toList().stream()),
-                         single(GROWTH_BLOCKED, m.growthBlocked.toList().stream()),
+        return Stream.of(single(INVALID_PLACEMENT,
+                                m.invalidPlacementWarned.toList().stream().map(Artifact::asString)),
+                         single(RETRY_EXHAUSTED,
+                                m.retryExhaustedWarned.toList().stream().map(Artifact::asString)),
+                         single(SCHEMA_UNKNOWN,
+                                m.schemaUnknownWarned.toList().stream()),
+                         single(JOIN_UNMATCHED,
+                                m.unmatchedWarned.toList().stream().map(NodeId::id)),
+                         single(NO_POLICY,
+                                m.noPolicyWarned.toList().stream().map(NodeId::id)),
+                         single(UNPLACED,
+                                m.unplacedWarned.toList().stream().map(NodeId::id)),
+                         single(UNJUDGEABLE,
+                                m.unjudgeableWarned.toList().stream()),
+                         single(SUPPRESSED,
+                                m.suppressedWarned.toList().stream()),
+                         single(GROWTH_BLOCKED,
+                                m.growthBlocked.toList().stream()),
                          strays(m),
                          holds(m))
                      .flatMap(entries -> entries)
@@ -226,8 +241,7 @@ public sealed interface Warnings {
         return m.strayWarned.entries()
                             .stream()
                             .map(entry -> Map.entry(FsmWarningKey.fsmWarningKey(STRAY,
-                                                                                entry.getKey()
-                                                                                     .asString()),
+                                                                                entry.getKey().asString()),
                                                     FsmWarningValue.fsmWarningValue(entry.getValue()
                                                                                          .toList()
                                                                                          .stream()
@@ -239,8 +253,7 @@ public sealed interface Warnings {
         return m.heldByArtifact.entries()
                                .stream()
                                .map(entry -> Map.entry(FsmWarningKey.fsmWarningKey(SCHEMA_HOLD,
-                                                                                   entry.getKey()
-                                                                                        .asString()),
+                                                                                   entry.getKey().asString()),
                                                        FsmWarningValue.fsmWarningValue(signatures(m,
                                                                                                   entry.getKey(),
                                                                                                   entry.getValue()))));
@@ -274,21 +287,14 @@ public sealed interface Warnings {
 
     private static ClusterModel adopt(ClusterModel m, Ctx ctx, FsmWarningKey key, FsmWarningValue value) {
         return switch (key.code()) {
-            case INVALID_PLACEMENT -> artifactOf(key).map(artifact -> adoptPlacement(m, ctx, artifact))
-                                                     .or(m);
-            case RETRY_EXHAUSTED -> artifactOf(key).map(artifact -> adoptRetry(m, ctx, artifact))
-                                                   .or(m);
+            case INVALID_PLACEMENT -> artifactOf(key).map(artifact -> adoptPlacement(m, ctx, artifact)).or(m);
+            case RETRY_EXHAUSTED -> artifactOf(key).map(artifact -> adoptRetry(m, ctx, artifact)).or(m);
             case SCHEMA_UNKNOWN -> adoptSchema(m, ctx, key.subject());
-            case STRAY -> artifactOf(key).map(artifact -> adoptStray(m, ctx, artifact, value))
-                                         .or(m);
-            case SCHEMA_HOLD -> artifactOf(key).map(artifact -> adoptHold(m, ctx, artifact, value))
-                                               .or(m);
-            case JOIN_UNMATCHED -> nodeOf(key).map(node -> adoptUnmatched(m, ctx, node))
-                                              .or(m);
-            case NO_POLICY -> nodeOf(key).map(node -> adoptNoPolicy(m, ctx, node))
-                                         .or(m);
-            case UNPLACED -> nodeOf(key).map(node -> adoptUnplaced(m, ctx, node))
-                                        .or(m);
+            case STRAY -> artifactOf(key).map(artifact -> adoptStray(m, ctx, artifact, value)).or(m);
+            case SCHEMA_HOLD -> artifactOf(key).map(artifact -> adoptHold(m, ctx, artifact, value)).or(m);
+            case JOIN_UNMATCHED -> nodeOf(key).map(node -> adoptUnmatched(m, ctx, node)).or(m);
+            case NO_POLICY -> nodeOf(key).map(node -> adoptNoPolicy(m, ctx, node)).or(m);
+            case UNPLACED -> nodeOf(key).map(node -> adoptUnplaced(m, ctx, node)).or(m);
             case UNJUDGEABLE -> adoptUnjudgeable(m, key.subject());
             case SUPPRESSED -> adoptSuppressed(m, ctx, key.subject());
             case GROWTH_BLOCKED -> adoptGrowthBlocked(m, key.subject());
@@ -297,13 +303,11 @@ public sealed interface Warnings {
     }
 
     private static Option<Artifact> artifactOf(FsmWarningKey key) {
-        return Artifact.artifact(key.subject())
-                       .option();
+        return Artifact.artifact(key.subject()).option();
     }
 
     private static Option<NodeId> nodeOf(FsmWarningKey key) {
-        return NodeId.nodeId(key.subject())
-                     .option();
+        return NodeId.nodeId(key.subject()).option();
     }
 
     /// Row 10: the artifact's target was removed between the leaders, else the placement pass closes it once it parses.
@@ -330,15 +334,18 @@ public sealed interface Warnings {
 
     /// Row 17: the datasource's record was removed, or its status decodes now; else it stays open.
     private static ClusterModel adoptSchema(ClusterModel m, Ctx ctx, String datasource) {
-        var status = m.schemas.get(datasource)
-                              .map(AetherValue.SchemaVersionValue::status);
+        var status = m.schemas.get(datasource).map(AetherValue.SchemaVersionValue::status);
 
         if (status.isEmpty()) {
             return gone(m, ctx, SCHEMA_UNKNOWN, datasource, "its schema record was removed between leaders");
         }
 
         if (!status.equals(Option.some(SchemaStatus.UNKNOWN))) {
-            return close(m, ctx, SCHEMA_UNKNOWN, datasource, "Schema record for datasource " + datasource + ": the status decodes");
+            return close(m,
+                         ctx,
+                         SCHEMA_UNKNOWN,
+                         datasource,
+                         "Schema record for datasource " + datasource + ": the status decodes");
         }
 
         m.schemaUnknownWarned = m.schemaUnknownWarned.add(datasource);
@@ -368,8 +375,9 @@ public sealed interface Warnings {
             return gone(m, ctx, SCHEMA_HOLD, artifact.asString(), "the held instances were removed between leaders");
         }
 
-        present.forEach(node -> hold(m, SlicePair.slicePair(node, artifact), value.members()
-                                                                                .get(node.id())));
+        present.forEach(node -> hold(m,
+                                     SlicePair.slicePair(node, artifact),
+                                     value.members().get(node.id())));
 
         return m;
     }
@@ -416,7 +424,11 @@ public sealed interface Warnings {
         }
 
         if (placedWorker(m, node)) {
-            return close(m, ctx, NO_POLICY, node.id(), "A community policy accepted worker " + node.id() + " between leaders");
+            return close(m,
+                         ctx,
+                         NO_POLICY,
+                         node.id(),
+                         "A community policy accepted worker " + node.id() + " between leaders");
         }
 
         m.noPolicyWarned = m.noPolicyWarned.add(node);
@@ -431,7 +443,11 @@ public sealed interface Warnings {
         }
 
         if (placedWorker(m, node)) {
-            return close(m, ctx, UNPLACED, node.id(), "Worker " + node.id() + " was assigned a community between leaders");
+            return close(m,
+                         ctx,
+                         UNPLACED,
+                         node.id(),
+                         "Worker " + node.id() + " was assigned a community between leaders");
         }
 
         m.unplacedWarned = m.unplacedWarned.add(node);

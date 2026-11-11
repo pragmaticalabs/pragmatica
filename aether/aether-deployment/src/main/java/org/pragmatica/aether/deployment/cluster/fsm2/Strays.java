@@ -88,6 +88,7 @@ public sealed interface Strays {
                      pair.artifact().asString(),
                      "Condemning stray instance of " + pair.artifact() + " on " + pair.node().id());
         }
+
         ctx.metric("aether_deployment_fsm_stray_total", Map.of("fsm", "cluster", "action", "condemn"));
 
         return Outbox.goal(m, pair, SliceGoal.UNLOADED, GoalMode.FRESH, Option.none(), "stray");

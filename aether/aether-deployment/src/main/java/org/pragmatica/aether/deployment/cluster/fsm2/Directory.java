@@ -368,7 +368,9 @@ public sealed interface Directory {
             m.noPolicyWarned = m.noPolicyWarned.add(node);
             ctx.warn("worker-no-community-policy",
                      node.id(),
-                     "No community policy accepts worker " + node.id() + " of source " + source + "; it gets no directive");
+                     "No community policy accepts worker " + node.id()
+                    + " of source " + source
+                    + "; it gets no directive");
         }
 
         return m;

@@ -260,7 +260,11 @@ public enum OperatorWarningCode {
     /// D.6 row 21: the recovery of [#WORKER_ABSENCE_UNJUDGEABLE], same subject: absence can be judged again for the class.
     /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`), so a successor leader raises
     /// it only for a subject in the inherited open set and publishes it without holding that warning's open mark.
-    WORKER_ABSENCE_JUDGEABLE("worker-absence-judgeable", "deployment", WarningLevel.INFO, WORKER_ABSENCE_UNJUDGEABLE, true),
+    WORKER_ABSENCE_JUDGEABLE("worker-absence-judgeable",
+                             "deployment",
+                             WarningLevel.INFO,
+                             WORKER_ABSENCE_UNJUDGEABLE,
+                             true),
     /// D.6 row 22: the recovery of [#WORKER_NO_COMMUNITY_POLICY], same subject: a later J5 placed the worker, or it departed first.
     /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`), so a successor leader raises
     /// it only for a subject in the inherited open set and publishes it without holding that warning's open mark.
@@ -638,7 +642,11 @@ public enum OperatorWarningCode {
     /// The recovery of [#COMMUNITY_GROWTH_BLOCKED], same subject (#241): a worker of the source was admitted to a community again (the bound
     /// was raised, or a community has room). INFO. Closes across nodes (#2834): the cluster FSM commits its open set, so a successor leader
     /// closes a blocked event the deposed leader published; each raiser raises it only for a subject it holds open.
-    COMMUNITY_GROWTH_RESUMED("community-growth-resumed", "community-growth", WarningLevel.INFO, COMMUNITY_GROWTH_BLOCKED, true),
+    COMMUNITY_GROWTH_RESUMED("community-growth-resumed",
+                             "community-growth",
+                             WarningLevel.INFO,
+                             COMMUNITY_GROWTH_BLOCKED,
+                             true),
     /// A community placement operation (a worker replacement, a scale-down, a community retirement) is parked and needs an operator (#241): its
     /// drain acknowledgement deadline passed (DRAIN_UNCERTAIN), so the previous worker may or may not be drained, or it is BLOCKED by a
     /// conflict the reconciler cannot resolve by itself. Subject is the community; the message names the operation, the phase, both nodes
