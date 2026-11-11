@@ -143,7 +143,7 @@ class ScalarAliasAndArrayBindTest {
             import org.pragmatica.aether.resource.db.PgSql;
             import org.pragmatica.lang.Promise;
 
-            record UserRow(long id, String name, String email, boolean active) {}
+            record UserRow(long id, String name, String email, boolean active) { static UserRow userRow(long id, String name, String email, boolean active) { return new UserRow(id, name, email, active); } }
 
             @PgSql
             public interface UserCrud {

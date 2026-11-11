@@ -11,6 +11,7 @@ import org.pragmatica.jbct.derive.result.Combination;
 import org.pragmatica.jbct.derive.result.Pressure;
 import org.pragmatica.lang.Option;
 
+
 /// Press — the pressure pass (SPEC.md §4). Each answered row is read through the Card-3 triage
 /// table: its `shape` (Q1/Q5) or `kind` (Q6) selects the axis it presses and the mechanism family,
 /// mechanically. A row the table maps to no move is recorded *inert* — a result, not a discard.
@@ -34,17 +35,12 @@ public sealed interface Press permits Press.unused {
 
     /// Run the pressure pass over a sheet.
     static PressResult press(AnswerSheet sheet) {
-        var pressures = sheet.rows()
-                             .stream()
-                             .filter(AnswerRow::isAnswered)
-                             .flatMap(Press::pressuresOf)
-                             .toList();
+        var pressures = sheet.rows().stream().filter(AnswerRow::isAnswered).flatMap(Press::pressuresOf).toList();
 
         return new PressResult(pressures, combinations(pressures));
     }
 
     // ---- per-row pressure (Card 3 triage table) ----
-
     private static Stream<Pressure> pressuresOf(AnswerRow row) {
         return row.contained()
                ? containedPressure(row)
@@ -92,8 +88,8 @@ public sealed interface Press permits Press.unused {
                                                             "latency-containment",
                                                             row));
             case "requester-clock" -> Stream.of(Pressure.inert(Axis.READ_WRITE,
-                                                              "requester-clock: the requester waits — a business-process deadline, not a system-latency target (F22)",
-                                                              row));
+                                                               "requester-clock: the requester waits — a business-process deadline, not a system-latency target (F22)",
+                                                               row));
             default -> Stream.of();
         };
     }
@@ -101,17 +97,17 @@ public sealed interface Press permits Press.unused {
     private static Stream<Pressure> loadShape(String shape, AnswerRow row) {
         return switch (shape) {
             case "volume" -> Stream.of(Pressure.press(Axis.PERSISTENCE,
-                                                     "toward store scaling (hardware -> cache -> replicas -> shard)",
-                                                     "volume-containment",
-                                                     row));
+                                                      "toward store scaling (hardware -> cache -> replicas -> shard)",
+                                                      "volume-containment",
+                                                      row));
             case "contention" -> Stream.of(Pressure.press(Axis.READ_WRITE,
-                                                         "toward contention response: coalesce (read) or admit (write) — never more sharding (F15)",
-                                                         "contention-containment",
-                                                         row));
+                                                          "toward contention response: coalesce (read) or admit (write) — never more sharding (F15)",
+                                                          "contention-containment",
+                                                          row));
             case "burst", "deadline" -> Stream.of(Pressure.press(Axis.SUBSTRATE,
-                                                                "toward event-based (a queue absorbs the peak)",
-                                                                "burst-absorption",
-                                                                row));
+                                                                 "toward event-based (a queue absorbs the peak)",
+                                                                 "burst-absorption",
+                                                                 row));
             default -> Stream.of();
         };
     }
@@ -126,32 +122,35 @@ public sealed interface Press permits Press.unused {
     private static Stream<Pressure> constraintKind(String kind, AnswerRow row) {
         return switch (kind) {
             case "audit" -> Stream.of(Pressure.press(Axis.STATE,
-                                                    "toward current-state + audit-log-as-data (audit is not replay, F3)",
-                                                    "audit-log",
-                                                    row));
-            case "replay" -> Stream.of(Pressure.press(Axis.STATE,
-                                                     "toward event-sourced (replay is demanded)",
-                                                     "replay-log",
+                                                     "toward current-state + audit-log-as-data (audit is not replay, F3)",
+                                                     "audit-log",
                                                      row));
+            case "replay" -> Stream.of(Pressure.press(Axis.STATE,
+                                                      "toward event-sourced (replay is demanded)",
+                                                      "replay-log",
+                                                      row));
             case "residency" -> Stream.of(Pressure.press(Axis.PERSISTENCE,
-                                                        "toward per-region / distributed (data residency)",
-                                                        "residency-partition",
-                                                        row));
+                                                         "toward per-region / distributed (data residency)",
+                                                         "residency-partition",
+                                                         row));
             case "mandate" -> mandatePressure(row);
             default -> Stream.of();
         };
     }
 
     private static Stream<Pressure> mandatePressure(AnswerRow row) {
-        return row.strikes().isEmpty() && !row.scope().isSystem()
+        return row.strikes()
+                  .isEmpty() && !row.scope()
+                                    .isSystem()
                ? Stream.of(Pressure.exclude(Axis.TOPOLOGY,
-                                            "split '" + row.scope().display() + "' out so the mandate never reaches the core (F20)",
+                                            "split '" + row.scope()
+                                                           .display()
+                                           + "' out so the mandate never reaches the core (F20)",
                                             row))
                : Stream.of();
     }
 
     // ---- combination check (F24/F26) ----
-
     private static List<Combination> combinations(List<Pressure> pressures) {
         return Stream.of(Axis.values())
                      .map(axis -> combinationFor(axis, pressures))
@@ -160,10 +159,7 @@ public sealed interface Press permits Press.unused {
     }
 
     private static Option<Combination> combinationFor(Axis axis, List<Pressure> pressures) {
-        var members = pressures.stream()
-                               .filter(Pressure::moves)
-                               .filter(pressure -> pressure.axis() == axis)
-                               .toList();
+        var members = pressures.stream().filter(Pressure::moves).filter(pressure -> pressure.axis() == axis).toList();
 
         return diverges(members)
                ? Option.some(new Combination(axis, members, combinationNote(axis)))
@@ -178,7 +174,8 @@ public sealed interface Press permits Press.unused {
 
     private static long distinctQuestions(List<Pressure> members) {
         return members.stream()
-                      .flatMap(pressure -> pressure.citing().stream())
+                      .flatMap(pressure -> pressure.citing()
+                                                   .stream())
                       .map(AnswerRow::question)
                       .distinct()
                       .count();
@@ -186,8 +183,10 @@ public sealed interface Press permits Press.unused {
 
     private static long distinctScopes(List<Pressure> members) {
         return members.stream()
-                      .flatMap(pressure -> pressure.citing().stream())
-                      .map(row -> row.scope().display())
+                      .flatMap(pressure -> pressure.citing()
+                                                   .stream())
+                      .map(row -> row.scope()
+                                     .display())
                       .distinct()
                       .count();
     }

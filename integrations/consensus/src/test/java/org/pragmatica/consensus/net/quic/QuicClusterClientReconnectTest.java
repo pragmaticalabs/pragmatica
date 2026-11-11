@@ -20,6 +20,8 @@ import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Map;
 
+import io.netty.channel.Channel;
+import io.netty.handler.codec.quic.QuicChannel;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -36,6 +38,8 @@ import org.pragmatica.serialization.SliceCodec;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /// Verifies the per-peer datagram channel tracking added to fix the QUIC client UDP-socket
 /// leak. Each `connect(peerId, ...)` allocates a fresh ephemeral UDP socket via
@@ -97,6 +101,41 @@ class QuicClusterClientReconnectTest {
         assertThat(client.datagramChannelCount())
             .as("closeDatagramChannel removes the per-peer entry")
             .isEqualTo(0);
+    }
+
+    /// #3033: the datagram channel is keyed by peer, so closing it on behalf of ANOTHER link of the pair (an inbound
+    /// link has no client socket; a replaced dial's socket is already closed) must leave the tracked dial alone.
+    @Test
+    void closeDatagramChannelOf_aLinkThatDoesNotRunOverIt_keepsTheDialAlive() {
+        startServer();
+        var port = server.boundPort().fold(() -> fail("server not bound"), p -> p);
+        client = createClient();
+        var dial = client.connect(SERVER_NODE, new InetSocketAddress("127.0.0.1", port))
+                         .await(AWAIT_TIMEOUT)
+                         .fold(cause -> fail("connect failed: " + cause.message()), link -> link);
+        var inbound = mock(QuicChannel.class);
+
+        when(inbound.parent()).thenReturn(mock(Channel.class));
+        client.closeDatagramChannelOf(SERVER_NODE, QuicPeerConnection.quicPeerConnection(SERVER_NODE, inbound))
+              .await(AWAIT_TIMEOUT);
+
+        assertThat(client.datagramChannelCount()).as("the dial's socket stays tracked").isEqualTo(1);
+        assertThat(dial.isActive()).as("the dial still carries its connection").isTrue();
+    }
+
+    @Test
+    void closeDatagramChannelOf_theLinkRunningOverIt_closesTheSocketAndTheLink() {
+        startServer();
+        var port = server.boundPort().fold(() -> fail("server not bound"), p -> p);
+        client = createClient();
+        var dial = client.connect(SERVER_NODE, new InetSocketAddress("127.0.0.1", port))
+                         .await(AWAIT_TIMEOUT)
+                         .fold(cause -> fail("connect failed: " + cause.message()), link -> link);
+
+        client.closeDatagramChannelOf(SERVER_NODE, dial).await(AWAIT_TIMEOUT);
+
+        assertThat(client.datagramChannelCount()).as("the link's own socket is released").isEqualTo(0);
+        TransportTripwireFixtures.awaitTrue(() -> !dial.isActive(), AWAIT_TIMEOUT, "closing the socket closes the link over it");
     }
 
     @Test

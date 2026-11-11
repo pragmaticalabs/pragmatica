@@ -27,9 +27,16 @@ public interface FactorySlice {
     Promise<ShortResponse> lookup(LookupRequest request);
     // Path only, request record declares NO factory and its constructor throws on bad input (#1573 R2-2)
     Promise<ShortResponse> strict(StrictRequest request);
-
     // POST bound ENTIRELY from the path: no body parameter exists, so none may be demanded (#1214)
     Promise<ShortResponse> openCode(LookupRequest request);
+    // Query only, validating factory (#3019)
+    Promise<ShortResponse> byTag(QueryItemRequest request);
+    // Query + body merged, validating factory (#3019)
+    Promise<ShortResponse> tagged(QueryBodyRequest request);
+    // Path + query, validating factory (#3019)
+    Promise<ShortResponse> pathTag(PathQueryRequest request);
+    // Path + query + body merged, validating factory (#3019)
+    Promise<ShortResponse> pathTagged(PathQueryBodyRequest request);
 
     static FactorySlice factorySlice() {
         return new FactorySlice() {
@@ -61,6 +68,26 @@ public interface FactorySlice {
             @Override
             public Promise<ShortResponse> openCode(LookupRequest request) {
                 return Promise.success(new ShortResponse(request.code()));
+            }
+
+            @Override
+            public Promise<ShortResponse> byTag(QueryItemRequest request) {
+                return Promise.success(new ShortResponse(request.tag().or("")));
+            }
+
+            @Override
+            public Promise<ShortResponse> tagged(QueryBodyRequest request) {
+                return Promise.success(new ShortResponse(request.name()));
+            }
+
+            @Override
+            public Promise<ShortResponse> pathTag(PathQueryRequest request) {
+                return Promise.success(new ShortResponse(request.tag().or("")));
+            }
+
+            @Override
+            public Promise<ShortResponse> pathTagged(PathQueryBodyRequest request) {
+                return Promise.success(new ShortResponse(request.name()));
             }
         };
     }

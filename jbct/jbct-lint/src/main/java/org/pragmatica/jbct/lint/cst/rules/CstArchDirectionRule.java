@@ -84,8 +84,9 @@ public class CstArchDirectionRule implements CstLintRule {
         var diagnostics = Stream.<Diagnostic> builder();
 
         for (var reference : ArchSupport.collectReferences(root)) {
-            violationReason(filePackage, fileLayer, reference.packageName(), ctx).onPresent(reason ->
-                diagnostics.add(createDiagnostic(reference.node(), reason, ctx)));
+            violationReason(filePackage, fileLayer, reference.packageName(), ctx).onPresent(reason -> diagnostics.add(createDiagnostic(reference.node(),
+                                                                                                                                       reason,
+                                                                                                                                       ctx)));
         }
 
         return diagnostics.build();
@@ -131,8 +132,10 @@ public class CstArchDirectionRule implements CstLintRule {
     }
 
     private static String layerMessage(Layer fileLayer, Layer referencedLayer, String referencedPackage) {
-        return name(fileLayer) + " must not depend on " + name(referencedLayer) + " layer (package '"
-               + referencedPackage + "')";
+        return name(fileLayer)
+             + " must not depend on " + name(referencedLayer)
+             + " layer (package '" + referencedPackage
+             + "')";
     }
 
     private static String name(Layer layer) {

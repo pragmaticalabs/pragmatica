@@ -42,11 +42,9 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 public class CstAlwaysSuccessResultRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-05";
     private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
-
     /// Return types whose contract asserts fallibility. `Option<T>` is deliberately absent: it
     /// asserts optionality, not failure, and an always-present `Option` is a different smell.
     private static final Pattern FALLIBLE_RETURN = Pattern.compile("^(Result|Promise)\\s*<");
-
     /// Every `return` in the body, with whatever follows it — the anchor for condition 1.
     private static final Pattern RETURN_STATEMENT = Pattern.compile("\\breturn\\s+");
 
@@ -59,8 +57,7 @@ public class CstAlwaysSuccessResultRule implements CstLintRule {
     private static final Pattern SUCCESS_HEAD = Pattern.compile("^(?:Result|Promise)\\s*\\.\\s*success\\s*\\(|^success\\s*\\(");
 
     /// Anything that introduces a failure in this body.
-    private static final Pattern FAILURE =
-        Pattern.compile("\\bfailure\\b|\\.result\\s*\\(\\s*\\)|\\.promise\\s*\\(\\s*\\)|\\.filter\\s*\\(|\\.ensure\\s*\\(");
+    private static final Pattern FAILURE = Pattern.compile("\\bfailure\\b|\\.result\\s*\\(\\s*\\)|\\.promise\\s*\\(\\s*\\)|\\.filter\\s*\\(|\\.ensure\\s*\\(");
 
     /// Condition 3: composition over a delegate's wrapper, which carries the delegate's failure.
     ///
@@ -70,9 +67,8 @@ public class CstAlwaysSuccessResultRule implements CstLintRule {
     /// uses against 3) and the one that produced the one confirmed false positive an audit of these
     /// findings turned up — `AlertForwarder.forward`, whose `Promise.allOf(...)` joins fallible
     /// webhook calls and whose callers handle the failure it propagates.
-    private static final Pattern DELEGATES =
-        Pattern.compile("\\.flatMap\\s*\\(|\\.async\\s*\\(\\s*\\)|"
-                       + "\\b(?:Result|Promise|Option)\\s*\\.\\s*(?:all|allOf|allOrCancel|allOfOrCancel|any)\\s*\\(");
+    private static final Pattern DELEGATES = Pattern.compile("\\.flatMap\\s*\\(|\\.async\\s*\\(\\s*\\)|"
+                                                            + "\\b(?:Result|Promise|Option)\\s*\\.\\s*(?:all|allOf|allOrCancel|allOfOrCancel|any)\\s*\\(");
 
     @Override
     public String ruleId() {
@@ -109,13 +105,12 @@ public class CstAlwaysSuccessResultRule implements CstLintRule {
     private boolean implementsAnInheritedContract(Cursor root, Cursor method) {
         return enclosingMember(root, method).map(member -> findAll(member, RuleKind.ANNOTATION).stream()
                                                                   .anyMatch(annotation -> text(annotation).contains("Override")))
-                                            .or(false);
+                              .or(false);
     }
 
     private boolean returnsResult(Cursor method) {
-        return methodReturnType(method).map(type -> FALLIBLE_RETURN.matcher(text(type).trim())
-                                                                    .find())
-                                       .or(false);
+        return methodReturnType(method).map(type -> FALLIBLE_RETURN.matcher(text(type).trim()).find())
+                               .or(false);
     }
 
     /// Condition 1 as stated: EVERY return yields a success construction — not "a success appears
@@ -125,10 +120,11 @@ public class CstAlwaysSuccessResultRule implements CstLintRule {
         var methodText = memberDeclText(method);
         var returns = returnedExpressions(methodText);
 
-        return !returns.isEmpty()
-              && returns.stream().allMatch(expression -> SUCCESS_HEAD.matcher(expression).find())
-              && !FAILURE.matcher(methodText).find()
-              && !DELEGATES.matcher(methodText).find();
+        return ! returns.isEmpty()
+               && returns.stream()
+                         .allMatch(expression -> SUCCESS_HEAD.matcher(expression).find())
+               && !FAILURE.matcher(methodText).find()
+               && !DELEGATES.matcher(methodText).find();
     }
 
     /// The expression each `return` yields, trimmed of leading whitespace. Text-level because a
@@ -153,7 +149,8 @@ public class CstAlwaysSuccessResultRule implements CstLintRule {
                                      ctx.fileName(),
                                      startLine(anchorOf(method)),
                                      startColumn(anchorOf(method)),
-                                     "Method '" + methodName + "' always succeeds but is typed as fallible; return the value directly",
+                                     "Method '" + methodName
+                                    + "' always succeeds but is typed as fallible; return the value directly",
                                      "The return type is the contract: Result<T> asserts fallible, Promise<T> fallible and asynchronous. A body that only ever constructs success has neither, so every caller flatMaps a step that cannot fail. Return the plain value and let callers use map.")
                          .withExample("""
             // Before: Result that never fails

@@ -48,15 +48,12 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// `records -> steps -> factory -> execute`; the book was reconciled to execute-early.)
 public class CstMemberOrderingRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-ORD-01";
-
     /// Returned for a member kind that is not in the file type's ordering table — ignored entirely:
     /// never ranked, never counted, never treated as out of order.
     private static final int IGNORED = -1;
-
     private static final int RANK_CONSTANT = 0;
     private static final int RANK_CONSTRUCTOR = 1;
     private static final int RANK_METHOD = 2;
-
     private static final int RANK_UC_RECORD = 0;
     private static final int RANK_UC_ENTRY = 1;
     private static final int RANK_UC_STEP = 2;
@@ -120,8 +117,8 @@ public class CstMemberOrderingRule implements CstLintRule {
 
     private List<Cursor> directOf(Cursor root, Cursor typeDecl, Predicate<Cursor> predicate) {
         return findAll(typeDecl, predicate).stream()
-                     .filter(node -> FileTypeClassifier.directlyEncloses(root, typeDecl, node))
-                     .toList();
+                      .filter(node -> FileTypeClassifier.directlyEncloses(root, typeDecl, node))
+                      .toList();
     }
 
     private int rankFor(Cursor root, Cursor member, FileType fileType, String ownName) {
@@ -132,8 +129,9 @@ public class CstMemberOrderingRule implements CstLintRule {
 
     private int valueObjectRank(Cursor root, Cursor member, String ownName) {
         return switch (member.kind()) {
-            case FIELD_DECL, INTERFACE_FIELD_DECL, RECORD_STATIC_FIELD ->
-                FileTypeClassifier.isPrivate(root, member) ? IGNORED : RANK_CONSTANT;
+            case FIELD_DECL, INTERFACE_FIELD_DECL, RECORD_STATIC_FIELD -> FileTypeClassifier.isPrivate(root, member)
+                                                                          ? IGNORED
+                                                                          : RANK_CONSTANT;
             case CONSTRUCTOR_DECL, COMPACT_CONSTRUCTOR -> RANK_CONSTRUCTOR;
             case MEMBER, INTERFACE_MEMBER, RECORD_MEMBER -> memberRank(root, member, ownName, RANK_METHOD, RANK_METHOD);
             default -> IGNORED;
@@ -143,7 +141,11 @@ public class CstMemberOrderingRule implements CstLintRule {
     private int useCaseRank(Cursor root, Cursor member, String ownName) {
         return switch (member.kind()) {
             case TYPE_KIND -> useCaseTypeRank(root, member);
-            case MEMBER, INTERFACE_MEMBER, RECORD_MEMBER -> memberRank(root, member, ownName, RANK_UC_FACTORY, RANK_UC_ENTRY);
+            case MEMBER, INTERFACE_MEMBER, RECORD_MEMBER -> memberRank(root,
+                                                                       member,
+                                                                       ownName,
+                                                                       RANK_UC_FACTORY,
+                                                                       RANK_UC_ENTRY);
             default -> IGNORED;
         };
     }

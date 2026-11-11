@@ -230,7 +230,8 @@ public final class LeaderElectionContext {
 
     private final AtomicReference<Option<NodeId>> lastNotifiedLeader = new AtomicReference<>(Option.none());
 
-    private final AtomicReference<List<NodeId>> currentTopology = new AtomicReference<>(List.of());
+    private final AtomicReference<SequencedTopology> currentTopology = new AtomicReference<>(SequencedTopology.INITIAL);
+
     private final AtomicBoolean hasEverHadLeader = new AtomicBoolean(false);
     /// Whether this node's KV state still trails the cluster's committed frontier (#1803). Consulted by
     /// [`LeaderElectionState.AwaitingKvSync`] so a joiner whose state is still being delivered waits for
@@ -776,6 +777,7 @@ public final class LeaderElectionContext {
 
     public List<NodeId> currentTopology() {
         return currentTopology.get()
+                              .topology()
                               .stream()
                               .filter(this::isEligible)
                               .toList();
@@ -783,14 +785,57 @@ public final class LeaderElectionContext {
 
     @Contract
     public void setCurrentTopology(List<NodeId> topology) {
-        if (topology.isEmpty()) {
-            return;
+        applyTopology(topology, ClusterFsmEvent.TopologyChange.NO_SEQUENCE);
+    }
+
+    /// Applies the event's view unless it is stale (#2971): a sequenced event whose sequence is not above the last
+    /// applied one is dropped, because the newer view already reflects every change the older one observed. The
+    /// ordering holds among the transport's own sequenced observations only: unsequenced writes (SWIM-observed
+    /// faults, `installLeaderEligibility`, local mode, `setCurrentTopology`) replace the view unconditionally and are
+    /// not fenced (#3044). The check and the write are one atomic step (`getAndAccumulate`), so a delayed older
+    /// transport event cannot overwrite a newer view however its handler interleaves. Returns `false` only for a
+    /// dropped stale event.
+    public boolean applyTopology(ClusterFsmEvent.TopologyChange event) {
+        return applyTopology(event.topology(), event.sequence());
+    }
+
+    private boolean applyTopology(List<NodeId> topology, long sequence) {
+        var candidate = SequencedTopology.sequencedTopology(topology, sequence);
+        var previous = currentTopology.getAndAccumulate(candidate, SequencedTopology::sequencedTopology);
+
+        return ! candidate.isStaleAgainst(previous);
+    }
+
+    /// The stored view and the sequence of the last sequenced event that wrote it. An empty view is never stored
+    /// (the previous one is kept), but its sequence still advances the fence.
+    private record SequencedTopology(List<NodeId> topology, long sequence) {
+        static final SequencedTopology INITIAL = new SequencedTopology(List.of(),
+                                                                       ClusterFsmEvent.TopologyChange.NO_SEQUENCE);
+
+        static SequencedTopology sequencedTopology(List<NodeId> topology, long sequence) {
+            var sorted = new ArrayList<>(topology);
+
+            Collections.sort(sorted);
+
+            return new SequencedTopology(List.copyOf(sorted), sequence);
         }
 
-        var sorted = new ArrayList<>(topology);
+        boolean isStaleAgainst(SequencedTopology current) {
+            return sequence > ClusterFsmEvent.TopologyChange.NO_SEQUENCE && sequence <= current.sequence();
+        }
 
-        Collections.sort(sorted);
-        currentTopology.set(List.copyOf(sorted));
+        static SequencedTopology sequencedTopology(SequencedTopology current, SequencedTopology candidate) {
+            if (candidate.isStaleAgainst(current)) {
+                return current;
+            }
+
+            var topology = candidate.topology().isEmpty()
+                           ? current.topology()
+                           : candidate.topology();
+
+            return new SequencedTopology(topology,
+                                         Math.max(current.sequence(), candidate.sequence()));
+        }
     }
 
     /// Live accessor for the consensus-engine readiness state — the SSOT consulted by

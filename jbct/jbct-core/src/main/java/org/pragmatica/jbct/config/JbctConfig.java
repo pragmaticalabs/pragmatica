@@ -81,7 +81,6 @@ public record JbctConfig(FormatterConfig formatter,
         sb.append("excludePackages = [");
         sb.append(excludePackages.stream().map(s -> "\"" + s + "\"").collect(Collectors.joining(", ")));
         sb.append("]\n");
-
         sb.append("\n");
         // Lint rules section
         sb.append("[lint.rules]\n");
@@ -119,9 +118,7 @@ public record JbctConfig(FormatterConfig formatter,
 
         sb.append(key)
           .append(" = [")
-          .append(globs.stream()
-                       .map(s -> "\"" + s + "\"")
-                       .collect(Collectors.joining(", ")))
+          .append(globs.stream().map(s -> "\"" + s + "\"").collect(Collectors.joining(", ")))
           .append("]\n");
     }
 }

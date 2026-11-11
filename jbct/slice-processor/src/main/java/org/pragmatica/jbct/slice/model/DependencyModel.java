@@ -86,16 +86,16 @@ public record DependencyModel(String parameterName,
         var hasFactory = hasFactoryMethod(typeElement, simpleName);
 
         return resolvePartitionKey(type, resourceQualifier).map(partitionKey -> new DependencyModel(paramName,
-                                                                                                     type,
-                                                                                                     qualifiedName,
-                                                                                                     simpleName,
-                                                                                                     packageName,
-                                                                                                     Option.none(),
-                                                                                                     Option.none(),
-                                                                                                     resourceQualifier,
-                                                                                                     isSlice,
-                                                                                                     hasFactory,
-                                                                                                     partitionKey));
+                                                                                                    type,
+                                                                                                    qualifiedName,
+                                                                                                    simpleName,
+                                                                                                    packageName,
+                                                                                                    Option.none(),
+                                                                                                    Option.none(),
+                                                                                                    resourceQualifier,
+                                                                                                    isSlice,
+                                                                                                    hasFactory,
+                                                                                                    partitionKey));
     }
 
     /// Resolve the `@PartitionKey` component of a stream resource's event type (#507).
@@ -111,8 +111,8 @@ public record DependencyModel(String parameterName,
         }
 
         return eventTypeMirror(type).map(eventType -> AnnotatedComponent.annotatedComponent(eventType,
-                                                                                             PARTITION_KEY_ANNOTATION))
-                                    .or(() -> Result.success(Option.none()));
+                                                                                            PARTITION_KEY_ANNOTATION))
+                              .or(() -> Result.success(Option.none()));
     }
 
     /// The single type argument of a `StreamPublisher<T>` / `StreamAccess<T>` parameter.
@@ -142,7 +142,7 @@ public record DependencyModel(String parameterName,
     /// artifact. Resources and plain-interface steps are not. Every generator that lists or wires
     /// slice dependencies (manifest, factory, Terra descriptor) classifies through this one predicate.
     public boolean isSliceDependency() {
-        return !isResource() && !isPlainInterface();
+        return ! isResource() && !isPlainInterface();
     }
 
     /// Check if this dependency is a plain interface: not resource, not slice, has factory method.

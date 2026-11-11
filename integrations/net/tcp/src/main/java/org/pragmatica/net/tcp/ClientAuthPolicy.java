@@ -34,7 +34,6 @@ public enum ClientAuthPolicy {
     /// Demand a peer certificate and verify it against the configured trust anchor. Use for
     /// CLUSTER transport, where every peer holds a certificate from the shared cluster CA.
     REQUIRED,
-
     /// Do not ask the peer for a certificate. Use for operator-facing HTTP/3 surfaces, whose
     /// clients authenticate by other means (API keys) and have no cluster certificate.
     NOT_REQUESTED

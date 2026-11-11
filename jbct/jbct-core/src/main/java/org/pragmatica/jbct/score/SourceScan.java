@@ -31,10 +31,7 @@ import org.pragmatica.lang.Result;
 /// file it never read — `Measuring 2 Java file(s)` above a `1 files` header, with nothing
 /// reconciling the two. A ratio measured over a subset is not the project's ratio, so the size of
 /// the subset travels with it.
-public record SourceScan(List<Diagnostic> diagnostics,
-                         int linesOfCode,
-                         int filesAnalyzed,
-                         int filesUnanalyzed) {
+public record SourceScan(List<Diagnostic> diagnostics, int linesOfCode, int filesAnalyzed, int filesUnanalyzed) {
     /// A scan that analysed everything it was given. Asserts complete coverage by construction —
     /// production sweeps go through [#sourceScan] and carry the real count.
     public SourceScan(List<Diagnostic> diagnostics, int linesOfCode, int filesAnalyzed) {
@@ -67,26 +64,23 @@ public record SourceScan(List<Diagnostic> diagnostics,
         return merge(scanned, unanalyzed[0]);
     }
 
-    private static void reportUnanalyzed(Path file,
-                                         Cause cause,
-                                         Consumer<String> errorHandler,
-                                         int[] unanalyzed) {
+    private static void reportUnanalyzed(Path file, Cause cause, Consumer<String> errorHandler, int[] unanalyzed) {
         unanalyzed[0]++;
         errorHandler.accept(file + ": " + cause.message());
     }
 
     private static Result<SourceScan> scanSource(SourceFile source, Fn1<Result<List<Diagnostic>>, SourceFile> lint) {
         return lint.apply(source)
-                   .map(diagnostics -> new SourceScan(diagnostics, source.nonBlankLines(), 1, 0));
+                   .map(diagnostics -> new SourceScan(diagnostics,
+                                                      source.nonBlankLines(),
+                                                      1,
+                                                      0));
     }
 
     private static SourceScan merge(List<SourceScan> scans, int unanalyzed) {
-        return new SourceScan(scans.stream()
-                                   .flatMap(scan -> scan.diagnostics().stream())
-                                   .toList(),
-                              scans.stream()
-                                   .mapToInt(SourceScan::linesOfCode)
-                                   .sum(),
+        return new SourceScan(scans.stream().flatMap(scan -> scan.diagnostics()
+                                                                 .stream()).toList(),
+                              scans.stream().mapToInt(SourceScan::linesOfCode).sum(),
                               scans.size(),
                               unanalyzed);
     }

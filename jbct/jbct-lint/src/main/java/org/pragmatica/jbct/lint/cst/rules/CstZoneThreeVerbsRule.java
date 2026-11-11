@@ -93,9 +93,8 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
 
     private boolean isLeafFunction(Cursor method, Cursor root) {
         // Find the member wrapper containing this method
-        return enclosingMember(root, method).filter(classMember -> isPrivateLeafMethod(classMember,
-                                                                                       method))
-                           .isPresent();
+        return enclosingMember(root, method).filter(classMember -> isPrivateLeafMethod(classMember, method))
+                              .isPresent();
     }
 
     private boolean isPrivateLeafMethod(Cursor classMember, Cursor method) {

@@ -59,7 +59,6 @@ public class LintCommand implements Callable<Integer> {
         var context = createContext(config);
         var linter = JbctLinter.jbctLinter(context);
         var filesToProcess = FileCollector.collectJavaFiles(paths, config.files(), System.err::println);
-
         // #1100: a run that examined nothing is a coverage gap, never a pass, so it exits 2 like any other gap.
         if (filesToProcess.isEmpty()) {
             operatorOut().println("No Java files found: nothing was examined. This is a COVERAGE GAP, not a pass.");
@@ -80,9 +79,7 @@ public class LintCommand implements Callable<Integer> {
             processFile(file, linter, allDiagnostics, counters, unanalysed);
         }
 
-        LayerCoverage.coverage(filesToProcess, context)
-                     .map(LayerCoverage::render)
-                     .onPresent(System.err::println);
+        LayerCoverage.coverage(filesToProcess, context).map(LayerCoverage::render).onPresent(System.err::println);
         var coverage = AnalysisCoverage.analysisCoverage(filesToProcess.size(), counters[3]);
         // Output results
         printResults(allDiagnostics, filesToProcess.size(), unanalysed);
@@ -137,22 +134,23 @@ public class LintCommand implements Callable<Integer> {
                   .onSuccess(diagnostics -> {
                                  allDiagnostics.addAll(diagnostics);
                                  for (var d : diagnostics) {
-                                 switch (d.severity()) {
-            case ERROR -> counters[0]++;
-            case WARNING -> counters[1]++;
-            case INFO -> counters[2]++;
-        }
-                             }
+                                     switch (d.severity()) {
+                                         case ERROR -> counters[0]++;
+                                         case WARNING -> counters[1]++;
+                                         case INFO -> counters[2]++;
+                                     }
+                                 }
 
                                  if (verbose && diagnostics.isEmpty()) {
-                                 operatorOut().println("  ✓ " + file);
-                             }
+                                     operatorOut().println("  ✓ " + file);
+                                 }
                              })
                   .onFailure(cause -> {
-                      counters[3]++;
-                      unanalysed.add(Unanalysed.unanalysed(file, cause.message()));
-                      System.err.println("  ✗ " + file + ": " + cause.message());
-                  });
+                                 counters[3]++;
+                                 unanalysed.add(Unanalysed.unanalysed(file,
+                                                                      cause.message()));
+                                 System.err.println("  ✗ " + file + ": " + cause.message());
+                             });
     }
 
     /// #633 — stdout is the document channel for the machine formats: `json`/`sarif` always emit
@@ -229,7 +227,7 @@ public class LintCommand implements Callable<Integer> {
 
     private String skippedJson(Unanalysed skipped) {
         return "    { \"file\": \"%s\", \"reason\": \"%s\" }".formatted(escapeJson(skipped.file().toString()),
-                                                                     escapeJson(skipped.reason()));
+                                                                        escapeJson(skipped.reason()));
     }
 
     private void printSarifResults(List<Diagnostic> diagnostics, int collected, List<Unanalysed> unanalysed) {
@@ -291,11 +289,14 @@ public class LintCommand implements Callable<Integer> {
 
         for (var skipped : unanalysed) {
             notifications.add(("        { \"level\": \"error\", \"message\": { \"text\": \"Not analysed: %s\" }, "
-                               + "\"locations\": [{ \"physicalLocation\": { \"artifactLocation\": { \"uri\": \"%s\" } } }] }")
-                              .formatted(escapeJson(skipped.reason()), escapeJson(skipped.file().toString())));
+                              + "\"locations\": [{ \"physicalLocation\": { \"artifactLocation\": { \"uri\": \"%s\" } } }] }").formatted(escapeJson(skipped.reason()),
+                                                                                                                                        escapeJson(skipped.file()
+                                                                                                                                                          .toString())));
         }
 
-        sb.append(notifications.isEmpty() ? "]\n" : "\n" + String.join(",\n", notifications) + "\n      ]\n");
+        sb.append(notifications.isEmpty()
+                  ? "]\n"
+                  : "\n" + String.join(",\n", notifications) + "\n      ]\n");
         sb.append("    }]\n");
     }
 
