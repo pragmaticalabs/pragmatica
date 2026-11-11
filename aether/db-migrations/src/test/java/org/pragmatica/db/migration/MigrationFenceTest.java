@@ -559,6 +559,18 @@ class MigrationFenceTest {
             assertThat(causeOf(MigrationFence.acquire(session, "ds", "node-1").await())).isInstanceOf(MigrationError.FenceUnavailable.class);
         }
 
+        /// F61: a session fence IS the fence, so none of them takes a per-script lock on top of it.
+        @Test
+        void sessionFences_takeNoScriptLock() {
+            var fences = List.<MigrationFence>of(new MigrationFence.H2Fence("ds"),
+                                                           new MigrationFence.SqlServerFence("ds"),
+                                                           new MigrationFence.OracleFence("ds"),
+                                                           new MigrationFence.PgFence("ds"),
+                                                           new MigrationFence.MysqlFence("ds", "lock"));
+
+            assertThat(fences).allSatisfy(fence -> assertThat(fence.scriptLock().isPresent()).as(fence.getClass().getSimpleName()).isFalse());
+        }
+
         @Test
         void acquire_h2ExclusiveReportedAsZero_isFenceUnavailable() {
             var session = new ScriptedSession(DatabaseType.H2, Map.of("INFORMATION_SCHEMA.SETTINGS", row("v", "0")));
