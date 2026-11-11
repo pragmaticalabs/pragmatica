@@ -339,6 +339,22 @@ class SwimDeathNoticeTest {
         assertThat(piggyback.getLast()).matches(noticeOf(overlong, 1L, TOKEN_A));
     }
 
+    /// Without an identity (no incarnation yet) the floor is zero: gossip yields to the notice.
+    @Test
+    void deathNotice_overBudgetNotice_noIdentity_gossipYields() {
+        var overlong = longId('z', 1250);
+
+        ping(NODE_B, 1L, List.of(updateOf(NODE_B, MemberState.ALIVE, 1L, TOKEN_B)));
+        protocol.putDeathRecordForTest(overlong, 1L, TOKEN_A, System.currentTimeMillis());
+        ping(overlong, 7L, List.of(updateOf(overlong, MemberState.ALIVE, 1L, TOKEN_A)));
+
+        assertThat(ackOf(transport, 1L).piggyback()).as("control: the gossip entry is sent without a notice")
+                                                         .anyMatch(update -> update.nodeId().equals(NODE_B));
+        assertThat(ackOf(transport, 7L).piggyback()).as("no identity to keep: only the notice fits")
+                                                    .singleElement()
+                                                    .matches(noticeOf(overlong, 1L, TOKEN_A));
+    }
+
     // ---- The loop closes: the falsely-dead same-token process rejoins (package 1 residual resolved) ----
 
     /// The holder declared NODE_A dead at incarnation 1 and its tombstone has expired, so only the record refuses.
