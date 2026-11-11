@@ -20,7 +20,9 @@ public record RecoveryAssignment(String operation, RecoveryClass recoveryClass, 
     }
 
     /// A resolved recovery posture for an operation.
-    public static RecoveryAssignment recoveryAssignment(String operation, RecoveryClass recoveryClass, String rationale) {
+    public static RecoveryAssignment recoveryAssignment(String operation,
+                                                        RecoveryClass recoveryClass,
+                                                        String rationale) {
         return new RecoveryAssignment(operation, recoveryClass, rationale);
     }
 

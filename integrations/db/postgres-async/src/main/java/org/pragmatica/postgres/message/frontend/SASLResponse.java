@@ -212,11 +212,11 @@ public final class SASLResponse implements FrontendMessage {
     }
 
     public static SASLResponse saslResponse(String password,
-                                  String serverFirstMessage,
-                                  String clientNonce,
-                                  String gs2Header,
-                                  String clientFirstMessageBare,
-                                  byte[] channelBindingData) {
+                                            String serverFirstMessage,
+                                            String clientNonce,
+                                            String gs2Header,
+                                            String clientFirstMessageBare,
+                                            byte[] channelBindingData) {
         var continueData = Authentication.SaslContinueServerFirstMessage.parse(serverFirstMessage);
         var serverNonce = continueData.augmentedNonce();
 
