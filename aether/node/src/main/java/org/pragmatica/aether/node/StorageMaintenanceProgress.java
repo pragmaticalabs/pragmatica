@@ -37,7 +37,7 @@ public record StorageMaintenanceProgress(long lastRunMs,
                                      Option<Result<Integer>> promotion,
                                      Result<Integer> collection) {
         var failure = failureOf(demotion).orElse(() -> promotion.flatMap(StorageMaintenanceProgress::failureOf))
-                                         .orElse(() -> failureOf(collection));
+                               .orElse(() -> failureOf(collection));
 
         return new StorageMaintenanceProgress(nowMs,
                                               failure.fold(() -> Outcome.OK, _ -> Outcome.FAILED),
@@ -45,8 +45,7 @@ public record StorageMaintenanceProgress(long lastRunMs,
                                                            _ -> consecutiveFailedTicks + 1),
                                               failure.orElse(lastFailure),
                                               demoted + demotion.or(0),
-                                              promoted + promotion.flatMap(Result::option)
-                                                                  .or(0),
+                                              promoted + promotion.flatMap(Result::option).or(0),
                                               collected + collection.or(0));
     }
 

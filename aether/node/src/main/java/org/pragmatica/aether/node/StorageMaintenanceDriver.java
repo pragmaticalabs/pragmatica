@@ -11,8 +11,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
-import io.micrometer.core.instrument.Gauge;
-import io.micrometer.core.instrument.MeterRegistry;
 import org.pragmatica.aether.node.StorageMaintenanceProgress.Outcome;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -26,6 +24,8 @@ import org.pragmatica.storage.PromotionManager;
 import org.pragmatica.storage.StorageGarbageCollector;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -86,6 +86,7 @@ public final class StorageMaintenanceDriver {
     private final AtomicBoolean promoting = new AtomicBoolean(false);
     /// When the running promotion cycle started, [#NO_CYCLE] while none runs.
     private final AtomicLong promotionStartedMs = new AtomicLong(NO_CYCLE);
+
     /// The result of the latest promotion cycle that ended and no tick has counted yet.
     private final AtomicReference<Option<Result<Integer>>> promotionResult = new AtomicReference<>(Option.none());
 
@@ -200,7 +201,7 @@ public final class StorageMaintenanceDriver {
         var now = clock.getAsLong();
 
         return failedStreak().orElse(() -> overdueTick(now))
-                             .orElse(() -> overduePromotion(now));
+                           .orElse(() -> overduePromotion(now));
     }
 
     /// Seconds since the latest tick completed, or since the driver was built before the first one.
@@ -222,6 +223,7 @@ public final class StorageMaintenanceDriver {
         for (var outcome : Outcome.values()) {
             registerOutcomeGauge(registry, outcome);
         }
+
         return Unit.unit();
     }
 
@@ -229,7 +231,8 @@ public final class StorageMaintenanceDriver {
         Gauge.builder("aether_storage_maintenance_last_outcome",
                       () -> isLastOutcome(outcome))
              .description("1 for the outcome of the latest storage maintenance tick, 0 for the others")
-             .tag("outcome", outcome.name())
+             .tag("outcome",
+                  outcome.name())
              .register(registry);
     }
 
@@ -244,8 +247,9 @@ public final class StorageMaintenanceDriver {
 
         return Option.some(current.consecutiveFailedTicks())
                      .filter(streak -> streak > 0)
-                     .map(streak -> streak + " maintenance tick(s) in a row had a failed pass, latest: "
-                                    + current.lastFailure().or("unknown"));
+                     .map(streak -> streak
+                                   + " maintenance tick(s) in a row had a failed pass, latest: " + current.lastFailure()
+                                                                                                          .or("unknown"));
     }
 
     private Option<String> overdueTick(long now) {
@@ -263,7 +267,8 @@ public final class StorageMaintenanceDriver {
     }
 
     private long lastCompletedMs() {
-        return Math.max(createdMs, progress.get().lastRunMs());
+        return Math.max(createdMs,
+                        progress.get().lastRunMs());
     }
 
     private void raiseOverdue(String part, String reason) {
@@ -327,7 +332,7 @@ public final class StorageMaintenanceDriver {
             } catch (Throwable t) {
                 promotionStartedMs.set(NO_CYCLE);
                 promoting.set(false);
-                promotionResult.set(Option.some(Causes.fromThrowable(t).<Integer>result()));
+                promotionResult.set(Option.some(Causes.fromThrowable(t).<Integer> result()));
                 raisePassFailed(PART_PROMOTION, t.toString());
                 log.warn("Storage promotion cycle could not be started: {} -- the next tick tries again", t.toString());
             }
