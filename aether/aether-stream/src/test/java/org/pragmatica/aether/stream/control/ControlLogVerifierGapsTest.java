@@ -8,6 +8,7 @@ import org.pragmatica.aether.stream.forward.AcceptingStreamForwardTransport;
 import java.nio.file.Files;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 
 import org.pragmatica.aether.stream.OwnerLease;
 import org.pragmatica.aether.stream.EvictionListener;
@@ -20,6 +21,8 @@ import org.pragmatica.aether.stream.forward.StreamForwardMessage.ControlAppendFo
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ControlAppendForwardResponse;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
 import org.junit.jupiter.api.Disabled;
@@ -34,6 +37,18 @@ import static org.pragmatica.aether.stream.replication.ReplicationManager.replic
 /// Verifier's gap tests for #2590 P1 (v-2603): behaviours of changed production lines that no test of the PR pinned. Each
 /// test names the mutation of the production line that turns it red.
 class ControlLogVerifierGapsTest {
+    private static ControlPartitionLog confirmationSignalling(ControlPartitionLog log, CountDownLatch registered) {
+        return new ControlLogIndexTest.ForwardingLog(log) {
+            @Override
+            public Promise<Unit> awaitConfirmed(String streamName, int partition, long lastOffset) {
+                var confirmed = super.awaitConfirmed(streamName, partition, lastOffset);
+
+                registered.countDown();
+                return confirmed;
+            }
+        };
+    }
+
     private static StreamForwardClient clientDropping(CopyOnWriteArrayList<ControlAppendForward> sent) {
         return StreamForwardClient.streamForwardClient(PEER,
                                                        AcceptingStreamForwardTransport.accepting((_, message) -> {
@@ -106,11 +121,16 @@ class ControlLogVerifierGapsTest {
     /// committedThrough answers the ring head on the owner (instead of its visible position).
     @Test
     void ownerRebuild_unacknowledgedRecord_isNotInTheCommittedIndex() {
-        try (var owner = owner(3, 3)) {
+        var waiterRegistered = new CountDownLatch(1);
+
+        try (var owner = owner(3, 3, MirrorView.EMPTY, Option.none(), 1L, log -> confirmationSignalling(log, waiterRegistered))) {
             awaitAdmissionReady(owner);
             var pending = owner.controlLog().append(STREAM, PARTITION, List.of(record("k", 1, 1)));
 
+            // The ack waiter captures the ownership it is admitted under inside awaitConfirmed, after the ring append: a ring head of 0 does
+            // not yet mean the waiter exists, and flipping the epoch before it does makes the waiter register under EPOCH_2 (Admitted, not unknown).
             awaitTrue("appended", () -> ringHead(owner) == 0L);
+            awaitTrue("ack waiter registered under EPOCH_1", () -> waiterRegistered.getCount() == 0L);
             owner.ownerEpoch().set(EPOCH_2);
             awaitAdmissionReady(owner);
 

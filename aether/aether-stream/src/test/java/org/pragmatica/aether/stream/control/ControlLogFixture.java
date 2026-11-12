@@ -193,6 +193,16 @@ final class ControlLogFixture {
                       MirrorView mirror,
                       Option<Path> walDir,
                       long isrVersion) {
+        return owner(replicas, confirmationFactor, mirror, walDir, isrVersion, UnaryOperator.identity());
+    }
+
+    /// An owner whose control log reads its partition through `wrap(the real log)`.
+    static Node owner(int replicas,
+                      int confirmationFactor,
+                      MirrorView mirror,
+                      Option<Path> walDir,
+                      long isrVersion,
+                      UnaryOperator<ControlPartitionLog> wrap) {
         var registry = registry(replicas);
         var replication = replicationManager(SELF, registry);
         var manager = streamPartitionManager(Long.MAX_VALUE,
@@ -200,7 +210,7 @@ final class ControlLogFixture {
                                              replication,
                                              walDir,
                                              LastSealedOffsetSource.none());
-        var node = node(manager, replication, mirror, isrVersion, ReplicaSetController.Role.OWNER);
+        var node = node(manager, replication, mirror, isrVersion, ReplicaSetController.Role.OWNER, wrap);
 
         createStream(manager, replicas, confirmationFactor);
 
