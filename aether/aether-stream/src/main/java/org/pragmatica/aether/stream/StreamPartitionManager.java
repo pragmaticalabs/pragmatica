@@ -465,6 +465,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final AtomicLong refusedReplicaDropsSinceBoot = new AtomicLong(0);
     /// Replica partitions quarantined since boot because a divergent held entry was found (#1505 F2).
     private final AtomicLong quarantinedPartitionsSinceBoot = new AtomicLong(0);
+    /// #2981 step 2 (design 2.2 check 3): cuts asked to go below the ring's visible offset, by outcome (`refused`: a confirmation-factor >= 2
+    /// cut that did not happen, counted per refused attempt; `retracted`: a CF = 1 or non-durable cut that went through). Since boot.
+    private final AtomicLong truncationRefusedBelowVisible = new AtomicLong(0);
+    private final AtomicLong truncationRetractedBelowVisible = new AtomicLong(0);
 
     private StreamPartitionManager(long maxTotalBytes,
                                    EvictionListener evictionListener,
@@ -3176,6 +3180,17 @@ public final class StreamPartitionManager implements AutoCloseable {
         return cause.result();
     }
 
+    /// Truncations refused because they would cut below the visible offset of a confirmation-factor >= 2 partition (#2981), per refused
+    /// attempt, since boot. The `refused` tag of `aether.stream.truncation.below_visible`.
+    public long truncationRefusedBelowVisible() {
+        return truncationRefusedBelowVisible.get();
+    }
+
+    /// Cuts below the visible offset that went through as a retraction (CF = 1 or non-durable), since boot. See [#truncationRefusedBelowVisible].
+    public long truncationRetractedBelowVisible() {
+        return truncationRetractedBelowVisible.get();
+    }
+
     /// Events dropped since boot on best-effort streams because a frozen ring could not fit them (#1233).
     /// Drops on streams with durability semantics are not counted here — they fail the publish instead.
     public long droppedEventsSinceBoot() {
@@ -3399,7 +3414,9 @@ public final class StreamPartitionManager implements AutoCloseable {
                  partition,
                  keep,
                  cause.message());
-        if (cause instanceof StreamError.RepairPreserveFailed || cause instanceof StreamError.RepairWitnessFailed) {
+        if (cause instanceof StreamError.TruncateBelowVisible refused) {
+            refusedBelowVisible(streamName, partition, refused);
+        } else if (cause instanceof StreamError.RepairPreserveFailed || cause instanceof StreamError.RepairWitnessFailed) {
             synchronized (refusedCutOrder) {
                 var previous = repairEpisode(streamName).refusedCuts().put(partition, cause.message());
 
@@ -3450,10 +3467,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void closeRefusedCut(PartitionState.RepairEpisode episode, PartitionRef ref, String reason) {
         synchronized (refusedCutOrder) {
-            if (episode.refusedCuts().remove(ref.partition()) != null) {
+            var recorded = episode.refusedCuts().remove(ref.partition());
+
+            if (recorded != null) {
                 OperatorWarnings.raise(log,
                                        operatorWarnings,
-                                       OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED,
+                                       resumedCode(recorded),
                                        ref.streamName() + "[" + ref.partition() + "]",
                                        "Replica {}[{}]: the refused divergent-tail cut no longer stands -- {}.",
                                        ref.streamName(),
@@ -3464,12 +3483,14 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     @Contract
-    private void cutResumed(String streamName, int partition, PartitionRef ref) {
+    void cutResumed(String streamName, int partition, PartitionRef ref) {
         synchronized (refusedCutOrder) {
-            if (repairEpisode(streamName).refusedCuts().remove(partition) != null) {
+            var recorded = repairEpisode(streamName).refusedCuts().remove(partition);
+
+            if (recorded != null) {
                 OperatorWarnings.raise(log,
                                        operatorWarnings,
-                                       OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED,
+                                       resumedCode(recorded),
                                        streamName + "[" + partition + "]",
                                        "Replica {}[{}] cut its divergent tail back after the refusal that had stopped it; its records are preserved.",
                                        streamName,
@@ -3524,6 +3545,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         var epoch = divergentEpoch(streamName, partition, divergedAtOffset);
         var wrote = new java.util.concurrent.atomic.AtomicBoolean(false);
         var preserved = new java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved>();
+        var retractedFrom = new AtomicLong(NOT_RETRACTED);
 
         cutWindowHook.run();
         var token = new Object();
@@ -3540,6 +3562,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                               epoch,
                                                               wrote,
                                                               preserved,
+                                                              retractedFrom,
                                                               token),
                                        _ -> {
                                            forgetCutState(streamName, partition, ref, divergedAtOffset, keep);
@@ -3553,6 +3576,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                        .onSuccess(_ -> option(preserved.get()).onPresent(segment -> reportPreserved(streamName,
                                                                                                     partition,
                                                                                                     segment)))
+                       .onSuccess(_ -> reportRetraction(streamName, partition, keep, retractedFrom.get()))
                        .map(removed -> new TailCut(keep, removed, keep + 1, keep + removed, epoch));
         } finally {
             // Every exit closes the cut's bracket (#2087): the cut refused, failed in the durable copy, failed to shrink the ring, or threw. A
@@ -3584,10 +3608,11 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           Option<Epoch> epoch,
                                           java.util.concurrent.atomic.AtomicBoolean wrote,
                                           java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved> preserved,
+                                          AtomicLong retractedFrom,
                                           Object token) {
         beginCut(streamName, partition, token);
 
-        return cutSteps(streamName, partition, divergedAtOffset, keep, authority, wal, ring, epoch, wrote, preserved);
+        return cutSteps(streamName, partition, divergedAtOffset, keep, authority, wal, ring, epoch, wrote, preserved, retractedFrom);
     }
 
     private Result<Unit> cutSteps(String streamName,
@@ -3599,11 +3624,17 @@ public final class StreamPartitionManager implements AutoCloseable {
                                   OffHeapRingBuffer ring,
                                   Option<Epoch> epoch,
                                   java.util.concurrent.atomic.AtomicBoolean wrote,
-                                  java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved> preserved) {
+                                  java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved> preserved,
+                                  AtomicLong retractedFrom) {
         var head = ring.headOffset();
         var prospective = new TailCut(keep, head - keep, keep + 1, head, epoch);
 
-        return authorised(streamName, partition, divergedAtOffset, authority).flatMap(_ -> witnessBeforeCut(streamName,
+        return authorised(streamName, partition, divergedAtOffset, authority).flatMap(_ -> requireVisibleKept(streamName,
+                                                                                                              partition,
+                                                                                                              keep,
+                                                                                                              ring,
+                                                                                                              retractedFrom))
+                         .flatMap(_ -> witnessBeforeCut(streamName,
                                                                                                             partition,
                                                                                                             wal,
                                                                                                             prospective))
@@ -3688,6 +3719,82 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                                     appendLog,
                                                                                                                                     earlier))
                                          .onEmpty(() -> deletePendingCut(pendingCutFile(appendLog))));
+    }
+
+    /// Sentinel of the retraction slot: this cut did not go below the visible offset.
+    private static final long NOT_RETRACTED = -1L;
+
+    /// #2981 step 2 (design 2.2 check 3): a cut below the ring's visible offset would retract records already served, and the next
+    /// append would reuse their offsets. Evaluated inside the cut's ordered section, before the witness or anything else is written, so a
+    /// refusal leaves the ring, the WAL, the witness and `visible` untouched. A confirmation-factor >= 2 partition REFUSES (the owner's
+    /// lineage rule makes this cut unreachable: a defect, the quarantine stands); CF = 1 and non-durable partitions are outside that rule
+    /// (a deposed owner's visible covers records the cluster never replicated), so the cut proceeds and is reported as a counted retraction.
+    private Result<Unit> requireVisibleKept(String streamName,
+                                            int partition,
+                                            long keep,
+                                            OffHeapRingBuffer ring,
+                                            AtomicLong retractedFrom) {
+        var visible = ring.visibleOffset();
+
+        return keep >= visible
+               ? Result.unitResult()
+               : belowVisible(streamName, partition, keep, visible, retractedFrom);
+    }
+
+    private Result<Unit> belowVisible(String streamName, int partition, long keep, long visible, AtomicLong retractedFrom) {
+        return confirmationFactorFor(streamName) >= 2
+               ? new StreamError.TruncateBelowVisible(streamName, partition, keep, visible).<Unit> result()
+               : Result.unitResult().onSuccess(_ -> retractedFrom.set(visible));
+    }
+
+    /// The cut went through below `visible` (CF = 1 or non-durable): counted as `retracted` and told to the operator at INFO.
+    @Contract
+    private void reportRetraction(String streamName, int partition, long keep, long visible) {
+        if (visible != NOT_RETRACTED) {
+            truncationRetractedBelowVisible.incrementAndGet();
+            OperatorWarnings.raise(log,
+                                   operatorWarnings,
+                                   OperatorWarningCode.STREAM_TRUNCATION_RETRACTED,
+                                   streamName + "[" + partition + "]",
+                                   "Replica {}[{}] cut back to offset {} below its visible offset {}: records already served were retracted "
+                                  + "(confirmation factor below 2, nothing acknowledged durably is lost).",
+                                   streamName,
+                                   partition,
+                                   keep,
+                                   visible);
+        }
+    }
+
+    /// A truncation refused because it would cut below the visible offset (CF >= 2): counted per refused attempt, and raised as
+    /// `stream-truncation-refused` once per distinct failure episode (same record-and-raise monitor as the other refused cuts), closed by
+    /// `stream-truncation-quarantine-cleared` when the cut finally goes through or the partition's replica goes away.
+    @Contract
+    private void refusedBelowVisible(String streamName, int partition, StreamError.TruncateBelowVisible refused) {
+        truncationRefusedBelowVisible.incrementAndGet();
+        synchronized (refusedCutOrder) {
+            var previous = repairEpisode(streamName).refusedCuts().put(partition, refused.message());
+
+            if (!refused.message().equals(previous)) {
+                refusalWindowHook.run();
+                OperatorWarnings.raise(log,
+                                       operatorWarnings,
+                                       OperatorWarningCode.STREAM_TRUNCATION_REFUSED,
+                                       streamName + "[" + partition + "]",
+                                       "Replica {}[{}] refused a truncation back to offset {}: visible is {} and the stream has confirmation factor >= 2, "
+                                      + "so this cut is unreachable by design (a defect). The partition stays quarantined with its records untouched.",
+                                       streamName,
+                                       partition,
+                                       refused.keepThrough(),
+                                       refused.visibleOffset());
+            }
+        }
+    }
+
+    /// The recovery code that closes a refused-cut episode whose recorded cause was `recorded`.
+    private static OperatorWarningCode resumedCode(String recorded) {
+        return StreamError.TruncateBelowVisible.describes(recorded)
+               ? OperatorWarningCode.STREAM_TRUNCATION_QUARANTINE_CLEARED
+               : OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED;
     }
 
     /// Evaluated inside the cut's ordered section, immediately before the first thing it removes: the committed owner that

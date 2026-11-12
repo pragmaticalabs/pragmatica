@@ -184,6 +184,29 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// #2981 step 2 (design 2.2 check 3, r7.1 C2): a suffix truncation of a confirmation-factor >= 2 partition asked to cut below
+    /// the ring's visible offset (`keepThrough < visibleOffset`), which would retract records already served and let the next append
+    /// reuse their offsets. Under the owner's lineage rule this cut is unreachable, so the refusal is a defect, not an operating state:
+    /// nothing changed (ring, WAL, witness and visible stand) and the quarantine stands.
+    record TruncateBelowVisible(String streamName, int partition, long keepThrough, long visibleOffset) implements StreamError {
+        /// The text every message of this refusal carries; the refused-cut episode keeps the message only, so it recognizes the kind by this.
+        public static final String MESSAGE_MARKER = "would retract records already visible";
+
+        @Override
+        public String message() {
+            return "Cannot truncate %s[%d] back to offset %d: it %s (visible through %d)".formatted(streamName,
+                                                                                                    partition,
+                                                                                                    keepThrough,
+                                                                                                    MESSAGE_MARKER,
+                                                                                                    visibleOffset);
+        }
+
+        /// Whether `detail` is the text of this refusal.
+        public static boolean describes(String detail) {
+            return detail.contains(MESSAGE_MARKER);
+        }
+    }
+
     /// Ring seed-offset precondition rejection (spec PHASE A-WAL §W1): {@link OffHeapRingBuffer#seedHead}
     /// requires a FRESH ring (`headOffset() == -1`, no appends yet) and a non-negative `base`. The seed
     /// is a replay-only positioning op; this rejects a misuse — a non-fresh ring or a negative `base` —

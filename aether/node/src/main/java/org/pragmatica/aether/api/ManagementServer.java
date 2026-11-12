@@ -788,7 +788,18 @@ class ManagementServerImpl implements ManagementServer {
         observability.gauge("aether.streams.memory.used.ratio", usedRatio);
         observability.gauge("aether.streams.seams.unbound.safety", unboundSafetySeams);
         observability.gauge("aether.streams.wal.failstopped", failStoppedWals);
+        registerTruncationBelowVisibleMetrics(spm);
         registerConsensusBatchMetrics();
+    }
+
+    /// #2981 step 2 (design 2.2 check 3): truncations asked to cut below a ring's visible offset, by outcome. `refused` (CF >= 2) is a
+    /// defect count and should read 0; `retracted` (CF = 1 or non-durable) is an operating count of legitimate rejoin repairs.
+    private void registerTruncationBelowVisibleMetrics(StreamPartitionManager spm) {
+        Supplier<Number> refused = spm::truncationRefusedBelowVisible;
+        Supplier<Number> retracted = spm::truncationRetractedBelowVisible;
+
+        observability.gauge("aether.stream.truncation.below_visible", refused, "outcome", "refused");
+        observability.gauge("aether.stream.truncation.below_visible", retracted, "outcome", "retracted");
     }
 
     /// #2590: consumer progress's load on consensus, cumulative since boot -- the batches the cursor command writer proposed
