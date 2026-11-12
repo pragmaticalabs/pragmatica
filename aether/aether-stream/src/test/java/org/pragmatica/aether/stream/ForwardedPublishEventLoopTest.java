@@ -246,6 +246,27 @@ class ForwardedPublishEventLoopTest {
                              .doesNotContainAnyElementsOf(resolvedOn);
     }
 
+    @Test
+    void boundedCommitWait_usesTheGivenHop() {
+        var hops = new AtomicInteger();
+        var lane = Promise.<Unit> promise();
+        var resumed = StreamPartitionManager.boundedCommitWait(lane, countingInline(hops));
+
+        lane.succeed(Unit.unit());
+        resumed.await();
+
+        assertThat(hops.get()).as("the injected executor carried the continuation exactly once").isEqualTo(1);
+    }
+
+    private static Executor countingInline(AtomicInteger hops) {
+        return task -> runCounted(hops, task);
+    }
+
+    private static void runCounted(AtomicInteger hops, Runnable task) {
+        hops.incrementAndGet();
+        task.run();
+    }
+
     private static void resolveOnFreshThread(ConcurrentLinkedQueue<Thread> resumedOn,
                                              ConcurrentLinkedQueue<Thread> resolvedOn) throws InterruptedException {
         resolveOnFreshThread(resumedOn, resolvedOn, task -> Promise.async(task));
