@@ -161,7 +161,9 @@ class SwimAnnounceSourcePinTest {
         pinnedMemberA();
         driveToTombstone();
 
-        protocol.onMessage(A_REAL, announceA());
+        // Above the death incarnation (2): a same-process ANNOUNCE at or below it is refused by the death record
+        // (#3028), and the member heals with the refutation it sends once notified.
+        protocol.onMessage(A_REAL, Announce.announce(infoOf(NODE_A, 9001), "", 3L, TOKEN_A));
 
         assertThat(protocol.tombstonedForTest(NODE_A))
             .as("the member itself, from its own address, heals exactly as before")

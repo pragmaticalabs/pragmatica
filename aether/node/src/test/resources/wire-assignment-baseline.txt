@@ -484,7 +484,7 @@ SHAPE org.pragmatica.swim.SwimMessage$Announce (nodeInfo:org.pragmatica.consensu
 SHAPE org.pragmatica.swim.SwimMessage$AppGossip (from:org.pragmatica.consensus.NodeId,channel:int,payload:byte[])
 SHAPE org.pragmatica.swim.SwimMessage$IdentityRefused (from:org.pragmatica.consensus.NodeId,refused:org.pragmatica.consensus.NodeId,reason:java.lang.String)
 SHAPE org.pragmatica.swim.SwimMessage$MembershipUpdate (nodeId:org.pragmatica.consensus.NodeId,state:org.pragmatica.swim.SwimMember$MemberState,incarnation:long,address:java.net.InetSocketAddress,bootToken:long,labels:java.util.Map<java.lang.String, java.lang.String>)
-SHAPE org.pragmatica.swim.SwimMessage$Ping (from:org.pragmatica.consensus.NodeId,sequence:long,piggyback:java.util.List<org.pragmatica.swim.SwimMessage$MembershipUpdate>)
+SHAPE org.pragmatica.swim.SwimMessage$Ping (from:org.pragmatica.consensus.NodeId,sequence:long,piggyback:java.util.List<org.pragmatica.swim.SwimMessage$MembershipUpdate>,onBehalfOf:org.pragmatica.lang.Option<org.pragmatica.consensus.NodeId>)
 SHAPE org.pragmatica.swim.SwimMessage$PingReq (from:org.pragmatica.consensus.NodeId,target:org.pragmatica.consensus.NodeId,sequence:long)
 SHAPE org.pragmatica.swim.SwimMessage$WhoAmI (from:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.swim.SwimMessage$WhoAmIReply (observedAddress:java.net.InetSocketAddress)
