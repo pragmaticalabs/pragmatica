@@ -96,10 +96,12 @@ class DockerRequirementTest {
             System.setProperty(DockerRequirement.HIDE_PROPERTY, "true");
             System.clearProperty(DockerRequirement.REQUIRE_PROPERTY);
             assertThat(DockerRequirement.dockerAvailable()).isFalse();
+            assertThat(new DockerCondition().evaluateExecutionCondition(null).isDisabled()).isTrue();
 
             System.setProperty(DockerRequirement.REQUIRE_PROPERTY, "true");
             assertThatThrownBy(DockerRequirement::dockerAvailable).isInstanceOf(AssertionError.class)
                                                                   .hasMessageContaining("refusing to skip");
+            assertThatThrownBy(() -> new DockerCondition().evaluateExecutionCondition(null)).isInstanceOf(AssertionError.class);
         } finally {
             restore(DockerRequirement.REQUIRE_PROPERTY, previousRequire);
             restore(DockerRequirement.HIDE_PROPERTY, previousHide);
