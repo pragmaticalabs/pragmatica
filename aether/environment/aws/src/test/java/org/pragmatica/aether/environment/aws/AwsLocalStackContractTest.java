@@ -77,6 +77,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// Spot is EXCLUDED (LocalStack-Pro-only, §4.3) — it is covered by unit tests
 /// (`AwsComputeProviderTest.createFrom_spotMarket_*`) plus a planned live spot smoke.
 class AwsLocalStackContractTest {
+    private static final String[] LOOPBACK_PREFIX = {"env", "LOCALSTACK_HOST=localhost:4566", "awslocal"};
     private static final DockerImageName LOCALSTACK_IMAGE = DockerImageName.parse("localstack/localstack:3.8");
     private static final String REGION = "us-east-1";
     private static final String INSTANCE_SIZE = "t3.micro";
@@ -587,11 +588,14 @@ class AwsLocalStackContractTest {
         }
     }
 
+    /// Runs `awslocal` against LocalStack's loopback edge port inside the container. `awslocal` derives its endpoint
+    /// from `LOCALSTACK_HOST`, which Testcontainers seeds from the host it detects; with Maven inside a container
+    /// sharing the host's Docker daemon that is the bridge gateway, unreachable from within LocalStack (#2199).
     private static String[] commandWith(String... args) {
-        var command = new String[args.length + 1];
+        var command = new String[args.length + LOOPBACK_PREFIX.length];
 
-        command[0] = "awslocal";
-        System.arraycopy(args, 0, command, 1, args.length);
+        System.arraycopy(LOOPBACK_PREFIX, 0, command, 0, LOOPBACK_PREFIX.length);
+        System.arraycopy(args, 0, command, LOOPBACK_PREFIX.length, args.length);
 
         return command;
     }
