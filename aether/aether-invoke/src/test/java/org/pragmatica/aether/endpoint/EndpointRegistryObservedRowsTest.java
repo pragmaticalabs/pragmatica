@@ -34,6 +34,8 @@ class EndpointRegistryObservedRowsTest {
     private static final NodeId NODE = NodeId.nodeId("core-1").unwrap();
     private static final Artifact ARTIFACT = Artifact.artifact("org.example:orders:1.0.0").unwrap();
     private static final MethodName METHOD = MethodName.methodName("handle").unwrap();
+    private static final NodeId PEER = NodeId.nodeId("core-2").unwrap();
+    private static final Artifact OTHER = Artifact.artifact("org.example:billing:1.0.0").unwrap();
     private static final SliceObservedKey KEY = SliceObservedKey.sliceObservedKey(NODE, ARTIFACT);
 
     private final Map<NodeId, Long> tokens = new HashMap<>();
@@ -93,6 +95,22 @@ class EndpointRegistryObservedRowsTest {
         assertThat(routedNodes()).containsExactly(NODE);
     }
 
+    /// Unregistering is scoped to the (node, artifact) pair: the same artifact on another node, and another artifact on the same node, keep routing.
+    @Test
+    void rowLeavingActive_unregistersOnlyItsOwnNodeAndArtifactPair() {
+        feed.onObservedPut(put(KEY, SliceObservedState.ACTIVE, 7L));
+        feed.onObservedPut(put(SliceObservedKey.sliceObservedKey(PEER, ARTIFACT), SliceObservedState.ACTIVE, 7L));
+        feed.onObservedPut(put(SliceObservedKey.sliceObservedKey(NODE, OTHER), SliceObservedState.ACTIVE, 7L));
+
+        feed.onObservedPut(put(KEY, SliceObservedState.DEACTIVATING, 7L));
+
+        assertThat(routedNodes()).as("same artifact, other node").containsExactly(PEER);
+        assertThat(registry.findEndpoints(OTHER, METHOD)
+                           .stream()
+                           .map(EndpointRegistry.Endpoint::nodeId)
+                           .toList()).as("same node, other artifact").containsExactly(NODE);
+    }
+
     private List<NodeId> routedNodes() {
         return registry.findEndpoints(ARTIFACT, METHOD)
                        .stream()
@@ -101,6 +119,10 @@ class EndpointRegistryObservedRowsTest {
     }
 
     private static ValuePut<SliceObservedKey, SliceObservedValue> put(SliceObservedState state, long token) {
+        return put(KEY, state, token);
+    }
+
+    private static ValuePut<SliceObservedKey, SliceObservedValue> put(SliceObservedKey key, SliceObservedState state, long token) {
         var row = new SliceObservedValue(state,
                                          1L,
                                          new Generation(1L, 1L),
@@ -111,7 +133,7 @@ class EndpointRegistryObservedRowsTest {
                                          List.of("handle"),
                                          0L);
 
-        return new ValuePut<>(new KVCommand.Put<>(KEY, row), Option.none());
+        return new ValuePut<>(new KVCommand.Put<>(key, row), Option.none());
     }
 
     private static ValuePut<NodeDepartureKey, NodeDepartureValue> departure(DepartureState state, DepartureCause cause) {

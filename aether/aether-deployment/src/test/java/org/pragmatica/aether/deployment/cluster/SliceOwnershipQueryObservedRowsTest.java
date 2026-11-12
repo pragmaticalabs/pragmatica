@@ -33,7 +33,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SliceOwnershipQueryObservedRowsTest {
     private static final NodeId OWNER = NodeId.nodeId("core-1").unwrap();
     private static final NodeId PEER = NodeId.nodeId("core-2").unwrap();
+    private static final NodeId THIRD = NodeId.nodeId("core-3").unwrap();
     private static final Artifact ARTIFACT = Artifact.artifact("org.example:orders:1.0.0").unwrap();
+    private static final Artifact OTHER = Artifact.artifact("org.example:billing:1.0.0").unwrap();
 
     private final MapStore store = new MapStore();
     private final Map<NodeId, Long> tokens = new HashMap<>();
@@ -76,6 +78,52 @@ class SliceOwnershipQueryObservedRowsTest {
         store.put(SliceObservedKey.sliceObservedKey(PEER, ARTIFACT), row(SliceObservedState.ACTIVE, 5L));
 
         assertThat(SliceOwnershipQuery.minAvailableDrainViolations(store, rows).apply(OWNER, Set.of(PEER))).isEmpty();
+    }
+
+    /// Ownership is per node: another node's live row does not make this node an owner.
+    @Test
+    void ownsActiveSlices_falseForANodeWhoseOnlyNeighbourHoldsALiveRow() {
+        store.put(SliceObservedKey.sliceObservedKey(PEER, ARTIFACT), row(SliceObservedState.ACTIVE, 0L));
+
+        assertThat(SliceOwnershipQuery.ownsActiveSlices(store, rows).test(OWNER)).isFalse();
+    }
+
+    /// Teardown/failed states are not ownership: a node holding only a current FAILED row owns nothing.
+    @Test
+    void ownsActiveSlices_falseForACurrentFailedRow() {
+        store.put(SliceObservedKey.sliceObservedKey(OWNER, ARTIFACT), row(SliceObservedState.FAILED, 0L));
+
+        assertThat(SliceOwnershipQuery.ownsActiveSlices(store, rows).test(OWNER)).isFalse();
+    }
+
+    /// The drain guard is evaluated only for artifacts the candidate hosts: an artifact held only by a third node is none of its business.
+    @Test
+    void drainViolations_ignoreAnArtifactTheCandidateDoesNotHost() {
+        store.put(SliceObservedKey.sliceObservedKey(OWNER, ARTIFACT), row(SliceObservedState.ACTIVE, 0L));
+        store.put(SliceObservedKey.sliceObservedKey(PEER, ARTIFACT), row(SliceObservedState.ACTIVE, 0L));
+        store.put(SliceObservedKey.sliceObservedKey(THIRD, OTHER), row(SliceObservedState.ACTIVE, 0L));
+
+        assertThat(SliceOwnershipQuery.minAvailableDrainViolations(store, rows).apply(OWNER, Set.of(PEER))).isEmpty();
+    }
+
+    /// A current FAILED row is not a live placement: the candidate does not "host" that artifact, so it cannot block the drain.
+    @Test
+    void drainViolations_ignoreAnArtifactTheCandidateOnlyHoldsAFailedRowFor() {
+        store.put(SliceObservedKey.sliceObservedKey(OWNER, ARTIFACT), row(SliceObservedState.ACTIVE, 0L));
+        store.put(SliceObservedKey.sliceObservedKey(PEER, ARTIFACT), row(SliceObservedState.ACTIVE, 0L));
+        store.put(SliceObservedKey.sliceObservedKey(OWNER, OTHER), row(SliceObservedState.FAILED, 0L));
+
+        assertThat(SliceOwnershipQuery.minAvailableDrainViolations(store, rows).apply(OWNER, Set.of(PEER))).isEmpty();
+    }
+
+    /// The violations path reads the observed rows too: the sole ACTIVE owner of an artifact is reported.
+    @Test
+    void drainViolations_reportTheSoleObservedOwner() {
+        store.put(SliceObservedKey.sliceObservedKey(OWNER, ARTIFACT), row(SliceObservedState.ACTIVE, 0L));
+
+        var violations = SliceOwnershipQuery.minAvailableDrainViolations(store, rows).apply(OWNER, Set.of(PEER));
+
+        assertThat(violations).extracting(SliceOwnershipQuery.DrainRefusal::artifact).containsExactly(ARTIFACT);
     }
 
     @Test
