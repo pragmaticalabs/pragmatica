@@ -272,7 +272,15 @@ public final class ReplicaRegistry {
     /// row.
     ///
     /// Not guaranteed: boot tokens are unordered, so an ack of a SUPERSEDED process delivered after the new process's ack
-    /// replaces the row too, until the current process's next ack replaces it back.
+    /// replaces the row too. That residual is an OVER-count (the unsafe direction: the row can name more than the current process
+    /// holds). It lasts until the current process's NEXT ack, so it is bounded by an event, not by time: an idle partition keeps
+    /// it. It is strictly better than the #2888 rule, which kept the over-count for good. Reachable by a Forge/Ember restart that
+    /// reuses the NodeId; whether a production crash-restart with the same NodeId can ack before the identity ledger refuses it
+    /// is [unverified].
+    ///
+    /// Evidence naming no process ([ReplicateAck#NO_BOOT_TOKEN]) re-raises a replaced row only within the row's epoch, and the
+    /// production writer of it (`PartitionBackfill#recordSurvivorConfirmed`) passes `Epoch.ZERO`, so a row confirmed under a real
+    /// epoch refuses it.
     @Contract
     public void advanceWatermark(String streamName,
                                  int partition,
