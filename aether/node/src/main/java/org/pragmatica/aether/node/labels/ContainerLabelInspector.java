@@ -50,15 +50,17 @@ public final class ContainerLabelInspector {
     /// detection can't proceed (not in a container, socket not mounted, I/O failure).
     /// Logs at DEBUG on skip; INFO on success with the resolved (cluster, node-id) pair.
     public static Option<Map<String, String>> inspectSelfLabels() {
-        return inspectSelfLabels(Path.of(DOCKERENV_MARKER), Path.of(DOCKER_SOCKET), Option.option(System.getenv("HOSTNAME")));
+        return inspectSelfLabels(Path.of(DOCKERENV_MARKER),
+                                 Path.of(DOCKER_SOCKET),
+                                 Option.option(System.getenv("HOSTNAME")));
     }
 
     /// Test seam: marker path, Docker socket path and the HOSTNAME value are supplied by the caller,
     /// so the outcome does not depend on the host's filesystem or environment.
     static Option<Map<String, String>> inspectSelfLabels(Path markerPath, Path socketPath, Option<String> hostname) {
         return detectContainer(markerPath).flatMap(_ -> resolveContainerId(hostname))
-                                          .flatMap(id -> queryDocker(socketPath, id))
-                                          .flatMap(ContainerLabelInspector::extractLabels);
+                              .flatMap(id -> queryDocker(socketPath, id))
+                              .flatMap(ContainerLabelInspector::extractLabels);
     }
 
     private static Option<Boolean> detectContainer(Path markerPath) {
@@ -66,8 +68,7 @@ public final class ContainerLabelInspector {
             return Option.some(true);
         }
 
-        log.debug("ContainerLabelInspector: no {} marker — not running in Docker, skipping label inspection",
-                  markerPath);
+        log.debug("ContainerLabelInspector: no {} marker — not running in Docker, skipping label inspection", markerPath);
 
         return Option.empty();
     }
