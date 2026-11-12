@@ -3567,7 +3567,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
             return ctx.kvStore()
                       .get(leaseKey)
-                      .map(_ -> List.<KVCommand<AetherKey>>of(new KVCommand.Remove<>(leaseKey)))
+                      .map(_ -> List.<KVCommand<AetherKey>> of(new KVCommand.Remove<>(leaseKey)))
                       .or(List.of());
         }
 
