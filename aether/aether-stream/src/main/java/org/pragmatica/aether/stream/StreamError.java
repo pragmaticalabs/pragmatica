@@ -701,4 +701,27 @@ public sealed interface StreamError extends Cause {
                                                                                                                                              partition);
         }
     }
+
+    /// #2981 step 2 (design §2.2 check 2): the replicas confirmed an append of `(streamName, partition)`, but the committed
+    /// ownership `(owner, ownerEpoch, ownershipTerm)` is no longer the one the ack waiter registered under: another owner may
+    /// have activated without the append. The write is NOT acknowledged; whether it survives is unknown, and every writer reports
+    /// it as `PublishOutcomeUnknown` (a retry may duplicate it: no publish idempotency key at rc5). Transient.
+    record OwnershipMovedBeforeAck(String streamName, int partition) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Append to %s[%d] not acknowledged: the committed ownership changed before the acknowledgement completed".formatted(streamName,
+                                                                                                                                       partition);
+        }
+    }
+
+    /// #2981 step 2 (design §2.2 check 2, F-1a-4): the replicas confirmed an append of `(streamName, partition)` while this node's
+    /// lease was lapsed, and no renewal re-validated it within the ack budget (5 s from registration). Not a failure of the
+    /// write: the acks arrived and the record may well survive, so every writer reports it as `PublishOutcomeUnknown`. Transient.
+    record OwnerLeaseLapsedBeforeAck(String streamName, int partition) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Append to %s[%d] not acknowledged: the node lease stayed lapsed through the acknowledgement budget".formatted(streamName,
+                                                                                                                                  partition);
+        }
+    }
 }

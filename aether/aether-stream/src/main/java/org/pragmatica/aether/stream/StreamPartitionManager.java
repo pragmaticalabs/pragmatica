@@ -120,6 +120,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #1278 ruling F: how long the publish auto-create path waits for its proposed config to commit and apply here.
     /// Inside the 5 s forward timeout that made this path asynchronous; past it the publish refuses retriably.
     private static final TimeSpan PUBLISH_COMMIT_WAIT = TimeSpan.timeSpan(2).seconds();
+    /// #2981 step 2 (design §2.2 check 2, F-1a-4): how long after registration a lapse-parked ack waiter is answered unknown.
+    private static final TimeSpan ACK_PARK_BUDGET = TimeSpan.timeSpan(5).seconds();
     /// Bound on dropping or checking a stream's durable footprint (a local ref write and one forced snapshot).
     private static final TimeSpan FOOTPRINT_TIMEOUT = TimeSpan.timeSpan(30).seconds();
     private static final Logger log = LoggerFactory.getLogger(StreamPartitionManager.class);
@@ -287,6 +289,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #2981 step 2 (design §2.2 check 3): whether this node is activated for the ownership it holds, late-bound
     /// ([#ownerActivated(OwnerActivatedView)]); unchecked until wired.
     private volatile OwnerActivatedView ownerActivated = ACTIVATION_UNCHECKED;
+    /// #2981 step 2 (design §2.2 check 2): ack waiters whose replicas confirmed while the lease was lapsed ([#awaitReplication]).
+    private final Set<ParkedAck> parkedAcks = ConcurrentHashMap.newKeySet();
     /// #2590 P1: where a partition's committed position and its suffix truncations are told, late-bound
     /// ([#partitionLogEvents(PartitionLogEvents)]); nobody until wired.
     private volatile PartitionLogEvents partitionLogEvents = PartitionLogEvents.NONE;
@@ -4672,11 +4676,142 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// ack in the pre-update observer call, both registry rows then land, and the await resolves before
     /// either post-update observer call — so without this the continuation could miss its own acked write.
     /// A ring released in the meantime has no reader left to expose the event to.
+    ///
+    /// #2981 step 2 (design §2.2 check 2, F-1a-2, F-1a-4): the ownership `(owner, ownerEpoch, ownershipTerm)` is captured when the
+    /// waiter registers (ISR fields excluded, so a routine ISR change does not turn a valid ack into unknown). When the replicas
+    /// have confirmed, the lease is read first, then the ownership: unchanged and the lease valid -> acknowledged; changed ->
+    /// [StreamError.OwnershipMovedBeforeAck]; unchanged and the lease lapsed -> PARKED until a renewal edge ([#onLeaseRegained])
+    /// re-checks it, or [StreamError.OwnerLeaseLapsedBeforeAck] once [#ACK_PARK_BUDGET] has passed since registration. Every
+    /// writer maps either failure to `PublishOutcomeUnknown`: the acks did arrive and the record may survive. Confirmation
+    /// factor 1, and a manager with both lease seams unwired, acknowledge as before.
     public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
+        var waiter = AckWaiter.ackWaiter(streamName, partition, ackOwnership(streamName, partition), System.nanoTime());
+
         return replicationManager.awaitReplication(streamName, partition, offset, minAcks)
-                                 .withSuccess(_ -> resolvePartitionBuffer(streamName, partition).onSuccess(ring -> refreshVisible(ring,
-                                                                                                                                  streamName,
-                                                                                                                                  partition)));
+                                 .flatMap(_ -> completeAck(waiter));
+    }
+
+    /// #2981 step 2 (design §2.2 check 2): the ownership an ack waiter is admitted under, without its ISR.
+    private record AckOwnership(NodeId owner, Epoch ownerEpoch, long ownershipTerm) {
+        static AckOwnership ackOwnership(StreamPartitionOwnershipValue record) {
+            return new AckOwnership(record.owner(), record.ownerEpoch(), record.ownershipTerm());
+        }
+    }
+
+    /// An ack waiter: its partition, the ownership captured at registration, and the registration instant (`System.nanoTime`).
+    private record AckWaiter(String streamName, int partition, Option<AckOwnership> ownership, long registeredNanos) {
+        static AckWaiter ackWaiter(String streamName, int partition, Option<AckOwnership> ownership, long registeredNanos) {
+            return new AckWaiter(streamName, partition, ownership, registeredNanos);
+        }
+    }
+
+    /// A waiter whose replicas confirmed while the lease was lapsed, and the answer its publisher holds.
+    private record ParkedAck(AckWaiter waiter, Promise<Unit> answer) {
+        static ParkedAck parkedAck(AckWaiter waiter) {
+            return new ParkedAck(waiter, Promise.promise());
+        }
+    }
+
+    private enum AckVerdict {
+        ACKNOWLEDGED,
+        MOVED,
+        LAPSED
+    }
+
+    private Option<AckOwnership> ackOwnership(String streamName, int partition) {
+        return ownershipRecords.committed(streamName, partition)
+                               .map(AckOwnership::ackOwnership);
+    }
+
+    private Promise<Unit> completeAck(AckWaiter waiter) {
+        var verdict = ackVerdict(waiter);
+
+        return verdict == AckVerdict.LAPSED
+               ? park(waiter)
+               : Promise.resolved(settled(waiter, verdict));
+    }
+
+    /// The lease is read BEFORE the ownership (design §2.2: `now` first).
+    private AckVerdict ackVerdict(AckWaiter waiter) {
+        return ownerChecksBypassed(confirmationFactorFor(waiter.streamName()))
+               ? AckVerdict.ACKNOWLEDGED
+               : ackVerdict(ownerLease.valid(),
+                            ackOwnership(waiter.streamName(), waiter.partition()).equals(waiter.ownership()));
+    }
+
+    private static AckVerdict ackVerdict(boolean leaseValid, boolean ownershipUnchanged) {
+        return ownershipUnchanged
+               ? leaseVerdict(leaseValid)
+               : AckVerdict.MOVED;
+    }
+
+    private static AckVerdict leaseVerdict(boolean leaseValid) {
+        return leaseValid
+               ? AckVerdict.ACKNOWLEDGED
+               : AckVerdict.LAPSED;
+    }
+
+    /// The answer of a waiter whose verdict is final: acknowledged (visibility refreshed first, rev1309 F1) or moved.
+    private Result<Unit> settled(AckWaiter waiter, AckVerdict verdict) {
+        return verdict == AckVerdict.ACKNOWLEDGED
+               ? acknowledged(waiter)
+               : new StreamError.OwnershipMovedBeforeAck(waiter.streamName(), waiter.partition()).result();
+    }
+
+    private Result<Unit> acknowledged(AckWaiter waiter) {
+        refreshVisible(waiter.streamName(), waiter.partition());
+        return Result.unitResult();
+    }
+
+    @Contract
+    private void refreshVisible(String streamName, int partition) {
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> refreshVisible(ring, streamName, partition));
+    }
+
+    /// Parks a lapsed waiter until a renewal edge re-checks it or its budget, counted from registration, runs out. It is
+    /// re-checked once right after joining the list: a renewal edge that ran between the verdict and the join would
+    /// otherwise leave it parked until its deadline.
+    private Promise<Unit> park(AckWaiter waiter) {
+        var parked = ParkedAck.parkedAck(waiter);
+
+        parkedAcks.add(parked);
+        SharedScheduler.schedule(() -> expireParked(parked), remainingParkBudget(waiter));
+        recheckParked(parked);
+        return parked.answer();
+    }
+
+    private static TimeSpan remainingParkBudget(AckWaiter waiter) {
+        return TimeSpan.timeSpan(Math.max(0L, waiter.registeredNanos() + ACK_PARK_BUDGET.nanos() - System.nanoTime()))
+                       .nanos();
+    }
+
+    /// Settles a parked waiter whose verdict is no longer "lapsed". Removal from the list decides which of the re-check and
+    /// the deadline answers, so each waiter is answered once.
+    @Contract
+    private void recheckParked(ParkedAck parked) {
+        var verdict = ackVerdict(parked.waiter());
+
+        if (verdict != AckVerdict.LAPSED && parkedAcks.remove(parked)) {
+            parked.answer()
+                  .resolve(settled(parked.waiter(), verdict));
+        }
+    }
+
+    @Contract
+    private void expireParked(ParkedAck parked) {
+        if (parkedAcks.remove(parked)) {
+            parked.answer()
+                  .resolve(new StreamError.OwnerLeaseLapsedBeforeAck(parked.waiter()
+                                                                           .streamName(),
+                                                                     parked.waiter()
+                                                                           .partition()).result());
+        }
+    }
+
+    /// #2981 step 2 (design §2.2, §2.4): this node's lease went from invalid to valid. Every parked ack waiter is re-checked.
+    @Contract
+    public void onLeaseRegained() {
+        parkedAcks.forEach(this::recheckParked);
     }
 
     /// #1262 fail-closed guard, applied ONCE by `StreamWriteRouter.publish` — the single write operation behind
