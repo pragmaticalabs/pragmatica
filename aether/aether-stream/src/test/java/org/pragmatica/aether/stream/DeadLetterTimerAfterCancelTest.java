@@ -118,6 +118,7 @@ class DeadLetterTimerAfterCancelTest {
         var timer = armedTimer("g");
 
         runtime.unsubscribe(STREAM, 0, "g");
+        awaitDetachCommit("g");
         timer.run();
         assertThat(log).as("one failed append, then the detach flush; the timer adds nothing")
                   .containsExactly("append:g", "commit:g");
@@ -157,12 +158,26 @@ class DeadLetterTimerAfterCancelTest {
 
             runtime.unsubscribe(STREAM, 0, group);
             firing.join(5_000);
+            awaitDetachCommit(group);
             judge(group, late);
             rounds++;
         }
 
         assertThat(late).as("rounds with an append after the detach flush").isEmpty();
         assertThat(rounds).as("rounds run").isGreaterThan(100);
+    }
+
+    /// [ConsumerRuntimeState#unsubscribe] returns before the detach flush commits: the flush is chained behind the
+    /// consumer's in-flight advance, which the failed append settles AFTER it armed the timer, so the commit runs on the
+    /// delivery thread some time after the test thread saw the timer. A bounded poll, not a sleep, orders the test after it.
+    private void awaitDetachCommit(String group) throws InterruptedException {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+        while (!log.contains("commit:" + group) && System.nanoTime() < deadline) {
+            Thread.sleep(1);
+        }
+
+        assertThat(log).as("the detach flush committed within the deadline").contains("commit:" + group);
     }
 
     private static void fireWhenReleased(AtomicBoolean go, Runnable timer) {
