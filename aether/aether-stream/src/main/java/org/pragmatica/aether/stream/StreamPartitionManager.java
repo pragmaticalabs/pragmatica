@@ -4700,7 +4700,10 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// An ack waiter: its partition, the ownership captured at registration, and the registration instant (`System.nanoTime`).
     private record AckWaiter(String streamName, int partition, Option<AckOwnership> ownership, long registeredNanos) {
-        static AckWaiter ackWaiter(String streamName, int partition, Option<AckOwnership> ownership, long registeredNanos) {
+        static AckWaiter ackWaiter(String streamName,
+                                   int partition,
+                                   Option<AckOwnership> ownership,
+                                   long registeredNanos) {
             return new AckWaiter(streamName, partition, ownership, registeredNanos);
         }
     }
@@ -4760,6 +4763,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     private Result<Unit> acknowledged(AckWaiter waiter) {
         refreshVisible(waiter.streamName(), waiter.partition());
+
         return Result.unitResult();
     }
 
@@ -4777,12 +4781,13 @@ public final class StreamPartitionManager implements AutoCloseable {
         parkedAcks.add(parked);
         SharedScheduler.schedule(() -> expireParked(parked), remainingParkBudget(waiter));
         recheckParked(parked);
+
         return parked.answer();
     }
 
     private static TimeSpan remainingParkBudget(AckWaiter waiter) {
-        return TimeSpan.timeSpan(Math.max(0L, waiter.registeredNanos() + ACK_PARK_BUDGET.nanos() - System.nanoTime()))
-                       .nanos();
+        return TimeSpan.timeSpan(Math.max(0L,
+                                          waiter.registeredNanos() + ACK_PARK_BUDGET.nanos() - System.nanoTime())).nanos();
     }
 
     /// Settles a parked waiter whose verdict is no longer "lapsed". Removal from the list decides which of the re-check and
@@ -4792,8 +4797,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         var verdict = ackVerdict(parked.waiter());
 
         if (verdict != AckVerdict.LAPSED && parkedAcks.remove(parked)) {
-            parked.answer()
-                  .resolve(settled(parked.waiter(), verdict));
+            parked.answer().resolve(settled(parked.waiter(), verdict));
         }
     }
 
@@ -4801,10 +4805,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     private void expireParked(ParkedAck parked) {
         if (parkedAcks.remove(parked)) {
             parked.answer()
-                  .resolve(new StreamError.OwnerLeaseLapsedBeforeAck(parked.waiter()
-                                                                           .streamName(),
-                                                                     parked.waiter()
-                                                                           .partition()).result());
+                  .resolve(new StreamError.OwnerLeaseLapsedBeforeAck(parked.waiter().streamName(),
+                                                                     parked.waiter().partition()).result());
         }
     }
 
