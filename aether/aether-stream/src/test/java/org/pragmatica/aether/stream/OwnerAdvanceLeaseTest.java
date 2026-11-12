@@ -142,7 +142,8 @@ class OwnerAdvanceLeaseTest {
         assertThat(visible()).as("control: under a valid lease the tail is restored").isEqualTo(2L);
     }
 
-    /// `restoreVisible`'s NONE arm (role unresolved): the same rule as the OWNER arm.
+    /// `restoreVisible`'s NONE arm (role unresolved): the same rule as the OWNER arm. Only a role that resolves to NONE between the
+    /// materialization decision and the restore reaches it, so the role answers OWNER once (the decision), then NONE.
     @Test
     void restoreVisible_noneArm_underALapsedLease_staysAtTheReplicaBound_thenAValidLeaseRestoresIt() {
         restartedWithThreeRecords(ReplicaSetController.Role.NONE, false);
@@ -243,7 +244,11 @@ class OwnerAdvanceLeaseTest {
         manager.close();
         leaseValid.set(leaseOnRestart);
         manager = wired(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir)));
-        manager.placementRoleSupplier((_, _) -> role);
+        var answered = new AtomicBoolean();
+
+        manager.placementRoleSupplier((_, _) -> answered.getAndSet(true)
+                                                ? role
+                                                : ReplicaSetController.Role.OWNER);
         createStream(2);
         assertThat(manager.partitionBuffer(STREAM, PARTITION).isPresent()).as("control: the ring was rebuilt").isTrue();
     }

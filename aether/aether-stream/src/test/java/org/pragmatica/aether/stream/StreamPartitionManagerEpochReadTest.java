@@ -41,9 +41,13 @@ class StreamPartitionManagerEpochReadTest {
         manager.createStream(StreamConfig.streamConfig(STREAM));
         manager.ownerLease(() -> true);
         manager.ownershipRecords((_, _) -> record.get());
+        // #2981 step 2: a CF >= 2 owner exposes its appends only while the applied record names it (design §2.2 check 3), so the
+        // records are published under one; each test then sets the record its read is validated against.
+        record.set(Option.some(owned(E1, List.of(new EpochStart(E1, 0L)))));
         for (var i = 0; i < 5; i++) {
             manager.publishLocal(STREAM, 0, ("r" + i).getBytes(UTF_8), i).unwrap();
         }
+        record.set(Option.none());
     }
 
     @AfterEach

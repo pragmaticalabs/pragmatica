@@ -116,6 +116,7 @@ class StreamAssemblyNodeLeaseTest {
 
         assertThat(source).containsOnlyOnce("hlcClock),nodeLease,streamPartitionManager::confirmationFactorFor);");
         assertThat(source).containsOnlyOnce("streamPartitionManager.ownerLease(nodeLease);");
+        assertThat(source).containsOnlyOnce("streamPartitionManager.ownerActivated(ownerActivation::isActivated);");
         assertThat(source).containsOnlyOnce("defer.accept(()->SharedScheduler.scheduleAtFixedRate(nodeLease::renew,streamingConfig.ownerLeaseRenewal()));");
     }
 
