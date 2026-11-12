@@ -57,14 +57,16 @@ class QuorumlessReadmissionCycleTest {
         assertThat(NODES).as("the partition leaves every node without quorum").allMatch(this::lostQuorum);
         NODES.forEach(this::publishOwnReport);
 
-        for (int round = 0; round < HEAL_ROUND_LIMIT && NODES.stream().anyMatch(this::lostQuorum); round++) {
+        for (int round = 0; round < HEAL_ROUND_LIMIT && !everyNodeAdmitsEveryPeer(); round++) {
             NODES.forEach(this::gossipToEveryPeer);
             NODES.forEach(this::publishOwnReport);
         }
 
         assertThat(NODES).as("quorum re-forms on every node after the heal (no circular wait on LOST reports)")
                          .noneMatch(this::lostQuorum);
-        assertThat(cluster.values()).allSatisfy(fsm -> assertThat(fsm.memberStates().values()).containsOnly("Member"));
+        assertThat(cluster.values()).as("a peer held out by a node that regained quorum first is re-admitted on the "
+                                        + "bump that clears its report (#2936 hold, bounded)")
+                                    .allSatisfy(fsm -> assertThat(fsm.memberStates().values()).containsOnly("Member"));
     }
 
     @Test
@@ -143,6 +145,15 @@ class QuorumlessReadmissionCycleTest {
                                            SHORT_BACKSTOP,
                                            LONG_WINDOW,
                                            LONG_WINDOW);
+    }
+
+    private boolean everyNodeAdmitsEveryPeer() {
+        return cluster.values()
+                      .stream()
+                      .allMatch(fsm -> fsm.memberStates()
+                                          .values()
+                                          .stream()
+                                          .allMatch("Member"::equals));
     }
 
     /// A node's own detector: below the simple-majority threshold over its own MEMBER view (self included).
