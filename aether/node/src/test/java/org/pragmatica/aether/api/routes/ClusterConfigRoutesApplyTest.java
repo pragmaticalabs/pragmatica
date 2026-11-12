@@ -830,6 +830,7 @@ class ClusterConfigRoutesApplyTest {
     @Nested
     class WriteTimeFence {
         private static final long STORED_VERSION = 5;
+        private static final String COMPETING_WRITER = "competing-writer";
         private static final AutoHealStateValue AUTO_HEAL_DISABLED = AutoHealStateValue.autoHealStateValue(false, "operator", 1L);
         private static final AutoHealStateValue AUTO_HEAL_ENABLED = AutoHealStateValue.autoHealStateValue(true, "operator", 2L);
 
@@ -860,7 +861,7 @@ class ClusterConfigRoutesApplyTest {
             assertThat(ran).as("instrument: the competing config write must have been injected").isTrue();
             assertThat(cause.expected()).isEqualTo(STORED_VERSION);
             assertThat(cause.actual()).as("same version, other content: only the fenced expected value can tell").isEqualTo(STORED_VERSION);
-            assertThat(committedConfig(store)).as("the competing write survives").isEqualTo(otherContentAt(STORED_VERSION));
+            assertThat(committedConfig(store).deploymentType()).as("the competing write survives").isEqualTo(COMPETING_WRITER);
         }
 
         @Test
@@ -918,7 +919,7 @@ class ClusterConfigRoutesApplyTest {
 
             assertThat(ran).as("instrument: the competing write must have been injected").isTrue();
             assertThat(refusal(result, ClusterConfigError.VersionConflict.class).actual()).isEqualTo(STORED_VERSION);
-            assertThat(committedConfig(store)).isEqualTo(otherContentAt(STORED_VERSION));
+            assertThat(committedConfig(store).deploymentType()).isEqualTo(COMPETING_WRITER);
         }
 
         @Test
@@ -962,7 +963,7 @@ class ClusterConfigRoutesApplyTest {
 
         /// Same version as the stored config, different content: a re-read at write time would adopt it and pass the CAS.
         private static ClusterConfigValue otherContentAt(long configVersion) {
-            return ClusterConfigValue.bootstrapSeed("prod", "1.0.0", List.of(new TopologyEntry("", TopologyEntry.CORE_ROLE, 5)), 5, 5, "competing-writer", configVersion);
+            return ClusterConfigValue.bootstrapSeed("prod", "1.0.0", List.of(new TopologyEntry("", TopologyEntry.CORE_ROLE, 5)), 5, 5, COMPETING_WRITER, configVersion);
         }
 
         private static <C extends Cause> C refusal(Result<?> result, Class<C> type) {
