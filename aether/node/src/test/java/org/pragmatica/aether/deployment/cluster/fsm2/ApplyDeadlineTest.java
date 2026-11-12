@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.UnaryOperator;
 
@@ -16,6 +17,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
+import org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
@@ -227,5 +229,44 @@ class ApplyDeadlineTest {
         h.advanceBySeconds(20 * 60);
         assertThat(status(h)).isNotEqualTo(Option.some(DeploymentOutcomeStatus.ROLLED_BACK));
         assertThat(h.warns("apply-deadline-exceeded")).isEmpty();
+    }
+
+    // -- inheritance (#2834 family) -----------------------------------------------------------------------------------
+    private static FsmHarness successorOf(String outcomeAttempt) {
+        var bounds = DivergenceBounds.divergenceBounds(TEN_HOURS_MS, TEN_HOURS_MS, TEN_HOURS_MS, TEN_HOURS_MS);
+        var h = new FsmHarness(Settings.settings(FsmHarness.SELF, DeploymentAtomicity.ALL_OR_NOTHING, Set.of(), bounds()).withDivergence(bounds));
+        var cores = Set.of(CORE_1, CORE_2, CORE_3);
+
+        h.commitLeader(FsmHarness.SELF, 1L);
+        h.seams = Seams.UNWIRED.withCountedCores(cores).withReady(cores);
+        h.seed(new DeploymentOutcomeKey(ID),
+               new DeploymentOutcomeValue(DeploymentOutcomeStatus.ROLLED_BACK, List.of(ORDERS.asString()), "apply-deadline-exceeded", h.wallMs, 2L, outcomeAttempt));
+        h.seed(FsmWarningKey.fsmWarningKey("apply-deadline-exceeded", APP), FsmWarningValue.fsmWarningValue(Map.of()));
+        h.activate();
+
+        return h;
+    }
+
+    /// An open warning whose deadline terminal still stands is adopted: the successor neither raises it again nor closes it. Red when: `Warnings.adopt`
+    /// has no APPLY_DEADLINE arm (the unadopted row is then closed as a stray), or adoption does not rebuild `applyDeadlineWarned`.
+    @Test
+    void inheritedWarning_whoseTerminalStands_isKeptOpen() {
+        var h = successorOf(ATTEMPT);
+
+        h.advanceBySeconds(5 * 60);
+        assertThat(h.warns("apply-deadline-cleared")).as("not closed").isEmpty();
+        assertThat(h.warns("apply-deadline-exceeded")).as("not raised again").isEmpty();
+        assertThat(h.store.get(FsmWarningKey.fsmWarningKey("apply-deadline-exceeded", APP)).isPresent()).as("still in the open set").isTrue();
+    }
+
+    /// An open warning whose terminal was replaced between the leaders (a republish: another attempt) is closed by the successor. Red when: the
+    /// adoption does not check that the outcome is the deadline terminal, so the stale warning stays open for ever.
+    @Test
+    void inheritedWarning_whoseTerminalWasReplaced_isClosed() {
+        var h = successorOf("attempt-0");
+
+        h.advanceBySeconds(60);
+        assertThat(h.warns("apply-deadline-cleared")).as("closed by the successor").hasSize(1);
+        assertThat(h.store.get(FsmWarningKey.fsmWarningKey("apply-deadline-exceeded", APP)).isPresent()).as("removed from the open set").isFalse();
     }
 }
