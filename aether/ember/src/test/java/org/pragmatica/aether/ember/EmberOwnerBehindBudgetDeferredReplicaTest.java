@@ -152,6 +152,15 @@ class EmberOwnerBehindBudgetDeferredReplicaTest {
                 var killed = restoredOwner.self().id();
 
                 cluster.killNode(killed).await(STOP_BOUND).onFailure(cause -> org.junit.jupiter.api.Assertions.fail("owner kill failed: " + cause.message()));
+                // `behind` stays starved until the election has named the new owner, so the owner is chosen while `behind` is still behind.
+                awaitUntil(() -> StreamTripwireSupport.committedRecord(cluster, KEY, PARTITION).filter(value -> !value.owner().id().equals(killed)).isPresent(),
+                           FAILOVER_BUDGET_MS,
+                           "a new owner was elected");
+                var electedOwner = StreamTripwireSupport.committedRecord(cluster, KEY, PARTITION).map(value -> value.owner().id()).unwrap();
+                var headAtElection = behind.streamPartitionManager().appendedHead(KEY, PARTITION);
+
+                System.out.println("NT149-PREMISE elected=" + electedOwner + " behindHeadAtElection=" + headAtElection + " deferredHead="
+                                   + deferred.streamPartitionManager().appendedHead(KEY, PARTITION) + " tail=" + (EARLY + LATE - 1L));
                 starved.set(null);
                 awaitOwner(behindId);
                 awaitUntil(() -> behind.streamPartitionManager().appendedHead(KEY, PARTITION) == EARLY + LATE - 1L,
