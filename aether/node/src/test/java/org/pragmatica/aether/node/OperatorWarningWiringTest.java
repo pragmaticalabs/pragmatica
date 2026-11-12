@@ -59,7 +59,7 @@ class OperatorWarningWiringTest {
 
         assertThat(code).containsOnlyOnce("swimHealthDetector.setOperatorWarningSink(operatorWarningSink);");
         assertThat(code).containsOnlyOnce("coreAbsenceDetector.setOperatorWarningSink(operatorWarningSink);");
-        assertThat(code).containsOnlyOnce("streamOwnershipViews.writeAuthority(),operatorWarningSink);");
+        assertThat(code).containsOnlyOnce("streamOwnershipViews.writeAuthority(),operatorWarningSink,()->bootToken);");
     }
 
     /// #752: the declarative consumer manager reports a divergence from its consumer runtime to this node's sink.
