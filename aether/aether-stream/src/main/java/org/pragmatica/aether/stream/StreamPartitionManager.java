@@ -11,6 +11,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.io.IOException;
@@ -7660,7 +7661,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         private String phaseLabel() {
             return phase.name()
-                        .toLowerCase()
+                        .toLowerCase(Locale.ROOT)
                         .replace('_', '-');
         }
     }

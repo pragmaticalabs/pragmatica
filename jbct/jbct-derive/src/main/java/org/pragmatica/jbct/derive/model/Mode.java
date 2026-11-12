@@ -1,5 +1,7 @@
 package org.pragmatica.jbct.derive.model;
 
+import java.util.Locale;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
@@ -20,7 +22,7 @@ public enum Mode {
                      .flatMap(Mode::parse);
     }
     private static Result<Mode> parse(String trimmed) {
-        return switch (trimmed.toLowerCase()) {
+        return switch (trimmed.toLowerCase(Locale.ROOT)) {
             case "greenfield" -> Result.success(GREENFIELD);
             case "living" -> Result.success(LIVING);
             default -> INVALID_MODE.apply(trimmed).result();

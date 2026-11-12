@@ -4,6 +4,7 @@
 
 package org.pragmatica.aether.pg.parser.transform;
 
+import java.util.Locale;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -53,7 +54,7 @@ class CstExtractorTest {
         void keywordLikeColLabel_isItsOwnLexeme(String alias) {
             var nav = parse("SELECT 1 AS " + alias);
             var id = CstExtractor.extractIdentifier(nav.findAll("ColLabel").getFirst());
-            assertThat(id.normalized()).isEqualTo(alias.toLowerCase());
+            assertThat(id.normalized()).isEqualTo(alias.toLowerCase(Locale.ROOT));
             assertThat(id.style()).isEqualTo(Identifier.QuoteStyle.UNQUOTED);
         }
 

@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Supplier;
@@ -415,7 +416,7 @@ public final class StatusRoutes implements RouteSource {
         // own doc instead of only the no-label default happening to already be uppercase.
         var role = info.map(i -> i.labels()
                                   .getOrDefault(ROLE_LABEL, ActivationDirectiveValue.CORE))
-                       .map(String::toUpperCase)
+                       .map(text -> text.toUpperCase(Locale.ROOT))
                        .or(ActivationDirectiveValue.CORE);
 
         return new LiveNodeEntry(nodeId.id(), address, role, swimAlive, reportedState);
@@ -476,7 +477,7 @@ public final class StatusRoutes implements RouteSource {
                           .option()
                           .flatMap(topology::get)
                           .flatMap(info -> Option.option(info.labels().get(ROLE_LABEL)));
-        var role = override.orElse(label).map(String::toUpperCase).or(ActivationDirectiveValue.CORE);
+        var role = override.orElse(label).map(text -> text.toUpperCase(Locale.ROOT)).or(ActivationDirectiveValue.CORE);
         var isLeader = leaderId.map(id::equals).or(false);
 
         return new EnrichedNodeInfo(id, role, isLeader);

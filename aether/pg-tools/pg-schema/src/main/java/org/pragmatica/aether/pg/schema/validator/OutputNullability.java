@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -717,7 +718,7 @@ public final class OutputNullability {
         return call.child("FuncName")
                    .flatMap(func -> func.child("QualifiedName"))
                    .flatMap(qualified -> lastQualifier(qualified))
-                   .map(String::toLowerCase);
+                   .map(txt -> txt.toLowerCase(Locale.ROOT));
     }
 
     private static Nullability functionCall(CstNavigator call) {

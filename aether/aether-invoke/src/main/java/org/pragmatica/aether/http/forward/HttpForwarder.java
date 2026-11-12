@@ -9,6 +9,7 @@ import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -954,7 +955,7 @@ public interface HttpForwarder {
 
             private static Option<HttpMethod> parseHttpMethod(String raw) {
                 return Result.lift(Causes::fromThrowable,
-                                   () -> HttpMethod.valueOf(raw.toUpperCase()))
+                                   () -> HttpMethod.valueOf(raw.toUpperCase(Locale.ROOT)))
                              .option();
             }
 

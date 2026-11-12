@@ -6,6 +6,7 @@ package org.pragmatica.aether.api.routes;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
@@ -195,7 +196,7 @@ public final class DeployRoutes implements RouteSource {
 
     private static Result<DeploymentStrategy> parseStrategy(String raw) {
         return option(raw).toResult(MISSING_STRATEGY)
-                     .map(String::toUpperCase)
+                     .map(text -> text.toUpperCase(Locale.ROOT))
                      .flatMap(DeployRoutes::toDeploymentStrategy);
     }
 
@@ -230,7 +231,7 @@ public final class DeployRoutes implements RouteSource {
             return Result.success(CleanupPolicy.GRACE_PERIOD);
         }
 
-        return switch (raw.toUpperCase()) {
+        return switch (raw.toUpperCase(Locale.ROOT)) {
             case "IMMEDIATE" -> Result.success(CleanupPolicy.IMMEDIATE);
             case "GRACE_PERIOD" -> Result.success(CleanupPolicy.GRACE_PERIOD);
             case "MANUAL" -> Result.success(CleanupPolicy.MANUAL);

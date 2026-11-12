@@ -16,6 +16,7 @@
 
 package org.pragmatica.lang.vo;
 
+import java.util.Locale;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -219,6 +220,24 @@ class EmailTest {
             Email.email(longLocal + "@example.com")
                  .onSuccessRun(Assertions::fail)
                  .onFailure(cause -> assertNotNull(cause.message()));
+        }
+    }
+
+    @Test
+    void email_lowercasesDomain_underTurkishLocale() {
+        underTurkishLocale(() -> Email.email("user@MAIL.COM")
+                                      .onFailureRun(Assertions::fail)
+                                      .onSuccess(e -> assertEquals("mail.com", e.domain())));
+    }
+
+    private static void underTurkishLocale(Runnable body) {
+        var saved = Locale.getDefault();
+
+        try {
+            Locale.setDefault(Locale.forLanguageTag("tr-TR"));
+            body.run();
+        } finally {
+            Locale.setDefault(saved);
         }
     }
 }

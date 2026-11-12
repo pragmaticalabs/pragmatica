@@ -19,6 +19,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.jar.JarFile;
@@ -980,7 +981,7 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var body = "{\"targetRole\":\"" + role.trim().toUpperCase() + "\"}";
+                var body = "{\"targetRole\":\"" + role.trim().toUpperCase(Locale.ROOT) + "\"}";
                 var response = nodesParent.parent.post(NODE_PROMOTE, List.of(nodeId), body);
                 var errorCode = OutputFormatter.checkResponseError(response,
                                                                    nodesParent.parent.outputOptions(),
@@ -992,7 +993,9 @@ public class AetherCli implements Runnable {
 
                 return OutputFormatter.printAction(response,
                                                    nodesParent.parent.outputOptions(),
-                                                   "acknowledge node " + nodeId + " role " + role.trim().toUpperCase());
+                                                   "acknowledge node " + nodeId
+                                                  + " role " + role.trim()
+                                                                   .toUpperCase(Locale.ROOT));
             }
         }
 
@@ -2624,7 +2627,7 @@ public class AetherCli implements Runnable {
             private void setStrategy(String strategyType) {
                 String body;
 
-                switch (strategyType.toLowerCase()) {
+                switch (strategyType.toLowerCase(Locale.ROOT)) {
                     case "fixed" -> body = buildFixedStrategyBody();
                     case "adaptive" -> body = buildAdaptiveStrategyBody();
                     default -> {
@@ -3356,12 +3359,12 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                var body = "{\"logger\":\"" + logger + "\",\"level\":\"" + level.toUpperCase() + "\"}";
+                var body = "{\"logger\":\"" + logger + "\",\"level\":\"" + level.toUpperCase(Locale.ROOT) + "\"}";
                 var response = loggingParent.parent.post(LOG_LEVEL_SET, body);
 
                 return OutputFormatter.printAction(response,
                                                    loggingParent.parent.outputOptions(),
-                                                   "Log level set: " + logger + " = " + level.toUpperCase());
+                                                   "Log level set: " + logger + " = " + level.toUpperCase(Locale.ROOT));
             }
         }
 

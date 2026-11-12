@@ -4,6 +4,7 @@
 package org.pragmatica.aether.pg.schema.model;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import org.pragmatica.lang.Option;
@@ -90,7 +91,7 @@ public final class BuiltinTypes {
                                                                      Map.entry("bit varying", "varbit"));
 
     public static Option<PgType.BuiltinType> lookup(String typeName) {
-        var normalized = typeName.toLowerCase().trim();
+        var normalized = typeName.toLowerCase(Locale.ROOT).trim();
         var type = TYPES.get(normalized);
 
         return type != null
@@ -99,7 +100,7 @@ public final class BuiltinTypes {
     }
 
     public static String canonicalize(String typeName) {
-        var normalized = typeName.toLowerCase().trim();
+        var normalized = typeName.toLowerCase(Locale.ROOT).trim();
 
         return ALIASES.getOrDefault(normalized, normalized);
     }

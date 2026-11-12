@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -280,7 +281,7 @@ public class CstMapperMethodReferenceRule implements CstLintRule {
     /// `*OrThrow` (container convention) or the JDK `orElseThrow`, matched case-insensitively so
     /// `Optional::orElseThrow` is caught.
     private boolean isThrowingName(String refName) {
-        var lower = refName.toLowerCase();
+        var lower = refName.toLowerCase(Locale.ROOT);
 
         return lower.endsWith("orthrow") || lower.endsWith("orelsethrow");
     }

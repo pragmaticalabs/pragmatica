@@ -6,6 +6,7 @@ package org.pragmatica.aether.setup.generators;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.stream.IntStream;
 
 import org.pragmatica.aether.config.AetherConfig;
@@ -176,7 +177,7 @@ public final class KubernetesGenerator implements Generator {
     private String gcFlag(AetherConfig config) {
         return config.node()
                      .gc()
-                     .toUpperCase()
+                     .toUpperCase(Locale.ROOT)
                      .equals("ZGC")
                ? "ZGC"
                : "G1GC";

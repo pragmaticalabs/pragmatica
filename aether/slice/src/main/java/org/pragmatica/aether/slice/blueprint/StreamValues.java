@@ -4,6 +4,7 @@
 package org.pragmatica.aether.slice.blueprint;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Pattern;
 
@@ -55,7 +56,7 @@ public sealed interface StreamValues {
 
     /// One of `allowed`, compared case-insensitively; anything else is refused rather than defaulted.
     static Result<String> oneOf(String alias, String key, String raw, List<String> allowed) {
-        var normalized = raw.trim().toLowerCase();
+        var normalized = raw.trim().toLowerCase(Locale.ROOT);
 
         return allowed.contains(normalized)
                ? success(normalized)
@@ -75,8 +76,8 @@ public sealed interface StreamValues {
         }
 
         var unit = upperCaseUnit
-                   ? matcher.group(2).toUpperCase()
-                   : matcher.group(2).toLowerCase();
+                   ? matcher.group(2).toUpperCase(Locale.ROOT)
+                   : matcher.group(2).toLowerCase(Locale.ROOT);
         var multiplier = units.get(unit);
 
         if (multiplier == null) {

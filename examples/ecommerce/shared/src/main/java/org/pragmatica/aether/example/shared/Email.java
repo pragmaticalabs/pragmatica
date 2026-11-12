@@ -1,5 +1,6 @@
 package org.pragmatica.aether.example.shared;
 
+import java.util.Locale;
 import java.util.regex.Pattern;
 
 import org.pragmatica.lang.Cause;
@@ -17,7 +18,7 @@ public record Email(String value) {
     public static Result<Email> email(String raw) {
         return Verify.ensure(raw, Verify.Is::notBlank, INVALID_EMAIL)
                      .map(String::trim)
-                     .map(String::toLowerCase)
+                     .map(text -> text.toLowerCase(Locale.ROOT))
                      .filter(INVALID_EMAIL,
                              EMAIL_PATTERN.asPredicate())
                      .map(Email::new);

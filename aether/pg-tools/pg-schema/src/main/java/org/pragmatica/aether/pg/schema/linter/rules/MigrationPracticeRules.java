@@ -4,6 +4,7 @@
 package org.pragmatica.aether.pg.schema.linter.rules;
 
 import java.util.List;
+import java.util.Locale;
 
 import org.pragmatica.aether.pg.schema.event.SchemaEvent;
 import org.pragmatica.aether.pg.schema.linter.LintDiagnostic;
@@ -154,7 +155,7 @@ public final class MigrationPracticeRules {
 
         public List<LintDiagnostic> check(SchemaEvent event, Schema schema) {
             if (event instanceof SchemaEvent.ColumnAdded e && e.column().defaultExpr().isPresent()) {
-                var expr = e.column().defaultExpr().unwrap().toLowerCase();
+                var expr = e.column().defaultExpr().unwrap().toLowerCase(Locale.ROOT);
 
                 for (var vf : VOLATILE_FUNCTIONS) {
                     if (expr.contains(vf)) {

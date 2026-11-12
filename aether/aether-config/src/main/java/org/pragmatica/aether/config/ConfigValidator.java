@@ -6,6 +6,7 @@ package org.pragmatica.aether.config;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
@@ -418,7 +419,7 @@ public final class ConfigValidator {
     }
 
     private static void gcErrors(NodeConfig node, List<String> errors) {
-        var gc = node.gc().toLowerCase();
+        var gc = node.gc().toLowerCase(Locale.ROOT);
         var isValid = VALID_GC.stream().anyMatch(gc::equals);
 
         if (!isValid) {

@@ -29,6 +29,7 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.stream.Collectors;
@@ -104,7 +105,7 @@ public sealed interface AwsSigV4Signer {
                                                                String payloadHash) {
         var signingHeaders = new TreeMap<String, String>();
 
-        headers.forEach((k, v) -> signingHeaders.put(k.toLowerCase(), v.trim()));
+        headers.forEach((k, v) -> signingHeaders.put(k.toLowerCase(Locale.ROOT), v.trim()));
         signingHeaders.put("host", host);
         signingHeaders.put("x-amz-date", amzDate);
         signingHeaders.put("x-amz-content-sha256", payloadHash);

@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.util.Locale;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 
 import java.io.IOException;
@@ -81,7 +82,7 @@ public final class ClusterTestPorts {
             if (Files.isReadable(linux)) {
                 return parse(read(linux), linux.toString());
             }
-            if (System.getProperty("os.name", "").toLowerCase().contains("mac")) {
+            if (System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac")) {
                 return parse(sysctl("net.inet.ip.portrange.first", "net.inet.ip.portrange.last"),
                              "sysctl net.inet.ip.portrange.first/last");
             }

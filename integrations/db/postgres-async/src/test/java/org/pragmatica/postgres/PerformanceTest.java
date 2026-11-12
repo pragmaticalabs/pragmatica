@@ -14,6 +14,7 @@
 
 package org.pragmatica.postgres;
 
+import java.util.Locale;
 import org.pragmatica.postgres.net.Connectible;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Tag;
@@ -41,7 +42,7 @@ import static org.pragmatica.lang.Unit.unit;
 @Tag("Slow")
 public class PerformanceTest {
     private static final DatabaseExtension dbr;
-    private static final boolean IS_MAC = System.getProperty("os.name").toLowerCase().startsWith("mac");
+    private static final boolean IS_MAC = System.getProperty("os.name").toLowerCase(Locale.ROOT).startsWith("mac");
 
     static {
         // Uncomment to run with single event loop thread, although I see no big value in it

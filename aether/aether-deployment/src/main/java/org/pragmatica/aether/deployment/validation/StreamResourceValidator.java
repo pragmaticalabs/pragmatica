@@ -9,6 +9,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
@@ -315,7 +316,7 @@ public sealed interface StreamResourceValidator {
 
     private static String classifyNamespaceFailure(Cause cause) {
         return cause.message()
-                    .toLowerCase()
+                    .toLowerCase(Locale.ROOT)
                     .contains("reserved")
                ? RULE_NAMESPACE_RESERVED
                : RULE_BLUEPRINT_NAMESPACE;

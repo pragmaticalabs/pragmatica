@@ -2,6 +2,7 @@ package org.pragmatica.jbct.derive.gate;
 
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -218,41 +219,41 @@ public sealed interface EntryGate permits EntryGate.unused {
 
     private static boolean hasKind(AnswerRow row) {
         return row.kind()
-                  .map(String::toLowerCase)
+                  .map(text -> text.toLowerCase(Locale.ROOT))
                   .filter(Q6_KINDS::contains)
                   .isPresent();
     }
 
     private static boolean hasShapeIn(AnswerRow row, Set<String> allowed) {
         return row.shape()
-                  .map(String::toLowerCase)
+                  .map(text -> text.toLowerCase(Locale.ROOT))
                   .filter(allowed::contains)
                   .isPresent();
     }
 
     private static boolean hasTargetBasis(AnswerRow row) {
         return row.basis()
-                  .map(String::toLowerCase)
+                  .map(text -> text.toLowerCase(Locale.ROOT))
                   .filter("target"::equals)
                   .isPresent();
     }
 
     private static boolean isObservedBasis(AnswerRow row) {
         return row.basis()
-                  .map(String::toLowerCase)
+                  .map(text -> text.toLowerCase(Locale.ROOT))
                   .filter("observed"::equals)
                   .isPresent();
     }
 
     private static boolean isBundled(String statement) {
-        var lower = statement.toLowerCase();
+        var lower = statement.toLowerCase(Locale.ROOT);
 
         return BUNDLED_PHRASES.stream().anyMatch(lower::contains);
     }
 
     private static String normalize(String statement) {
         return statement.trim()
-                        .toLowerCase()
+                        .toLowerCase(Locale.ROOT)
                         .replaceAll("[.!]+$", "");
     }
 

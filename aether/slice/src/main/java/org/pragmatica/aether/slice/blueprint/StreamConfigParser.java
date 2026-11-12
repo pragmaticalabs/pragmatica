@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Comparator;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -314,7 +315,7 @@ public interface StreamConfigParser {
 
     private static String defaultVersionForRole(Option<String> roleOpt) {
         return roleOpt.map(String::trim)
-                      .map(String::toLowerCase)
+                      .map(txt -> txt.toLowerCase(Locale.ROOT))
                       .filter(ROLE_CONSUMER::equals)
                       .map(_ -> DEFAULT_CONSUMER_VERSION)
                       .or(DEFAULT_PRODUCER_VERSION);
@@ -355,7 +356,7 @@ public interface StreamConfigParser {
         return Option.some(addr)
                      .filter(ResourceAddress::isSystem)
                      .flatMap(_ -> roleOpt.map(String::trim)
-                                          .map(String::toLowerCase)
+                                          .map(txt -> txt.toLowerCase(Locale.ROOT))
                                           .filter(StreamConfigParser::writes))
                      .map(role -> StreamSourceError.SystemSourceNotConsumer.FACTORY.apply(streamName, source, role).<ResourceAddress> result())
                      .or(() -> success(addr));
@@ -408,7 +409,7 @@ public interface StreamConfigParser {
                                                                   StreamVersionSpec spec,
                                                                   Option<String> roleOpt) {
         var producesEvents = roleOpt.map(String::trim)
-                                    .map(String::toLowerCase)
+                                    .map(txt -> txt.toLowerCase(Locale.ROOT))
                                     .filter(role -> ROLE_PRODUCER.equals(role) || ROLE_BOTH.equals(role))
                                     .isPresent();
 
@@ -972,7 +973,7 @@ public interface StreamConfigParser {
     }
 
     private static Option<ProcessingMode> parseProcessingMode(String value) {
-        return switch (value.toLowerCase()) {
+        return switch (value.toLowerCase(Locale.ROOT)) {
             case "ordered" -> some(ProcessingMode.ORDERED);
             case "parallel" -> some(ProcessingMode.PARALLEL);
             default -> none();
@@ -980,21 +981,21 @@ public interface StreamConfigParser {
     }
 
     private static ConsistencyMode parseConsistencyMode(String value) {
-        return switch (value.toLowerCase()) {
+        return switch (value.toLowerCase(Locale.ROOT)) {
             case "strong" -> ConsistencyMode.STRONG;
             default -> ConsistencyMode.EVENTUAL;
         };
     }
 
     private static RetentionMode parseRetentionMode(String value) {
-        return switch (value.toLowerCase()) {
+        return switch (value.toLowerCase(Locale.ROOT)) {
             case "all" -> RetentionMode.ALL;
             default -> RetentionMode.ANY;
         };
     }
 
     private static StreamCompression parseCompression(String value) {
-        return switch (value.toLowerCase()) {
+        return switch (value.toLowerCase(Locale.ROOT)) {
             case "lz4" -> StreamCompression.LZ4;
             case "zstd" -> StreamCompression.ZSTD;
             default -> StreamCompression.NONE;
@@ -1002,7 +1003,7 @@ public interface StreamConfigParser {
     }
 
     private static Option<ReadPreference> parseReadPreference(String value) {
-        return switch (value.toLowerCase()) {
+        return switch (value.toLowerCase(Locale.ROOT)) {
             case "governor" -> some(ReadPreference.GOVERNOR);
             case "nearest" -> some(ReadPreference.NEAREST);
             case "any-replica", "any_replica", "any", "replica", "follower-only", "follower_only", "follower" -> some(ReadPreference.ANY_REPLICA);
@@ -1012,7 +1013,7 @@ public interface StreamConfigParser {
     }
 
     private static Option<ErrorStrategy> parseErrorStrategy(String value) {
-        return switch (value.toLowerCase()) {
+        return switch (value.toLowerCase(Locale.ROOT)) {
             case "retry" -> some(ErrorStrategy.RETRY);
             case "skip" -> some(ErrorStrategy.SKIP);
             case "stall" -> some(ErrorStrategy.STALL);

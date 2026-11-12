@@ -2,6 +2,7 @@ package org.pragmatica.aether.example.pricing;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -223,7 +224,7 @@ public interface PricingService {
 
             @Override
             public Promise<TaxResult> calculateTax(CalculateTaxRequest request) {
-                var state = request.shippingAddress().state().toUpperCase();
+                var state = request.shippingAddress().state().toUpperCase(Locale.ROOT);
                 var rate = taxRates.getOrDefault(state, BigDecimal.valueOf(0.08));
 
                 return request.subtotal()
@@ -270,7 +271,7 @@ public interface PricingService {
             }
 
             private Promise<DiscountResult> applyCodeDiscount(String code, Money subtotal) {
-                return Option.option(discountCodes.get(code.toUpperCase()))
+                return Option.option(discountCodes.get(code.toUpperCase(Locale.ROOT)))
                              .toResult(new PricingError.InvalidDiscountCode(code))
                              .flatMap(discount -> validateMinimumPurchase(discount, subtotal))
                              .flatMap(discount -> subtotal.percentage(discount.percentOff())

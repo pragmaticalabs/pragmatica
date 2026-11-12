@@ -3,6 +3,7 @@ package org.pragmatica.jbct.lint.cst.shape;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -950,7 +951,7 @@ public final class MethodShapeClassifier {
             var matcher = pattern.matcher(masked);
 
             while (matcher.find()) {
-                firstWord(matcher.group(2)).filter(verb -> ZONE_THREE_VERBS.contains(verb.toLowerCase()))
+                firstWord(matcher.group(2)).filter(verb -> ZONE_THREE_VERBS.contains(verb.toLowerCase(Locale.ROOT)))
                          .filter(verb -> !verbs.contains(verb))
                          .onPresent(verbs::add);
             }
@@ -1131,7 +1132,7 @@ public final class MethodShapeClassifier {
     }
 
     private static Option<ShapeZoneMismatch> mismatchForShape(Cursor method, MethodShape shape) {
-        return firstWord(FileTypeClassifier.methodName(method)).map(String::toLowerCase)
+        return firstWord(FileTypeClassifier.methodName(method)).map(txt -> txt.toLowerCase(Locale.ROOT))
                         .flatMap(verb -> mismatchForVerb(method, shape, verb));
     }
 

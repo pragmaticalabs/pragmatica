@@ -11,6 +11,7 @@ import javax.lang.model.type.TypeMirror;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -76,7 +77,7 @@ final class JsonbCodecs {
     }
 
     private String register(String qualified, TypeElement element) {
-        var base = NamingConvention.toSnakeCase(element.getSimpleName().toString()).toUpperCase() + "_JSON";
+        var base = NamingConvention.toSnakeCase(element.getSimpleName().toString()).toUpperCase(Locale.ROOT) + "_JSON";
         var name = base;
 
         for (var n = 2; !fieldNames.add(name); n++) {
