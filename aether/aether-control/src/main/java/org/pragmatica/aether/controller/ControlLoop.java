@@ -81,7 +81,8 @@ public interface ControlLoop {
 
     /// F5b (phase-3 design 8.2 D-10, spec 1.6.1): the FSM2 source of [#onNodeArtifactPut]. A current row records its
     /// state; a stale row (R-1.6.2, judged against `admittedToken`) and an UNLOADED row clear it, as a removal would.
-    void onSliceObservedPut(ValuePut<SliceObservedKey, SliceObservedValue> valuePut, ToLongFunction<NodeId> admittedToken);
+    void onSliceObservedPut(ValuePut<SliceObservedKey, SliceObservedValue> valuePut,
+                            ToLongFunction<NodeId> admittedToken);
 
     /// F5b: the FSM2 source of [#onNodeArtifactRemove].
     void onSliceObservedRemove(ValueRemove<SliceObservedKey, SliceObservedValue> valueRemove);
@@ -277,9 +278,10 @@ public interface ControlLoop {
             var value = valuePut.cause().value();
             var sliceNodeKey = new SliceNodeKey(key.artifact(), key.nodeId());
 
-            observedState(value, admittedToken.applyAsLong(key.nodeId()))
-                .onPresent(state -> ctx.recordSliceState(sliceNodeKey, state))
-                .onEmpty(() -> ctx.clearSliceState(sliceNodeKey));
+            observedState(value,
+                          admittedToken.applyAsLong(key.nodeId())).onPresent(state -> ctx.recordSliceState(sliceNodeKey,
+                                                                                                           state))
+                         .onEmpty(() -> ctx.clearSliceState(sliceNodeKey));
         }
 
         @Override

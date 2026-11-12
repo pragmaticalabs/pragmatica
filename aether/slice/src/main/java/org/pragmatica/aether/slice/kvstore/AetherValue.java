@@ -4480,7 +4480,9 @@ public sealed interface AetherValue {
         /// boot token are both known (non-zero) and differ. Positive evidence only: an unknown token on either side reads as
         /// current.
         public boolean isStaleAgainst(long admittedToken) {
-            return incarnation.bootToken() != 0L && admittedToken != 0L && incarnation.bootToken() != admittedToken;
+            return incarnation.bootToken() != 0L
+                   && admittedToken != 0L
+                   && incarnation.bootToken() != admittedToken;
         }
     }
 

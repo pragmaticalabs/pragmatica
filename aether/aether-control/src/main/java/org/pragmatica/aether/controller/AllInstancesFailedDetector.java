@@ -122,7 +122,8 @@ public final class AllInstancesFailedDetector {
 
         return result.entrySet()
                      .stream()
-                     .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey, entry -> Set.copyOf(entry.getValue())));
+                     .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
+                                                           entry -> Set.copyOf(entry.getValue())));
     }
 
     @Contract
