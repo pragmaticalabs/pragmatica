@@ -1535,10 +1535,10 @@ public final class MembershipFsm {
     }
 
     private MemberTracking newTracking(NodeId id) {
-        var fsm = Fsm.fsm(FSM_KIND, id.id(), initialStateFactory(id,
-                                                                   () -> quorumLossReported.test(id),
-                                                                   () -> selfQuorumLost.getAsBoolean()),
-                      observer);
+        var fsm = Fsm.fsm(FSM_KIND,
+                          id.id(),
+                          initialStateFactory(id, () -> quorumLossReported.test(id), () -> selfQuorumLost.getAsBoolean()),
+                          observer);
         var tracking = new MemberTracking(id,
                                           fsm,
                                           this::onEnteredDead,
