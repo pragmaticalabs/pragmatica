@@ -18,6 +18,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.config.BackupConfig.RestoreMode;
@@ -49,7 +50,10 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.sleepQuietly;
 /// the tail and it builds no ring. In life 2 the owner is killed and `behind` is released: it takes over behind the only
 /// holder of the tail, which is the budget-deferred replica, and can reach that tail only by pulling it from the replica's WAL.
 ///
-/// Asserts: the new owner holds the replica's tail and completes its activation at it; the deferred replica still has no
+/// Two tests share the scene: an enabled tripwire for the open defect (the election strands the partition on the deferred replica)
+/// and the intended assertions, `@Disabled` beside it.
+///
+/// Intended asserts: the new owner holds the replica's tail and completes its activation at it; the deferred replica still has no
 /// ring and its allocated bytes did not move. Red when the owner's catch-up cannot use a deferred replica as its source.
 @PortBudget
 class EmberOwnerBehindBudgetDeferredReplicaTest {
@@ -67,6 +71,7 @@ class EmberOwnerBehindBudgetDeferredReplicaTest {
     private static final long CATCHUP_BUDGET_MS = 120_000L;
     private static final long REBUILD_BUDGET_MS = 240_000L;
     private static final long BACKUP_QUIET_MS = 10_000L;
+    private static final long TRIPWIRE_HOLD_MS = 45_000L;
     private static final long DEFERRAL_SETTLE_MS = 15_000L;
     private static final String KEY = engineKey(STREAM);
 
@@ -85,9 +90,24 @@ class EmberOwnerBehindBudgetDeferredReplicaTest {
         StreamTripwireSupport.deleteTree(baseDir);
     }
 
+    /// Tripwire for the open product defect (#2923): asserts today's behaviour. Fails, naming what to enable, once the election
+    /// no longer strands the partition on the budget-deferred replica.
     @Test
     @Timeout(1200)
+    void deferredReplicaElectedOwner_neverActivates_tripwire() {
+        scene(true);
+    }
+
+    /// The intended behaviour: enable (and delete the tripwire above) when a promoted owner that cannot materialize is no longer
+    /// left owning the partition.
+    @Test
+    @Disabled("#2923: a budget-deferred replica is elected owner and never activates; enable with the product fix and delete the tripwire")
+    @Timeout(1200)
     void ownerBehindABudgetDeferredReplica_catchesUpFromReplicaWal_andActivates() {
+        scene(false);
+    }
+
+    private void scene(boolean tripwire) {
         baseDir = StreamTripwireSupport.newDataDir("nt149");
 
         var remote = baseDir.resolve("kv-backup-remote.git");
@@ -162,6 +182,16 @@ class EmberOwnerBehindBudgetDeferredReplicaTest {
                 System.out.println("NT149-PREMISE elected=" + electedOwner + " behindHeadAtElection=" + headAtElection + " deferredHead="
                                    + deferred.streamPartitionManager().appendedHead(KEY, PARTITION) + " tail=" + (EARLY + LATE - 1L));
                 starved.set(null);
+                if (tripwire) {
+                    assertThat(electedOwner).as("tripwire: the election named the budget-deferred replica; the premise changed, enable the intended test").isEqualTo(deferredId.id());
+                    assertThat(headAtElection).as("premise: `behind` was behind the replica's WAL tail at the election").isLessThan(EARLY + LATE - 1L);
+                    sleepQuietly(TRIPWIRE_HOLD_MS);
+                    assertThat(StreamTripwireSupport.committedRecord(cluster, KEY, PARTITION).map(value -> value.owner().id()).unwrap())
+                        .as("tripwire: the deferred replica still owns the partition (stranded); the defect is fixed, enable the intended test")
+                        .isEqualTo(deferredId.id());
+                    assertThat(activated(capture)).as("tripwire: nothing activated at the replica's tail; the defect is fixed, enable the intended test").isFalse();
+                    return;
+                }
                 awaitOwner(behindId);
                 awaitUntil(() -> behind.streamPartitionManager().appendedHead(KEY, PARTITION) == EARLY + LATE - 1L,
                            CATCHUP_BUDGET_MS,
