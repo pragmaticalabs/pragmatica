@@ -857,6 +857,44 @@ class ClusterCursorStoreTest {
                                .matches(r -> r.map(o -> o instanceof CommitOutcome.Fenced).or(false));
         }
 
+        /// #2596 guess: the assignment mirror a blind worker consults lags the core by one decision. The core already moved the
+        /// assignment to a peer and refused the Put, yet the worker reports Persisted. The consequence is a redelivery, never a skip:
+        /// the core holds no checkpoint, so the successor resumes before the offset, and once the mirror catches up the same commit is Fenced.
+        @Test
+        void commit_forwardingWorker_laggingAssignmentMirror_persistedForRefusedWriteIsARedeliveryNotASkip() {
+            var mirror = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+            mirror.process(mirror.createBatch(List.of(assignment(SELF, EPOCH))));
+            core.process(core.createBatch(List.of(assignment(PEER, NEXT_EPOCH))));
+            var laggingWorker = ClusterCursorStore.clusterCursorStore(recordingLocal(new AtomicReference<>()),
+                                                                      SELF,
+                                                                      this::workerReplicaRead,
+                                                                      assignmentsIn(mirror),
+                                                                      this::forwardToCore,
+                                                                      () -> true);
+
+            var lagging = laggingWorker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
+            var successor = ClusterCursorStore.clusterCursorStore(recordingLocal(new AtomicReference<>()),
+                                                                  PEER,
+                                                                  key -> core.getTyped(key, StreamCursorCheckpointValue.class),
+                                                                  assignmentsIn(core),
+                                                                  this::forwardToCore,
+                                                                  () -> false);
+
+            assertThat(lagging).describedAs("the lagging mirror still names this node, so the refused write reads Persisted (the guess)")
+                               .isEqualTo(Result.success(CommitOutcome.persisted()));
+            assertThat(coreCheckpoint()).describedAs("control: the applier REFUSED the write, nothing is checkpointed").isEqualTo(Option.none());
+            assertThat(successor.fetchCursor(GROUP, STREAM, PARTITION, NEXT_EPOCH).await())
+                    .describedAs("the successor resumes from no cursor, so offset 10 is re-read, not skipped")
+                    .isEqualTo(Result.success(Option.none()));
+
+            mirror.process(mirror.createBatch(List.of(assignment(PEER, NEXT_EPOCH))));
+
+            assertThat(laggingWorker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await()
+                                    .map(outcome -> outcome instanceof CommitOutcome.Fenced))
+                    .describedAs("once the mirror catches up the same commit is Fenced")
+                    .isEqualTo(Result.success(true));
+        }
+
         /// #2596: every attempt of a forwarding worker costs two consensus commands, the `Put` and the `Noop` barrier, and a
         /// worker's checkpoint now settles as `Persisted` on the first attempt, so the pair is no longer repeated per retry.
         @Test
