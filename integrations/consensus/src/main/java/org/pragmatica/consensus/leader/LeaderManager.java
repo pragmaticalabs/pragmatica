@@ -549,15 +549,25 @@ public interface LeaderManager {
             // SWIM-FAULTY removes exactly the faulty peer, view-free (#3044): SWIM's snapshot is not a sequenced
             // transport view, so it never replaces the stored one (it would also drop SUSPECT peers and re-add peers
             // the transport has evicted).
-            // Local mode removes the peer first and, if it was removed, adopts from the STORED view before the dispatch
-            // (#3044), so `Led` never sees an intermediate "no leader"; the FSM's removal then finds the peer gone.
-            // The event is dispatched even when nothing was removed: a removal is never stale, and `Led` loses a removed
-            // leader unconditionally even when the stored view no longer holds it.
-            if (localMode && context.removeFromView(peerObservedFaulty.nodeId())) {
-                electLocallyIfPossible();
+            // Local mode removes the peer first and, only if it was removed, adopts from the STORED view and then
+            // dispatches (#3044), so `Led` never sees an intermediate "no leader"; the FSM's removal then finds the peer
+            // gone. A refused removal (the last node stays) neither adopts nor dispatches: in local mode the leader is the
+            // first entry of the stored view, so nothing was removed and nothing may move, and a dispatch would make `Led`
+            // lose a leader that no local commit can restore.
+            // Non-local mode dispatches even when nothing was removed: a removal is never stale, and `Led` loses a
+            // removed leader unconditionally even when the stored view no longer holds it.
+            if (localMode) {
+                removeLocally(peerObservedFaulty.nodeId());
+            } else {
+                fsm.dispatch(new LeaderElectionEvents.PeerRemovedFromView(peerObservedFaulty.nodeId()));
             }
+        }
 
-            fsm.dispatch(new LeaderElectionEvents.PeerRemovedFromView(peerObservedFaulty.nodeId()));
+        private void removeLocally(NodeId nodeId) {
+            if (context.removeFromView(nodeId)) {
+                electLocallyIfPossible();
+                fsm.dispatch(new LeaderElectionEvents.PeerRemovedFromView(nodeId));
+            }
         }
 
         @Contract
