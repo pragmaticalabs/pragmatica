@@ -5,6 +5,7 @@
 package org.pragmatica.aether.node.deployment;
 
 import java.util.List;
+import java.util.stream.Collectors;
 import java.util.Map;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.Executor;
@@ -352,22 +353,41 @@ public final class DeploymentWiring {
         if (isFsm2()) {
             registerObservedFeeds(builder,
                                   ObservedSliceFeed.stateFeed(admissions::tokenOf, state),
-                                  ObservedSliceFeed.trafficFeed(admissions::tokenOf, traffic));
+                                  ObservedSliceFeed.trafficFeed(admissions::tokenOf, traffic),
+                                  readerNames(state),
+                                  readerNames(traffic));
         }
     }
 
     private void registerObservedFeeds(KVNotificationRouter.Builder<AetherKey, AetherValue> builder,
                                        ObservedSliceFeed stateFeed,
-                                       ObservedSliceFeed trafficFeed) {
+                                       ObservedSliceFeed trafficFeed,
+                                       String stateReaders,
+                                       String trafficReaders) {
         builder.onPut(SliceObservedKey.class, stateFeed::onObservedPut)
                .onRemove(SliceObservedKey.class, stateFeed::onObservedRemove)
                .onPut(SliceObservedKey.class, trafficFeed::onObservedPut)
                .onRemove(SliceObservedKey.class, trafficFeed::onObservedRemove)
                .onPut(NodeDepartureKey.class, trafficFeed::onDeparturePut)
                .onRemove(NodeDepartureKey.class, trafficFeed::onDepartureRemove);
-        bindings.put("B21.readers.state.SliceObservedKey", "fsm2:ObservedSliceFeed.stateFeed");
-        bindings.put("B21.readers.traffic.SliceObservedKey", "fsm2:ObservedSliceFeed.trafficFeed");
-        bindings.put("B21.readers.traffic.NodeDepartureKey", "fsm2:ObservedSliceFeed.trafficFeed");
+        bindings.put("B21.readers.state.SliceObservedKey", "fsm2:ObservedSliceFeed.stateFeed" + stateReaders);
+        bindings.put("B21.readers.traffic.SliceObservedKey", "fsm2:ObservedSliceFeed.trafficFeed" + trafficReaders);
+        bindings.put("B21.readers.traffic.NodeDepartureKey", "fsm2:ObservedSliceFeed.trafficFeed" + trafficReaders);
+    }
+
+    /// The readers a feed hands rows to, by type, so the baseline pins WHICH readers `AetherNode` wired and a dropped one is a changed row.
+    private static String readerNames(List<ObservedSliceListener> readers) {
+        return readers.stream()
+                      .map(DeploymentWiring::typeName)
+                      .collect(Collectors.joining(",", "[", "]"));
+    }
+
+    /// The class name without its package; unlike `getSimpleName` it is not empty for an anonymous class.
+    private static String typeName(Object reader) {
+        var name = reader.getClass()
+                         .getName();
+
+        return name.substring(name.lastIndexOf('.') + 1);
     }
 
     /// B2, B7, B8, B9: the message routes the FSM2 engine consumes. Under LEGACY none; for a worker the quorum edge (B2) only.
