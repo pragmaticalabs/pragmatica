@@ -45,6 +45,7 @@ class TruncationBelowVisibleTest {
 
     private final List<OperatorWarning> delivered = new CopyOnWriteArrayList<>();
     private StreamPartitionManager replica;
+    private boolean wireRole = true;
 
     @AfterEach
     void tearDown() {
@@ -117,6 +118,15 @@ class TruncationBelowVisibleTest {
         assertThat(codes()).isEmpty();
     }
 
+    /// [guess G9] tripwire on the current behaviour: an UNWIRED placement role (the default, every partition OWNER) does not enforce the check.
+    @Test
+    void anUnwiredPlacementRole_doesNotEnforceTheCheck() {
+        wireRole = false;
+        quarantinedReplica(2, false);
+
+        assertThat(replica.repairDivergence(STREAM, PARTITION, _ -> true).isSuccess()).isTrue();
+    }
+
     /// A configuration can only get STRONGER online (CF never drops on a live life), so the refusal is in practice closed by the replica going
     /// away; the resume path still has to name the right recovery should the cut ever go through after a refusal. The resume is driven directly.
     @Test
@@ -137,8 +147,8 @@ class TruncationBelowVisibleTest {
         assertThat(ring.visibleOffset()).as("visible lowered with the cut").isEqualTo(KEEP);
         assertThat(replica.truncationRetractedBelowVisible()).isEqualTo(1L);
         assertThat(replica.truncationRefusedBelowVisible()).isZero();
-        assertThat(codes()).containsExactly(OperatorWarningCode.STREAM_TRUNCATION_RETRACTED);
-        assertThat(delivered.getFirst().code().level()).as("a retraction is INFO").isEqualTo(WarningLevel.INFO);
+        assertThat(codes()).contains(OperatorWarningCode.STREAM_TRUNCATION_RETRACTED).doesNotContain(OperatorWarningCode.STREAM_TRUNCATION_REFUSED);
+        assertThat(OperatorWarningCode.STREAM_TRUNCATION_RETRACTED.level()).as("a retraction is INFO").isEqualTo(WarningLevel.INFO);
     }
 
     private void assertNothingCut() {
@@ -169,7 +179,9 @@ class TruncationBelowVisibleTest {
         replica = withWal
                   ? streamPartitionManager(Long.MAX_VALUE, Option.some(walDir))
                   : streamPartitionManager(Long.MAX_VALUE);
-        replica.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
+        if (wireRole) {
+            replica.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
+        }
         replica.operatorWarnings(OperatorWarningSink.handingOffTo(delivered::add));
         replica.createStream(configOf(confirmationFactor)).onFailure(cause -> fail(cause.message()));
         for (var i = 0L; i <= VISIBLE; i++) {

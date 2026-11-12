@@ -3739,6 +3739,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// refusal leaves the ring, the WAL, the witness and `visible` untouched. A confirmation-factor >= 2 partition REFUSES (the owner's
     /// lineage rule makes this cut unreachable: a defect, the quarantine stands); CF = 1 and non-durable partitions are outside that rule
     /// (a deposed owner's visible covers records the cluster never replicated), so the cut proceeds and is reported as a counted retraction.
+    /// [guess G9] A manager whose placement role is still the unwired default ([#ALWAYS_OWNER]: every partition is OWNER, so `visible` equals
+    /// `durable` whatever the owner announced) is not a replica that a repair can run on: the check is skipped there. Production wires the
+    /// supplier in `StreamAssembly`; the divergent-tail fixtures that never wire it model a replica's repair on a manager that exposes its
+    /// whole tail, which a wired replica (visible bounded by the owner's committed mark and the verified prefix) cannot be in.
     private Result<Unit> requireVisibleKept(String streamName,
                                             int partition,
                                             long keep,
@@ -3746,7 +3750,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                             AtomicLong retractedFrom) {
         var visible = ring.visibleOffset();
 
-        return keep >= visible
+        return keep >= visible || placementRoleSupplier == ALWAYS_OWNER
                ? Result.unitResult()
                : belowVisible(streamName, partition, keep, visible, retractedFrom);
     }
