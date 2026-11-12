@@ -6,13 +6,11 @@ package org.pragmatica.aether.node;
 
 import java.time.Duration;
 import java.util.Set;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CopyOnWriteArrayList;
 import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentContext;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
@@ -44,7 +42,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.utility.warning.OperatorWarning;
-import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.awaitility.Awaitility.await;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -67,17 +65,12 @@ class AetherNodeLeaderAwaitedTargetBootTest {
     private static final Artifact SLICE = Artifact.artifact("org.example:wiring-slice:1.0.0").unwrap();
 
     private static final String AWAITING_TARGET = "slice-start-awaiting-target";
-    private static final int NOISE_WARNINGS = 200;
 
     private AetherNode node;
-    private ScheduledExecutorService noise;
+    private final List<String> handedToTheSink = new CopyOnWriteArrayList<>();
 
     @AfterEach
     void tearDown() {
-        if (noise != null) {
-            noise.shutdownNow();
-        }
-
         if (node != null) {
             node.stop()
                 .await(timeSpan(10).seconds())
@@ -112,48 +105,30 @@ class AetherNodeLeaderAwaitedTargetBootTest {
         assertThat(node.kvStore().get(SliceTargetKey.sliceTargetKey(SLICE.base())).isPresent()).as("control: the blueprint is committed, its target is not").isFalse();
         // The booted node's own storage may already have raised its degrade warnings (the synthesized instances cannot open a disk
         // tier under the hermetic root, and say so since A0b); the control is about THIS warning, not about silence.
-        assertThat(raisedCodes()).as("control: awaiting-target not raised yet").doesNotContain(AWAITING_TARGET);
+        assertThat(handedToTheSink).as("control: awaiting-target not raised yet").doesNotContain(AWAITING_TARGET);
 
-        raiseOtherWarningsAround();
+        recordWhatTheLeaderHandsToItsSink(ctx);
         ctx.setAwaitedTargetBound(timeSpan(1).millis());
         cdm.activate();
         assertThat(ctx.isActive()).as("control: the leader state is active").isTrue();
 
-        // The aggregator's single most-recent slot is overwritten by any later warning (storage degrade, the noise above), so the
-        // assertion reads the event log: the awaited warning was RAISED, whatever was raised after it.
+        // The aggregator's single most-recent slot is overwritten by any later warning (the booted node's storage degrade warnings), and
+        // its event log is not reachable on this hermetic node, so the assertion reads what the leader handed to its sink: the awaited
+        // warning was RAISED, whatever was raised after it (#3103). The recorder forwards to the node's real sink, so delivery is unchanged;
+        // that the context holds the node's one aggregator-bound sink is pinned by OperatorWarningWiringTest.
         await().atMost(Duration.ofSeconds(90))
-               .untilAsserted(() -> assertThat(raisedCodes()).as("the leader's awaiting-target warning reached this node's event log")
-                                                             .contains(AWAITING_TARGET));
+               .untilAsserted(() -> assertThat(handedToTheSink).as("the leader raised its awaiting-target warning").contains(AWAITING_TARGET));
     }
 
-    /// Other producers keep raising warnings while the leader's reconcile tick runs, so the most-recent slot cannot hold the awaited
-    /// one for long (#3103); a bounded burst of distinct-subject warnings stands in for the storage degrade warnings of the hermetic node.
-    private void raiseOtherWarningsAround() {
-        var raised = new AtomicInteger();
+    private void recordWhatTheLeaderHandsToItsSink(ClusterDeploymentContext ctx) {
+        var nodeSink = ctx.operatorWarnings();
 
-        noise = Executors.newSingleThreadScheduledExecutor();
-        noise.scheduleAtFixedRate(() -> raiseNoiseWarning(raised.incrementAndGet()), 0, 5, TimeUnit.MILLISECONDS);
+        ctx.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warning -> forwardAndRecord(nodeSink, warning)));
     }
 
-    private void raiseNoiseWarning(int sequence) {
-        if (sequence > NOISE_WARNINGS) {
-            noise.shutdown();
-            return;
-        }
-
-        var subject = "noise-" + sequence;
-
-        node.eventAggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.DEPLOY_WARNING, subject, "deploy-warning " + subject));
-    }
-
-    private List<String> raisedCodes() {
-        return node.eventAggregator()
-                   .events()
-                   .await(timeSpan(10).seconds())
-                   .or(List.of())
-                   .stream()
-                   .map(event -> String.valueOf(event.details().get("code")))
-                   .toList();
+    private void forwardAndRecord(OperatorWarningSink nodeSink, OperatorWarning warning) {
+        handedToTheSink.add(warning.code().code());
+        nodeSink.accept(warning);
     }
 
     /// A0b: storage is built before the node's event aggregator exists; the node binds every instance's degrade reporter to the
