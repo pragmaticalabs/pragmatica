@@ -2013,7 +2013,7 @@ public final class PartitionBackfill {
     /// I-27 (#1759, CTO P10): the offset up to which `node`, whose tail is `tail` (registry-known or probed), is a source for the
     /// owner: `tail` capped at the committed-lineage end an earlier clipped catch-up learned for it, while `tail` is still the one
     /// observed then.
-    private long lineageEnd(String streamName, int partition, NodeId node, long tail) {
+    public long lineageEnd(String streamName, int partition, NodeId node, long tail) {
         return Option.option(committedLineageEnds.get(partitionKey(streamName, partition)))
                      .flatMap(ends -> Option.option(ends.get(node)))
                      .filter(lineage -> tail <= lineage.rawTail())
@@ -2130,8 +2130,8 @@ public final class PartitionBackfill {
 
     /// I-27 (#1759, CTO D1): the activating owner takes a source's records only up to the lowest offset a later committed epoch
     /// re-assigned ([AlignedRecovery#reassignedFrom]): a replica serving its WAL ships what it holds, a deposed epoch's tail
-    /// included, vouched by its own history, and the receiver clips it. What is left out is never installed; the promotion
-    /// gate then finds the run short of the source's tail and the activation stays un-activated, as for any short run.
+    /// included, vouched by its own history, and the receiver clips it. What is left out is never installed, and the end learned
+    /// here caps the source in the promotion gate's ranking ([#lineageEnd], #3071): the refused tail never counts as ahead.
     private Option<Long> lineageBound(ReplicationMessage.CatchupResponse response) {
         return partitionRecovery.reassignedFrom(response.streamName(),
                                                 response.partition(),

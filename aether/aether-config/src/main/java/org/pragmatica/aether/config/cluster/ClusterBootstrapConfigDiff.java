@@ -270,7 +270,9 @@ public final class ClusterBootstrapConfigDiff {
         }
     }
 
-    private static int roleSize(RoleSubTable role) {
+    /// The node count a role declares, as every diff action reports it: its `count` plus its pinned `hosts`. Public for the
+    /// #686 route check, which sizes the roles of a removed source with the same rule.
+    public static int roleSize(RoleSubTable role) {
         return role.count()
                    .or(0) + role.hosts()
                                 .map(List::size)

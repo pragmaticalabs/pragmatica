@@ -129,6 +129,10 @@ public final class EmberCluster {
     /// test sets it to the OLD label before `start` and to the TARGET label before the run, and the nodes the run provisions
     /// then carry the new one. Harness-scoped.
     private volatile String versionLabel = "";
+    /// TEST SEAM (#2981 step 6) — the `NodeInfo.LABEL_WIRE_GENERATION` every node booted from now on advertises ("" = none: the
+    /// consensus layer stamps this binary's generation). Lets one in-JVM build boot an OLDER generation, so a test can show a later
+    /// node refusing to join it. Harness-scoped.
+    private volatile String wireGenerationLabel = "";
     private final Queue<Integer> availableSlots = new ConcurrentLinkedQueue<>();
     private final Map<String, Integer> slotsByNodeId = new ConcurrentHashMap<>();
     /// Slot each node last ran on, retained after the node is killed — lets [#relaunchNode] start a
@@ -805,11 +809,10 @@ public final class EmberCluster {
             var slot = availableSlots.poll();
             var nodeId = nodeId(nodeIdPrefix + "-" + i).unwrap();
             var port = basePort + slot * portStride;
-            var info = versionLabel.isEmpty()
+            var seamLabels = withSeamLabels(Map.of());
+            var info = seamLabels.isEmpty()
                        ? NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap())
-                       : NodeInfo.nodeInfo(nodeId,
-                                           nodeAddress("localhost", port).unwrap(),
-                                           Map.of(NodeInfo.LABEL_VERSION, versionLabel));
+                       : NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap(), seamLabels);
 
             initialNodes.add(info);
             instanceTags.put(nodeId.id(), harnessInstanceTags(nodeId, Map.of()));
@@ -1330,7 +1333,7 @@ public final class EmberCluster {
         var port = basePort + slot * portStride;
         var mgmtPort = baseMgmtPort + slot * portStride;
         var appHttpPort = baseAppHttpPort + slot * portStride;
-        var advertised = withVersionLabel(labels);
+        var advertised = withSeamLabels(labels);
         var info = advertised.isEmpty()
                    ? NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap())
                    : NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap(), advertised);
@@ -1357,16 +1360,29 @@ public final class EmberCluster {
         return this;
     }
 
-    private Map<String, String> withVersionLabel(Map<String, String> labels) {
-        if (versionLabel.isEmpty() || labels.containsKey(NodeInfo.LABEL_VERSION)) {
+    /// TEST SEAM (#2981 step 6) — see [#wireGenerationLabel]. Applies to nodes booted after the call; running nodes keep theirs.
+    public EmberCluster nodeWireGeneration(String generation) {
+        wireGenerationLabel = generation;
+
+        return this;
+    }
+
+    private Map<String, String> withSeamLabels(Map<String, String> labels) {
+        return withSeamLabel(withSeamLabel(labels, NodeInfo.LABEL_VERSION, versionLabel),
+                             NodeInfo.LABEL_WIRE_GENERATION,
+                             wireGenerationLabel);
+    }
+
+    private static Map<String, String> withSeamLabel(Map<String, String> labels, String key, String value) {
+        if (value.isEmpty() || labels.containsKey(key)) {
             return labels;
         }
 
-        var versioned = new java.util.HashMap<>(labels);
+        var labelled = new java.util.HashMap<>(labels);
 
-        versioned.put(NodeInfo.LABEL_VERSION, versionLabel);
+        labelled.put(key, value);
 
-        return Map.copyOf(versioned);
+        return Map.copyOf(labelled);
     }
 
     /// The core list a new node is configured with: the full current list, or only `mintTimePeers` plus the node

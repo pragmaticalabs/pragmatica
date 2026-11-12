@@ -1208,6 +1208,18 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         return Option.some((VV) raw);
     }
 
+    /// Lock-free typed lookup for the node lease checks (#2981 §2.2): unlike [#getTyped] it does not take the store
+    /// monitor, so it never waits behind a batch the apply thread is applying, and it counts no read-ahead. `storage` is a
+    /// `ConcurrentHashMap` of immutable values, so a reader sees, per key, the old or the new value, never a torn one.
+    /// During `reset` and a snapshot install a key can read ABSENT; the lease checks treat absence as "the record does not
+    /// name me" and fail closed, so use it only where absence is safe to read as "not mine" (#2981 step 2 moves the whole `OwnershipRecordSource` lambda to it). Returns
+    /// `Option.none()` when the key is absent OR the stored value isn't an instance of `valueClass`.
+    public <VV> Option<VV> peekTyped(StructuredKey key, Class<VV> valueClass) {
+        return Option.option(storage.get(key))
+                     .filter(valueClass::isInstance)
+                     .map(valueClass::cast);
+    }
+
     /// Iterates over entries matching the specified key and value types.
     /// This avoids ClassCastException when the store contains mixed key types (e.g., AetherKey and LeaderKey).
     ///

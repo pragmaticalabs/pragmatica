@@ -57,7 +57,7 @@ public sealed interface Absence {
             return NodeClass.ASSIGNED_WORKER;
         }
 
-        var core = directive.map(Absence::isCoreDirective).or(false) || isSeedCore(ctx, node) || isLiveCore(m, node);
+        var core = directive.map(Absence::isCoreDirective).or(false) || isSeedCore(m, ctx, node) || isLiveCore(m, node);
 
         return core
                ? NodeClass.CORE
@@ -68,10 +68,12 @@ public sealed interface Absence {
         return ActivationDirectiveValue.CORE.equals(directive.role());
     }
 
-    private static boolean isSeedCore(Ctx ctx, NodeId node) {
+    /// The boot-time configured cores, or the role-core members the cluster admitted since (#2887): a seed core a cloud-discovery boot missed is still known.
+    private static boolean isSeedCore(ClusterModel m, Ctx ctx, NodeId node) {
         return ctx.settings()
                   .seedCores()
-                  .contains(node);
+                  .contains(node) || m.seams.coreRoleMembers()
+                                            .contains(node);
     }
 
     private static boolean isLiveCore(ClusterModel m, NodeId node) {

@@ -21,13 +21,14 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// provide.
 class MigrationDialectsTest {
     @Test
-    void dialectFor_returnsDdlTransactionalH2Spec_forH2() {
+    void dialectFor_returnsAutocommitDdlH2Spec_forH2() {
         var dialect = MigrationDialects.dialectFor(DatabaseType.H2)
                                        .onEmpty(() -> fail("H2 should resolve to a dialect-aware execution descriptor"))
                                        .unwrap();
 
         assertThat(dialect.spec()).isSameAs(Dialects.H2);
-        assertThat(dialect.ddlTransactional()).isTrue();
+        // T12 (FDB-2b): H2's CREATE TABLE survives a ROLLBACK, so its DDL is not transactional
+        assertThat(dialect.ddlTransactional()).isFalse();
     }
 
     @Test

@@ -313,6 +313,7 @@ final class Fsm2Harness implements AutoCloseable {
                                                                    Set::of,
                                                                    Map::of,
                                                                    Map::of,
+                                                                   Set::of,
                                                                    () -> Set.of(SELF, PEER),
                                                                    bootTokens::tokenOf),
                                             AdmissionSeam.admissionSeam(bootTokens::tokenOf, _ -> 0L),

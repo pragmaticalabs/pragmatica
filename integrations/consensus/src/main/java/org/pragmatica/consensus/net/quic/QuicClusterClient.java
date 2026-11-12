@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.JoinGenerationGuard;
 import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.IdentityFacts;
 import org.pragmatica.consensus.net.NetworkMessage;
@@ -319,7 +320,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                               BootTokens bootTokens) {
         this.selfId = selfId;
         this.selfAddress = selfAddress;
-        this.selfLabels = Map.copyOf(selfLabels);
+        this.selfLabels = JoinGenerationGuard.advertised(selfLabels);
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.quicMetrics = quicMetrics;
@@ -931,6 +932,8 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             // at bind time) — eviction closes the right channel, and no code path can register
             // a connection under an unverified id.
             var peerConnection = quicPeerConnection(peerId, selfId, generation, quicChannel);
+
+            peerConnection.helloLabels(hello.labels());
             // The handshake stream is the CONTROL lane.
             var _ = peerConnection.registerStream(StreamType.CONTROL, (QuicStreamChannel) ctx.channel());
             // #1578: stamp the VERIFIED connection so a lane the acceptor opens finds it (the acceptor

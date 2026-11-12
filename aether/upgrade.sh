@@ -343,6 +343,10 @@ print_summary() {
     echo ""
     echo "Upgrade complete: $CURRENT_VERSION -> $TARGET_VERSION"
     echo ""
+    echo "IMPORTANT: upgrades of a running cluster are stop-the-world. Stop EVERY node, then start EVERY node"
+    echo "on the new version. A mixed-version cluster is not supported: an older node cannot decode the new"
+    echo "consensus records. A new node refuses to start if a handshaken member runs an older wire generation."
+    echo ""
     echo "Verify: aether --version"
 }
 

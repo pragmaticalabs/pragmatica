@@ -208,11 +208,19 @@ public sealed interface StorageAssembly {
         var delegatedStorageAdapter = DelegatedStorageAdapter.delegatedStorageAdapter(compositeDemotionManager,
                                                                                       compositeGarbageCollector,
                                                                                       leaderMaintenance);
+        var maintenancePasses = DegradeReporter.degradeReporter(StorageMaintenanceDriver.REPORT_SUBJECT);
+
+        maintenancePasses.bind(operatorWarningSink);
         var storageMaintenanceDriver = StorageMaintenanceDriver.storageMaintenanceDriver(compositeDemotionManager,
                                                                                          compositePromotionManager,
                                                                                          PromotionStallWatch.promotionStallWatch(storageSetups,
                                                                                                                                  operatorWarningSink),
-                                                                                         compositeGarbageCollector);
+                                                                                         compositeGarbageCollector,
+                                                                                         maintenancePasses,
+                                                                                         delegatedStorageAdapter::retryPending,
+                                                                                         config.timeouts()
+                                                                                               .storageMaintenance()
+                                                                                               .interval());
 
         LOG.info("Storage maintenance enabled: demotion+promotion+GC cadence={}, storage setups={}",
                  config.timeouts().storageMaintenance().interval(),
@@ -244,6 +252,10 @@ public sealed interface StorageAssembly {
         // activation state. Cadence is operator-configurable ([timeouts.storage_maintenance] interval,
         // default 5m); both operations self-gate internally, so this tick is cheap when inactive or idle.
         defer.accept(() -> SharedScheduler.scheduleAtFixedRate(storageMaintenanceDriver::tick,
+                                                               config.timeouts().storageMaintenance().interval()));
+        // #800 maintenance watchdog: its own timer, so a tick blocked inside a pass (which also makes the scheduler skip the
+        // ticks after it) cannot keep the overdue warning from being raised.
+        defer.accept(() -> SharedScheduler.scheduleAtFixedRate(storageMaintenanceDriver::checkOverdue,
                                                                config.timeouts().storageMaintenance().interval()));
 
         return Unit.unit();

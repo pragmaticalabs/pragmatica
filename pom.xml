@@ -128,6 +128,18 @@
 
     <dependencyManagement>
         <dependencies>
+            <!-- #3076: bcpkix-jdk18on 1.80 declares bcutil-jdk18on [1.80,1.81) and bcutil declares bcprov-jdk18on [1.80,1.81).
+                 A range forces a remote maven-metadata.xml fetch on every resolution; pin both to 1.80.2, the version the ranges resolved to (no downgrade of a crypto library). -->
+            <dependency>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcutil-jdk18on</artifactId>
+                <version>1.80.2</version>
+            </dependency>
+            <dependency>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcprov-jdk18on</artifactId>
+                <version>1.80.2</version>
+            </dependency>
             <!-- Core module -->
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>

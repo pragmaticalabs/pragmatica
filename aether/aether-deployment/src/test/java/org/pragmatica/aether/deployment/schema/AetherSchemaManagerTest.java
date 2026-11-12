@@ -428,7 +428,7 @@ class AetherSchemaManagerTest {
         /// is ownership bookkeeping, and being neither history nor migration body it would otherwise
         /// land in `migrationStatements`.
         private void recordStatement(String sql) {
-            if (sql.contains(META_TABLE) || sql.contains(OWNER_TABLE)) {
+            if (sql.contains(META_TABLE) || sql.contains(OWNER_TABLE) || FakeMigrationFence.isFenceUpdate(sql)) {
                 return;
             }
 
