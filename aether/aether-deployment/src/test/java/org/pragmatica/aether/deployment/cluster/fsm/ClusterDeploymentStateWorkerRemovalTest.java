@@ -526,8 +526,11 @@ class ClusterDeploymentStateWorkerRemovalTest {
             return kvStore.get(ActivationDirectiveKey.activationDirectiveKey(W));
         }
 
-        private static String communityOf(Option<AetherValue> value) {
-            return ((ActivationDirectiveValue) value.or(ActivationDirectiveValue.worker("", ""))).communityId();
+        /// The removal's directive delete has landed in the committed state while its chain (a lost or stuck ack) is still unresolved: a join
+        /// that runs now has a visible effect, a fresh directive, because the early-return check finds none.
+        private void dropDirective() {
+            kvStore.commit(List.of(new KVCommand.Remove<AetherKey>(ActivationDirectiveKey.activationDirectiveKey(W))));
+            assertThat(directive().isPresent()).as("precondition: the directive is gone").isFalse();
         }
 
         private void rejoin() {
@@ -554,8 +557,7 @@ class ClusterDeploymentStateWorkerRemovalTest {
         @Test
         void workerJoin_removalFails_joinStillRuns() {
             joinWorker(W);
-            // A blank-community directive does not satisfy the early-return check, so a join that runs leaves a visible assignment.
-            kvStore.put(ActivationDirectiveKey.activationDirectiveKey(W), ActivationDirectiveValue.worker("", ""));
+            dropDirective();
             var commit = Promise.<Unit>promise();
 
             cluster.gate = commit;
@@ -565,16 +567,15 @@ class ClusterDeploymentStateWorkerRemovalTest {
             commit.fail(new org.pragmatica.consensus.ConsensusError.CommandBatchIsEmpty());
 
             await().atMost(5, TimeUnit.SECONDS)
-                   .untilAsserted(() -> assertThat(communityOf(directive()))
+                   .untilAsserted(() -> assertThat(directive().isPresent())
                            .as("a failed removal still releases the join, which then reads the committed state")
-                           .isEqualTo(COMMUNITY_ID));
+                           .isTrue());
         }
 
         @Test
         void workerJoin_removalNeverResolves_joinRunsAfterBound() {
             joinWorker(W);
-            // A blank-community directive does not satisfy the early-return check, so a join that runs leaves a visible assignment.
-            kvStore.put(ActivationDirectiveKey.activationDirectiveKey(W), ActivationDirectiveValue.worker("", ""));
+            dropDirective();
             context.setRemovalWaitBound(timeSpan(300).millis());
             cluster.gate = Promise.<Unit>promise();
 
@@ -582,12 +583,12 @@ class ClusterDeploymentStateWorkerRemovalTest {
             assertThat(context.removalsInFlight()).as("the removal is pending").containsKey(W);
             rejoin();
 
-            assertThat(communityOf(directive())).as("inside the bound the join is still waiting").isEmpty();
+            assertThat(directive().isPresent()).as("inside the bound the join is still waiting").isFalse();
             cluster.gate = Promise.unitPromise();
             await().atMost(5, TimeUnit.SECONDS)
-                   .untilAsserted(() -> assertThat(communityOf(directive()))
+                   .untilAsserted(() -> assertThat(directive().isPresent())
                            .as("past the bound the join ran against the committed state")
-                           .isEqualTo(COMMUNITY_ID));
+                           .isTrue());
             assertThat(context.removalsInFlight()).doesNotContainKey(W);
         }
     }
