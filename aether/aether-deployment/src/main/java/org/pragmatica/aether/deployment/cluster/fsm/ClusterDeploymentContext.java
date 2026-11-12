@@ -28,6 +28,8 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.concurrent.CancellableTask;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
@@ -258,6 +260,28 @@ public final class ClusterDeploymentContext {
 
     public CommunityAdmissionLedger communityAdmission() {
         return communityAdmission;
+    }
+
+    /// #3028 M2: the departure cleanup of each node whose chain has not finished. A worker that rejoins while its removal is in flight
+    /// waits on it, so the removal's late directive delete cannot land after the join's directive check. Kept here, not in `Active`, so it
+    /// survives a leader FSM rebuild on this node.
+    private final java.util.concurrent.ConcurrentMap<NodeId, Promise<Unit>> removalsInFlight = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /// How long a worker join waits for its node's in-flight removal before it runs against the committed state: twice the consensus
+    /// `applyTimeout` (30 s) [guess: 2 x]; a stuck commit or a leader change must not hold the join forever.
+    private final java.util.concurrent.atomic.AtomicReference<TimeSpan> removalWaitBound = new java.util.concurrent.atomic.AtomicReference<>(TimeSpan.timeSpan(60).seconds());
+
+    public java.util.concurrent.ConcurrentMap<NodeId, Promise<Unit>> removalsInFlight() {
+        return removalsInFlight;
+    }
+
+    public TimeSpan removalWaitBound() {
+        return removalWaitBound.get();
+    }
+
+    @Contract
+    public void setRemovalWaitBound(TimeSpan bound) {
+        removalWaitBound.set(bound);
     }
 
     public org.pragmatica.utility.warning.OperatorWarningSink operatorWarnings() {

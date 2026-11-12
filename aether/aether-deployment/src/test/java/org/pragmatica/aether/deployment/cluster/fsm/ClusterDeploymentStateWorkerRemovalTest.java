@@ -72,11 +72,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
 import io.netty.buffer.ByteBuf;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #731 (symmetric sibling of #728): a worker's REMOVED edge never reaches
@@ -107,6 +109,7 @@ class ClusterDeploymentStateWorkerRemovalTest {
     private RecordingClusterNode cluster;
     private InMemoryKvStore kvStore;
     private FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> harness;
+    private ClusterDeploymentContext context;
 
     @BeforeEach
     void setUp() {
@@ -122,7 +125,7 @@ class ClusterDeploymentStateWorkerRemovalTest {
         // down the WORKER branch of assignNodeRole (mirrors CommunityMintTest's setup) and makes
         // SELF the only allocatableNode for the post-departure reconcile assertion.
         Function<Fsm<ClusterDeploymentState, ClusterFsmEvent>, ClusterDeploymentState> factory =
-                fsm -> new ClusterDeploymentContext(fsm,
+                fsm -> (context = new ClusterDeploymentContext(fsm,
                                                     SELF,
                                                     cluster,
                                                     kvStore,
@@ -137,7 +140,7 @@ class ClusterDeploymentStateWorkerRemovalTest {
                                                     1,
                                                     timeSpan(300).seconds(),
                                                     System::currentTimeMillis,
-                                                    memberSourceSupplier).dormant();
+                                                    memberSourceSupplier)).dormant();
         harness = FsmTestHarness.harness("worker-removal-" + SELF.id(), factory);
         harness.dispatch(new Activate());
     }
@@ -513,6 +516,75 @@ class ClusterDeploymentStateWorkerRemovalTest {
     /// Net-new regression: no existing test exercises `handleNodeRemoval` at this FSM layer for a
     /// CORE node. Confirms the #731 WORKER-channel addition left the pre-existing CORE
     /// `MembershipDecisionReceived(NodeRemoved)` arm's cleanup behavior unchanged.
+    /// #3028 M2: a falsely-dead worker rejoins promptly, while its departure cleanup (whose last step deletes the activation directive) is
+    /// still committing. The join used to read the directive that was about to vanish, return early, and the delete then landed: no directive.
+    @Nested
+    class JoinDuringRemovalInFlight {
+        private static final NodeId W = WORKER_1;
+
+        private Option<AetherValue> directive() {
+            return kvStore.get(ActivationDirectiveKey.activationDirectiveKey(W));
+        }
+
+        private void rejoin() {
+            harness.dispatch(new WorkerJoinReceived(WorkerJoinDecision.workerJoinDecision(W, "worker", HlcTimestamp.ZERO)));
+        }
+
+        @Test
+        void workerJoin_duringRemovalInFlight_directivePresentAtEnd() {
+            joinWorker(W);
+            assertThat(directive().isPresent()).as("precondition: the directive is committed").isTrue();
+            var commit = Promise.<Unit>promise();
+
+            cluster.gate = commit;
+            leaveWorker(W);
+            rejoin();
+            commit.succeed(Unit.unit());
+
+            await().atMost(5, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(directive().isPresent())
+                           .as("#3028 M2: the join waited for the removal, then assigned afresh: the directive is present at the end")
+                           .isTrue());
+            assertThat(context.removalsInFlight()).as("the settled removal is no longer tracked").doesNotContainKey(W);
+        }
+
+        @Test
+        void workerJoin_removalFails_joinStillRuns() {
+            joinWorker(W);
+            var commit = Promise.<Unit>promise();
+
+            cluster.gate = commit;
+            leaveWorker(W);
+            rejoin();
+            commit.fail(new org.pragmatica.consensus.ConsensusError.CommandBatchIsEmpty());
+
+            await().atMost(5, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(context.removalsInFlight()).as("a failed removal releases the join").doesNotContainKey(W));
+            assertThat(directive().isPresent()).as("the failed commit left the directive; the join read what is committed").isTrue();
+        }
+
+        @Test
+        void workerJoin_removalNeverResolves_joinRunsAfterBound() {
+            joinWorker(W);
+            // A blank-community directive does not satisfy the early-return check, so a join that runs leaves a visible assignment.
+            kvStore.put(ActivationDirectiveKey.activationDirectiveKey(W), ActivationDirectiveValue.worker("", ""));
+            context.setRemovalWaitBound(timeSpan(300).millis());
+            cluster.gate = Promise.<Unit>promise();
+
+            leaveWorker(W);
+            rejoin();
+            var blank = ((ActivationDirectiveValue) directive().or(ActivationDirectiveValue.worker("", ""))).communityId();
+
+            assertThat(blank).as("inside the bound the join is still waiting").isEmpty();
+            cluster.gate = Promise.unitPromise();
+            await().atMost(5, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(((ActivationDirectiveValue) directive().or(ActivationDirectiveValue.worker("", ""))).communityId())
+                           .as("past the bound the join ran against the committed state")
+                           .isEqualTo(COMMUNITY_ID));
+            assertThat(context.removalsInFlight()).doesNotContainKey(W);
+        }
+    }
+
     @Nested
     class CoreRemovalRegression {
         @Test
@@ -1042,6 +1114,8 @@ class ClusterDeploymentStateWorkerRemovalTest {
         final List<KVCommand<AetherKey>> commands = Collections.synchronizedList(new ArrayList<>());
         final List<List<KVCommand<AetherKey>>> batches = Collections.synchronizedList(new ArrayList<>());
         private final InMemoryKvStore committed;
+        /// #3028 M2: while set, every batch commits only once this promise resolves (a slow or stuck consensus commit).
+        volatile Promise<Unit> gate = Promise.unitPromise();
 
         RecordingClusterNode(NodeId self, InMemoryKvStore committed) {
             this.self = self;
@@ -1067,7 +1141,7 @@ class ClusterDeploymentStateWorkerRemovalTest {
 
             commands.addAll(batch);
             batches.add(List.copyOf(batch));
-            return Promise.success(committed.process(committed.createBatch(batch)));
+            return gate.map(_ -> committed.process(committed.createBatch(batch)));
         }
     }
 

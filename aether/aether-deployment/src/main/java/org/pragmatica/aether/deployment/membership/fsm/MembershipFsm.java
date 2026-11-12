@@ -123,6 +123,9 @@ public final class MembershipFsm {
 
     /// FSM kind tag — groups all per-member FSMs under one name for observer dashboards.
     private static final String FSM_KIND = "membership";
+
+    /// #3028 S3: how often a rejoin refused for quorum loss is re-offered to a DEAD member [guess: 2 s, a few SWIM periods].
+    private static final TimeSpan REJOIN_REOFFER = TimeSpan.timeSpan(2).seconds();
     /// Up-hysteresis promotion threshold for this **edge-driven** manager (= 1). SWIM emits
     /// `HealthyObserved` once, on the edge into ALIVE — not as a periodic sample — so the first
     /// observation is the promotion signal. presence sampler's 2-sample
@@ -1274,6 +1277,23 @@ public final class MembershipFsm {
                 tracking.dispatch(new UpHysteresisMet());
             }
         });
+        reofferIfRefusedForQuorumLoss(tracking, incarnation);
+    }
+
+    /// #3028 S3: a newer-incarnation `SwimHealthy` that [`MembershipState.Dead`] refused only because the member reports
+    /// quorum loss is remembered and re-offered every [`#REJOIN_REOFFER`] until the report clears or the identity leaves
+    /// DEAD. Nothing else re-offers it: the refutation is spent (holders already hold the refuted incarnation, so no
+    /// further notice arrives) and the report's clearing carries a further bump only when the member's incarnation moves.
+    @Contract
+    private void reofferIfRefusedForQuorumLoss(MemberTracking tracking, long incarnation) {
+        if (tracking.armRejoinReoffer(incarnation, quorumLossReported.test(tracking.id))) {
+            SharedScheduler.schedule(() -> reofferRefusedRejoin(tracking), REJOIN_REOFFER);
+        }
+    }
+
+    @Contract
+    private void reofferRefusedRejoin(MemberTracking tracking) {
+        tracking.takeRefusedRejoin().onPresent(incarnation -> healthy(tracking, incarnation));
     }
 
     private void suspect(MemberTracking tracking, long incarnation) {
@@ -1704,6 +1724,10 @@ public final class MembershipFsm {
         /// projections and the SWIM health filter. Once observed, always observed; departure is
         /// handled by the member leaving [`#coreCountedMembers`] on death.
         private boolean everReachable = false;
+        /// #3028 S3: highest incarnation a DEAD member's rejoin was refused at for quorum loss, and whether a re-offer is scheduled.
+        /// Mutated only under the per-member monitor.
+        private long refusedRejoin = 0L;
+        private boolean rejoinReofferPending = false;
         private long lastDoubtAtMs = 0L;
         private MemberDescriptor descriptor = MemberDescriptor.UNKNOWN;
         /// Pending terminal-eviction backstop (#131 Model C). `Some(future)` while a co-confirmed-death
@@ -2014,6 +2038,32 @@ public final class MembershipFsm {
 
         private synchronized boolean isDead() {
             return fsm.current() instanceof MembershipState.Dead;
+        }
+
+        /// #3028 S3: records `incarnation` as a rejoin refused for quorum loss when this member is DEAD, `incarnation`
+        /// exceeds the incarnation it died at, and it `reportsQuorumLoss`. True when the caller must schedule the
+        /// re-offer (none is pending yet), so at most one re-offer timer exists per member.
+        synchronized boolean armRejoinReoffer(long incarnation, boolean reportsQuorumLoss) {
+            if (!(fsm.current() instanceof MembershipState.Dead dead) || incarnation <= dead.terminalIncarnation() || !reportsQuorumLoss) {
+                return false;
+            }
+
+            refusedRejoin = Math.max(refusedRejoin, incarnation);
+            var schedule = !rejoinReofferPending;
+
+            rejoinReofferPending = true;
+
+            return schedule;
+        }
+
+        /// #3028 S3: the pending re-offer fires. Returns the refused incarnation to re-feed, or empty when the member
+        /// left DEAD meanwhile (a rejoin through another path needs no re-offer).
+        synchronized Option<Long> takeRefusedRejoin() {
+            rejoinReofferPending = false;
+
+            return isDead()
+                   ? Option.some(refusedRejoin)
+                   : Option.none();
         }
 
         private synchronized boolean isDeparting() {

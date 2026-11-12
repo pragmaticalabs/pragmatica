@@ -131,6 +131,42 @@ class RefutedDrainQuorumLossTest {
         assertThat(survivor.forwardableMembers(List.of(SUSPECT))).containsExactly(SUSPECT);
     }
 
+    /// #3028 S3: the refutation was refused while the member reported quorum loss, the report then clears WITHOUT a further
+    /// incarnation bump, and nothing else offers the incarnation again. The FSM re-offers it itself.
+    @Test
+    void rejoinRefusedDuringQuorumLoss_retriedOnRegain() {
+        var survivor = survivor(SHORT_DEPARTURE);
+
+        enterDepartingWithoutDeath(survivor);
+        reporting.add(SUSPECT);
+        survivor.onSwimHealthy(SUSPECT, 2L);
+        await().atMost(2, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(survivor.memberStates()).containsEntry(SUSPECT, "Dead"));
+        survivor.onSwimHealthy(SUSPECT, 3L);
+        assertThat(survivor.memberStates()).as("refused while the member reports quorum loss").containsEntry(SUSPECT, "Dead");
+
+        reporting.remove(SUSPECT);
+
+        await().atMost(6, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(survivor.memberStates()).as("quorum regained: the refused incarnation is re-offered")
+                                                                       .containsEntry(SUSPECT, "Observed"));
+    }
+
+    @Test
+    void rejoinRefusedDuringQuorumLoss_staysDeadWhileTheReportHolds() throws InterruptedException {
+        var survivor = survivor(SHORT_DEPARTURE);
+
+        enterDepartingWithoutDeath(survivor);
+        reporting.add(SUSPECT);
+        survivor.onSwimHealthy(SUSPECT, 2L);
+        await().atMost(2, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(survivor.memberStates()).containsEntry(SUSPECT, "Dead"));
+        survivor.onSwimHealthy(SUSPECT, 3L);
+        Thread.sleep(4500);
+
+        assertThat(survivor.memberStates()).as("the re-offer is refused again while the report holds").containsEntry(SUSPECT, "Dead");
+    }
+
     @Test
     void reportingMember_staysReachable_butIsNotForwardable() {
         var survivor = survivor(LONG_WINDOW);
