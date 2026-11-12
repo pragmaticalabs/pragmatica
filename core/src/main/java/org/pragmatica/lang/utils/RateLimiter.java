@@ -132,8 +132,8 @@ public interface RateLimiter {
             return validate(source).map(_ -> build(source));
         }
 
-        private static final long MAX_CAPACITY = (1L<< 16) - 1L;
-        private static final long MAX_NANOS_PER_TOKEN = (1L<< 48) - 1L;
+        private static final long MAX_CAPACITY = (1L << 16) - 1L;
+        private static final long MAX_NANOS_PER_TOKEN = (1L << 48) - 1L;
 
         private Result<Unit> validate(TimeSource source) {
             if (rate < 1) {
@@ -175,7 +175,7 @@ public interface RateLimiter {
                                long baseNanos,
                                AtomicLong state) implements RateLimiter {
                 private static final int TOKENS_SHIFT = 48;
-                private static final long TIME_MASK = (1L<< 48) - 1L;
+                private static final long TIME_MASK = (1L << 48) - 1L;
 
                 @Override
                 public boolean tryAcquire() {
