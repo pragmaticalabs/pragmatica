@@ -271,7 +271,9 @@ public final class VirtualThreadScheduler {
 
             cancelled = true;
             // The cancelled entry stays in the DelayQueue until its deadline; without this it would pin the body's whole
-            // object graph (a promise timeout's failure lambda holds its promise) for the full delay (#3049).
+            // object graph for the full delay (#3049). Promise timeouts do not use this scheduler (AsyncExecutor's
+            // STPE removes cancelled entries); the case is a cancelled SharedScheduler one-shot, such as
+            // DeparturePushRun's re-evaluation timer.
             body = null;
             if (mayInterruptIfRunning) {
                 var f = inFlight;

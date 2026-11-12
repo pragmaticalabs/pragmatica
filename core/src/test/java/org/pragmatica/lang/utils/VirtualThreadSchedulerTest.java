@@ -17,8 +17,10 @@
 
 package org.pragmatica.lang.utils;
 
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.testlogging.LogCapture;
 
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
@@ -252,6 +254,21 @@ class VirtualThreadSchedulerTest {
     private static void printRow(String label, List<Long> lagNanos) {
         System.out.printf("%s detection-lag  samples=%-5d  p50=%8.1fms  p99=%8.1fms  max=%8.1fms%n",
                           label, lagNanos.size(), pct(lagNanos, 50), pct(lagNanos, 99), max(lagNanos));
+    }
+
+    // The dispatch lambda read cancelled == false, then cancel() dropped the body, then runGuarded reads it.
+    @Test
+    void runGuarded_afterCancelDroppedTheBody_runsNothingAndLogsNothing() {
+        var runs = new AtomicInteger();
+        var task = new VirtualThreadScheduler.ScheduledTask(runs::incrementAndGet, System.nanoTime() + 60_000_000_000L, 0L);
+
+        try (var capture = LogCapture.capture(VirtualThreadScheduler.class, Level.WARN, false)) {
+            task.cancel(false);
+            task.runGuarded();
+
+            assertThat(capture.messages()).as("a cancel racing the dispatch is not a body failure").isEmpty();
+        }
+        assertThat(runs.get()).isZero();
     }
 
     private static double pct(List<Long> nanos, int p) {
