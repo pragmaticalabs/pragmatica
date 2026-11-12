@@ -241,8 +241,7 @@ public record ClusterCursorStore(ConsumerCursorStore local,
 
     /// #2596: a forwarding node whose replica excludes the cursor key ([ReplicaFilter]) can never read the checkpoint back.
     private boolean replicaBlind(StreamCursorCheckpointKey key) {
-        return forwarding.getAsBoolean() && ReplicaFilter.replicaFilter()
-                                                         .excludes(key);
+        return forwarding.getAsBoolean() && ReplicaFilter.replicaFilter().excludes(key);
     }
 
     /// #2596: the verdict of a node that cannot read its own checkpoint back. The forwarded `Put` and the `Noop` barrier settled on
