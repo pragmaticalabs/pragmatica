@@ -4824,8 +4824,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void onLeaseRegained() {
         materializedHeads().stream()
-                           .filter(head -> placementRoleSupplier.roleFor(head.streamName(), head.partition()) == Role.OWNER)
-                           .forEach(head -> refreshVisible(head.streamName(), head.partition()));
+                         .filter(head -> placementRoleSupplier.roleFor(head.streamName(),
+                                                                       head.partition()) == Role.OWNER)
+                         .forEach(head -> refreshVisible(head.streamName(),
+                                                         head.partition()));
         parkedAcks.forEach(this::recheckParked);
     }
 
