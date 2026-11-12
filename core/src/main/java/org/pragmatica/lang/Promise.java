@@ -405,7 +405,8 @@ public sealed interface Promise<T> permits PromiseImpl {
     }
 
     /// **[Side Effect]**
-    /// Run an action once the promise is resolved with success. The action is executed asynchronously.
+    /// Run an action once the promise is resolved with success. The action runs inline on the attaching thread when the
+    /// promise is already resolved, otherwise on the promise's event-handler task.
     ///
     /// @param action Action to be executed once the promise is resolved with success.
     ///
@@ -435,7 +436,8 @@ public sealed interface Promise<T> permits PromiseImpl {
     }
 
     /// **[Side Effect]**
-    /// Run an action once the promise is resolved with success. The action is executed asynchronously.
+    /// Run an action once the promise is resolved with failure. The action runs inline on the attaching thread when the
+    /// promise is already resolved, otherwise on the promise's event-handler task.
     ///
     /// @param action Action to be executed
     default Promise<T> onFailureRun(Runnable action) {
@@ -713,13 +715,15 @@ public sealed interface Promise<T> permits PromiseImpl {
     /// - Two `continueOn` branches taken from the same promise are independent tasks with no mutual order.
     /// - Continuations attached elsewhere to this promise are unaffected; they run where they would run without the
     ///   hop.
-    /// - If `executor` rejects the task ([RejectedExecutionException]), the returned promise FAILS with a
-    ///   [CoreError.Exception] carrying the rejection. The result is never delivered inline as a fallback, and the
-    ///   returned promise never stays unresolved. That failure is delivered on the thread that attempted the
+    /// - If `executor` rejects the task ([RejectedExecutionException]) or `Executor.execute` throws anything else
+    ///   non-fatal, the returned promise FAILS with a [CoreError.Exception] carrying the thrown exception. (A
+    ///   [VirtualMachineError] also fails it, then is rethrown.) The result is never delivered inline as a fallback,
+    ///   and the returned promise never stays unresolved. That failure is delivered on the thread that attempted the
     ///   submission, so failure-path steps chained on the returned promise run there.
     ///
-    /// The captured [ContextPropagation] snapshot of the submitting thread is restored around the resolution, as
-    /// for [#async(Consumer)].
+    /// The captured [ContextPropagation] snapshot is restored around the resolution, as for [#async(Consumer)]: the
+    /// resolver's context when this promise is pending (the capture happens in its event-handler task), the caller's
+    /// when it is already resolved.
     ///
     /// Contrast with [#async()], which returns this instance and does NOT hop.
     ///
@@ -3717,16 +3721,21 @@ final class PromiseImpl<T> implements Promise<T> {
         return hopped;
     }
 
-    /// Submits the resolution of `target` to `executor`, restoring the submitting thread's context snapshot. A
-    /// rejected submission fails `target` with the rejection (FER: the caller observes the failure instead of a
-    /// promise that never resolves); the result itself is never delivered on this thread.
+    /// Submits the resolution of `target` to `executor`, restoring the context snapshot captured here. This method
+    /// runs inside the source's event-handler task when the source is pending, so the snapshot is that task's (the
+    /// resolver's context, as for a plain `map`), and the caller's context when the source is already resolved. A
+    /// submission that throws anything non-fatal (a rejection or any other exception out of `Executor.execute`) fails
+    /// `target` with it (FER: the caller observes the failure instead of a promise that never resolves); a
+    /// [VirtualMachineError] fails `target` first and is then rethrown. The result itself is never delivered on this
+    /// thread.
     private static <T> Unit resolveOn(Executor executor, PromiseImpl<T> target, Result<T> result) {
         var snapshot = ContextPropagation.INSTANCE.capture();
 
         try {
             executor.execute(() -> ContextPropagation.INSTANCE.runWith(snapshot, () -> target.resolve(result)));
-        } catch (RejectedExecutionException rejected) {
-            target.resolve(CoreError.exception(rejected).result());
+        } catch (Throwable thrown) {
+            target.resolve(CoreError.exception(thrown).result());
+            rethrowIfFatal(thrown);
         }
 
         return Unit.unit();

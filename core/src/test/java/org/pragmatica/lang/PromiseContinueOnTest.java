@@ -132,6 +132,30 @@ class PromiseContinueOnTest {
     }
 
     @Test
+    void continueOn_executorThrowingOtherException_pendingSource_failsReturnedPromise() {
+        var source = Promise.<Integer>promise();
+        var hopped = source.continueOn(PromiseContinueOnTest::breakDown);
+
+        source.succeed(1);
+
+        assertBrokenDown(hopped.await(REJECTION_BOUND));
+    }
+
+    @Test
+    void continueOn_executorThrowingOtherException_resolvedSource_failsReturnedPromise() {
+        assertBrokenDown(Promise.success(1)
+                                .continueOn(PromiseContinueOnTest::breakDown)
+                                .await(REJECTION_BOUND));
+    }
+
+    @Test
+    void continueOn_executorThrowingFatalError_isRethrownToTheSubmitter() {
+        var source = Promise.success(1);
+
+        assertThrows(OutOfMemoryError.class, () -> source.continueOn(PromiseContinueOnTest::exhaust));
+    }
+
+    @Test
     void continueOn_shutDownExecutor_failsReturnedPromise() {
         hopPool.shutdownNow();
 
@@ -169,6 +193,20 @@ class PromiseContinueOnTest {
         var exception = assertInstanceOf(CoreError.Exception.class, cause);
 
         assertInstanceOf(RejectedExecutionException.class, exception.cause());
+    }
+
+    private static void assertBrokenDown(Result<Integer> result) {
+        result.onSuccess(_ -> fail("a failing hop must fail, never deliver the value inline"))
+              .onFailure(cause -> assertInstanceOf(IllegalStateException.class,
+                                                   assertInstanceOf(CoreError.Exception.class, cause).cause()));
+    }
+
+    private static void breakDown(Runnable task) {
+        throw new IllegalStateException("continueOn test: executor closed");
+    }
+
+    private static void exhaust(Runnable task) {
+        throw new OutOfMemoryError("continueOn test: fatal");
     }
 
     private static void reject(Runnable task) {
