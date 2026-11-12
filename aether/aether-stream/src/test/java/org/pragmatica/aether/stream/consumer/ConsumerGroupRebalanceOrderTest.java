@@ -576,6 +576,91 @@ class ConsumerGroupRebalanceOrderTest {
         }
     }
 
+    /// #2642 item 1: the SAME coordinator deactivated and re-activated at the SAME term. The previous activation's
+    /// second batch is still in flight (not committed), so a reseed from the committed epoch alone stamps the
+    /// re-activated leader's first batch with that in-flight batch's epoch, and the fence accepts an equal epoch: the
+    /// older member list could win by committing last. The mint must be strictly after EVERY epoch this coordinator
+    /// stamped, committed or not.
+    @Nested
+    class ReActivatedSameTerm {
+        @Test
+        void rebalance_reActivatedLeaderOutranksThePreviousActivationsInFlightBatch_whenTheOlderCommitsLast() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+            commit(0);
+            reActivate(coordinator);
+
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c3", NODE_A);
+
+            assertThat(epochOf(held.get(2))).as("the re-activated mint is strictly after the in-flight one")
+                                             .isGreaterThan(epochOf(held.get(1)));
+            commit(2);
+            commit(1);
+
+            assertThat(committedOwners().values()).as("the previous activation's late batch must be refused")
+                                                  .containsOnly("c3")
+                                                  .hasSize(PARTITIONS);
+        }
+
+        @Test
+        void rebalance_reActivatedLeaderWins_whenTheInFlightBatchCommitsFirst() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+            commit(0);
+            reActivate(coordinator);
+
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c3", NODE_A);
+            commit(1);
+            commit(2);
+
+            assertThat(committedOwners().values()).containsOnly("c3").hasSize(PARTITIONS);
+        }
+
+        private void reActivate(ConsumerGroupCoordinator target) {
+            target.onLeaderChange(new LeaderChange(Option.some(NODE_A), false));
+            target.onLeaderChange(new LeaderChange(Option.some(SELF), true));
+        }
+    }
+
+    /// #2642 item 2: the SUPERSEDED refusal on the member-LEAVE path (a remaining member, so a rebalance, not the
+    /// last-member clear). L1 (term 1) is deposed by L2 (term 2).
+    @Nested
+    class DeposedLeaderLeave {
+        @Test
+        void leaveGroup_deposedLeadersLeave_isRefusedLoudly_whenANewerTermHasCommitted() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+            newCoordinator(2L).joinGroup(GROUP, STREAM, PARTITIONS, "c3", NODE_A);
+            commit(2);
+
+            var result = coordinator.leaveGroup(GROUP, STREAM, "c2");
+
+            result.onSuccess(_ -> Assertions.fail("a deposed leader's leave must not rebalance over a newer term"))
+                  .onFailure(cause -> assertThat(cause).isEqualTo(ConsumerGroupCoordinator.CoordinatorError.SUPERSEDED));
+            assertThat(held).as("a refused leave submits nothing").hasSize(3);
+            assertThat(committedOwners().values()).containsOnly("c3").hasSize(PARTITIONS);
+        }
+
+        @Test
+        void leaveGroup_deposedLeadersInFlightLeaveBatch_isRefusedByTheFence_whenItCommitsAfterTheSuccessors() {
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            coordinator.joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+            coordinator.leaveGroup(GROUP, STREAM, "c2")
+                       .onFailure(cause -> Assertions.fail("the leave precedes the successor's commit: " + cause.message()));
+            newCoordinator(2L).joinGroup(GROUP, STREAM, PARTITIONS, "c3", NODE_A);
+            assertThat(held).hasSize(4);
+
+            commit(3);
+            commit(0);
+            commit(1);
+            commit(2);
+
+            assertThat(committedOwners().values()).as("the deposed leave batch, committed last, must be refused")
+                                                  .containsOnly("c3")
+                                                  .hasSize(PARTITIONS);
+        }
+    }
+
     @Nested
     class ConcurrentJoins {
         private static final int CONSUMERS = 6;
