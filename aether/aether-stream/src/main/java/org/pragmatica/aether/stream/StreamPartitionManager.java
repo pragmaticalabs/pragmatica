@@ -276,9 +276,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #1730 phase 2: where a replica's divergent-tail truncation is reported to the operator, late-bound
     /// ([#operatorWarnings(OperatorWarningSink)]); log-only until then.
     private volatile OperatorWarningSink operatorWarnings = OperatorWarningSink.logOnly();
+
     /// #1730 phase 2 / #1873: the committed ownership records a validated consumer read is checked against, late-bound
     /// ([#ownershipRecords(OwnerActivation.OwnershipRecordSource)]); none until wired.
     private volatile OwnerActivation.OwnershipRecordSource ownershipRecords = OwnerActivation.OwnershipRecordSource.UNWIRED;
+
     /// #2981 step 2 (design §2.2): this node's lease, read by the owner checks ([#ownerLease(OwnerLease)]); [OwnerLease#UNWIRED]
     /// (compared by identity) until wired.
     private volatile OwnerLease ownerLease = OwnerLease.UNWIRED;
