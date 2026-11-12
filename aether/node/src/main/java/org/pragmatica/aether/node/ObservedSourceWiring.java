@@ -23,6 +23,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
+
 /// F5b (phase-3 design 8.2 D-10): the node-side wiring of the FSM2 observed-row sources, extracted from [AetherNode] so a unit test can reach
 /// the real production lambdas (which counted-member predicate, which admitted-token reader, which control-loop callback) instead of a
 /// rebuilt fixture.

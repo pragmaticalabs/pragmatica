@@ -2922,8 +2922,8 @@ public interface AetherNode extends ManageableNode {
         var allInstancesFailedDetector = AllInstancesFailedDetector.allInstancesFailedDetector(metricsCollector::allObservations,
                                                                                                deploymentWiring.source("B22.AllInstancesFailedDetector.activeInstances",
                                                                                                                        () -> ObservedSourceWiring.observedActiveInstances(kvStore,
-                                                                                                                                                     Option.option(membershipFsmRef.get()),
-                                                                                                                                                     admissionSeam),
+                                                                                                                                                                          Option.option(membershipFsmRef.get()),
+                                                                                                                                                                          admissionSeam),
                                                                                                                        () -> activeInstancesByArtifact(deploymentMap,
                                                                                                                                                        Option.option(membershipFsmRef.get()))),
                                                                                                isLeaderSupplier,
@@ -5063,8 +5063,8 @@ public interface AetherNode extends ManageableNode {
                                                   .onPut(AetherKey.NodeArtifactKey.class, controlLoop::onNodeArtifactPut)
                                                   .onPut(AetherKey.SliceObservedKey.class,
                                                          deploymentWiring.fsm2Reader("B22.ControlLoop.SliceObservedKey.put",
-                                                                    ObservedSourceWiring.controlLoopObservedPut(controlLoop,
-                                                                                                                deploymentWiring.admissions())))
+                                                                                     ObservedSourceWiring.controlLoopObservedPut(controlLoop,
+                                                                                                                                 deploymentWiring.admissions())))
                                                   .onPut(AetherKey.NodeArtifactKey.class,
                                                          eventAggregator::onNodeArtifactPut)
                                                   .onPut(AetherKey.CommunityKey.class, eventAggregator::onCommunityPut)
