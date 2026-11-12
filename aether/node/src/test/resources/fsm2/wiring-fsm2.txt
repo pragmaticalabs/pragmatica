@@ -84,9 +84,9 @@ B21.deploymentMap.NodeArtifactKey.remove -> dropped
 B21.endpoints.NodeArtifactKey.put -> dropped
 B21.endpoints.NodeArtifactKey.remove -> dropped
 B21.events.NodeArtifactKey.put -> dropped
-B21.readers.state.SliceObservedKey -> fsm2:ObservedSliceFeed.stateFeed
-B21.readers.traffic.NodeDepartureKey -> fsm2:ObservedSliceFeed.trafficFeed
-B21.readers.traffic.SliceObservedKey -> fsm2:ObservedSliceFeed.trafficFeed
+B21.readers.state.SliceObservedKey -> fsm2:ObservedSliceFeed.stateFeed[ArtifactDeploymentTrackerImpl,IndexedDeploymentMap,ControlLoop$ControlLoopAdapter,ClusterEventAggregator]
+B21.readers.traffic.NodeDepartureKey -> fsm2:ObservedSliceFeed.trafficFeed[EndpointRegistry$1endpointRegistry]
+B21.readers.traffic.SliceObservedKey -> fsm2:ObservedSliceFeed.trafficFeed[EndpointRegistry$1endpointRegistry]
 B21.tracker.NodeArtifactKey.put -> dropped
 B21.tracker.NodeArtifactKey.remove -> dropped
 B3.ActivationDriver -> fsm2:Fsm2System.reconcileActivation
