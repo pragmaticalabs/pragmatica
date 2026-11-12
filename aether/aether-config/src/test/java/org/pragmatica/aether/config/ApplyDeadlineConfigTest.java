@@ -33,6 +33,25 @@ class ApplyDeadlineConfigTest {
         assertThat(deployment.applySchemaPauseMax().millis()).isEqualTo(2 * 60 * 60_000L);
     }
 
+    /// Red when: a key present in `[timeouts.deployment]` with the other absent takes the other key's default (the per-key fallback arguments
+    /// are swapped). The section is present, so the per-key default arguments are reached, which the empty document never does.
+    @Test
+    void sectionWithOneKey_takesTheOtherKeysOwnDefault() {
+        var onlyPause = load("""
+                             [timeouts.deployment]
+                             apply_schema_pause_max = "30m"
+                             """);
+        var onlyDeadline = load("""
+                                [timeouts.deployment]
+                                apply_deadline = "5m"
+                                """);
+
+        assertThat(onlyPause.applyDeadline().millis()).as("deadline absent: its own 15 min default").isEqualTo(15 * 60_000L);
+        assertThat(onlyPause.applySchemaPauseMax().millis()).isEqualTo(30 * 60_000L);
+        assertThat(onlyDeadline.applyDeadline().millis()).isEqualTo(5 * 60_000L);
+        assertThat(onlyDeadline.applySchemaPauseMax().millis()).as("pause cap absent: its own 2 h default").isEqualTo(2 * 60 * 60_000L);
+    }
+
     /// Red when: a key is not read from its TOML name.
     @Test
     void bothKeys_areParsed() {

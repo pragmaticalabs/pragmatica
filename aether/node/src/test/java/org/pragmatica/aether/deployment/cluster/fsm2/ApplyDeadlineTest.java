@@ -11,11 +11,14 @@ import java.util.function.UnaryOperator;
 
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentApplyKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentApplyValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
@@ -345,6 +348,133 @@ class ApplyDeadlineTest {
         publish(h, blueprint(APP, false, ATTEMPT, slice(ORDERS, 1, 1, Set.of())), Option.none());
         h.advanceBySeconds(2 * 60);
         assertThat(status(h)).as("two minutes into a new apply").isEqualTo(Option.some(DeploymentOutcomeStatus.IN_PROGRESS));
+    }
+
+    // -- survivor pins (#3114 verification: v07, v08, v09, v11, v14, v15, v35, v38) ---------------------------------
+    /// v07. Red when: an apply record left behind by a terminal outcome of its own attempt is judged open again, so the deadline writes a second
+    /// terminal over the first.
+    @Test
+    void terminalOutcomeOfTheAttempt_withAResidualApplyRecord_isNotTerminatedAgain() {
+        var h = publishedApply();
+
+        h.seed(new DeploymentOutcomeKey(ID),
+               new DeploymentOutcomeValue(DeploymentOutcomeStatus.ROLLED_BACK, List.of(), "slice-failed", FsmHarness.START_WALL, 2L, ATTEMPT));
+        h.advanceBySeconds(20 * 60);
+        assertThat(outcome(h).map(DeploymentOutcomeValue::cause)).as("the first terminal stands").isEqualTo(Option.some("slice-failed"));
+        assertThat(h.submits(ClusterModel.SubmitKind.ROLLBACK)).isEmpty();
+        assertThat(h.warns("apply-deadline-exceeded")).isEmpty();
+    }
+
+    /// v07 with v16. Red when: a SUCCEEDED outcome of the attempt whose apply record survived is condemned by the deadline (both the open test
+    /// and the deployed guard of `terminate` are gone).
+    @Test
+    void succeededOutcome_withAResidualApplyRecord_isNotTerminatedByTheDeadline() {
+        var h = publishedApply();
+        var host = hosts(h, ORDERS).getFirst();
+
+        node(h, host, 1L).follows(ORDERS);
+        h.drain();
+        node(h, host, 1L).follows(ORDERS);
+        h.drain();
+        assertThat(status(h)).as("control: succeeded").isEqualTo(Option.some(DeploymentOutcomeStatus.SUCCEEDED));
+        h.seed(new DeploymentApplyKey(ID), new DeploymentApplyValue(ATTEMPT, Option.none(), h.wallMs));
+        h.advanceBySeconds(20 * 60);
+        assertThat(status(h)).isEqualTo(Option.some(DeploymentOutcomeStatus.SUCCEEDED));
+        assertThat(h.submits(ClusterModel.SubmitKind.ROLLBACK)).isEmpty();
+        assertThat(h.warns("apply-deadline-exceeded")).isEmpty();
+    }
+
+    /// v08. Red when: an apply record of an older attempt, beside a blueprint and an outcome of a newer one, is measured and terminated.
+    @Test
+    void staleApplyRecord_ofAnOlderAttempt_isNotTerminated() {
+        var h = publishedApply();
+
+        h.seed(new DeploymentOutcomeKey(ID), DeploymentOutcomeValue.inProgress(h.wallMs, 2L, "attempt-2"));
+        h.seed(new AppBlueprintKey(ID), blueprint(APP, false, "attempt-2", slice(ORDERS, 1, 1, Set.of())));
+        h.advanceBySeconds(20 * 60);
+        assertThat(h.warns("apply-deadline-exceeded")).isEmpty();
+        assertThat(h.submits(ClusterModel.SubmitKind.ROLLBACK)).isEmpty();
+    }
+
+    /// v09. Red when: a republish while the first apply is still open (another attempt) inherits the first apply's clock instead of starting its own.
+    @Test
+    void republishWhileOpen_startsANewClock() {
+        var h = publishedApply();
+
+        h.advanceBySeconds(10 * 60);
+        publish(h, blueprint(APP, false, "attempt-2", slice(ORDERS, 1, 1, Set.of())), Option.none());
+        h.advanceBySeconds(10 * 60);
+        assertThat(status(h)).as("10 min into the second apply, 20 since the first").isEqualTo(Option.some(DeploymentOutcomeStatus.IN_PROGRESS));
+        h.advanceBySeconds(6 * 60);
+        assertThat(status(h)).as("16 min into the second apply").isEqualTo(Option.some(DeploymentOutcomeStatus.ROLLED_BACK));
+    }
+
+    /// v11. Red when: a negative pause cap (reachable only through a directly built `Timing`) is not read as zero, so it shortens the unpaused
+    /// interval below what has elapsed.
+    @Test
+    void negativePauseCap_isReadAsZero_andNeverShortensTheInterval() {
+        var h = publishedApply(DeploymentAtomicity.ALL_OR_NOTHING, timing -> timing.withApplyDeadline(60_000L).withApplySchemaPauseMax(-60_000L));
+
+        h.seed(new SchemaVersionKey("ds"), schema(SchemaStatus.MIGRATING));
+        h.advanceBySeconds(30);
+        assertThat(status(h)).as("30 s of a 60 s deadline").isEqualTo(Option.some(DeploymentOutcomeStatus.IN_PROGRESS));
+        h.advanceBySeconds(60);
+        assertThat(status(h)).as("a zero cap pauses nothing: past 60 s").isEqualTo(Option.some(DeploymentOutcomeStatus.ROLLED_BACK));
+    }
+
+    /// v14. Red when: a blueprint declaring `schema_required = false` is paused by a PENDING datasource (the requirement is not consulted).
+    @Test
+    void schemaNotRequired_pendingDatasource_doesNotPauseTheClock() {
+        var toml = """
+                   id = "org.example:app:1.0.0"
+
+                   [[slices]]
+                   artifact = "org.example:orders:1.0.0"
+
+                   [deployment]
+                   strategy = "rolling"
+                   schema_required = false
+                   """;
+        var plain = blueprint(APP, false, ATTEMPT, slice(ORDERS, 1, 1, Set.of()));
+        var h = harness(DeploymentAtomicity.ALL_OR_NOTHING, UnaryOperator.identity());
+
+        publish(h, new AppBlueprintValue(ExpandedBlueprint.expandedBlueprint(ID, plain.blueprint().loadOrder(), Option.some(toml)), false, ATTEMPT),
+                Option.none());
+        h.seed(new SchemaVersionKey("ds"), schema(SchemaStatus.PENDING));
+        h.advanceBySeconds(16 * 60);
+        assertThat(status(h)).isEqualTo(Option.some(DeploymentOutcomeStatus.ROLLED_BACK));
+    }
+
+    /// v15. Red when: a datasource owned by another version of the same blueprint base does not pause the clock (the owner is compared whole).
+    @Test
+    void datasourceOfAnotherVersionOfTheSameBase_pausesTheClock() {
+        var h = publishedApply();
+
+        h.seed(new SchemaVersionKey("ds"), schemaOwnedBy(SchemaStatus.MIGRATING, blueprintId("org.example:app:2.0.0")));
+        h.advanceBySeconds(20 * 60);
+        assertThat(status(h)).isEqualTo(Option.some(DeploymentOutcomeStatus.IN_PROGRESS));
+    }
+
+    /// v35. Red when: under BEST_EFFORT a deadline terminal that is submitted and unsettled is submitted again at every pass.
+    @Test
+    void bestEffort_unsettledTerminal_isSubmittedOnce() {
+        var h = publishedApply(DeploymentAtomicity.BEST_EFFORT, UnaryOperator.identity());
+
+        h.policy = FsmHarness.SettlePolicy.HOLD;
+        h.advanceBySeconds(16 * 60);
+        h.advanceBySeconds(5 * 60);
+        assertThat(h.submits(ClusterModel.SubmitKind.OUTCOME)).hasSize(1);
+    }
+
+    /// v38. Red when: the BEST_EFFORT deadline terminal does not carry the attempt of the apply it closes (the warning lifecycle keys on it).
+    @Test
+    void bestEffort_terminal_carriesTheAttempt_andItsWarningStands() {
+        var h = publishedApply(DeploymentAtomicity.BEST_EFFORT, UnaryOperator.identity());
+
+        h.advanceBySeconds(16 * 60);
+        assertThat(outcome(h).map(DeploymentOutcomeValue::attemptId)).isEqualTo(Option.some(ATTEMPT));
+        h.advanceBySeconds(5 * 60);
+        assertThat(h.warns("apply-deadline-cleared")).as("the warning of the warned attempt stands").isEmpty();
     }
 
     // -- inheritance (#2834 family) -----------------------------------------------------------------------------------

@@ -138,7 +138,7 @@ class Fsm2DerivationsTest {
                                                                                            defaults.unloading(),
                                                                                            defaults.activationChain(),
                                                                                            defaults.transitionRetryDelay(),
-                                                                                           defaults.reconciliationInterval(),
+                                                                                           TimeSpan.timeSpan(45).seconds(),
                                                                                            defaults.maxLifecycleRetries(),
                                                                                            TimeSpan.timeSpan(5).minutes(),
                                                                                            TimeSpan.timeSpan(30).minutes());
@@ -146,6 +146,7 @@ class Fsm2DerivationsTest {
 
         assertThat(timing.applyDeadline()).isEqualTo(300_000L);
         assertThat(timing.applySchemaPauseMax()).isEqualTo(1_800_000L);
+        assertThat(timing.tick()).as("the tick is the configured reconciliation interval (not Timing.DEFAULT's)").isEqualTo(45_000L);
         assertThat(Fsm2System.timing(defaults).applyDeadline()).as("control: the defaults").isEqualTo(900_000L);
     }
 
