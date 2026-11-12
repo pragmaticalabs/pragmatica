@@ -183,6 +183,20 @@ class NodeLeaseTest {
         assertThat(lease.valid()).isTrue();
     }
 
+    /// r2b (v3054 survivor): a renewal submitted at the SAME `nanoTime` as the revocation is not "after" it, so it does not clear the
+    /// revocation (NEW-3 boundary). Mutation: `extendedBy`'s `anchor - revokedAt <= 0` -> `< 0` -> RED.
+    @Test
+    void revoke_aRenewalSubmittedAtTheSameInstantAsTheRevocation_doesNotClearIt() {
+        lease.renew();
+        deliverOwn(0);
+        advance(10);
+        lease.revoke();
+        lease.renew();
+        deliverOwn(1);
+
+        assertThat(lease.valid()).isFalse();
+    }
+
     @Test
     void crossCheck_gapExactlyT_doesNotRevoke_gapOneMillisecondOverTDoes() {
         lease.renew();

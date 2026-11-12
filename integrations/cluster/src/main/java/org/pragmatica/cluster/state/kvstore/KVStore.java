@@ -970,8 +970,8 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
     /// Registers the listener told the revision of every replay item ([#replayNotifications()]) on the delivering thread, before the item's burst
     /// is delivered and whether or not the burst is empty: the snapshot install itself, not something to infer from its burst. The revision is the
-    /// store's committed revision at the replay: the install's for a `restoreCommittedSnapshot`, the unchanged one for a `restoreSnapshot`. One
-    /// listener; a second registration replaces the first.
+    /// store's committed revision at the replay: the install's for a `restoreCommittedSnapshot`, the unchanged one for a `restoreSnapshot`.
+    /// Registration APPENDS (#2981 C1): every registered listener is told, in registration order, and one that throws does not skip the others.
     @Contract
     public void onReplayStart(LongConsumer listener) {
         dispatcher.onReplayStart(listener);
