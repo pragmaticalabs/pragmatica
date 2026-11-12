@@ -141,6 +141,9 @@ class EmberOwnerBehindBudgetDeferredReplicaTest {
             sleepQuietly(DEFERRAL_SETTLE_MS);
             assertThat(deferred.streamPartitionManager().partitionBuffer(KEY, PARTITION).isEmpty()).as("precondition: the deferred replica built no ring").isTrue();
 
+            assertThat(behind.streamPartitionManager().appendedHead(KEY, PARTITION)).as("precondition: `behind` is still at the early records after the restart")
+                                                                                .isEqualTo((long) (EARLY - 1));
+
             var allocatedBefore = deferred.streamPartitionManager().totalAllocatedBytes();
             var capture = StreamTripwireSupport.captureLogs();
 
@@ -202,12 +205,14 @@ class EmberOwnerBehindBudgetDeferredReplicaTest {
         return starvedNode == null || !((receiver.self().equals(starvedNode) && carriesStreamData(message)) || isCatchupReadBy(starvedNode, message));
     }
 
-    /// Replication data for the stream: what would let the starved copy catch up.
+    /// Replication data for the stream: what would let the starved copy catch up. A forwarded read's response carries no stream name
+    /// and is the path by which the starved copy's own catch-up read returns events, so every one addressed to it is dropped.
     private static boolean carriesStreamData(Object message) {
         return switch (message) {
             case ReplicationMessage.ReplicateEvents events -> KEY.equals(events.streamName());
             case ReplicationMessage.BatchSync sync -> KEY.equals(sync.streamName());
             case ReplicationMessage.CatchupResponse response -> KEY.equals(response.streamName());
+            case StreamForwardMessage.ReadForwardResponse _ -> true;
             default -> false;
         };
     }
