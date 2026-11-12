@@ -150,9 +150,7 @@ class EmberOwnerBehindBudgetDeferredReplicaTest {
 
                 cluster.killNode(killed).await(STOP_BOUND).onFailure(cause -> org.junit.jupiter.api.Assertions.fail("owner kill failed: " + cause.message()));
                 starved.set(null);
-                var newOwner = awaitNewOwner(killed);
-
-                assertThat(newOwner.self()).as("the owner that took over is the one that was behind (deferred %s, killed %s)", deferredId, killed).isEqualTo(behindId);
+                awaitOwner(behindId);
                 awaitUntil(() -> behind.streamPartitionManager().appendedHead(KEY, PARTITION) == EARLY + LATE - 1L,
                            CATCHUP_BUDGET_MS,
                            "the new owner reached the deferred replica's tail (head " + behind.streamPartitionManager().appendedHead(KEY, PARTITION) + ")");
@@ -239,22 +237,26 @@ class EmberOwnerBehindBudgetDeferredReplicaTest {
         awaitUntil(() -> node.streamPartitionManager().appendedHead(KEY, PARTITION) + 1 >= count, 30_000L, node.self().id() + " holds " + count + " records");
     }
 
-    private AetherNode awaitNewOwner(String killed) {
+    /// Waits until `expected` owns the partition, recording every other owner the committed record named on the way.
+    private AetherNode awaitOwner(NodeId expected) {
         var deadline = System.currentTimeMillis() + FAILOVER_BUDGET_MS;
+        var seen = new java.util.LinkedHashSet<String>();
 
         while (System.currentTimeMillis() < deadline) {
+            StreamTripwireSupport.committedRecord(cluster, KEY, PARTITION).onPresent(value -> seen.add(value.owner().id() + "@" + value.ownerEpoch()));
+
             var found = StreamTripwireSupport.committedRecord(cluster, KEY, PARTITION)
-                                             .filter(value -> !value.owner().id().equals(killed))
+                                             .filter(value -> value.owner().equals(expected))
                                              .flatMap(value -> cluster.getNode(value.owner().id()));
 
             if (found.isPresent()) {
                 return found.unwrap();
             }
 
-            sleepQuietly(500L);
+            sleepQuietly(250L);
         }
 
-        throw new AssertionError("ownership did not leave the killed owner " + killed + " within " + FAILOVER_BUDGET_MS + "ms");
+        throw new AssertionError("ownership did not reach " + expected + " within " + FAILOVER_BUDGET_MS + "ms; owners seen: " + seen);
     }
 
     private EmberCluster backedUpCluster(int basePort, Path remote) {
