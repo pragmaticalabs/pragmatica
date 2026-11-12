@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
@@ -46,15 +47,40 @@ public final class ConfigLoader {
     private ConfigLoader() {}
 
     public static Result<AetherConfig> load(Path path) {
-        return TomlParser.parseFile(path).flatMap(doc -> loadDocument(doc, Map.of(), System::getenv, FileOps::exists));
+        return TomlParser.parseFile(path).flatMap(doc -> loadNode(doc, Map.of(), System::getenv));
     }
 
     public static Result<AetherConfig> loadFromString(String content) {
-        return TomlParser.parse(content).flatMap(doc -> loadDocument(doc, Map.of(), System::getenv, FileOps::exists));
+        return TomlParser.parse(content).flatMap(doc -> loadNode(doc, Map.of(), System::getenv));
+    }
+
+    /// [#loadFromString] against a supplied environment (the test seam for env-fed values such as the HS256 secret).
+    static Result<AetherConfig> loadFromString(String content, Fn1<String, String> env) {
+        return TomlParser.parse(content).flatMap(doc -> loadNode(doc, Map.of(), env));
     }
 
     public static Result<AetherConfig> loadWithOverrides(Path path, Map<String, String> overrides) {
-        return TomlParser.parseFile(path).flatMap(doc -> loadDocument(doc, overrides, System::getenv, FileOps::exists));
+        return TomlParser.parseFile(path).flatMap(doc -> loadNode(doc, overrides, System::getenv));
+    }
+
+    /// The node's own load: [#loadDocument] plus the one verdict pre-flight cannot give, that an HS256 JWT mode has its
+    /// secret (#2880). A configured mode with a missing secret is refused naming the setting, never a degraded fallback.
+    private static Result<AetherConfig> loadNode(TomlDocument doc,
+                                                 Map<String, String> overrides,
+                                                 Fn1<String, String> env) {
+        return loadDocument(doc, overrides, env, FileOps::exists).flatMap(ConfigLoader::requireJwtSecret);
+    }
+
+    private static Result<AetherConfig> requireJwtSecret(AetherConfig config) {
+        return config.appHttp()
+                     .jwtConfig()
+                     .filter(jwt -> jwt.keyMode() == JwtKeyMode.HS256 && jwt.sharedSecret()
+                                                                            .isEmpty())
+                     .fold(() -> Result.success(config),
+                           _ -> ConfigError.invalidConfig("[app-http] jwt_algorithm = \"HS256\" needs a shared secret of at least " + JwtSecret.MIN_BYTES
+                                                         + " bytes in " + JWT_SECRET_ENV
+                                                         + " (or the file " + JWT_SECRET_ENV
+                                                         + "_FILE names); none was supplied.").result());
     }
 
     /// THE node load path, shared by every entry point and by cluster bootstrap's pre-flight ([#checkNodeDocument]):
@@ -254,6 +280,17 @@ public final class ConfigLoader {
                                                 "streaming",
                                                 "seal_pending_cap_bytes",
                                                 defaults.sealPendingCapBytes());
+        var replicationBatchMaxEvents = parseInt(doc,
+                                                 "streaming",
+                                                 "replication_batch_max_events",
+                                                 defaults.replicationBatchMaxEvents());
+        var replicationBatchMaxDelay = parseTimeSpan(doc,
+                                                     "streaming",
+                                                     "replication_batch_max_delay",
+                                                     defaults.replicationBatchMaxDelay());
+        var ownerLease = parseTimeSpan(doc, "streaming", "owner_lease", defaults.ownerLease());
+        var ownerLeaseRenewal = parseTimeSpan(doc, "streaming", "owner_lease_renewal", defaults.ownerLeaseRenewal());
+        var clockDriftBound = doc.getDouble("streaming", "clock_drift_bound").or(defaults.clockDriftBound());
 
         builder.streaming(StreamingConfig.streamingConfig(publishTimeout,
                                                           readTimeout,
@@ -266,7 +303,9 @@ public final class ConfigLoader {
                                          .withIsrLagMax(isrLagMax)
                                          .withPromotionEscapeAfter(promotionEscapeAfter)
                                          .withSealRun(sealRunBytes, sealRunEvents, sealRunAge, sealMergeBytes)
-                                         .withMemoryBudget(maxMemoryBytes, sealPendingCapBytes));
+                                         .withMemoryBudget(maxMemoryBytes, sealPendingCapBytes)
+                                         .withReplicationBatch(replicationBatchMaxEvents, replicationBatchMaxDelay)
+                                         .withOwnerLease(ownerLease, ownerLeaseRenewal, clockDriftBound));
     }
 
     /// #2201 C-03 (spec 4.4 items 1 and 3, D-12): a written `[streaming] max_memory_bytes` or `seal_pending_cap_bytes` must be
@@ -461,7 +500,7 @@ public final class ConfigLoader {
         // cluster-wide bootstrap admin key (BootstrapAdminKeyRegistrar) supplies a credential when
         // none was provisioned. An explicit `security_mode` (including "none") always wins.
         var securityMode = explicitMode.or(SecurityMode.API_KEY);
-        var jwtConfig = parseJwtConfig(doc);
+        var jwtConfig = parseJwtConfig(doc, env);
         var httpProtocol = doc.getParsed("app-http", "protocol", "one of: h1, h3, both", HttpProtocol::httpProtocol)
                               .or(HttpProtocol.H1);
         // #198 §7: cluster-level API-version detection mode + header name (per-slice override is a
@@ -592,19 +631,68 @@ public final class ConfigLoader {
                      .map(AppHttpConfig.AppTls::new);
     }
 
-    private static Option<JwtConfig> parseJwtConfig(TomlDocument doc) {
-        return doc.getString("app-http", "jwks_url")
-                  .map(jwksUrl -> buildJwtConfig(doc, jwksUrl));
+    /// `jwt_algorithm = "HS256"` (#2880) selects the shared-secret mode, and the secret comes from the environment
+    /// (`AETHER_JWT_SECRET`, or the file `AETHER_JWT_SECRET_FILE` names), never from the TOML, so the config file can be
+    /// committed and logged. Without `jwt_algorithm` the mode is JWKS and `jwks_url` alone makes it present. A secret the
+    /// environment does not supply is not refused here: pre-flight judges against an empty environment, so the node's
+    /// own load refuses it instead ([#requireJwtSecret]).
+    private static Option<JwtConfig> parseJwtConfig(TomlDocument doc, Fn1<String, String> env) {
+        return jwtKeyMode(doc).fold(() -> doc.getString("app-http", "jwks_url")
+                                             .map(jwksUrl -> buildJwtConfig(doc,
+                                                                            jwksUrl,
+                                                                            JwtKeyMode.JWKS,
+                                                                            Option.empty())),
+                                    mode -> Option.some(buildJwtConfig(doc,
+                                                                       doc.getString("app-http", "jwks_url").or(""),
+                                                                       mode,
+                                                                       jwtSecret(env))));
     }
 
-    private static JwtConfig buildJwtConfig(TomlDocument doc, String jwksUrl) {
+    /// The environment variable carrying the HS256 secret; `AETHER_JWT_SECRET_FILE` is its file form.
+    public static final String JWT_SECRET_ENV = "AETHER_JWT_SECRET";
+
+    private static Option<JwtKeyMode> jwtKeyMode(TomlDocument doc) {
+        return doc.getString("app-http", "jwt_algorithm")
+                  .map(ConfigLoader::requireKeyMode);
+    }
+
+    private static JwtKeyMode requireKeyMode(String raw) {
+        return JwtKeyMode.jwtKeyMode(raw)
+                         .toResult(ConfigError.invalidConfig("[app-http] jwt_algorithm = \"" + raw
+                                                            + "\" is not supported. Allowed value: HS256 (omit it for JWKS)."))
+                         .getOrThrow(IllegalArgumentException::new, "invalid [app-http]");
+    }
+
+    private static Option<JwtSecret> jwtSecret(Fn1<String, String> env) {
+        return ClusterSecretSource.resolve(env, JWT_SECRET_ENV)
+                                  .getOrThrow(IllegalArgumentException::new, "invalid [app-http] jwt secret")
+                                  .map(text -> JwtSecret.jwtSecret(text).getOrThrow(IllegalArgumentException::new,
+                                                                                    "invalid [app-http] jwt secret (" + JWT_SECRET_ENV
+                                                                                   + ")"));
+    }
+
+    private static JwtConfig buildJwtConfig(TomlDocument doc,
+                                            String jwksUrl,
+                                            JwtKeyMode keyMode,
+                                            Option<JwtSecret> sharedSecret) {
         var issuer = doc.getString("app-http", "issuer");
         var audience = doc.getString("app-http", "audience");
         var roleClaim = doc.getString("app-http", "role_claim").or(JwtConfig.DEFAULT_ROLE_CLAIM);
         var cacheTtl = parseLong(doc, "app-http", "jwks_cache_ttl_seconds", JwtConfig.DEFAULT_CACHE_TTL_SECONDS);
         var clockSkew = parseLong(doc, "app-http", "clock_skew_seconds", JwtConfig.DEFAULT_CLOCK_SKEW_SECONDS);
+        // #2156: an invalid list (empty, a non-token entry, a duplicate) refuses the load through the
+        // IllegalArgumentException boundary of assembleConfig; it is never replaced by the default.
+        var authSchemes = doc.getStringList("app-http", "auth_schemes").or(AuthSchemes.DEFAULT);
 
-        return JwtConfig.jwtConfig(jwksUrl, issuer, audience, roleClaim, cacheTtl, clockSkew).unwrap();
+        return JwtConfig.jwtConfig(jwksUrl,
+                                   issuer,
+                                   audience,
+                                   roleClaim,
+                                   cacheTtl,
+                                   clockSkew,
+                                   authSchemes,
+                                   keyMode,
+                                   sharedSecret).getOrThrow(IllegalArgumentException::new, "invalid [app-http]");
     }
 
     private static void populateBackupConfig(TomlDocument doc,
@@ -1595,7 +1683,7 @@ public final class ConfigLoader {
     /// without one, and `--tls=yes` turned TLS off; a value that is not `true` or `false` refuses the load like the
     /// neighbouring `restore` mode does. The CLI overrides use the same parse as the TOML booleans.
     private static Result<Boolean> strictBoolean(String raw) {
-        return switch (raw.toLowerCase()) {
+        return switch (raw.toLowerCase(Locale.ROOT)) {
             case "true" -> success(true);
             case "false" -> success(false);
             default -> ConfigError.invalidConfig("'" + raw + "' is not true or false").result();
@@ -1630,7 +1718,7 @@ public final class ConfigLoader {
     }
 
     public static Duration parseDuration(String value) {
-        var normalized = value.trim().toLowerCase();
+        var normalized = value.trim().toLowerCase(Locale.ROOT);
 
         return normalized.isEmpty()
                ? Duration.ofSeconds(1)

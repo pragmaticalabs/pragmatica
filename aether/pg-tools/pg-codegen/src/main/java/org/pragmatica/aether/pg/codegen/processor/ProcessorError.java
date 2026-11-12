@@ -67,6 +67,26 @@ public final class ProcessorError {
              + "Double, Float.";
     }
 
+    public static String missingRecordFactory(String methodName, String recordName, String expectedSignature) {
+        return PREFIX
+             + "Method '" + methodName
+             + "' returns row record '" + recordName
+             + "', which has no type-named static factory; generated code builds records through it, never 'new'. "
+             + "Declare: " + expectedSignature
+             + " (return Result<" + recordName
+             + "> when the record has an invariant)";
+    }
+
+    public static String recordFactoryReturnType(String methodName, String factoryName, String recordName) {
+        return PREFIX
+             + "Method '" + methodName
+             + "': factory '" + factoryName
+             + "' of row record '" + recordName
+             + "' must return " + recordName
+             + " or Result<" + recordName
+             + ">";
+    }
+
     public static String cannotInferTable(String methodName) {
         return PREFIX + "Cannot infer table for method '" + methodName + "'; add @Table annotation";
     }
@@ -86,8 +106,58 @@ public final class ProcessorError {
              + "' is not listed in migrations.list (kept via auto-discovery)";
     }
 
+    public static String scalarColumnNeedsAlias(String method) {
+        return PREFIX
+             + "Method '" + method
+             + "' reads a single column, but the query's output column has no name: add an alias to the selected"
+             + " expression (e.g. 'count(*) AS n') and select no '*'";
+    }
+
     public static String returnFieldNotInSelect(String field, String recordType) {
         return PREFIX + "Field '" + field + "' in return type " + recordType + " has no matching SELECT column";
+    }
+
+    public static String nullableOutputToNonOption(String method,
+                                                   String output,
+                                                   String target,
+                                                   String reason,
+                                                   boolean fieldTarget) {
+        return PREFIX
+             + "Method '" + method
+             + "': output '" + output
+             + "' may be NULL (" + reason
+             + ") but is read into " + target
+             + ", which cannot hold NULL. Fix: wrap the output in COALESCE(..., <default>)" + (fieldTarget
+                                                                                               ? " or declare the field as Option<T>."
+                                                                                               : ".");
+    }
+
+    public static String provenNonNullToOption(String method,
+                                               String output,
+                                               String field,
+                                               String proof,
+                                               String plainType) {
+        return PREFIX
+             + "Method '" + method
+             + "': output '" + output
+             + "' is proven non-null (" + proof
+             + ") but field '" + field
+             + "' is declared Option<" + plainType
+             + ">. Declared types must match proven nullability. Fix: declare the field as the plain type " + plainType
+             + ".";
+    }
+
+    public static String ambiguousOutputName(String method, String output, int count, String field) {
+        return PREFIX
+             + "Method '" + method
+             + "': output name '" + output
+             + "' appears " + count
+             + " times in the select list, so field '" + field
+             + "' cannot be mapped unambiguously. Fix: give each output a distinct alias.";
+    }
+
+    public static String analysisFailed(String method, String sql, String detail) {
+        return PREFIX + "Method '" + method + "' could not be analysed (" + detail + "); SQL: " + sql;
     }
 
     public static String missingValueMappingForParam(String param, String type) {

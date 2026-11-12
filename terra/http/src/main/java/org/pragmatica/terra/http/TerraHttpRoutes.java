@@ -20,6 +20,8 @@ import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.aether.http.handler.security.SecurityContextHolder;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.http.security.HttpAuthenticator;
+import org.pragmatica.aether.http.security.SecurityError;
+import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
@@ -28,6 +30,7 @@ import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RequestContext;
 import org.pragmatica.http.routing.security.Access;
 import org.pragmatica.json.JsonMapper;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -53,6 +56,7 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
                                                    JsonMapper mapper) {
         var routes = new ArrayList<Route<?>>();
         var owners = new IdentityHashMap<Route<?>, SliceRouter>();
+        var sliceNames = new IdentityHashMap<Route<?>, String>();
         var types = new java.util.HashSet<Class<?>>();
 
         for (var factory : factories) {
@@ -75,11 +79,13 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
 
             routes.addAll(value.routes());
             value.routes().forEach(route -> owners.put(route, value.router()));
+            value.routes().forEach(route -> sliceNames.put(route,
+                                                           factory.sliceType().getName()));
         }
 
-        return checkRoutes(routes, owners).map(_ -> routingIndex(routes,
-                                                                 owners,
-                                                                 config.mountMode().isHeaderMode()));
+        return checkRoutes(routes, sliceNames).map(_ -> routingIndex(routes,
+                                                                     owners,
+                                                                     config.mountMode().isHeaderMode()));
     }
 
     // Header-mode ownership must not apply a shape from another version before the slice's
@@ -106,17 +112,28 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
                                    indexOwners);
     }
 
+    /// #2947: ownership is keyed by the full route shape, the same facets the shared shape matcher dispatches by:
+    /// method, static base, trailing-segment arity, spacers and their slots. Path variables are wildcards (their
+    /// names are not part of the shape), so `{a}` and `{b}` at one position are the same shape. Sibling shapes under
+    /// one base may belong to different slices; only one shape owned by two slices is ambiguous and refused.
+    /// Precedence when several shapes admit a request: arity must equal the request's trailing segments, then a
+    /// shape whose spacers (literal segments) all match beats a spacer-free (all-variable) one -- as in Aether.
     private static Result<org.pragmatica.lang.Unit> checkRoutes(List<Route<?>> routes,
-                                                                Map<Route<?>, SliceRouter> owners) {
+                                                                Map<Route<?>, String> sliceNames) {
         var identities = new java.util.HashSet<String>();
-        var bases = new HashMap<String, SliceRouter>();
+        var shapeOwners = new HashMap<String, String>();
 
         for (var route : routes) {
             var base = route.method() + " " + route.path();
-            var previous = bases.putIfAbsent(base, owners.get(route));
+            var shape = base + " " + route.pathParamCount() + " " + route.spacers() + " " + route.spacerSlots();
+            var slice = sliceNames.get(route);
+            var previous = shapeOwners.putIfAbsent(shape, slice);
 
-            if (previous != null && previous != owners.get(route)) {
-                return new TerraHttpError.InvalidRoutes("Multiple slices own route base: " + base).result();
+            if (previous != null && !previous.equals(slice)) {
+                return new TerraHttpError.InvalidRoutes("Multiple slices own route shape: " + shape
+                                                       + " (" + previous
+                                                       + ", " + slice
+                                                       + ")").result();
             }
 
             var identity = base
@@ -168,7 +185,7 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
                                                 }));
     }
 
-    private static <T> Route<T> secure(Route<T> route, SecurityPolicy defaultPolicy, HttpAuthenticator authenticator) {
+    static <T> Route<T> secure(Route<T> route, SecurityPolicy defaultPolicy, HttpAuthenticator authenticator) {
         return Route.route(route.method(),
                            route.path(),
                            context -> authenticate(route, context, defaultPolicy, authenticator).flatMap(security -> invoke(route,
@@ -180,7 +197,9 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
                            route.security(),
                            route.version(),
                            route.pathParamCount(),
-                           route.spacerSlots());
+                           route.spacerSlots(),
+                           route.uploadSpec(),
+                           route.successSpec());
     }
 
     private static Promise<SecurityContext> authenticate(Route<?> route,
@@ -195,13 +214,26 @@ record TerraHttpRoutes(RequestRouter index, Map<Route<?>, SliceRouter> owners) {
         return Promise.lift(Causes::fromThrowable,
                             () -> authenticator.validate(request, policy))
                       .flatMap(Result::async)
-                      .mapError(cause -> cause instanceof HttpStatusAware status
-                                         ? status.httpStatus()
-                                                 .with(cause)
-                                         : HttpStatus.INTERNAL_SERVER_ERROR.with(cause))
+                      .mapError(cause -> refusal(cause, authenticator))
                       .flatMap(security -> policy.canAccess(security) == Access.ALLOW
                                            ? Promise.success(security)
                                            : HttpStatus.FORBIDDEN.with("Route policy denied access").promise());
+    }
+
+    /// #2926: a 401 carries the RFC 6750 section 3.1 challenge of the authenticator's scheme; any other status is
+    /// answered as before (403 for a role, 500 for a server-side failure).
+    private static HttpError refusal(Cause cause, HttpAuthenticator authenticator) {
+        var status = cause instanceof HttpStatusAware aware
+                     ? aware.httpStatus()
+                     : HttpStatus.INTERNAL_SERVER_ERROR;
+
+        return status == HttpStatus.UNAUTHORIZED
+               ? TerraAuthenticationRefusal.refusal(cause,
+                                                    authenticator.challengeScheme()
+                                                                 .map(scheme -> SecurityError.challenge(scheme,
+                                                                                                        "Terra",
+                                                                                                        cause)))
+               : status.with(cause);
     }
 
     // The rebuilt context keeps the router's codec (the generated one where the slice has it), so a request body is

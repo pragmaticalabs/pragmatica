@@ -20,6 +20,7 @@ import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.SliceCodec;
 
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 
@@ -70,9 +71,17 @@ public record DefaultSliceBridge(Artifact artifact,
 
     @Override
     public Promise<byte[]> invoke(String methodName, byte[] input) {
+        return invokeAsCaller(methodName, input, none());
+    }
+
+    /// #2157: a method whose slice method takes a `SecurityContext` declares [CallerRequest] as its parameter and
+    /// receives the decoded payload wrapped with `caller`; every other method receives the bare payload. A call with no
+    /// caller (a plain [#invoke]) hands such a method an empty identity, never a stand-in one.
+    @Override
+    public Promise<byte[]> invokeAsCaller(String methodName, byte[] input, Option<CallerIdentity> caller) {
         return lookupMethod(methodName).flatMap(DefaultSliceBridge::acceptingBareEvent)
                            .async()
-                           .flatMap(method -> invokeWithSerialization(method, input));
+                           .flatMap(method -> invokeWithSerialization(method, input, caller));
     }
 
     @Override
@@ -91,8 +100,23 @@ public record DefaultSliceBridge(Artifact artifact,
                     .getClassLoader();
     }
 
-    private Promise<byte[]> invokeWithSerialization(InternalMethod method, byte[] input) {
-        return deserializeInput(input).flatMap(parameter -> invokeAndSerialize(method.method(), parameter));
+    private Promise<byte[]> invokeWithSerialization(InternalMethod method,
+                                                    byte[] input,
+                                                    Option<CallerIdentity> caller) {
+        return this.<Object> deserializeInput(input)
+                   .map(payload -> callerArgumentFor(method, payload, caller))
+                   .flatMap(parameter -> invokeAndSerialize(method.method(),
+                                                            parameter));
+    }
+
+    private static Object callerArgumentFor(InternalMethod method, Object payload, Option<CallerIdentity> caller) {
+        return takesCaller(method)
+               ? CallerRequest.callerRequest(payload, caller)
+               : payload;
+    }
+
+    private static boolean takesCaller(InternalMethod method) {
+        return CallerRequest.class.equals(method.parameterType().rawType());
     }
 
     private <T> Promise<byte[]> invokeAndSerialize(SliceMethod<?, ?> method, T parameter) {

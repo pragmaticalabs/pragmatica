@@ -155,6 +155,44 @@ class GossipKeyRoutesTest {
                                      .doesNotContain(committedKey());
     }
 
+    /// NT-168 (#1977, I-34). Our rotation lands, then a second legitimate rotation — derived from
+    /// OURS, so it carries our key as `previousKey` — commits before this route's re-read. Ours
+    /// took effect; reporting `Superseded` would send the operator to retry and mint a third key
+    /// on the key-leak response path.
+    @Test
+    void rotate_laterRotationLandsBeforeReread_reportsOursLanded() {
+        when(node.<Object> apply(anyList())).thenAnswer(invocation -> {
+            List<KVCommand<AetherKey>> commands = invocation.getArgument(0);
+
+            applied.addAll(commands);
+            kvStore.process(kvStore.createBatch(commands));
+            kvStore.process(kvStore.createBatch(List.of(putOf(successorOf(rotationValueOf(commands.getFirst()))))));
+
+            return org.pragmatica.lang.Promise.success(List.of());
+        });
+
+        var result = GossipKeyRoutes.gossipKeyRoutes(() -> node).rotate().await(timeSpan(5).seconds());
+        var ours = rotationValueOf(applied.getFirst());
+
+        assertThat(committedKeyId()).as("precondition: the later rotation is what the cluster holds now")
+                                    .isEqualTo(2);
+        assertThat(result.isSuccess()).as("#1977: our rotation landed and must be reported as landed, not Superseded")
+                                      .isTrue();
+        assertThat(result.unwrap().currentKeyId()).as("the response describes OUR rotation, not the later one")
+                                                  .isEqualTo(ours.currentKeyId());
+    }
+
+    private static GossipKeyRotationValue successorOf(GossipKeyRotationValue prior) {
+        return GossipKeyRotationValue.gossipKeyRotationValue(prior.currentKeyId() + 1,
+                                                             Base64.getEncoder().encodeToString(new byte[32]),
+                                                             prior.currentKeyId(),
+                                                             prior.currentKey());
+    }
+
+    private int committedKeyId() {
+        return ((GossipKeyRotationValue) kvStore.get(GossipKeyRotationKey.gossipKeyRotationKey()).unwrap()).currentKeyId();
+    }
+
     @SuppressWarnings("unchecked")
     private static KVCommand<AetherKey> putOf(GossipKeyRotationValue value) {
         return (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(GossipKeyRotationKey.gossipKeyRotationKey(),

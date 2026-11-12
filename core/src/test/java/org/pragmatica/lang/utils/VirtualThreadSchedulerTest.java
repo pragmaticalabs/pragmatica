@@ -17,9 +17,12 @@
 
 package org.pragmatica.lang.utils;
 
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.testlogging.LogCapture;
 
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -27,6 +30,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -56,6 +60,43 @@ class VirtualThreadSchedulerTest {
         } finally {
             scheduler.shutdown();
         }
+    }
+
+    // ---- #3049: a cancelled task stays queued until its deadline but must not pin its body ----
+
+    @Test
+    void cancel_longBeforeDeadline_releasesTheBody() {
+        var scheduler = new VirtualThreadScheduler();
+        try {
+            var bodyRef = scheduleAndCancel(scheduler);
+
+            assertThat(collected(bodyRef)).as("a cancelled task must not keep its body reachable until the deadline")
+                                          .isTrue();
+        } finally {
+            scheduler.shutdown();
+        }
+    }
+
+    private static WeakReference<Runnable> scheduleAndCancel(VirtualThreadScheduler scheduler) {
+        Runnable body = new Runnable() {
+            @Override
+            public void run() {}
+        };
+
+        scheduler.schedule(body, timeSpan(60).seconds()).cancel(false);
+
+        return new WeakReference<>(body);
+    }
+
+    private static boolean collected(WeakReference<?> reference) {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4);
+
+        while (reference.get() != null && System.nanoTime() < deadline) {
+            System.gc();
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(50));
+        }
+
+        return reference.get() == null;
     }
 
     // ---- G2: cancel stops all future occurrences -----------------------------------------
@@ -213,6 +254,21 @@ class VirtualThreadSchedulerTest {
     private static void printRow(String label, List<Long> lagNanos) {
         System.out.printf("%s detection-lag  samples=%-5d  p50=%8.1fms  p99=%8.1fms  max=%8.1fms%n",
                           label, lagNanos.size(), pct(lagNanos, 50), pct(lagNanos, 99), max(lagNanos));
+    }
+
+    // The dispatch lambda read cancelled == false, then cancel() dropped the body, then runGuarded reads it.
+    @Test
+    void runGuarded_afterCancelDroppedTheBody_runsNothingAndLogsNothing() {
+        var runs = new AtomicInteger();
+        var task = new VirtualThreadScheduler.ScheduledTask(runs::incrementAndGet, System.nanoTime() + 60_000_000_000L, 0L);
+
+        try (var capture = LogCapture.capture(VirtualThreadScheduler.class, Level.WARN, false)) {
+            task.cancel(false);
+            task.runGuarded();
+
+            assertThat(capture.messages()).as("a cancel racing the dispatch is not a body failure").isEmpty();
+        }
+        assertThat(runs.get()).isZero();
     }
 
     private static double pct(List<Long> nanos, int p) {

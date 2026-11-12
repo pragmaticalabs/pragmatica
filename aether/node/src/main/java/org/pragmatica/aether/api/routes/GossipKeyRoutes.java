@@ -102,13 +102,25 @@ public final class GossipKeyRoutes implements RouteSource {
 
     /// The engine runs the local `process` before resolving the apply promise, so a local re-read
     /// afterwards is authoritative for this batch.
+    ///
+    /// Ours landed when the committed record's `currentKey` OR `previousKey` is ours (I-34, #1977):
+    /// a later rotation can commit before the re-read, and it carries the key it replaced as
+    /// `previousKey`, which can only be ours if ours was committed. A fenced-out competitor from the
+    /// same base carries the BASE key there, never ours. Not detected: two or more later rotations
+    /// committing before the re-read; that still reports `Superseded` although ours landed — a
+    /// false refusal, never a false success.
     private static Promise<GossipKeyRotationResponse> confirmLanded(ManageableNode node,
                                                                     GossipKeyRotationValue intended) {
-        return committedRotation(node).filter(committed -> committed.currentKey()
-                                                                    .equals(intended.currentKey()))
-                                .map(GossipKeyRoutes::rotationResponse)
+        return committedRotation(node).filter(committed -> landed(committed, intended))
+                                .map(_ -> rotationResponse(intended))
                                 .map(Promise::success)
                                 .or(() -> new GossipKeyRotationError.Superseded(intended.currentKeyId()).promise());
+    }
+
+    private static boolean landed(GossipKeyRotationValue committed, GossipKeyRotationValue intended) {
+        return committed.currentKey()
+                        .equals(intended.currentKey()) || committed.previousKey()
+                                                                   .equals(intended.currentKey());
     }
 
     private static GossipKeyRotationResponse rotationResponse(GossipKeyRotationValue value) {

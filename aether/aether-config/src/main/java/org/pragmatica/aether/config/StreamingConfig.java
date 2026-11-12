@@ -23,7 +23,12 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                               TimeSpan sealRunAge,
                               long sealMergeBytes,
                               long maxMemoryBytes,
-                              long sealPendingCapBytes) {
+                              long sealPendingCapBytes,
+                              int replicationBatchMaxEvents,
+                              TimeSpan replicationBatchMaxDelay,
+                              TimeSpan ownerLease,
+                              TimeSpan ownerLeaseRenewal,
+                              double clockDriftBound) {
     public static final long DEFAULT_MAX_READ_RESPONSE_BYTES = 28L * 1024 * 1024;
     /// How many partitions one node may hold in materialize+backfill at once (`reshuffle_concurrency`).
     /// One-at-a-time starves a large reshuffle; unbounded floods backfill. Was a hard-coded constant with
@@ -109,6 +114,30 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
     /// The largest derived `seal_pending_cap_bytes`: 256 MiB. A GUESS (spec 4.4 item 3): it decouples the heap the sealer may
     /// hold from the off-heap budget, so raising the budget does not raise the heap exposure past this.
     public static final long MAX_DERIVED_SEAL_PENDING_CAP_BYTES = 256 * 1024 * 1024L;
+    /// #263 `replication_batch_max_events`: an owner's replication batch of one partition is sent once it holds this many
+    /// events, or ...
+    public static final int DEFAULT_REPLICATION_BATCH_MAX_EVENTS = 100;
+    /// `replication_batch_max_delay`: ... once this long has passed since it opened. The first event of an idle partition
+    /// goes out at once and opens the window, so the delay is paid only by events that arrive inside a window. The values are
+    /// the batcher's own defaults (overhaul 7.2); the window is deliberately not lengthened to chase a better message ratio,
+    /// since every event inside a window waits up to its length.
+    public static final TimeSpan DEFAULT_REPLICATION_BATCH_MAX_DELAY = timeSpan(1).millis();
+    /// #2981 `owner_lease` (`T`): how long a node's ownership lease runs from the submission time of the renewal that
+    /// granted it (fence-lease design 7). A node whose lease has lapsed stops completing publishes "ok"; the next owner
+    /// waits `W` (see [#ownerLeaseWait()]) before it activates. THE DEFAULT IS A GUESS (design 2.2): what would settle it
+    /// is the measured renewal round latency under load, with slack for a slow round before a spurious lapse.
+    public static final TimeSpan DEFAULT_OWNER_LEASE = timeSpan(3).seconds();
+    /// `owner_lease_renewal` (`R`): how often a node renews its lease; must stay below `T`. The default leaves 2 s of
+    /// slack for a slow round. A GUESS, settled by the same measurement as [#DEFAULT_OWNER_LEASE].
+    public static final TimeSpan DEFAULT_OWNER_LEASE_RENEWAL = timeSpan(1).seconds();
+    /// `clock_drift_bound` (`rho`): the assumed bound on the rate difference of a node's monotonic clock from true time
+    /// (A-CLK-1, design 4). Derived, not measured: 0.1 is generous for a disciplined host. Setting it lower is an
+    /// operator assertion about the host clock that the node does not check.
+    public static final double DEFAULT_CLOCK_DRIFT_BOUND = 0.1;
+    /// The smallest accepted `clock_drift_bound`: 1e-3.
+    public static final double MIN_CLOCK_DRIFT_BOUND = 1e-3;
+    /// Safety margin added to the drift-padded lease wait: 50 ms (design 2.2).
+    public static final TimeSpan OWNER_LEASE_WAIT_MARGIN = timeSpan(50).millis();
 
     /// The default `LINEARIZABLE`-read mechanism (spec §8.1): the no-op consensus round (#345 item
     /// 1e-a). The alternative `lease` mechanism is rejected at config parse until validated.
@@ -146,7 +175,12 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    DEFAULT_SEAL_RUN_AGE,
                                    DEFAULT_SEAL_MERGE_BYTES,
                                    DERIVE_MAX_MEMORY_BYTES,
-                                   DERIVE_SEAL_PENDING_CAP_BYTES);
+                                   DERIVE_SEAL_PENDING_CAP_BYTES,
+                                   DEFAULT_REPLICATION_BATCH_MAX_EVENTS,
+                                   DEFAULT_REPLICATION_BATCH_MAX_DELAY,
+                                   DEFAULT_OWNER_LEASE,
+                                   DEFAULT_OWNER_LEASE_RENEWAL,
+                                   DEFAULT_CLOCK_DRIFT_BOUND);
     }
 
     public static StreamingConfig streamingConfig(TimeSpan publishForwardTimeout,
@@ -167,7 +201,12 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    DEFAULT_SEAL_RUN_AGE,
                                    DEFAULT_SEAL_MERGE_BYTES,
                                    DERIVE_MAX_MEMORY_BYTES,
-                                   DERIVE_SEAL_PENDING_CAP_BYTES);
+                                   DERIVE_SEAL_PENDING_CAP_BYTES,
+                                   DEFAULT_REPLICATION_BATCH_MAX_EVENTS,
+                                   DEFAULT_REPLICATION_BATCH_MAX_DELAY,
+                                   DEFAULT_OWNER_LEASE,
+                                   DEFAULT_OWNER_LEASE_RENEWAL,
+                                   DEFAULT_CLOCK_DRIFT_BOUND);
     }
 
     public static StreamingConfig streamingConfig(TimeSpan publishForwardTimeout,
@@ -189,7 +228,12 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    DEFAULT_SEAL_RUN_AGE,
                                    DEFAULT_SEAL_MERGE_BYTES,
                                    DERIVE_MAX_MEMORY_BYTES,
-                                   DERIVE_SEAL_PENDING_CAP_BYTES);
+                                   DERIVE_SEAL_PENDING_CAP_BYTES,
+                                   DEFAULT_REPLICATION_BATCH_MAX_EVENTS,
+                                   DEFAULT_REPLICATION_BATCH_MAX_DELAY,
+                                   DEFAULT_OWNER_LEASE,
+                                   DEFAULT_OWNER_LEASE_RENEWAL,
+                                   DEFAULT_CLOCK_DRIFT_BOUND);
     }
 
     public static StreamingConfig streamingConfig(TimeSpan publishForwardTimeout,
@@ -212,7 +256,12 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    DEFAULT_SEAL_RUN_AGE,
                                    DEFAULT_SEAL_MERGE_BYTES,
                                    DERIVE_MAX_MEMORY_BYTES,
-                                   DERIVE_SEAL_PENDING_CAP_BYTES);
+                                   DERIVE_SEAL_PENDING_CAP_BYTES,
+                                   DEFAULT_REPLICATION_BATCH_MAX_EVENTS,
+                                   DEFAULT_REPLICATION_BATCH_MAX_DELAY,
+                                   DEFAULT_OWNER_LEASE,
+                                   DEFAULT_OWNER_LEASE_RENEWAL,
+                                   DEFAULT_CLOCK_DRIFT_BOUND);
     }
 
     public static StreamingConfig streamingConfig(TimeSpan publishForwardTimeout,
@@ -236,7 +285,12 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    DEFAULT_SEAL_RUN_AGE,
                                    DEFAULT_SEAL_MERGE_BYTES,
                                    DERIVE_MAX_MEMORY_BYTES,
-                                   DERIVE_SEAL_PENDING_CAP_BYTES);
+                                   DERIVE_SEAL_PENDING_CAP_BYTES,
+                                   DEFAULT_REPLICATION_BATCH_MAX_EVENTS,
+                                   DEFAULT_REPLICATION_BATCH_MAX_DELAY,
+                                   DEFAULT_OWNER_LEASE,
+                                   DEFAULT_OWNER_LEASE_RENEWAL,
+                                   DEFAULT_CLOCK_DRIFT_BOUND);
     }
 
     /// The same streaming config with the streams disk-tier cap set (`segment_disk_max_bytes`, #1604);
@@ -257,7 +311,12 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    sealRunAge,
                                    sealMergeBytes,
                                    maxMemoryBytes,
-                                   sealPendingCapBytes);
+                                   sealPendingCapBytes,
+                                   replicationBatchMaxEvents,
+                                   replicationBatchMaxDelay,
+                                   ownerLease,
+                                   ownerLeaseRenewal,
+                                   clockDriftBound);
     }
 
     /// The same streaming config with the cap on this node's DHT bytes of `stream-segments` set (`dht_segment_max_bytes`,
@@ -278,7 +337,12 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    sealRunAge,
                                    sealMergeBytes,
                                    maxMemoryBytes,
-                                   sealPendingCapBytes);
+                                   sealPendingCapBytes,
+                                   replicationBatchMaxEvents,
+                                   replicationBatchMaxDelay,
+                                   ownerLease,
+                                   ownerLeaseRenewal,
+                                   clockDriftBound);
     }
 
     /// The cap on the live bytes of `stream-segments` in this node's DHT engine: the configured value, or when it is
@@ -306,7 +370,12 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    sealRunAge,
                                    sealMergeBytes,
                                    maxMemoryBytes,
-                                   sealPendingCapBytes);
+                                   sealPendingCapBytes,
+                                   replicationBatchMaxEvents,
+                                   replicationBatchMaxDelay,
+                                   ownerLease,
+                                   ownerLeaseRenewal,
+                                   clockDriftBound);
     }
 
     /// The same streaming config with the promotion escape bound set (`promotion_escape_after`, #2080).
@@ -326,7 +395,12 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    sealRunAge,
                                    sealMergeBytes,
                                    maxMemoryBytes,
-                                   sealPendingCapBytes);
+                                   sealPendingCapBytes,
+                                   replicationBatchMaxEvents,
+                                   replicationBatchMaxDelay,
+                                   ownerLease,
+                                   ownerLeaseRenewal,
+                                   clockDriftBound);
     }
 
     /// The same streaming config with the run-forming sealer's thresholds set (`seal_run_bytes`, `seal_run_events`,
@@ -347,7 +421,12 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    sealRunAge,
                                    sealMergeBytes,
                                    maxMemoryBytes,
-                                   sealPendingCapBytes);
+                                   sealPendingCapBytes,
+                                   replicationBatchMaxEvents,
+                                   replicationBatchMaxDelay,
+                                   ownerLease,
+                                   ownerLeaseRenewal,
+                                   clockDriftBound);
     }
 
     /// The same streaming config with the off-heap stream memory budget and the sealer's pending-seal heap cap set
@@ -369,7 +448,12 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    sealRunAge,
                                    sealMergeBytes,
                                    maxMemoryBytes,
-                                   sealPendingCapBytes);
+                                   sealPendingCapBytes,
+                                   replicationBatchMaxEvents,
+                                   replicationBatchMaxDelay,
+                                   ownerLease,
+                                   ownerLeaseRenewal,
+                                   clockDriftBound);
     }
 
     /// The off-heap stream memory budget a node derives when `max_memory_bytes` is unset: one eighth of `totalMemoryBytes`
@@ -392,6 +476,32 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
         return suspectTimeout.plus(suspectTimeout);
     }
 
+    /// The same streaming config with the owner's replication batching set (`replication_batch_max_events`,
+    /// `replication_batch_max_delay`; #263).
+    public StreamingConfig withReplicationBatch(int replicationBatchMaxEvents, TimeSpan replicationBatchMaxDelay) {
+        return new StreamingConfig(publishForwardTimeout,
+                                   readForwardTimeout,
+                                   maxReadResponseBytes,
+                                   readLinearization,
+                                   reshuffleConcurrency,
+                                   caughtUpMaxLagOffsets,
+                                   segmentDiskMaxBytes,
+                                   dhtSegmentMaxBytes,
+                                   isrLagMax,
+                                   promotionEscapeAfter,
+                                   sealRunBytes,
+                                   sealRunEvents,
+                                   sealRunAge,
+                                   sealMergeBytes,
+                                   maxMemoryBytes,
+                                   sealPendingCapBytes,
+                                   replicationBatchMaxEvents,
+                                   replicationBatchMaxDelay,
+                                   ownerLease,
+                                   ownerLeaseRenewal,
+                                   clockDriftBound);
+    }
+
     /// The same streaming config with the `LINEARIZABLE`-read mechanism replaced — used by the config
     /// loader to apply the parsed `[durable-entity] read-linearization` knob onto the streaming config.
     public StreamingConfig withReadLinearization(ReadLinearizationMode readLinearization) {
@@ -410,7 +520,47 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    sealRunAge,
                                    sealMergeBytes,
                                    maxMemoryBytes,
-                                   sealPendingCapBytes);
+                                   sealPendingCapBytes,
+                                   replicationBatchMaxEvents,
+                                   replicationBatchMaxDelay,
+                                   ownerLease,
+                                   ownerLeaseRenewal,
+                                   clockDriftBound);
+    }
+
+    /// The same streaming config with the owner lease set (`owner_lease`, `owner_lease_renewal`, `clock_drift_bound`;
+    /// #2981). Not validated here: [ConfigValidator] checks the bounds against the suspect timeout.
+    public StreamingConfig withOwnerLease(TimeSpan ownerLease, TimeSpan ownerLeaseRenewal, double clockDriftBound) {
+        return new StreamingConfig(publishForwardTimeout,
+                                   readForwardTimeout,
+                                   maxReadResponseBytes,
+                                   readLinearization,
+                                   reshuffleConcurrency,
+                                   caughtUpMaxLagOffsets,
+                                   segmentDiskMaxBytes,
+                                   dhtSegmentMaxBytes,
+                                   isrLagMax,
+                                   promotionEscapeAfter,
+                                   sealRunBytes,
+                                   sealRunEvents,
+                                   sealRunAge,
+                                   sealMergeBytes,
+                                   maxMemoryBytes,
+                                   sealPendingCapBytes,
+                                   replicationBatchMaxEvents,
+                                   replicationBatchMaxDelay,
+                                   ownerLease,
+                                   ownerLeaseRenewal,
+                                   clockDriftBound);
+    }
+
+    /// The new owner's lease wait `W = T (1 + rho) / (1 - rho) + 50 ms` (design 2.2, 4): covers the new owner's clock
+    /// running fast and the old owner's running slow, each by `rho`.
+    public TimeSpan ownerLeaseWait() {
+        var padded = Math.round(ownerLease.nanos() * (1 + clockDriftBound) / (1 - clockDriftBound));
+
+        return timeSpan(padded).nanos()
+                       .plus(OWNER_LEASE_WAIT_MARGIN);
     }
 
     /// Bounded wait for a caught-up source to appear before a cold-start replica self-promotes. Derived

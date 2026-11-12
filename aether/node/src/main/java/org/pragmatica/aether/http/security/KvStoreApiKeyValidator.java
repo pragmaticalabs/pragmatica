@@ -9,6 +9,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
@@ -57,6 +58,7 @@ class KvStoreApiKeyValidator implements SecurityValidator {
     public Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy) {
         return switch (policy) {
             case SecurityPolicy.Public() -> Result.success(SecurityContext.securityContext());
+            case SecurityPolicy.OptionalAuth() -> validateApiKeyIfPresented(request);
             case SecurityPolicy.ApiKeyRequired() -> validateApiKey(request);
             case SecurityPolicy.Authenticated() -> validateApiKey(request);
             case SecurityPolicy.RoleRequired _ -> validateApiKey(request);
@@ -95,6 +97,12 @@ class KvStoreApiKeyValidator implements SecurityValidator {
 
         return extractApiKey(request.headers()).toResult(SecurityError.MISSING_API_KEY)
                             .flatMap(this::checkKvStoreKey);
+    }
+
+    /// #2946: no `X-API-Key` is anonymous; a presented key is held to the full check (configured keys, then KV).
+    private Result<SecurityContext> validateApiKeyIfPresented(HttpRequestContext request) {
+        return extractApiKey(request.headers()).map(_ -> validateApiKey(request))
+                            .or(() -> Result.success(SecurityContext.securityContext()));
     }
 
     private Result<SecurityContext> checkKvStoreKey(String apiKey) {
@@ -152,7 +160,7 @@ class KvStoreApiKeyValidator implements SecurityValidator {
             return AuthorizationRole.VIEWER;
         }
 
-        return switch (raw.toUpperCase()) {
+        return switch (raw.toUpperCase(Locale.ROOT)) {
             case "ADMIN" -> AuthorizationRole.ADMIN;
             case "OPERATOR" -> AuthorizationRole.OPERATOR;
             case "VIEWER" -> AuthorizationRole.VIEWER;

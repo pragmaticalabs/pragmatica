@@ -4,6 +4,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected;
@@ -19,6 +20,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -30,6 +32,10 @@ import static org.pragmatica.consensus.topology.TransportObservation.peerDisconn
 import static org.pragmatica.consensus.topology.TransportObservation.peerJoined;
 
 class LeaderManagerTest {
+    /// Leader election drops unsequenced wholesale view writes (#3044), so every transport observation here carries a
+    /// sequence from one JVM-wide counter: monotone in routing order for every node's context.
+    private static final AtomicLong SEQUENCE = new AtomicLong();
+
     record Watcher<T>(List<T> collected) {
         @MessageReceiver
         public void watch(T notification) {
@@ -104,6 +110,14 @@ class LeaderManagerTest {
 
     @Nested
     class ConsensusElectionMode {
+        // Bounded deadlines for condition polls; far above the nominal 3s KvSync grace + 2-3s staircase delay
+        // (and above a 9s grace stall), so a stalled host cannot turn a late-but-correct outcome into a failure.
+        private static final Duration ELECTION_DEADLINE = Duration.ofSeconds(30);
+        private static final Duration NOTIFICATION_DEADLINE = Duration.ofSeconds(30);
+        // Observation window for stale-timer proposals after a fenced decision point: KvSync grace (3s) +
+        // base election delay (2s) + rank stagger + margin. A window is only an extra net; the fence is the event.
+        private static final Duration NO_PROPOSAL_WINDOW = Duration.ofMillis(6_500);
+
         private final MessageRouter.MutableRouter router = MessageRouter.mutable();
         private final Watcher<LeaderNotification> watcher = new Watcher<>(new CopyOnWriteArrayList<>());
         private final List<LeaderProposal> proposals = new CopyOnWriteArrayList<>();
@@ -149,7 +163,7 @@ class LeaderManagerTest {
             for (var nodeId : nodes) {
                 list.add(nodeId);
                 var topology = list.stream().sorted().toList();
-                localRouter.route(peerJoined(nodeId, topology, QUIC));
+                localRouter.route(peerJoined(nodeId, topology, QUIC, SEQUENCE.incrementAndGet()));
             }
 
             // Establish quorum (sets active=true but does NOT auto-trigger initial election)
@@ -162,7 +176,8 @@ class LeaderManagerTest {
             // The cold-boot self-proposal gate (AwaitingKvSync) defers the first proposal by
             // [`LeaderElectionContext#DEFAULT_KV_SYNC_GRACE_DELAY`] (3s); the test runs without
             // a peer KV-sync, so it falls through via the timeout path.
-            Thread.sleep(6_500);
+            await("leader proposal submitted").atMost(ELECTION_DEADLINE)
+                   .until(() -> !localProposals.isEmpty());
 
             // Proposal should have been submitted by min node
             assertThat(localProposals).hasSize(1);
@@ -176,7 +191,7 @@ class LeaderManagerTest {
             for (var nodeId : nodes) {
                 list.add(nodeId);
                 var topology = list.stream().sorted().toList();
-                router.route(peerJoined(nodeId, topology, QUIC));
+                router.route(peerJoined(nodeId, topology, QUIC, SEQUENCE.incrementAndGet()));
             }
             router.route(ClusterStateNotification.active());
 
@@ -188,7 +203,8 @@ class LeaderManagerTest {
             leaderManager.onLeaderCommitted(expectedLeader);
 
             // Wait for async notification (routeAsync uses Promise.async)
-            Thread.sleep(100);
+            await("async leader notification observed").atMost(NOTIFICATION_DEADLINE)
+                   .until(() -> !watcher.collected().isEmpty());
 
             // Now notification should be present
             assertThat(watcher.collected()).hasSize(1);
@@ -204,22 +220,34 @@ class LeaderManagerTest {
             for (var nodeId : nodes) {
                 list.add(nodeId);
                 var topology = list.stream().sorted().toList();
-                router.route(peerJoined(nodeId, topology, QUIC));
+                router.route(peerJoined(nodeId, topology, QUIC, SEQUENCE.incrementAndGet()));
             }
             router.route(ClusterStateNotification.active());
 
             // First commit
             leaderManager.onLeaderCommitted(nodes.getFirst());
-            Thread.sleep(50);
+            await("async leader notification observed").atMost(NOTIFICATION_DEADLINE)
+                   .until(() -> !watcher.collected().isEmpty());
 
             // Second commit with same leader (should skip notification)
             leaderManager.onLeaderCommitted(nodes.getFirst());
-            Thread.sleep(50);
 
-            // Only one notification (duplicate skipped)
-            assertThat(watcher.collected()).hasSize(1);
-            var notification = (LeaderChange) watcher.collected().getFirst();
-            assertThat(notification.leaderId()).isEqualTo(Option.some(nodes.getFirst()));
+            // Positive fence: a later, sequence-less commit of a different leader is a distinct
+            // observable event dispatched after the duplicate. Once its notification is seen, the
+            // duplicate has had its chance to notify.
+            var otherLeader = nodes.getLast();
+            leaderManager.onLeaderCommitted(otherLeader);
+            await("async notification for the fencing commit").atMost(NOTIFICATION_DEADLINE)
+                   .until(() -> watcher.collected().stream()
+                                       .anyMatch(n -> n instanceof LeaderChange lc
+                                                      && lc.leaderId().equals(Option.some(otherLeader))));
+
+            // Exactly one notification for the first leader (duplicate skipped), one for the fence
+            assertThat(watcher.collected()).hasSize(2);
+            assertThat(watcher.collected().stream()
+                              .filter(n -> n instanceof LeaderChange lc
+                                           && lc.leaderId().equals(Option.some(nodes.getFirst())))
+                              .count()).isEqualTo(1);
         }
 
         @Test
@@ -243,7 +271,7 @@ class LeaderManagerTest {
             var list = new ArrayList<NodeId>();
             for (var nodeId : nodes) {
                 list.add(nodeId);
-                localRouter.route(peerJoined(nodeId, list.stream().sorted().toList(), QUIC));
+                localRouter.route(peerJoined(nodeId, list.stream().sorted().toList(), QUIC, SEQUENCE.incrementAndGet()));
             }
 
             // Establish quorum (sets active=true)
@@ -253,7 +281,8 @@ class LeaderManagerTest {
             localManager.triggerElection();
 
             // Wait for KvSync grace (3s) + stagger delay (rank 1 = 2s base + 1s rank).
-            Thread.sleep(8_000);
+            await("leader proposal submitted").atMost(ELECTION_DEADLINE)
+                   .until(() -> !localProposals.isEmpty());
 
             var expectedCandidate = nodes.stream().sorted().toList().getFirst();
             assertThat(localProposals).isNotEmpty()
@@ -280,7 +309,7 @@ class LeaderManagerTest {
             var list = new ArrayList<NodeId>();
             for (var nodeId : nodes) {
                 list.add(nodeId);
-                localRouter.route(peerJoined(nodeId, list.stream().sorted().toList(), QUIC));
+                localRouter.route(peerJoined(nodeId, list.stream().sorted().toList(), QUIC, SEQUENCE.incrementAndGet()));
             }
 
             // Simulate rapid quorum flapping: ESTABLISHED -> DISAPPEARED -> ESTABLISHED -> DISAPPEARED -> ESTABLISHED
@@ -298,7 +327,8 @@ class LeaderManagerTest {
             localManager.triggerElection();
 
             // Wait for proposal (KvSync grace 3s + BASE_ELECTION_DELAY 2s + margin).
-            Thread.sleep(6_500);
+            await("leader proposal submitted").atMost(ELECTION_DEADLINE)
+                   .until(() -> !localProposals.isEmpty());
 
             // Despite flapping, proposals should eventually be submitted
             assertThat(localProposals).isNotEmpty();
@@ -323,7 +353,7 @@ class LeaderManagerTest {
             var list = new ArrayList<NodeId>();
             for (var nodeId : nodes) {
                 list.add(nodeId);
-                localRouter.route(peerJoined(nodeId, list.stream().sorted().toList(), QUIC));
+                localRouter.route(peerJoined(nodeId, list.stream().sorted().toList(), QUIC, SEQUENCE.incrementAndGet()));
             }
 
             // Establish quorum and trigger election (simulating AetherNode)
@@ -334,7 +364,7 @@ class LeaderManagerTest {
             // before the AwaitingKvSync grace window expires; LeaderCommitted is handled in
             // AwaitingKvSync (transitioning straight to Led without entering Electing).
             localManager.onLeaderCommitted(minNode);
-            await().atMost(Duration.ofSeconds(2))
+            await("min node adopted as leader").atMost(ELECTION_DEADLINE)
                    .until(() -> localManager.leader().equals(Option.some(minNode)));
 
             // Record proposal count after initial election (after the leader-commit takes hold)
@@ -347,7 +377,7 @@ class LeaderManagerTest {
             // Wait for re-election proposal. Path: QuorumLost → AwaitingKvSync (grace 3s) →
             // Electing → propose (base 2s + rank 0 + jitter). Cap generously to absorb staircase
             // + KvSync grace + retry tick under CI load.
-            await().atMost(Duration.ofSeconds(10))
+            await("re-election proposal submitted").atMost(ELECTION_DEADLINE)
                    .until(() -> localProposals.size() > proposalsAfterInitial);
 
             // Min node should submit a new proposal for re-election
@@ -379,7 +409,7 @@ class LeaderManagerTest {
             var list = new ArrayList<NodeId>();
             for (var nodeId : nodes) {
                 list.add(nodeId);
-                localRouter.route(peerJoined(nodeId, list.stream().sorted().toList(), QUIC));
+                localRouter.route(peerJoined(nodeId, list.stream().sorted().toList(), QUIC, SEQUENCE.incrementAndGet()));
             }
 
             // Establish quorum (sets active=true)
@@ -393,12 +423,17 @@ class LeaderManagerTest {
             // Now trigger election (as AetherNode does after adoption)
             localManager.triggerElection();
 
-            // Wait past KvSync grace (3s) + base election delay (2s) + rank stagger + margin.
-            Thread.sleep(6_500);
+            // Positive fence: the adopt path ran (FSM holds Led(existingLeader)). The dispatch is
+            // synchronous, so this proves the decision point was reached, independent of host speed.
+            await("adopted leader held in Led").atMost(ELECTION_DEADLINE)
+                   .until(() -> isLedBy(localManager, existingLeader));
 
             // The min node must NOT submit a proposal because a leader was already adopted.
             // Without the adoption fix, hasEverHadLeader=false and min-rank would propose itself,
-            // causing leader churn.
+            // causing leader churn. The window catches a stale grace/election timer proposing late.
+            await("no proposal while Led").during(NO_PROPOSAL_WINDOW)
+                   .atMost(ELECTION_DEADLINE)
+                   .until(() -> localProposals.isEmpty() && isLedBy(localManager, existingLeader));
             assertThat(localProposals).isEmpty();
             assertThat(localManager.leader()).isEqualTo(Option.some(existingLeader));
         }
@@ -424,15 +459,16 @@ class LeaderManagerTest {
             localRouter.addRoute(ClusterStateNotification.class, localManager::watchClusterState);
 
             // Topology only contains [a, b] — NOT node-c
-            localRouter.route(peerJoined(minNode, List.of(minNode), QUIC));
-            localRouter.route(peerJoined(self, List.of(minNode, self), QUIC));
+            localRouter.route(peerJoined(minNode, List.of(minNode), QUIC, SEQUENCE.incrementAndGet()));
+            localRouter.route(peerJoined(self, List.of(minNode, self), QUIC, SEQUENCE.incrementAndGet()));
             localRouter.route(ClusterStateNotification.active());
 
             // Committed leader = node-c which is NOT in our transport topology
             var committed = nodes.getLast();
             localManager.onLeaderCommitted(committed);
 
-            Thread.sleep(100);
+            await("async leader notification observed").atMost(NOTIFICATION_DEADLINE)
+                   .until(() -> localManager.leader().equals(Option.some(committed)));
 
             assertThat(localManager.leader())
                     .as("committed leader adopted unconditionally despite absence from topology (FIX 1)")
@@ -461,26 +497,26 @@ class LeaderManagerTest {
             var list = new ArrayList<NodeId>();
             for (var n : nodes) {
                 list.add(n);
-                localRouter.route(peerJoined(n, list.stream().sorted().toList(), QUIC));
+                localRouter.route(peerJoined(n, list.stream().sorted().toList(), QUIC, SEQUENCE.incrementAndGet()));
             }
             localRouter.route(ClusterStateNotification.active());
 
             localManager.onLeaderCommitted(leaderNode);
-            await().atMost(Duration.ofSeconds(2))
+            await("leader node adopted").atMost(ELECTION_DEADLINE)
                    .until(() -> localManager.leader().equals(Option.some(leaderNode)));
             localWatcher.collected().clear();
             localProposals.clear();
 
             // Leader (node-a) removed
             var survivors = List.of(follower, nodes.getLast());
-            localRouter.route(peerDisconnected(leaderNode, survivors, QUIC));
+            localRouter.route(peerDisconnected(leaderNode, survivors, QUIC, SEQUENCE.incrementAndGet()));
 
             // Wait for re-election: leader cleared, no-leader notification emitted, follower
             // submits a proposal. Path: Led → ReElecting (NodeGone of leader) → propose. The
             // ReElecting state passes through AwaitingKvSync only on the cold-boot path; here
             // we reach it from Led, which short-circuits the grace and uses the proposal-retry
-            // tick (~500ms + jitter). Cap at 10s to absorb staircase + jitter under CI load.
-            await().atMost(Duration.ofSeconds(10))
+            // tick (~500ms + jitter). Cap at ELECTION_DEADLINE to absorb a host stall.
+            await("re-election after leader removal").atMost(ELECTION_DEADLINE)
                    .until(() -> localManager.leader().isEmpty()
                                 && localWatcher.collected().stream()
                                                .anyMatch(n -> n instanceof LeaderChange lc && lc.leaderId().isEmpty())
@@ -504,7 +540,7 @@ class LeaderManagerTest {
 
             localManager.stop();
 
-            localRouter.route(peerJoined(self, List.of(self), QUIC));
+            localRouter.route(peerJoined(self, List.of(self), QUIC, SEQUENCE.incrementAndGet()));
             localRouter.route(ClusterStateNotification.active());
             localManager.onLeaderCommitted(self);
 
@@ -539,7 +575,7 @@ class LeaderManagerTest {
             var list = new ArrayList<NodeId>();
             for (var n : nodes) {
                 list.add(n);
-                localRouter.route(peerJoined(n, list.stream().sorted().toList(), QUIC));
+                localRouter.route(peerJoined(n, list.stream().sorted().toList(), QUIC, SEQUENCE.incrementAndGet()));
             }
 
             // Establish quorum — QuorumWaiting.onEntry queries the supplier (true) and
@@ -548,7 +584,8 @@ class LeaderManagerTest {
             localRouter.route(ClusterStateNotification.active());
 
             // Wait past KvSync grace (3s) + staggered initial delay (base 2s + rank 0) + margin.
-            Thread.sleep(6_500);
+            await("leader proposal submitted").atMost(ELECTION_DEADLINE)
+                   .until(() -> !localProposals.isEmpty());
 
             assertThat(localProposals).isNotEmpty();
             assertThat(localProposals.getFirst().candidate()).isEqualTo(minNode);
@@ -561,13 +598,14 @@ class LeaderManagerTest {
             for (var nodeId : nodes) {
                 list.add(nodeId);
                 var topology = list.stream().sorted().toList();
-                router.route(peerJoined(nodeId, topology, QUIC));
+                router.route(peerJoined(nodeId, topology, QUIC, SEQUENCE.incrementAndGet()));
             }
             router.route(ClusterStateNotification.active());
 
             // Commit leader and wait for async notification to complete
             leaderManager.onLeaderCommitted(nodes.getFirst());
-            Thread.sleep(50);
+            await("async leader notification observed").atMost(NOTIFICATION_DEADLINE)
+                   .until(() -> !watcher.collected().isEmpty());
 
             // Clear watcher to check quorum disappearance
             watcher.collected().clear();
@@ -585,12 +623,18 @@ class LeaderManagerTest {
 
     // Helper methods shared between test classes
 
+    private static boolean isLedBy(LeaderManager manager, NodeId leader) {
+        return manager instanceof LeaderManager.FsmBackedLeaderManager fsmBacked
+               && fsmBacked.fsm().current() instanceof LeaderElectionState.Led led
+               && led.leader().equals(leader);
+    }
+
     private void sendNodeAdded(MessageRouter router, NodeId nodeId) {
         var topology = Stream.concat(nodes.stream(), Stream.of(nodeId))
                              .sorted()
                              .toList();
 
-        router.route(peerJoined(nodeId, topology, QUIC));
+        router.route(peerJoined(nodeId, topology, QUIC, SEQUENCE.incrementAndGet()));
     }
 
     private void sendNodeRemoved(MessageRouter router, NodeId nodeId) {
@@ -599,7 +643,7 @@ class LeaderManagerTest {
                             .sorted()
                             .toList();
 
-        router.route(peerDisconnected(nodeId, topology, QUIC));
+        router.route(peerDisconnected(nodeId, topology, QUIC, SEQUENCE.incrementAndGet()));
     }
 
     private List<LeaderNotification> simulateClusterStart(MessageRouter router,
@@ -620,7 +664,7 @@ class LeaderManagerTest {
                 router.route(ClusterStateNotification.active());
             }
 
-            router.route(peerJoined(nodeId, topology, QUIC));
+            router.route(peerJoined(nodeId, topology, QUIC, SEQUENCE.incrementAndGet()));
         }
 
         return expected;

@@ -4,9 +4,14 @@
 package org.pragmatica.aether.http.security;
 
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.security.PublicKey;
 import java.security.Signature;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 
+import org.pragmatica.aether.config.JwtSecret;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import static org.pragmatica.lang.Result.success;
@@ -16,8 +21,54 @@ import static org.pragmatica.lang.Result.success;
 final class JwtSignatureVerifier {
     private JwtSignatureVerifier() {}
 
+    private static final String HMAC_SHA256 = "HmacSHA256";
+
+    private static final SecurityError HS_ALGORITHM_REFUSED = new SecurityError.InvalidCredentials("Token algorithm is not HS256, the only one this server's JWT mode accepts");
+
+    private static final SecurityError HS_SECRET_MISSING = new SecurityError.KeyNotFound("No HS256 shared secret is configured");
+
     static Result<JwtTokenParser.ParsedJwt> verify(JwtTokenParser.ParsedJwt jwt, PublicKey key) {
-        return resolveAlgorithm(jwt.header().alg()).flatMap(jdkAlg -> performVerification(jwt, key, jdkAlg));
+        return asymmetricAlgorithm(jwt).flatMap(jdkAlg -> performVerification(jwt, key, jdkAlg));
+    }
+
+    /// JWKS mode: the JDK algorithm for a RS*/ES* token, decided BEFORE any key is looked up. HS*, `none`, an empty or
+    /// blank `alg` and any other algorithm are refused here. A header without `alg` keeps its historical reading as
+    /// RS256 (the parser decides that, #2880: JWKS mode is unchanged); HS256 mode refuses it ([#verifyHmac]).
+    static Result<String> asymmetricAlgorithm(JwtTokenParser.ParsedJwt jwt) {
+        return resolveAlgorithm(jwt.header().alg());
+    }
+
+    /// HS256 mode (#2880): the token must itself name HS256 (a missing or different `alg` is refused before the
+    /// secret is touched), and the MAC over the signed content is compared in constant time. No JWKS is involved.
+    static Result<JwtTokenParser.ParsedJwt> verifyHmac(JwtTokenParser.ParsedJwt jwt, Option<JwtSecret> secret) {
+        return requireHs256(jwt).flatMap(_ -> secret.toResult(HS_SECRET_MISSING))
+                           .flatMap(key -> checkMac(jwt, key));
+    }
+
+    private static Result<JwtTokenParser.ParsedJwt> requireHs256(JwtTokenParser.ParsedJwt jwt) {
+        return "HS256".equals(jwt.header().alg())
+               ? success(jwt)
+               : HS_ALGORITHM_REFUSED.result();
+    }
+
+    private static Result<JwtTokenParser.ParsedJwt> checkMac(JwtTokenParser.ParsedJwt jwt, JwtSecret secret) {
+        return Result.lift(JwtSignatureVerifier::verificationFailed, () -> macOf(jwt, secret)).flatMap(mac -> macMatches(jwt,
+                                                                                                                         mac));
+    }
+
+    private static Result<JwtTokenParser.ParsedJwt> macMatches(JwtTokenParser.ParsedJwt jwt, byte[] mac) {
+        return MessageDigest.isEqual(mac, jwt.signature())
+               ? success(jwt)
+               : new SecurityError.SignatureInvalid("Signature verification failed").result();
+    }
+
+    @SuppressWarnings({"JBCT-EX-01"})
+    private static byte[] macOf(JwtTokenParser.ParsedJwt jwt, JwtSecret secret) throws Exception {
+        var mac = Mac.getInstance(HMAC_SHA256);
+
+        mac.init(new SecretKeySpec(secret.value(), HMAC_SHA256));
+
+        return mac.doFinal(jwt.signedContent().getBytes(StandardCharsets.US_ASCII));
     }
 
     private static Result<String> resolveAlgorithm(String jwtAlg) {

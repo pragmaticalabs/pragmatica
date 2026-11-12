@@ -10,6 +10,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executors;
@@ -97,7 +98,7 @@ class ApplyNameDedupTest {
         var nodeId = onlyRow(recorder).nodeId();
         var sent = project.createRequests.getFirst();
 
-        assertThat(sent.name()).isEqualTo(CLUSTER.value() + "-" + nodeId).isEqualTo(sent.name().toLowerCase()).matches("[a-z0-9-]{1,63}");
+        assertThat(sent.name()).isEqualTo(CLUSTER.value() + "-" + nodeId).isEqualTo(sent.name().toLowerCase(Locale.ROOT)).matches("[a-z0-9-]{1,63}");
         assertThat(sent.labels()).containsEntry("aether.op", CLUSTER.value() + "-" + nodeId)
                                  .containsEntry("aether-node-id", nodeId)
                                  .containsEntry("aether-cluster", CLUSTER.value())

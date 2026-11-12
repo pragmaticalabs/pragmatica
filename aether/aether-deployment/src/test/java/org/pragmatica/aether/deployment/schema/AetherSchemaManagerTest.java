@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.schema;
 
+import java.util.Locale;
 import org.pragmatica.lang.Unit;
 import java.time.Duration;
 import org.pragmatica.db.migration.MigrationDialects;
@@ -428,12 +429,12 @@ class AetherSchemaManagerTest {
         /// is ownership bookkeeping, and being neither history nor migration body it would otherwise
         /// land in `migrationStatements`.
         private void recordStatement(String sql) {
-            if (sql.contains(META_TABLE) || sql.contains(OWNER_TABLE)) {
+            if (sql.contains(META_TABLE) || sql.contains(OWNER_TABLE) || FakeMigrationFence.isFenceUpdate(sql)) {
                 return;
             }
 
             if (sql.contains(HISTORY_TABLE)) {
-                if (sql.stripLeading().toUpperCase().startsWith("INSERT")) {
+                if (sql.stripLeading().toUpperCase(Locale.ROOT).startsWith("INSERT")) {
                     historyInserts++;
                     if (parent == null) {
                         baseHistoryInserts++;

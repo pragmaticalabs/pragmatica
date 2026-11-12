@@ -37,7 +37,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// wedged a node in ROUTING and the publish Promise hung forever. Post-fix the publish Promise
 /// always resolves: success when consensus succeeds, failure once retries are exhausted.
 ///
-/// Routes are produced by the ServiceLoader-discovered [`StubRouteHandlerFactory`]
+/// Routes are produced by the ServiceLoader-discovered [`StubRouteSliceRoutes`]
 /// (`src/test/resources/META-INF/services/...`), so `publishRoutes(...)` reaches the
 /// apply-with-retry path with a controllable [`StubCluster`].
 class HttpRoutePublisherConsensusRetryTest {
@@ -110,7 +110,7 @@ class HttpRoutePublisherConsensusRetryTest {
     }
 
     private Promise<Unit> publish() {
-        return publisher.publishRoutes(ARTIFACT, getClass().getClassLoader(), stubInvokerFacade());
+        return publisher.publishRoutes(ARTIFACT, getClass().getClassLoader(), new StubRouteSlice(), stubInvokerFacade());
     }
 
     private static SliceInvokerFacade stubInvokerFacade() {

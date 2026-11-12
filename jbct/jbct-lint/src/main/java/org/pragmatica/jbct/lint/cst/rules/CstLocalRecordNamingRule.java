@@ -52,7 +52,7 @@ public class CstLocalRecordNamingRule implements CstLintRule {
     }
 
     private boolean isPascalCase(String name) {
-        return !name.isEmpty() && Character.isUpperCase(name.charAt(0));
+        return ! name.isEmpty() && Character.isUpperCase(name.charAt(0));
     }
 
     private String recordName(Cursor record) {

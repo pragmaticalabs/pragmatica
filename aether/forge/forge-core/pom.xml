@@ -90,6 +90,16 @@
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- #2983: the HS256 secret ForgeServerSiblingConfigWiringTest's JWT sibling needs, supplied the way a node gets it -->
+                    <environmentVariables>
+                        <AETHER_JWT_SECRET>a-test-only-shared-secret-of-32-bytes!</AETHER_JWT_SECRET>
+                    </environmentVariables>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
                 <version>3.6.0</version>
                 <dependencies>

@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -152,7 +153,7 @@ class WiringArchitectureTest {
 
     @Test
     void anFsm2SideTarget_hasNoAllowListEntry() {
-        assertThat(allowlist().keySet()).noneMatch(entry -> entry.toLowerCase().matches(".*(node|cluster)fsminterpreter.*|.*enginemarkerguard.*"));
+        assertThat(allowlist().keySet()).noneMatch(entry -> entry.toLowerCase(Locale.ROOT).matches(".*(node|cluster)fsminterpreter.*|.*enginemarkerguard.*"));
     }
 
     /// N14 (v-2204 F8, text-level by design): the 5 s level-heal's consensus predicate is the node's own `runtimeReady(clusterNode)` at the assembly

@@ -21,8 +21,6 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.http.adapter.RouteDecorator;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.adapter.SliceRouterFactory;
-import org.pragmatica.aether.http.handler.HttpRequestHandler;
-import org.pragmatica.aether.http.handler.HttpRequestHandlerFactory;
 import org.pragmatica.aether.http.handler.HttpRouteDefinition;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.ExecutionOutcome;
@@ -68,8 +66,6 @@ import org.slf4j.LoggerFactory;
 
 
 public interface HttpRoutePublisher {
-    Promise<Unit> publishRoutes(Artifact artifact, ClassLoader classLoader, SliceInvokerFacade invokerFacade);
-
     Promise<Unit> publishRoutes(Artifact artifact,
                                 ClassLoader classLoader,
                                 Object sliceInstance,
@@ -77,7 +73,6 @@ public interface HttpRoutePublisher {
 
     boolean hasRoutes(ClassLoader classLoader, Object sliceInstance);
     Promise<Unit> unpublishRoutes(Artifact artifact);
-    Option<HttpRequestHandler> getHandler(Artifact artifact);
     Option<SliceRouter> getSliceRouter(Artifact artifact);
     Set<HttpNodeRouteKey> allLocalRoutes();
     Option<SliceRouter> findLocalRouter(String httpMethod, String pathPrefix);
@@ -139,8 +134,7 @@ public interface HttpRoutePublisher {
     /// TYPED slice instance directly (`SliceRouterFactory.create(sliceInstance, …)`), so the only call site
     /// the two share is the slice object itself. Proxying the slice interface would be the single point,
     /// at the cost of wrapping every generated slice type — the two recorders feed one collector and apply
-    /// the classification in [ExecutionOutcome] instead. A route built by the legacy
-    /// `HttpRequestHandlerFactory` invokes through the invoker, so the bridge already counts it.
+    /// the classification in [ExecutionOutcome] instead.
     @FunctionalInterface
     interface RouteOutcomeRecorder {
         RouteOutcomeRecorder NONE = (_, _, _) -> Unit.unit();
@@ -225,7 +219,6 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     private final ClusterNode<KVCommand<AetherKey>> cluster;
     private final GenerationSnapshotSource snapshotSource;
     private final RouteMountMode mountMode;
-    private final Map<Artifact, HttpRequestHandler> handlers = new ConcurrentHashMap<>();
     private final Map<Artifact, SliceRouter> sliceRouters = new ConcurrentHashMap<>();
     private final Map<Artifact, List<HttpRouteDefinition>> publishedRoutes = new ConcurrentHashMap<>();
     private final Map<Artifact, List<ObservabilityStrategyCell>> routeCells = new ConcurrentHashMap<>();
@@ -255,42 +248,6 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     }
 
     @Override
-    public Promise<Unit> publishRoutes(Artifact artifact, ClassLoader classLoader, SliceInvokerFacade invokerFacade) {
-        log.debug("publishRoutes(3-arg) called for artifact={}, classLoader={}",
-                  artifact,
-                  classLoader.getClass().getName());
-        var factories = ServiceLoader.load(HttpRequestHandlerFactory.class, classLoader);
-        var iterator = factories.iterator();
-
-        if (!iterator.hasNext()) {
-            log.debug("ServiceLoader: No HttpRequestHandlerFactory found for slice {}", artifact);
-
-            return Promise.unitPromise();
-        }
-
-        var factory = iterator.next();
-
-        log.debug("ServiceLoader: Found HttpRequestHandlerFactory for slice {}: {}",
-                  artifact,
-                  factory.getClass().getName());
-        var handler = factory.create(invokerFacade);
-
-        handlers.put(artifact, handler);
-        var routes = handler.routes();
-
-        log.debug("Route extraction: {} routes found for slice {}", routes.size(), artifact);
-        if (routes.isEmpty()) {
-            log.debug("No HTTP routes defined for slice {}, skipping publication", artifact);
-
-            return Promise.unitPromise();
-        }
-
-        publishedRoutes.put(artifact, routes);
-
-        return publishRoutesToCluster(routes, artifact);
-    }
-
-    @Override
     public Promise<Unit> publishRoutes(Artifact artifact,
                                        ClassLoader classLoader,
                                        Object sliceInstance,
@@ -315,10 +272,11 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
             }
         }
 
-        log.debug("ServiceLoader: {} SliceRouterFactory(s) found, none matched. Falling back to HttpRequestHandlerFactory",
-                  factoryCount);
+        log.debug("ServiceLoader: {} SliceRouterFactory(s) found, none matched slice {}; no routes published",
+                  factoryCount,
+                  artifact);
 
-        return publishRoutes(artifact, classLoader, invokerFacade);
+        return Promise.unitPromise();
     }
 
     @SuppressWarnings("unchecked")
@@ -419,10 +377,7 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
             }
         }
 
-        var handlerFactories = ServiceLoader.load(HttpRequestHandlerFactory.class, classLoader);
-
-        return handlerFactories.iterator()
-                               .hasNext();
+        return false;
     }
 
     /// Overrides take effect on the LOCAL authorization decision immediately, because
@@ -539,7 +494,6 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
 
     @Override
     public Promise<Unit> unpublishRoutes(Artifact artifact) {
-        handlers.remove(artifact);
         sliceRouters.remove(artifact);
         deregisterRouteCells(artifact);
         var routes = publishedRoutes.remove(artifact);
@@ -585,11 +539,6 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                   CONSENSUS_MAX_RETRIES);
 
         return applyWithRetry(commands, attempt + 1);
-    }
-
-    @Override
-    public Option<HttpRequestHandler> getHandler(Artifact artifact) {
-        return Option.option(handlers.get(artifact));
     }
 
     @Override
@@ -661,7 +610,8 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                            route.version(),
                            route.pathParamCount(),
                            route.spacerSlots(),
-                           route.uploadSpec());
+                           route.uploadSpec(),
+                           route.successSpec());
     }
 
     /// #1573 B1: runs the route and records its outcome ([ExecutionOutcome] has the classification).
@@ -912,7 +862,7 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                       .equals(right.spacerSlots());
     }
 
-    /// Strictest by strength, with `UNSPECIFIED` ("inherit the global mode", at least public) just above `PUBLIC`;
+    /// Strictest by strength, with `UNSPECIFIED` ("inherit the global mode", at least public) just above `PUBLIC` and `OPTIONAL` (#2946);
     /// equal strengths are ordered by the canonical string so the answer is the same on every node.
     private static Option<SecurityPolicy> strictest(List<SecurityPolicy> policies) {
         return Option.from(policies.stream()
@@ -922,8 +872,9 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     private static int strictness(SecurityPolicy policy) {
         return switch (policy) {
             case SecurityPolicy.Public _ -> 0;
-            case SecurityPolicy.Unspecified _ -> 1;
-            default -> policy.strength() + 2;
+            case SecurityPolicy.OptionalAuth _ -> 1;
+            case SecurityPolicy.Unspecified _ -> 2;
+            default -> policy.strength() + 3;
         };
     }
 

@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.config.ConfigNotificationManager;
 import org.pragmatica.aether.deployment.drain.DrainReason;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager.SuspendedSlice;
@@ -33,6 +34,8 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
@@ -225,6 +228,32 @@ public final class NodeDeploymentContext {
 
     /// A start (`state` is what was refused: LOAD, ACTIVATE or an ACTIVE claim) parked since `since`; `warned` once the
     /// operator warning for it has been raised.
+    /// #3028 design 4 rule 4 (iii): the in-flight force-cleanup of each artifact, until it settles. Held here, not in `Active`, because a cleanup
+    /// started before a quorum cycle may still run after it, and a LOAD of the same artifact in the next `Active` must wait for it.
+    private final ConcurrentHashMap<Artifact, Promise<Unit>> cleanupsInFlight = new ConcurrentHashMap<>();
+
+    public boolean cleanupInFlight(Artifact artifact) {
+        return cleanupsInFlight.containsKey(artifact);
+    }
+
+    /// Records `cleanup` as the artifact's in-flight cleanup; the entry goes when it settles, whatever the outcome. The removal is a DEPENDENT
+    /// step (`withResult`), done before the settling `resolve` returns: an `onResult` event handler runs asynchronously, and a remove arriving
+    /// right after the settle would find the entry still there and skip its cleanup. Registered after the `put`, so a cleanup that already
+    /// settled removes its entry at once.
+    @Contract
+    public void trackCleanup(Artifact artifact, Promise<Unit> cleanup) {
+        cleanupsInFlight.put(artifact, cleanup);
+        cleanup.withResult(_ -> cleanupsInFlight.remove(artifact, cleanup));
+    }
+
+    /// Resolves once the artifact's in-flight cleanup, if any, has settled. FER: a failed cleanup was already logged at its site
+    /// (`CLEANUP_FAILED`); this wait orders a LOAD after the cleanup and nothing more, so the failure is absorbed and the LOAD proceeds.
+    public Promise<Unit> cleanupSettled(Artifact artifact) {
+        return Option.option(cleanupsInFlight.get(artifact))
+                     .map(cleanup -> cleanup.recover(_ -> Unit.unit()))
+                     .or(Promise.unitPromise());
+    }
+
     public record ParkedStart(long since, SliceState state, boolean warned) {}
 
     /// Records the first refusal of a start. True when this call opened the park (the caller arms the bound); a repeated

@@ -3,15 +3,21 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.db;
 
+import org.pragmatica.config.StrictKeys;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.TimeSpan;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
-import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.utils.Causes.cause;
 
 
+/// `@StrictKeys` (#2973): a key `pool_config` does not declare fails the bind. In particular `pool_scope` belongs to the
+/// datasource section, and written here it is refused rather than ignored, so a misplaced opt-out cannot silently keep
+/// the pool shared.
+@StrictKeys
 public record PoolConfig(int minConnections,
                          int maxConnections,
                          TimeSpan connectionTimeout,
@@ -31,14 +37,24 @@ public record PoolConfig(int minConnections,
                                                 Option<String> validationQuery,
                                                 TimeSpan leakDetectionTimeout,
                                                 int ioThreads) {
-        return success(new PoolConfig(minConnections,
-                                      maxConnections,
-                                      connectionTimeout,
-                                      idleTimeout,
-                                      maxLifetime,
-                                      validationQuery,
-                                      leakDetectionTimeout,
-                                      ioThreads));
+        return ensureBounds(minConnections, maxConnections).map(_ -> new PoolConfig(minConnections,
+                                                                                    maxConnections,
+                                                                                    connectionTimeout,
+                                                                                    idleTimeout,
+                                                                                    maxLifetime,
+                                                                                    validationQuery,
+                                                                                    leakDetectionTimeout,
+                                                                                    ioThreads));
+    }
+
+    /// `0 <= min_connections <= max_connections` and `max_connections >= 1` (#2948): a minimum above the maximum can
+    /// never be satisfied, so the configuration is refused at load.
+    private static Result<Unit> ensureBounds(int minConnections, int maxConnections) {
+        return maxConnections < 1 || minConnections < 0 || minConnections > maxConnections
+               ? cause("Invalid pool size: min_connections=" + minConnections
+                      + ", max_connections=" + maxConnections
+                      + " (require 0 <= min_connections <= max_connections and max_connections >= 1)").result()
+               : Result.unitResult();
     }
 
     public int effectiveIoThreads() {

@@ -5,6 +5,8 @@
 package org.pragmatica.aether.deployment.cluster;
 
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -35,6 +37,7 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Self
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingRemoveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState;
+import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
@@ -107,6 +110,12 @@ public interface ClusterDeploymentManager {
     /// unwired deployments keep the pre-round-3 behaviour (empty set, no effect on the sweep).
     @Contract
     void setLocalAliveMembersSupplier(Supplier<Set<NodeId>> supplier);
+
+    /// #2937 (deployment-fsm-spec C17r, legacy parity): inject local membership's current DEAD set, read at activation so a
+    /// verdict this node reached as a follower is applied on becoming leader. Wired from the node's `MembershipFsm`; unwired, the
+    /// set is empty and activation synthesises nothing.
+    @Contract
+    void setDeadMembersSupplier(Supplier<Map<NodeId, MemberDescriptor>> supplier);
 
     @Contract
     @MessageReceiver
@@ -212,7 +221,7 @@ public interface ClusterDeploymentManager {
             }
 
             return switch (value.trim()
-                                .toLowerCase()
+                                .toLowerCase(Locale.ROOT)
                                 .replace("-", "_")) {
                 case "best_effort" -> BEST_EFFORT;
                 default -> ALL_OR_NOTHING;
@@ -410,6 +419,45 @@ public interface ClusterDeploymentManager {
         return new ClusterDeploymentManagerAdapter(ctx);
     }
 
+    /// #2937: as the factory above, with the local membership's DEAD set (legacy engine: the activation synthesises the
+    /// removal of every id in it, draft 8.1a residue guard).
+    static ClusterDeploymentManager clusterDeploymentManager(NodeId self,
+                                                             ClusterNode<KVCommand<AetherKey>> cluster,
+                                                             KVStore<AetherKey, AetherValue> kvStore,
+                                                             MessageRouter router,
+                                                             List<NodeId> initialTopology,
+                                                             TopologyManager topologyManager,
+                                                             DeploymentAtomicity atomicity,
+                                                             int coreMax,
+                                                             TimeSpan reconcileInterval,
+                                                             SchemaOrchestratorService schemaOrchestrator,
+                                                             Supplier<Set<NodeId>> coreCountedMembersSupplier,
+                                                             Supplier<Set<NodeId>> readyNodesSupplier,
+                                                             Supplier<Set<NodeId>> drainingNodesSupplier,
+                                                             Function<NodeId, Option<String>> memberSourceSupplier,
+                                                             CommunitySizing communitySizing,
+                                                             Supplier<Map<NodeId, MemberDescriptor>> deadMembersSupplier) {
+        var manager = clusterDeploymentManager(self,
+                                               cluster,
+                                               kvStore,
+                                               router,
+                                               initialTopology,
+                                               topologyManager,
+                                               atomicity,
+                                               coreMax,
+                                               reconcileInterval,
+                                               schemaOrchestrator,
+                                               coreCountedMembersSupplier,
+                                               readyNodesSupplier,
+                                               drainingNodesSupplier,
+                                               memberSourceSupplier,
+                                               communitySizing);
+
+        manager.setDeadMembersSupplier(deadMembersSupplier);
+
+        return manager;
+    }
+
     private static ClusterDeploymentContext buildContext(NodeId self,
                                                          ClusterNode<KVCommand<AetherKey>> cluster,
                                                          KVStore<AetherKey, AetherValue> kvStore,
@@ -517,6 +565,12 @@ public interface ClusterDeploymentManager {
         @Contract
         public void setLocalAliveMembersSupplier(Supplier<Set<NodeId>> supplier) {
             ctx.setLocalAliveMembersSupplier(supplier);
+        }
+
+        @Override
+        @Contract
+        public void setDeadMembersSupplier(Supplier<Map<NodeId, MemberDescriptor>> supplier) {
+            ctx.setDeadMembersSupplier(supplier);
         }
 
         @Override

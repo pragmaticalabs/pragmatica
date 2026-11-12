@@ -123,6 +123,20 @@ class StreamPartitionManagerTest {
             fenced.close();
         }
 
+        /// #2952: the forwarded publish's owner append (now resolved on its fsync promise) still stamps the node's
+        /// committed owner epoch, so it passes a fence the committed epoch advanced; a ZERO stamp would be fenced.
+        @Test
+        void publishForwarded_stampsTheCommittedOwnerEpoch_soItPassesAnAdvancedFence() {
+            var fenced = fencedManager(highWaterAt(Epoch.epoch(0L, 1, 3)));
+            assertThat(fenced.createStream(StreamConfig.streamConfig(FENCE_STREAM)).isSuccess()).isTrue();
+            fenced.ownerEpochSource((_, _) -> Epoch.epoch(0L, 1, 3));
+
+            var accepted = fenced.publishForwarded(FENCE_STREAM, FENCE_PARTITION, "e".getBytes(), 1L, 0).await();
+
+            assertThat(accepted.or(-1L)).as("accepted at the committed epoch: %s", accepted).isEqualTo(0L);
+            fenced.close();
+        }
+
         private static StreamPartitionManager fencedManager(OwnershipEpochHighWater highWater) {
             var node = new StubClusterNode(StubApply.SUCCESS);
             var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE,

@@ -19,7 +19,6 @@ import org.pragmatica.aether.http.HttpRoutePublisher.LocalRouteInfo;
 import org.pragmatica.aether.http.adapter.RouteDecorator;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
-import org.pragmatica.aether.http.handler.HttpRequestHandler;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
@@ -50,8 +49,8 @@ import static org.pragmatica.lang.Unit.unit;
 /// real `HttpClient`, one anonymous `GET` per cell.
 ///
 /// Five server configurations (`none`, `api-key` WITH keys, `api-key` WITHOUT keys, `jwt` WITHOUT
-/// `jwks_url`, `jwt` WITH it) times six effective policies (`public`, `authenticated`, `role:admin`,
-/// `unspecified`, `api_key`, `bearer_token`). The expected status per cell is written down as a
+/// `jwks_url`, `jwt` WITH it) times seven effective policies (`public`, `optional` (#2946: an anonymous caller is
+/// served under every configuration), `authenticated`, `role:admin`, `unspecified`, `api_key`, `bearer_token`). The expected status per cell is written down as a
 /// literal table, not derived from the code under test, so a change to any cell is a change to this
 /// file. These five are every behaviourally distinct configuration: `buildSecurityValidator` reads
 /// `jwtConfig` only under `JWT` and `apiKeys` only under `API_KEY`, and the request path reads the
@@ -119,6 +118,7 @@ class AppHttpServerSecurityGridTest {
     /// operator override can produce.
     enum Policy {
         PUBLIC(SecurityPolicy.publicRoute()),
+        OPTIONAL(SecurityPolicy.optional()),
         AUTHENTICATED(SecurityPolicy.authenticated()),
         ROLE_ADMIN(SecurityPolicy.roleRequired("admin")),
         UNSPECIFIED(SecurityPolicy.unspecified()),
@@ -146,30 +146,35 @@ class AppHttpServerSecurityGridTest {
     /// `api-key` with keys: the header is checked before the key map is consulted. No configuration
     /// serves anything but `public` anonymously.
     static final List<Cell> GRID = List.of(new Cell(Setup.NONE, Policy.PUBLIC, 200),
+                                           new Cell(Setup.NONE, Policy.OPTIONAL, 200),
                                            new Cell(Setup.NONE, Policy.AUTHENTICATED, 401),
                                            new Cell(Setup.NONE, Policy.ROLE_ADMIN, 401),
                                            new Cell(Setup.NONE, Policy.UNSPECIFIED, 200),
                                            new Cell(Setup.NONE, Policy.API_KEY, 401),
                                            new Cell(Setup.NONE, Policy.BEARER_TOKEN, 401),
                                            new Cell(Setup.API_KEY, Policy.PUBLIC, 200),
+                                           new Cell(Setup.API_KEY, Policy.OPTIONAL, 200),
                                            new Cell(Setup.API_KEY, Policy.AUTHENTICATED, 401),
                                            new Cell(Setup.API_KEY, Policy.ROLE_ADMIN, 401),
                                            new Cell(Setup.API_KEY, Policy.UNSPECIFIED, 401),
                                            new Cell(Setup.API_KEY, Policy.API_KEY, 401),
                                            new Cell(Setup.API_KEY, Policy.BEARER_TOKEN, 401),
                                            new Cell(Setup.API_KEY_WITHOUT_KEYS, Policy.PUBLIC, 200),
+                                           new Cell(Setup.API_KEY_WITHOUT_KEYS, Policy.OPTIONAL, 200),
                                            new Cell(Setup.API_KEY_WITHOUT_KEYS, Policy.AUTHENTICATED, 401),
                                            new Cell(Setup.API_KEY_WITHOUT_KEYS, Policy.ROLE_ADMIN, 401),
                                            new Cell(Setup.API_KEY_WITHOUT_KEYS, Policy.UNSPECIFIED, 401),
                                            new Cell(Setup.API_KEY_WITHOUT_KEYS, Policy.API_KEY, 401),
                                            new Cell(Setup.API_KEY_WITHOUT_KEYS, Policy.BEARER_TOKEN, 401),
                                            new Cell(Setup.JWT_WITHOUT_CONFIG, Policy.PUBLIC, 200),
+                                           new Cell(Setup.JWT_WITHOUT_CONFIG, Policy.OPTIONAL, 200),
                                            new Cell(Setup.JWT_WITHOUT_CONFIG, Policy.AUTHENTICATED, 401),
                                            new Cell(Setup.JWT_WITHOUT_CONFIG, Policy.ROLE_ADMIN, 401),
                                            new Cell(Setup.JWT_WITHOUT_CONFIG, Policy.UNSPECIFIED, 401),
                                            new Cell(Setup.JWT_WITHOUT_CONFIG, Policy.API_KEY, 401),
                                            new Cell(Setup.JWT_WITHOUT_CONFIG, Policy.BEARER_TOKEN, 401),
                                            new Cell(Setup.JWT_WITH_CONFIG, Policy.PUBLIC, 200),
+                                           new Cell(Setup.JWT_WITH_CONFIG, Policy.OPTIONAL, 200),
                                            new Cell(Setup.JWT_WITH_CONFIG, Policy.AUTHENTICATED, 401),
                                            new Cell(Setup.JWT_WITH_CONFIG, Policy.ROLE_ADMIN, 401),
                                            new Cell(Setup.JWT_WITH_CONFIG, Policy.UNSPECIFIED, 401),
@@ -210,6 +215,97 @@ class AppHttpServerSecurityGridTest {
 
         assertThat(response.statusCode()).isEqualTo(401);
         assertThat(response.body()).doesNotContain(SERVED);
+        assertThat(response.headers().firstValue("WWW-Authenticate")).contains("Bearer realm=\"Aether\"");
+    }
+
+    /// #2156: the JWT challenge names the FIRST configured `auth_schemes` entry; the default config challenges `Bearer`.
+    @Test
+    void jwtMode_challengeNamesTheFirstConfiguredScheme() throws Exception {
+        var jwt = JwtConfig.jwtConfig(UNREACHABLE_JWKS, Option.empty(), Option.empty(), "role", 3600, 30, List.of("Token", "Bearer"))
+                           .unwrap();
+
+        startServer(Setup.appHttp(SecurityMode.JWT, Option.some(jwt)), SecurityPolicy.roleRequired("admin"));
+
+        var response = get("/local/thing", Option.none());
+
+        assertThat(response.statusCode()).isEqualTo(401);
+        assertThat(response.headers().firstValue("WWW-Authenticate")).contains("Token realm=\"Aether\"");
+    }
+
+    @Test
+    void jwtMode_defaultConfig_challengesBearer() throws Exception {
+        startServer(Setup.JWT_WITH_CONFIG, SecurityPolicy.roleRequired("admin"));
+
+        var response = get("/local/thing", Option.none());
+
+        assertThat(response.statusCode()).isEqualTo(401);
+        assertThat(response.headers().firstValue("WWW-Authenticate")).contains("Bearer realm=\"Aether\"");
+    }
+
+    /// #2926: a malformed bearer token is unauthenticated -- 401 with the RFC 6750 `invalid_token` code, never 403.
+    @Test
+    void jwtMode_malformedBearerToken_isRefusedWith401InvalidToken() throws Exception {
+        startServer(Setup.JWT_WITH_CONFIG, SecurityPolicy.roleRequired("admin"));
+
+        var response = get("/local/thing", Option.some("Bearer not-a-jwt"));
+
+        assertThat(response.statusCode()).isEqualTo(401);
+        assertThat(response.body()).doesNotContain(SERVED);
+        assertThat(response.headers().firstValue("WWW-Authenticate")).contains("Bearer realm=\"Aether\", error=\"invalid_token\"");
+    }
+
+    /// #2926: `Authorization: Bearer ` -- the HTTP stack trims the trailing space, so the node sees a scheme with no
+    /// token: a missing credential (401, no `error`), not 403. (An empty `X-API-Key` is the invalid-token case below.)
+    @Test
+    void jwtMode_bearerWithNoToken_isRefusedWith401() throws Exception {
+        startServer(Setup.JWT_WITH_CONFIG, SecurityPolicy.roleRequired("admin"));
+
+        var response = get("/local/thing", Option.some("Bearer "));
+
+        assertThat(response.statusCode()).isEqualTo(401);
+        assertThat(response.headers().firstValue("WWW-Authenticate")).contains("Bearer realm=\"Aether\"");
+    }
+
+    /// #2926: the error code follows the first configured scheme.
+    @Test
+    void jwtMode_invalidToken_challengeNamesTheFirstConfiguredSchemeAndTheErrorCode() throws Exception {
+        var jwt = JwtConfig.jwtConfig(UNREACHABLE_JWKS, Option.empty(), Option.empty(), "role", 3600, 30, List.of("Token", "Bearer"))
+                           .unwrap();
+
+        startServer(Setup.appHttp(SecurityMode.JWT, Option.some(jwt)), SecurityPolicy.roleRequired("admin"));
+
+        var response = get("/local/thing", Option.some("Token not-a-jwt"));
+
+        assertThat(response.statusCode()).isEqualTo(401);
+        assertThat(response.headers().firstValue("WWW-Authenticate")).contains("Token realm=\"Aether\", error=\"invalid_token\"");
+    }
+
+    /// #2926 (CTO ruling): the JWKS endpoint is unreachable, so a well-formed token's key cannot be resolved. That is the
+    /// SERVER failing -- 503 with no `WWW-Authenticate` -- not the credential: a 401 challenge would send a refreshing
+    /// client into a refresh loop against the outage.
+    @Test
+    void jwtMode_unreachableJwks_isRefusedWith503_andNoChallenge() throws Exception {
+        startServer(Setup.JWT_WITH_CONFIG, SecurityPolicy.roleRequired("admin"));
+
+        var encoder = java.util.Base64.getUrlEncoder().withoutPadding();
+        var token = encoder.encodeToString("{\"alg\":\"RS256\",\"kid\":\"k1\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8))
+                    + "." + encoder.encodeToString("{\"exp\":4102444800}".getBytes(java.nio.charset.StandardCharsets.UTF_8))
+                    + "." + encoder.encodeToString(new byte[] {1, 2, 3});
+        var response = get("/local/thing", Option.some("Bearer " + token));
+
+        assertThat(response.statusCode()).isEqualTo(503);
+        assertThat(response.headers().firstValue("WWW-Authenticate")).isEmpty();
+        assertThat(response.body()).doesNotContain(SERVED);
+    }
+
+    /// #2926 (guess G1): a header in a scheme this node does not accept presents no usable credential -- 401, no `error`.
+    @Test
+    void jwtMode_unacceptedScheme_isRefusedWith401AndNoErrorCode() throws Exception {
+        startServer(Setup.JWT_WITH_CONFIG, SecurityPolicy.roleRequired("admin"));
+
+        var response = get("/local/thing", Option.some("Basic dXNlcjpwYXNz"));
+
+        assertThat(response.statusCode()).isEqualTo(401);
         assertThat(response.headers().firstValue("WWW-Authenticate")).contains("Bearer realm=\"Aether\"");
     }
 
@@ -274,11 +370,15 @@ class AppHttpServerSecurityGridTest {
     }
 
     private void startServer(Setup setup, SecurityPolicy routePolicy) {
+        startServer(setup.config(), routePolicy);
+    }
+
+    private void startServer(AppHttpConfig config, SecurityPolicy routePolicy) {
         httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
 
         var publisher = StubRoutePublisher.hosting("GET", "/local/", routePolicy);
 
-        server = AppHttpServer.appHttpServer(setup.config(),
+        server = AppHttpServer.appHttpServer(config,
                                              ForwardingTimeouts.forwardingTimeouts(),
                                              SELF_NODE,
                                              HttpRouteRegistry.httpRouteRegistry(),
@@ -342,11 +442,6 @@ class AppHttpServerSecurityGridTest {
         }
 
         @Override
-        public Promise<Unit> publishRoutes(Artifact artifact, ClassLoader classLoader, SliceInvokerFacade invokerFacade) {
-            return Promise.success(unit());
-        }
-
-        @Override
         public Promise<Unit> publishRoutes(Artifact artifact,
                                            ClassLoader classLoader,
                                            Object sliceInstance,
@@ -362,11 +457,6 @@ class AppHttpServerSecurityGridTest {
         @Override
         public Promise<Unit> unpublishRoutes(Artifact artifact) {
             return Promise.success(unit());
-        }
-
-        @Override
-        public Option<HttpRequestHandler> getHandler(Artifact artifact) {
-            return Option.none();
         }
 
         @Override

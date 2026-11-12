@@ -4,6 +4,7 @@
 package org.pragmatica.aether.pg.parser.ast.common;
 
 import java.util.List;
+import java.util.Locale;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
@@ -19,7 +20,7 @@ public record DataTypeName(SourceSpan span,
     }
 
     public String normalized() {
-        return baseName.toLowerCase();
+        return baseName.toLowerCase(Locale.ROOT);
     }
 
     @Override

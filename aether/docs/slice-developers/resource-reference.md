@@ -363,6 +363,8 @@ Transport is selected automatically by priority:
 | `jdbc_url` | `String` (optional) | none | Override JDBC URL (replaces host/port/database) |
 | `r2dbc_url` | `String` (optional) | none | Override R2DBC URL (replaces host/port/database) |
 | `async_url` | `String` (optional) | none | Override async URL — selects postgres-async transport (highest priority) |
+| `application_name` | `String` (optional) | `aether-<node id>` (else `aether-<datasource name>`) | PostgreSQL `application_name` of every session the postgres-async transport opens, visible in `pg_stat_activity`. Non-blank, at most 63 UTF-8 bytes, no NUL; an invalid value refuses the configuration at load. Characters outside printable ASCII (`0x20`-`0x7E`: control characters, non-ASCII letters, emoji) are sent as `?` (one per code point), because PostgreSQL would otherwise rewrite them to `\xNN` in `pg_stat_activity`; a derived default longer than 63 characters is cut. Honoured by the postgres-async transport only (#2948) |
+| `pool_scope` | `"node"` or `"slice"` (optional) | `"node"` | Who shares this datasource's pool (#2973). `"node"`: slices on one node whose datasource section resolves to the same connection settings share one pool per connector type (see "Shared pools" below). `"slice"`: this slice keeps a private pool. Case-insensitive; any other value fails the slice load and never falls back to a default. Belongs in the datasource section, not in `pool_config`; overlays can set it per slice |
 | `properties.*` | `Map<String, String>` | empty | Additional driver-specific properties |
 
 **Overrides and precedence (#769):**
@@ -460,13 +462,50 @@ Forge no longer provides an embedded H2 database. For local development, start a
 
 The `start-postgres.sh` script creates the required database automatically. If you add a new named datasource with schema migrations, add a `CREATE DATABASE` statement to your `start-postgres.sh` script.
 
+### Shared pools (#2973)
+
+By default (`pool_scope = "node"`) a node keeps **one pool per node per datasource per connector type**: slices on
+the node whose datasource section resolves to the same connection settings share it, whatever the section is called.
+- **What "the same settings" means:** the transport's effective endpoint (URL, or host, port and database), user,
+  resolved password, the database type, every `pool_config` value, `properties` and the application name the connector sends. An absent
+  default and the same default written out (port `5432`, say) count as the same. A datasource `name` does not. Any
+  difference gives a separate pool; a rotated or dynamic secret gives each resolution its own pool.
+- **Per connector type:** `SqlConnector`, `PgSqlConnector` and jOOQ over one datasource are separate pools.
+- **Isolation:** pooled connections are shared across slices. A slice that changes session state (`SET`, temporary
+  tables, session advisory locks outside `pinned`) must restore it, or use `pool_scope = "slice"`. One slice's long
+  transactions or leaked connections can starve the others on that datasource.
+- **Handles:** each slice receives its own handle on the shared pool. Its `stop()`/`close()` releases only that slice's
+  handle, and later async calls on it fail with `HandleReleased`; the pool closes when the last slice using it releases it
+  (or the slice unloads). A provisioned connector is a handle, so casting it to a concrete connector class fails. The
+  jOOQ handle's `dsl()` is a synchronous accessor: it is not guarded and keeps returning the pool's `DSLContext` (for
+  JDBC, bound to the shared `DataSource`), so do not use a `DSLContext` you kept after `stop()`.
+- **Bundled connectors:** a slice that bundles its own DB connector module or driver keeps a private pool. Drivers for
+  shared pools come from the node classpath.
+- **Attribution:** pool sessions and `pg_stat_activity` attribute connections to the node and datasource
+  (`application_name` defaults per node), not to a slice.
+- **Verifying it:** the node log reports `opened shared pool <section>@<host>:<port>/<db> (<user>) for <slice>`,
+  `<slice> joined shared pool … (holders=n)`, `<slice> left shared pool (holders=n)` and `closed shared pool …`.
+- **Server limit check:** after each pool opens (shared or per slice), the node compares its pools' demand on that
+  PostgreSQL server with what the server allows (`max_connections` minus the reserved connections). If the sum of
+  warm-ups or of `max_connections` exceeds it, or the server refuses the check with SQLSTATE `53300`, the node logs a
+  WARN and raises the operator warning `datasource-demand-exceeds-server-limit` or
+  `datasource-server-refused-connection` (subject `<addr>:<port>`). It never refuses a pool. Only this node's pools
+  are counted; the server's limit is shared with every other node and client. Each warning has an INFO recovery for the
+  same subject: `datasource-demand-within-server-limit` once a later probe answer or a pool close finds the sums back
+  within the limit, and `datasource-server-accepting-connections` once a later probe of that server is answered
+  [verified: `PoolDemandGuardTest`]. Recovery action: size
+  `max_connections` per node per datasource for the node's peak concurrent work, keep pools shared, or raise the
+  server limit (compare against a connection pooler's limits if one sits in front).
+
 ### Connection Pool Configuration
 
-Nested under `pool_config` in the database section.
+Nested under `pool_config` in the database section. With shared pools (the default) these values size **the node's
+pool for that datasource**, not one slice's: 19 slices at `max_connections = 32` share one pool of up to 32
+connections on each node.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `min_connections` | `int` | `4` | Minimum connections to maintain |
+| `min_connections` | `int` | `4` | Sessions the postgres-async transport opens at provisioning, so the first requests do not pay connection setup (#2948). Best effort: a database that is unreachable at provisioning, or slower than `connection_timeout`, leaves the pool to open sessions on demand and provisioning still succeeds. Must satisfy `0 <= min_connections <= max_connections` (and `max_connections >= 1`); otherwise the configuration is refused at load, so a `max_connections` below the default `min_connections` of `4` needs an explicit `min_connections` |
 | `max_connections` | `int` | `20` | Maximum connections allowed |
 | `connection_timeout` | duration | `30s` | Maximum wait time for a connection |
 | `idle_timeout` | duration | `10m` | Maximum idle time before closing |
@@ -615,6 +654,21 @@ password = "${secrets:database/analytics/password}"
 [database.analytics.pool_config]
 min_connections = 2
 max_connections = 5
+```
+
+**A private pool for one slice (`pool_scope`, #2973):** by default the slices on a node share one pool per
+datasource; a slice that changes session state, or must not be starved by the others, keeps its own. `pool_scope`
+sits in the datasource section itself, never under `pool_config`. The spellings `pool-scope`, `poolScope` and `pool_config.pool_scope` fail the slice load with an error that names `pool_scope` (file-backed config layers only; environment and system-property layers are not checked, and other unknown keys in a datasource section are ignored) [verified: `PoolScopeRefusalTest`]:
+```toml
+[database.reporting]
+name = "reporting"
+async_url = "postgresql://db.example.com:5432/reports"
+username = "report_user"
+password = "${secrets:database/reporting/password}"
+pool_scope = "slice"
+
+[database.reporting.pool_config]
+max_connections = 4
 ```
 
 **H2 in-memory (testing):**

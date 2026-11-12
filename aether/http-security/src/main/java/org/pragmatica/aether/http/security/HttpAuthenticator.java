@@ -11,6 +11,7 @@ import org.pragmatica.aether.config.JwtConfig;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -20,6 +21,11 @@ public interface HttpAuthenticator {
     /// Release authentication resources after accepted requests have drained.
     default Promise<Unit> close() {
         return Promise.unitPromise();
+    }
+
+    /// The scheme a `WWW-Authenticate` challenge names for a refused request (#2926); none means no challenge is sent.
+    default Option<String> challengeScheme() {
+        return Option.none();
     }
 
     Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy);
@@ -36,13 +42,14 @@ public interface HttpAuthenticator {
         return new JwtSecurityValidator(jwtConfig);
     }
 
-    /// The safe "no credentials are configured" validator: public routes pass with an EMPTY context,
-    /// everything else is refused with [SecurityError#NO_VALIDATOR_CONFIGURED] (#573).
+    /// The safe "no credentials are configured" validator: public routes pass with an EMPTY context, as do
+    /// optional-authentication routes (#2946: there is no credential store to check a presented credential against, and
+    /// the anonymous context grants nothing), everything else is refused with [SecurityError#NO_VALIDATOR_CONFIGURED] (#573).
     /// An empty configuration conveys no authority. This also allows Aether's separate KV-key
     /// adapter to try cluster-managed credentials after the configured authenticator refuses.
     static HttpAuthenticator denyUnlessPublicValidator() {
         return (_, policy) -> switch (policy) {
-            case SecurityPolicy.Public() -> Result.success(SecurityContext.securityContext());
+            case SecurityPolicy.Public(), SecurityPolicy.OptionalAuth() -> Result.success(SecurityContext.securityContext());
             default -> SecurityError.NO_VALIDATOR_CONFIGURED.result();
         };
     }

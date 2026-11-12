@@ -11,6 +11,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.io.IOException;
@@ -19,6 +20,7 @@ import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -314,14 +316,22 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final WalFailStop walAlarms = WalFailStop.walFailStop(this::walFailStopped, this::walWritable);
 
     /// Know 3b01e624f1: the WAL directories (`<stream>@<incarnation>`) under the log root as they were when the first stream life was adopted,
-    /// i.e. at startup, before this process created any. Read once: the directories of this process's own lives are not in it.
+    /// i.e. at startup. Read once, by the first life-reports drain ([#drainLifeReports]), never on the adopting thread (#2952: the walk held
+    /// the KV dispatcher ~670 ms). The drain starts right after the first adoption, so the walk can list a directory this process created
+    /// meanwhile: a report never names a life this process proposed or adopted up to the adoption it reports ([StreamEntries#ownLives]).
     private final Lazy<List<String>> walDirectoriesAtStart = Lazy.lazy(this::scanWalDirectories);
+    /// #2952: held by the one thread draining [StreamEntries#lifeReports], so the reports run one at a time, in adoption order.
+    private final AtomicBoolean lifeReportsDraining = new AtomicBoolean();
 
     private static final long DURABLE_WATERMARK_TTL_NANOS = 10_000_000_000L;
 
     /// Bumped on every ring install and release; a watermark read that started before a bump is never cached, so a
     /// slow read cannot put a pre-install value back after the drop.
     private final AtomicLong watermarkGeneration = new AtomicLong();
+    /// Where the next page of a held-unmaterialized partition's read-only WAL scan starts ([#readHeldDurable]), so a reader
+    /// paging the log sequentially reads it once rather than once per page. A hint is only a start position: a page read
+    /// from it that does not begin at the expected offset is read again from the start of the file.
+    private final ConcurrentHashMap<PartitionRef, ScanHint> heldScanHints = new ConcurrentHashMap<>();
     /// Source of the durable last-sealed offset per `(stream, partition)` (streaming-persistence W4).
     /// Bounds WAL replay when a partition ring is (re)built: sealed segments already serve
     /// `[0, lastSealedOffset]`, so a recovered ring is seeded above that bound and replays only the
@@ -359,6 +369,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// rather than a permanent failure; `AetherNode` late-binds the node's committed KV state. Volatile:
     /// set once at wiring, read only on the forwarded-publish recovery path.
     private volatile CommittedConfigSource committedConfigSource = _ -> Option.none();
+
+    /// Test-only gate, see [#configApplyGateForTest]. A no-op unless a test sets it.
+    private volatile Consumer<String> configApplyGate = _ -> {};
 
     /// Default replica-catch-up source (#265 increment 5): reports "everyone caught up" — a large
     /// other-caught-up count (so the release catch-up gate always passes) and `selfCaughtUp = true` (so an
@@ -1430,9 +1443,20 @@ public final class StreamPartitionManager implements AutoCloseable {
     public void operatorWarnings(OperatorWarningSink sink) {
         this.operatorWarnings = sink;
         boundSeams.add(StreamSeam.OPERATOR_WARNINGS);
-        operatorWarningsBound = true;
-        entries.deferredReports().forEach(Runnable::run);
-        entries.deferredReports().clear();
+        bindAndTakeDeferredReports().forEach(Runnable::run);
+    }
+
+    /// #2952: a report can now be deferred from the life-reports drain while the sink is being bound; under the lock it is either
+    /// deferred before the bind (and taken here) or sees the bind (and runs at once), never lost between the two.
+    private List<Runnable> bindAndTakeDeferredReports() {
+        synchronized (entries.deferredReports()) {
+            operatorWarningsBound = true;
+            var deferred = List.copyOf(entries.deferredReports());
+
+            entries.deferredReports().clear();
+
+            return deferred;
+        }
     }
 
     /// Atomically reserve `bytes` against the shared pool. Returns true iff the reservation fit under
@@ -1517,8 +1541,58 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// failure. The committed-and-materialized steady state returns `Result.unitResult()` instantly with
     /// NO consensus round-trip (the same hot path `createStream` short-circuits, but as success rather
     /// than the `STREAM_ALREADY_EXISTS` sentinel the explicit-create contract requires).
+    ///
+    /// [TerminalOperation] (#2952): this blocks its caller for at most [#PUBLISH_COMMIT_WAIT] while the fired commit
+    /// settles ([#materializeForPublish]). Its callers run on threads that may park: the management publish route and
+    /// the control log's serial queue (a virtual thread). The forwarded publish, which runs on the transport's event
+    /// loop, composes [#materializeForPublish] instead and never waits here.
+    @TerminalOperation
     public Result<Unit> ensureStreamMaterialized(StreamConfig config) {
-        return createStream(config, CommitMode.ASYNC);
+        return materializeForPublish(config).await();
+    }
+
+    /// #2952: the publish-path create as a promise. The local materialization runs now, the config `Put` is fired into
+    /// the name's commit lane, and the promise resolves once that lane settles or [#PUBLISH_COMMIT_WAIT] elapses
+    /// (#1278 ruling F), so nothing parks a thread while the commit is in flight.
+    private Promise<Unit> materializeForPublish(StreamConfig config) {
+        return createStream(config, CommitMode.ASYNC).fold(Cause::promise, _ -> publishCommitSettled(config.name()));
+    }
+
+    /// The bounded wait of [#materializeForPublish]: the name's commit lane settling, at most [#PUBLISH_COMMIT_WAIT]. With
+    /// no lane open, no `Put` is in flight and nothing is waited for.
+    private Promise<Unit> publishCommitSettled(String streamName) {
+        return option(commitLanes.get(streamName)).fold(Promise::unitPromise, StreamPartitionManager::boundedCommitWait);
+    }
+
+    /// The timeout fails a DERIVED promise, never the lane itself: the lane settles only when its `Put` resolves, so a
+    /// destroy of the name stays queued behind the `Put` however long it takes ([#inLane], #2627).
+    ///
+    /// Recovery: design-out -- the wait's outcome is not read. The accept gate ([#committedLife]) decides from the life
+    /// applied here, so a commit slower than the wait leaves the publish refused retriably, never accepted into an
+    /// uncommitted life.
+    ///
+    /// The continuation hops off whichever thread ended the wait ([Promise#continueOn()]): a timed-out wait ends on the
+    /// JVM-wide `promise-timeout-scheduler` pool, an in-time commit on the thread that resolves the lane, and the post-wait
+    /// work (ordered section, WAL frame write, transport send) belongs on neither (#2952, #2997). The hop is unconditional:
+    /// the returned promise is resolved ONLY by a task on the async executor once the wait settles, so a continuation
+    /// attached before that runs on the executor's virtual thread, never on the lane resolver or the timeout scheduler. A
+    /// continuation attached after the resolution runs on the attaching thread, as for any promise. A rejected hop (the
+    /// executor shut down) fails the returned promise instead of leaving it unresolved.
+    static Promise<Unit> boundedCommitWait(Promise<Unit> lane) {
+        return boundedWait(lane).continueOn();
+    }
+
+    /// Test seam (#2997): `hop` runs the task that resolves the returned promise ([Promise#continueOn(Executor)]);
+    /// production uses the async executor. A test executor that finishes the task before `execute` returns forces the
+    /// "already resolved when attached" ordering.
+    static Promise<Unit> boundedCommitWait(Promise<Unit> lane, Executor hop) {
+        return boundedWait(lane).continueOn(hop);
+    }
+
+    private static Promise<Unit> boundedWait(Promise<Unit> lane) {
+        return lane.map(_ -> unit())
+                   .timeout(PUBLISH_COMMIT_WAIT)
+                   .recover(_ -> unit());
     }
 
     /// #1564: create a DECLARED stream — a `[streams.X]` resource, a durable topic (and its dead-letter stream)
@@ -1607,7 +1681,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private Result<Unit> createFreshStream(StreamConfig requested, CommitMode commitMode) {
-        var config = withIncarnation(requested);
+        var config = ownLife(withIncarnation(requested));
 
         return checkReplicationMinimum(config).flatMap(_ -> checkRetentionCapacity(config))
                                       .flatMap(_ -> checkPartitionCaps(config))
@@ -1831,6 +1905,11 @@ public final class StreamPartitionManager implements AutoCloseable {
         return commitLanes.size();
     }
 
+    /// The name's open commit lane, if any (test seam, #2952: the thread-hop test reads which thread settles it).
+    Option<Promise<Unit>> commitLaneOf(String streamName) {
+        return option(commitLanes.get(streamName));
+    }
+
     private void settleLane(String streamName, Promise<Unit> settled) {
         commitLanes.remove(streamName, settled);
         settled.succeed(unit());
@@ -1935,19 +2014,15 @@ public final class StreamPartitionManager implements AutoCloseable {
         return List.of(new KVCommand.Put<AetherKey, AetherValue>(key, value));
     }
 
-    /// Publish-path commit (#1278 ruling F): fire the config `Put` and wait at most [#PUBLISH_COMMIT_WAIT] for it to
-    /// commit and apply here, so the first publish to a new stream normally lands in its committed life. The outcome
-    /// is not read: the accept gate ([#committedLife]) decides from the applied life, and a commit slower than the
-    /// wait — a still-catching-up leader — leaves the publish refused retriably instead of stalling it. The `Put` is
-    /// submitted through the name's commit lane ([#inLane], #2627): a wait that elapses leaves the `Put` in flight, and a
-    /// destroy of the name is then queued behind it instead of racing it.
-    private Result<Unit> fireAsyncCommit(ClusterNode<KVCommand<AetherKey>> node,
-                                         StreamConfig config,
-                                         StreamEntry entry) {
-        return inLane(config.name(),
-                      () -> applyPutCommandAsync(node, config)).await(PUBLISH_COMMIT_WAIT)
-                     .fold(_ -> success(unit()),
-                           _ -> success(unit()));
+    /// Publish-path commit (#1278 ruling F): fire the config `Put` through the name's commit lane ([#inLane], #2627) and
+    /// return at once. The bounded wait for it to commit and apply here, so the first publish to a new stream normally
+    /// lands in its committed life, is the caller's ([#publishCommitSettled], #2952): it composes on the lane and never
+    /// parks a thread. A wait that elapses leaves the `Put` in flight, and a destroy of the name is then queued behind it
+    /// instead of racing it. The `Put`'s failure is logged by [#applyPutCommandAsync] and otherwise not read: the accept
+    /// gate ([#committedLife]) decides from the applied life.
+    @Contract
+    private void fireAsyncCommit(ClusterNode<KVCommand<AetherKey>> node, StreamConfig config) {
+        inLane(config.name(), () -> applyPutCommandAsync(node, config));
     }
 
     /// Commit strategy threaded through the shared create/materialize chain so `createStream` (explicit
@@ -1978,15 +2053,18 @@ public final class StreamPartitionManager implements AutoCloseable {
                 return StreamError.General.STREAM_ALREADY_EXISTS.result();
             }
         },
-        /// Publish auto-create path: fire the commit async (never blocks); already-committed and
-        /// republished both report success so the caller proceeds straight to `publishLocal`.
+        /// Publish auto-create path: fire the commit async (never blocks; the bounded wait is composed by
+        /// [StreamPartitionManager#materializeForPublish]); already-committed and republished both report success so
+        /// the caller proceeds straight to `publishLocal`.
         ASYNC {
             @Override
             Result<Unit> publish(StreamPartitionManager mgr,
                                  ClusterNode<KVCommand<AetherKey>> node,
                                  StreamConfig config,
                                  StreamEntry entry) {
-                return mgr.fireAsyncCommit(node, config, entry);
+                mgr.fireAsyncCommit(node, config);
+
+                return success(unit());
             }
 
             @Override
@@ -2018,10 +2096,20 @@ public final class StreamPartitionManager implements AutoCloseable {
                    .mapToUnit();
     }
 
+    /// Test-only seam (#2972): called with the stream name at the start of [#onStreamConfigPut], before the stream is
+    /// materialised here, so a test can hold the window in which the committed config is visible in the KV store but this
+    /// node has not applied it. The default does nothing and production never sets it.
+    @Contract
+    public void configApplyGateForTest(Consumer<String> gate) {
+        this.configApplyGate = gate;
+    }
+
     @Contract
     @MessageReceiver
     public void onStreamConfigPut(ValuePut<StreamConfigKey, StreamConfigValue> put) {
         var streamName = put.cause().key().streamName();
+
+        configApplyGate.accept(streamName);
         var config = put.cause().value().config();
 
         entries.appliedConfigs().put(streamName, config);
@@ -2361,52 +2449,61 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// The owner re-checks the stream's consistency ({@link #ensureWritableConsistency}, #1262) on BOTH
     /// attempts — the first append and the post-materialize retry — rather than trusting the forwarder to
     /// have refused: a STRONG or UNKNOWN stream is never appended here as EVENTUAL.
-    public Result<Long> publishForwarded(String streamName,
-                                         int partition,
-                                         byte[] payload,
-                                         long timestamp,
-                                         int minAcks) {
+    ///
+    /// #2952: the answer is a promise and nothing on this path waits on the calling thread for a commit or an fsync; that
+    /// thread is the transport's event loop ([org.pragmatica.aether.stream.forward.StreamForwardHandler#onPublishForward]): the lazy materialization's
+    /// bounded commit wait is composed ([#materializeForPublish]), and the owner append resolves on its group-commit
+    /// fsync ([#durablePublish]) instead of awaiting it.
+    public Promise<Long> publishForwarded(String streamName,
+                                          int partition,
+                                          byte[] payload,
+                                          long timestamp,
+                                          int minAcks) {
         return publishForwarded(streamName, partition, payload, timestamp, minAcks, false);
     }
 
     /// `systemWriter` is true only for a publish that the sending node's own system publisher forwarded (#1338): the
     /// owner refuses a forwarded write to a `system:` stream without it, so the origin-side check is not the only one.
-    public Result<Long> publishForwarded(String streamName,
-                                         int partition,
-                                         byte[] payload,
-                                         long timestamp,
-                                         int minAcks,
-                                         boolean systemWriter) {
-        return writableAppend(streamName, partition, payload, timestamp, minAcks, systemWriter).fold(cause -> recoverForwardedPublish(cause,
-                                                                                                                                      streamName,
-                                                                                                                                      partition,
-                                                                                                                                      payload,
-                                                                                                                                      timestamp,
-                                                                                                                                      systemWriter),
-                                                                                                     Result::success);
+    public Promise<Long> publishForwarded(String streamName,
+                                          int partition,
+                                          byte[] payload,
+                                          long timestamp,
+                                          int minAcks,
+                                          boolean systemWriter) {
+        return writableAppend(streamName, partition, payload, timestamp, minAcks, systemWriter).fold(result -> recoverForwardedPublish(result,
+                                                                                                                                       streamName,
+                                                                                                                                       partition,
+                                                                                                                                       payload,
+                                                                                                                                       timestamp,
+                                                                                                                                       systemWriter));
     }
 
-    private Result<Long> recoverForwardedPublish(Cause cause,
-                                                 String streamName,
-                                                 int partition,
-                                                 byte[] payload,
-                                                 long timestamp,
-                                                 boolean systemWriter) {
-        return cause instanceof StreamError.StreamNotFound
-               ? materializeThenRetryPublish(streamName, partition, payload, timestamp, systemWriter)
-               : cause.result();
+    private Promise<Long> recoverForwardedPublish(Result<Long> result,
+                                                  String streamName,
+                                                  int partition,
+                                                  byte[] payload,
+                                                  long timestamp,
+                                                  boolean systemWriter) {
+        return result.fold(cause -> cause instanceof StreamError.StreamNotFound
+                                    ? materializeThenRetryPublish(streamName,
+                                                                  partition,
+                                                                  payload,
+                                                                  timestamp,
+                                                                  systemWriter)
+                                    : cause.promise(),
+                           Promise::success);
     }
 
     /// Lazily materialize from the locally-visible committed config, then retry the append once. When the
     /// committed config is not yet visible on this node the append cannot be recovered here, so the
     /// retryable {@link StreamError.StreamConfigNotYetVisible} is returned for the forwarder to back off on.
-    private Result<Long> materializeThenRetryPublish(String streamName,
-                                                     int partition,
-                                                     byte[] payload,
-                                                     long timestamp,
-                                                     boolean systemWriter) {
+    private Promise<Long> materializeThenRetryPublish(String streamName,
+                                                      int partition,
+                                                      byte[] payload,
+                                                      long timestamp,
+                                                      boolean systemWriter) {
         return committedConfigSource.committedConfig(streamName)
-                                    .fold(() -> new StreamError.StreamConfigNotYetVisible(streamName).result(),
+                                    .fold(() -> new StreamError.StreamConfigNotYetVisible(streamName).promise(),
                                           config -> materializeThenPublish(config,
                                                                            streamName,
                                                                            partition,
@@ -2417,32 +2514,35 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// The retry's replica floor is the committed config's own `CF - 1`: the caller's floor was read
     /// before the stream existed here and is therefore always 0 on this path.
-    private Result<Long> materializeThenPublish(StreamConfig config,
-                                                String streamName,
-                                                int partition,
-                                                byte[] payload,
-                                                long timestamp,
-                                                boolean systemWriter) {
-        return ensureStreamMaterialized(config).flatMap(_ -> writableAppend(streamName,
-                                                                            partition,
-                                                                            payload,
-                                                                            timestamp,
-                                                                            config.confirmationFactor() - 1,
-                                                                            systemWriter));
+    private Promise<Long> materializeThenPublish(StreamConfig config,
+                                                 String streamName,
+                                                 int partition,
+                                                 byte[] payload,
+                                                 long timestamp,
+                                                 boolean systemWriter) {
+        return materializeForPublish(config).flatMap(_ -> writableAppend(streamName,
+                                                                         partition,
+                                                                         payload,
+                                                                         timestamp,
+                                                                         config.confirmationFactor() - 1,
+                                                                         systemWriter));
     }
 
-    private Result<Long> writableAppend(String streamName,
-                                        int partition,
-                                        byte[] payload,
-                                        long timestamp,
-                                        int minAcks,
-                                        boolean systemWriter) {
-        return ensureWritableConsistency(streamName).flatMap(_ -> publishLocalAtFloor(streamName,
-                                                                                      partition,
-                                                                                      payload,
-                                                                                      timestamp,
-                                                                                      minAcks,
-                                                                                      systemWriter));
+    private Promise<Long> writableAppend(String streamName,
+                                         int partition,
+                                         byte[] payload,
+                                         long timestamp,
+                                         int minAcks,
+                                         boolean systemWriter) {
+        return ensureWritableConsistency(streamName).fold(Cause::promise,
+                                                          _ -> durablePublish(streamName,
+                                                                              partition,
+                                                                              payload,
+                                                                              timestamp,
+                                                                              ownerEpochSource.currentOwnerEpoch(streamName,
+                                                                                                                 partition),
+                                                                              minAcks,
+                                                                              systemWriter));
     }
 
     public Result<Long> publishLocal(String streamName, int partition, byte[] payload, long timestamp) {
@@ -2526,22 +2626,56 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       Epoch ownerEpoch,
                                       int minAcks,
                                       boolean systemWriter) {
-        return StreamWriteRouter.systemWriteRefusal(streamName, systemWriter)
-                                .<Result<Long>> map(Cause::result)
-                                .or(() -> admittedPublishLocal(streamName,
-                                                               partition,
-                                                               payload,
-                                                               timestamp,
-                                                               ownerEpoch,
-                                                               minAcks));
+        return ownerAppend(streamName, partition, payload, timestamp, ownerEpoch, minAcks, systemWriter).flatMap(this::awaitDurable)
+                          .onSuccess(offset -> ownerDurable(streamName, partition, offset))
+                          .fold(cause -> handleDrop(cause, streamName, partition),
+                                Result::success);
     }
 
-    private Result<Long> admittedPublishLocal(String streamName,
-                                              int partition,
-                                              byte[] payload,
-                                              long timestamp,
-                                              Epoch ownerEpoch,
-                                              int minAcks) {
+    /// #2952: the forwarded publish's owner append — the same append, admission and drop handling as
+    /// [#publishLocal], but the group-commit fsync is composed rather than awaited, so the transport's event loop
+    /// that runs the forward never parks on it. The answer still resolves only once the frame is durable.
+    private Promise<Long> durablePublish(String streamName,
+                                         int partition,
+                                         byte[] payload,
+                                         long timestamp,
+                                         Epoch ownerEpoch,
+                                         int minAcks,
+                                         boolean systemWriter) {
+        return ownerAppend(streamName, partition, payload, timestamp, ownerEpoch, minAcks, systemWriter).fold(cause -> handleDrop(cause,
+                                                                                                                                  streamName,
+                                                                                                                                  partition).async(),
+                                                                                                              logged -> durableOffset(logged,
+                                                                                                                                      streamName,
+                                                                                                                                      partition));
+    }
+
+    /// The append's offset once its fsync resolves, marked durable here BEFORE the promise's dependents run
+    /// ([Promise#withSuccess]), so visibility is recomputed before the publish is answered, as in [#publishLocal].
+    private Promise<Long> durableOffset(LoggedAppend logged, String streamName, int partition) {
+        return logged.durable()
+                     .map(_ -> logged.offset())
+                     .withSuccess(offset -> ownerDurable(streamName, partition, offset));
+    }
+
+    private Result<LoggedAppend> ownerAppend(String streamName,
+                                             int partition,
+                                             byte[] payload,
+                                             long timestamp,
+                                             Epoch ownerEpoch,
+                                             int minAcks,
+                                             boolean systemWriter) {
+        return StreamWriteRouter.systemWriteRefusal(streamName, systemWriter)
+                                .<Result<LoggedAppend>> map(Cause::result)
+                                .or(() -> admittedAppend(streamName, partition, payload, timestamp, ownerEpoch, minAcks));
+    }
+
+    private Result<LoggedAppend> admittedAppend(String streamName,
+                                                int partition,
+                                                byte[] payload,
+                                                long timestamp,
+                                                Epoch ownerEpoch,
+                                                int minAcks) {
         return resolveWritableEntry(streamName).flatMap(entry -> publishInSection(entry,
                                                                                   streamName,
                                                                                   partition,
@@ -2552,11 +2686,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                   partition,
                                                                                                   minAcks).flatMap(_ -> provenanceAdmits(streamName,
                                                                                                                                          partition,
-                                                                                                                                         some(ownerEpoch)))))
-                                   .flatMap(this::awaitDurable)
-                                   .onSuccess(offset -> ownerDurable(streamName, partition, offset))
-                                   .fold(cause -> handleDrop(cause, streamName, partition),
-                                         Result::success);
+                                                                                                                                         some(ownerEpoch)))));
     }
 
     /// The owner's append at `offset` is durable — its group commit resolved, and group commit resolves in
@@ -3615,12 +3745,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                 deletePendingCut(pendingCutFile(appendLog));
             };
 
-            if (operatorWarningsBound) {
-                report.run();
-            } else {
-                entries.deferredReports()
-                       .add(report);
-            }
+            raiseOrDefer(report);
         }));
     }
 
@@ -3885,6 +4010,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// The owner-side pre-checks — epoch fence, then `admission` (owner admission and replica floor, #1230/#1236)
     /// — run BEFORE the partition's ordered section: they read committed state the section cannot make
     /// atomic with the append, and a refused write must neither take an offset nor hold the lock.
+    ///
+    /// #263: an admitted write then reserves its payload in the replication send budget, so a spent budget refuses it
+    /// (`REPLICATION_BEHIND`) before it takes an offset; the reservation is released once the append returned, when the
+    /// event, if appended, is already held by the replication batcher.
     private Result<LoggedAppend> publishInSection(StreamEntry entry,
                                                   String streamName,
                                                   int partition,
@@ -3892,15 +4021,36 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                   long timestamp,
                                                   Epoch ownerEpoch,
                                                   Result<Unit> admission) {
-        return appendToPartition(entry,
-                                 streamName,
-                                 partition,
-                                 payload,
-                                 timestamp,
-                                 ownerEpoch,
-                                 admission,
-                                 ownerSection(streamName, partition, ownerEpoch),
-                                 offset -> logAndReplicate(streamName, partition, offset, payload, timestamp, ownerEpoch));
+        var reservation = admission.flatMap(_ -> replicationManager.reserveSend(payload.length));
+
+        return releasingSend(reservation,
+                             payload.length,
+                             appendToPartition(entry,
+                                               streamName,
+                                               partition,
+                                               payload,
+                                               timestamp,
+                                               ownerEpoch,
+                                               reservation,
+                                               ownerSection(streamName, partition, ownerEpoch),
+                                               offset -> logAndReplicate(streamName,
+                                                                         partition,
+                                                                         offset,
+                                                                         payload,
+                                                                         timestamp,
+                                                                         ownerEpoch)));
+    }
+
+    /// Returns `outcome` once the send-budget reservation it was appended under, if granted, is released (#263).
+    private <T> Result<T> releasingSend(Result<Unit> reservation, long bytes, Result<T> outcome) {
+        return outcome.onResultRun(() -> releaseIfReserved(reservation, bytes));
+    }
+
+    @Contract
+    private void releaseIfReserved(Result<Unit> reservation, long bytes) {
+        if (reservation.isSuccess()) {
+            replicationManager.releaseSend(bytes);
+        }
     }
 
     /// The in-section admission of an owner append (#2201 A-01): the epoch fence, the provenance check and the log's health, re-read
@@ -4307,21 +4457,26 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                        long timestamp,
                                                        Epoch ownerEpoch,
                                                        int minAcks) {
-        return ensureNotStale(streamName, partition, ownerEpoch).flatMap(_ -> admitOwnerWrite(streamName,
-                                                                                              partition,
-                                                                                              minAcks))
-                             .flatMap(_ -> provenanceAdmits(streamName,
-                                                            partition,
-                                                            some(ownerEpoch)))
-                             .flatMap(_ -> checkEventSizes(entry, payloads))
-                             .flatMap(_ -> resolveAppendTarget(streamName, partition, entry))
-                             .flatMap(buffer -> appendRunInSection(buffer,
-                                                                   streamName,
-                                                                   partition,
-                                                                   payloads,
-                                                                   timestamp,
-                                                                   ownerEpoch))
-                             .onSuccess(_ -> entry.updateActivity());
+        var bytes = payloads.stream().mapToLong(payload -> payload.length).sum();
+        var reservation = ensureNotStale(streamName, partition, ownerEpoch).flatMap(_ -> admitOwnerWrite(streamName,
+                                                                                                         partition,
+                                                                                                         minAcks))
+                                        .flatMap(_ -> provenanceAdmits(streamName,
+                                                                       partition,
+                                                                       some(ownerEpoch)))
+                                        .flatMap(_ -> checkEventSizes(entry, payloads))
+                                        .flatMap(_ -> replicationManager.reserveSend(bytes));
+
+        return releasingSend(reservation,
+                             bytes,
+                             reservation.flatMap(_ -> resolveAppendTarget(streamName, partition, entry))
+                                        .flatMap(buffer -> appendRunInSection(buffer,
+                                                                              streamName,
+                                                                              partition,
+                                                                              payloads,
+                                                                              timestamp,
+                                                                              ownerEpoch))
+                                        .onSuccess(_ -> entry.updateActivity()));
     }
 
     private Result<LoggedAppend> appendRunInSection(OffHeapRingBuffer buffer,
@@ -5084,6 +5239,43 @@ public final class StreamPartitionManager implements AutoCloseable {
         return installUnattributed(streamName, partition, toOffset).flatMap(installed -> settle(installed, apply.apply()));
     }
 
+    /// I-27 (#1759, CTO D1): the lowest offset of the page `[fromOffset, toOffset]` a later epoch re-assigned, judged on every
+    /// epoch the source's `slice` records by 6a's min-over-history rule ([EpochValidation#reassignedFrom]): a recorded range
+    /// `(e_k, [s_k, end_k))` that reaches into the page holds the replaced lineage from `max(s_k, reassignedFrom(starts, e_k))`
+    /// when that lies inside it. The activating owner installs nothing at or above it ([AlignedRecovery#reassignedFrom]): a
+    /// replica that kept a deposed epoch's tail serves it from its WAL, vouched by its own history, and the tail is not taken.
+    ///
+    /// Unlike the doubt of a copy ([#recordedDoubtStart]), a range with NO committed start after its epoch is not judged
+    /// re-assigned: the activating owner's own epoch is pending -- its start is committed only after this catch-up -- and is
+    /// treated as not started, so the records of the epoch it succeeds are what it catches up on. An empty slice records no
+    /// epoch, and judges nothing. [guess: an empty slice (a log-less source) is not clipped; the N13 install compare stays its
+    /// guard. Clipping it from the lowest committed start would refuse every catch-up from a log-less peer.]
+    public Option<Long> reassignedFrom(String streamName,
+                                       int partition,
+                                       long fromOffset,
+                                       long toOffset,
+                                       List<ProvenanceEntry> slice) {
+        var starts = committedEpochStarts.startsOf(streamName, partition);
+        var ranges = slice.stream().map(entry -> new RecordedRange(entry.rank(), entry.startOffset())).toList();
+
+        return Option.from(IntStream.range(0,
+                                           ranges.size())
+                                    .filter(i -> rangeEnd(ranges, i, toOffset) > fromOffset)
+                                    .mapToObj(i -> reassignedInside(ranges.get(i),
+                                                                    rangeEnd(ranges, i, toOffset),
+                                                                    starts))
+                                    .flatMap(Option::stream)
+                                    .min(Long::compare));
+    }
+
+    private static Option<Long> reassignedInside(RecordedRange range, long end, List<EpochStart> starts) {
+        return EpochValidation.reassignedFrom(starts,
+                                              range.epoch())
+                              .map(reassigned -> Math.max(range.from(),
+                                                          reassigned))
+                              .filter(bound -> bound < end);
+    }
+
     private Result<Long> settle(InstalledSlice installed, Result<Long> applied) {
         return applied.onSuccess(_ -> releaseProvenance(installed))
                       .onFailure(_ -> trimAfterFailedApply(installed));
@@ -5362,7 +5554,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                                                         partition)),
                                                this::applyAttributed,
                                                this::applyOwnerAttributed,
-                                               this::applyUnattributed);
+                                               this::applyUnattributed,
+                                               this::reassignedFrom);
     }
 
     /// Records about to be applied up to `toOffset` carry no provenance (#1596: a sealed segment without a slice).
@@ -5453,6 +5646,12 @@ public final class StreamPartitionManager implements AutoCloseable {
         return resolvePartitionBuffer(streamName, partition).flatMap(buffer -> buffer.read(fromOffset, maxEvents));
     }
 
+    /// Whether the stream is present on this node (#2960): false once [#onStreamConfigRemove] has removed it, before it tells its
+    /// [StreamRemovedListener]. The all-stalled warning is raised only while this holds.
+    public boolean streamExists(String streamName) {
+        return streams.containsKey(streamName);
+    }
+
     /// Whether `nodeId` is a registered replica of `(streamName, partition)` in the SAME registry the
     /// replication manager sends to and counts acks from (#1235). Gates the appended-head catch-up read:
     /// a node outside the replica set gets a consumer read instead.
@@ -5527,9 +5726,144 @@ public final class StreamPartitionManager implements AutoCloseable {
     private void dropDurableWatermark(PartitionRef ref) {
         watermarkGeneration.incrementAndGet();
         ringScoped(ref.streamName()).durableWatermarks().remove(ref.partition());
+        heldScanHints.remove(ref);
     }
 
     record CachedWatermark(long watermark, long atNanos) {}
+
+    /// The next page of a held partition's WAL scan starts at byte `position`, with offset `nextOffset`.
+    record ScanHint(long nextOffset, long position) {}
+
+    /// I-27 (#1759): a replication-class read of a partition this node HOLDS but has not materialized (paced or
+    /// budget-deferred, [#heldNotMaterializedWatermark]), served READ-ONLY from its WAL ([AppendLog.Opener#readRange]): no
+    /// ring is created and no off-heap budget is taken, so an owner behind such a replica can catch up from it without the
+    /// replica materializing. None when the partition is materialized, is not held here, or keeps no log; the caller then
+    /// answers as before.
+    ///
+    /// The page is the records `fromOffset, fromOffset + 1, ...`, contiguous, up to `maxEvents`. A `fromOffset` below the
+    /// WAL's lowest record -- a prefix sealed to the tier -- is answered `CursorExpired` naming that record (the sealed
+    /// floor's successor when the WAL holds nothing at or above `fromOffset`), so the caller can read the prefix from the
+    /// tier. Never a partial range: a torn or damaged frame before the page is full ([AppendLog.WalError.LogDamaged]), a
+    /// hole inside the page ([StreamError.WalReplayMismatch]) and an unreadable log each fail the read.
+    public Option<Result<List<OffHeapRingBuffer.RawEvent>>> readHeldDurable(String streamName,
+                                                                            int partition,
+                                                                            long fromOffset,
+                                                                            int maxEvents) {
+        return option(streams.get(streamName)).filter(entry -> isHeldWithoutRing(entry, streamName, partition))
+                     .flatMap(entry -> logs.map(opener -> heldPage(opener,
+                                                                   new PartitionRef(streamName, partition),
+                                                                   StreamEntry.logName(entry.config(),
+                                                                                       partition),
+                                                                   fromOffset,
+                                                                   maxEvents)));
+    }
+
+    /// The owner-epoch history of a held-unmaterialized partition's WAL, READ-ONLY ([AppendLog.Opener#readEpochHistory]):
+    /// what a [#readHeldDurable] page is vouched by (#1759). None when the partition is materialized, is not held here, or
+    /// keeps no log; a failure when the history cannot be read, which the caller must not answer as an empty one.
+    public Option<Result<List<ProvenanceEntry>>> heldEpochHistory(String streamName, int partition) {
+        return option(streams.get(streamName)).filter(entry -> isHeldWithoutRing(entry, streamName, partition))
+                     .flatMap(entry -> logs.map(opener -> opener.readEpochHistory(StreamEntry.logName(entry.config(),
+                                                                                                      partition))
+                                                                .flatMap(StreamPartitionManager::provenanceOf)));
+    }
+
+    private static Result<List<ProvenanceEntry>> provenanceOf(List<AppendLog.EpochStart> history) {
+        return Result.allOf(history.stream().map(ProvenanceEntry::provenanceEntry).toList());
+    }
+
+    private Result<List<OffHeapRingBuffer.RawEvent>> heldPage(AppendLog.Opener opener,
+                                                              PartitionRef ref,
+                                                              String logName,
+                                                              long fromOffset,
+                                                              int maxEvents) {
+        var start = option(heldScanHints.get(ref)).filter(hint -> hint.nextOffset() == fromOffset)
+                          .map(ScanHint::position)
+                          .or(0L);
+
+        return pageFrom(opener, logName, fromOffset, maxEvents, start).onSuccess(page -> rememberHint(ref, page))
+                       .flatMap(page -> contiguousFrom(ref,
+                                                       logName,
+                                                       fromOffset,
+                                                       page.records()));
+    }
+
+    /// A page read from a hint that fails, or does not begin at `fromOffset`, is read again from the start of the file: a hint
+    /// can be stale (the log was rewritten while materialized), never trusted.
+    private static Result<AppendLog.RangePage> pageFrom(AppendLog.Opener opener,
+                                                        String logName,
+                                                        long fromOffset,
+                                                        int maxEvents,
+                                                        long start) {
+        var page = opener.readRange(logName, fromOffset, maxEvents, start);
+
+        return start == 0L
+               ? page
+               : page.filter(StreamError.General.PARTITION_NOT_LOCAL,
+                             read -> startsAt(read, fromOffset))
+                     .orElse(() -> opener.readRange(logName, fromOffset, maxEvents, 0L));
+    }
+
+    private static boolean startsAt(AppendLog.RangePage page, long fromOffset) {
+        return ! page.records()
+                     .isEmpty() && page.records()
+                                       .getFirst()
+                                       .offset() == fromOffset;
+    }
+
+    @Contract
+    private void rememberHint(PartitionRef ref, AppendLog.RangePage page) {
+        if (!page.records().isEmpty()) {
+            heldScanHints.put(ref,
+                              new ScanHint(page.records().getLast().offset() + 1,
+                                           page.endPosition()));
+        }
+    }
+
+    private Result<List<OffHeapRingBuffer.RawEvent>> contiguousFrom(PartitionRef ref,
+                                                                    String logName,
+                                                                    long fromOffset,
+                                                                    List<WalRecord> records) {
+        if (records.isEmpty()) {
+            return belowSealedFloor(ref, fromOffset);
+        }
+
+        if (records.getFirst().offset() > fromOffset) {
+            return new StreamError.CursorExpired(fromOffset,
+                                                 records.getFirst().offset()).result();
+        }
+
+        return firstHole(records, fromOffset).<Result<List<OffHeapRingBuffer.RawEvent>>> map(i -> new StreamError.WalReplayMismatch(ref.streamName(),
+                                                                                                                                    ref.partition(),
+                                                                                                                                    Path.of(logName),
+                                                                                                                                    fromOffset + i,
+                                                                                                                                    records.get(i)
+                                                                                                                                           .offset()).result())
+                        .or(() -> success(records.stream()
+                                                 .map(record -> OffHeapRingBuffer.RawEvent.rawEvent(record.offset(),
+                                                                                                    record.payload(),
+                                                                                                    record.timestampMillis()))
+                                                 .toList()));
+    }
+
+    private static Option<Integer> firstHole(List<WalRecord> records, long fromOffset) {
+        return Option.from(IntStream.range(0,
+                                           records.size())
+                                    .filter(i -> records.get(i)
+                                                        .offset() != fromOffset + i)
+                                    .boxed()
+                                    .findFirst());
+    }
+
+    /// The WAL holds nothing at or above `fromOffset`: the read is past the end, unless the sealed floor covers it -- the WAL's
+    /// prefix was sealed to the tier and compacted away -- in which case the tier holds it.
+    private Result<List<OffHeapRingBuffer.RawEvent>> belowSealedFloor(PartitionRef ref, long fromOffset) {
+        var floor = lastSealedOffset.lastSealedOffset(ref.streamName(), ref.partition());
+
+        return fromOffset <= floor
+               ? new StreamError.CursorExpired(fromOffset, floor + 1).result()
+               : success(List.of());
+    }
 
     private Option<Long> readDurableWatermark(String streamName, int partition) {
         return logs.fold(() -> Option.some(lastSealedOffset.lastSealedOffset(streamName, partition)),
@@ -6124,18 +6458,65 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Before a stream materializes: serve the life `config` names (#1278 review), so recovery anchors only at that
     /// life's sealed watermark and floor. Any other life of the name is announced, never reclaimed (#2452, [#reportOtherLives]).
     private Result<Unit> adoptIncarnation(StreamConfig config) {
-        return reportOtherLives(config,
+        return reportOtherLives(ownLife(config),
                                 streamFootprint.adopt(config.name(), config.incarnation()).await(FOOTPRINT_TIMEOUT));
     }
 
+    /// #2952: `config`'s life is this process's own from here on, before any WAL directory of it exists: the startup snapshot, which
+    /// can list a directory created while it is taken, never reports it as an orphan ([#raiseOrphanedLives]).
+    private StreamConfig ownLife(StreamConfig config) {
+        entries.ownLives().add(SegmentIndex.durableName(config.name(), config.incarnation()));
+
+        return config;
+    }
+
     /// Know 3b01e624f1, 6d0c58fd67: adoption deletes no other life of the name ([StreamFootprint#adopt]); each is announced instead.
+    ///
+    /// #2952: the announcing lists the WAL root (the startup snapshot on the first adoption, a fresh listing while an orphan is open), a
+    /// filesystem walk, so it never runs on the adopting thread, which is the KV dispatcher for a committed config: it is queued and
+    /// run by a drainer thread. Ordering, as when it ran inline: the reports run one at a time in adoption order, so a later
+    /// adoption's release sees every orphan an earlier one raised; the footprint adoption itself stays inline, before the life
+    /// materializes. What changes: the announcement follows the adoption instead of preceding its return, and the startup snapshot can
+    /// list directories this process created after the first adoption. A report leaves out the lives this process proposed or adopted up
+    /// to the adoption it reports, captured now; a later own life it still names (one created while the walk ran) is announced and then
+    /// released by the report of that life's own adoption, or of the stream's next one, which is queued behind it.
+    ///
+    /// Reports still queued, or mid-walk, when [#close] runs or the JVM exits are dropped: nothing drains the queue on close, and the drainer is a
+    /// virtual (daemon) thread. They are operator announcements only -- nothing durable depends on one and adoption deletes no life -- so the
+    /// accepted cost is a warning lost at shutdown.
     private Result<Unit> reportOtherLives(StreamConfig config, Result<List<StreamFootprint.OtherLife>> adopted) {
         var others = adopted.or(List.of());
+        var ownLives = Set.copyOf(entries.ownLives());
 
-        raiseReleasedLives(config, others);
-        raiseOrphanedLives(config, others);
+        entries.lifeReports().add(() -> announceOtherLives(config, others, ownLives));
+        Thread.ofVirtual().name("stream-life-reports").start(this::drainLifeReports);
 
         return adopted.mapToUnit();
+    }
+
+    @Contract
+    private void announceOtherLives(StreamConfig config, List<StreamFootprint.OtherLife> others, Set<String> ownLives) {
+        raiseReleasedLives(config, others);
+        raiseOrphanedLives(config, others, ownLives);
+    }
+
+    /// #2952: one drainer at a time runs the queued reports in order. A report queued while another thread drains is taken by
+    /// that drainer, or by this loop once the flag is released: the queue is re-checked after every release.
+    @Contract
+    private void drainLifeReports() {
+        while (!entries.lifeReports().isEmpty() && lifeReportsDraining.compareAndSet(false, true)) {
+            runQueuedLifeReports();
+            lifeReportsDraining.set(false);
+        }
+    }
+
+    /// Only the flag holder removes, so the queue is not empty at `remove`. A report that throws is logged and the rest still run.
+    @Contract
+    private void runQueuedLifeReports() {
+        while (!entries.lifeReports().isEmpty()) {
+            Result.lift(entries.lifeReports().remove()::run).onFailure(cause -> log.warn("Stream life report failed: {}",
+                                                                                         cause.message()));
+        }
     }
 
     /// A life of the name other than the one `config` adopts — a WAL directory `<stream>@<incarnation>` or sealed segments, or both — holds
@@ -6143,12 +6524,15 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// config mints a fresh one). It is never deleted, and never silent: raised once per life, naming the stream, both incarnations and the
     /// sealed-segment count.
     @Contract
-    private void raiseOrphanedLives(StreamConfig config, List<StreamFootprint.OtherLife> sealedLives) {
+    private void raiseOrphanedLives(StreamConfig config,
+                                    List<StreamFootprint.OtherLife> sealedLives,
+                                    Set<String> ownLives) {
         var sealed = sealedLives.stream()
                                 .collect(Collectors.toMap(StreamFootprint.OtherLife::incarnation,
                                                           StreamFootprint.OtherLife::sealedSegments));
         var walLives = walDirectoriesAtStart.get()
                                             .stream()
+                                            .filter(directory -> !ownLives.contains(directory))
                                             .filter(directory -> isOrphanedLifeOf(config, directory))
                                             .map(directory -> SegmentIndex.DurableName.parse(directory).incarnation())
                                             .toList();
@@ -6204,10 +6588,16 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     @Contract
     private void raiseOrDefer(Runnable report) {
-        if (operatorWarningsBound) {
+        if (!deferredUnlessBound(report)) {
             report.run();
-        } else {
-            entries.deferredReports().add(report);
+        }
+    }
+
+    /// True when `report` was deferred because the sink is not bound yet; under the lock [#bindAndTakeDeferredReports] binds under.
+    private boolean deferredUnlessBound(Runnable report) {
+        synchronized (entries.deferredReports()) {
+            return ! operatorWarningsBound && entries.deferredReports()
+                                                     .add(report);
         }
     }
 
@@ -7268,7 +7658,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         private String phaseLabel() {
             return phase.name()
-                        .toLowerCase()
+                        .toLowerCase(Locale.ROOT)
                         .replace('_', '-');
         }
     }

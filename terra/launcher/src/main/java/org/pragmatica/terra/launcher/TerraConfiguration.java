@@ -53,9 +53,9 @@ final class TerraConfiguration {
     private static Result<ConfigurationProvider> hostKeys(ConfigurationProvider host) {
         return host.keys()
                    .stream()
-                   .allMatch(key -> key.startsWith("http.") || key.startsWith("api_keys.") || key.startsWith("jwt."))
+                   .allMatch(key -> key.startsWith("http.") || key.startsWith("api_keys.") || key.startsWith("jwt.") || key.startsWith("authenticator."))
                ? Result.success(host)
-               : new TerraLaunchError("terra.toml accepts only http, api_keys, and jwt sections; put resource settings in resources.toml").result();
+               : new TerraLaunchError("terra.toml accepts only http, api_keys, jwt, and authenticator sections; put resource settings in resources.toml").result();
     }
 
     static Result<MapConfigSource> environment(Map<String, String> values) {

@@ -3,6 +3,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.http.handler.security;
 
+import java.util.Locale;
+
 import org.pragmatica.http.routing.security.Access;
 import org.pragmatica.http.routing.security.RequestSecurityContext;
 import org.pragmatica.http.routing.security.RouteSecurityPolicy;
@@ -15,6 +17,19 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
     @SuppressWarnings("JBCT-NAM-01")
     record Public() implements SecurityPolicy {
         private static final Public INSTANCE = new Public();
+
+        @Override
+        public <T extends RequestSecurityContext> Access canAccess(T context) {
+            return Access.ALLOW;
+        }
+    }
+
+    /// Authenticate if a credential is presented (#2946): no credential serves the request anonymously (an empty
+    /// context), a credential that fails validation is refused (401), a valid one yields its validated context.
+    /// `canAccess` allows both an anonymous and an authenticated context -- the refusal of a bad credential is the
+    /// validator's, which runs before this policy is consulted. [Public] by contrast never reads a credential.
+    record OptionalAuth() implements SecurityPolicy {
+        private static final OptionalAuth INSTANCE = new OptionalAuth();
 
         @Override
         public <T extends RequestSecurityContext> Access canAccess(T context) {
@@ -88,6 +103,10 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
         return Unspecified.INSTANCE;
     }
 
+    static SecurityPolicy optional() {
+        return OptionalAuth.INSTANCE;
+    }
+
     static SecurityPolicy authenticated() {
         return Authenticated.INSTANCE;
     }
@@ -107,6 +126,7 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
     static SecurityPolicy fromString(String value) {
         return switch (value) {
             case "PUBLIC" -> publicRoute();
+            case "OPTIONAL" -> optional();
             case "AUTHENTICATED" -> authenticated();
             case "API_KEY" -> apiKeyRequired();
             case "BEARER_TOKEN" -> bearerTokenRequired();
@@ -158,6 +178,7 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
     default String asString() {
         return switch (this) {
             case Public() -> "PUBLIC";
+            case OptionalAuth() -> "OPTIONAL";
             case Authenticated() -> "AUTHENTICATED";
             case ApiKeyRequired() -> "API_KEY";
             case BearerTokenRequired() -> "BEARER_TOKEN";
@@ -170,6 +191,7 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
     default int strength() {
         return switch (this) {
             case Public() -> 0;
+            case OptionalAuth() -> 5;
             case Authenticated() -> 10;
             case ApiKeyRequired() -> 20;
             case BearerTokenRequired() -> 20;
@@ -180,9 +202,10 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
     }
 
     static SecurityPolicy fromBlueprintString(String value) {
-        return switch (value.toLowerCase()
+        return switch (value.toLowerCase(Locale.ROOT)
                             .strip()) {
             case "public" -> publicRoute();
+            case "optional" -> optional();
             case "authenticated" -> authenticated();
             case "api_key" -> apiKeyRequired();
             case "bearer_token" -> bearerTokenRequired();
@@ -243,7 +266,7 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
     }
 
     private static SecurityPolicy parseBlueprintRoleOrDefault(String value) {
-        var stripped = value.strip().toLowerCase();
+        var stripped = value.strip().toLowerCase(Locale.ROOT);
 
         if (stripped.startsWith("role:")) {
             return roleRequired(value.strip().substring(5));

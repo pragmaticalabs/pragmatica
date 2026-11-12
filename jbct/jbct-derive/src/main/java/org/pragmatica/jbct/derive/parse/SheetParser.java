@@ -26,6 +26,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.utils.Causes;
 
+
 /// Parses a TOML answer sheet into the typed [AnswerSheet] model (SPEC.md §3), the first stage of
 /// the pipeline (`parse → normalize → …`). This is parse-don't-validate: a returned [AnswerSheet]
 /// is structurally sound and ready for the entry gate; anything malformed fails as a [SheetError]
@@ -40,13 +41,15 @@ public sealed interface SheetParser {
     /// Parse a sheet from a file. The path becomes the sheet's `source` for diagnostics.
     static Result<AnswerSheet> parse(Path path) {
         return FileOps.readString(path)
-                      .mapError(cause -> new SheetError.FileReadFailed(path.toString(), cause.message()))
-                      .flatMap(content -> parse(content, path.toString()));
+                      .mapError(cause -> new SheetError.FileReadFailed(path.toString(),
+                                                                       cause.message()))
+                      .flatMap(content -> parse(content,
+                                                path.toString()));
     }
 
     /// Parse a sheet from raw TOML text with an explicit source label.
     static Result<AnswerSheet> parse(String content, String source) {
-        var lines = SheetLines.of(content);
+        var lines = SheetLines.sheetLines(content);
 
         return TomlParser.parse(content)
                          .mapError(SheetParser::toSheetError)
@@ -67,8 +70,14 @@ public sealed interface SheetParser {
                           changeDrivers(doc, lines),
                           LivingSystemParser.currentVector(doc),
                           LivingSystemParser.floors(doc, lines))
-                     .map((version, meta, rows, shapes, drivers, vector, floors) ->
-                              assemble(source, version, meta, rows, shapes, drivers, vector, floors));
+                     .map((version, meta, rows, shapes, drivers, vector, floors) -> assemble(source,
+                                                                                             version,
+                                                                                             meta,
+                                                                                             rows,
+                                                                                             shapes,
+                                                                                             drivers,
+                                                                                             vector,
+                                                                                             floors));
     }
 
     private static AnswerSheet assemble(String source,
@@ -83,7 +92,6 @@ public sealed interface SheetParser {
     }
 
     // ---- schema_version ----
-
     private static Result<String> schemaVersion(TomlDocument doc) {
         return doc.getString("", "schema_version")
                   .toResult(new SheetError.MissingSchemaVersion())
@@ -97,10 +105,11 @@ public sealed interface SheetParser {
     }
 
     // ---- [meta] ----
-
     private static Result<Meta> meta(TomlDocument doc) {
-        return Result.all(requiredMeta(doc, "system"), requiredMeta(doc, "era"), mode(doc))
-                     .map((system, era, mode) -> assembleMeta(doc, system, era, mode));
+        return Result.all(requiredMeta(doc, "system"), requiredMeta(doc, "era"), mode(doc)).map((system, era, mode) -> assembleMeta(doc,
+                                                                                                                                    system,
+                                                                                                                                    era,
+                                                                                                                                    mode));
     }
 
     private static Meta assembleMeta(TomlDocument doc, String system, String era, Mode mode) {
@@ -112,11 +121,11 @@ public sealed interface SheetParser {
     }
 
     private static Result<String> requiredMeta(TomlDocument doc, String key) {
-        return doc.getString("meta", key).toResult(new SheetError.MissingField("meta." + key));
+        return doc.getString("meta", key)
+                  .toResult(new SheetError.MissingField("meta." + key));
     }
 
     // ---- [[answers.qN]] ----
-
     private static Result<List<AnswerRow>> rows(TomlDocument doc, SheetLines lines) {
         var results = Stream.of(QuestionId.values())
                             .flatMap(question -> rowResults(doc, lines, question).stream())
@@ -129,16 +138,29 @@ public sealed interface SheetParser {
         var table = question.tableName();
         var arr = doc.getTableArray(table).or(List.of());
 
-        return IntStream.range(0, arr.size())
-                        .mapToObj(i -> answerRow(question, table, i, lines.lineFor(table, i), arr.get(i)))
+        return IntStream.range(0,
+                               arr.size())
+                        .mapToObj(i -> answerRow(question,
+                                                 table,
+                                                 i,
+                                                 lines.lineFor(table, i),
+                                                 arr.get(i)))
                         .toList();
     }
 
-    private static Result<AnswerRow> answerRow(QuestionId question, String table, int index, int line, Map<String, Object> row) {
+    private static Result<AnswerRow> answerRow(QuestionId question,
+                                               String table,
+                                               int index,
+                                               int line,
+                                               Map<String, Object> row) {
         return Result.all(scopeField(row, table, index, line),
                           statement(row, table, index, line),
-                          status(row, table, index, line))
-                     .map((scope, statement, status) -> assembleRow(question, line, row, scope, statement, status));
+                          status(row, table, index, line)).map((scope, statement, status) -> assembleRow(question,
+                                                                                                         line,
+                                                                                                         row,
+                                                                                                         scope,
+                                                                                                         statement,
+                                                                                                         status));
     }
 
     private static AnswerRow assembleRow(QuestionId question,
@@ -162,11 +184,13 @@ public sealed interface SheetParser {
     }
 
     // ---- [[domain_shape]] ----
-
     private static Result<List<DomainShape>> domainShapes(TomlDocument doc, SheetLines lines) {
         var arr = doc.getTableArray("domain_shape").or(List.of());
-        var results = IntStream.range(0, arr.size())
-                               .mapToObj(i -> domainShape(i, lines.lineFor("domain_shape", i), arr.get(i)))
+        var results = IntStream.range(0,
+                                      arr.size())
+                               .mapToObj(i -> domainShape(i,
+                                                          lines.lineFor("domain_shape", i),
+                                                          arr.get(i)))
                                .toList();
 
         return Result.allOf(results);
@@ -187,11 +211,13 @@ public sealed interface SheetParser {
     }
 
     // ---- [[change_drivers]] ----
-
     private static Result<List<ChangeDriver>> changeDrivers(TomlDocument doc, SheetLines lines) {
         var arr = doc.getTableArray("change_drivers").or(List.of());
-        var results = IntStream.range(0, arr.size())
-                               .mapToObj(i -> changeDriver(i, lines.lineFor("change_drivers", i), arr.get(i)))
+        var results = IntStream.range(0,
+                                      arr.size())
+                               .mapToObj(i -> changeDriver(i,
+                                                           lines.lineFor("change_drivers", i),
+                                                           arr.get(i)))
                                .toList();
 
         return Result.allOf(results);
@@ -199,21 +225,28 @@ public sealed interface SheetParser {
 
     private static Result<ChangeDriver> changeDriver(int index, int line, Map<String, Object> row) {
         return Result.all(scopeField(row, "change_drivers", index, line),
-                          requiredRow(row, "volatility", "change_drivers", index, line))
-                     .map((scope, volatility) -> assembleChangeDriver(scope, volatility, row, line));
+                          requiredRow(row, "volatility", "change_drivers", index, line)).map((scope, volatility) -> assembleChangeDriver(scope,
+                                                                                                                                         volatility,
+                                                                                                                                         row,
+                                                                                                                                         line));
     }
 
-    private static ChangeDriver assembleChangeDriver(Scope scope, String volatility, Map<String, Object> row, int line) {
+    private static ChangeDriver assembleChangeDriver(Scope scope,
+                                                     String volatility,
+                                                     Map<String, Object> row,
+                                                     int line) {
         return new ChangeDriver(scope, volatility, TomlAccess.str(row, "source"), line);
     }
 
     // ---- shared row-field parsers ----
-
     private static Result<Scope> scopeField(Map<String, Object> row, String table, int index, int line) {
         return TomlAccess.str(row, "scope")
                          .toResult(Causes.cause("missing 'scope'"))
                          .flatMap(Scope::scope)
-                         .mapError(cause -> new SheetError.MalformedRow(table, index, line, cause.message()));
+                         .mapError(cause -> new SheetError.MalformedRow(table,
+                                                                        index,
+                                                                        line,
+                                                                        cause.message()));
     }
 
     private static Result<String> statement(Map<String, Object> row, String table, int index, int line) {
@@ -226,7 +259,10 @@ public sealed interface SheetParser {
         return TomlAccess.str(row, "status")
                          .toResult(Causes.cause("missing 'status'"))
                          .flatMap(RowStatus::rowStatus)
-                         .mapError(cause -> new SheetError.MalformedRow(table, index, line, cause.message()));
+                         .mapError(cause -> new SheetError.MalformedRow(table,
+                                                                        index,
+                                                                        line,
+                                                                        cause.message()));
     }
 
     private static Result<String> requiredRow(Map<String, Object> row, String key, String table, int index, int line) {

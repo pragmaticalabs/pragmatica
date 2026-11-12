@@ -25,7 +25,6 @@ import org.pragmatica.aether.http.HttpRoutePublisher.LocalRouteInfo;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
-import org.pragmatica.aether.http.handler.HttpRequestHandler;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
@@ -224,11 +223,6 @@ class V1796AppProbeTest {
         @Override public Option<LocalRouteInfo> findLocalRoute(String method, String path) {return Option.none();}
 
         @Override
-        public Promise<Unit> publishRoutes(Artifact artifact, ClassLoader classLoader, SliceInvokerFacade invokerFacade) {
-            return Promise.success(unit());
-        }
-
-        @Override
         public Promise<Unit> publishRoutes(Artifact artifact,
                                            ClassLoader classLoader,
                                            Object sliceInstance,
@@ -238,7 +232,6 @@ class V1796AppProbeTest {
 
         @Override public boolean hasRoutes(ClassLoader classLoader, Object sliceInstance) {return false;}
         @Override public Promise<Unit> unpublishRoutes(Artifact artifact) {return Promise.success(unit());}
-        @Override public Option<HttpRequestHandler> getHandler(Artifact artifact) {return Option.none();}
         @Override public Option<SliceRouter> getSliceRouter(Artifact artifact) {return Option.none();}
         @Override public Unit updateSecurityOverrides(SecurityOverrides overrides) {return unit();}
         @Override public Unit setVersioningMetricsSink(VersioningMetricsSink sink) {return unit();}

@@ -119,10 +119,13 @@ public sealed interface Schemas {
     }
 
     private static ClusterModel unreadable(ClusterModel m, Ctx ctx, String datasource) {
-        m.schemaUnknownWarned = m.schemaUnknownWarned.add(datasource);
-        ctx.warn("schema-status-unknown",
-                 datasource,
-                 "Schema record for datasource " + datasource + " carries a status this node cannot decode");
+        // #2834: once per episode: an open warning, this leader's or inherited from the committed open set (`Warnings.inherit`), is not raised again.
+        if (!m.schemaUnknownWarned.contains(datasource)) {
+            m.schemaUnknownWarned = m.schemaUnknownWarned.add(datasource);
+            ctx.warn("schema-status-unknown",
+                     datasource,
+                     "Schema record for datasource " + datasource + " carries a status this node cannot decode");
+        }
 
         return m;
     }

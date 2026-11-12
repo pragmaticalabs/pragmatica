@@ -48,6 +48,10 @@ import org.pragmatica.messaging.Message;
 /// notably `LeaderManager` and `ClusterFsmRouter` for the leader-election bootstrap fast-path.
 /// Code that requires canonical cluster truth must consume {@link MembershipDecision} instead.
 public sealed interface TransportObservation extends Message.Local {
+    /// Sequence carried by an observation that is not ordered against its producer's others (#2971): SWIM
+    /// observations, tests. A consumer applies it unconditionally and never fences on it. Producer sequences
+    /// start above it.
+    long NO_SEQUENCE = 0L;
     /// The peer that was observed.
     NodeId nodeId();
     /// Local view of the connected peer set after this observation, as known to THIS node.
@@ -59,18 +63,42 @@ public sealed interface TransportObservation extends Message.Local {
 
     /// Local transport observed a peer joining: handshake completed, channel established.
     /// Fires from QUIC ADD or Netty ADD operations.
-    record PeerJoined(NodeId nodeId, List<NodeId> topology, ObservationSource source) implements TransportObservation {}
+    ///
+    /// `sequence` orders this observation against the producer's other view-carrying observations (#2971); see
+    /// [`#NO_SEQUENCE`].
+    record PeerJoined(NodeId nodeId, List<NodeId> topology, ObservationSource source, long sequence) implements TransportObservation {
+        /// Sequence-less convenience constructor — an observation carrying [`TransportObservation#NO_SEQUENCE`].
+        public PeerJoined(NodeId nodeId, List<NodeId> topology, ObservationSource source) {
+            this(nodeId, topology, source, NO_SEQUENCE);
+        }
+    }
 
     /// Local transport observed a peer disconnecting: channel evicted or connection lost.
     /// May be transient — the peer may reconnect, or the cluster may not yet have decided
     /// to remove this peer from canonical membership.
     /// Fires from QUIC REMOVE / SWIM-FAULTY.
-    record PeerDisconnected(NodeId nodeId, List<NodeId> topology, ObservationSource source) implements TransportObservation {}
+    ///
+    /// `sequence` orders this observation against the producer's other view-carrying observations (#2971); see
+    /// [`#NO_SEQUENCE`].
+    record PeerDisconnected(NodeId nodeId, List<NodeId> topology, ObservationSource source, long sequence) implements TransportObservation {
+        /// Sequence-less convenience constructor — an observation carrying [`TransportObservation#NO_SEQUENCE`].
+        public PeerDisconnected(NodeId nodeId, List<NodeId> topology, ObservationSource source) {
+            this(nodeId, topology, source, NO_SEQUENCE);
+        }
+    }
 
     /// Local transport observed a peer reconnecting after a previous disconnect.
     /// Fires from QUIC RECONNECT.
     /// Subscribers may use this to invalidate disconnect-driven cleanup if appropriate.
-    record PeerReconnected(NodeId nodeId, List<NodeId> topology, ObservationSource source) implements TransportObservation {}
+    ///
+    /// `sequence` orders this observation against the producer's other view-carrying observations (#2971); see
+    /// [`#NO_SEQUENCE`].
+    record PeerReconnected(NodeId nodeId, List<NodeId> topology, ObservationSource source, long sequence) implements TransportObservation {
+        /// Sequence-less convenience constructor — an observation carrying [`TransportObservation#NO_SEQUENCE`].
+        public PeerReconnected(NodeId nodeId, List<NodeId> topology, ObservationSource source) {
+            this(nodeId, topology, source, NO_SEQUENCE);
+        }
+    }
 
     /// SWIM protocol marked a peer as FAULTY based on its own protocol state machine
     /// (suspect timeout + indirect-ping failure). Distinct from `PeerDisconnected` because
@@ -97,12 +125,30 @@ public sealed interface TransportObservation extends Message.Local {
         return new PeerJoined(nodeId, view, source);
     }
 
+    /// Sequenced variant: `sequence` is the producer's order of this observation among its view-carrying ones.
+    static PeerJoined peerJoined(NodeId nodeId, List<NodeId> view, ObservationSource source, long sequence) {
+        return new PeerJoined(nodeId, view, source, sequence);
+    }
+
     static PeerDisconnected peerDisconnected(NodeId nodeId, List<NodeId> view, ObservationSource source) {
         return new PeerDisconnected(nodeId, view, source);
     }
 
+    /// Sequenced variant: `sequence` is the producer's order of this observation among its view-carrying ones.
+    static PeerDisconnected peerDisconnected(NodeId nodeId,
+                                             List<NodeId> view,
+                                             ObservationSource source,
+                                             long sequence) {
+        return new PeerDisconnected(nodeId, view, source, sequence);
+    }
+
     static PeerReconnected peerReconnected(NodeId nodeId, List<NodeId> view, ObservationSource source) {
         return new PeerReconnected(nodeId, view, source);
+    }
+
+    /// Sequenced variant: `sequence` is the producer's order of this observation among its view-carrying ones.
+    static PeerReconnected peerReconnected(NodeId nodeId, List<NodeId> view, ObservationSource source, long sequence) {
+        return new PeerReconnected(nodeId, view, source, sequence);
     }
 
     static PeerObservedFaulty peerObservedFaulty(NodeId nodeId, List<NodeId> view, ObservationSource source) {

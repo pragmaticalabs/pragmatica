@@ -119,6 +119,29 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.TERMINATION_RETIREMENT_RESOLVED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.TERMINATION_RETIREMENT_OVERDUE);
     }
 
+    /// #2981 step 5: the lease and clock codes are operator-visible literals, each WARNING closed by an INFO recovery; the
+    /// truncation codes split by outcome (refused WARNING with recovery, retracted INFO). A change would orphan open alerts or silence the lease signal.
+    @Test
+    void ownerLeaseCodes_arePinned() {
+        assertThat(OperatorWarningCode.STREAM_OWNER_LEASE_LAPSED.code()).isEqualTo("stream-owner-lease-lapsed");
+        assertThat(OperatorWarningCode.STREAM_OWNER_LEASE_LAPSED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.STREAM_OWNER_LEASE_RESTORED.code()).isEqualTo("stream-owner-lease-restored");
+        assertThat(OperatorWarningCode.STREAM_OWNER_LEASE_RESTORED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STREAM_OWNER_LEASE_RESTORED.recoveryOf()).isEqualTo(Option.some(OperatorWarningCode.STREAM_OWNER_LEASE_LAPSED));
+        assertThat(OperatorWarningCode.NODE_CLOCK_RATE_DIVERGENCE.code()).isEqualTo("node-clock-rate-divergence");
+        assertThat(OperatorWarningCode.NODE_CLOCK_RATE_DIVERGENCE.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.NODE_CLOCK_RATE_NORMAL.code()).isEqualTo("node-clock-rate-normal");
+        assertThat(OperatorWarningCode.NODE_CLOCK_RATE_NORMAL.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.NODE_CLOCK_RATE_NORMAL.recoveryOf()).isEqualTo(Option.some(OperatorWarningCode.NODE_CLOCK_RATE_DIVERGENCE));
+        assertThat(OperatorWarningCode.STREAM_TRUNCATION_REFUSED.code()).isEqualTo("stream-truncation-refused");
+        assertThat(OperatorWarningCode.STREAM_TRUNCATION_REFUSED.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.STREAM_TRUNCATION_QUARANTINE_CLEARED.code()).isEqualTo("stream-truncation-quarantine-cleared");
+        assertThat(OperatorWarningCode.STREAM_TRUNCATION_QUARANTINE_CLEARED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STREAM_TRUNCATION_QUARANTINE_CLEARED.recoveryOf()).isEqualTo(Option.some(OperatorWarningCode.STREAM_TRUNCATION_REFUSED));
+        assertThat(OperatorWarningCode.STREAM_TRUNCATION_RETRACTED.code()).isEqualTo("stream-truncation-retracted");
+        assertThat(OperatorWarningCode.STREAM_TRUNCATION_RETRACTED.level()).isEqualTo(WarningLevel.INFO);
+    }
+
     @Test
     void codes_areKebabCase() {
         assertThat(Arrays.stream(OperatorWarningCode.values())
@@ -477,15 +500,25 @@ class OperatorWarningCodeTest {
                                                                                      .isEqualTo(23);
     }
 
-    /// CTO ruling A2 on #2831 (O3): of the D.6 recoveries, exactly those whose open condition is committed state close across nodes (rows 6/7,
-    /// the inferred-departure record; row 19, the committed exclusions), so a successor leader publishes them. The leader-local families do
-    /// not; their stale opens after a leader change are #2834. Red when: a committed-family recovery is refused by a successor, or a
-    /// leader-local recovery is published by a node that never raised its warning.
+    /// CTO ruling A2 on #2831 (O3), extended by #2834: of the D.6 recoveries, exactly those whose open condition is committed state close
+    /// across nodes, so a successor leader publishes them. Rows 6/7 (the inferred-departure record) and row 19 (the committed exclusions)
+    /// always were; the leader-local families commit their open set (`FsmWarningKey`) since #2834. `deployment-engine-matched` is raised by
+    /// each node about itself, so it does not. Red when: a committed-family recovery is refused by a successor, or the node-local recovery is
+    /// published by a node that never raised its warning.
     @Test
-    void d6Ruling_onlyTheCommittedStateRecoveries_closeAcrossNodes() {
+    void d6Ruling_theCommittedStateRecoveries_closeAcrossNodes() {
         assertThat(D6_RECOVERIES.keySet().stream().filter(OperatorWarningCode::closesAcrossNodes)).containsExactlyInAnyOrder(OperatorWarningCode.DEPARTURE_INFERRED_REVERSED,
                                                                                                                           OperatorWarningCode.DEPARTURE_INFERRED_CONFIRMED,
-                                                                                                                          OperatorWarningCode.SLICE_UNRESPONSIVE_EXPIRED);
+                                                                                                                          OperatorWarningCode.SLICE_UNRESPONSIVE_EXPIRED,
+                                                                                                                          OperatorWarningCode.DEPARTURE_BREAKER_CLEARED,
+                                                                                                                          OperatorWarningCode.PLACEMENT_VALID,
+                                                                                                                          OperatorWarningCode.JOIN_MATCHED,
+                                                                                                                          OperatorWarningCode.RETRY_EXHAUSTED_SETTLED,
+                                                                                                                          OperatorWarningCode.SCHEMA_HOLD_CLEARED,
+                                                                                                                          OperatorWarningCode.SCHEMA_STATUS_READABLE,
+                                                                                                                          OperatorWarningCode.STRAY_INSTANCE_REMOVED,
+                                                                                                                          OperatorWarningCode.WORKER_ABSENCE_JUDGEABLE,
+                                                                                                                          OperatorWarningCode.WORKER_COMMUNITY_POLICY_MATCHED);
     }
 
     /// #752: a recovery code closes a condition of its own subsystem, and a condition is not itself a recovery, so a

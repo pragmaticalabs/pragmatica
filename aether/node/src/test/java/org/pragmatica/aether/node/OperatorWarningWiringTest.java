@@ -46,6 +46,13 @@ class OperatorWarningWiringTest {
         assertThat(code).containsOnlyOnce("kvDispatchEvents.operatorWarnings(operatorWarningSink);");
     }
 
+    /// #1109 / #3103: the leader's committed-target gate raises into the node's ONE sink (bound to the aggregator by
+    /// `assembly_bindsOneSinkToThisNodesAggregator`); `AetherNodeLeaderAwaitedTargetBootTest` watches what the leader hands to its sink.
+    @Test
+    void assembly_givesTheSinkToTheClusterDeploymentManager() {
+        assertThat(assemblyCode()).containsOnlyOnce("clusterDeploymentManager.setOperatorWarningSink(operatorWarningSink);");
+    }
+
     @Test
     void assembly_givesTheSinkToSwimCoreAbsenceAndReplication() {
         var code = assemblyCode();
@@ -61,7 +68,31 @@ class OperatorWarningWiringTest {
     /// and managers, so un-binding either here, or handing the watch a different sink or a partial setup map, left them green.
     @Test
     void assembly_givesTheMaintenanceDriverAStallWatchOverEverySetupOnThisNodesSink() {
-        assertThat(assemblyCode()).containsOnlyOnce("StorageMaintenanceDriver.storageMaintenanceDriver(compositeDemotionManager,compositePromotionManager,PromotionStallWatch.promotionStallWatch(storageSetups,operatorWarningSink),compositeGarbageCollector);");
+        assertThat(assemblyCode()).containsOnlyOnce("StorageMaintenanceDriver.storageMaintenanceDriver(compositeDemotionManager,compositePromotionManager,PromotionStallWatch.promotionStallWatch(storageSetups,operatorWarningSink),compositeGarbageCollector,maintenancePasses,delegatedStorageAdapter::retryPending,config.timeouts().storageMaintenance().interval());");
+    }
+
+    /// #800: a maintenance pass that throws reaches this node's sink through the driver's own reporter, and the node serves the
+    /// driver's progress. The driver is tested with its own sink, so leaving the reporter unbound, or not serving the progress,
+    /// left it green.
+    @Test
+    void assembly_bindsTheMaintenancePassReporterToThisNodesSink() {
+        assertThat(assemblyCode()).containsOnlyOnce("maintenancePasses=DegradeReporter.degradeReporter(StorageMaintenanceDriver.REPORT_SUBJECT);maintenancePasses.bind(operatorWarningSink);");
+    }
+
+    /// #800: the overdue watchdog runs on its own timer, the gauges join the registry the Management API scrapes, and the node
+    /// serves the driver's degradation to `/api/health`. The driver is tested alone, so dropping any of these left it green.
+    @Test
+    void assembly_schedulesTheWatchdog_registersTheGauges_andServesTheDegradation() {
+        var code = assemblyCode();
+
+        assertThat(code).containsOnlyOnce("SharedScheduler.scheduleAtFixedRate(storageMaintenanceDriver::checkOverdue,config.timeouts().storageMaintenance().interval())");
+        assertThat(code).containsOnlyOnce("storageMaintenanceDriver.registerMeters(deploymentMeters);");
+        assertThat(code).containsOnlyOnce("returnstorageMaintenanceDriver.degradation();");
+    }
+
+    @Test
+    void node_servesTheMaintenanceDriversProgress() {
+        assertThat(assemblyCode()).containsOnlyOnce("returnstorageMaintenanceDriver.progress();");
     }
 
     /// The ready signal can fire again after a drain began; the node tells it whether it is draining from the drain procedure's own

@@ -13,7 +13,9 @@ import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /// Shared compilation infrastructure for annotation processor tests.
 final class TestCompilationHelper {
@@ -43,6 +45,22 @@ final class TestCompilationHelper {
 
     record SourceEntry(String fileName, String sourceCode) {}
 
+    /// Completes an empty-bodied fixture record with its type-named static factory: generated row mappers build records
+    /// through `Type.type(...)`, never `new` (#3018). `fields` are the plain components, e.g. `long id, String name`.
+    static String rowRecord(String name, String fields) {
+        var names = Arrays.stream(fields.split(","))
+                          .map(field -> field.trim().substring(field.trim().lastIndexOf(' ') + 1))
+                          .collect(Collectors.joining(", "));
+
+        return "record %s(%s) { static %s %s(%s) { return new %s(%s); } }".formatted(name,
+                                                                                    fields,
+                                                                                    name,
+                                                                                    Character.toLowerCase(name.charAt(0)) + name.substring(1),
+                                                                                    fields,
+                                                                                    name,
+                                                                                    names);
+    }
+
     /// Several sources, compiled with the processor and the generated sources all the way to bytecode.
     static CompilationResult compileAndCompileGenerated(List<SourceEntry> sources, Path tempDir) throws Exception {
         return compile(sources, tempDir, false);
@@ -52,7 +70,22 @@ final class TestCompilationHelper {
         return compile(sources, tempDir, true);
     }
 
+    /// Compiles with a caller-supplied processor, e.g. a subclass that forces a failure.
+    static CompilationResult compileWithProcessor(QueryAnnotationProcessor processor,
+                                                  String sourceCode,
+                                                  String fileName,
+                                                  Path tempDir) throws Exception {
+        return compile(List.of(new SourceEntry(fileName, sourceCode)), tempDir, true, processor);
+    }
+
     private static CompilationResult compile(List<SourceEntry> sources, Path tempDir, boolean procOnly) throws Exception {
+        return compile(sources, tempDir, procOnly, new QueryAnnotationProcessor());
+    }
+
+    private static CompilationResult compile(List<SourceEntry> sources,
+                                             Path tempDir,
+                                             boolean procOnly,
+                                             QueryAnnotationProcessor processor) throws Exception {
         var compiler = ToolProvider.getSystemJavaCompiler();
         var diagnosticCollector = new DiagnosticCollector<JavaFileObject>();
 
@@ -83,7 +116,7 @@ final class TestCompilationHelper {
             var task = compiler.getTask(
                 null, fileManager, diagnosticCollector, options, null, sourceFiles
             );
-            task.setProcessors(List.of(new QueryAnnotationProcessor()));
+            task.setProcessors(List.of(processor));
             var success = task.call();
             var diagMessages = diagnosticCollector.getDiagnostics().stream()
                 .map(d -> d.getKind() + ": " + d.getMessage(null))

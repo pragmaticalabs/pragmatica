@@ -177,13 +177,16 @@ public sealed interface Failures {
         }
 
         routeFailed(m, ctx, pair, reason);
-        m.retryExhaustedWarned = m.retryExhaustedWarned.add(artifact);
-        ctx.warn("retry-exhausted-unsettled",
-                 artifact.asString(),
-                 "Max retries exceeded for " + artifact
-                + " on " + pair.node().id()
-                + ": " + reason
-                + " - not marking permanently failed, no blueprint apply is outstanding");
+        // #2834: once per episode: an open warning, this leader's or inherited from the committed open set (`Warnings.inherit`), is not raised again.
+        if (!m.retryExhaustedWarned.contains(artifact)) {
+            m.retryExhaustedWarned = m.retryExhaustedWarned.add(artifact);
+            ctx.warn("retry-exhausted-unsettled",
+                     artifact.asString(),
+                     "Max retries exceeded for " + artifact
+                    + " on " + pair.node().id()
+                    + ": " + reason
+                    + " - not marking permanently failed, no blueprint apply is outstanding");
+        }
 
         return m;
     }

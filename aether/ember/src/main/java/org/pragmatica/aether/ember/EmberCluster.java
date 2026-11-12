@@ -60,6 +60,7 @@ import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.HttpProtocol;
+import org.pragmatica.aether.config.JwtConfig;
 import org.pragmatica.aether.config.SecurityMode;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.StreamingConfig;
@@ -128,6 +129,10 @@ public final class EmberCluster {
     /// test sets it to the OLD label before `start` and to the TARGET label before the run, and the nodes the run provisions
     /// then carry the new one. Harness-scoped.
     private volatile String versionLabel = "";
+    /// TEST SEAM (#2981 step 6) — the `NodeInfo.LABEL_WIRE_GENERATION` every node booted from now on advertises ("" = none: the
+    /// consensus layer stamps this binary's generation). Lets one in-JVM build boot an OLDER generation, so a test can show a later
+    /// node refusing to join it. Harness-scoped.
+    private volatile String wireGenerationLabel = "";
     private final Queue<Integer> availableSlots = new ConcurrentLinkedQueue<>();
     private final Map<String, Integer> slotsByNodeId = new ConcurrentHashMap<>();
     /// Slot each node last ran on, retained after the node is killed — lets [#relaunchNode] start a
@@ -205,6 +210,9 @@ public final class EmberCluster {
     private final AtomicReference<Option<SecurityMode>> managementSecurityMode = new AtomicReference<>(Option.empty());
 
     private final AtomicReference<Map<String, ApiKeyEntry>> appHttpApiKeys = new AtomicReference<>(Map.of());
+
+    /// The `[app-http]` JWT verification settings every node gets (#2983); empty unless [#withAppHttpSecurity] supplies them.
+    private final AtomicReference<Option<JwtConfig>> appHttpJwtConfig = new AtomicReference<>(Option.empty());
 
     /// TEST SEAM (streaming A-WAL) — opt-in writable, restart-stable per-node data dir. Defaults to
     /// [Option#none] (production + existing tests: nodes get an UNCREATABLE storage root, see
@@ -441,8 +449,19 @@ public final class EmberCluster {
     /// that never invoke this are byte-for-byte unchanged.
     @Contract
     public void withAppHttpSecurity(SecurityMode securityMode, Map<String, ApiKeyEntry> apiKeys) {
+        withAppHttpSecurity(securityMode, apiKeys, Option.empty());
+    }
+
+    /// As [#withAppHttpSecurity(SecurityMode, Map)], also handing every node the `[app-http]` JWT config (#2983), so
+    /// `security_mode = "jwt"` verifies tokens exactly as it does on a production node. Without it the nodes would run JWT
+    /// mode with no verifier and refuse every non-public route.
+    @Contract
+    public void withAppHttpSecurity(SecurityMode securityMode,
+                                    Map<String, ApiKeyEntry> apiKeys,
+                                    Option<JwtConfig> jwtConfig) {
         appHttpSecurityMode.set(securityMode);
         appHttpApiKeys.set(Map.copyOf(apiKeys));
+        appHttpJwtConfig.set(jwtConfig);
     }
 
     /// Give the Management API of EVERY node in this cluster its own security mode (#962), as `[management]
@@ -460,7 +479,7 @@ public final class EmberCluster {
                                            appHttpApiKeys.get(),
                                            AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE,
                                            appHttpSecurityMode.get(),
-                                           Option.empty(),
+                                           appHttpJwtConfig.get(),
                                            HttpProtocol.H1,
                                            apiVersioningDetection.get(),
                                            apiVersionHeaderName.get())
@@ -790,11 +809,10 @@ public final class EmberCluster {
             var slot = availableSlots.poll();
             var nodeId = nodeId(nodeIdPrefix + "-" + i).unwrap();
             var port = basePort + slot * portStride;
-            var info = versionLabel.isEmpty()
+            var seamLabels = withSeamLabels(Map.of());
+            var info = seamLabels.isEmpty()
                        ? NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap())
-                       : NodeInfo.nodeInfo(nodeId,
-                                           nodeAddress("localhost", port).unwrap(),
-                                           Map.of(NodeInfo.LABEL_VERSION, versionLabel));
+                       : NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap(), seamLabels);
 
             initialNodes.add(info);
             instanceTags.put(nodeId.id(), harnessInstanceTags(nodeId, Map.of()));
@@ -1315,7 +1333,7 @@ public final class EmberCluster {
         var port = basePort + slot * portStride;
         var mgmtPort = baseMgmtPort + slot * portStride;
         var appHttpPort = baseAppHttpPort + slot * portStride;
-        var advertised = withVersionLabel(labels);
+        var advertised = withSeamLabels(labels);
         var info = advertised.isEmpty()
                    ? NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap())
                    : NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap(), advertised);
@@ -1342,16 +1360,29 @@ public final class EmberCluster {
         return this;
     }
 
-    private Map<String, String> withVersionLabel(Map<String, String> labels) {
-        if (versionLabel.isEmpty() || labels.containsKey(NodeInfo.LABEL_VERSION)) {
+    /// TEST SEAM (#2981 step 6) — see [#wireGenerationLabel]. Applies to nodes booted after the call; running nodes keep theirs.
+    public EmberCluster nodeWireGeneration(String generation) {
+        wireGenerationLabel = generation;
+
+        return this;
+    }
+
+    private Map<String, String> withSeamLabels(Map<String, String> labels) {
+        return withSeamLabel(withSeamLabel(labels, NodeInfo.LABEL_VERSION, versionLabel),
+                             NodeInfo.LABEL_WIRE_GENERATION,
+                             wireGenerationLabel);
+    }
+
+    private static Map<String, String> withSeamLabel(Map<String, String> labels, String key, String value) {
+        if (value.isEmpty() || labels.containsKey(key)) {
             return labels;
         }
 
-        var versioned = new java.util.HashMap<>(labels);
+        var labelled = new java.util.HashMap<>(labels);
 
-        versioned.put(NodeInfo.LABEL_VERSION, versionLabel);
+        labelled.put(key, value);
 
-        return Map.copyOf(versioned);
+        return Map.copyOf(labelled);
     }
 
     /// The core list a new node is configured with: the full current list, or only `mintTimePeers` plus the node
@@ -1384,7 +1415,15 @@ public final class EmberCluster {
                      .or(() -> nodeNotFound(nodeIdStr));
     }
 
+    private static final Cause NULL_NODE_ID = org.pragmatica.lang.utils.Causes.cause("killNode needs a node id, got null");
+
     public Promise<Unit> killNode(String nodeIdStr, boolean graceful) {
+        return Option.option(nodeIdStr)
+                     .map(id -> killKnownOrMissing(id, graceful))
+                     .or(NULL_NODE_ID::promise);
+    }
+
+    private Promise<Unit> killKnownOrMissing(String nodeIdStr, boolean graceful) {
         return Option.option(nodes.get(nodeIdStr))
                      .map(node -> killNodeInternal(nodeIdStr, node, graceful))
                      .or(() -> nodeNotFound(nodeIdStr));

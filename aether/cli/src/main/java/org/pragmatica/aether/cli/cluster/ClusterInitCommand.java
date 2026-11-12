@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Callable;
 
@@ -459,7 +460,7 @@ class ClusterInitCommand implements Callable<Integer> {
 
         var mode = tls == null
                    ? "auto"
-                   : tls.toLowerCase();
+                   : tls.toLowerCase(Locale.ROOT);
 
         return switch (mode) {
             case "auto" -> Result.success(new TlsAnswers.AutoGenerate());
@@ -488,7 +489,7 @@ class ClusterInitCommand implements Callable<Integer> {
 
         var mode = secret == null
                    ? "auto"
-                   : secret.toLowerCase();
+                   : secret.toLowerCase(Locale.ROOT);
 
         return switch (mode) {
             case "auto" -> Result.success(new SecretAnswers.AutoGenerate());

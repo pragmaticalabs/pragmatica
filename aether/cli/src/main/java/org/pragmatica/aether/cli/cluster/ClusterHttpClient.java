@@ -37,6 +37,14 @@ public sealed interface ClusterHttpClient {
     AtomicReference<HttpOperations> HTTP_OPS_REF = new AtomicReference<>(JdkHttpOperations.jdkHttpOperations());
 
     long DRAIN_POLL_INTERVAL_MS = 2000;
+    /// A leader-side write refused by the conditional-commit fence answers 409 with this hint in its detail (#2944): nothing was written
+    /// and the same request succeeds once the leader's view settles. A 409 without the hint (a floor breach, an already-applied
+    /// state) is a real conflict and is never retried.
+    String TRANSIENT_CONFLICT_HINT = "retry the request";
+    /// Requests a POST makes in all against a transient-conflict 409 before the answer is handed to the caller (#2944).
+    int CONFLICT_RETRY_ATTEMPTS = 4;
+    /// The pause before retry N is N times this many milliseconds.
+    long CONFLICT_RETRY_PAUSE_MS = 250;
 
     @Contract
     @SuppressWarnings({"JBCT-EX-01", "JBCT-PAT-01", "JBCT-RET-08"})
@@ -188,7 +196,28 @@ public sealed interface ClusterHttpClient {
 
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"})
     private static Result<String> postPath(String path, String jsonBody) {
+        var result = postOnce(path, jsonBody);
+        var attempt = 1;
+
+        while (isTransientConflict(result) && attempt < CONFLICT_RETRY_ATTEMPTS) {
+            ClusterBootstrapOrchestrator.sleepQuietly(CONFLICT_RETRY_PAUSE_MS * attempt);
+            result = postOnce(path, jsonBody);
+            attempt++;
+        }
+
+        return result;
+    }
+
+    private static Result<String> postOnce(String path, String jsonBody) {
         return resolveEndpoint().flatMap(endpoint -> doPost(endpoint, path, jsonBody));
+    }
+
+    private static boolean isTransientConflict(Result<String> result) {
+        return result.fold(cause -> cause instanceof HttpError.ApiError error
+                                    && error.statusCode() == 409
+                                    && error.body()
+                                            .contains(TRANSIENT_CONFLICT_HINT),
+                           _ -> false);
     }
 
     @SuppressWarnings({"JBCT-UTIL-01", "JBCT-SEQ-01"})

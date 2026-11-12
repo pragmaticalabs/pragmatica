@@ -13,6 +13,7 @@ import org.pragmatica.aether.invoke.AdmittedSliceBridgeTest.Bridge;
 import org.pragmatica.aether.invoke.AdmittedSliceBridgeTest.Gate;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.ExecutionOutcome;
 import org.pragmatica.aether.slice.SliceDefect;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
@@ -65,7 +66,7 @@ class AdmittedSliceBridgeOutcomeTest {
     void invokeWithReply_timeout_recordsNothing() {
         var replied = Promise.<Unit>promise();
 
-        bridge(Promise.promise()).invokeWithReply("call", new byte[0], TimeSpan.timeSpan(10).millis(), _ -> replied.succeed(Unit.unit()));
+        bridge(Promise.promise()).invokeWithReply("call", new byte[0], Option.none(), TimeSpan.timeSpan(10).millis(), _ -> replied.succeed(Unit.unit()));
         replied.await(WAIT);
 
         assertThat(recorded).as("a stall is overload or an outage as often as a broken version").isEmpty();
@@ -76,7 +77,7 @@ class AdmittedSliceBridgeOutcomeTest {
         var replied = Promise.<Unit>promise();
 
         bridge(SliceDefect.CodecFailed.FACTORY.apply(Causes.cause("bad bytes")).promise())
-            .invokeWithReply("call", new byte[0], WAIT, _ -> replied.succeed(Unit.unit()));
+            .invokeWithReply("call", new byte[0], Option.none(), WAIT, _ -> replied.succeed(Unit.unit()));
         replied.await(WAIT);
 
         assertThat(recorded).containsExactly("call:DEFECT");

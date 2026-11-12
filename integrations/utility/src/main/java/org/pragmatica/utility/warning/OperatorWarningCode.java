@@ -196,7 +196,9 @@ public enum OperatorWarningCode {
     /// [#SCHEMA_HOLD_CLEARED].
     SCHEMA_HOLD("schema-hold", "deployment", WarningLevel.WARNING),
     /// D.6 row 16: the recovery of [#SCHEMA_HOLD], same subject: the hold was released, or its slice left the model.
-    SCHEMA_HOLD_CLEARED("schema-hold-cleared", "deployment", WarningLevel.INFO, SCHEMA_HOLD),
+    /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`), so a successor leader raises
+    /// it only for a subject in the inherited open set and publishes it without holding that warning's open mark.
+    SCHEMA_HOLD_CLEARED("schema-hold-cleared", "deployment", WarningLevel.INFO, SCHEMA_HOLD, true),
     /// D.6 row 17: a datasource's schema status does not decode (#964). Subject is the datasource. Closed by [#SCHEMA_STATUS_READABLE].
     SCHEMA_STATUS_UNKNOWN("schema-status-unknown", "deployment", WarningLevel.WARNING),
     /// D.6 row 18: a goal went unanswered in time; the node is excluded for the artifact. Closed by [#SLICE_UNRESPONSIVE_EXPIRED].
@@ -228,27 +230,49 @@ public enum OperatorWarningCode {
                                  true),
     /// D.6 row 8: the recovery of [#DEPARTURE_INFERRED_SUPPRESSED], same subject: the community's breaker cleared, or the community left the
     /// model.
+    /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`), so a successor leader raises
+    /// it only for a subject in the inherited open set and publishes it without holding that warning's open mark.
     DEPARTURE_BREAKER_CLEARED("departure-breaker-cleared",
                               "deployment",
                               WarningLevel.INFO,
-                              DEPARTURE_INFERRED_SUPPRESSED),
+                              DEPARTURE_INFERRED_SUPPRESSED,
+                              true),
     /// D.6 row 10: the recovery of [#INVALID_PLACEMENT], same subject: the placement parses, or the artifact's target was removed.
-    PLACEMENT_VALID("placement-valid", "deployment", WarningLevel.INFO, INVALID_PLACEMENT),
+    /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`), so a successor leader raises
+    /// it only for a subject in the inherited open set and publishes it without holding that warning's open mark.
+    PLACEMENT_VALID("placement-valid", "deployment", WarningLevel.INFO, INVALID_PLACEMENT, true),
     /// D.6 row 13: the recovery of [#JOIN_UNMATCHED], same subject: the pending join matched a row, or it was dropped.
-    JOIN_MATCHED("join-matched", "deployment", WarningLevel.INFO, JOIN_UNMATCHED),
+    /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`), so a successor leader raises
+    /// it only for a subject in the inherited open set and publishes it without holding that warning's open mark.
+    JOIN_MATCHED("join-matched", "deployment", WarningLevel.INFO, JOIN_UNMATCHED, true),
     /// D.6 row 14: the recovery of [#RETRY_EXHAUSTED_UNSETTLED], same subject: the judgment settled, or the artifact's target was removed.
-    RETRY_EXHAUSTED_SETTLED("retry-exhausted-settled", "deployment", WarningLevel.INFO, RETRY_EXHAUSTED_UNSETTLED),
+    /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`), so a successor leader raises
+    /// it only for a subject in the inherited open set and publishes it without holding that warning's open mark.
+    RETRY_EXHAUSTED_SETTLED("retry-exhausted-settled", "deployment", WarningLevel.INFO, RETRY_EXHAUSTED_UNSETTLED, true),
     /// D.6 row 17: the recovery of [#SCHEMA_STATUS_UNKNOWN], same subject: the status decodes, or the datasource's record was removed.
-    SCHEMA_STATUS_READABLE("schema-status-readable", "deployment", WarningLevel.INFO, SCHEMA_STATUS_UNKNOWN),
+    /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`), so a successor leader raises
+    /// it only for a subject in the inherited open set and publishes it without holding that warning's open mark.
+    SCHEMA_STATUS_READABLE("schema-status-readable", "deployment", WarningLevel.INFO, SCHEMA_STATUS_UNKNOWN, true),
     /// D.6 row 20: the recovery of [#STRAY_INSTANCE], same subject: the condemned observed row disappeared.
-    STRAY_INSTANCE_REMOVED("stray-instance-removed", "deployment", WarningLevel.INFO, STRAY_INSTANCE),
+    /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`), so a successor leader raises
+    /// it only for a subject in the inherited open set and publishes it without holding that warning's open mark.
+    STRAY_INSTANCE_REMOVED("stray-instance-removed", "deployment", WarningLevel.INFO, STRAY_INSTANCE, true),
     /// D.6 row 21: the recovery of [#WORKER_ABSENCE_UNJUDGEABLE], same subject: absence can be judged again for the class.
-    WORKER_ABSENCE_JUDGEABLE("worker-absence-judgeable", "deployment", WarningLevel.INFO, WORKER_ABSENCE_UNJUDGEABLE),
+    /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`), so a successor leader raises
+    /// it only for a subject in the inherited open set and publishes it without holding that warning's open mark.
+    WORKER_ABSENCE_JUDGEABLE("worker-absence-judgeable",
+                             "deployment",
+                             WarningLevel.INFO,
+                             WORKER_ABSENCE_UNJUDGEABLE,
+                             true),
     /// D.6 row 22: the recovery of [#WORKER_NO_COMMUNITY_POLICY], same subject: a later J5 placed the worker, or it departed first.
+    /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`), so a successor leader raises
+    /// it only for a subject in the inherited open set and publishes it without holding that warning's open mark.
     WORKER_COMMUNITY_POLICY_MATCHED("worker-community-policy-matched",
                                     "deployment",
                                     WarningLevel.INFO,
-                                    WORKER_NO_COMMUNITY_POLICY),
+                                    WORKER_NO_COMMUNITY_POLICY,
+                                    true),
     /// A deployment FSM's mailbox holds more than 10,000 inputs (phase-3 design 3.1, N-5): the mailboxes are unbounded by design, so a consumer that
     /// cannot keep up is reported here and nowhere else. The subject is `<node>/<fsm>`, the message names the depth. Closed by
     /// [#DEPLOYMENT_FSM_BACKLOG_CLEARED].
@@ -452,6 +476,16 @@ public enum OperatorWarningCode {
                                           "stream-consumer",
                                           WarningLevel.INFO,
                                           STREAM_CONSUMER_SEALED_RANGE_MISSING),
+    /// A stream consumer re-subscribed on a node started without the previous consumer's detach flush, which did not
+    /// settle within the detach-wait bound (#1960, 30s): the flush's cursor-store commit is wedged. The successor starts
+    /// from the cursor the store holds; if the held commit lands later with a lower cursor, the cluster checkpoint refuses
+    /// it (#1961). Raised once per held flush, subject the consumer.
+    STREAM_CONSUMER_DETACH_WAIT_EXCEEDED("stream-consumer-detach-wait-exceeded", "stream-consumer", WarningLevel.WARNING),
+    /// The recovery of a [#STREAM_CONSUMER_DETACH_WAIT_EXCEEDED], same subject: the held detach flush has settled.
+    STREAM_CONSUMER_DETACH_WAIT_SETTLED("stream-consumer-detach-wait-settled",
+                                        "stream-consumer",
+                                        WarningLevel.INFO,
+                                        STREAM_CONSUMER_DETACH_WAIT_EXCEEDED),
     /// A partition's owner promotion is refused because a peer ANSWERED its watermark probe with a page cut before its
     /// first event: that event alone exceeds the peer's read cap (#1431). Not an unreachable peer; the operator raises
     /// the peer's `maxReadResponseBytes`. The message names the partition, the peer and the offset.
@@ -484,6 +518,51 @@ public enum OperatorWarningCode {
                                    "stream-replication",
                                    WarningLevel.INFO,
                                    STREAM_OWNER_LINEAGE_REFUSED),
+    /// A node's ownership lease lapsed (#2981, fence-lease design 7): a renewal round took more than `T - R`, so the node stops
+    /// completing publishes "ok" for every CF >= 2 partition it owns until a renewal lands. Raised once per lapse edge; the
+    /// subject is the node. Registered by step 5 and raised by the lease steps (1-2), not by the config step. Closed by
+    /// [#STREAM_OWNER_LEASE_RESTORED].
+    STREAM_OWNER_LEASE_LAPSED("stream-owner-lease-lapsed", "stream-replication", WarningLevel.WARNING),
+    /// The recovery of a [#STREAM_OWNER_LEASE_LAPSED] (#2981), same subject: a renewal landed and the node's lease is valid again.
+    STREAM_OWNER_LEASE_RESTORED("stream-owner-lease-restored",
+                                "stream-replication",
+                                WarningLevel.INFO,
+                                STREAM_OWNER_LEASE_LAPSED),
+    /// A node's monotonic and wall clocks diverged by more than `clock_drift_bound` over a renewal interval (#2981, design 4,
+    /// A-CLK-1): the lease arithmetic assumes the monotonic clock is within that bound, so an acknowledged write can be
+    /// lost beyond it. Detection only, weak: a clock daemon that slews both clocks together is not seen. The subject is the node.
+    /// Registered by step 5 and raised by the lease steps. Closed by [#NODE_CLOCK_RATE_NORMAL].
+    NODE_CLOCK_RATE_DIVERGENCE("node-clock-rate-divergence", "node-clock", WarningLevel.WARNING),
+    /// The recovery of a [#NODE_CLOCK_RATE_DIVERGENCE] (#2981), same subject: the clock rates agree within the bound again.
+    NODE_CLOCK_RATE_NORMAL("node-clock-rate-normal", "node-clock", WarningLevel.INFO, NODE_CLOCK_RATE_DIVERGENCE),
+    /// A truncation of a partition's ring was asked to cut below its visible offset and was refused (#2981, design 2.2 check 3,
+    /// r7.1 C2): with CF >= 2 lineage the owner's lineage rule makes this cut unreachable, so a refusal is a defect and the
+    /// quarantine stands. The message names stream, partition, `keep` and `visible`. Registered by step 5 and raised by step 2's
+    /// truncation check. Closed by [#STREAM_TRUNCATION_QUARANTINE_CLEARED].
+    STREAM_TRUNCATION_REFUSED("stream-truncation-refused", "stream-replication", WarningLevel.WARNING),
+    /// The recovery of a [#STREAM_TRUNCATION_REFUSED] (#2981), same subject: the partition's quarantine cleared. Registered by
+    /// step 5; raised where the quarantine clears (steps 2-3).
+    STREAM_TRUNCATION_QUARANTINE_CLEARED("stream-truncation-quarantine-cleared",
+                                         "stream-replication",
+                                         WarningLevel.INFO,
+                                         STREAM_TRUNCATION_REFUSED),
+    /// A truncation of a partition's ring was asked to cut below its visible offset and proceeded as a counted retraction (#2981,
+    /// CF = 1 or non-durable: nothing acknowledged durably is lost). The message names stream, partition, `keep` and `visible`.
+    /// A point event that opens nothing, so INFO. Registered by step 5 and raised by step 2's truncation check.
+    STREAM_TRUNCATION_RETRACTED("stream-truncation-retracted", "stream-replication", WarningLevel.INFO),
+    /// A promoted owner's catch-up cannot progress (#2960): every source it could read for the partition answered short without
+    /// advancing the owner for three consecutive rounds, so the round ends demoted-source after demoted-source. The owner stays SYNCING and
+    /// never activates below the target; the redrive retries every tick and nothing else bounds it. CRITICAL: the partition has no
+    /// authoritative owner until a source holding the missing records answers in full or an operator acts. Raised once per episode,
+    /// not per tick; the message names the partition. Closed by [#STREAM_OWNER_CATCHUP_PROGRESSING].
+    STREAM_OWNER_CATCHUP_STALLED("stream-owner-catchup-stalled", "stream-replication", WarningLevel.CRITICAL),
+    /// The recovery of a [#STREAM_OWNER_CATCHUP_STALLED] (#2960), same subject: the owner's head advanced, the catch-up reached its target
+    /// and the owner activated, no source answered ahead of it any more, or this node stopped being the partition's owner (the message
+    /// says which).
+    STREAM_OWNER_CATCHUP_PROGRESSING("stream-owner-catchup-progressing",
+                                     "stream-replication",
+                                     WarningLevel.INFO,
+                                     STREAM_OWNER_CATCHUP_STALLED),
     /// A node's HTTP listener refused a TLS certificate rotation because the new certificate bundle did not build into a TLS
     /// context (a malformed or mismatched certificate or key). The listener keeps serving the PREVIOUS certificate, which
     /// expires; nothing is replaced and nothing falls back to plain HTTP. Subject is the listener (`management`, `app-http`).
@@ -593,8 +672,13 @@ public enum OperatorWarningCode {
     /// worker takes a community when it rejoins. Closed by [#COMMUNITY_GROWTH_RESUMED].
     COMMUNITY_GROWTH_BLOCKED("community-growth-blocked", "community-growth", WarningLevel.WARNING),
     /// The recovery of [#COMMUNITY_GROWTH_BLOCKED], same subject (#241): a worker of the source was admitted to a community again (the bound
-    /// was raised, or a community has room). INFO, published only after a published blocked event for the source (#752 mechanism).
-    COMMUNITY_GROWTH_RESUMED("community-growth-resumed", "community-growth", WarningLevel.INFO, COMMUNITY_GROWTH_BLOCKED),
+    /// was raised, or a community has room). INFO. Closes across nodes (#2834): the cluster FSM commits its open set, so a successor leader
+    /// closes a blocked event the deposed leader published; each raiser raises it only for a subject it holds open.
+    COMMUNITY_GROWTH_RESUMED("community-growth-resumed",
+                             "community-growth",
+                             WarningLevel.INFO,
+                             COMMUNITY_GROWTH_BLOCKED,
+                             true),
     /// A community placement operation (a worker replacement, a scale-down, a community retirement) is parked and needs an operator (#241): its
     /// drain acknowledgement deadline passed (DRAIN_UNCERTAIN), so the previous worker may or may not be drained, or it is BLOCKED by a
     /// conflict the reconciler cannot resolve by itself. Subject is the community; the message names the operation, the phase, both nodes
@@ -630,12 +714,14 @@ public enum OperatorWarningCode {
                                     "deployment",
                                     WarningLevel.INFO,
                                     TERMINATION_RETIREMENT_OVERDUE),
-    /// The recovery of [#COMMUNITY_ASSIGNMENT_UNPLACED], same subject (#241): the worker was assigned a community. INFO, published only after a
-    /// published unplaced event for the worker (#752 mechanism).
+    /// The recovery of [#COMMUNITY_ASSIGNMENT_UNPLACED], same subject (#241): the worker was assigned a community. INFO. Closes across
+    /// nodes (#2834): the cluster FSM commits its open set, so a successor leader closes an unplaced event the deposed leader published; each
+    /// raiser raises it only for a subject it holds open.
     COMMUNITY_ASSIGNMENT_PLACED("community-assignment-placed",
                                 "community-assignment",
                                 WarningLevel.INFO,
-                                COMMUNITY_ASSIGNMENT_UNPLACED),
+                                COMMUNITY_ASSIGNMENT_UNPLACED,
+                                true),
     /// Auto-heal is disabled, so the cluster did NOT delete the instance of a node it would otherwise have reaped (#1038): a departed node,
     /// an orphan the sweep found, a surplus trim, the reap of a never-joined (join-grace) zombie, or the retry or re-check of any of them.
     /// A retirement directed from outside (the node-replacement protocol, a community-placement retirement) is operator intent and is not held;
@@ -740,6 +826,37 @@ public enum OperatorWarningCode {
                                 "storage",
                                 WarningLevel.INFO,
                                 STORAGE_MAINTENANCE_NOT_STARTED),
+    /// The leader-pinned storage maintenance group (demotion, garbage collection) could not be stopped when this node stopped
+    /// leading (#800): it keeps running on a node that is no longer the leader. The subject is `leader-maintenance`. Closed by
+    /// [#STORAGE_MAINTENANCE_STOPPED].
+    STORAGE_MAINTENANCE_NOT_STOPPED("storage-maintenance-not-stopped", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STORAGE_MAINTENANCE_NOT_STOPPED], same subject: the group was stopped, or this node leads again so
+    /// running it is correct. INFO, published only after a published failure for the subject (#752 mechanism).
+    STORAGE_MAINTENANCE_STOPPED("storage-maintenance-stopped",
+                                "storage",
+                                WarningLevel.INFO,
+                                STORAGE_MAINTENANCE_NOT_STOPPED),
+    /// One storage maintenance pass (`demotion`, `garbage-collection` or `promotion`) threw instead of completing (#800), so
+    /// that part of maintenance did nothing this tick. Raised once per part; the subject is `storage-maintenance/<part>` and
+    /// the message carries the cause. Closed by [#STORAGE_MAINTENANCE_PASS_RECOVERED].
+    STORAGE_MAINTENANCE_PASS_FAILED("storage-maintenance-pass-failed", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STORAGE_MAINTENANCE_PASS_FAILED], same subject: the next pass of that part completed. INFO, published
+    /// only after a published failure for the subject (#752 mechanism).
+    STORAGE_MAINTENANCE_PASS_RECOVERED("storage-maintenance-pass-recovered",
+                                       "storage",
+                                       WarningLevel.INFO,
+                                       STORAGE_MAINTENANCE_PASS_FAILED),
+    /// A storage maintenance pass has not completed within three maintenance intervals (#800): the tick (subject
+    /// `storage-maintenance/tick`, no tick completed in that time, so a pass is blocked or the ticks are not running) or a
+    /// promotion cycle (subject `storage-maintenance/promotion`, one cycle running that long). Raised once per subject by the
+    /// maintenance watchdog. Closed by [#STORAGE_MAINTENANCE_PASS_COMPLETED].
+    STORAGE_MAINTENANCE_PASS_OVERDUE("storage-maintenance-pass-overdue", "storage", WarningLevel.WARNING),
+    /// The recovery of [#STORAGE_MAINTENANCE_PASS_OVERDUE], same subject: the next tick or promotion cycle completed. INFO,
+    /// published only after a published overdue warning for the subject (#752 mechanism).
+    STORAGE_MAINTENANCE_PASS_COMPLETED("storage-maintenance-pass-completed",
+                                       "storage",
+                                       WarningLevel.INFO,
+                                       STORAGE_MAINTENANCE_PASS_OVERDUE),
     /// A stream append log cut a torn tail while opening: bytes past the last valid record were discarded (they were never
     /// acknowledged). The subject is the storage instance; the message names the log, the byte range and the last valid offset. The
     /// cut happens once, at open, so there is no recovery code. Raised once per instance: a second log cut in the same boot is in
@@ -1032,6 +1149,51 @@ public enum OperatorWarningCode {
     /// log from their source of truth. Closed in-drain by [#DHT_DEPARTURE_SOLE_COPY_DELIVERED]; after a halt it stays open (no
     /// operator closer in this release).
     DHT_DEPARTURE_SOLE_COPY_AT_RISK("dht-departure-sole-copy-at-risk", "dht", WarningLevel.CRITICAL),
+    /// A node's datasource pools ask more of a PostgreSQL server than it allows (#2973): the sum of this node's pool warm-ups
+    /// ("at warm-up") or of their maximums ("under load") exceeds the server's non-superuser connection limit. Raised after
+    /// a pool opens, from the node's demand guard; it never refuses the pool. Subject is the server, `<addr>:<port>`, so the
+    /// aggregator throttles per server. Closed by [#DATASOURCE_DEMAND_WITHIN_SERVER_LIMIT], published when a later probe answer
+    /// or a pool close finds the server's sums back within its last answered limit; a server that is never probed or
+    /// closed against again keeps the warning open until the node restarts.
+    /// Recovery action: size `max_connections` per node per datasource for the node's peak concurrent work, keep pools
+    /// shared (`pool_scope = "node"`), or raise the server limit.
+    DATASOURCE_DEMAND_EXCEEDS_SERVER_LIMIT("datasource-demand-exceeds-server-limit", "datasource", WarningLevel.WARNING),
+    /// A PostgreSQL server refused the demand guard's probe with SQLSTATE 53300 (too many clients) right after a pool opened
+    /// (#2973): the server is full now. CRITICAL and a separate code, so the per-code throttle never hides it behind an
+    /// earlier demand warning for the same server. Subject is the server, `<addr>:<port>`; the message names the last limit
+    /// the server answered, or says it is unknown. Closed by [#DATASOURCE_SERVER_ACCEPTING_CONNECTIONS], published when a later probe of that server is answered.
+    /// Recovery action: as for [#DATASOURCE_DEMAND_EXCEEDS_SERVER_LIMIT].
+    DATASOURCE_SERVER_REFUSED_CONNECTION("datasource-server-refused-connection", "datasource", WarningLevel.CRITICAL),
+    /// The recovery of [#DATASOURCE_DEMAND_EXCEEDS_SERVER_LIMIT], same subject, the server (#2973): the node's pool sums on that
+    /// server are back within the limit it last answered. INFO, published only after a published demand warning for the subject
+    /// (#752 mechanism), by the node's demand guard on a probe answer or a pool close.
+    DATASOURCE_DEMAND_WITHIN_SERVER_LIMIT("datasource-demand-within-server-limit",
+                                          "datasource",
+                                          WarningLevel.INFO,
+                                          DATASOURCE_DEMAND_EXCEEDS_SERVER_LIMIT),
+    /// The recovery of [#DATASOURCE_SERVER_REFUSED_CONNECTION], same subject, the server (#2973): a later demand probe of that
+    /// server was answered, so it accepts connections again. INFO, published only after a published refusal for the subject
+    /// (#752 mechanism).
+    DATASOURCE_SERVER_ACCEPTING_CONNECTIONS("datasource-server-accepting-connections",
+                                            "datasource",
+                                            WarningLevel.INFO,
+                                            DATASOURCE_SERVER_REFUSED_CONNECTION),
+    /// At boot, the data root holds stream or WAL directories of another (earlier) NodeId (#2825, D7): every restart mints a fresh
+    /// NodeId, so after a whole-cluster restart the previous run's `stream-segments/<nodeId>/` and `wal/<nodeId>` are not read, and
+    /// stream records and durable-entity state are lost even though the disks survived. Subject is the data root holding the
+    /// directories (stable across restarts); the message names each directory and its size. Nothing is deleted or moved.
+    /// Recovery action: republish the stream records from their source; when nothing needs the directories, remove them by hand.
+    /// The real fix is #1569. Closed by [#STREAM_DATA_ABANDONED_CLEARED].
+    STREAM_DATA_ABANDONED("stream-data-abandoned", "stream-storage", WarningLevel.WARNING),
+    /// The recovery of [#STREAM_DATA_ABANDONED], same subject, the data root (#2825): a later boot found no stream or WAL directory
+    /// of another NodeId under it. INFO, closes across nodes: the warning belongs to an earlier boot, so no event layer of this process
+    /// has seen it. The raiser owns "is it open": it raises this only when the marker file the warning left beside the data root exists,
+    /// so a boot over a clean root that never warned publishes nothing.
+    STREAM_DATA_ABANDONED_CLEARED("stream-data-abandoned-cleared",
+                                  "stream-storage",
+                                  WarningLevel.INFO,
+                                  STREAM_DATA_ABANDONED,
+                                  true),
     /// The recovery of [#DHT_DEPARTURE_SOLE_COPY_AT_RISK], same subject (#2034): every sole-copy key was acknowledged by a target in its
     /// post-departure responsible set before the node halted. INFO, published by the draining node itself, only after its published
     /// at-risk event (#752 mechanism).

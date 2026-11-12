@@ -37,6 +37,9 @@ import org.pragmatica.lang.utils.Causes;
 /// - `ensureOption(option, predicate, ...)` — validates optional values with the
 ///   `Result<Option<T>>` contract: empty → `Success(None)`, present and valid → `Success(Some)`,
 ///   present and invalid → `Failure(cause)`.
+/// - `ensureSome(option, predicate, ...)` — the required-field counterpart: absent → `Failure`,
+///   present and invalid → `Failure`, present and valid → `Success(value)`.
+/// - `ensureNone(option, ...)` — a field that must not be supplied: present → `Failure`, absent → `Success(Unit)`.
 /// - `combine(check1, check2, ...)` — composes several `Fn1<Result<T>, T>` validators into one,
 ///   applied left to right, first failure wins.
 ///
@@ -48,7 +51,7 @@ import org.pragmatica.lang.utils.Causes;
 /// | Null | `notNull` |
 /// | Numeric | `positive`, `negative`, `nonNegative`, `nonPositive` |
 /// | Comparable | `greaterThan`, `greaterThanOrEqualTo`, `lessThan`, `lessThanOrEqualTo`, `equalTo`, `notEqualTo`, `between` |
-/// | CharSequence | `empty`, `notEmpty`, `blank`, `notBlank`, `present`, `lenBetween` |
+/// | CharSequence | `empty`, `notEmpty`, `blank`, `notBlank`, `present`, `lenBetween`, `codePointsBetween`, `utf8LengthAtMost` |
 /// | String | `contains`, `notContains`, `matches` (regex string or `Pattern`) |
 ///
 /// `present` = non-null AND non-blank (the usual "required string" check); `notBlank` assumes
@@ -441,6 +444,143 @@ public sealed interface Verify {
                           v -> ensure(v, predicate, param1, param2, causeProvider).map(Option::some));
     }
 
+    //------------------------------------------------------------------------------------------------------------------
+    // Required / forbidden optional value validation (ensureSome, ensureNone)
+    //------------------------------------------------------------------------------------------------------------------
+    /// Requires an optional value to be present and to satisfy a predicate. This is the required-field
+    /// counterpart of [#ensureOption(Option,Predicate)], where absence is a success.
+    ///
+    /// @param value     the optional value to verify
+    /// @param predicate the predicate the present value must satisfy
+    /// @param cause     the cause for both an absent value and a present value failing the predicate
+    /// @param <T>       the type of the value being verified
+    ///
+    /// @return success with the value if present and valid, failure with `cause` if absent or present and invalid
+    static <T> Result<T> ensureSome(Option<T> value, Predicate<T> predicate, Cause cause) {
+        return value.fold(cause::result, v -> ensure(v, predicate, cause));
+    }
+
+    /// Requires an optional value to be present and to satisfy a predicate, with a separate cause for a
+    /// present value that fails the predicate.
+    ///
+    /// @param value         the optional value to verify
+    /// @param predicate     the predicate the present value must satisfy
+    /// @param absent        the cause when the value is absent
+    /// @param causeProvider function that creates a Cause from the present value when the predicate fails
+    /// @param <T>           the type of the value being verified
+    ///
+    /// @return success with the value if present and valid, failure with `absent` if absent,
+    ///         failure with the generated cause if present and invalid
+    static <T> Result<T> ensureSome(Option<T> value,
+                                    Predicate<T> predicate,
+                                    Cause absent,
+                                    Fn1<? extends Cause, ? super T> causeProvider) {
+        return value.fold(absent::result, v -> ensure(v, predicate, causeProvider));
+    }
+
+    /// Requires an optional value to be present and to satisfy a binary predicate.
+    ///
+    /// @param value     the optional value to verify
+    /// @param predicate the binary predicate the present value must satisfy
+    /// @param param1    the additional parameter to pass to the predicate
+    /// @param cause     the cause for both an absent value and a present value failing the predicate
+    /// @param <T>       the type of the value being verified
+    /// @param <P1>      the type of the additional parameter
+    ///
+    /// @return success with the value if present and valid, failure with `cause` if absent or present and invalid
+    static <T, P1> Result<T> ensureSome(Option<T> value, Fn2<Boolean, T, P1> predicate, P1 param1, Cause cause) {
+        return value.fold(cause::result, v -> ensure(v, predicate, param1, cause));
+    }
+
+    /// Requires an optional value to be present and to satisfy a binary predicate, with a separate cause for
+    /// a present value that fails the predicate.
+    ///
+    /// @param value         the optional value to verify
+    /// @param predicate     the binary predicate the present value must satisfy
+    /// @param param1        the additional parameter to pass to the predicate
+    /// @param absent        the cause when the value is absent
+    /// @param causeProvider function that creates a Cause from the present value when the predicate fails
+    /// @param <T>           the type of the value being verified
+    /// @param <P1>          the type of the additional parameter
+    ///
+    /// @return success with the value if present and valid, failure with `absent` if absent,
+    ///         failure with the generated cause if present and invalid
+    static <T, P1> Result<T> ensureSome(Option<T> value,
+                                        Fn2<Boolean, T, P1> predicate,
+                                        P1 param1,
+                                        Cause absent,
+                                        Fn1<? extends Cause, ? super T> causeProvider) {
+        return value.fold(absent::result, v -> ensure(v, predicate, param1, causeProvider));
+    }
+
+    /// Requires an optional value to be present and to satisfy a ternary predicate.
+    ///
+    /// @param value     the optional value to verify
+    /// @param predicate the ternary predicate the present value must satisfy
+    /// @param param1    the first additional parameter to pass to the predicate
+    /// @param param2    the second additional parameter to pass to the predicate
+    /// @param cause     the cause for both an absent value and a present value failing the predicate
+    /// @param <T>       the type of the value being verified
+    /// @param <P1>      the type of the first additional parameter
+    /// @param <P2>      the type of the second additional parameter
+    ///
+    /// @return success with the value if present and valid, failure with `cause` if absent or present and invalid
+    static <T, P1, P2> Result<T> ensureSome(Option<T> value,
+                                            Fn3<Boolean, T, P1, P2> predicate,
+                                            P1 param1,
+                                            P2 param2,
+                                            Cause cause) {
+        return value.fold(cause::result, v -> ensure(v, predicate, param1, param2, cause));
+    }
+
+    /// Requires an optional value to be present and to satisfy a ternary predicate, with a separate cause
+    /// for a present value that fails the predicate.
+    ///
+    /// @param value         the optional value to verify
+    /// @param predicate     the ternary predicate the present value must satisfy
+    /// @param param1        the first additional parameter to pass to the predicate
+    /// @param param2        the second additional parameter to pass to the predicate
+    /// @param absent        the cause when the value is absent
+    /// @param causeProvider function that creates a Cause from the present value when the predicate fails
+    /// @param <T>           the type of the value being verified
+    /// @param <P1>          the type of the first additional parameter
+    /// @param <P2>          the type of the second additional parameter
+    ///
+    /// @return success with the value if present and valid, failure with `absent` if absent,
+    ///         failure with the generated cause if present and invalid
+    static <T, P1, P2> Result<T> ensureSome(Option<T> value,
+                                            Fn3<Boolean, T, P1, P2> predicate,
+                                            P1 param1,
+                                            P2 param2,
+                                            Cause absent,
+                                            Fn1<? extends Cause, ? super T> causeProvider) {
+        return value.fold(absent::result, v -> ensure(v, predicate, param1, param2, causeProvider));
+    }
+
+    /// Requires an optional value to be absent. Use it for a field that must not be supplied in an operation.
+    ///
+    /// @param value the optional value to verify
+    /// @param cause the cause to use if the value is present
+    /// @param <T>   the type of the value being verified
+    ///
+    /// @return success with `Unit` if absent, failure with `cause` if present
+    static <T> Result<Unit> ensureNone(Option<T> value, Cause cause) {
+        return value.fold(Result::unitResult, _ -> cause.result());
+    }
+
+    /// Requires an optional value to be absent, building the failure from the unexpected value.
+    ///
+    /// @param value         the optional value to verify
+    /// @param causeProvider function that creates a Cause from the unexpected present value
+    /// @param <T>           the type of the value being verified
+    ///
+    /// @return success with `Unit` if absent, failure with the generated cause if present
+    static <T> Result<Unit> ensureNone(Option<T> value, Fn1<? extends Cause, ? super T> causeProvider) {
+        return value.fold(Result::unitResult,
+                          v -> causeProvider.apply(v)
+                                            .result());
+    }
+
     /// A collection of predicate functions that can be used with the `ensure` methods.
     ///
     /// This interface provides a comprehensive set of predicate functions for common validation
@@ -663,6 +803,54 @@ public sealed interface Verify {
         /// @return true if the length is between minLen and maxLen (inclusive), false otherwise
         static <T extends CharSequence> boolean lenBetween(T value, int minLen, int maxLen) {
             return value.length() >= minLen && value.length() <= maxLen;
+        }
+
+        /// Checks if the number of Unicode code points in a character sequence is within specified bounds
+        /// (inclusive). Unlike [#lenBetween], a surrogate pair (e.g. an emoji) counts as ONE; a base character
+        /// followed by combining marks counts as one code point per character (no grapheme clustering).
+        ///
+        /// @param value the character sequence to check
+        /// @param min   the minimum number of code points (inclusive)
+        /// @param max   the maximum number of code points (inclusive)
+        /// @param <T>   the type of character sequence
+        /// @return true if the code point count is between min and max (inclusive), false otherwise
+        static <T extends CharSequence> boolean codePointsBetween(T value, int min, int max) {
+            var count = Character.codePointCount(value, 0, value.length());
+
+            return count >= min && count <= max;
+        }
+
+        /// Checks if the UTF-8 encoded length of a character sequence, in bytes, does not exceed a limit.
+        /// A code point takes 1 byte below U+0080, 2 below U+0800, 3 in the rest of the BMP and 4 for
+        /// supplementary code points (a surrogate pair is 4 bytes in total). An unpaired surrogate is
+        /// counted as 1 byte, the size of the `?` that the JDK encoder substitutes for it.
+        ///
+        /// @param value the character sequence to check
+        /// @param max   the maximum number of UTF-8 bytes (inclusive)
+        /// @param <T>   the type of character sequence
+        /// @return true if the UTF-8 length is at most max, false otherwise
+        static <T extends CharSequence> boolean utf8LengthAtMost(T value, int max) {
+            return value.codePoints()
+                        .mapToLong(Is::utf8Size)
+                        .sum() <= max;
+        }
+
+        private static int utf8Size(int codePoint) {
+            if (codePoint < 0x80 || isLoneSurrogate(codePoint)) {
+                return 1;
+            }
+
+            if (codePoint < 0x800) {
+                return 2;
+            }
+
+            return codePoint < 0x10000
+                   ? 3
+                   : 4;
+        }
+
+        private static boolean isLoneSurrogate(int codePoint) {
+            return codePoint >= Character.MIN_SURROGATE && codePoint <= Character.MAX_SURROGATE;
         }
 
         /// Checks if a String contains a substring.

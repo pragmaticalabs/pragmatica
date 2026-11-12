@@ -15,6 +15,7 @@ import org.pragmatica.aether.pg.parser.transform.CstNavigator;
 import org.pragmatica.aether.pg.schema.model.BuiltinTypes;
 import org.pragmatica.aether.pg.schema.model.PgType;
 import org.pragmatica.aether.pg.schema.model.Schema;
+import org.pragmatica.aether.pg.schema.validator.OutputNullability;
 import org.pragmatica.aether.pg.schema.validator.QueryValidator;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -30,11 +31,13 @@ import javax.lang.model.SourceVersion;
 import javax.lang.model.element.Element;
 import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.ExecutableElement;
+import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.element.VariableElement;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.MirroredTypeException;
 import javax.lang.model.type.TypeMirror;
+import javax.lang.model.util.Types;
 import javax.tools.Diagnostic;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -45,6 +48,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.regex.Pattern;
 
 /// Main annotation processor for PostgreSQL persistence interfaces.
@@ -202,14 +206,40 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
             if ( enclosed.getKind() != ElementKind.METHOD) {
             continue;}
             var execElement = (ExecutableElement) enclosed;
-            var methodInfo = analyzeMethod(execElement, schemaOpt, interfaceElement);
+            var methodInfo = analyzeGuarded(execElement, schemaOpt, interfaceElement);
             if ( methodInfo != null) {
             methods.add(methodInfo);}
         }
         return methods;
     }
 
-    private FactoryGenerator.MethodInfo analyzeMethod(
+    /// The processor boundary: a failure inside the analysis of one method (for instance a parse-tree extractor that
+    /// throws on a shape it does not model) must not escape as an uncaught processor crash naming only a grammar
+    /// rule. It becomes a build error naming the method and its SQL.
+    @SuppressWarnings("JBCT-EX-01")
+    private FactoryGenerator.MethodInfo analyzeGuarded(
+    ExecutableElement execElement,
+    Option<Schema> schemaOpt,
+    TypeElement interfaceElement) {
+        try {
+            return analyzeMethod(execElement, schemaOpt, interfaceElement);
+        } catch (RuntimeException failure) {
+            error(ProcessorError.analysisFailed(execElement.getSimpleName().toString(),
+                                                declaredSql(execElement),
+                                                String.valueOf(failure.getMessage())),
+                  execElement);
+            return null;
+        }
+    }
+
+    private static String declaredSql(ExecutableElement execElement) {
+        var query = execElement.getAnnotation(Query.class);
+        return query == null
+               ? "(generated CRUD statement)"
+               : query.value();
+    }
+
+    FactoryGenerator.MethodInfo analyzeMethod(
     ExecutableElement execElement,
     Option<Schema> schemaOpt,
     TypeElement interfaceElement) {
@@ -285,9 +315,23 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                               schema));
         validateJsonPairs(execElement, pairing, boundBody);
         schemaOpt.onPresent(schema -> validateReturnTypeMapping(execElement, resolved, parsedCst));
+        schemaOpt.onPresent(schema -> validateOutputNullability(execElement,
+                                                                methodName,
+                                                                resolved,
+                                                                needsScalarColumn(resolved, documentRepr.isPresent()),
+                                                                parsedCst,
+                                                                schema));
         validateRewrittenSql(execElement, methodName, rewritten.sql(), schemaOpt);
         var mapperColumns = boundMapperColumns(execElement, resolved, resolveMapperColumns(execElement, resolved), Set.of());
-        var documentColumn = documentRepr.map(repr -> documentColumn(repr, rewritten.sql(), resolved.kind()));
+        var scalarNeeded = needsScalarColumn(resolved, documentRepr.isPresent());
+        var scalarColumn = scalarNeeded
+                           ? outputColumn(parsedCst)
+                           : Option.<String>none();
+        if (scalarNeeded && scalarColumn.isEmpty()) {
+            error(ProcessorError.scalarColumnNeedsAlias(methodName), execElement);
+            return null;
+        }
+        var documentColumn = documentRepr.map(repr -> documentColumn(repr, scalarColumn.expect("document methods are scalar")));
         var bodyParams = reorderedParams(boundBody, rewritten.parameterOrder());
         // #648: the generated method OVERRIDES the interface method, so its signature is the
         // declaration order, always. Only the bind list follows placeholder order — it is emitted by
@@ -305,16 +349,19 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                mapperColumns,
                                                resolved.needsMapper(),
                                                resolved.scalarAccessor(),
-                                               documentColumn);
+                                               documentColumn,
+                                               scalarColumn,
+                                               fallibleRecordFactory(execElement, methodName, resolved));
     }
 
-    /// The document handling of a `@Jsonb` method's result: empty for an unmarked method, a failure (already
-    /// reported) when the return type cannot be a document.
+    /// The single-column handling of a method's result: a `@Jsonb` document, or a value object that declares
+    /// `valueMapping()` (#3015). Empty for any other unmarked method, a failure (already reported) when a marked
+    /// return type cannot be a document.
     private Result<Option<ColumnRepr>> documentReturn(ExecutableElement execElement,
                                                       String methodName,
                                                       TypeMirrorResolver.ResolvedReturn resolved) {
         if (!isMarked(execElement)) {
-            return Result.success(Option.empty());
+            return Result.success(valueObjectReturn(execElement, resolved));
         }
         var kind = resolved.kind();
         if (kind != MethodAnalyzer.ReturnKind.SINGLE && kind != MethodAnalyzer.ReturnKind.OPTIONAL
@@ -332,6 +379,112 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                           .mapError(_ -> REPORTED);
     }
 
+    /// A value object in `T`, `Option<T>` or `List<T>` position reads its one column and decodes it through
+    /// `valueMapping().lift()`, the way a value-object record component does. It is never a row record.
+    private static Option<ColumnRepr> valueObjectReturn(ExecutableElement execElement,
+                                                        TypeMirrorResolver.ResolvedReturn resolved) {
+        var kind = resolved.kind();
+        var rowKind = kind == MethodAnalyzer.ReturnKind.SINGLE || kind == MethodAnalyzer.ReturnKind.OPTIONAL
+                      || kind == MethodAnalyzer.ReturnKind.LIST;
+        var element = TypeMirrorResolver.innerTypeElement(execElement.getReturnType());
+
+        return rowKind && element != null
+               ? ValueMappingResolver.resolve(element.asType()).map(ColumnRepr.class::cast)
+               : Option.empty();
+    }
+
+    /// Whether the row record's type-named static factory returns `Result` (the record has an invariant) rather than
+    /// the record (#3018). The generated mapper builds the record through `Row.row(components...)`, never `new`, so
+    /// the invariants run at the decode boundary; a record without such a factory is reported (the placeholder keeps
+    /// the generated source well-formed while the reported error fails the compilation).
+    private boolean fallibleRecordFactory(ExecutableElement execElement,
+                                          String methodName,
+                                          TypeMirrorResolver.ResolvedReturn resolved) {
+        var record = TypeMirrorResolver.innerTypeElement(execElement.getReturnType());
+
+        if (!resolved.needsMapper() || record == null) {
+            return false;
+        }
+
+        var factory = recordFactory(record);
+
+        if (factory.isEmpty()) {
+            error(ProcessorError.missingRecordFactory(methodName,
+                                                      record.getSimpleName().toString(),
+                                                      expectedFactorySignature(record)),
+                  execElement);
+            return false;
+        }
+
+        return factory.map(method -> isFallibleFactory(execElement, methodName, record, method))
+                      .or(false);
+    }
+
+    private boolean isFallibleFactory(ExecutableElement execElement,
+                                      String methodName,
+                                      TypeElement record,
+                                      ExecutableElement factory) {
+        var types = processingEnv.getTypeUtils();
+        var returned = factory.getReturnType();
+
+        if (types.isSameType(returned, record.asType())) {
+            return false;
+        }
+
+        if (isResultOf(returned, record, types)) {
+            return true;
+        }
+
+        error(ProcessorError.recordFactoryReturnType(methodName, factory.getSimpleName().toString(), record.getSimpleName().toString()),
+              execElement);
+        return false;
+    }
+
+    private static boolean isResultOf(TypeMirror returned, TypeElement record, Types types) {
+        return returned instanceof DeclaredType declared
+               && ((TypeElement) declared.asElement()).getQualifiedName().contentEquals(RESULT_TYPE)
+               && declared.getTypeArguments().size() == 1
+               && types.isSameType(declared.getTypeArguments().getFirst(), record.asType());
+    }
+
+    private static final String RESULT_TYPE = "org.pragmatica.lang.Result";
+
+    /// The static method named after the record (`Row` -> `row`) whose parameters are the record's components, in order.
+    private static Option<ExecutableElement> recordFactory(TypeElement record) {
+        var name = factoryName(record);
+        var componentTypes = componentTypeNames(record);
+
+        return Option.from(record.getEnclosedElements()
+                                 .stream()
+                                 .filter(enclosed -> enclosed.getKind() == ElementKind.METHOD)
+                                 .map(ExecutableElement.class::cast)
+                                 .filter(method -> method.getSimpleName().contentEquals(name))
+                                 .filter(method -> method.getModifiers().contains(Modifier.STATIC))
+                                 .filter(method -> parameterTypeNames(method).equals(componentTypes))
+                                 .findFirst());
+    }
+
+    private static String factoryName(TypeElement record) {
+        return NamingConvention.toFactoryMethodName(record.getSimpleName().toString());
+    }
+
+    private static List<String> componentTypeNames(TypeElement record) {
+        return record.getRecordComponents().stream().map(component -> component.asType().toString()).toList();
+    }
+
+    private static List<String> parameterTypeNames(ExecutableElement method) {
+        return method.getParameters().stream().map(param -> param.asType().toString()).toList();
+    }
+
+    private static String expectedFactorySignature(TypeElement record) {
+        var params = record.getRecordComponents()
+                           .stream()
+                           .map(component -> component.asType() + " " + component.getSimpleName())
+                           .collect(Collectors.joining(", "));
+
+        return "static " + record.getSimpleName() + " " + factoryName(record) + "(" + params + ")";
+    }
+
     // `T` of `Promise<T>`, `Promise<Option<T>>` or `Promise<List<T>>`.
     private static TypeMirror documentType(TypeMirror returnType, MethodAnalyzer.ReturnKind kind) {
         var inner = ((DeclaredType) returnType).getTypeArguments().getFirst();
@@ -340,10 +493,62 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                : ((DeclaredType) inner).getTypeArguments().getFirst();
     }
 
-    private static FactoryGenerator.MapperColumn documentColumn(ColumnRepr repr,
-                                                                String sql,
-                                                                MethodAnalyzer.ReturnKind kind) {
-        var columnName = FactoryGenerator.inferScalarColumnName(sql, kind);
+    /// A method whose result is one value read from one column: a document, a `long`/`boolean`, or a
+    /// scalar accessor. Its column is named by the query's CST, never by scanning the text (#2886).
+    private static boolean needsScalarColumn(TypeMirrorResolver.ResolvedReturn resolved, boolean document) {
+        return !resolved.needsMapper()
+               && resolved.kind() != MethodAnalyzer.ReturnKind.UNIT
+               && (document
+                   || resolved.scalarAccessor().isPresent()
+                   || resolved.kind() == MethodAnalyzer.ReturnKind.LONG
+                   || resolved.kind() == MethodAnalyzer.ReturnKind.BOOLEAN);
+    }
+
+    /// The first output column NAME of the statement, from the parse tree: the alias `ColLabel` of a
+    /// target, else its column. Absent when the query does not parse or a target is an unaliased
+    /// expression or `*`.
+    private static Option<String> outputColumn(Result<CstNode> parsedCst) {
+        return parsedCst.option()
+                        .flatMap(CstNavigator::wrap)
+                        .flatMap(QueryValidator::selectOutputColumnNames)
+                        .flatMap(names -> Option.from(names.stream().findFirst()));
+    }
+
+    /// CRUD SQL is generated here, so an unaliased `count(*)` / `EXISTS(..)` has the column name
+    /// PostgreSQL gives it: `count` / `exists`.
+    private Option<String> crudScalarColumn(ExecutableElement execElement,
+                                            String methodName,
+                                            String sql,
+                                            MethodNameParser.Operation operation,
+                                            TypeMirrorResolver.ResolvedReturn resolved) {
+        if (!needsScalarColumn(resolved, false)) {
+            return Option.none();
+        }
+
+        var column = crudOutputColumn(sql, operation);
+
+        if (column.isEmpty()) {
+            error(ProcessorError.scalarColumnNeedsAlias(methodName), execElement);
+        }
+
+        return column;
+    }
+
+    private Option<String> crudOutputColumn(String sql, MethodNameParser.Operation operation) {
+        var named = outputColumn(sqlParseCache.computeIfAbsent(sql, sqlParser::parseCst));
+
+        if (named.isPresent()) {
+            return named;
+        }
+
+        return switch (operation) {
+            case COUNT -> Option.some("count");
+            case EXISTS -> Option.some("exists");
+            default -> Option.none();
+        };
+    }
+
+    private static FactoryGenerator.MapperColumn documentColumn(ColumnRepr repr, String columnName) {
         var accessor = repr.pAccessor();
         return new FactoryGenerator.MapperColumn(columnName,
                                                  accessor.method(),
@@ -468,6 +673,10 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         }
         var crudSql = sqlOpt.expect("checked with isEmpty above");
         validateRewrittenSql(execElement, methodName, crudSql, schemaOpt);
+        var scalarColumn = crudScalarColumn(execElement, methodName, crudSql, parsed.operation(), resolved);
+        if (needsScalarColumn(resolved, false) && scalarColumn.isEmpty()) {
+            return null;
+        }
         var mapperColumns = boundMapperColumns(execElement,
                                                resolved,
                                                resolved.needsMapper()
@@ -486,7 +695,9 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                mapperColumns,
                                                resolved.needsMapper(),
                                                resolved.scalarAccessor(),
-                                               Option.empty());
+                                               Option.empty(),
+                                               scalarColumn,
+                                               fallibleRecordFactory(execElement, methodName, resolved));
     }
 
     private FactoryGenerator.MethodInfo buildCrudMethodInfoWithoutSchema(
@@ -500,6 +711,10 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
     RecordExpansionResult recordExpansion) {
         var selectColumns = List.<String>of();
         var sql = generateCrudSqlWithoutSchema(parsed, tableName, selectColumns, inputFieldNames, resolved.kind());
+        var scalarColumn = crudScalarColumn(execElement, methodName, sql, parsed.operation(), resolved);
+        if (needsScalarColumn(resolved, false) && scalarColumn.isEmpty()) {
+            return null;
+        }
         var mapperColumns = boundMapperColumns(execElement, resolved, resolveMapperColumns(execElement, resolved), Set.of());
         var boundBody = boundBodyParams(execElement,
                                         recordExpansion.hasExpansion()
@@ -517,7 +732,9 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
                                                mapperColumns,
                                                resolved.needsMapper(),
                                                resolved.scalarAccessor(),
-                                               Option.empty());
+                                               Option.empty(),
+                                               scalarColumn,
+                                               fallibleRecordFactory(execElement, methodName, resolved));
     }
 
     private String generateCrudSqlWithoutSchema(
@@ -1344,6 +1561,101 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
             if ( !selectColumns.contains(columnName)) {
             warning(ProcessorError.returnFieldNotInSelect(field.name(), resolved.innerTypeName()),
                     execElement);}
+        }
+    }
+
+    /// An output NOT PROVEN non-null that is read into a non-`Option` field fails the build (#2889). Nullability is
+    /// computed per output expression from the parse tree (`OutputNullability`), never from column metadata alone.
+    /// A record field is checked against the output of its name; a scalar or document method reads its single output
+    /// through a non-nullable accessor, so a scalar is always checked, whatever the method's `Option` row wrapper.
+    /// An `Option` field on a provably non-null output is accepted without a warning. Skipped only when the text is
+    /// not exactly one analysable statement (parse failure); a `*` or output that cannot be listed or named is
+    /// treated as unproven, never skipped.
+    private void validateOutputNullability(
+    ExecutableElement execElement,
+    String methodName,
+    TypeMirrorResolver.ResolvedReturn resolved,
+    boolean scalar,
+    Result<CstNode> parsedCst,
+    Schema schema) {
+        if (!resolved.needsMapper() && !scalar) {
+            return;
+        }
+        var outputs = parsedCst.option()
+                               .flatMap(CstNavigator::wrap)
+                               .flatMap(nav -> OutputNullability.analyze(nav, schema));
+        if (outputs.isEmpty()) {
+            return;
+        }
+        if (scalar) {
+            outputs.unwrap().stream().findFirst().ifPresent(first -> reportIfNullable(execElement, methodName, first, "the returned value"));
+            return;
+        }
+        for (var field : extractReturnFields(execElement, resolved)) {
+            validateFieldOutputs(execElement, methodName, field, outputs.unwrap());
+        }
+    }
+
+    /// One record field against the select list: a name that repeats is ambiguous, whatever the field's type; a
+    /// non-`Option` field must not read an output that may be NULL. An output the query leaves unnamed (or a `*`
+    /// whose columns are unknown) may be what the field reads when no named output has its name, so a field no
+    /// named output covers is checked against the unnamed outputs that are not proven.
+    private void validateFieldOutputs(
+    ExecutableElement execElement,
+    String methodName,
+    TypeMirrorResolver.FieldInfo field,
+    List<OutputNullability.Output> outputs) {
+        var columnName = NamingConvention.toSnakeCase(field.name());
+        var named = outputs.stream().filter(output -> output.name().map(columnName::equals).or(false)).toList();
+        if (named.size() > 1) {
+            error(ProcessorError.ambiguousOutputName(methodName, columnName, named.size(), field.name()), execElement);
+            return;
+        }
+        if (field.typeName().startsWith(OPTION_TYPE + "<")) {
+            reportIfProven(execElement, methodName, field, named);
+            return;
+        }
+        if (named.isEmpty()) {
+            outputs.stream()
+                   .filter(output -> output.name().isEmpty())
+                   .filter(output -> !output.nullability().isNonNull())
+                   .findFirst()
+                   .ifPresent(output -> reportIfNullable(execElement, methodName, output, "field '" + field.name() + "'"));
+            return;
+        }
+        reportIfNullable(execElement, methodName, named.getFirst(), "field '" + field.name() + "'");
+    }
+
+    /// An `Option` field whose named output is PROVEN non-null fails the build (#2962): declared types match proven
+    /// nullability in both directions. An output that is not proven, or that no named output covers, stays accepted.
+    private void reportIfProven(ExecutableElement execElement,
+                                String methodName,
+                                TypeMirrorResolver.FieldInfo field,
+                                List<OutputNullability.Output> named) {
+        if (named.size() == 1 && named.getFirst().nullability() instanceof OutputNullability.Nullability.NonNull proven) {
+            var typeName = field.typeName();
+            var plainType = typeName.substring(OPTION_TYPE.length() + 1, typeName.length() - 1);
+
+            error(ProcessorError.provenNonNullToOption(methodName,
+                                                       named.getFirst().name().or("(unnamed output)"),
+                                                       field.name(),
+                                                       proven.proof(),
+                                                       plainType),
+                  execElement);
+        }
+    }
+
+    private void reportIfNullable(ExecutableElement execElement,
+                                  String methodName,
+                                  OutputNullability.Output output,
+                                  String target) {
+        if (output.nullability() instanceof OutputNullability.Nullability.MayBeNull nullable) {
+            error(ProcessorError.nullableOutputToNonOption(methodName,
+                                                           output.name().or("(unnamed output)"),
+                                                           target,
+                                                           nullable.reason(),
+                                                           target.startsWith("field")),
+                  execElement);
         }
     }
 

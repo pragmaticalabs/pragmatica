@@ -356,6 +356,11 @@ class ScheduledSingleModeNoOverlapTest {
             leader.answerFirst();
             await(() -> state.get(stateKey()) != null && state.get(stateKey()).totalExecutions() == 1, 5_000);
             leader.stopLeading(other.self);
+            // #2909: the fire gives up its durable claim and records its outcome BEFORE its in-process claim (the
+            // promise that releases it settles after the durable release, on another thread), so the state row above
+            // can be seen while the leader still holds the in-process claim. Wait for that settle, or the leader's
+            // refusals below would come from its own finished fire rather than from the manual run's cluster claim.
+            await(() -> inProcessClaimFree(leader), 5_000);
             var manual = other.manager.claimForManualRun(task).await().unwrap();
 
             assertThat(manual.isPresent()).as("the fire released: the manual run may take the claim").isTrue();
@@ -367,6 +372,20 @@ class ScheduledSingleModeNoOverlapTest {
             leader.stop();
             other.stop();
         }
+    }
+
+    /// True once `node`'s own fire has settled and given up its in-process claim; the probe claim is given back at once.
+    /// Called only after the node stopped leading, so no tick of its own can race the probe.
+    private static boolean inProcessClaimFree(Node node) {
+        var key = ScheduledTaskKey.scheduledTaskKey(SECTION, ARTIFACT, METHOD);
+
+        if (!node.manager.tryClaim(key)) {
+            return false;
+        }
+
+        node.manager.release(key);
+
+        return true;
     }
 
     private static void await(BooleanSupplier condition, long timeoutMs) {

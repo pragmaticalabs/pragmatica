@@ -205,6 +205,10 @@ public sealed interface MembershipAssembly {
         // Publish the FSM into the deferred holder so the membership consumers wired earlier (DHT
         // livePeers, accessibility filter, quorum-count propagation) read the authoritative FSM set.
         membershipFsmRef.set(membershipFsm);
+        // #2936: a node that cannot write to the quorum says so on its SWIM self-ALIVE, and every node reads its
+        // peers' reports — a reporting peer stays out of the forward set and a refuted drain does not re-admit it.
+        // Only a core publishes: a worker never writes to the quorum, its detector measures core visibility.
+        wireQuorumReports(configuredWorker(config), membershipFsm, quorumLossDetector, swimHealthDetector);
         metricsCollector.setMetricsProducerEligibility(membershipFsm::isTrackedAndNotDead);
         controlLoop.setMetricsProducerEligibility(membershipFsm::isTrackedAndNotDead);
 
@@ -213,6 +217,19 @@ public sealed interface MembershipAssembly {
                                         quorumLossDetector,
                                         clusterNameSupplier,
                                         membershipFsm);
+    }
+
+    /// #2936: the membership FSM reads every peer's SWIM quorum-loss report; a core also publishes its own report on
+    /// its SWIM self-ALIVE (a worker never writes to the quorum, so it publishes nothing).
+    @Contract
+    static void wireQuorumReports(boolean worker,
+                                  MembershipFsm membershipFsm,
+                                  QuorumLossDetector quorumLossDetector,
+                                  CoreSwimHealthDetector swimHealthDetector) {
+        membershipFsm.setQuorumLossReport(swimHealthDetector::reportsQuorumLoss);
+        if (!worker) {
+            quorumLossDetector.setQuorumReportListener(swimHealthDetector::reportSelfQuorum);
+        }
     }
 
     /// What `membershipJournal` reads from the assembly built so far.

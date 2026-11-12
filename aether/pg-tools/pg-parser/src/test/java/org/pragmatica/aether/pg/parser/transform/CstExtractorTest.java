@@ -4,7 +4,10 @@
 
 package org.pragmatica.aether.pg.parser.transform;
 
+import java.util.Locale;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.pg.parser.PostgresParser;
 import org.pragmatica.aether.pg.parser.PostgresParser.CstNode;
@@ -17,7 +20,7 @@ class CstExtractorTest {
 
     private CstNavigator parse(String sql) {
         var cst = PARSER.parseCst(sql).unwrap();
-        return CstNavigator.of((CstNode.NonTerminal) cst);
+        return CstNavigator.cstNavigator((CstNode.NonTerminal) cst);
     }
 
     private CstNavigator dataTypeFrom(String typeName) {
@@ -42,6 +45,17 @@ class CstExtractorTest {
             assertThat(qname.name().value()).isEqualTo("MyTable");
             assertThat(qname.name().style()).isEqualTo(Identifier.QuoteStyle.DOUBLE_QUOTED);
             assertThat(qname.name().normalized()).isEqualTo("MyTable");
+        }
+
+        /// #2894: a ColLabel the lexer reads as a keyword / type word is still the label's own lexeme.
+        @ParameterizedTest
+        @ValueSource(strings = {"name", "text", "user", "Name", "timestamp", "interval", "char", "varchar",
+                                "boolean", "int", "integer", "bigint", "numeric", "json", "jsonb", "bit"})
+        void keywordLikeColLabel_isItsOwnLexeme(String alias) {
+            var nav = parse("SELECT 1 AS " + alias);
+            var id = CstExtractor.extractIdentifier(nav.findAll("ColLabel").getFirst());
+            assertThat(id.normalized()).isEqualTo(alias.toLowerCase(Locale.ROOT));
+            assertThat(id.style()).isEqualTo(Identifier.QuoteStyle.UNQUOTED);
         }
 
         @Test void unquotedCaseFolded() {

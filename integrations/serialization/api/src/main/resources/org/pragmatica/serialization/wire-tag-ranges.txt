@@ -29,7 +29,9 @@
 192..196 pre-ledger 2026-11-07 allocated before the ledger: artifact coordinates
 256..293 pre-ledger 2026-11-07 allocated before the ledger: cluster events
 512..522 pre-ledger 2026-11-07 allocated before the ledger: HTTP handling and forwarding
+523..523 tP7 2026-11-09 #2879 RequestHeaders (PR #2933)
 640..643 pre-ledger 2026-11-07 allocated before the ledger: slice invocation (two retired DHTNotification pins)
+644..644 tP9d 2026-11-09 #2157 InvokeRequest with caller; 642 keeps the old shape (PR #2945)
 704..712 pre-ledger 2026-11-07 allocated before the ledger: slice core types
 832..841 pre-ledger 2026-11-07 allocated before the ledger: generation and community topology
 960..968 pre-ledger 2026-11-07 allocated before the ledger: blueprints
@@ -51,3 +53,7 @@
 2870..2879 ahse-A2b 2026-11-07 ahse lane A2b
 2880..2889 ahse-A3-1 2026-11-07 #2450
 2890..2899 ahse-U2 2026-11-07 ahse lane U2
+2900..2901 fix2635 2026-11-11 #2635 ConsumerGroupTombstone (PR #3025)
+2902..2903 fix2834 2026-11-11 #2834 FsmWarningKey and FsmWarningValue (2900..2901 left to fix2635, PR #3025)
+2904..2907 fix1715 2026-11-11 #1715 node-id high-water key and value (2904, 2905 pinned; 2906..2907 spare)
+2910..2911 impl2981s1 2026-11-11 #2981 NodeLeaseKey and NodeLeaseValue (2908..2909 left free)

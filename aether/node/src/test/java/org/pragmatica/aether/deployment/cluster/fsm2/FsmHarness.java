@@ -76,6 +76,8 @@ final class FsmHarness {
     long order;
     int inputs;
     Seams seams = Seams.UNWIRED;
+    /// Local membership's DEAD set as the next `Rebuild` reads it (C17r).
+    ClusterInput.DeadSet dead = ClusterInput.DeadSet.NONE;
     SettlePolicy policy = SettlePolicy.APPLY;
     ClusterState state = ClusterState.initial();
     boolean notifying = true;
@@ -201,7 +203,7 @@ final class FsmHarness {
         entries.sort(Comparator.comparing(entry -> entry.key()
                                                         .toString()));
 
-        return ClusterInput.Snapshot.snapshot(entries, seams, admissions, committedLeader());
+        return ClusterInput.Snapshot.snapshot(entries, seams, admissions, committedLeader(), dead);
     }
 
     /// Deliver one input and run the mailbox until it is empty.
@@ -367,6 +369,25 @@ final class FsmHarness {
     List<ClusterEffect.Submit> submits(ClusterModel.SubmitKind kind) {
         return submits().stream()
                       .filter(submit -> submit.kind() == kind)
+                      .toList();
+    }
+
+    /// Every submission except those of one kind (the WARNINGS transaction rides beside the decision that raised the warning).
+    List<ClusterEffect.Submit> submitsBesides(ClusterModel.SubmitKind kind) {
+        return submits().stream()
+                      .filter(submit -> submit.kind() != kind)
+                      .toList();
+    }
+
+    /// The keys the WARNINGS transactions put (an opened warning), in submission order; removals are not listed.
+    List<AetherKey> warningPuts() {
+        return submits(ClusterModel.SubmitKind.WARNINGS).stream()
+                      .flatMap(submit -> submit.transaction()
+                                               .mutations()
+                                               .stream())
+                      .filter(mutation -> mutation.replacement()
+                                                  .isPresent())
+                      .map(mutation -> (AetherKey) mutation.key())
                       .toList();
     }
 

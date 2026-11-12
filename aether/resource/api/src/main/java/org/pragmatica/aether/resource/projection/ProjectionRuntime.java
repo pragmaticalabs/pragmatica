@@ -15,7 +15,7 @@ import org.pragmatica.lang.Result;
 /// public @interface OrderProjectionRuntime {}
 ///
 /// static OrdersSlice ordersSlice(@OrderProjectionRuntime ProjectionRuntime runtime, ...) {
-///     var projection = runtime.attach(Projection.of(ORDER_EVENTS).into(store, key).apply(fold)
+///     var projection = runtime.attach(Projection.projection(ORDER_EVENTS).into(store, key).apply(fold)
 ///                                               .withClaims(claims, lease))
 ///                             .unwrap();
 ///     ...

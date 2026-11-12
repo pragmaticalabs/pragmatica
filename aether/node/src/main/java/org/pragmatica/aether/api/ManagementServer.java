@@ -58,6 +58,7 @@ import org.pragmatica.aether.api.routes.LogLevelRoutes;
 import org.pragmatica.aether.api.routes.ManagementRouter;
 import org.pragmatica.aether.api.routes.MavenProtocolRoutes;
 import org.pragmatica.aether.api.routes.MetricsRoutes;
+import org.pragmatica.aether.api.routes.NodeIdRoutes;
 import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.api.routes.NodeReplacementRoutes;
 import org.pragmatica.aether.api.routes.UpgradeRunRoutes;
@@ -285,7 +286,11 @@ class ManagementServerImpl implements ManagementServer {
     /// Below this much remaining wire budget a forwarded management request is refused instead of
     /// dispatched: the answer cannot reach the sender before its hop timeout fires.
     private static final TimeSpan RECEIVER_BUDGET_FLOOR = TimeSpan.timeSpan(50).millis();
+    /// Re-send window of a management reply whose request carried no budget (`Deadline.NO_BUDGET`): the request budget a
+    /// client's management call gets by default.
+    private static final TimeSpan UNBUDGETED_REPLY_WINDOW = TimeSpan.timeSpan(10).seconds();
 
+    private final ForwardReplyResender replyResender = ForwardReplyResender.forwardReplyResender();
     private final Consumer<NodeId> drainCommandSink;
     private final Supplier<Set<NodeId>> pendingDrainsSupplier;
     private final NodeLifecycleRoutes.SliceFloor sliceFloor;
@@ -444,6 +449,7 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(org.pragmatica.aether.api.routes.VersionRoutes.versionRoutes(nodeSupplier));
         routeSources.add(org.pragmatica.aether.api.routes.WorkerRoutes.workerRoutes(nodeSupplier));
         routeSources.add(org.pragmatica.aether.api.routes.CommunityRoutes.communityRoutes(nodeSupplier));
+        routeSources.add(NodeIdRoutes.nodeIdRoutes(nodeSupplier));
         // #525: turns declared-but-unbuilt routes into an honest 501 instead of a bare 404.
         // Registration order is irrelevant (route names are unique); registration itself is not —
         // dropping this source silently resurrects the dead-route class. Reasons live per-route in
@@ -1655,7 +1661,7 @@ class ManagementServerImpl implements ManagementServer {
 
     private static Option<org.pragmatica.http.HttpMethod> parseRoutingMethod(String raw) {
         return Result.lift(Causes::fromThrowable,
-                           () -> org.pragmatica.http.HttpMethod.valueOf(raw.toUpperCase()))
+                           () -> org.pragmatica.http.HttpMethod.valueOf(raw.toUpperCase(Locale.ROOT)))
                      .option();
     }
 
@@ -1831,7 +1837,7 @@ class ManagementServerImpl implements ManagementServer {
 
         if (securityEnabled) {
             var method = Result.lift(Causes::fromThrowable,
-                                     () -> HttpMethod.valueOf(context.method().toUpperCase()))
+                                     () -> HttpMethod.valueOf(context.method().toUpperCase(Locale.ROOT)))
                                .option();
 
             if (method.isEmpty()) {
@@ -2033,7 +2039,7 @@ class ManagementServerImpl implements ManagementServer {
                                                       payload,
                                                       Pipeline.MANAGEMENT);
 
-        network.send(request.sender(), forwardResponse);
+        sendManagementForwardReply(network, request, forwardResponse);
         log.trace("Sent management forward success response [{}]", request.requestId());
     }
 
@@ -2056,7 +2062,19 @@ class ManagementServerImpl implements ManagementServer {
                                                       errorMessage.getBytes(StandardCharsets.UTF_8),
                                                       Pipeline.MANAGEMENT);
 
-        network.send(request.sender(), forwardResponse);
+        sendManagementForwardReply(network, request, forwardResponse);
+    }
+
+    /// #2569 / #2583 P2: the reply is re-sent while the transport proves it did not write it (see [ForwardReplyResender]),
+    /// for as long as the requester can still be waiting. The window is the budget the request arrived with, measured from
+    /// this first reply send: it can only overstate what is left, and a reply that outlives its requester is ignored there.
+    private void sendManagementForwardReply(ClusterNetwork network,
+                                            HttpForwardRequest request,
+                                            HttpForwardResponse reply) {
+        replyResender.deliver(network,
+                              request.sender(),
+                              reply,
+                              Deadline.fromWireMillis(request.remainingMillis()).bounded(UNBUDGETED_REPLY_WINDOW));
     }
 
     @SuppressWarnings("JBCT-PAT-01")
@@ -2343,10 +2361,16 @@ class ManagementServerImpl implements ManagementServer {
 
         requestObserver.recordSecurityDenial(classifyDenialType(cause), method, path);
         if (status == HttpStatus.UNAUTHORIZED) {
-            response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"");
+            response.header("WWW-Authenticate", authenticateChallenge(cause));
         }
 
         ProblemResponses.writeProblem(response, toRoutingStatus(status), denialDetail(cause), path, requestId);
+    }
+
+    /// #2926: `ApiKey realm="Aether"`, plus the RFC 6750 section 3.1 `error` auth-param when a credential was
+    /// presented and refused. Package-visible so the exact challenge can be asserted without the HTTP pipeline.
+    static String authenticateChallenge(Cause cause) {
+        return SecurityError.challenge("ApiKey", "Aether", cause);
     }
 
     private static final String AUTHENTICATION_DENIAL = "Management API authentication refused: ";
@@ -2381,6 +2405,7 @@ class ManagementServerImpl implements ManagementServer {
             case SecurityError.MissingCredentials _ -> "auth_failure";
             case SecurityError.InvalidCredentials _ -> "auth_failure";
             case SecurityError.AccessDenied _ -> "insufficient_role";
+            case SecurityError.InsufficientRole _ -> "insufficient_role";
             case RoleEnforcer.AuthorizationError.AccessDenied _ -> "insufficient_role";
             default -> "auth_failure";
         };
@@ -2394,9 +2419,11 @@ class ManagementServerImpl implements ManagementServer {
     static HttpStatus resolveSecurityErrorStatus(Cause cause) {
         return switch (cause) {
             case SecurityError.MissingCredentials _ -> HttpStatus.UNAUTHORIZED;
-            case SecurityError.InvalidCredentials _ -> HttpStatus.FORBIDDEN;
+            case SecurityError.InvalidCredentials _ -> HttpStatus.UNAUTHORIZED;
             case SecurityError.AccessDenied _ -> HttpStatus.FORBIDDEN;
+            case SecurityError.InsufficientRole _ -> HttpStatus.FORBIDDEN;
             case RoleEnforcer.AuthorizationError.AccessDenied _ -> HttpStatus.FORBIDDEN;
+            case SecurityError.JwksFetchFailed _ -> HttpStatus.SERVICE_UNAVAILABLE;
             default -> HttpStatus.UNAUTHORIZED;
         };
     }

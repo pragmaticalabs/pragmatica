@@ -682,6 +682,25 @@ from the JSON body automatically.
 **Supported types:** `String` (default), `Integer`, `Long`, `Double`, `Float`, `Boolean`,
 `BigDecimal`, `LocalDate`, `LocalDateTime`, `LocalTime`, `OffsetDateTime`, `Duration`.
 
+**Success status** is declared with an inline-table route and `status`. The allowed set is
+`200`, `201`, `202` and `204`; `203`, `205`, `206` and any other value fail the build.
+`204` is valid only when the method returns `Unit`:
+
+```toml
+accept = { route = "POST /jobs", status = 202 }
+```
+
+**Location header** is declared with `location`, a template whose `{field}` placeholders name
+components of the result record (an `Option` result is read inside). Each field is rendered as
+one percent-encoded path segment. A `201` with no `location` sends no header:
+
+```toml
+create = { route = "POST /articles", status = 201, location = "/articles/{slug}" }
+```
+
+**Defaults:** a method returning `Unit` answers `204` with no body (or the declared status),
+an empty `Option` answers `404`, and a `null` success value is a bug answered `500`.
+
 ### Error Mapping
 
 The `[errors]` section uses glob patterns to match `Cause` type names to HTTP status codes:
@@ -1009,6 +1028,24 @@ Routes can be:
 - **String** (uses default security): `shorten = "POST /"`
 - **Array** (explicit security): `resolve = ["GET /{shortCode}", "public"]`
 
+Security levels: `public`, `optional`, `authenticated`, `role:<name>`.
+
+**`optional` -- authenticate if a credential is presented** (#2946; the name is a guess pending review). Use it for a
+route that serves everyone but personalises for a signed-in caller (a feed with a `following` flag):
+
+| Request | Outcome |
+|---|---|
+| no credential (`Authorization` / `X-API-Key` header absent) | served anonymously: the slice's `SecurityContext` parameter is the empty context (`isAuthenticated() == false`) |
+| a credential header that is present but fails validation (bare `Bearer`, empty value, unknown scheme, empty `X-API-Key`, malformed, expired, bad signature, wrong `alg`, wrong issuer/audience, unknown key) | `401` with `WWW-Authenticate: <first auth_schemes entry> realm="Aether", error="invalid_token"` -- never downgraded to anonymous |
+| a valid credential | served; the slice's `Principal` / `SecurityContext` parameters carry the validated identity |
+
+`public` is unchanged: it never reads a credential, so a bad token on a `public` route is ignored. `authenticated`
+and `role:<name>` are unchanged: a missing credential is still `401`. Under `security_mode = "none"` (and `jwt`
+without a `jwks_url`) there is nothing to validate a credential against, so an `optional` route is served anonymously
+and any credential is ignored. A security override to `optional` is subject to `strengthen_only` like `public`: it
+cannot be applied to an undeclared route, and `public` cannot replace `optional`. A JWT 503 (key-set fetch failure)
+is still a 503 on an `optional` route.
+
 The `[security]` section is optional. A route with no `[security]` section at all does **not**
 default to `public` (#763) -- it inherits the app HTTP server's global `security_mode` (see
 "Securing Your Endpoints" below), the same as an authenticated route with no per-route override.
@@ -1053,6 +1090,73 @@ The `override_policy` controls what operators can change at deploy time via blue
 See the [Management API reference](../reference/management-api.md#security-overrides)
 for full details on operator security overrides.
 
+## Injected Parameters
+
+A slice method that is served over HTTP can ask the route for values taken from the request itself, by
+declaring a parameter of one of these types. The route supplies it; it is never bound from the path, query or
+body, and it does not count as the method's request record.
+
+| Parameter type | Supplied value |
+|---|---|
+| `Principal` (`org.pragmatica.aether.http.handler.security`) | the authenticated caller |
+| `SecurityContext` (same package) | the caller's full security context |
+| `RequestHeaders` (`org.pragmatica.aether.http.handler`) | the headers of the request that reached the route |
+
+```java
+@Slice
+public interface UrlShortener {
+    // Path/query/body bound into the record; headers supplied by the route.
+    Promise<ShortUrl> resolve(RequestHeaders headers, ResolveRequest request);
+}
+```
+
+```java
+private Promise<ShortUrl> traced(RequestHeaders headers, ResolveRequest request) {
+    var traceId = headers.first("x-trace-id").or("none");   // Option<String>
+    var accepts = headers.all("accept");                    // List<String>, every value in arrival order
+    ...
+}
+```
+
+- `first(name)` answers an `Option<String>`: empty when the request did not carry the header.
+  `all(name)` answers every value of a repeated header, in arrival order, and an empty list when absent.
+- A comma-joined header value is kept as ONE value and is never split: `Accept: a/1, b/2` is the single value
+  `a/1, b/2`. `all(name)` returns repeated header lines as separate entries, in order.
+- `toString()` keeps the names and prints `<redacted>` for the values of `Authorization`, `Proxy-Authorization`,
+  `Cookie` and `Set-Cookie`, so logging a `RequestHeaders` does not leak credentials. The accessors still return the
+  real values.
+- Names are case-insensitive (RFC 9110 section 5.1); `X-Trace-Id` and `x-trace-id` are the same header.
+  `RequestHeaders` is immutable.
+- The parameter may stand anywhere in the parameter list and may be combined with `Principal` /
+  `SecurityContext`. With any injected parameter the method takes at most one other parameter, its request
+  record; the build refuses a method with two or more.
+- The same declaration works on Aether and on Terra: both serve a slice through the same generated routes.
+- **Headers exist at the HTTP edge only.** The route hands them to the method directly from the request it is
+  serving. Nothing carries them across a slice-to-slice call: when another slice calls a method that declares
+  `RequestHeaders`, that caller supplies the `RequestHeaders` argument like any other, and nothing is added on its
+  behalf. A slice that must pass the headers on does so explicitly. A `null` `RequestHeaders` argument on such a
+  call is sent as empty headers by the generated proxy rather than failing.
+
+### The caller across slice-to-slice calls
+
+A `SecurityContext` parameter is the caller's identity on every hop, not only at the edge:
+
+- **At the edge** the generated route passes the context the edge validated for this request (and, for a `Principal`
+  parameter, its principal) straight into the method. It is taken from the request, never from ambient state, so a
+  body decode or any other asynchronous step before the handler cannot lose it. An unauthenticated request gets the
+  anonymous context.
+- **Across a slice-to-slice call** to a method that declares `SecurityContext`, the caller passes its context as the
+  argument, as with any parameter. The generated proxy does not put it in the payload: it travels beside the payload, on
+  the invoke message, exactly as the edge validated it (principal, roles, claims). The receiving method gets it in its
+  `SecurityContext` parameter, and a `Principal` parameter beside it gets its principal. An unauthenticated or absent
+  context travels as "no identity" and arrives as the anonymous context, never as a stand-in principal or a default
+  role.
+- **Identity, never authorization.** The receiving node's route security never reads a propagated context; it only
+  ever authorizes the HTTP requests it serves itself. Treat the context as who is calling, for slice logic and audit.
+- A method that declares a `Principal` and no `SecurityContext` receives its `Principal` as an ordinary argument on a
+  slice-to-slice call: the caller holds only a principal there, so there is no validated context to carry.
+- `SecurityContext.toString()` prints claim names but not claim values, so logging a context does not leak a token.
+
 ## Securing Your Endpoints
 
 The app HTTP server defaults to `api-key` mode when `security_mode` is omitted from `aether.toml`
@@ -1060,7 +1164,10 @@ The app HTTP server defaults to `api-key` mode when `security_mode` is omitted f
 random ADMIN key on first startup and prints it once, prominently, to its log:
 
 - **`api-key`** -- authenticate via `X-API-Key` header, reuses management API keys (**default**)
-- **`jwt`** -- authenticate via `Authorization: Bearer` header with JWKS validation (RS256/ES256)
+- **`jwt`** -- authenticate via `Authorization: Bearer` header with JWKS validation (RS256/ES256), or with a shared secret
+  when `jwt_algorithm = "HS256"` (secret in `AETHER_JWT_SECRET`); `[app-http] auth_schemes`
+  (default `["Bearer"]`) names the accepted schemes, matched case-insensitively, and the `401` challenge names the first.
+  Forge honours this mode too: see [Application HTTP security](forge-guide.md#application-http-security-aethertoml)
 - **`none`** -- no authentication; must be set explicitly, dev/eval only, never for anything
   reachable over an untrusted network (Forge/Ember's in-JVM dev harness hardcodes this for local
   iteration, which is a separate, unrelated default from a real node's `aether.toml`)

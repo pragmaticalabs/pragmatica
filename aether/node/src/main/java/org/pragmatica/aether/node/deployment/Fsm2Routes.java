@@ -20,6 +20,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityPlacementOperationKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentApplyKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodePlacementKey;
@@ -105,6 +106,7 @@ public final class Fsm2Routes {
                                                                                         CommunityPlacementOperationKey.class,
                                                                                         TopicSubscriptionKey.class,
                                                                                         TopicPublisherKey.class,
+                                                                                        FsmWarningKey.class,
                                                                                         ClusterConfigKey.class);
 
     /// The key families the cluster FSM indexes on a remove: the put families without `ClusterConfigKey`.

@@ -9,6 +9,7 @@ import java.util.Map;
 
 import org.pragmatica.aether.worker.isolation.CoreAbsenceSnapshot;
 import org.pragmatica.hlc.HlcTimestamp;
+import org.pragmatica.aether.config.cluster.ApplyRoute;
 import org.pragmatica.lang.Option;
 
 
@@ -74,7 +75,8 @@ public sealed interface ManagementApiResponses {
                           int connectedPeers,
                           int metricsNodeCount,
                           int sliceCount,
-                          String buildTimestamp) {}
+                          String buildTimestamp,
+                          List<ComponentHealth> components) {}
 
     record LivenessResponse(String status, String nodeId, String state, boolean ready) {}
 
@@ -979,7 +981,10 @@ public sealed interface ManagementApiResponses {
                                  String version,
                                  boolean isLeader) {}
 
-    record ApplyConfigRequest(String tomlContent, long expectedVersion) {}
+    /// `route` (#686) is the client's claim of who fills the pools the plan changes. Absent, the server keeps the pre-#686
+    /// rule: structural actions are refused as unsupported. Present, the server recomputes the route of every pool-changing
+    /// action and refuses the plan on a mismatch, so the claim selects the check and never decides the outcome.
+    record ApplyConfigRequest(String tomlContent, long expectedVersion, Option<ApplyRoute> route) {}
 
     record ApplyConfigResponse(long configVersion, String clusterName, int coreCount, long updatedAt) {}
 
@@ -1006,6 +1011,12 @@ public sealed interface ManagementApiResponses {
                                 int previousCount,
                                 int newCount,
                                 long configVersion) {}
+
+    /// #1715: reserve `count` node ids `<source>-<role>-<n>` for `cluster apply`. `source` and `role` are required: an id names both.
+    record ReserveNodeIdsRequest(String source, String role, int count) {}
+
+    /// #1715: the reserved ids, in ascending ordinal, and the committed high-water they end at. The advance is committed before this answers.
+    record ReserveNodeIdsResponse(String source, String role, List<String> ids, int highWater) {}
 
     /// `expectedVersion` is the committed `configVersion` the operator read before asking (#1424), the same
     /// optimistic fence apply-config and scale carry. A primitive `long`, so an omitted or `null` field is

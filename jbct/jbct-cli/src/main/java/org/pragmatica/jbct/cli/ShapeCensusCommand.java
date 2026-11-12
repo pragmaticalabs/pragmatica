@@ -37,9 +37,7 @@ import picocli.CommandLine.Parameters;
 /// pointed at a stranger's code, where an unparseable file is exactly the thing worth knowing about.
 /// So this parses per file and folds the per-root reports itself, reporting `filesParsed` and
 /// `parseErrors` alongside the histogram.
-@Command(name = "shape-census",
-         description = "Report the distribution of JBCT structural patterns across a source tree",
-         mixinStandardHelpOptions = true)
+@Command(name = "shape-census", description = "Report the distribution of JBCT structural patterns across a source tree", mixinStandardHelpOptions = true)
 public class ShapeCensusCommand implements Callable<Integer> {
     static final int USAGE_ERROR = 2;
     static final List<String> SUPPORTED_FORMATS = List.of("text", "json");
@@ -56,7 +54,8 @@ public class ShapeCensusCommand implements Callable<Integer> {
     @Override
     public Integer call() {
         if (!SUPPORTED_FORMATS.contains(format.toLowerCase(Locale.ROOT))) {
-            System.err.println("Unknown format '" + format + "'; supported formats: " + String.join(", ", SUPPORTED_FORMATS));
+            System.err.println("Unknown format '" + format
+                              + "'; supported formats: " + String.join(", ", SUPPORTED_FORMATS));
 
             return USAGE_ERROR;
         }
@@ -86,18 +85,16 @@ public class ShapeCensusCommand implements Callable<Integer> {
                       .flatMap(source -> parser.parse(source.content()))
                       .onSuccess(root -> {
                           parsed.incrementAndGet();
-                          merge(histogram, ShapeCensus.census(root));
+                          merge(histogram,
+                                ShapeCensus.census(root));
                       })
                       .onFailure(cause -> {
-                          parseErrors.incrementAndGet();
-                          System.err.println("  ✗ " + file + ": " + cause.message());
-                      });
+                                     parseErrors.incrementAndGet();
+                                     System.err.println("  ✗ " + file + ": " + cause.message());
+                                 });
         }
 
-        var total = histogram.values()
-                             .stream()
-                             .mapToInt(Integer::intValue)
-                             .sum();
+        var total = histogram.values().stream().mapToInt(Integer::intValue).sum();
         var report = new ShapeCensus.CensusReport(java.util.Map.copyOf(histogram), total);
 
         if ("json".equalsIgnoreCase(format)) {
@@ -110,14 +107,12 @@ public class ShapeCensusCommand implements Callable<Integer> {
     }
 
     private static void merge(EnumMap<MethodShape, Integer> histogram, ShapeCensus.CensusReport report) {
-        report.histogram()
-              .forEach((shape, count) -> histogram.merge(shape, count, Integer::sum));
+        report.histogram().forEach((shape, count) -> histogram.merge(shape, count, Integer::sum));
     }
 
     private void printText(ShapeCensus.CensusReport report, int parsed, int parseErrors) {
         System.out.print(report.render());
         System.out.printf("  files parsed: %d%n", parsed);
-
         if (parseErrors > 0) {
             System.out.printf("  parse errors: %d (these contribute no methods; the counts above are a floor)%n",
                               parseErrors);
@@ -134,12 +129,13 @@ public class ShapeCensusCommand implements Callable<Integer> {
         builder.append("  \"mixedRate\": %.4f,\n".formatted(report.mixedRate()));
         builder.append("  \"unclassifiedRate\": %.4f,\n".formatted(report.unclassifiedRate()));
         builder.append("  \"histogram\": {\n");
-
         var shapes = MethodShape.values();
 
         for (int i = 0; i < shapes.length; i++) {
             builder.append("    \"%s\": %d".formatted(shapes[i], report.count(shapes[i])));
-            builder.append(i < shapes.length - 1 ? ",\n" : "\n");
+            builder.append(i < shapes.length - 1
+                           ? ",\n"
+                           : "\n");
         }
 
         builder.append("  }\n}\n");

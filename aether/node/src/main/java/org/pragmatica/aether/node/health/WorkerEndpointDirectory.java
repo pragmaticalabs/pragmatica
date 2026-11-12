@@ -39,7 +39,7 @@ public record WorkerEndpointDirectory(AtomicReference<Map<NodeId, NodeInfo>> ent
     }
 
     public List<NodeId> accessible(List<NodeId> candidates, MembershipFsm membership, Set<NodeId> connected) {
-        var reachable = Set.copyOf(membership.reachableMembers(candidates));
+        var reachable = Set.copyOf(membership.forwardableMembers(candidates));
         var directory = entries.get();
         var locallyObserved = membership.memberStates().keySet();
 

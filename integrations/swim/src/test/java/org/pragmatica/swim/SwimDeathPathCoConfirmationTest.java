@@ -299,7 +299,8 @@ class SwimDeathPathCoConfirmationTest {
                        .atMost(Duration.ofSeconds(5))
                        .until(() -> !listener.faultyCalls.contains(new FaultyCall(NODE_A, true)));
                 await().atMost(Duration.ofSeconds(15))
-                       .until(() -> listener.faultyCalls.contains(new FaultyCall(NODE_A, true)));
+                       .until(() -> listener.faultyCalls.contains(new FaultyCall(NODE_A, true))
+                                           && !forPeer(SwimObservation.UnknownObserved.class, NODE_A).isEmpty());
             } finally {
                 protocol.stop();
             }
@@ -334,7 +335,8 @@ class SwimDeathPathCoConfirmationTest {
                        .atMost(Duration.ofSeconds(5))
                        .until(() -> !listener.faultyCalls.contains(new FaultyCall(NODE_A, true)));
                 await().atMost(Duration.ofSeconds(15))
-                       .until(() -> listener.faultyCalls.contains(new FaultyCall(NODE_A, true)));
+                       .until(() -> listener.faultyCalls.contains(new FaultyCall(NODE_A, true))
+                                           && !forPeer(SwimObservation.UnknownObserved.class, NODE_A).isEmpty());
             } finally {
                 protocol.stop();
             }
@@ -482,7 +484,8 @@ class SwimDeathPathCoConfirmationTest {
                        .atMost(Duration.ofSeconds(5))
                        .until(() -> !listener.faultyCalls.contains(new FaultyCall(NODE_A, true)));
                 await().atMost(Duration.ofSeconds(15))
-                       .until(() -> listener.faultyCalls.contains(new FaultyCall(NODE_A, true)));
+                       .until(() -> listener.faultyCalls.contains(new FaultyCall(NODE_A, true))
+                                           && !forPeer(SwimObservation.UnknownObserved.class, NODE_A).isEmpty());
             } finally {
                 protocol.stop();
             }

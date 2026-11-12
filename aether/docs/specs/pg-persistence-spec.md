@@ -183,6 +183,19 @@ Promise<Unit> createUser(CreateUserRequest request);
 - All record fields MUST be used in the query (same exact-match rule)
 - `Option<T>` field → binds NULL when empty
 
+### Output Nullability (`@Query`)
+- Nullability is computed per output expression from the parse tree, never from column metadata alone
+- An output NOT PROVEN non-null that is read into a non-`Option` record field or a scalar/`@Jsonb` result → compilation error naming the method, output, reason and fix (`COALESCE(..., <default>)` or `Option<T>`)
+- Proven non-null: `NOT NULL` columns of the FROM root and inner-joined tables, `count(..)`, literals, `EXISTS`/`NOT EXISTS`, a scalar subquery that is a lone ungrouped `count(..)` (no `GROUP BY`/`HAVING`/set operation/`LIMIT`/`OFFSET`), `COALESCE` with a proven last argument; casts, signs and parentheses pass the verdict through
+- Proven by the `WHERE` (owner ruling, know 24474f6010): a NULL-rejecting predicate on a bare column - `IS NOT NULL`, `=`, `<>`, `<`, `>`, `<=`, `>=`, `BETWEEN`, `LIKE`/`ILIKE`, `IN (..)` (a scalar or list right-hand side) - proves that column non-null, ONLY as a top-level `AND` conjunct of the `WHERE` of the same `SELECT`; not under `OR`/`NOT` (including `NOT IN`/`NOT LIKE`), not inside a subquery, not in `HAVING`, not in an outer join's `ON`; it proves only that column and a predicate on an expression proves nothing. Quantified comparisons (`= ALL (..)`, `op ANY/SOME (..)`; an empty `ALL` set is true for a NULL row) and `IS [NOT] DISTINCT FROM` / `IS [NOT] TRUE|FALSE|UNKNOWN` prove nothing. A `WHERE` predicate on a column of the nullable side of a `LEFT JOIN` proves that column. `ROLLUP`/`CUBE`/`GROUPING SETS` subtotal rows still null it; the `WHERE` of an `UPDATE`/`DELETE` does not prove its `RETURNING` outputs
+- Nullable forms: outer-join sides, `max`/`min`/`sum`/`avg`/... over a possibly empty group, `CASE` without `ELSE`, `NULLIF`, empty scalar subquery, set operation with a nullable branch, anything unproven
+- An output PROVEN non-null that is read into an `Option<T>` record field → compilation error naming the method, output and proof, fix: declare the plain `T` (#2962); an unproven output may still be read into `Option<T>`. A scalar `Promise<Option<T>>` is exempt: there `Option` is the row wrapper
+- Scalar/`@Jsonb` single outputs are read non-nullably: `Promise<Option<T>>` does not permit a NULL value
+- Unaliased outputs use PostgreSQL's default label (function name, `case`, `coalesce`, `nullif`, cast/parenthesised column); an output with no certain name is checked against any field no named output covers
+- `SELECT *` over a derived table/CTE propagates each inner output's verdict; unresolvable columns are unproven; a `VALUES` branch is nullable if any row is
+- A repeated output name read by a record component → compilation error (ambiguous mapping)
+- CRUD-generated methods are out of scope
+
 ### Mixing Records and Direct Parameters
 
 ```java
@@ -291,8 +304,8 @@ Promise<List<UserName>> findActiveNames();
 | `Promise<Option<T>>` | Zero or one row | `Option.empty()` if no rows |
 | `Promise<List<T>>` | Zero or more rows | Empty list if no rows |
 | `Promise<Unit>` | No result (DML) | Returns successfully |
-| `Promise<Long>` | Scalar count | Maps to long |
-| `Promise<Boolean>` | Scalar boolean | Maps to boolean |
+| `Promise<Long>` | Scalar count | Maps to long; an expression such as `count(*)` must be aliased (`SELECT count(*) AS n`), else the build fails |
+| `Promise<Boolean>` | Scalar boolean | Maps to boolean; an expression such as `EXISTS(..)` must be aliased, else the build fails |
 
 ## Auto-Generated CRUD Methods
 

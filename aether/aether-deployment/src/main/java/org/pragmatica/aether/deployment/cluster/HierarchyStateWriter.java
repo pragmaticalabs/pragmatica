@@ -32,7 +32,7 @@ public record HierarchyStateWriter(Supplier<Option<LeaderValue>> authority,
         public String message() {
             return this == INACTIVE
                    ? "Active committed core authority is required"
-                   : "Hierarchy state changed before conditional commit";
+                   : "Hierarchy state changed before conditional commit; nothing was written, retry the request";
         }
     }
 

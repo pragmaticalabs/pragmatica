@@ -988,6 +988,25 @@ public final class MembershipFsm {
         return snapshot;
     }
 
+    /// The current DEAD set (#2937, deployment-fsm-spec C17r): every tracked member whose state is terminally DEAD, i.e. a
+    /// verdict this node reached and has not re-admitted (a fenced rejoin moves the member out of DEAD), with its retained
+    /// descriptor. Read by the deployment engines on becoming leader, so a verdict reached as a follower is not lost.
+    /// Insertion-ordered, matching [`#memberStates`]. Pure read.
+    public Map<NodeId, MemberDescriptor> deadMembers() {
+        var snapshot = new LinkedHashMap<NodeId, MemberDescriptor>();
+
+        members.forEach((id, tracking) -> addIfDead(snapshot, id, tracking));
+
+        return snapshot;
+    }
+
+    @Contract
+    private static void addIfDead(Map<NodeId, MemberDescriptor> snapshot, NodeId id, MemberTracking tracking) {
+        if (tracking.isDead()) {
+            snapshot.put(id, tracking.descriptor());
+        }
+    }
+
     /// Wave-1 diagnostic snapshot (cluster-topology-overhaul spec, item 6): each tracked
     /// member's SWIM-incarnation high-water mark ([`MembershipContext#lastSeenIncarnation`]).
     /// Insertion-ordered, matching [`#memberStates`] / [`#memberDescriptors`]; includes DEAD
@@ -1228,6 +1247,19 @@ public final class MembershipFsm {
                          .toList();
     }
 
+    /// Filter `candidates` to the FORWARD set (#2936): [#reachableMembers] minus every member that reports it cannot
+    /// write to the quorum. AccessibilityFilter uses this, so an HTTP route or slice invocation is never handed to a
+    /// quorumless node a refuted drain or a stale route would otherwise keep reachable. Deliberately NOT folded into
+    /// [#reachableMembers]: that set also scopes which cores SWIM observes, and narrowing it there could stop a survivor
+    /// from hearing the report clear. Preserves the caller's candidate order.
+    public List<NodeId> forwardableMembers(List<NodeId> candidates) {
+        var predicate = quorumLossReported;
+
+        return reachableMembers(candidates).stream()
+                               .filter(predicate.negate())
+                               .toList();
+    }
+
     // --- Per-member transition drivers (presence sampler promotion + co-confirmation eviction) ---
     // Each driver below is ONE logical membership operation spanning several per-member steps.
     // Since #929 they run under the member's transition guard ([`MemberTracking#inTransition`]) so
@@ -1417,6 +1449,18 @@ public final class MembershipFsm {
     }
 
     private volatile boolean onePlaneWorkerEviction = true;
+    /// #2936 — the member's own report that it cannot write to the quorum (its SWIM-gossiped quorum-loss label).
+    /// Default: nobody reports (a host without SWIM, the legacy factories, tests that do not set it).
+    private volatile Predicate<NodeId> quorumLossReported = _ -> false;
+
+    /// #2936 — wire the per-member quorum-loss report. Read live at two sites: the DEPARTING->MEMBER refuted-drain
+    /// recovery ([`MembershipState.Departing`] holds a reporting member in DEPARTING) and [#forwardableMembers]. A
+    /// report that clears re-admits on the member's next strictly-newer `SwimHealthy`, which the clearing carries.
+    public org.pragmatica.lang.Unit setQuorumLossReport(Predicate<NodeId> report) {
+        quorumLossReported = report;
+
+        return org.pragmatica.lang.Unit.unit();
+    }
 
     /// #1717 — whether THIS node may evict a worker or spot on a single death plane. A core holds evidence
     /// sources for a member (governor reports, worker admission) that veto a wrong signal inside the backstop
@@ -1478,7 +1522,7 @@ public final class MembershipFsm {
     }
 
     private MemberTracking newTracking(NodeId id) {
-        var fsm = Fsm.fsm(FSM_KIND, id.id(), initialStateFactory(id), observer);
+        var fsm = Fsm.fsm(FSM_KIND, id.id(), initialStateFactory(id, () -> quorumLossReported.test(id)), observer);
         var tracking = new MemberTracking(id,
                                           fsm,
                                           this::onEnteredDead,
@@ -1506,9 +1550,10 @@ public final class MembershipFsm {
     /// Explicitly-typed initial-state factory so the [`Fsm#fsm`] constructor-driven overload is
     /// selected unambiguously (the bare lambda is ambiguous against the plain `S initial` overload).
     /// Builds the per-member [`MembershipContext`] bound to the partially-constructed FSM and returns
-    /// its OBSERVED initial state.
-    private static Function<Fsm<MembershipState, MembershipEvent>, MembershipState> initialStateFactory(NodeId id) {
-        return holder -> new MembershipContext(holder, id).observed();
+    /// its OBSERVED initial state. `quorumLossReported` reads the member's quorum-loss report live (#2936).
+    private static Function<Fsm<MembershipState, MembershipEvent>, MembershipState> initialStateFactory(NodeId id,
+                                                                                                        BooleanSupplier quorumLossReported) {
+        return holder -> new MembershipContext(holder, id, quorumLossReported).observed();
     }
 
     /// Mutable per-member bookkeeping: the member's FSM plus the promotion streak counter and the two

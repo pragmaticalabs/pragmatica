@@ -32,6 +32,7 @@ import org.pragmatica.messaging.MessageRouter;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -56,6 +57,9 @@ class LeaderReconnectTransportTest {
 
     private final List<QuicClusterNetwork> networks = new ArrayList<>();
     private FsmBackedLeaderManager manager;
+    /// Set once the follower manager's `PeerJoined` handler has RETURNED for the leader. The manager is seeded with the
+    /// electorate, so `currentTopology().contains(LEADER)` is true before any observation arrives (#2969).
+    private final AtomicBoolean joinHandled = new AtomicBoolean();
 
     @AfterEach
     void tearDown() {
@@ -73,10 +77,16 @@ class LeaderReconnectTransportTest {
         router.addRoute(PeerJoined.class, built::peerJoined);
         router.addRoute(PeerDisconnected.class, built::peerDisconnected);
         router.addRoute(PeerReconnected.class, built::peerReconnected);
+        // Registered after the manager's own route, so it runs after that handler returns (CopyOnWriteArrayList order).
+        router.addRoute(PeerJoined.class, (Consumer<PeerJoined>) joined -> {
+            if (joined.nodeId().equals(LEADER)) {
+                joinHandled.set(true);
+            }
+        });
         router.addRoute(Send.class, (Consumer<Send>) _ -> {});
         built.context().enablePreVote(LONG);
         built.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
-        built.fsm().dispatch(new ClusterFsmEvent.NodeAdded(FOLLOWER, ALL));
+        built.fsm().dispatch(new ClusterFsmEvent.NodeAdded(FOLLOWER, ALL, 1L));
         built.fsm().dispatch(new ConsensusReady());
         built.fsm().dispatch(new LeaderCommitted(LEADER, 1L));
 
@@ -110,7 +120,7 @@ class LeaderReconnectTransportTest {
 
         follower.dialForTests(leaderInfo, false);
         awaitTrue(() -> connected(follower, LEADER) && connected(leader, FOLLOWER), AWAIT, "both ends CONNECTED");
-        awaitTrue(() -> manager.context().currentTopology().contains(LEADER), AWAIT, "the join put the leader in the follower's view");
+        awaitTrue(joinHandled::get, AWAIT, "the transport's PeerJoined(leader) was fully handled by the follower manager (the seeded view already holds the leader, so the topology cannot gate this)");
         assertThat(followsTheLeader()).as("control: the follower follows the leader").isTrue();
 
         follower.peerStateForTests(LEADER).evict(System.nanoTime()).onPresent(connection -> connection.close().await(AWAIT));

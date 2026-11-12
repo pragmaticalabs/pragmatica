@@ -63,6 +63,16 @@ class GeneratedVoRouteTest {
                 ".to(seatId -> org.pragmatica.lang.Result.lift(__thrown -> HttpStatus.BAD_REQUEST.with(__thrown), () -> new com.example.voslice.GetSeatRequest(seatId)).async().flatMap(__constructed -> delegate.getSeat(__constructed)))");
         }
 
+        /// #2879: RequestHeaders beside the request record leaves the record's value-object bindings intact.
+        @Test
+        void getSeatWithHeaders_keepsTheValueObjectBindingBesideRequestHeaders() {
+            var start = generated.indexOf("/api/seats/with-headers/");
+
+            assertThat(start).as("the headers route is generated").isPositive();
+            assertThat(generated.substring(start, start + 220)).contains(
+                ".withPath(PathParameter.aUuid().mapped(com.example.voslice.SeatId.valueMapping().lift()))");
+        }
+
         @Test
         void getSeat_doesNotFallBackToRawStringParser() {
             // Regression guard: the value-object segment must never degrade to aString().

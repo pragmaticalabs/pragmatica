@@ -70,11 +70,19 @@ final class JsonCodecEmitter {
     private static final String ENTRY_POINT_SUFFIX = "JsonCodec";
 
     private final JsonTypeAnalyzer analyzer;
+    private final Map<String, Set<String>> requestBound;
     private final Map<String, String> names = new HashMap<>();
     private final Set<String> taken = new HashSet<>();
 
     JsonCodecEmitter(JsonTypeAnalyzer analyzer) {
+        this(analyzer, Map.of());
+    }
+
+    /// `requestBound` names, per record (by qualified name), the components a route fills from its path or query
+    /// (#2957): the record's reader does not require them and skips a body member of the same name unread.
+    JsonCodecEmitter(JsonTypeAnalyzer analyzer, Map<String, Set<String>> requestBound) {
         this.analyzer = analyzer;
+        this.requestBound = requestBound;
     }
 
     /// The holder `holderName`, marked as generated for `generatedFor` (`JsonCodecGenerator.generatedForMarker`).
@@ -351,7 +359,7 @@ final class JsonCodecEmitter {
         var lines = new ArrayList<String>();
 
         lines.add("    interface " + name + " {");
-        lines.addAll(objectConstants(definition));
+        lines.addAll(objectConstants(definition, requestBound(definition)));
         lines.add("        " + RT
                  + "JsonTypeCodec<" + type
                  + "> CODEC = " + RT
@@ -394,7 +402,7 @@ final class JsonCodecEmitter {
         var lines = new ArrayList<String>();
 
         lines.add("    interface " + name + " {");
-        lines.addAll(objectConstants(definition));
+        lines.addAll(objectConstants(definition, requestBound(definition)));
         lines.add("        " + RT
                  + "JsonTypeCodec<" + type
                  + "> CODEC = " + RT
@@ -425,20 +433,31 @@ final class JsonCodecEmitter {
         return lines;
     }
 
-    private static List<String> objectConstants(JsonType.RecordDefinition definition) {
+    // The components of `definition` a route fills from its path or query, none for most records.
+    private Set<String> requestBound(JsonType.RecordDefinition definition) {
+        return requestBound.getOrDefault(definition.element().getQualifiedName().toString(),
+                                         Set.of());
+    }
+
+    private static List<String> objectConstants(JsonType.RecordDefinition definition, Set<String> requestBound) {
         var components = definition.components();
         var nameList = String.join(", ",
                                    components.stream().map(c -> "\"" + c.wireName() + "\"").toList());
         var required = 0L;
 
         for (int i = 0; i < components.size(); i++) {
-            if (! (components.get(i).type() instanceof JsonType.OptionalOf)) {
+            if (!isOptionalMember(components.get(i).type()) && !requestBound.contains(components.get(i).name())) {
                 required |= 1L << i;
             }
         }
 
         return List.of("        " + SPI + "FieldNames NAMES = " + SPI + "FieldNames.fieldNames(" + nameList + ");",
                        "        long REQUIRED = " + required + "L;");
+    }
+
+    // A member that may be missing: an `Option` reads it as empty, a `Patch` as `Absent`.
+    static boolean isOptionalMember(JsonType type) {
+        return type instanceof JsonType.OptionalOf || type instanceof JsonType.PatchOf;
     }
 
     // The object form of a record: one member per component, in declaration order.
@@ -469,6 +488,7 @@ final class JsonCodecEmitter {
     private List<String> objectReader(JsonType.RecordDefinition definition, String method) {
         var type = typeName(definition.element());
         var components = definition.components();
+        var bound = requestBound(definition);
         var lines = new ArrayList<String>();
 
         lines.add("        static " + type + " " + method + "(" + SPI + "JsonReader in) {");
@@ -498,10 +518,12 @@ final class JsonCodecEmitter {
         for (int i = 0; i < components.size(); i++) {
             var component = components.get(i);
 
-            lines.add("                    case " + i
-                     + " -> f_" + component.name()
-                     + " = " + readField(component, i)
-                     + ";");
+            lines.add(bound.contains(component.name())
+                      ? "                    case " + i + " -> in.skipValue();"
+                      : "                    case " + i
+                       + " -> f_" + component.name()
+                       + " = " + readField(component, i)
+                       + ";");
         }
 
         lines.add("                    default -> unknown = in.skipUnknown(unknown);");
@@ -511,6 +533,12 @@ final class JsonCodecEmitter {
             if (components.get(i).type() instanceof JsonType.OptionalOf) {
                 lines.add("            if ((seen & " + (1L << i) + "L) == 0) {");
                 lines.add("                f_" + components.get(i).name() + " = org.pragmatica.lang.Option.none();");
+                lines.add("            }");
+            }
+
+            if (components.get(i).type() instanceof JsonType.PatchOf) {
+                lines.add("            if ((seen & " + (1L << i) + "L) == 0) {");
+                lines.add("                f_" + components.get(i).name() + " = org.pragmatica.lang.Patch.absent();");
                 lines.add("            }");
             }
         }
@@ -523,8 +551,9 @@ final class JsonCodecEmitter {
         lines.add("            }");
         var args = String.join(", ",
                                components.stream().map(c -> "f_" + c.name()).toList());
-
-        lines.add(definition.factory().isEmpty()
+        // A request-bound component is not in the body, so the factory cannot judge this partial value: the route
+        // builds the record again from the request and the body, and validates it then.
+        lines.add(definition.factory().isEmpty() || !bound.isEmpty()
                   ? "            return new " + type + "(" + args + ");"
                   : "            return in.accept(" + type
                    + "." + definition.factoryName()
@@ -539,12 +568,17 @@ final class JsonCodecEmitter {
     // ---- writing -------------------------------------------------------------------------------
     // One member: its pre-encoded name, then its value. An `Option` component writes its name only when present and
     // leaves an empty one to `writeEmpty`, which writes the name and `null`, or nothing when the options exclude empty
-    // values: the option is consulted on the empty path alone.
+    // values: the option is consulted on the empty path alone. A `Patch` component ignores the option: `Absent` is
+    // left out (`writeAbsent`) and `Null` is always written.
     private List<String> writeMember(JsonType.Component component, int index, String ind) {
         var name = "NAMES." + (index == 0
                                ? "first"
                                : "next") + "(" + index + ")";
         var expr = "value." + component.name() + "()";
+
+        if (component.type() instanceof JsonType.PatchOf patch) {
+            return writePatchMember(patch, name, expr, ind);
+        }
 
         if (! (component.type() instanceof JsonType.OptionalOf optional)) {
             var lines = new ArrayList<String>();
@@ -571,12 +605,34 @@ final class JsonCodecEmitter {
         return lines;
     }
 
+    private List<String> writePatchMember(JsonType.PatchOf patch, String name, String expr, String ind) {
+        var boxed = javaType(patch.element());
+        var lines = new ArrayList<String>();
+
+        lines.add(ind + "switch (" + expr + ") {");
+        lines.add(ind + "    case org.pragmatica.lang.Patch.Value<" + boxed + ">(var present) -> {");
+        lines.add(ind + "        out.writeRaw(" + name + ");");
+        depth++;
+        lines.addAll(writeValue(patch.element(), "present", ind + "        "));
+        depth--;
+        lines.add(ind + "    }");
+        lines.add(ind + "    case org.pragmatica.lang.Patch.Null<" + boxed + "> _ -> {");
+        lines.add(ind + "        out.writeRaw(" + name + ");");
+        lines.add(ind + "        out.writeNull();");
+        lines.add(ind + "    }");
+        lines.add(ind + "    case org.pragmatica.lang.Patch.Absent<" + boxed + "> _ -> out.writeAbsent();");
+        lines.add(ind + "}");
+
+        return lines;
+    }
+
     private List<String> writeValue(JsonType type, String expr, String ind) {
         return switch (type) {
             case JsonType.Scalar scalar -> List.of(ind + writeScalar(scalar, expr) + ";");
             case JsonType.EnumRef ref -> List.of(ind + codecName(ref.element()) + ".write(out, " + expr + ");");
             case JsonType.RecordRef ref -> List.of(ind + codecName(ref.element()) + ".write(out, " + expr + ");");
             case JsonType.OptionalOf optional -> writeOptional(optional, expr, ind);
+            case JsonType.PatchOf _ -> throw new IllegalStateException("a Patch is written only as a member: " + type);
             case JsonType.ListOf list -> writeList(list, expr, ind);
             case JsonType.MapOf map -> writeMap(map, expr, ind);
         };
@@ -739,7 +795,7 @@ final class JsonCodecEmitter {
     }
 
     private static boolean needsHelper(JsonType type) {
-        return type instanceof JsonType.OptionalOf || type instanceof JsonType.ListOf || type instanceof JsonType.MapOf;
+        return type instanceof JsonType.OptionalOf || type instanceof JsonType.PatchOf || type instanceof JsonType.ListOf || type instanceof JsonType.MapOf;
     }
 
     private boolean isValueObject(JsonType.RecordRef ref) {
@@ -767,6 +823,10 @@ final class JsonCodecEmitter {
             case JsonType.OptionalOf optional -> List.of(ind + "return in.isNull()",
                                                          ind + "       ? org.pragmatica.lang.Option.none()",
                                                          ind + "       : org.pragmatica.lang.Option.some(" + readElement(optional.element()) + ");");
+            // Reached only for a present member: a missing one is set to `Absent` after the member loop.
+            case JsonType.PatchOf patch -> List.of(ind + "return in.isNull()",
+                                                   ind + "       ? org.pragmatica.lang.Patch.nullValue()",
+                                                   ind + "       : org.pragmatica.lang.Patch.value(" + readElement(patch.element()) + ");");
             case JsonType.ListOf list -> {
                 var impl = list.set()
                            ? "java.util.LinkedHashSet"
@@ -849,6 +909,7 @@ final class JsonCodecEmitter {
             case JsonType.EnumRef ref -> typeName(ref.element());
             case JsonType.RecordRef ref -> typeName(ref.element());
             case JsonType.OptionalOf optional -> "org.pragmatica.lang.Option<" + javaType(optional.element()) + ">";
+            case JsonType.PatchOf patch -> "org.pragmatica.lang.Patch<" + javaType(patch.element()) + ">";
             case JsonType.ListOf list -> (list.set()
                                           ? "java.util.Set<"
                                           : "java.util.List<") + javaType(list.element()) + ">";

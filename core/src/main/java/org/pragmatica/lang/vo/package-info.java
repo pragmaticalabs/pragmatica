@@ -28,6 +28,10 @@
 /// | [NonBlankString][org.pragmatica.lang.vo.NonBlankString] | `NonBlankString.nonBlankString(String)` | Rejects null/empty/blank, trims |
 /// | [IsoDateTime][org.pragmatica.lang.vo.IsoDateTime] | `IsoDateTime.isoDateTime(String)`, `isoDateTime(OffsetDateTime)`, `now()`, `nowUtc()` | ISO 8601 datetime with offset |
 ///
+/// Not a validated value: [ValueMapping][org.pragmatica.lang.vo.ValueMapping] (`ValueMapping.valueMapping(lower, lift)`) is the
+/// boundary-neutral descriptor a custom value object exposes as `static ValueMapping<Self, P> valueMapping()` so
+/// persistence and transport generators bind it to a single primitive `P`.
+///
 /// All factories follow the JBCT naming convention (`TypeName.typeName(...)`) and return
 /// `Result<T>` — failures carry descriptive `Cause`s suitable for direct propagation.
 ///

@@ -6,6 +6,7 @@ package org.pragmatica.aether.api.routes;
 
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.function.Supplier;
@@ -349,7 +350,7 @@ public final class ClusterConfigRoutes implements RouteSource {
         var label = topology.get(nid).flatMap(info -> Option.option(info.labels().get(NodeInfo.LABEL_ROLE)));
 
         return override.orElse(label)
-                       .map(String::toLowerCase)
+                       .map(text -> text.toLowerCase(Locale.ROOT))
                        .or("core");
     }
 
@@ -479,9 +480,16 @@ public final class ClusterConfigRoutes implements RouteSource {
     /// Replacement is what BootstrapModule's own comment — "Bootstrap replaces it with the real
     /// per-source spec at formation" — already promised; the version still advances by one, so the
     /// RFC-0018 successor fence is satisfied and the write is confirmed like any other.
+    ///
+    /// #686: a request carrying a `route` must carry a real `expectedVersion`; the wildcard `0` is refused before anything
+    /// else, whatever is stored, because the route check judges the plan against one exact committed config.
     private Promise<Object> processApply(ClusterConfigValue stored,
                                          ClusterBootstrapConfig desired,
                                          ApplyConfigRequest request) {
+        if (request.route().isPresent() && request.expectedVersion() == 0) {
+            return new ClusterConfigError.UnfencedOverwrite(stored.configVersion()).promise();
+        }
+
         return stored.tomlContent()
                      .fold(() -> storeUpdatedConfig(desired,
                                                     request.tomlContent(),
@@ -545,8 +553,10 @@ public final class ClusterConfigRoutes implements RouteSource {
         var validationActions = !removed.isEmpty() && desired.communities().isEmpty()
                                 ? plan.allActions().stream().filter(action -> !workerCountChange(action)).toList()
                                 : plan.allActions();
-
-        return applier.validate(validationActions)
+        // #686: with a route, check 2 decides the route of every pool-changing action; without one, the pre-#686 rule.
+        return request.route()
+                      .fold(() -> applier.validate(validationActions),
+                            route -> applier.validateRoute(route, validationActions, storedConfig, desired))
                       .flatMap(_ -> storeUpdatedConfig(desired,
                                                        request.tomlContent(),
                                                        stored.configVersion() + 1));

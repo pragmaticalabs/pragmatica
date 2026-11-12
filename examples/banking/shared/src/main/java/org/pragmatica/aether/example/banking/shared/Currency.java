@@ -1,5 +1,6 @@
 package org.pragmatica.aether.example.banking.shared;
 
+import java.util.Locale;
 import java.util.regex.Pattern;
 
 import org.pragmatica.lang.Cause;
@@ -21,7 +22,7 @@ public record Currency(String code) {
     public static Result<Currency> currency(String raw) {
         return Verify.ensure(raw, Verify.Is::notBlank, INVALID_CURRENCY)
                      .map(String::trim)
-                     .map(String::toUpperCase)
+                     .map(text -> text.toUpperCase(Locale.ROOT))
                      .filter(INVALID_CURRENCY,
                              ISO_CURRENCY.asMatchPredicate())
                      .map(Currency::new);

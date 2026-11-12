@@ -31,7 +31,6 @@ import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
@@ -43,12 +42,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// deposed leader's warnings go to its own aggregator and the successor's to a fresh one (the successor's event layer never saw the
 /// deposed leader's warnings), exactly as the effect translator raises them. The operator's view is both event logs together.
 /// - A committed-state family (rows 18/19) is closed by the successor: its recovery closes across nodes.
-/// - A leader-local family (row 10) is raised again by the successor where its condition still holds, so the successor closes it.
-/// - A leader-local warning whose condition ended while no leader watched stays open: the named limit #2834 (tripwire).
+/// - A leader-local family (row 10) is inherited by the successor from the committed open set (#2834): it is not raised again, and the
+///   successor closes it when the condition ends, also when that happened while no leader watched.
 class LeaderChangeRecoveriesTest {
     private static final long T_LOAD = 120_000L;
-    private static final String LIMIT = "#2834: a leader-local D.6 warning raised by a deposed leader is never closed when its condition ends before "
-                                        + "the successor activates (the open sets are leader-local)";
     private static final List<String> UNRESPONSIVE = List.of("slice-unresponsive", "slice-unresponsive-expired");
     private static final List<String> PLACEMENT = List.of("invalid-placement", "placement-valid");
     private static final SliceCodec CODEC = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
@@ -79,11 +76,11 @@ class LeaderChangeRecoveriesTest {
         assertThat(codes(successor, UNRESPONSIVE)).as("the successor publishes the close it never opened").containsExactly("slice-unresponsive-expired");
     }
 
-    /// Row 10: the deposed leader raised `invalid-placement`; the placement is still invalid when the successor activates, so the successor
-    /// raises it again (its own open mark), and closes it when the placement parses. Red when: the successor does not re-raise a leader-local
-    /// warning whose condition holds at activation, so its `placement-valid` is refused.
+    /// Row 10: the deposed leader raised `invalid-placement` and persisted it; the placement is still invalid when the successor activates,
+    /// so the successor inherits the open warning (does not raise it again) and closes it when the placement parses. Red when: the open set
+    /// is not inherited (the successor raises `invalid-placement` a second time, or its `placement-valid` is refused).
     @Test
-    void leaderLocalFamily_isRaisedAgainByTheSuccessor_andClosedByIt() {
+    void leaderLocalFamily_isInheritedBySuccessor_notRaisedAgain_andClosedByIt() {
         var h = threeCores();
 
         h.seedQuietly(new SliceTargetKey(ORDERS.base()), target(ORDERS, 2, 1, "NOWHERE"));
@@ -98,23 +95,12 @@ class LeaderChangeRecoveriesTest {
         var successor = raisedSince(h, deposed.raised(), aggregator());
 
         assertThat(codes(deposed.aggregator(), PLACEMENT)).containsExactly("invalid-placement");
-        assertThat(codes(successor, PLACEMENT)).as("raised again where the condition holds, then closed by the same leader")
-                                    .containsExactly("invalid-placement", "placement-valid");
+        assertThat(codes(successor, PLACEMENT)).as("inherited, not raised again; closed by the successor")
+                                    .containsExactly("placement-valid");
     }
 
-    /// TRIPWIRE for #2834, asserting what happens today: the placement is fixed while no leader runs, so the successor never sees the
-    /// condition, raises no close, and the deposed leader's `invalid-placement` stays open. When this goes red, #2834 is fixed: delete this
-    /// tripwire and enable [#leaderLocalFamily_conditionEndedBetweenLeaders_isClosed].
-    @Test
-    void tripwire_leaderLocalFamily_conditionEndedBetweenLeaders_staysOpen() {
-        var views = endedBetweenLeaders();
-
-        assertThat(codes(views.getFirst(), PLACEMENT)).as("the deposed leader published the opener").containsExactly("invalid-placement");
-        assertThat(codes(views.getLast(), PLACEMENT)).as(LIMIT + ": no close today; when this fails, enable the @Disabled test beside it").isEmpty();
-    }
-
-    /// The real assertion for #2834: a leader-local warning whose condition ended between leaders is closed once.
-    @Disabled(LIMIT)
+    /// #2834: a leader-local warning whose condition ended between leaders is closed once, by the successor that inherits it from the
+    /// committed open set. Red when: the open set is not committed or not inherited, so the successor never publishes `placement-valid`.
     @Test
     void leaderLocalFamily_conditionEndedBetweenLeaders_isClosed() {
         var views = endedBetweenLeaders();

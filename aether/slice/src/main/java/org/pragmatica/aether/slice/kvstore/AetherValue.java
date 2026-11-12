@@ -774,6 +774,15 @@ public sealed interface AetherValue {
         }
     }
 
+    /// One node lease renewal (#2981 §2.1), stored under [AetherKey.NodeLeaseKey]. `seq` rises with every renewal the node
+    /// submits, so no two renewals are content-identical and none merges with another; the submitter matches the delivered
+    /// `seq` against the renewals it has in flight to learn which submission time the delivery anchors.
+    record NodeLeaseValue(long seq) implements AetherValue {
+        public static NodeLeaseValue nodeLeaseValue(long seq) {
+            return new NodeLeaseValue(seq);
+        }
+    }
+
     /// The operator's pause of one scheduled task, stored under [AetherKey.ScheduledTaskPauseKey]. Its
     /// presence is the pause; `pausedAt` records when, for the operator.
     record ScheduledTaskPauseValue(long pausedAt) implements AetherValue {
@@ -3063,6 +3072,26 @@ public sealed interface AetherValue {
         }
     }
 
+    /// #2635: the empty group's release of one partition. An absent key cannot refuse a stale `Put` (the applier's fence
+    /// compares only against a committed value), so a rebalance batch derived before the last member left, committing
+    /// after the clear, would resurrect the departed owner. The clear therefore WRITES this value at its freshly minted
+    /// epoch for every partition: it shares [ConsumerGroupValue]'s fence kind (an `Epoch`), so the applier refuses any
+    /// older assignment `Put` over it, and the registry reads it as "no owner". It is reclaimed by the next rebalance of
+    /// the group, which mints a higher epoch and overwrites it; a group that never rebalances again keeps one such
+    /// entry per partition.
+    ///
+    /// @param epoch the clear this tombstone belongs to; strictly newer than every assignment it releases
+    record ConsumerGroupTombstone(Epoch epoch) implements AetherValue, EpochBearing<Epoch> {
+        @Override
+        public Epoch fenceEpoch() {
+            return epoch;
+        }
+
+        public static ConsumerGroupTombstone consumerGroupTombstone(Epoch epoch) {
+            return new ConsumerGroupTombstone(epoch);
+        }
+    }
+
     /// #1278: fenced on the stream's incarnation ([IncarnationFenced]), so while a life of the name is committed no
     /// other life can commit over it — concurrent first creates resolve first-wins, and a recreate commits only after
     /// the removal of the old life has applied.
@@ -3607,6 +3636,19 @@ public sealed interface AetherValue {
     /// that FAILED proves nothing, and a mark that only ever met failures keeps `absent` false and keeps being re-checked.
     record UnconfirmedTerminationValue(String cause, boolean seen, boolean absent) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {}
 
+    /// #2834: an open leader-local warning of the cluster FSM, keyed by `FsmWarningKey(code, subject)`. `members` are the parts of a
+    /// subject that covers several instances (a stray's condemned nodes, a schema hold's held nodes with their hold signature), keyed by
+    /// node id; empty for a single-instance subject. Held sorted by node id: every node encodes the same bytes.
+    record FsmWarningValue(Map<String, String> members) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {
+        public FsmWarningValue {
+            members = Collections.unmodifiableSortedMap(new TreeMap<>(members));
+        }
+
+        public static FsmWarningValue fsmWarningValue(Map<String, String> members) {
+            return new FsmWarningValue(members);
+        }
+    }
+
     /// #1543 replacement steps. `DONE` and `ROLLED_BACK` are terminal and inert; `FAILED_KEPT_BOTH` is terminal
     /// and keeps both nodes until an operator settles it. `REVERTING` swaps the original back into the electorate
     /// after a failed canary, before the replacement is terminated.
@@ -3895,6 +3937,11 @@ public sealed interface AetherValue {
 
     /// rc6 §4.3: the workflow holding a conflict key, keyed by `WorkflowClaimKey(conflictKey)`.
     record WorkflowClaimValue(String holderRunId) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {}
+
+    /// #1715: the highest ordinal reserved so far for one (source, role), keyed by `NodeIdHighWaterKey(source, role)`. A reservation advances
+    /// it by `count` in one compare-and-set transaction BEFORE any VM is created, so a crash between reserve and provision leaves a gap in the
+    /// ordinals and never a reuse. [LeaderAuthorized]: every write is a `LeaderTransaction` mutation expecting the value the leader read.
+    record NodeIdHighWaterValue(int highWater) implements AetherValue, LeaderAuthorized {}
 
     /// A definitive no-create refusal. The operation itself is the exclusive recovery-probe token.
     record CommunityPlacementAvailabilityValue(String policyIdentity,

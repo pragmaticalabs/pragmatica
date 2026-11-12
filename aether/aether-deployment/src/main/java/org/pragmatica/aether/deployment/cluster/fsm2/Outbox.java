@@ -152,7 +152,7 @@ public sealed interface Outbox {
     }
 
     static boolean hasIntents(ClusterModel m) {
-        return ! m.goalIntents.isEmpty() || !m.artifactIntents.isEmpty() || !m.outbox.isEmpty();
+        return ! m.goalIntents.isEmpty() || !m.artifactIntents.isEmpty() || !m.outbox.isEmpty() || Warnings.pending(m);
     }
 
     /// At the end of the step: if the handlers left intents and no flush is queued, queue one at the tail of the
@@ -178,9 +178,10 @@ public sealed interface Outbox {
             dropIntents(m, ctx);
             clearIntents(m);
 
-            return m;
+            return Warnings.suspended(m);
         }
 
+        Warnings.draft(m);
         var drafts = materialize(m, ctx);
 
         clearIntents(m);
@@ -517,6 +518,7 @@ public sealed interface Outbox {
         submission.drafts().forEach(draft -> dropPending(m, draft));
         submission.drafts().forEach(draft -> Blueprints.releaseUnsent(m, draft));
         submission.drafts().forEach(draft -> awaitEvents(m, draft));
+        submission.drafts().forEach(draft -> Warnings.unlanded(m, draft));
         metric(ctx, submission, "lost");
 
         return m;
@@ -555,6 +557,7 @@ public sealed interface Outbox {
 
     private static ClusterModel accepted(ClusterModel m, Ctx ctx, Submitted submission) {
         for (var draft : submission.drafts()) {
+            Warnings.accepted(m, draft);
             draft.onAccepted().forEach(ctx::route);
             ctx.metric("aether_deployment_fsm_submissions_total",
                        Map.of("fsm",
@@ -656,6 +659,7 @@ public sealed interface Outbox {
             case AetherKey.SchemaVersionKey k -> m.schemas.get(k.datasourceName()).map(v -> (AetherValue) v);
             case AetherKey.TopicSubscriptionKey k -> m.topicRows.get(k);
             case AetherKey.TopicPublisherKey k -> m.topicRows.get(k);
+            case AetherKey.FsmWarningKey k -> m.warningRows.get(k).map(v -> (AetherValue) v);
             default -> Option.none();
         };
     }
@@ -712,6 +716,8 @@ public sealed interface Outbox {
             case STALE_MARK -> m;
             // #1337 parity: a refused stale topic-row removal is derived again by the next pass's sweep (`DepartureFlow.sweepStaleTopicRows`).
             case STALE_TOPIC_ROW -> m;
+            // #2834: the next flush drafts the difference between the family sets and the mirror the refusal corrected.
+            case WARNINGS -> Warnings.unlanded(m, draft);
             case DIRECTIVE -> rederiveAssignment(m, ctx, draft);
             default -> rederiveByPair(m, ctx, draft);
         };

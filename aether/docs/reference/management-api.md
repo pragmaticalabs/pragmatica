@@ -20,7 +20,9 @@ X-API-Key: your-api-key
 
 **Error responses:**
 - `401 Unauthorized` — Missing `X-API-Key` header. Response includes `WWW-Authenticate: ApiKey realm="Aether"`.
-- `403 Forbidden` — Invalid API key provided.
+- `401 Unauthorized` — Invalid API key provided (#2926). Response includes `WWW-Authenticate: ApiKey realm="Aether", error="invalid_token"`; the body never says why the key was refused.
+- `403 Forbidden` — Authenticated, but the key's role lacks permission. No challenge is sent.
+- `503 Service Unavailable` — JWT mode only: the JWKS key set could not be fetched (a server-side failure, not a bad credential). No `WWW-Authenticate` is sent; retry later.
 
 With no key configured, `security_mode = "api-key"` (the default) is fail-closed: every non-public route is refused until a credential exists, and the cluster bootstrap admin key is the only one accepted (see [SECURITY.md](../../../SECURITY.md#default-security-posture-management-api)). Only an explicit `security_mode = "none"` serves the management plane without authentication, and then it is **fully open**: no validator is consulted on any path (local, forwarded, websocket feeds, artifact push), so any caller that can reach the port can run every operation. Use `none` only on an isolated listener.
 
@@ -124,7 +126,7 @@ When an authenticated user lacks the required role for an endpoint, the server r
 }
 ```
 
-This is distinct from the authentication 403 (invalid API key). The authorization 403 indicates the key is valid but the assigned role lacks permission.
+This is distinct from the authentication failure (an invalid API key answers 401 since #2926). The authorization 403 indicates the key is valid but the assigned role lacks permission.
 
 ---
 
@@ -261,9 +263,19 @@ Get node health status including readiness and quorum.
   "nodeCount": 3,
   "connectedPeers": 2,
   "metricsNodeCount": 3,
-  "sliceCount": 5
+  "sliceCount": 5,
+  "buildTimestamp": "2026-11-11T10:00:00Z",
+  "components": [
+    {"name": "storage-maintenance", "status": "UP", "detail": "Storage maintenance ticks complete"}
+  ]
 }
 ```
+
+- `components` (#800): one entry, `storage-maintenance`, which reports the leader's maintenance (`/health` is forwarded to the leader, where the passes run; a follower's own failures surface in its per-node metrics and operator warnings). Its `status` is `DEGRADED` while the latest maintenance ticks in a
+  row had a failed pass, while no maintenance tick completed within three maintenance intervals (counted from node assembly
+  before the first tick), or while one promotion cycle has been running that long; `detail` names which. Otherwise `UP`.
+  It is informational: neither `status` nor `ready` here reads it, and `/health/ready` does not carry it, so a maintenance
+  fault never takes a serving node out of rotation.
 
 ### GET /health/live
 
@@ -501,6 +513,13 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `gossip-key-peer-decrypted` (INFO — the recovery of `gossip-key-unknown-from-peer`: a datagram from that sender decrypted; same `subject`)
 - `gossip-key-unknown-senders-suppressed` (INFO — more than 16 new sender addresses sent gossip under an unheld key id within a minute, almost certainly spoofed, and were not reported one by one; the message gives the count, a lower bound at 1024; `subject` is `unknown-gossip-key-senders`; a point event with no recovery, issue #1200)
 - `swim-member-identity-conflict` (WARNING — an ANNOUNCE presented a process token that the member's live process did not answer with; ignored, nothing retired; `subject` is the member)
+- `stream-owner-lease-lapsed` (WARNING — #2981: this node's ownership lease lapsed because a renewal round took more than `owner_lease - owner_lease_renewal`, so it stops completing CF >= 2 publishes "ok" until a renewal lands; once per lapse edge, `subject` is the node. Registered with the config step of #2981; nothing raises it yet)
+- `stream-owner-lease-restored` (INFO — the recovery of `stream-owner-lease-lapsed`: a renewal landed, same `subject`)
+- `node-clock-rate-divergence` (WARNING — #2981: this node's monotonic and wall clocks diverged by more than `clock_drift_bound` over a renewal interval, so the lease arithmetic no longer holds and an acknowledged write can be lost; weak detection that misses a daemon slewing both clocks, `subject` is the node. Registered with the config step of #2981; nothing raises it yet)
+- `node-clock-rate-normal` (INFO — the recovery of `node-clock-rate-divergence`: the clock rates agree within the bound again, same `subject`)
+- `stream-truncation-refused` (WARNING — #2981: a ring truncation was asked to cut below the partition's visible offset with CF >= 2 lineage and was refused; the owner's lineage rule makes this cut unreachable, so it is a defect and the partition's quarantine stands; the message names stream, partition, `keep` and `visible`; the metric `aether.stream.truncation.below_visible{outcome=refused}` counts it. Registered with the config step of #2981; nothing raises the event or the metric yet)
+- `stream-truncation-quarantine-cleared` (INFO — the recovery of `stream-truncation-refused`: the partition's quarantine cleared, same `subject`; the raise point is owed by the quarantine-clearing steps of #2981)
+- `stream-truncation-retracted` (INFO — #2981: a truncation below the visible offset proceeded as a counted retraction (CF = 1 or non-durable); a point event with no recovery; the metric `aether.stream.truncation.below_visible{outcome=retracted}` counts it. Registered with the config step; nothing raises it yet)
 - `stream-event-exceeds-read-cap` (CRITICAL — a partition's owner promotion is refused because a peer answered its watermark probe with a page cut before its first event, which alone exceeds that peer's `maxReadResponseBytes`; raise the cap on that peer; `subject` is `stream[partition]`, issue #1431)
 - `stream-consumer-state-diverged` (WARNING — a declarative stream consumer this node held as attached had no subscription in its consumer runtime, so that partition was not consumed while reported attached; a reconcile pass forgets and re-attaches it, issue #752; `subject` is `group:stream[partition]`)
 - `stream-consumer-detach-found-nothing` (WARNING — a detach or abandon found no subscription in the consumer runtime: delivery had already stopped and no final cursor flush was made; a point event, state already reconciled, with no recovery event, and independent of `stream-consumer-state-diverged` for throttling; same `subject`, issue #752)
@@ -515,6 +534,8 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `stream-consumer-cursor-resumed` (INFO — its recovery, same subject: the cursor is re-established, because a read from the offset it moved to succeeded, the cursor moved again first (a later expiry or a rewind), or the consumer was cancelled (the message says which); it closes the alert, not the loss: the skipped range stays undelivered)
 - `stream-consumer-sealed-range-missing` (WARNING — the group waits at an offset that no sealed segment holds while a later one is sealed, a hole above what retention reclaimed; the cursor does not move; subject `stream[partition]/group@<offset>`, the message names the range, issue #2201)
 - `stream-consumer-sealed-range-restored` (INFO — its recovery, same subject: a read from that offset succeeded, the cursor moved off it, or the consumer was cancelled)
+- `stream-consumer-detach-wait-exceeded` (WARNING — a consumer re-subscribed on this node started without the previous consumer's detach flush, which did not settle within the 30s detach-wait bound (#1960): its cursor-store commit is wedged. The successor starts from the cursor the store holds; a held commit that lands later with a lower cursor is refused by the cluster checkpoint (#1961), while the node-local cursor can still be lowered and a resume ranks both by (epoch, offset). Once per held flush; subject `stream[partition]/group`. Recovery: none needed for delivery; investigate the cursor store if it recurs)
+- `stream-consumer-detach-wait-settled` (INFO — its recovery, same subject: the held detach flush has settled)
 - `entity-ownership-unsettled-mint` (WARNING — the leader minted a durable-entity keyspace's first ownership records over a hosting set that kept changing for the first-mint ceiling (6 tick intervals of time, 30 s); `subject` is the keyspace, the message gives the number of set changes seen. Owners may move once the set settles, each move opening a transient not-held window for that arc; nothing to clear, the state ends when the set has been quiet for 2 tick intervals (10 s), issue #1734)
 - `slice-start-awaiting-target` (WARNING — a LOAD, ACTIVATE or ACTIVE claim this node refused for want of a committed `SliceTarget` has stayed parked for 2 minutes on the node's clock; the park is untouched and is re-driven when the target arrives, issue #1109; `subject` is `<artifact>@<node>`)
 - `slice-start-deferral-ended` (INFO — the recovery: the target arrived, or the parked entry was superseded, removed or dropped as stale; raised only for a subject whose `slice-start-awaiting-target` was raised)
@@ -558,6 +579,12 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `storage-dht-marker-verified` (INFO — the recovery: the check completed and the DHT tier was admitted; raised only after `storage-dht-marker-unverified` was offered to the event feed for the same `subject`)
 - `storage-maintenance-not-started` (WARNING — demotion, promotion or garbage collection could not be started when the node reported ready; `subject` is the instance, or `leader-maintenance` for the leader-pinned group)
 - `storage-maintenance-started` (INFO — the recovery: the managers were activated; raised only after `storage-maintenance-not-started` was offered to the event feed for the same `subject`)
+- `storage-maintenance-not-stopped` (WARNING — the leader-pinned storage maintenance group (demotion, garbage collection) could not be stopped when this node stopped leading, so it keeps running on a non-leader; `subject` is `leader-maintenance`; retried on each maintenance tick, up to 3 times)
+- `storage-maintenance-stopped` (INFO — the recovery: the group was stopped, or this node leads again; raised only after `storage-maintenance-not-stopped` was offered to the event feed for the same `subject`)
+- `storage-maintenance-pass-failed` (WARNING — one maintenance pass threw instead of completing, so that part of maintenance did nothing this tick; `subject` is `storage-maintenance/<part>` with part `demotion`, `garbage-collection` or `promotion`; raised once per part, the message carries the cause)
+- `storage-maintenance-pass-recovered` (INFO — the recovery: the next pass of that part completed; raised only after `storage-maintenance-pass-failed` was offered to the event feed for the same `subject`)
+- `storage-maintenance-pass-overdue` (WARNING — a maintenance pass has not completed within three maintenance intervals: `subject` `storage-maintenance/tick` when no tick completed in that time (a pass is blocked, or the ticks are not running), `storage-maintenance/promotion` when one promotion cycle has been running that long; raised once per `subject` by a watchdog on its own timer)
+- `storage-maintenance-pass-completed` (INFO — the recovery: the next tick or promotion cycle completed; raised only after `storage-maintenance-pass-overdue` was offered to the event feed for the same `subject`)
 - `storage-wal-tail-cut` (WARNING — a stream append log cut a torn tail while opening, bytes that were never acknowledged; `subject` is the instance; a cut happens once at open, so there is no recovery event)
 - `storage-volume-guard-inactive` (WARNING — the unmounted-volume guard of the instance is off: its sentinel is on the same filesystem as the guarded volume and is lost with it, so the node would boot empty on an unmounted volume instead of refusing; `subject` is the instance; decided once at boot, no recovery event)
 - `storage-wal-fail-stopped` (CRITICAL — an append log fail-stopped after a failed fsync, frame write or reopen and refuses every append; for a stream partition's WAL the `subject` is `stream[partition]` and the warning is raised once per partition log (#2201 D-01), every later publish to that partition is refused with `PartitionFailStopped` before it takes an offset, and gauge `aether.streams.wal.failstopped` counts the node's fail-stopped partitions; for any other log the `subject` is the instance, the message names the log, and it is raised once per instance; recovery for a stream partition: replace the node, see `wal.failStopped` (a node id never returns, so the replacement does not reopen the log); closed by `storage-wal-writable` when a whole-cluster restart reopens the same WAL under the same node id and it accepts a durable write, by `storage-wal-retired` when the node that raised it is removed or decommissioned (as when it is replaced), and superseded by that node's `NODE_FAILED` when it crashes; the instance subject has no recovery event. Named limit: the subject is the partition, not the node, so when two nodes fail-stop the same partition one node's close also closes the other's warning)
@@ -580,6 +607,8 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 - `stream-segment-unreadable-reclaimed` (INFO — the recovery, same subject: retention reclaimed the segment)
 - `stream-segment-delete-failing` (WARNING — a node's collection of released stream segments from the cluster-shared tier has failed for three consecutive runs: the DHT write quorum is unreachable or its removes fail. The released segments are already out of the node's index, but their blocks stay on disk and in the DHT, so usage does not fall while this lasts. Subject `node <nodeId> storage streams` (#2258))
 - `stream-segment-delete-recovered` (INFO — the recovery, same subject: a run completed with no failed delete)
+- `stream-data-abandoned` (WARNING — at boot the data root holds stream or WAL directories of an earlier NodeId, which this node does not read: stream records and durable-entity state held only there are unavailable to this node although the disks survived; after a whole-cluster restart that is all of them. The message names each directory and its size; nothing is deleted or moved. Recover by republishing from the source, then remove the directories by hand. Subject: `<nodeId>@<data root>`; if the marker file that lets a later boot clear it could not be written, the message says so and the warning will not clear automatically (#2825; real fix #1569))
+- `stream-data-abandoned-cleared` (INFO — the recovery, same subject as the warning it closes (the node id read from the marker): a later boot found no directory of another NodeId under the data root; raised only when the marker file `.stream-data-abandoned` beside the data root, left by the warning, exists, and the marker is deleted after the raise; closes across nodes, so a new process closes it)
 - `stream-segment-dht-near-full` (WARNING — a node's DHT engine holds 85% or more of `[streaming] dht_segment_max_bytes` as live plus tombstone bytes of `stream-segments`; tombstones are not capped but count here as heap. Subject `node <nodeId> dht prefix stream-segments` (#2258))
 - `stream-segment-dht-near-full-cleared` (INFO — the recovery, same subject: live plus tombstone bytes fell below 80% of the cap)
 - `stream-segment-dht-full` (CRITICAL — a node's DHT engine refused a client put for the cap on `stream-segments`; raised once per episode, at the first refusal, naming the cap, the usage and the refused size. Seals that need this replica fail. Subject `node <nodeId> dht prefix stream-segments` (#2258))
@@ -1533,6 +1562,12 @@ Includes the streams gauges: `aether_streams_memory_used_bytes`, `aether_streams
 `aether_streams_wal_failstopped` (#2201 D-01): the number of partitions materialized on this node whose WAL fail-stopped, 0 from
 boot and at least 1 while a partition refuses every publish (`storage-wal-fail-stopped`, `wal.failStopped`). Each sample line ends in its
 value; the registry writes no timestamp.
+
+Includes the storage maintenance gauges (#800): `aether_storage_maintenance_consecutive_failed_ticks` (maintenance ticks
+in a row with a failed pass, 0 after a tick with none), `aether_storage_maintenance_seconds_since_last_pass` (seconds since
+the latest tick completed, since node assembly before the first; it keeps growing while a tick is blocked) and
+`aether_storage_maintenance_last_outcome` with an `outcome` tag (`NEVER_RUN`, `OK`, `FAILED`): 1 for the latest tick's
+outcome, 0 for the others.
 `consensus_consecutive_empty_slots_with_pending` (a level, #2045) counts the slots this node decided in a row
 without applying a batch while it held pending batches; it returns to 0 once a slot applies a batch or the queue
 empties. The comprehensive response carries it as `consecutiveEmptySlotsWithPending`, next to
@@ -2309,10 +2344,20 @@ readiness.
       "readiness": {"state": "READY", "isReadReady": true, "isWriteReady": true},
       "wal": {"totalBytes": 8388608, "walPartitions": 4}
     }
-  ]
+  ],
+  "maintenance": {
+    "lastRunMs": 1700000000099,
+    "outcome": "OK",
+    "consecutiveFailedTicks": 0,
+    "lastFailure": null,
+    "demoted": 7,
+    "promoted": 3,
+    "collected": 5
+  }
 }
 ```
 
+- `maintenance` (#800): what the storage maintenance tick (demotion, promotion, garbage collection) has done on this node. `lastRunMs` is when the latest tick finished (`0` before the first); `outcome` is `NEVER_RUN`, `OK` or `FAILED` (a demotion, promotion or garbage-collection pass threw); `consecutiveFailedTicks` counts the ticks in a row with a failed pass; `lastFailure` is the cause of the latest failed pass and stays after a recovery (`null` if none ever failed); `demoted`, `promoted` and `collected` are blocks since boot. A promotion cycle runs off the tick, so its result counts in the first tick that ends after the cycle ended. A failing pass also raises `storage-maintenance-pass-failed`; a pass that does not complete raises `storage-maintenance-pass-overdue`.
 - `utilizationPct`: `usedBytes / maxBytes` as a percentage rounded to one decimal (`0.0` when `maxBytes` is 0).
 - `readiness.isReadReady` / `isWriteReady`: whether the instance's `StorageReadinessGate` currently admits reads / writes. `isReadReady` turns true once the local snapshot is loaded; `isWriteReady` turns true when the node reports ready (its DHT-backed instances admitted), and stays false before that. Nothing in the storage engine consults the gate yet: it is an observability signal.
 - `wal` (#634-3): live stream-WAL usage — non-`null` **only on the `streams` instance**. The WAL is a
@@ -3523,13 +3568,49 @@ applicable through this route; a plan containing any of them is rejected in full
 including any scale in the same plan. A rollout of the other changes needs a new cluster. This is the
 same statement the CLI reference makes for `aether cluster apply`, which calls this route.
 
+**Routed apply (#686).** A request may carry `route`, the client's claim of who fills the pools the plan
+changes: `LEADER` (the leader's reconcilers, after the commit) or `APPLY` (the CLI, before the commit).
+Without `route` the rule above holds unchanged. With `route`:
+
+- `expectedVersion` must be the stored `configVersion`; `0` is refused (`UnfencedOverwrite`), and a moved
+  config is refused (`VersionConflict`).
+- The server recomputes the diff and decides the route of every pool-changing action itself, from the
+  committed auto-heal value (an absent record counts as enabled): a worker or spot pool is `LEADER`, a core
+  pool is `LEADER` with auto-heal on and `APPLY` with it off. The claim never decides; it only has to match.
+- Config-only actions (community placement, non-version cluster-level fields, a new source's declaration,
+  and the removal of a role or source whose committed counts are all 0) are admitted on either route.
+- Version, runtime, runtime-profile and immutable-field changes stay refused, whatever `route` says.
+
+Refusals with `route` present, each a 409 unless noted, checked before the route comparison:
+
+| `code` | When | Next step in the message |
+|---|---|---|
+| `SourceReplaceRefused` | A source-level field changes (it replaces every node of the source) on a source with a non-core role above 0, or while auto-heal is on. | Disable auto-heal, or move the roles to a new source and remove the old one. |
+| `LivePoolRemovalRefused` | A worker or spot role, or a source holding one, is removed while its committed count is above 0. | Set the count to 0, apply, wait until `aether cluster status` shows 0 live, then remove the entry. |
+| `CoreFillRefused` | A core role is added with nodes while auto-heal is on. | Disable auto-heal, apply, re-enable. |
+| `MultiSourceCoreScaleRefused` | A core scale-up while auto-heal is on and several sources declare the core role. | Disable auto-heal, apply, re-enable. |
+| `ParseFailed` (400) | Explicit communities are configured and the plan adds or rescales a worker role. | Change `community.target_size` instead. |
+| `RouteMismatch` | An action's route differs from the claim. A plan mixing `LEADER` and `APPLY` actions always gets it. | Re-plan against the current state. |
+
+**Error codes.** Every config refusal carries a `code` member in its `application/problem+json` body,
+alongside the RFC 9457 members. Classify a refusal by `code`, never by the status alone: a 409 is both
+the definitive `RouteMismatch` and the transient "Current core leader required for config update".
+
+| Class | `code` / response |
+|---|---|
+| Definitive (do not retry the same request) | `VersionConflict`, `UnfencedOverwrite`, `RouteMismatch`, `SourceReplaceRefused`, `LivePoolRemovalRefused`, `CoreFillRefused`, `MultiSourceCoreScaleRefused`, `UnsupportedApplyAction` (501), `ImmutableFieldChange`, `ValidationFailed`, `VersionChangeViaApply`, `RuntimeChangeViaApply`, `RuntimeProfileChangeViaApply`, `ParseFailed` (community guards and the community-retirement guard), `ClusterEventsFactorsRefused` |
+| Transient (retry) | 409 "Current core leader required for config update" and 503 during an election: no `code`. `ClusterTopologyManagerUnavailable` (503) is typed and also transient. |
+
 **Request:**
 ```json
 {
   "tomlContent": "[cluster]\nname = \"production\"\n...",
-  "expectedVersion": 7
+  "expectedVersion": 7,
+  "route": "LEADER"
 }
 ```
+
+`route` is optional.
 
 **Response (applied):**
 ```json
@@ -4832,6 +4913,23 @@ The clear is audited: the cluster raises `community-placement-cleared` naming th
 `400` for a missing `reason`; `404` when the community has no operation; `409` when the operation is not parked, changed or the clear was not confirmed
 committed (read the operation again before retrying), or the node is not the leader; `401`/`403` when the caller is not authorized.
 CLI: `aether cluster clear-placement <community> --reason <text>`; exit 0 cleared, 3 no such operation, 1 any other refusal or failure, 64 a missing or blank `--reason`.
+
+### POST /api/v1/cluster/node-ids/reserve
+
+Reserves `count` node ids `<source>-<role>-<n>` (#1715). Body `{"source": "<name>", "role": "<role>", "count": <1..1000>}`; `source` and `role` are
+names of letters, digits, `.`, `_` and `-`. Route target is `LEADER`, authorization OPERATOR.
+
+The leader advances the committed per-`(source, role)` high-water (`NodeIdHighWaterKey`, part of the backed-up cluster state, so a restore keeps it) in ONE
+compare-and-set leader transaction and answers only after that transaction is accepted. An id in the answer is therefore never returned again, to this or
+another caller; a caller that dies before it provisions leaves a gap in the ordinals, never a reuse. The first reservation for a pair has no stored
+value and starts above the larger of the persisted configuration's desired count for that source and role (bootstrap named `<source>-<role>-0..count-1`)
+and one past the highest `<source>-<role>-<n>` among the node identities ever admitted (identity records are never deleted). An id that bootstrap used and
+that is in neither of the two is not covered.
+
+The response is `{"source", "role", "ids", "highWater"}`: `ids` ascending, `highWater` the committed counter after the advance. `400` for an invalid
+`source`, `role` or `count`; `409` when this node is not the committed core leader, or when the compare-and-set was lost three times to concurrent
+reservations (nothing is reserved; retry); `503` while no core leader is committed; `401`/`403` when the caller is not authorized.
+CLI: `aether cluster node-ids reserve --source <name> [--role <role>] --count <N>`.
 
 ### POST /api/v1/nodes/promote/{id}
 
@@ -6478,8 +6576,8 @@ All errors return JSON with an `error` field:
 
 Common HTTP status codes:
 - `400 Bad Request` -- Invalid request format or missing required fields
-- `401 Unauthorized` -- Missing API key (when authentication is configured)
-- `403 Forbidden` -- Invalid API key
+- `401 Unauthorized` -- Missing or invalid API key (when authentication is configured); carries `WWW-Authenticate`, with `error="invalid_token"` for an invalid key
+- `403 Forbidden` -- Valid API key whose role lacks permission
 - `404 Not Found` -- Resource not found
 - `500 Internal Server Error` -- Server error
 
@@ -6617,13 +6715,14 @@ Default: `10MB` (10,485,760 bytes). This is the default body limit of every rout
 
 ```toml
 [app-http]
-read_timeout = "60s"     # Default: 60s. Zero disables.
+read_timeout = "60s"     # Default: 60s. Zero disables the idle clock (see the abort-wait floor below).
 min_body_rate = "1KB"    # Bytes per second. Default: 1KB. Zero disables.
 ```
 
 Both bounds apply the same way over HTTP/1.1 and HTTP/3.
 
 - `read_timeout` is an idle bound: a request that receives no body byte for this long is refused. Over HTTP/1.1, a connection that is silent for this long while no response is pending (a stalled body, an idle keep-alive connection) is closed. Over HTTP/3, a request stream whose body is silent this long receives `408 Request Timeout` and its input is reset. Upgraded WebSocket connections are exempt.
+- A zero `read_timeout` disables the idle clock only. When the server ends a streamed request while the upload sink is still working on a chunk, it waits for that chunk for at most `read_timeout`, or 30 s when `read_timeout` is zero: the abort deadline keeps a 30 s floor, so a hung sink never holds the request's admission forever.
 - `min_body_rate` bounds a client that trickles just inside the idle bound. After a 10 s grace from the start of the request, the body's bytes are averaged over each 10 s window. A body arriving below the rate is refused: over HTTP/1.1 the connection is closed, and over HTTP/3 the request receives `408` and its stream input is reset. A slow upload above the rate completes however long it takes.
 
 #### Request trailers

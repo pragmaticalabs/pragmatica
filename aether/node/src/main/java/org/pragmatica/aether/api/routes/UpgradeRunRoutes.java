@@ -42,7 +42,7 @@ public final class UpgradeRunRoutes implements RouteSource {
             return new UpgradeRunResponse(false, "", "NONE", "NONE", 0, 0, "", List.of(), "", 0L, 0L, 0L);
         }
 
-        static UpgradeRunResponse of(UpgradeRunValue run) {
+        static UpgradeRunResponse upgradeRunResponse(UpgradeRunValue run) {
             return new UpgradeRunResponse(true,
                                           run.targetVersion(),
                                           run.state().name(),
@@ -78,24 +78,24 @@ public final class UpgradeRunRoutes implements RouteSource {
 
     UpgradeRunResponse status() {
         return service().status()
-                      .fold(UpgradeRunResponse::none, UpgradeRunResponse::of);
+                      .fold(UpgradeRunResponse::none, UpgradeRunResponse::upgradeRunResponse);
     }
 
     Promise<UpgradeRunResponse> pause() {
         return service().pause()
-                      .map(UpgradeRunResponse::of)
+                      .map(UpgradeRunResponse::upgradeRunResponse)
                       .mapError(UpgradeRunRoutes::asManagementError);
     }
 
     Promise<UpgradeRunResponse> resume() {
         return service().resume()
-                      .map(UpgradeRunResponse::of)
+                      .map(UpgradeRunResponse::upgradeRunResponse)
                       .mapError(UpgradeRunRoutes::asManagementError);
     }
 
     Promise<UpgradeRunResponse> abort() {
         return service().abort()
-                      .map(UpgradeRunResponse::of)
+                      .map(UpgradeRunResponse::upgradeRunResponse)
                       .mapError(UpgradeRunRoutes::asManagementError);
     }
 

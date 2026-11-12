@@ -267,6 +267,26 @@ public sealed interface StreamAssembly {
 
     /// The network-backed replication transport: each send returns the cluster network's own outcome, and the
     /// caller-wait overload reaches the network's TTL-bounded send (#1996, #2583 P1).
+    /// #263 (overhaul 7.2): the owner batches what it replicates. The append section hands each event to the batcher;
+    /// encoding and sending happen on flusher threads, in offset order, and an idle partition's first event goes out at
+    /// once. `[streaming] replication_batch_max_events` / `replication_batch_max_delay` size the batch. The batcher holds
+    /// heap copies of the events whose sends have not returned, at most `sendBudgetBytes` of them; past that, owner
+    /// publishes are refused (`REPLICATION_BEHIND`) before they take an offset.
+    static ReplicationManager streamReplicationManager(NodeId self,
+                                                       ReplicaRegistry registry,
+                                                       ReplicationTransport transport,
+                                                       ReplicationManager.EarliestRetainedOffset earliestRetained,
+                                                       StreamingConfig streaming,
+                                                       long sendBudgetBytes) {
+        return ReplicationManager.batchingReplicationManager(self,
+                                                             registry,
+                                                             transport,
+                                                             earliestRetained,
+                                                             streaming.replicationBatchMaxEvents(),
+                                                             streaming.replicationBatchMaxDelay(),
+                                                             sendBudgetBytes);
+    }
+
     static ReplicationTransport replicationTransport(ClusterNetwork replicationNetwork) {
         return new ReplicationTransport() {
             @Override
@@ -309,13 +329,20 @@ public sealed interface StreamAssembly {
         // just below (it needs this manager), so the earliest-retained seam reads through a holder set
         // immediately after.
         var streamPartitionManagerRef = new AtomicReference<StreamPartitionManager>();
-        var streamReplicationManager = ReplicationManager.replicationManager(config.self(),
-                                                                             streamReplicaRegistry,
-                                                                             streamReplicationTransport,
-                                                                             (streamName, partition) -> Option.option(streamPartitionManagerRef.get())
-                                                                                                              .map(spm -> spm.earliestRetainedOffset(streamName,
-                                                                                                                                                     partition))
-                                                                                                              .or(-1L));
+        var streamReplicationManager = streamReplicationManager(config.self(),
+                                                                streamReplicaRegistry,
+                                                                streamReplicationTransport,
+                                                                (streamName, partition) -> Option.option(streamPartitionManagerRef.get())
+                                                                                                 .map(spm -> spm.earliestRetainedOffset(streamName,
+                                                                                                                                        partition))
+                                                                                                 .or(-1L),
+                                                                config.streaming(),
+
+        // #263: the replication send budget is the stream memory
+        // budget's heap cap for un-landed event copies, the sealer's
+        // pending cap below (a GUESS at the share; each has its own
+        // counter, so the two together may hold twice the cap).
+        in.streamMemoryBudget().sealPendingCapBytes());
         var streamSegmentIndex = new SegmentIndex();
         // A3b restore-at-boot: the streams MetadataStore was already restored from its latest disk
         // snapshot when `streamStorageSetup` was assembled (StorageFactory.restoreAndSignalReady), so
@@ -736,10 +763,11 @@ public sealed interface StreamAssembly {
                                                                                                                                                                            streamPartitionBackfill,
                                                                                                                                                                            streamName,
                                                                                                                                                                            partition)),
-                                                                                   (List<PartitionKey> reconciled) -> driveStreamOwnership(streamOwnershipWriter,
-                                                                                                                                           clusterCommandApplier,
-                                                                                                                                           streamOwnershipRetry,
-                                                                                                                                           reconciled));
+                                                                                   (List<PartitionKey> reconciled) -> reconcilePassComplete(streamPartitionBackfill,
+                                                                                                                                            streamOwnershipWriter,
+                                                                                                                                            clusterCommandApplier,
+                                                                                                                                            streamOwnershipRetry,
+                                                                                                                                            reconciled));
         // B5b: bind the owner-gate ref so ClusterEventAggregator.emit can consult isOwner(...) for
         // (system:cluster-events:1.0.0, partition 0). isOwner is computed from the live HRW placement
         // against the current topology, independent of reconcile, so it is correct as soon as members
@@ -885,10 +913,15 @@ public sealed interface StreamAssembly {
         // #2080: its cold-start contest proceeds past unreachable co-replicas only for a node the COMMITTED in-sync set names, and
         // reports that escape the way the gate does.
         bindPromotionAlarm(streamPartitionBackfill, operatorWarningSink, kvStore, streamingConfig.promotionEscapeAfter());
+        // #2960: the all-stalled warning is raised only for a stream that exists, so one destroyed under an in-flight round leaves no report.
+        streamPartitionBackfill.streamExists(streamPartitionManager::streamExists);
         streamPartitionManager.ownerServeGate(ownerActivation::admit);
         // #1730 phase 2: the gate's relaxation for a divergent peer respects the candidate's durable sealed floor, and a peer it
         // leaves out loses the row this registry kept for it from an earlier tenure.
         ownerActivation.sealedFloor(streamSegmentIndex::lastSealedOffset);
+        // #3071: the gate ranks a peer only up to the committed-lineage end its clipped catch-up learned (I-27), so a deposed
+        // epoch's tail the catch-up refuses never counts as ahead and cannot keep the owner un-activated.
+        ownerActivation.peerLineageEnd(streamPartitionBackfill::lineageEnd);
         ownerActivation.peerRingTail((node, stream, partition) -> node.equals(config.self())
                                                                   ? Promise.success(streamPartitionManager.visibleBounds(stream,
                                                                                                                          partition)
@@ -1419,7 +1452,10 @@ public sealed interface StreamAssembly {
         // #2599: the ack of a batch the gate held back is sent once a compare verifies the copy, not left to a later batch.
         streamPartitionManager.onEpochVerified(streamReplicationReceiveHandler::releaseDeferredAck);
         // #2599: a removed stream's deferred acks go with it, so none is released into a stream recreated under its name.
-        streamPartitionManager.onStreamRemoved(streamReplicationReceiveHandler::forgetDeferredAcks);
+        // #2960: its open all-stalled warning is resolved with it, since no later round of a destroyed stream can end it.
+        streamPartitionManager.onStreamRemoved(streamName -> forgetRemovedStream(streamReplicationReceiveHandler,
+                                                                                 streamPartitionBackfill,
+                                                                                 streamName));
         // #2599 G3: a backfill's ack goes out in the receive handler's per-partition section, settling a deferred ack it covers.
         streamPartitionBackfill.backfillAckSink(streamReplicationReceiveHandler::ackBackfill);
         // #2087: a replica serves a consumer read only up to the owner's reported visible position.
@@ -1489,9 +1525,7 @@ public sealed interface StreamAssembly {
     /// unusable and streams degraded to no WAL.
     static Option<AppendLog.Opener> streamLogs(StorageInstance streamStorage) {
         return streamStorage.logRoot()
-                            .<AppendLog.Opener> map(_ -> AppendLog.Opener.opener(streamStorage::openLog,
-                                                                                 streamStorage::inspectLog,
-                                                                                 streamStorage::listLogs));
+                            .map(_ -> AppendLog.Opener.storage(streamStorage));
     }
 
     /// Build a named daemon thread for a single-thread executor's `ThreadFactory`. Extracted so the
@@ -1514,6 +1548,8 @@ public sealed interface StreamAssembly {
     /// introduced.
     @Contract
     private static void redriveIncompleteBackfills(PartitionBackfill backfill, Executor backfillExecutor) {
+        // #2960: the level trigger of the all-stalled warning also runs on every tick, so a report no pass or round revisits ends within one tick.
+        backfillExecutor.execute(backfill::reconcileStalled);
         backfill.redriveCandidates()
                 .forEach(key -> backfillExecutor.execute(() -> backfill.backfill(key.streamName(),
                                                                                  key.partition())));
@@ -1751,6 +1787,18 @@ public sealed interface StreamAssembly {
                                                         writer.writeOwnershipChanges(EntityOwnershipReconciler.withoutEntityArcs(reconciled))));
     }
 
+    /// A finished reconcile pass (#2960): the replica set and the ownership may have moved, so the open all-stalled warnings are re-derived
+    /// from the live state first ([PartitionBackfill#reconcileStalled]), then the pass's ownership changes are driven.
+    @Contract
+    static void reconcilePassComplete(PartitionBackfill backfill,
+                                      StreamPartitionOwnershipWriter writer,
+                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                      StreamOwnershipRetry retry,
+                                      List<PartitionKey> reconciled) {
+        backfill.reconcileStalled();
+        driveStreamOwnership(writer, applier, retry, reconciled);
+    }
+
     /// Apply the reconcile pass's ownership-change Puts as ONE consensus batch. An empty batch (a
     /// follower, or a pass with no moved partitions) applies nothing and logs nothing — the empty apply
     /// is skipped rather than sent (an empty command batch would be rejected by consensus).
@@ -1905,6 +1953,15 @@ public sealed interface StreamAssembly {
                                       escape.message());
     }
 
+    /// What a removed stream leaves behind on this node: the acks its partitions deferred, and the all-stalled warning (#2960) its owner catch-up raised.
+    static Unit forgetRemovedStream(ReplicationReceiveHandler receiveHandler,
+                                    PartitionBackfill backfill,
+                                    String streamName) {
+        receiveHandler.forgetDeferredAcks(streamName);
+
+        return backfill.clearStalledOf(streamName);
+    }
+
     /// What the promoted owner's backfill and its cold-start contest need from the node (#1937, #2080): where its blocks and escapes
     /// are reported, and where it reads whether a node is named in a partition's committed in-sync set. One place, so the production
     /// wiring is the code the wiring test drives.
@@ -1946,6 +2003,12 @@ public sealed interface StreamAssembly {
                                                                                                   partitionSubject(refused),
                                                                                                   "{}",
                                                                                                   refused.message());
+            case OwnerActivation.ActivationBlock.CatchupStalled stalled -> OperatorWarnings.raise(LOG,
+                                                                                                  sink,
+                                                                                                  OperatorWarningCode.STREAM_OWNER_CATCHUP_STALLED,
+                                                                                                  partitionSubject(stalled),
+                                                                                                  "{}",
+                                                                                                  stalled.message());
             default -> raiseOwnerPromotionBlock(block);
         };
     }
@@ -1970,6 +2033,12 @@ public sealed interface StreamAssembly {
                                                                                                   partitionSubject(refused),
                                                                                                   "Owner promotion of {} is no longer refused at its epoch-start commit.",
                                                                                                   partitionSubject(refused));
+            case OwnerActivation.ActivationBlock.CatchupStalled stalled -> OperatorWarnings.raise(LOG,
+                                                                                                  sink,
+                                                                                                  OperatorWarningCode.STREAM_OWNER_CATCHUP_PROGRESSING,
+                                                                                                  partitionSubject(stalled),
+                                                                                                  "Owner catch-up of {} is no longer stalled: its head advanced, it activated, no source answered ahead of it any more, or this node is no longer its owner.",
+                                                                                                  partitionSubject(stalled));
             default -> Unit.unit();
         };
     }

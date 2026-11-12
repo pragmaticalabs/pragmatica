@@ -6,6 +6,7 @@ package org.pragmatica.aether.environment;
 import java.util.ArrayList;
 import java.util.List;
 
+import java.util.Locale;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -63,7 +64,7 @@ class OperationIdTest {
                 minted.add(ProvisionContext.mintNodeId(maybeClusterName("prod")));
             }
 
-            assertThat(minted).allSatisfy(id -> assertThat(id).isEqualTo(id.toLowerCase()));
+            assertThat(minted).allSatisfy(id -> assertThat(id).isEqualTo(id.toLowerCase(Locale.ROOT)));
             assertThat(minted).allSatisfy(id -> assertThat(OperationId.operationId(id).isSuccess()).as(id).isTrue());
             assertThat(minted).doesNotHaveDuplicates();
         }

@@ -1,5 +1,6 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
+import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -92,9 +93,8 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
 
     private boolean isLeafFunction(Cursor method, Cursor root) {
         // Find the member wrapper containing this method
-        return enclosingMember(root, method).filter(classMember -> isPrivateLeafMethod(classMember,
-                                                                                       method))
-                           .isPresent();
+        return enclosingMember(root, method).filter(classMember -> isPrivateLeafMethod(classMember, method))
+                              .isPresent();
     }
 
     private boolean isPrivateLeafMethod(Cursor classMember, Cursor method) {
@@ -117,11 +117,11 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
             return Stream.empty();
         }
         // Extract the verb from method name
-        return extractVerb(methodName).filter(verb -> ZONE_2_VERBS.contains(verb.toLowerCase()))
+        return extractVerb(methodName).filter(verb -> ZONE_2_VERBS.contains(verb.toLowerCase(Locale.ROOT)))
                           .map(verb -> createDiagnostic(method,
                                                         methodName,
                                                         verb,
-                                                        suggestZone3Verb(verb.toLowerCase()),
+                                                        suggestZone3Verb(verb.toLowerCase(Locale.ROOT)),
                                                         ctx))
                           .stream();
     }

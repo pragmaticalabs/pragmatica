@@ -1,0 +1,922 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
+package org.pragmatica.db.migration;
+
+import java.nio.file.Path;
+import java.sql.DriverManager;
+import java.sql.SQLException;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
+import java.util.function.Predicate;
+
+import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
+import org.pragmatica.aether.resource.db.DatabaseConnectorError;
+import org.pragmatica.aether.resource.db.DatabaseType;
+import org.pragmatica.aether.resource.db.PoolConfig;
+import org.pragmatica.aether.resource.db.RowMapper;
+import org.pragmatica.aether.resource.db.SqlConnector;
+import org.pragmatica.aether.resource.db.jdbc.JdbcSqlConnectorFactory;
+import org.pragmatica.db.migration.ParsedMigration.MigrationType;
+import org.pragmatica.db.migration.SchemaHistoryRepository.AppliedMigration;
+import org.pragmatica.db.migration.SchemaMigrations.SchemaResult;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.parse.TimeSpan;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.resource.db.DatabaseConnectorConfig.databaseConnectorConfigBuilder;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+
+/// FDB-2b (#2591): the in-JVM proofs of the tiers that need no container. T12 pins H2's decision (DDL commits
+/// implicitly, so its dialect is autocommit; `SET EXCLUSIVE 1` makes a second connect fail, so it is tier 1). T6, T8
+/// and T8b run tier 3 on a REAL SQLite file (the lock, the in-transaction re-read, the non-transactional refusal, the
+/// history-row collision) and the CockroachDB path on a recording wrapper over H2 (CockroachDB and DB2 themselves are
+/// fake-only `[unverified engine]`; SQL Server and Oracle have live tests in the heavy-db group).
+@Timeout(120)
+class MigrationFenceInJvmTest {
+    private static final String DATASOURCE = "ds";
+    private static final String OWNER = "bp";
+    private static final String LOCK_STATEMENT = "UPDATE aether_schema_owner SET blueprint_base = blueprint_base";
+    private static final String MARK_SCRIPT = "CREATE TABLE applied_marks (n INTEGER); INSERT INTO applied_marks VALUES (1);";
+
+    @TempDir
+    Path dir;
+
+    private final List<SqlConnector> opened = new ArrayList<>();
+
+    @AfterEach
+    void stopConnectors() {
+        opened.forEach(connector -> connector.stop().await());
+    }
+
+    // ---------------------------------------------------------------- T12 (H2)
+
+    /// T12a: `CREATE TABLE` then `ROLLBACK` leaves the table, so H2's DDL is not transactional (dialect flag false).
+    @Test
+    void t12_h2CreateTableThenRollback_leavesTheTable() throws SQLException {
+        try (var conn = DriverManager.getConnection("jdbc:h2:mem:t12a");
+             var statement = conn.createStatement()) {
+            conn.setAutoCommit(false);
+            statement.execute("CREATE TABLE t12 (id INT)");
+            conn.rollback();
+
+            try (var rows = statement.executeQuery("SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'T12'")) {
+                rows.next();
+                assertThat(rows.getInt(1)).isEqualTo(1);
+            }
+        }
+
+        assertThat(MigrationDialects.H2.ddlTransactional()).isFalse();
+    }
+
+    /// T12b: while a runner holds H2's exclusive mode a competing runner's connect is rejected (90135) and read as the
+    /// fence being held; after the holder's session closes the competitor runs.
+    @Test
+    void t12_h2ExclusiveMode_rejectsTheCompetingConnectAsHeldThenReleases() {
+        var url = "jdbc:h2:mem:t12b;DB_CLOSE_DELAY=-1";
+        var holder = h2(url);
+        var competitor = h2(url);
+
+        var duringHold = holder.pinned(Duration.ofMinutes(1),
+                                       session -> MigrationFence.acquire(session, DATASOURCE, "holder")
+                                                                .flatMap(_ -> migrate(competitor, MARK_SCRIPT)),
+                                       _ -> Promise.unitPromise())
+                               .await();
+
+        assertThat(causeOf(duringHold)).isInstanceOf(MigrationError.MigrationFencedInDatabase.class);
+        assertThat(causeOf(duringHold).message()).contains("exclusive mode");
+        assertThat(migrate(competitor, MARK_SCRIPT).await().isSuccess()).isTrue();
+        assertThat(scalar(url, "SELECT COUNT(*) FROM applied_marks")).isEqualTo(1);
+    }
+
+    /// H2 runs its script on the fenced session in autocommit (checkpointed) and records its history row.
+    @Test
+    void t12_h2Migrate_runsFencedAndRecordsTheHistoryRow() {
+        var url = "jdbc:h2:mem:t12c;DB_CLOSE_DELAY=-1";
+
+        var result = migrate(h2(url), MARK_SCRIPT).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(scalar(url, "SELECT COUNT(*) FROM aether_schema_history WHERE status = 'SUCCESS'")).isEqualTo(1);
+    }
+
+    /// F61: a session-fenced engine (H2 here) takes NO tier-3 script lock: the pinned session is the fence.
+    @Test
+    void t12_h2Migrate_issuesNoScriptLockStatement() {
+        var statements = new CopyOnWriteArrayList<String>();
+        var probe = Probe.over(h2("jdbc:h2:mem:t12nolock;DB_CLOSE_DELAY=-1"), DatabaseType.H2, statements);
+
+        assertThat(migrate(probe, MARK_SCRIPT).await().isSuccess()).isTrue();
+        assertThat(statements).isNotEmpty().noneMatch(sql -> sql.startsWith(LOCK_STATEMENT) || sql.contains("LOCK TABLE") || sql.contains("FOR UPDATE"));
+    }
+
+    // ---------------------------------------------------------------- T6
+
+    /// T6 (SQLite): a script that cannot run in a transaction is refused before its first statement.
+    @Test
+    void t6_sqliteScriptWithVacuum_isRefusedBeforeAnyStatement() {
+        var file = dir.resolve("t6.db");
+        var statements = new CopyOnWriteArrayList<String>();
+        var probe = Probe.over(sqlite(file), DatabaseType.SQLITE, statements);
+
+        var cause = causeOf(migrate(probe, "VACUUM;").await());
+
+        assertThat(cause).isInstanceOf(MigrationError.NonTransactionalScriptUnfenced.class);
+        assertThat(cause.message()).contains("SQLite").contains("VACUUM").contains("No statement was run");
+        assertThat(statements).noneMatch(sql -> sql.startsWith("VACUUM"));
+        assertThat(scalar("jdbc:sqlite:" + file, "SELECT COUNT(*) FROM aether_schema_history")).isZero();
+    }
+
+    /// S10: the refusal is case-insensitive: a lowercase `vacuum` is refused too.
+    @Test
+    void t6_sqliteLowercaseVacuum_isRefusedBeforeAnyStatement() {
+        var statements = new CopyOnWriteArrayList<String>();
+        var probe = Probe.over(sqlite(dir.resolve("t6lower.db")), DatabaseType.SQLITE, statements);
+
+        var cause = causeOf(migrate(probe, "vacuum;").await());
+
+        assertThat(cause).isInstanceOf(MigrationError.NonTransactionalScriptUnfenced.class);
+        assertThat(statements).noneMatch(sql -> sql.toUpperCase().startsWith("VACUUM"));
+    }
+
+    /// S8/E1/E2: the refusal names the migration's file and shows the offending statement on ONE line, cut at 80 chars.
+    @Test
+    void t6_refusalMessage_namesTheFileAndAbbreviatesTheStatementToOneLine() {
+        var statement = "VACUUM\n   " + "x".repeat(100);
+
+        var message = MigrationError.NonTransactionalScriptUnfenced.nonTransactionalScriptUnfenced("SQLite", "V7__big.sql", statement).message();
+
+        assertThat(message).contains("'V7__big.sql'")
+                           .contains("(VACUUM " + "x".repeat(73) + "...)")
+                           .doesNotContain("\n");
+        assertThat(MigrationError.NonTransactionalScriptUnfenced.nonTransactionalScriptUnfenced("SQLite", "V7__small.sql", "VACUUM").message()).contains("(VACUUM)");
+    }
+
+    /// T6 (CockroachDB fake): `CREATE INDEX CONCURRENTLY` cannot run in a transaction, so it is refused, nothing run.
+    @Test
+    void t6_cockroachScriptWithConcurrentIndex_isRefusedBeforeAnyStatement() {
+        var url = "jdbc:h2:mem:t6crdb;DB_CLOSE_DELAY=-1";
+        var statements = new CopyOnWriteArrayList<String>();
+        var probe = Probe.over(h2(url), DatabaseType.COCKROACHDB, statements);
+
+        var cause = causeOf(migrate(probe, "CREATE INDEX CONCURRENTLY idx_a ON t_a (a);").await());
+
+        assertThat(cause).isInstanceOf(MigrationError.NonTransactionalScriptUnfenced.class);
+        assertThat(cause.message()).contains("CockroachDB").contains("CONCURRENTLY");
+        assertThat(statements).noneMatch(sql -> sql.contains("CONCURRENTLY"));
+    }
+
+    // ---------------------------------------------------------------- T8
+
+    /// T8 (SQLite): the second runner has already read an empty history when the first finishes; under its script lock
+    /// it reads the row again and skips. Both complete, and the script ran once (M9: without the re-read the second
+    /// run would repeat the script and fail).
+    @Test
+    void t8_sqliteSerializedPair_secondRunnerReReadsUnderTheLockAndSkips() throws Exception {
+        var file = dir.resolve("t8.db");
+        var reached = new CountDownLatch(1);
+        var gate = new CountDownLatch(1);
+        var second = Probe.over(sqlite(file),
+                                DatabaseType.SQLITE,
+                                new CopyOnWriteArrayList<>()).afterHistoryRead(() -> pause(reached, gate));
+        var executor = Executors.newSingleThreadExecutor();
+
+        try {
+            Future<Result<SchemaResult>> secondRun = executor.submit(() -> migrate(second, MARK_SCRIPT).await());
+
+            assertThat(reached.await(30, TimeUnit.SECONDS)).isTrue();
+            var firstRun = migrate(sqlite(file), MARK_SCRIPT).await();
+            gate.countDown();
+
+            assertThat(firstRun.isSuccess()).isTrue();
+            assertThat(secondRun.get(60, TimeUnit.SECONDS).isSuccess()).isTrue();
+            assertThat(scalar("jdbc:sqlite:" + file, "SELECT COUNT(*) FROM applied_marks")).isEqualTo(1);
+            assertThat(scalar("jdbc:sqlite:" + file, "SELECT COUNT(*) FROM aether_schema_history WHERE status = 'SUCCESS'")).isEqualTo(1);
+        } finally {
+            gate.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    /// T8 (order): the lock is the FIRST statement of the script's transaction, before the history re-read and before
+    /// the script (mutant: lock removed or moved).
+    @Test
+    void t8_sqliteLock_isTheFirstStatementOfTheScriptTransaction() {
+        var statements = new CopyOnWriteArrayList<String>();
+        var probe = Probe.over(sqlite(dir.resolve("t8order.db")), DatabaseType.SQLITE, statements);
+
+        assertThat(migrate(probe, MARK_SCRIPT).await().isSuccess()).isTrue();
+
+        var lock = indexOf(statements, "UPDATE aether_schema_owner SET blueprint_base = blueprint_base");
+        var reread = indexOf(statements, "SELECT status, statements_completed, checksum FROM aether_schema_history");
+        var script = indexOf(statements, "CREATE TABLE applied_marks");
+
+        assertThat(lock).isNotNegative();
+        assertThat(reread).isGreaterThan(lock);
+        assertThat(script).isGreaterThan(reread);
+    }
+
+    /// T8 (CockroachDB fake): the lock is `SELECT ... FOR UPDATE` on the owner row, first in the transaction.
+    @Test
+    void t8_cockroachLock_isForUpdateOnTheOwnerRowBeforeTheScript() {
+        var statements = new CopyOnWriteArrayList<String>();
+        var probe = Probe.over(h2("jdbc:h2:mem:t8crdb;DB_CLOSE_DELAY=-1"), DatabaseType.COCKROACHDB, statements);
+
+        assertThat(migrate(probe, MARK_SCRIPT).await().isSuccess()).isTrue();
+
+        var lock = indexOf(statements, "SELECT 1 FROM aether_schema_owner FOR UPDATE");
+
+        assertThat(lock).isNotNegative();
+        assertThat(indexOf(statements, "CREATE TABLE applied_marks")).isGreaterThan(lock);
+    }
+
+    /// T8 (bootstrap): on tier 3 the meta and owner inserts are `INSERT ... SELECT ... WHERE NOT EXISTS`.
+    @Test
+    void t8_tierThreeBootstrap_insertsOnlyWhenAbsent() {
+        var statements = new CopyOnWriteArrayList<String>();
+        var probe = Probe.over(sqlite(dir.resolve("t8boot.db")), DatabaseType.SQLITE, statements);
+
+        assertThat(migrate(probe, MARK_SCRIPT).await().isSuccess()).isTrue();
+
+        assertThat(statements).anyMatch(sql -> sql.startsWith("INSERT INTO aether_schema_history_meta") && sql.contains("WHERE NOT EXISTS"));
+        assertThat(statements).anyMatch(sql -> sql.startsWith("INSERT INTO aether_schema_owner") && sql.contains("WHERE NOT EXISTS"));
+    }
+
+    /// T8 (failure): a statement failure inside a tier-3 script ends FAILED and rolls the script back; nothing
+    /// converts it to a completion.
+    @Test
+    void t8_sqliteStatementFailure_endsFailedAndLeavesNoHistoryRow() {
+        var file = dir.resolve("t8fail.db");
+
+        var result = migrate(sqlite(file), "CREATE TABLE applied_marks (n INTEGER); INSERT INTO missing_table VALUES (1);").await();
+
+        assertThat(result.isFailure()).isTrue();
+        assertThat(scalar("jdbc:sqlite:" + file, "SELECT COUNT(*) FROM aether_schema_history")).isZero();
+    }
+
+    // ---------------------------------------------------------------- T8b
+
+    /// T8b (SQLite): a history row the applied-read does not show (`FAILED`) meets the script's insert: the run ends
+    /// FAILED with [MigrationError.HistoryRowCollision] and the script's work is rolled back (M5: collision to success).
+    @Test
+    void t8b_sqliteHistoryRowCollision_endsFailedAndRollsTheScriptBack() throws SQLException {
+        var file = dir.resolve("t8b.db");
+        var connector = sqlite(file);
+        SchemaHistoryRepository.schemaHistoryRepository().bootstrap(connector).await().unwrap();
+        try (var conn = DriverManager.getConnection("jdbc:sqlite:" + file);
+             var statement = conn.createStatement()) {
+            statement.execute("INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms, status, statements_completed)"
+                              + " VALUES (1, 'VERSIONED', 'a', 'V1__a.sql', 1, 'other', 0, 0, 'FAILED', 0)");
+        }
+
+        var cause = causeOf(migrate(connector, MARK_SCRIPT).await());
+
+        assertThat(cause).isInstanceOf(MigrationError.HistoryRowCollision.class);
+        assertThat(cause.message()).contains("version 1").contains("VERSIONED");
+        assertThat(scalar("jdbc:sqlite:" + file, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'applied_marks'")).isZero();
+    }
+
+    /// T8b (tier 1 repository path): a real primary-key violation from the engine is a collision, never a success.
+    @Test
+    void t8b_historyInsertMeetingAnExistingRow_isHistoryRowCollision() {
+        var connector = h2("jdbc:h2:mem:t8btier1;DB_CLOSE_DELAY=-1");
+        var repository = SchemaHistoryRepository.schemaHistoryRepository();
+        var row = AppliedMigration.appliedMigration(1, MigrationType.VERSIONED, "a", "V1__a.sql", 1L, "node", 0L, 0);
+        repository.bootstrap(connector).await().unwrap();
+        repository.recordMigration(connector, row).await().unwrap();
+
+        var again = repository.recordMigration(connector, row).await();
+
+        assertThat(causeOf(again)).isInstanceOf(MigrationError.HistoryRowCollision.class);
+    }
+
+    /// H14: a history insert failing with an error that is no unique violation (here a timeout: no SQLSTATE, no
+    /// constraint text) keeps its own cause; it is never relabelled a collision.
+    @Test
+    void t8b_historyInsertFailingWithATimeout_keepsItsCause() {
+        var base = h2("jdbc:h2:mem:t8btimeout;DB_CLOSE_DELAY=-1");
+        var probe = Probe.over(base, DatabaseType.H2, new CopyOnWriteArrayList<>())
+                         .failingUpdate(sql -> sql.startsWith("INSERT INTO aether_schema_history"), DatabaseConnectorError.timeout("insert"));
+        var repository = SchemaHistoryRepository.schemaHistoryRepository();
+        var row = AppliedMigration.appliedMigration(1, MigrationType.VERSIONED, "a", "V1__a.sql", 1L, "node", 0L, 0);
+        repository.bootstrap(base).await().unwrap();
+
+        var failed = repository.recordMigration(probe, row).await();
+
+        assertThat(causeOf(failed)).isInstanceOf(DatabaseConnectorError.TimedOut.class);
+    }
+
+    /// H12: a bare SQLSTATE of class 23 on a plain query failure (the R2DBC mapping keeps it unclassified) is a collision.
+    @Test
+    void t8b_historyInsertFailingWithSqlStateClass23_isHistoryRowCollision() {
+        var cause = DatabaseConnectorError.queryFailed("INSERT", "boom", Option.none(), Option.some("23505"));
+        var base = h2("jdbc:h2:mem:t8b23;DB_CLOSE_DELAY=-1");
+        var probe = Probe.over(base, DatabaseType.H2, new CopyOnWriteArrayList<>())
+                         .failingUpdate(sql -> sql.startsWith("INSERT INTO aether_schema_history"), cause);
+        var repository = SchemaHistoryRepository.schemaHistoryRepository();
+        var row = AppliedMigration.appliedMigration(1, MigrationType.VERSIONED, "a", "V1__a.sql", 1L, "node", 0L, 0);
+        repository.bootstrap(base).await().unwrap();
+
+        assertThat(causeOf(repository.recordMigration(probe, row).await())).isInstanceOf(MigrationError.HistoryRowCollision.class);
+    }
+
+    // ---------------------------------------------------------------- survivors of the first mutation run
+
+    /// M9b: a serialized runner that finds a row for ITS script with ANOTHER checksum does not skip: the insert meets
+    /// the row and the run ends [MigrationError.HistoryRowCollision], the script rolled back.
+    @Test
+    void t8_serializedRunnerFindingARowWithAnotherChecksum_isCollisionNotSkip() {
+        var file = dir.resolve("t8sum.db");
+        var connector = sqlite(file);
+        SchemaHistoryRepository.schemaHistoryRepository().bootstrap(connector).await().unwrap();
+        var probe = Probe.over(connector, DatabaseType.SQLITE, new CopyOnWriteArrayList<>())
+                         .afterHistoryRead(() -> execute(file, "INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms, status, statements_completed)"
+                                                              + " VALUES (1, 'VERSIONED', 'a', 'V1__a.sql', 999, 'other', 0, 0, 'SUCCESS', 1)"));
+
+        var cause = causeOf(migrate(probe, MARK_SCRIPT).await());
+
+        assertThat(cause).isInstanceOf(MigrationError.HistoryRowCollision.class);
+        assertThat(scalar("jdbc:sqlite:" + file, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'applied_marks'")).isZero();
+    }
+
+    /// B2: a tier-3 bootstrap whose owner insert lost to a competitor (the NOT EXISTS insert wrote nothing) reads the
+    /// owner again and compares it: another owner is a conflict, not a silent success.
+    @Test
+    void t8_tierThreeOwnerInsertLosingToAnotherOwner_isOwnershipConflict() {
+        var file = dir.resolve("t8owner.db");
+        var raced = new AtomicBoolean();
+        var probe = Probe.over(sqlite(file), DatabaseType.SQLITE, new CopyOnWriteArrayList<>())
+                         .afterOwnerRead(() -> insertOtherOwnerOnce(file, raced));
+
+        var cause = causeOf(migrate(probe, MARK_SCRIPT).await());
+
+        assertThat(cause).isInstanceOf(MigrationError.PhysicalDatasourceOwnershipConflict.class);
+    }
+
+    /// U2: a serialized second undo finds its history row already gone under the lock and skips: it neither runs the
+    /// undo script (which would fail here, the table is gone) nor fails.
+    @Test
+    void undo_rowRemovedAfterTheAppliedRead_skipsTheScriptUnderTheLock() {
+        var file = dir.resolve("undoTwice.db");
+        var connector = sqlite(file);
+        var raced = new AtomicBoolean();
+        var probe = Probe.over(connector, DatabaseType.SQLITE, new CopyOnWriteArrayList<>())
+                         .afterHistoryRead(() -> removeRowOnce(file, raced));
+
+        assertThat(migrate(connector, MARK_SCRIPT).await().isSuccess()).isTrue();
+        var undo = undoOver(probe);
+
+        assertThat(undo.isSuccess()).isTrue();
+        assertThat(raced.get()).isTrue();
+    }
+
+    /// L1b: the undo's per-script lock is the FIRST statement of its transaction, before the row re-read and before
+    /// the undo script.
+    @Test
+    void undo_tierThreeLock_isTheFirstStatementOfTheUndoTransaction() {
+        var connector = sqlite(dir.resolve("undoLock.db"));
+        var statements = new CopyOnWriteArrayList<String>();
+
+        assertThat(migrate(connector, MARK_SCRIPT).await().isSuccess()).isTrue();
+        assertThat(undoOver(Probe.over(connector, DatabaseType.SQLITE, statements)).isSuccess()).isTrue();
+
+        var lock = indexOf(statements, "UPDATE aether_schema_owner");
+        assertThat(lock).isGreaterThanOrEqualTo(0);
+        assertThat(lock).isLessThan(indexOf(statements, "SELECT status, statements_completed, checksum"));
+        assertThat(lock).isLessThan(indexOf(statements, "DROP TABLE applied_marks"));
+    }
+
+    private Result<SchemaResult> undoOver(SqlConnector connector) {
+        return SchemaMigrations.schemaMigrations(timeSpan(1).minutes())
+                               .undo(DATASOURCE,
+                                     0,
+                                     List.of(MigrationScript.migrationScript("V1__a.sql", MARK_SCRIPT, 1L),
+                                             MigrationScript.migrationScript("U1__a.sql", "DROP TABLE applied_marks", 2L)),
+                                     connector,
+                                     "node",
+                                     OWNER)
+                               .await();
+    }
+
+    private static void removeRowOnce(Path file, AtomicBoolean raced) {
+        if (raced.compareAndSet(false, true)) {
+            execute(file, "DELETE FROM aether_schema_history WHERE version = 1");
+            execute(file, "DROP TABLE applied_marks");
+        }
+    }
+
+    private static void insertOtherOwnerOnce(Path file, AtomicBoolean raced) {
+        if (raced.compareAndSet(false, true)) {
+            execute(file, "INSERT INTO aether_schema_owner (blueprint_base) VALUES ('other')");
+        }
+    }
+
+    private static void execute(Path file, String sql) {
+        try (var conn = DriverManager.getConnection("jdbc:sqlite:" + file);
+             var statement = conn.createStatement()) {
+            statement.execute(sql);
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    // ---------------------------------------------------------------- atomic undo
+
+    /// Undo and the removal of its history row commit as one unit: a failing undo script leaves the row.
+    @Test
+    void undo_failingScript_keepsTheHistoryRow() {
+        var file = dir.resolve("undo.db");
+        var connector = sqlite(file);
+
+        assertThat(migrate(connector, MARK_SCRIPT).await().isSuccess()).isTrue();
+        var undo = SchemaMigrations.schemaMigrations(timeSpan(1).minutes())
+                                   .undo(DATASOURCE,
+                                         0,
+                                         List.of(MigrationScript.migrationScript("V1__a.sql", MARK_SCRIPT, 1L),
+                                                 MigrationScript.migrationScript("U1__a.sql", "DROP TABLE no_such_table", 2L)),
+                                         connector,
+                                         "node",
+                                         OWNER)
+                                   .await();
+
+        assertThat(undo.isFailure()).isTrue();
+        assertThat(scalar("jdbc:sqlite:" + file, "SELECT COUNT(*) FROM aether_schema_history WHERE version = 1")).isEqualTo(1);
+    }
+
+    @Test
+    void undo_succeedingScript_dropsTheWorkAndTheHistoryRowTogether() {
+        var file = dir.resolve("undoOk.db");
+        var connector = sqlite(file);
+
+        assertThat(migrate(connector, MARK_SCRIPT).await().isSuccess()).isTrue();
+        var undo = SchemaMigrations.schemaMigrations(timeSpan(1).minutes())
+                                   .undo(DATASOURCE,
+                                         0,
+                                         List.of(MigrationScript.migrationScript("V1__a.sql", MARK_SCRIPT, 1L),
+                                                 MigrationScript.migrationScript("U1__a.sql", "DROP TABLE applied_marks", 2L)),
+                                         connector,
+                                         "node",
+                                         OWNER)
+                                   .await();
+
+        assertThat(undo.isSuccess()).isTrue();
+        assertThat(undo.unwrap().appliedCount()).as("S27: one undo step ran").isEqualTo(1);
+        assertThat(scalar("jdbc:sqlite:" + file, "SELECT COUNT(*) FROM aether_schema_history WHERE version = 1")).isZero();
+        assertThat(scalar("jdbc:sqlite:" + file, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'applied_marks'")).isZero();
+    }
+
+    // ---------------------------------------------------------------- fix round (#2591)
+
+    /// A4b: a SQLite lock held LONGER than the driver's default busy timeout (3 s) is waited for: the second runner,
+    /// which read an empty history before the winner took the lock, waits (the connector's per-statement timeout, here
+    /// the pool's 10 s, is the busy wait), then re-reads under the lock and skips. The review's 3 s failure came from a
+    /// raw JDBC probe; through the connector every statement carries its query timeout, which the driver applies as the
+    /// busy wait (probed on sqlite-jdbc 3.54.1.0).
+    @Test
+    void t8c_sqliteLockHeldBeyondTheDriverDefault_secondRunnerWaitsThenSkips() throws Exception {
+        var file = dir.resolve("t8busy.db");
+        var reached = new CountDownLatch(1);
+        var gate = new CountDownLatch(1);
+        var locked = new CountDownLatch(1);
+        var second = Probe.over(sqlite(file, "10s"), DatabaseType.SQLITE, new CopyOnWriteArrayList<>()).afterHistoryRead(() -> pause(reached, gate));
+        var winner = Probe.over(sqlite(file, "10s"), DatabaseType.SQLITE, new CopyOnWriteArrayList<>()).afterLock(() -> holdTheLock(locked, 4500));
+        var executor = Executors.newFixedThreadPool(2);
+
+        try {
+            Future<Result<SchemaResult>> secondRun = executor.submit(() -> migrate(second, MARK_SCRIPT).await());
+
+            assertThat(reached.await(30, TimeUnit.SECONDS)).isTrue();
+            Future<Result<SchemaResult>> firstRun = executor.submit(() -> migrate(winner, MARK_SCRIPT).await());
+
+            assertThat(locked.await(30, TimeUnit.SECONDS)).isTrue();
+            gate.countDown();
+
+            assertThat(firstRun.get(60, TimeUnit.SECONDS).isSuccess()).isTrue();
+
+            var loser = secondRun.get(60, TimeUnit.SECONDS);
+
+            assertThat(loser.isSuccess()).as("the loser waited and skipped: %s", loser).isTrue();
+            assertThat(scalar("jdbc:sqlite:" + file, "SELECT COUNT(*) FROM applied_marks")).isEqualTo(1);
+            assertThat(scalar("jdbc:sqlite:" + file, "SELECT COUNT(*) FROM aether_schema_history WHERE status = 'SUCCESS'")).isEqualTo(1);
+        } finally {
+            gate.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    /// A4b (bound): the wait is bounded by the connector's per-statement timeout: with the pool's 1 s against a lock
+    /// held 2.5 s, the second runner FAILS with the busy error (it never serializes beyond that bound), and nothing is
+    /// applied twice. Pair of the test above: together they pin that the wait IS the statement timeout.
+    @Test
+    void t8c_sqliteLockWait_isBoundedByTheConnectorStatementTimeout() throws Exception {
+        var file = dir.resolve("t8bound.db");
+        var reached = new CountDownLatch(1);
+        var gate = new CountDownLatch(1);
+        var locked = new CountDownLatch(1);
+        var second = Probe.over(sqlite(file), DatabaseType.SQLITE, new CopyOnWriteArrayList<>()).afterHistoryRead(() -> pause(reached, gate));
+        var winner = Probe.over(sqlite(file), DatabaseType.SQLITE, new CopyOnWriteArrayList<>()).afterLock(() -> holdTheLock(locked, 2500));
+        var executor = Executors.newFixedThreadPool(2);
+
+        try {
+            Future<Result<SchemaResult>> secondRun = executor.submit(() -> migrate(second, MARK_SCRIPT).await());
+
+            assertThat(reached.await(30, TimeUnit.SECONDS)).isTrue();
+            Future<Result<SchemaResult>> firstRun = executor.submit(() -> migrate(winner, MARK_SCRIPT).await());
+
+            assertThat(locked.await(30, TimeUnit.SECONDS)).isTrue();
+            gate.countDown();
+
+            assertThat(firstRun.get(60, TimeUnit.SECONDS).isSuccess()).isTrue();
+            assertThat(secondRun.get(60, TimeUnit.SECONDS).isFailure()).as("the wait ended at the 1 s statement timeout").isTrue();
+            assertThat(scalar("jdbc:sqlite:" + file, "SELECT COUNT(*) FROM applied_marks")).isEqualTo(1);
+        } finally {
+            gate.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    private static void holdTheLock(CountDownLatch locked, long millis) {
+        if (locked.getCount() == 0) {
+            return;
+        }
+
+        locked.countDown();
+
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /// A5 / S23 (transactional engine class reachable in-JVM: H2 with a DML-only undo): the undo script and the removal
+    /// of its history row share ONE transaction, so a removal that fails takes the undo's effect with it.
+    @Test
+    void undo_removalFailing_rollsBackADmlUndoOnANonTierThreeEngine() {
+        var url = "jdbc:h2:mem:undoDml;DB_CLOSE_DELAY=-1";
+
+        assertThat(migrate(h2(url), MARK_SCRIPT).await().isSuccess()).isTrue();
+
+        var undo = undoWithFailingRemoval(url, "DELETE FROM applied_marks");
+
+        assertThat(undo.isFailure()).isTrue();
+        assertThat(scalar(url, "SELECT COUNT(*) FROM applied_marks")).as("the undo's DML was rolled back").isEqualTo(1);
+        assertThat(scalar(url, "SELECT COUNT(*) FROM aether_schema_history WHERE version = 1")).isEqualTo(1);
+    }
+
+    /// A5 (documented limit): on an engine whose DDL commits implicitly (H2 here; MySQL and Oracle alike) a DDL undo is
+    /// already committed when the history row's removal fails: the table is gone and the row stays. Nothing is rolled
+    /// back; the undo script must be re-runnable. This pins the narrowed claim of `undoAndForget`.
+    @Test
+    void undo_removalFailing_leavesADdlUndoCommittedOnAnImplicitCommitEngine() {
+        var url = "jdbc:h2:mem:undoDdl;DB_CLOSE_DELAY=-1";
+
+        assertThat(migrate(h2(url), MARK_SCRIPT).await().isSuccess()).isTrue();
+
+        var undo = undoWithFailingRemoval(url, "DROP TABLE applied_marks");
+
+        assertThat(undo.isFailure()).isTrue();
+        assertThat(scalar(url, "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'APPLIED_MARKS'")).as("the DDL stayed undone").isZero();
+        assertThat(scalar(url, "SELECT COUNT(*) FROM aether_schema_history WHERE version = 1")).as("the row stayed").isEqualTo(1);
+    }
+
+    private Result<SchemaResult> undoWithFailingRemoval(String url, String undoSql) {
+        var probe = Probe.over(h2(url), DatabaseType.H2, new CopyOnWriteArrayList<>())
+                         .failingUpdate(sql -> sql.startsWith("DELETE FROM aether_schema_history"));
+
+        return SchemaMigrations.schemaMigrations(timeSpan(1).minutes())
+                               .undo(DATASOURCE,
+                                     0,
+                                     List.of(MigrationScript.migrationScript("V1__a.sql", MARK_SCRIPT, 1L),
+                                             MigrationScript.migrationScript("U1__a.sql", undoSql, 2L)),
+                                     probe,
+                                     "node",
+                                     OWNER)
+                               .await();
+    }
+
+    private static final String REPEATABLE_ROW = "INSERT INTO aether_schema_history (version, type, description, script, checksum, applied_by, applied_at, execution_ms, status, statements_completed)"
+                                                 + " VALUES (0, 'REPEATABLE', 'marks', 'R__marks.sql', %d, 'other', 0, 0, 'SUCCESS', 1)";
+
+    /// S17: a FIRST-run repeatable (no stored checksum) applies under the tier-3 lock; it is not mistaken for applied.
+    @Test
+    void t8d_sqliteFirstRunRepeatable_appliesUnderTheLock() {
+        var file = dir.resolve("rep1.db");
+
+        var result = migrateRepeatable(sqlite(file), 1L).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(scalar("jdbc:sqlite:" + file, "SELECT COUNT(*) FROM applied_marks")).isEqualTo(1);
+        assertThat(scalar("jdbc:sqlite:" + file, "SELECT COUNT(*) FROM aether_schema_history WHERE type = 'REPEATABLE'")).isEqualTo(1);
+    }
+
+    /// S20: a repeatable another runner applied (same checksum) between this runner's read and its lock is found under
+    /// the lock and skipped: the script does not run.
+    @Test
+    void t8d_sqliteRepeatableAppliedMeanwhileWithTheSameChecksum_isSkippedUnderTheLock() {
+        var file = dir.resolve("rep2.db");
+        var raced = new AtomicBoolean();
+        var probe = Probe.over(sqlite(file), DatabaseType.SQLITE, new CopyOnWriteArrayList<>())
+                         .afterRepeatableRead(() -> insertRepeatableOnce(file, raced, 1L));
+
+        var result = migrateRepeatable(probe, 1L).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(raced.get()).as("positive control: the competitor's row was written").isTrue();
+        assertThat(scalar("jdbc:sqlite:" + file, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'applied_marks'")).as("the script was skipped").isZero();
+    }
+
+    /// S30: a repeatable another runner applied with ANOTHER checksum is not skipped: this runner's script runs, meets
+    /// the row and the run ends [MigrationError.HistoryRowCollision], the script rolled back.
+    @Test
+    void t8d_sqliteRepeatableAppliedMeanwhileWithAnotherChecksum_isCollisionNotSkip() {
+        var file = dir.resolve("rep3.db");
+        var raced = new AtomicBoolean();
+        var probe = Probe.over(sqlite(file), DatabaseType.SQLITE, new CopyOnWriteArrayList<>())
+                         .afterRepeatableRead(() -> insertRepeatableOnce(file, raced, 999L));
+
+        var cause = causeOf(migrateRepeatable(probe, 1L).await());
+
+        assertThat(raced.get()).as("positive control: the competitor's row was written").isTrue();
+        assertThat(cause).isInstanceOf(MigrationError.HistoryRowCollision.class);
+        assertThat(scalar("jdbc:sqlite:" + file, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'applied_marks'")).isZero();
+    }
+
+    private static void insertRepeatableOnce(Path file, AtomicBoolean raced, long checksum) {
+        if (raced.compareAndSet(false, true)) {
+            execute(file, REPEATABLE_ROW.formatted(checksum));
+        }
+    }
+
+    private static Promise<SchemaResult> migrateRepeatable(SqlConnector connector, long checksum) {
+        return SchemaMigrations.schemaMigrations(timeSpan(1).minutes())
+                               .migrate(DATASOURCE,
+                                        List.of(MigrationScript.migrationScript("R__marks.sql", MARK_SCRIPT, checksum)),
+                                        connector,
+                                        "node",
+                                        OWNER);
+    }
+
+    // ---------------------------------------------------------------- helpers
+
+    private static Promise<SchemaResult> migrate(SqlConnector connector, String sql) {
+        return migrate(connector, sql, SchemaMigrations.schemaMigrations(timeSpan(1).minutes()));
+    }
+
+    private static Promise<SchemaResult> migrate(SqlConnector connector, String sql, SchemaMigrations migrations) {
+        return migrations
+                               .migrate(DATASOURCE,
+                                        List.of(MigrationScript.migrationScript("V1__a.sql", sql, 1L)),
+                                        connector,
+                                        "node",
+                                        OWNER);
+    }
+
+    private SqlConnector sqlite(Path file) {
+        return sqlite(file, "1s");
+    }
+
+    private SqlConnector sqlite(Path file, String statementTimeout) {
+        return connector(DatabaseType.SQLITE, "jdbc:sqlite:" + file, 2, statementTimeout);
+    }
+
+    private SqlConnector h2(String url) {
+        return connector(DatabaseType.H2, url, 4);
+    }
+
+    private SqlConnector connector(DatabaseType type, String url, int poolSize) {
+        return connector(type, url, poolSize, "1s");
+    }
+
+    private SqlConnector connector(DatabaseType type, String url, int poolSize, String connectionTimeout) {
+        var pool = PoolConfig.poolConfigBuilder()
+                             .withMinConnections(0)
+                             .withMaxConnections(poolSize)
+                             .withConnectionTimeout(TimeSpan.timeSpan(connectionTimeout).unwrap())
+                             .build()
+                             .unwrap();
+        var config = databaseConnectorConfigBuilder().withName(DATASOURCE)
+                                                     .withType(type)
+                                                     .withJdbcUrl(url)
+                                                     .withPoolConfig(pool)
+                                                     .build()
+                                                     .unwrap();
+        var connector = new JdbcSqlConnectorFactory().provision(config).await().unwrap();
+
+        opened.add(connector);
+
+        return connector;
+    }
+
+    private static int scalar(String url, String sql) {
+        try (var conn = DriverManager.getConnection(url);
+             var statement = conn.createStatement();
+             var rows = statement.executeQuery(sql)) {
+            rows.next();
+            return rows.getInt(1);
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private static void pause(CountDownLatch reached, CountDownLatch gate) {
+        reached.countDown();
+
+        try {
+            gate.await(60, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static int indexOf(List<String> statements, String prefix) {
+        for (var i = 0; i < statements.size(); i++) {
+            if (statements.get(i).startsWith(prefix)) {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    private static Cause causeOf(Result<?> result) {
+        return result.fold(cause -> cause, _ -> {
+            throw new AssertionError("expected a failure");
+        });
+    }
+
+    /// A connector over a real one that reports another engine type and records every statement, including those of
+    /// the script transactions it begins. It can run a hook after the applied-history read.
+    private static final class Probe implements SqlConnector {
+        private final SqlConnector delegate;
+        private final DatabaseType type;
+        private final List<String> statements;
+        private final Predicate<String> historyRead = sql -> sql.contains("status = 'SUCCESS'");
+        private Runnable afterHistoryRead = () -> {};
+        private Runnable afterOwnerRead = () -> {};
+        private Runnable afterRepeatableRead = () -> {};
+        private Runnable afterLock = () -> {};
+        private Predicate<String> failingUpdate = _ -> false;
+        private Function<String, Cause> failure = sql -> Causes.cause("injected failure of: " + sql);
+
+        private Probe(SqlConnector delegate, DatabaseType type, List<String> statements) {
+            this.delegate = delegate;
+            this.type = type;
+            this.statements = statements;
+        }
+
+        static Probe over(SqlConnector delegate, DatabaseType type, List<String> statements) {
+            return new Probe(delegate, type, statements);
+        }
+
+        Probe afterHistoryRead(Runnable hook) {
+            afterHistoryRead = hook;
+            return this;
+        }
+
+        @Override
+        public <T> Promise<T> queryOne(String sql, RowMapper<T> mapper, Object... params) {
+            statements.add(sql);
+            return delegate.queryOne(sql, mapper, params);
+        }
+
+        Probe afterOwnerRead(Runnable hook) {
+            afterOwnerRead = hook;
+            return this;
+        }
+
+        /// Runs `hook` after the PRE-lock read of a repeatable's stored checksum (not the read under the lock).
+        Probe afterRepeatableRead(Runnable hook) {
+            afterRepeatableRead = hook;
+            return this;
+        }
+
+        /// Runs `hook` once the tier-3 lock statement has completed on a script transaction.
+        Probe afterLock(Runnable hook) {
+            afterLock = hook;
+            return this;
+        }
+
+        /// Fails every update whose text matches, with an injected cause.
+        Probe failingUpdate(Predicate<String> matches) {
+            failingUpdate = matches;
+            return this;
+        }
+
+        /// Fails every update whose text matches, with the given cause.
+        Probe failingUpdate(Predicate<String> matches, Cause cause) {
+            failingUpdate = matches;
+            failure = _ -> cause;
+            return this;
+        }
+
+        private Probe inheritedBy(Probe inner) {
+            inner.afterLock = afterLock;
+            inner.failingUpdate = failingUpdate;
+            inner.failure = failure;
+            return inner;
+        }
+
+        @Override
+        public <T> Promise<Option<T>> queryOptional(String sql, RowMapper<T> mapper, Object... params) {
+            statements.add(sql);
+            return delegate.queryOptional(sql, mapper, params)
+                           .map(row -> hookedOwner(sql, row));
+        }
+
+        private <T> Option<T> hookedOwner(String sql, Option<T> row) {
+            if (sql.startsWith("SELECT blueprint_base")) {
+                afterOwnerRead.run();
+            }
+
+            if (sql.contains("type = 'REPEATABLE'")) {
+                afterRepeatableRead.run();
+            }
+
+            return row;
+        }
+
+        @Override
+        public <T> Promise<List<T>> queryList(String sql, RowMapper<T> mapper, Object... params) {
+            statements.add(sql);
+            return delegate.queryList(sql, mapper, params)
+                           .map(rows -> hooked(sql, rows));
+        }
+
+        private <T> List<T> hooked(String sql, List<T> rows) {
+            if (historyRead.test(sql)) {
+                afterHistoryRead.run();
+            }
+
+            return rows;
+        }
+
+        @Override
+        public Promise<Integer> update(String sql, Object... params) {
+            statements.add(sql);
+            return failingUpdate.test(sql)
+                   ? failure.apply(sql).promise()
+                   : delegate.update(sql, params).map(count -> afterLockRan(sql, count));
+        }
+
+        private Integer afterLockRan(String sql, Integer count) {
+            if (sql.startsWith(LOCK_STATEMENT)) {
+                afterLock.run();
+            }
+
+            return count;
+        }
+
+        @Override
+        public <T> Promise<T> pinned(Duration statementTimeout, TransactionCallback<T> body, TransactionCallback<Unit> release) {
+            return delegate.pinned(statementTimeout,
+                                   session -> body.execute(inheritedBy(new Probe(session, type, statements))),
+                                   session -> release.execute(inheritedBy(new Probe(session, type, statements))));
+        }
+
+        @Override
+        public Promise<int[]> batch(String sql, List<Object[]> paramsList) {
+            statements.add(sql);
+            return delegate.batch(sql, paramsList);
+        }
+
+        @Override
+        public <T> Promise<T> transactional(TransactionCallback<T> callback) {
+            return delegate.transactional(tx -> callback.execute(inheritedBy(new Probe(tx, type, statements))));
+        }
+
+        @Override
+        public DatabaseConnectorConfig config() {
+            return delegate.config();
+        }
+
+        @Override
+        public DatabaseType databaseType() {
+            return type;
+        }
+
+        @Override
+        public Promise<Boolean> isHealthy() {
+            return delegate.isHealthy();
+        }
+    }
+}

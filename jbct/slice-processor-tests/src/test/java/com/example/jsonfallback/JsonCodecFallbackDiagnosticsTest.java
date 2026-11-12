@@ -45,6 +45,7 @@ class JsonCodecFallbackDiagnosticsTest {
 
         writeResource(classesDir, "com/example/rollbackfixture/routes.toml", ROLLBACK_ROUTES);
         writeResource(classesDir, "com/example/nocodecfixture/routes.toml", NO_CODEC_ROUTES);
+        writeResource(classesDir, "com/example/patchfixture/routes.toml", PATCH_ROUTES);
         var sources = SOURCES.entrySet()
                              .stream()
                              .map(entry -> writeSource(sourceDir, entry.getKey(), entry.getValue()))
@@ -124,6 +125,34 @@ class JsonCodecFallbackDiagnosticsTest {
                               .contains("        return fallback;")
                               .doesNotContain("GeneratedJsonCodec")
                               .doesNotContain("JsonCodecs");
+        }
+    }
+
+    // #2884: a Patch has a missing state only as a record component; as the whole body or a list element the
+    // generator refuses it with that reason, and the route stays on Jackson (which refuses it too, at run time).
+    @Nested
+    class PatchOutsideARecordComponent {
+        private static final String POSITION = "a Patch is supported only as a record component, over a type that is neither an Option nor a Patch";
+
+        @Test
+        void patchBody_getsANoteWithThePositionReason() {
+            assertThat(success).as(String.join("\n", errors)).isTrue();
+            assertThat(notes).anyMatch(note -> note.contains("Route 'whole'")
+                                               && note.contains("uses the Jackson fallback")
+                                               && note.contains(POSITION));
+        }
+
+        @Test
+        void patchListElement_getsANoteWithThePositionReason() {
+            assertThat(notes).anyMatch(note -> note.contains("Route 'listed': com.example.patchfixture.Listed uses the Jackson fallback")
+                                               && note.contains(POSITION));
+        }
+
+        @Test
+        void patchComponent_getsACodec() throws Exception {
+            assertThat(generated("com/example/patchfixture/PatchFixtureSliceRoutesJsonCodecs.java"))
+                .contains("com.example.patchfixture.Component.class")
+                .doesNotContain("com.example.patchfixture.Listed.class");
         }
     }
 
@@ -213,7 +242,69 @@ class JsonCodecFallbackDiagnosticsTest {
         default = 500
         """;
 
+    private static final String PATCH_ROUTES = """
+        prefix = "/api/patchfixture"
+
+        [routes]
+        whole = "PUT /whole"
+        listed = "PUT /listed"
+        component = "PUT /component"
+
+        [errors]
+        default = 500
+        """;
+
     private static final Map<String, String> SOURCES = Map.ofEntries(
+        Map.entry("com/example/patchfixture/PatchFixtureSlice.java", """
+            package com.example.patchfixture;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Patch;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+
+            @Slice
+            public interface PatchFixtureSlice {
+                Promise<Unit> whole(Patch<String> request);
+                Promise<Unit> listed(Listed request);
+                Promise<Unit> component(Component request);
+
+                static PatchFixtureSlice patchFixtureSlice() {
+                    return new PatchFixtureSlice() {
+                        @Override
+                        public Promise<Unit> whole(Patch<String> request) {
+                            return Promise.unitPromise();
+                        }
+
+                        @Override
+                        public Promise<Unit> listed(Listed request) {
+                            return Promise.unitPromise();
+                        }
+
+                        @Override
+                        public Promise<Unit> component(Component request) {
+                            return Promise.unitPromise();
+                        }
+                    };
+                }
+            }
+            """),
+        Map.entry("com/example/patchfixture/Listed.java", """
+            package com.example.patchfixture;
+
+            import java.util.List;
+
+            import org.pragmatica.lang.Patch;
+
+            public record Listed(List<Patch<String>> items) {}
+            """),
+        Map.entry("com/example/patchfixture/Component.java", """
+            package com.example.patchfixture;
+
+            import org.pragmatica.lang.Patch;
+
+            public record Component(Patch<String> name) {}
+            """),
         Map.entry("com/example/rollbackfixture/RollbackSlice.java", """
             package com.example.rollbackfixture;
 

@@ -15,6 +15,12 @@
     <description>Java record and enum code generation from PostgreSQL schema</description>
 
     <dependencies>
+        <!-- DockerRequirement / RequiresDocker: the one Docker guard (#3089) -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>testing</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>pg-schema</artifactId>

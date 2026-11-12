@@ -99,11 +99,13 @@ class OptionBindingSupportGateTest {
 
     /// Every `Option<X>` component the walk finds, as `Record.component : Option<X>`.
     private static final Set<String> EXPECTED_OPTION_COMPONENTS = Set.of("DatabaseConnectorConfig.asyncUrl : org.pragmatica.lang.Option<java.lang.String>",
+                                                                         "DatabaseConnectorConfig.applicationName : org.pragmatica.lang.Option<java.lang.String>",
                                                                          "DatabaseConnectorConfig.database : org.pragmatica.lang.Option<java.lang.String>",
                                                                          "DatabaseConnectorConfig.host : org.pragmatica.lang.Option<java.lang.String>",
                                                                          "DatabaseConnectorConfig.jdbcUrl : org.pragmatica.lang.Option<java.lang.String>",
                                                                          "DatabaseConnectorConfig.name : org.pragmatica.lang.Option<java.lang.String>",
                                                                          "DatabaseConnectorConfig.password : org.pragmatica.lang.Option<java.lang.String>",
+                                                                         "DatabaseConnectorConfig.poolScope : org.pragmatica.lang.Option<org.pragmatica.aether.resource.db.PoolScope>",
                                                                          "DatabaseConnectorConfig.port : org.pragmatica.lang.Option<java.lang.Integer>",
                                                                          "DatabaseConnectorConfig.r2dbcUrl : org.pragmatica.lang.Option<java.lang.String>",
                                                                          "DatabaseConnectorConfig.type : org.pragmatica.lang.Option<org.pragmatica.aether.resource.db.DatabaseType>",

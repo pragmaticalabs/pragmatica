@@ -36,10 +36,8 @@ public sealed interface ScoreReport permits ScoreReport.unused {
     String ADVISORY_MARKER = " (advisory)";
     String ADVISORY_LEGEND = "  (advisory) — reported for visibility, NOT counted in the TOTAL above";
     String DENSITY_UNIT = "/KLOC";
-
     /// Minimum interior width of the box, so a small report keeps the familiar proportions.
     int MIN_BOX_WIDTH = 51;
-
     /// Blanks between the border and the text on either side.
     int BOX_PADDING = 2;
 
@@ -61,16 +59,24 @@ public sealed interface ScoreReport permits ScoreReport.unused {
     /// advisory flag, so the breakdown is self-describing and the total is reproducible from it.
     static List<String> jsonLines(ScoreResult score) {
         return Stream.of(Stream.of("{",
-                                   String.format(Locale.ROOT, "  \"linesOfCode\": %d,", score.linesOfCode()),
-                                   String.format(Locale.ROOT, "  \"filesAnalyzed\": %d,", score.filesAnalyzed()),
-                                   String.format(Locale.ROOT, "  \"filesUnanalyzed\": %d,", score.filesUnanalyzed()),
+                                   String.format(Locale.ROOT,
+                                                 "  \"linesOfCode\": %d,",
+                                                 score.linesOfCode()),
+                                   String.format(Locale.ROOT,
+                                                 "  \"filesAnalyzed\": %d,",
+                                                 score.filesAnalyzed()),
+                                   String.format(Locale.ROOT,
+                                                 "  \"filesUnanalyzed\": %d,",
+                                                 score.filesUnanalyzed()),
                                    "  \"breakdown\": {"),
                          categoryEntries(score),
                          Stream.of("  },",
                                    String.format(Locale.ROOT,
                                                  "  \"totalDensityPerKloc\": %.1f,",
                                                  score.totalDensityPerKloc()),
-                                   String.format(Locale.ROOT, "  \"totalViolations\": %d", score.totalViolations()),
+                                   String.format(Locale.ROOT,
+                                                 "  \"totalViolations\": %d",
+                                                 score.totalViolations()),
                                    "}"))
                      .flatMap(identity())
                      .toList();
@@ -144,25 +150,27 @@ public sealed interface ScoreReport permits ScoreReport.unused {
     }
 
     private static String categoryLabel(ScoreCategory category) {
-        return category.name().replace('_', ' ');
+        return category.name()
+                       .replace('_', ' ');
     }
 
     /// Assemble the box: a header section followed by the non-empty row sections, each separated
     /// by a divider, with the advisory legend below the bottom border.
     private static List<String> box(String header, List<List<Row>> sections) {
-        var populated = sections.stream()
-                                .filter(section -> !section.isEmpty())
-                                .toList();
+        var populated = sections.stream().filter(section -> !section.isEmpty()).toList();
         var rendered = renderSections(populated);
         var width = Math.max(MIN_BOX_WIDTH,
-                             Stream.concat(Stream.of(header), rendered.stream().flatMap(List::stream))
+                             Stream.concat(Stream.of(header),
+                                           rendered.stream().flatMap(List::stream))
                                    .mapToInt(String::length)
                                    .max()
                                    .orElse(0));
 
-        return Stream.of(Stream.of(border("╔", "╗", width), boxed(header, width)),
+        return Stream.of(Stream.of(border("╔", "╗", width),
+                                   boxed(header, width)),
                          rendered.stream().flatMap(section -> boxedSection(section, width)),
-                         Stream.of(border("╚", "╝", width), ADVISORY_LEGEND))
+                         Stream.of(border("╚", "╝", width),
+                                   ADVISORY_LEGEND))
                      .flatMap(identity())
                      .toList();
     }
@@ -217,8 +225,9 @@ public sealed interface ScoreReport permits ScoreReport.unused {
     private static Stream<String> categoryEntries(ScoreResult score) {
         var categories = ScoreCategory.values();
 
-        return IntStream.range(0, categories.length)
-                        .mapToObj(index -> categoryEntry(score, categories[index], index < categories.length - 1));
+        return IntStream.range(0, categories.length).mapToObj(index -> categoryEntry(score,
+                                                                                     categories[index],
+                                                                                     index < categories.length - 1));
     }
 
     private static String categoryEntry(ScoreResult score, ScoreCategory category, boolean hasNext) {
@@ -226,7 +235,7 @@ public sealed interface ScoreReport permits ScoreReport.unused {
 
         return String.format(Locale.ROOT,
                              "    \"%s\": {\"densityPerKloc\": %.1f, \"violations\": %d, \"errors\": %d, "
-                             + "\"warnings\": %d, \"info\": %d, \"advisory\": %b}%s",
+                            + "\"warnings\": %d, \"info\": %d, \"advisory\": %b}%s",
                              category.name().toLowerCase(Locale.ROOT),
                              categoryScore.densityPerKloc(),
                              categoryScore.violations(),

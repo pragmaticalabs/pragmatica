@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.derive.pipeline;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -16,6 +17,7 @@ import org.pragmatica.jbct.derive.result.VectorPosition;
 import org.pragmatica.jbct.derive.result.VectorPosition.Resolution;
 import org.pragmatica.jbct.derive.result.Verification;
 import org.pragmatica.lang.Option;
+
 
 /// Verify — the exit gate, arithmetic only (SPEC.md §4). It runs the five budget rules against the
 /// user-supplied `[[floors]]`; a floor the sheet did not supply produces an explicit `UNVERIFIED`,
@@ -50,7 +52,9 @@ public sealed interface Verify permits Verify.unused {
         return new VerifyResult(verifications, halts);
     }
 
-    private static List<Verification> allRules(AnswerSheet sheet, List<VectorPosition> vector, List<RecoveryAssignment> recovery) {
+    private static List<Verification> allRules(AnswerSheet sheet,
+                                               List<VectorPosition> vector,
+                                               List<RecoveryAssignment> recovery) {
         return concat(latency(sheet),
                       List.of(tailComposition(),
                               envelopeComposition(),
@@ -59,7 +63,6 @@ public sealed interface Verify permits Verify.unused {
     }
 
     // ---- Rule 1: latency decomposition down the critical path (the one rule schema v0.1 runs) ----
-
     private static List<Verification> latency(AnswerSheet sheet) {
         return sheet.rows()
                     .stream()
@@ -71,20 +74,26 @@ public sealed interface Verify permits Verify.unused {
     }
 
     private static boolean isSystemClock(AnswerRow row) {
-        return row.shape().map(String::toLowerCase).filter("system-clock"::equals).isPresent();
+        return row.shape()
+                  .map(txt -> txt.toLowerCase(Locale.ROOT))
+                  .filter("system-clock"::equals)
+                  .isPresent();
     }
 
     private static Verification latencyFor(AnswerSheet sheet, AnswerRow row) {
-        return floorFor(sheet, row.scope())
-            .map(floor -> latencyWithFloor(row, floor))
-            .or(Verification.unverified("latency decomposition",
-                                        row.scope().display(),
-                                        "floor missing — no [[floors]] for this path (never a default)"));
+        return floorFor(sheet,
+                        row.scope()).map(floor -> latencyWithFloor(row, floor))
+                       .or(Verification.unverified("latency decomposition",
+                                                   row.scope().display(),
+                                                   "floor missing — no [[floors]] for this path (never a default)"));
     }
 
     private static Verification latencyWithFloor(AnswerRow row, Floor floor) {
-        return Option.all(floorMillis(floor), targetMillis(row.statement()))
-                     .map((floorMs, targetMs) -> compareLatency(row.scope(), floorMs, targetMs))
+        return Option.all(floorMillis(floor),
+                          targetMillis(row.statement()))
+                     .map((floorMs, targetMs) -> compareLatency(row.scope(),
+                                                                floorMs,
+                                                                targetMs))
                      .or(Verification.unverified("latency decomposition",
                                                  row.scope().display(),
                                                  "floor hops or the stated target are not numerically resolvable"));
@@ -94,7 +103,10 @@ public sealed interface Verify permits Verify.unused {
         return floorMs <= targetMs
                ? Verification.verified("latency decomposition",
                                        scope.display(),
-                                       floorMs + "ms floor <= " + targetMs + "ms target (headroom " + (targetMs - floorMs) + "ms)")
+                                       floorMs
+                                      + "ms floor <= " + targetMs
+                                      + "ms target (headroom " + (targetMs - floorMs)
+                                      + "ms)")
                : Verification.halt("latency decomposition",
                                    scope.display(),
                                    floorMs + "ms floor exceeds the " + targetMs + "ms target");
@@ -103,20 +115,29 @@ public sealed interface Verify permits Verify.unused {
     private static Option<Floor> floorFor(AnswerSheet sheet, Scope scope) {
         return sheet.floors()
                     .stream()
-                    .filter(floor -> floor.path().display().equals(scope.display()))
+                    .filter(floor -> floor.path()
+                                          .display()
+                                          .equals(scope.display()))
                     .findFirst()
                     .map(Option::some)
                     .orElseGet(Option::none);
     }
 
     private static Option<Long> floorMillis(Floor floor) {
-        return floor.hops().stream().anyMatch(hop -> hop.p50Ms().isEmpty())
+        return floor.hops()
+                    .stream()
+                    .anyMatch(hop -> hop.p50Ms()
+                                        .isEmpty())
                ? Option.none()
                : Option.some(sumHops(floor));
     }
 
     private static long sumHops(Floor floor) {
-        return floor.hops().stream().mapToLong(hop -> hop.p50Ms().or(0L)).sum();
+        return floor.hops()
+                    .stream()
+                    .mapToLong(hop -> hop.p50Ms()
+                                         .or(0L))
+                    .sum();
     }
 
     private static Option<Double> targetMillis(String statement) {
@@ -128,7 +149,6 @@ public sealed interface Verify permits Verify.unused {
     }
 
     // ---- Rules 2-4: structurally honest gaps under schema v0.1 ----
-
     private static Verification tailComposition() {
         return Verification.unverified("tail composition",
                                        "system",
@@ -148,12 +168,14 @@ public sealed interface Verify permits Verify.unused {
     }
 
     // ---- Rule 5: the mechanism bill against the Q8 envelope ----
-
-    private static Verification mechanismBill(AnswerSheet sheet, List<VectorPosition> vector, List<RecoveryAssignment> recovery) {
+    private static Verification mechanismBill(AnswerSheet sheet,
+                                              List<VectorPosition> vector,
+                                              List<RecoveryAssignment> recovery) {
         return Verification.unverified("mechanism bill (Rule 5)",
                                        "system",
-                                       mechanismCount(vector, recovery) + " standing mechanism(s) derived; Q8 envelope is prose ("
-                                       + q8Envelope(sheet) + ") — the bill-vs-envelope comparison is judgment");
+                                       mechanismCount(vector, recovery)
+                                      + " standing mechanism(s) derived; Q8 envelope is prose (" + q8Envelope(sheet)
+                                      + ") — the bill-vs-envelope comparison is judgment");
     }
 
     private static long mechanismCount(List<VectorPosition> vector, List<RecoveryAssignment> recovery) {
@@ -168,12 +190,13 @@ public sealed interface Verify permits Verify.unused {
     }
 
     private static long standingRecovery(List<RecoveryAssignment> recovery) {
-        return recovery.stream().filter(Verify::isStanding).count();
+        return recovery.stream()
+                       .filter(Verify::isStanding)
+                       .count();
     }
 
     private static boolean isStanding(RecoveryAssignment assignment) {
-        return assignment.recoveryClass() == RecoveryAssignment.RecoveryClass.FER
-            || assignment.recoveryClass() == RecoveryAssignment.RecoveryClass.BER;
+        return assignment.recoveryClass() == RecoveryAssignment.RecoveryClass.FER || assignment.recoveryClass() == RecoveryAssignment.RecoveryClass.BER;
     }
 
     private static String q8Envelope(AnswerSheet sheet) {
@@ -194,12 +217,14 @@ public sealed interface Verify permits Verify.unused {
     }
 
     // ---- shared ----
-
     private static Halt toHalt(Verification line) {
-        return Halt.of(Halt.Kind.FLOORS_EXCEED_BUDGET, line.rule() + " @ " + line.scope() + ": " + line.detail());
+        return Halt.halt(Halt.Kind.FLOORS_EXCEED_BUDGET,
+                         line.rule() + " @ " + line.scope() + ": " + line.detail());
     }
 
     private static List<Verification> concat(List<Verification> head, List<Verification> tail) {
-        return Stream.concat(head.stream(), tail.stream()).toList();
+        return Stream.concat(head.stream(),
+                             tail.stream())
+                     .toList();
     }
 }

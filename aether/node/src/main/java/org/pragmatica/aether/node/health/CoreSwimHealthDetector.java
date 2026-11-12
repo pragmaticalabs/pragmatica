@@ -48,6 +48,7 @@ import org.pragmatica.swim.GossipDecryptObserver;
 import org.pragmatica.swim.GossipEncryptor;
 import org.pragmatica.swim.HealthSnapshot;
 import org.pragmatica.swim.NettySwimTransport;
+import org.pragmatica.swim.QuorumReport;
 import org.pragmatica.swim.SwimConfig;
 import org.pragmatica.swim.SwimHealth;
 import org.pragmatica.swim.SwimMember;
@@ -80,6 +81,24 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private volatile Option<BootTokens> bootTokens = Option.none();
     private volatile Option<OperatorWarningSink> operatorWarningSink = Option.none();
     private volatile List<NodeInfo> peerDirectory = List.of();
+    /// #2936: this node's last quorum report, replayed onto a protocol created after it was made.
+    private volatile QuorumReport selfQuorumReport = QuorumReport.HELD;
+
+    /// #2936: publish this node's own [QuorumReport] on its SWIM self-ALIVE (see `SwimProtocol.reportSelfQuorum`).
+    /// Kept and replayed when the protocol starts later.
+    public Unit reportSelfQuorum(QuorumReport report) {
+        selfQuorumReport = report;
+        protocol().onPresent(protocol -> protocol.reportSelfQuorum(report));
+
+        return Unit.unit();
+    }
+
+    /// #2936: whether `peer` reports, over SWIM, that it is a voter that cannot write to its quorum. `false` before SWIM
+    /// starts and for a peer that reports `OBSERVER` (passive by role).
+    public boolean reportsQuorumLoss(NodeId peer) {
+        return protocol().map(protocol -> protocol.reportsQuorumLoss(peer))
+                       .or(false);
+    }
 
     public Unit setMembershipEligibility(Predicate<NodeId> eligibility) {
         membershipEligibility = eligibility;
@@ -809,6 +828,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         pendingObservationListeners.forEach(protocol::addObservationListener);
         pendingTransportObservationEmitters.forEach(protocol::addTransportObservationEmitter);
         pendingGossipChannels.forEach(protocol::registerGossipChannel);
+        protocol.reportSelfQuorum(selfQuorumReport);
         seedMembers(protocol);
         seedPeerDirectory(protocol);
         pendingAnnounceJoin.onPresent(call -> protocol.announceJoin(call.self(),

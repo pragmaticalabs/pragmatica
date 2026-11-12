@@ -20,7 +20,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// `Publisher` is expected, so the existing string-keyed publish path keeps working.
 class TypedPublisherTest {
     private static final Cause PUBLISH_FAILED = Causes.cause("Publish failed");
-    private static final Topic<SeatSold> SEAT_SOLD = Topic.of("seat-sold", SeatSold.class);
+    private static final Topic<SeatSold> SEAT_SOLD = Topic.topic("seat-sold", SeatSold.class);
 
     record SeatSold(String seatId) {}
 

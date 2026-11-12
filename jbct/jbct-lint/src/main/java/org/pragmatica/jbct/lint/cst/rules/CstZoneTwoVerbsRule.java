@@ -1,5 +1,6 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
+import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -107,11 +108,11 @@ public class CstZoneTwoVerbsRule implements CstLintRule {
             return Stream.empty();
         }
         // Extract the verb from interface name (e.g., "FetchUserData" -> "fetch")
-        return extractVerb(interfaceName).filter(verb -> ZONE_3_VERBS.contains(verb.toLowerCase()))
+        return extractVerb(interfaceName).filter(verb -> ZONE_3_VERBS.contains(verb.toLowerCase(Locale.ROOT)))
                           .map(verb -> createDiagnostic(iface,
                                                         interfaceName,
                                                         verb,
-                                                        suggestZone2Verb(verb.toLowerCase()),
+                                                        suggestZone2Verb(verb.toLowerCase(Locale.ROOT)),
                                                         ctx))
                           .stream();
     }

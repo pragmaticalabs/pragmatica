@@ -3,6 +3,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.jbct.slice.routing;
 
+import java.util.Locale;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
@@ -13,6 +15,10 @@ import org.pragmatica.lang.utils.Causes;
 public sealed interface RouteSecurityLevel {
     /// No authentication required.
     record Public() implements RouteSecurityLevel {}
+
+    /// Authenticate if a credential is presented (#2946): none is served anonymously, an invalid one is refused
+    /// (401), a valid one reaches the slice through its `Principal`/`SecurityContext` parameters.
+    record OptionalAuth() implements RouteSecurityLevel {}
 
     /// Any valid credential (API key or JWT based on server mode).
     record Authenticated() implements RouteSecurityLevel {}
@@ -26,35 +32,38 @@ public sealed interface RouteSecurityLevel {
     record Unspecified() implements RouteSecurityLevel {}
 
     RouteSecurityLevel PUBLIC = new Public();
+    RouteSecurityLevel OPTIONAL = new OptionalAuth();
     RouteSecurityLevel AUTHENTICATED = new Authenticated();
     RouteSecurityLevel UNSPECIFIED = new Unspecified();
     Cause EMPTY_VALUE = Causes.cause("Empty security value");
     Cause EMPTY_ROLE = Causes.cause("Empty role name");
     Fn1<Cause, String> UNKNOWN_LEVEL = Causes.forOneValue("Unknown security level: %s");
 
-    /// Parse from string: "public", "authenticated", "role:name".
+    /// Parse from string: "public", "optional", "authenticated", "role:name".
     static Result<RouteSecurityLevel> parse(String value) {
         if (value == null || value.isBlank()) {
             return EMPTY_VALUE.result();
         }
 
-        var trimmed = value.trim().toLowerCase();
+        var trimmed = value.trim().toLowerCase(Locale.ROOT);
 
         return switch (trimmed) {
             case "public" -> Result.success(PUBLIC);
+            case "optional" -> Result.success(OPTIONAL);
             case "authenticated" -> Result.success(AUTHENTICATED);
             case "unspecified" -> Result.success(UNSPECIFIED);
             default -> parseRole(trimmed, value);
         };
     }
 
-    /// Strength ordering: UNSPECIFIED(-1) < PUBLIC(0) < AUTHENTICATED(1) < ROLE(2).
+    /// Strength ordering: UNSPECIFIED(-1) < PUBLIC(0) < OPTIONAL(1) < AUTHENTICATED(2) < ROLE(3).
     default int strength() {
         return switch (this) {
             case Public _ -> 0;
-            case Authenticated _ -> 1;
-            case Role _ -> 2;
-            case Unspecified _ -> -1;
+            case OptionalAuth _ -> 1;
+            case Authenticated _ -> 2;
+            case Role _ -> 3;
+            case Unspecified _ -> - 1;
         };
     }
 
@@ -67,6 +76,7 @@ public sealed interface RouteSecurityLevel {
     default String toConfigString() {
         return switch (this) {
             case Public _ -> "public";
+            case OptionalAuth _ -> "optional";
             case Authenticated _ -> "authenticated";
             case Role(var name) -> "role:" + name;
             case Unspecified _ -> "unspecified";

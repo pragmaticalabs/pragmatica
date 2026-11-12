@@ -7,7 +7,6 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Pattern;
-
 import javax.lang.model.element.AnnotationMirror;
 import javax.lang.model.element.AnnotationValue;
 import javax.lang.model.element.Element;
@@ -42,12 +41,15 @@ import com.sun.source.util.TreePath;
 import com.sun.source.util.TreePathScanner;
 import com.sun.source.util.Trees;
 
+
 /// JBCT-ASYNC-01, type-attributed: every `Promise` callback must be justified.
 ///
-/// `Promise.onSuccess/onFailure/onResult` and their `*Run`/`*Async` forms are events: each runs on its own virtual thread,
-/// concurrently with the promise's dependents (the awaiting caller, the next `map`/`flatMap`) and in no order relative to them.
-/// Any effect a callback has, other than the three that nothing downstream can order against, may therefore land after the code
-/// that follows the promise has already looked. `withSuccess`/`withFailure`/`withResult` and a plain chain step run in chain
+/// `Promise.onSuccess/onFailure/onResult` and their `*Run` forms are events. Where one runs depends on when it is attached:
+/// on a promise still pending at that moment, every event callback of that promise runs after resolution on ONE virtual thread,
+/// in sequence, concurrently with the promise's dependents (the awaiting caller, the next `map`/`flatMap`) and in no order
+/// relative to them; on a promise already resolved at that moment, the callback runs inline on the attaching thread before the
+/// call returns. The attaching code cannot in general know which case it is in, so any effect a callback has, other than the
+/// three that nothing downstream can order against, may land after the code that follows the promise has already looked. `withSuccess`/`withFailure`/`withResult` and a plain chain step run in chain
 /// order, before any dependent sees the value. `Result.on*` runs inline and is never looked at: the receiver is identified by
 /// the resolved method symbol (owner `org.pragmatica.lang.Promise`), not by its spelling, after attribution, so it is exact and
 /// cross-file.
@@ -69,34 +71,96 @@ import com.sun.source.util.Trees;
 /// whose result is used is assumed to be a read, so an effect hidden behind one is not seen.
 public final class AsyncCallbackCheck implements TaskListener {
     static final String RULE_ID = "JBCT-ASYNC-01";
-
     private static final String PROMISE = "org.pragmatica.lang.Promise";
     private static final int MAX_DEPTH = 3;
-    private static final Set<String> CALLBACKS = Set.of("onSuccess", "onFailure", "onResult", "onSuccessRun", "onFailureRun",
-                                                        "onResultRun", "onSuccessAsync", "onFailureAsync", "onResultAsync",
-                                                        "onSuccessRunAsync", "onFailureRunAsync", "onResultRunAsync");
-    private static final Set<String> VERBS = Set.of("put", "putAll", "putIfAbsent", "add", "addAll", "addFirst", "addLast",
-                                                    "remove", "removeIf", "removeAll", "retainAll", "clear", "set", "lazySet",
-                                                    "getAndSet", "incrementAndGet", "getAndIncrement", "decrementAndGet",
-                                                    "getAndDecrement", "addAndGet", "getAndAdd", "compareAndSet",
-                                                    "compareAndExchange", "weakCompareAndSet", "weakCompareAndSetPlain",
-                                                    "weakCompareAndSetVolatile", "updateAndGet", "getAndUpdate",
-                                                    "accumulateAndGet", "getAndAccumulate", "compute", "computeIfAbsent",
-                                                    "computeIfPresent", "merge", "replace", "replaceAll", "offer", "offerFirst",
-                                                    "offerLast", "push", "pop", "poll", "pollFirst", "pollLast", "append",
-                                                    "increment", "decrement", "reset", "setRelease", "setPlain", "setVolatile",
-                                                    "setOpaque", "accumulate");
+
+    private static final Set<String> CALLBACKS = Set.of("onSuccess",
+                                                        "onFailure",
+                                                        "onResult",
+                                                        "onSuccessRun",
+                                                        "onFailureRun",
+                                                        "onResultRun");
+
+    private static final Set<String> VERBS = Set.of("put",
+                                                    "putAll",
+                                                    "putIfAbsent",
+                                                    "add",
+                                                    "addAll",
+                                                    "addFirst",
+                                                    "addLast",
+                                                    "remove",
+                                                    "removeIf",
+                                                    "removeAll",
+                                                    "retainAll",
+                                                    "clear",
+                                                    "set",
+                                                    "lazySet",
+                                                    "getAndSet",
+                                                    "incrementAndGet",
+                                                    "getAndIncrement",
+                                                    "decrementAndGet",
+                                                    "getAndDecrement",
+                                                    "addAndGet",
+                                                    "getAndAdd",
+                                                    "compareAndSet",
+                                                    "compareAndExchange",
+                                                    "weakCompareAndSet",
+                                                    "weakCompareAndSetPlain",
+                                                    "weakCompareAndSetVolatile",
+                                                    "updateAndGet",
+                                                    "getAndUpdate",
+                                                    "accumulateAndGet",
+                                                    "getAndAccumulate",
+                                                    "compute",
+                                                    "computeIfAbsent",
+                                                    "computeIfPresent",
+                                                    "merge",
+                                                    "replace",
+                                                    "replaceAll",
+                                                    "offer",
+                                                    "offerFirst",
+                                                    "offerLast",
+                                                    "push",
+                                                    "pop",
+                                                    "poll",
+                                                    "pollFirst",
+                                                    "pollLast",
+                                                    "append",
+                                                    "increment",
+                                                    "decrement",
+                                                    "reset",
+                                                    "setRelease",
+                                                    "setPlain",
+                                                    "setVolatile",
+                                                    "setOpaque",
+                                                    "accumulate");
+
     /// `Result`/`Option` combinators run their function argument inline; the argument is scanned in its own right.
-    private static final Set<String> COMBINATOR_OWNERS = Set.of("org.pragmatica.lang.Result", "org.pragmatica.lang.Option");
-    private static final Set<String> PROMISE_FACTORIES = Set.of("promise", "resolved", "success", "ok", "failure", "err", "unitPromise");
+    private static final Set<String> COMBINATOR_OWNERS = Set.of("org.pragmatica.lang.Result",
+                                                                "org.pragmatica.lang.Option");
+
+    private static final Set<String> PROMISE_FACTORIES = Set.of("promise",
+                                                                "resolved",
+                                                                "success",
+                                                                "ok",
+                                                                "failure",
+                                                                "err",
+                                                                "unitPromise");
+
     private static final Set<String> RESOLVERS = Set.of("succeed", "fail", "resolve", "cancel");
-    private static final Set<String> LOGGER_OWNERS = Set.of("org.slf4j.Logger", "org.slf4j.spi.LoggingEventBuilder",
-                                                            "java.lang.System.Logger", "java.util.logging.Logger",
-                                                            "java.io.PrintStream", "org.slf4j.MDC");
+
+    private static final Set<String> LOGGER_OWNERS = Set.of("org.slf4j.Logger",
+                                                            "org.slf4j.spi.LoggingEventBuilder",
+                                                            "java.lang.System.Logger",
+                                                            "java.util.logging.Logger",
+                                                            "java.io.PrintStream",
+                                                            "org.slf4j.MDC");
+
     private static final Set<String> EXECUTOR_OWNERS = Set.of("java.util.concurrent.ScheduledExecutorService",
                                                               "java.util.concurrent.Executor",
                                                               "java.util.concurrent.ExecutorService",
                                                               "java.util.concurrent.CompletableFuture");
+
     private static final Pattern STRING_LITERAL = Pattern.compile("\"(?:\\\\.|[^\"\\\\])*\"");
 
     /// The comment opener must come right before `detached`, so a string literal or "not detached: ..." does not count.
@@ -146,15 +210,18 @@ public final class AsyncCallbackCheck implements TaskListener {
         return trees.getElement(path) instanceof ExecutableElement method
                && CALLBACKS.contains(method.getSimpleName().toString())
                && method.getEnclosingElement() instanceof TypeElement owner
-               && owner.getQualifiedName().contentEquals(PROMISE);
+               && owner.getQualifiedName()
+                       .contentEquals(PROMISE);
     }
 
     private void check(TreePath path, MethodInvocationTree call) {
-        var argumentPath = new TreePath(path, call.getArguments().getFirst());
+        var argumentPath = new TreePath(path,
+                                        call.getArguments().getFirst());
 
-        effectOf(argumentPath, enclosingTypes(path)).or(() -> siblingEffect(path, call))
-                                                    .filter(_ -> !isSuppressed(path))
-                                                    .ifPresent(effect -> report(path, call, effect));
+        effectOf(argumentPath,
+                 enclosingTypes(path)).or(() -> siblingEffect(path, call))
+                .filter(_ -> !isSuppressed(path))
+                .ifPresent(effect -> report(path, call, effect));
     }
 
     /// A callback that is itself allowlisted is still reported when another callback of the same promise chain has an effect:
@@ -164,26 +231,29 @@ public final class AsyncCallbackCheck implements TaskListener {
     private Optional<Effect> siblingEffect(TreePath path, MethodInvocationTree call) {
         var outermost = path;
 
-        while (outermost.getParentPath().getLeaf() instanceof MemberSelectTree select
-               && select.getExpression() == outermost.getLeaf()
-               && outermost.getParentPath().getParentPath().getLeaf() instanceof MethodInvocationTree) {
+        while (outermost.getParentPath().getLeaf() instanceof MemberSelectTree select && select.getExpression() == outermost.getLeaf() && outermost.getParentPath()
+                                                                                                                                                   .getParentPath()
+                                                                                                                                                   .getLeaf() instanceof MethodInvocationTree) {
             outermost = outermost.getParentPath().getParentPath();
         }
 
         var scope = enclosingTypes(path);
 
-        for (var current = outermost; current.getLeaf() instanceof MethodInvocationTree invocation; ) {
+        for (var current = outermost; current.getLeaf() instanceof MethodInvocationTree invocation;) {
             if (isPromiseCallback(current) && invocation.getArguments().size() == 1) {
-                var sibling = effectOf(new TreePath(current, invocation.getArguments().getFirst()), scope);
+                var sibling = effectOf(new TreePath(current,
+                                                    invocation.getArguments().getFirst()),
+                                       scope);
 
                 if (sibling.isPresent()) {
-                    return Optional.of(new Effect("is allowlisted, but the " + callbackName(invocation) + " callback of the same chain "
-                                                  + sibling.get().description(), null));
+                    return Optional.of(new Effect("is allowlisted, but the " + callbackName(invocation)
+                                                 + " callback of the same chain " + sibling.get()
+                                                                                           .description(),
+                                                  null));
                 }
             }
 
-            if (!(invocation.getMethodSelect() instanceof MemberSelectTree select
-                  && select.getExpression() instanceof MethodInvocationTree)) {
+            if (! (invocation.getMethodSelect() instanceof MemberSelectTree select && select.getExpression() instanceof MethodInvocationTree)) {
                 break;
             }
 
@@ -194,7 +264,10 @@ public final class AsyncCallbackCheck implements TaskListener {
     }
 
     private static String callbackName(MethodInvocationTree invocation) {
-        return invocation.getMethodSelect() instanceof MemberSelectTree select ? select.getIdentifier().toString() : "on*";
+        return invocation.getMethodSelect() instanceof MemberSelectTree select
+               ? select.getIdentifier()
+                       .toString()
+               : "on*";
     }
 
     private Optional<Effect> effectOf(TreePath argumentPath, Set<Element> scope) {
@@ -204,6 +277,7 @@ public final class AsyncCallbackCheck implements TaskListener {
             var finder = new EffectFinder(scope, declaredIn(argumentPath, lambda), MAX_DEPTH, lambda.getBody());
 
             finder.scan(new TreePath(argumentPath, lambda.getBody()), null);
+
             return Optional.ofNullable(finder.found);
         }
 
@@ -219,7 +293,8 @@ public final class AsyncCallbackCheck implements TaskListener {
     /// A callback handed on unchanged from a parameter of the enclosing method: the caller of that method supplies it, and is
     /// checked where it builds it.
     private boolean isForwardedParameter(TreePath argumentPath) {
-        return argumentPath.getLeaf() instanceof IdentifierTree && trees.getElement(argumentPath) instanceof Element element
+        return argumentPath.getLeaf() instanceof IdentifierTree
+               && trees.getElement(argumentPath) instanceof Element element
                && element.getKind() == ElementKind.PARAMETER;
     }
 
@@ -268,8 +343,9 @@ public final class AsyncCallbackCheck implements TaskListener {
             return delegateEffect(method, delegate.get(), sharedArguments, scope, depth);
         }
 
-        var voidLike = resultDiscarded || method.getReturnType().getKind() == TypeKind.VOID
-                       || method.getReturnType().toString().equals("org.pragmatica.lang.Unit");
+        var voidLike = resultDiscarded || method.getReturnType().getKind() == TypeKind.VOID || method.getReturnType()
+                                                                                                     .toString()
+                                                                                                     .equals("org.pragmatica.lang.Unit");
 
         return voidLike
                ? Optional.of(new Effect("calls " + ownerName(method) + "." + method.getSimpleName() + "(...)", null))
@@ -308,41 +384,43 @@ public final class AsyncCallbackCheck implements TaskListener {
         var finder = new EffectFinder(scope, declared, depth - 1, null);
 
         finder.scan(new TreePath(methodPath, tree.getBody()), null);
-        return Optional.ofNullable(finder.found).map(effect -> new Effect(effect.description(), method.getSimpleName().toString()));
+
+        return Optional.ofNullable(finder.found).map(effect -> new Effect(effect.description(),
+                                                                          method.getSimpleName().toString()));
     }
 
     private static String ownerName(ExecutableElement method) {
-        return method.getEnclosingElement().getSimpleName().toString();
+        return method.getEnclosingElement()
+                     .getSimpleName()
+                     .toString();
     }
 
     /// Logging, scheduling and resolving another promise: the effects the rule accepts without a justification.
     private static boolean isAllowlisted(ExecutableElement method) {
         var name = method.getSimpleName().toString();
-        var owner = method.getEnclosingElement() instanceof TypeElement type ? type.getQualifiedName().toString() : "";
+        var owner = method.getEnclosingElement() instanceof TypeElement type
+                    ? type.getQualifiedName().toString()
+                    : "";
 
-        return LOGGER_OWNERS.contains(owner)
-               || EXECUTOR_OWNERS.contains(owner)
-               || name.startsWith("schedule")
-               || owner.equals(PROMISE) && RESOLVERS.contains(name);
+        return LOGGER_OWNERS.contains(owner) || EXECUTOR_OWNERS.contains(owner) || name.startsWith("schedule") || owner.equals(PROMISE) && RESOLVERS.contains(name);
     }
 
     /// `Cause.promise()`, `Promise.success(v)`, `Unit.unit()`: building a value has no effect, so discarding one is not one. Their
     /// arguments are still scanned, so the consumer handed to `Promise.promise(consumer)` is judged on its own body.
     private static boolean isPureFactory(ExecutableElement method) {
-        if (!(method.getEnclosingElement() instanceof TypeElement owner)) {
+        if (! (method.getEnclosingElement() instanceof TypeElement owner)) {
             return false;
         }
 
         var type = owner.getQualifiedName().toString();
         var name = method.getSimpleName().toString();
 
-        return type.equals(PROMISE) && PROMISE_FACTORIES.contains(name)
-               || type.equals("org.pragmatica.lang.Cause") && (name.equals("promise") || name.equals("result"))
-               || type.equals("org.pragmatica.lang.Unit") && name.equals("unit");
+        return type.equals(PROMISE) && PROMISE_FACTORIES.contains(name) || type.equals("org.pragmatica.lang.Cause") && (name.equals("promise") || name.equals("result")) || type.equals("org.pragmatica.lang.Unit") && name.equals("unit");
     }
 
     private static boolean isCombinator(ExecutableElement method) {
-        return method.getEnclosingElement() instanceof TypeElement owner && COMBINATOR_OWNERS.contains(owner.getQualifiedName().toString());
+        return method.getEnclosingElement() instanceof TypeElement owner && COMBINATOR_OWNERS.contains(owner.getQualifiedName()
+                                                                                                            .toString());
     }
 
     /// Scans a callback or delegate body for the first effect that is neither allowlisted nor a read.
@@ -362,7 +440,9 @@ public final class AsyncCallbackCheck implements TaskListener {
 
         @Override
         public Void scan(Tree tree, Void unused) {
-            return found == null ? super.scan(tree, unused) : null;
+            return found == null
+                   ? super.scan(tree, unused)
+                   : null;
         }
 
         @Override
@@ -379,20 +459,23 @@ public final class AsyncCallbackCheck implements TaskListener {
         @Override
         public Void visitAssignment(AssignmentTree node, Void unused) {
             checkTarget(new TreePath(getCurrentPath(), node.getVariable()), "assigns");
+
             return super.visitAssignment(node, unused);
         }
 
         @Override
         public Void visitCompoundAssignment(CompoundAssignmentTree node, Void unused) {
             checkTarget(new TreePath(getCurrentPath(), node.getVariable()), "updates");
+
             return super.visitCompoundAssignment(node, unused);
         }
 
         @Override
         public Void visitUnary(UnaryTree node, Void unused) {
             switch (node.getKind()) {
-                case POSTFIX_INCREMENT, POSTFIX_DECREMENT, PREFIX_INCREMENT, PREFIX_DECREMENT ->
-                    checkTarget(new TreePath(getCurrentPath(), node.getExpression()), "updates");
+                case POSTFIX_INCREMENT, POSTFIX_DECREMENT, PREFIX_INCREMENT, PREFIX_DECREMENT -> checkTarget(new TreePath(getCurrentPath(),
+                                                                                                                          node.getExpression()),
+                                                                                                             "updates");
                 default -> {}
             }
 
@@ -401,8 +484,7 @@ public final class AsyncCallbackCheck implements TaskListener {
 
         @Override
         public Void visitMemberReference(MemberReferenceTree node, Void unused) {
-            if (found == null && isConsumerOfCombinator(getCurrentPath())
-                && trees.getElement(getCurrentPath()) instanceof ExecutableElement target) {
+            if (found == null && isConsumerOfCombinator(getCurrentPath()) && trees.getElement(getCurrentPath()) instanceof ExecutableElement target) {
                 callEffect(target, List.of(), scope, depth, true).ifPresent(effect -> found = effect);
             }
 
@@ -411,18 +493,19 @@ public final class AsyncCallbackCheck implements TaskListener {
 
         /// `opt.onPresent(this::land)`: a reference handed to a combinator that runs it inline is a call made by the callback.
         private boolean isConsumerOfCombinator(TreePath reference) {
-            return reference.getParentPath().getLeaf() instanceof MethodInvocationTree
+            return reference.getParentPath()
+                            .getLeaf() instanceof MethodInvocationTree
                    && trees.getElement(reference.getParentPath()) instanceof ExecutableElement combinator
                    && combinator.getEnclosingElement() instanceof TypeElement owner
-                   && (COMBINATOR_OWNERS.contains(owner.getQualifiedName().toString())
-                       || owner.getQualifiedName().contentEquals("java.util.Optional"));
+                   && (COMBINATOR_OWNERS.contains(owner.getQualifiedName().toString()) || owner.getQualifiedName()
+                                                                                               .contentEquals("java.util.Optional"));
         }
 
         @Override
         public Void visitMethodInvocation(MethodInvocationTree node, Void unused) {
             var path = getCurrentPath();
 
-            if (!(trees.getElement(path) instanceof ExecutableElement method)) {
+            if (! (trees.getElement(path) instanceof ExecutableElement method)) {
                 return super.visitMethodInvocation(node, unused);
             }
 
@@ -435,13 +518,19 @@ public final class AsyncCallbackCheck implements TaskListener {
             }
 
             classify(path, node, method);
-            return found == null ? super.visitMethodInvocation(node, unused) : null;
+
+            return found == null
+                   ? super.visitMethodInvocation(node, unused)
+                   : null;
         }
 
         private void classify(TreePath path, MethodInvocationTree node, ExecutableElement method) {
             if (isSharedMutation(path, node, method)) {
-                found = new Effect("calls " + describe(((MemberSelectTree) node.getMethodSelect()).getExpression()) + "."
-                                   + method.getSimpleName() + "(...)", null);
+                found = new Effect("calls " + describe(((MemberSelectTree) node.getMethodSelect()).getExpression())
+                                  + "." + method.getSimpleName()
+                                  + "(...)",
+                                   null);
+
                 return;
             }
 
@@ -458,7 +547,9 @@ public final class AsyncCallbackCheck implements TaskListener {
         /// A JDK method on a receiver the callback owns (a builder, a local list) is not an effect.
         private boolean isLocalJdkCall(TreePath path, MethodInvocationTree node, ExecutableElement method) {
             return method.getEnclosingElement() instanceof TypeElement owner
-                   && owner.getQualifiedName().toString().startsWith("java.")
+                   && owner.getQualifiedName()
+                           .toString()
+                           .startsWith("java.")
                    && node.getMethodSelect() instanceof MemberSelectTree select
                    && !isSharedRoot(new TreePath(new TreePath(path, select), select.getExpression()));
         }
@@ -472,7 +563,9 @@ public final class AsyncCallbackCheck implements TaskListener {
         private boolean isSharedMutation(TreePath path, MethodInvocationTree node, ExecutableElement method) {
             return VERBS.contains(method.getSimpleName().toString())
                    && node.getMethodSelect() instanceof MemberSelectTree select
-                   && !(method.getEnclosingElement() instanceof TypeElement owner && owner.getQualifiedName().toString().startsWith("org.pragmatica.lang."))
+                   && !(method.getEnclosingElement() instanceof TypeElement owner && owner.getQualifiedName()
+                                                                                          .toString()
+                                                                                          .startsWith("org.pragmatica.lang."))
                    && isSharedRoot(new TreePath(new TreePath(path, select), select.getExpression()));
         }
 
@@ -489,7 +582,8 @@ public final class AsyncCallbackCheck implements TaskListener {
 
             return switch (path.getLeaf()) {
                 case IdentifierTree _ -> isField;
-                case MemberSelectTree select -> isField && (isStatic(element) || isSharedRoot(new TreePath(path, select.getExpression())));
+                case MemberSelectTree select -> isField && (isStatic(element) || isSharedRoot(new TreePath(path,
+                                                                                                           select.getExpression())));
                 case ArrayAccessTree access -> isSharedRoot(new TreePath(path, access.getExpression()));
                 default -> false;
             };
@@ -519,7 +613,7 @@ public final class AsyncCallbackCheck implements TaskListener {
                         current = strip(new TreePath(current, select.getExpression()));
                     }
                     case MethodInvocationTree call -> {
-                        if (!(call.getMethodSelect() instanceof MemberSelectTree select)) {
+                        if (! (call.getMethodSelect() instanceof MemberSelectTree select)) {
                             return true;
                         }
 
@@ -538,15 +632,15 @@ public final class AsyncCallbackCheck implements TaskListener {
 
             return element != null && switch (element.getKind()) {
                 case FIELD -> true;
-                case LOCAL_VARIABLE, PARAMETER, EXCEPTION_PARAMETER, BINDING_VARIABLE, RESOURCE_VARIABLE ->
-                    !declared.contains(element);
+                case LOCAL_VARIABLE, PARAMETER, EXCEPTION_PARAMETER, BINDING_VARIABLE, RESOURCE_VARIABLE -> !declared.contains(element);
                 default -> false;
             };
         }
     }
 
     private static boolean isStatic(Element element) {
-        return element.getModifiers().contains(Modifier.STATIC);
+        return element.getModifiers()
+                      .contains(Modifier.STATIC);
     }
 
     private static TreePath strip(TreePath path) {
@@ -564,7 +658,8 @@ public final class AsyncCallbackCheck implements TaskListener {
     }
 
     private static String describe(Tree tree) {
-        return tree.toString().replaceAll("\\s+", "");
+        return tree.toString()
+                   .replaceAll("\\s+", "");
     }
 
     private boolean isSuppressed(TreePath path) {
@@ -575,8 +670,7 @@ public final class AsyncCallbackCheck implements TaskListener {
         for (var current = path; current != null; current = current.getParentPath()) {
             var leaf = current.getLeaf();
 
-            if ((leaf instanceof MethodTree || leaf instanceof ClassTree || leaf instanceof VariableTree)
-                && trees.getElement(current) != null && suppresses(trees.getElement(current))) {
+            if ((leaf instanceof MethodTree || leaf instanceof ClassTree || leaf instanceof VariableTree) && trees.getElement(current) != null && suppresses(trees.getElement(current))) {
                 return true;
             }
         }
@@ -625,7 +719,9 @@ public final class AsyncCallbackCheck implements TaskListener {
             var start = (int) positions.getStartPosition(unit, statement.getLeaf());
             var end = (int) positions.getEndPosition(unit, statement.getLeaf());
 
-            return start >= 0 && end >= start && hasDetachedTag(text, start, end);
+            return start >= 0
+                   && end >= start
+                   && hasDetachedTag(text, start, end);
         } catch (IOException e) {
             return false;
         }
@@ -633,7 +729,9 @@ public final class AsyncCallbackCheck implements TaskListener {
 
     private static boolean hasDetachedTag(String text, int start, int end) {
         var lineStart = text.lastIndexOf('\n', start - 1) + 1;
-        var lineEnd = text.indexOf('\n', end) < 0 ? text.length() : text.indexOf('\n', end);
+        var lineEnd = text.indexOf('\n', end) < 0
+                      ? text.length()
+                      : text.indexOf('\n', end);
         var lines = new ArrayList<String>(List.of(text.substring(lineStart, lineEnd).split("\n", -1)));
         var above = lineStart;
 
@@ -641,7 +739,7 @@ public final class AsyncCallbackCheck implements TaskListener {
             var previousStart = text.lastIndexOf('\n', above - 2) + 1;
             var previous = text.substring(previousStart, above - 1).strip();
 
-            if (!(previous.startsWith("//") || previous.startsWith("/*") || previous.startsWith("*"))) {
+            if (! (previous.startsWith("//") || previous.startsWith("/*") || previous.startsWith("*"))) {
                 break;
             }
 
@@ -649,18 +747,26 @@ public final class AsyncCallbackCheck implements TaskListener {
             above = previousStart;
         }
 
-        return lines.stream().map(line -> STRING_LITERAL.matcher(line).replaceAll("\"\"")).anyMatch(line -> DETACHED.matcher(line).find());
+        return lines.stream()
+                    .map(line -> STRING_LITERAL.matcher(line).replaceAll("\"\""))
+                    .anyMatch(line -> DETACHED.matcher(line).find());
     }
 
     private void report(TreePath path, MethodInvocationTree call, Effect effect) {
-        var name = call.getMethodSelect() instanceof MemberSelectTree select ? select.getIdentifier().toString() : "on*";
-        var via = effect.via() == null ? "" : " (via " + effect.via() + ")";
+        var name = call.getMethodSelect() instanceof MemberSelectTree select
+                   ? select.getIdentifier().toString()
+                   : "on*";
+        var via = effect.via() == null
+                  ? ""
+                  : " (via " + effect.via() + ")";
 
         trees.printMessage(severity,
-                           RULE_ID + ": Promise." + name + " callback " + effect.description() + via
-                           + " but runs on its own thread, concurrently with the promise's dependents: use"
-                           + " withSuccess/withFailure/withResult (or a chain step), or justify a deliberately detached effect"
-                           + " with '// detached: <why it may run late>'",
+                           RULE_ID
+                          + ": Promise." + name
+                          + " callback " + effect.description() + via
+                          + " but runs on its own thread, concurrently with the promise's dependents: use"
+                          + " withSuccess/withFailure/withResult (or a chain step), or justify a deliberately detached effect"
+                          + " with '// detached: <why it may run late>'",
                            call.getMethodSelect(),
                            path.getCompilationUnit());
     }

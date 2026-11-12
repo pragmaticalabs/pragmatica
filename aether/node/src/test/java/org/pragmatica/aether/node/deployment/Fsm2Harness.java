@@ -47,6 +47,7 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
 import org.pragmatica.aether.deployment.wiring.FsmTimers;
 import org.pragmatica.aether.deployment.wiring.NodeFsmInterpreter;
 import org.pragmatica.aether.deployment.wiring.SliceRuntimeAdapter;
@@ -231,7 +232,7 @@ final class Fsm2Harness implements AutoCloseable {
     Fsm2System foreignRoleSystem() {
         var c = collaborators();
 
-        return Fsm2System.fsm2System(new Fsm2System.Collaborators(c.config(), c.process(), c.swim(), c.splitTimeout(), c.store(), c.cluster(), c.adapter(), c.loaded(), c.selfReady(), c.translator(), c.seamSources(), c.admissions(), c.guard(), c.clock(), !worker),
+        return Fsm2System.fsm2System(new Fsm2System.Collaborators(c.config(), c.process(), c.swim(), c.splitTimeout(), c.store(), c.cluster(), c.adapter(), c.loaded(), c.selfReady(), c.translator(), c.seamSources(), c.admissions(), c.dead(), c.guard(), c.clock(), !worker),
                                      stopWaitMs);
     }
 
@@ -312,9 +313,11 @@ final class Fsm2Harness implements AutoCloseable {
                                                                    Set::of,
                                                                    Map::of,
                                                                    Map::of,
+                                                                   Set::of,
                                                                    () -> Set.of(SELF, PEER),
                                                                    bootTokens::tokenOf),
                                             AdmissionSeam.admissionSeam(bootTokens::tokenOf, _ -> 0L),
+                                            () -> ClusterInput.DeadSet.NONE,
                                             guard,
                                             clock,
                                             worker);

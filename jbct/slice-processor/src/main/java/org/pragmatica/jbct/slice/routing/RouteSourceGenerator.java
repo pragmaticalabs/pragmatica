@@ -23,9 +23,11 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -143,6 +145,12 @@ public class RouteSourceGenerator {
 
     /// Qualified name of the carrier a validating factory must return: `Result<Self>` (#605).
     private static final String RESULT_TYPE = "org.pragmatica.lang.Result";
+    private static final String HANDLER_TYPE = "org.pragmatica.http.routing.Handler";
+
+    private static final String REQUEST_HEADERS_FACTORY = "org.pragmatica.aether.http.handler.RequestHeaders.requestHeaders";
+
+    /// #2157: the security context the edge validated for THIS request, read from the request itself.
+    private static final String REQUEST_SECURITY = "org.pragmatica.aether.http.adapter.RequestSecurity.securityOf(__request)";
 
     private static final Map<Integer, String> HTTP_STATUS_NAMES = Map.ofEntries(Map.entry(200, "OK"),
                                                                                 Map.entry(201, "CREATED"),
@@ -298,6 +306,7 @@ public class RouteSourceGenerator {
             }
         }
 
+        warnStillRequired(json, routeConfig, methodMap, sliceElement);
         if (!json.hasCodecs()) {
             return Result.success(Option.none());
         }
@@ -306,18 +315,73 @@ public class RouteSourceGenerator {
                    .map(_ -> Option.some(holderName));
     }
 
+    // A merged route whose path- or query-bound component the holder's codec still requires in the body answers 400
+    // for a body without it: say so at build time, naming the route, the record, the component and the reason (#2957).
+    private void warnStillRequired(JsonCodecGenerator json,
+                                   RouteConfig routeConfig,
+                                   Map<String, MethodModel> methodMap,
+                                   TypeElement sliceElement) {
+        routeConfig.routes()
+                   .forEach((name, routeDsl) -> Option.option(methodMap.get(name)).onPresent(method -> warnRoute(json,
+                                                                                                                 name,
+                                                                                                                 routeDsl,
+                                                                                                                 method,
+                                                                                                                 sliceElement)));
+    }
+
+    private void warnRoute(JsonCodecGenerator json,
+                           String name,
+                           RouteDsl routeDsl,
+                           MethodModel method,
+                           TypeElement sliceElement) {
+        for (var root : jsonRoots(method, routeDsl)) {
+            if (root.body()) {
+                json.stillRequired(root.type(),
+                                   root.requestBound())
+                    .forEach((component, reason) -> warnComponent(name, routeDsl, root, component, reason, sliceElement));
+            }
+        }
+    }
+
+    private void warnComponent(String name,
+                               RouteDsl routeDsl,
+                               JsonRoot root,
+                               String component,
+                               String reason,
+                               TypeElement sliceElement) {
+        messager.printMessage(Diagnostic.Kind.WARNING,
+                              stillRequiredMessage(name, routeDsl, root, component, reason),
+                              sliceElement);
+    }
+
+    private static String stillRequiredMessage(String name,
+                                               RouteDsl routeDsl,
+                                               JsonRoot root,
+                                               String component,
+                                               String reason) {
+        return "Route '" + name
+             + "' (" + routeDsl.method()
+             + " " + routeDsl.pathTemplate()
+             + "): component '" + component
+             + "' of " + root.type()
+             + " is bound from the path or query but stays required in the JSON body, because " + reason
+             + ". A body without it is answered 400 'Missing required field'.";
+    }
+
     // A body is decoded by its declared type, so a List/Set body gets a generated container codec; a response is
     // encoded from its runtime value, so it gets only its element codecs.
     private static Option<String> addJsonRoot(JsonCodecGenerator json, JsonRoot root) {
         return root.body()
-               ? json.addBodyRoot(root.type())
+               ? json.addBodyRoot(root.type(), root.requestBound())
                : json.addRoot(root.type());
     }
 
-    /// A JSON route root and whether it is the request body (decoded by declared type) or the response.
-    record JsonRoot(TypeMirror type, boolean body) {
-        static JsonRoot jsonRoot(TypeMirror type, boolean body) {
-            return new JsonRoot(type, body);
+    /// A JSON route root, whether it is the request body (decoded by declared type) or the response, and, for a body,
+    /// the names the route binds from its path and query: the merged constructor fills those components from the
+    /// request, so the body codec must not require them (#2957).
+    record JsonRoot(TypeMirror type, boolean body, Set<String> requestBound) {
+        static JsonRoot jsonRoot(TypeMirror type, boolean body, Set<String> requestBound) {
+            return new JsonRoot(type, body, requestBound);
         }
     }
 
@@ -332,18 +396,20 @@ public class RouteSourceGenerator {
         };
 
         if (jsonBody) {
-            requestBodyType(method).onPresent(type -> roots.add(JsonRoot.jsonRoot(type, true)));
+            requestBodyType(method).onPresent(type -> roots.add(JsonRoot.jsonRoot(type,
+                                                                                  true,
+                                                                                  pathQueryParamNames(routeDsl))));
         }
 
         if (routeDsl.produces().isJson() && !isUnit(method.responseType())) {
-            roots.add(JsonRoot.jsonRoot(method.responseType(), false));
+            roots.add(JsonRoot.jsonRoot(method.responseType(), false, Set.of()));
         }
 
         return roots;
     }
 
     private static Option<TypeMirror> requestBodyType(MethodModel method) {
-        if (method.hasSecurityParams()) {
+        if (method.hasInjectedParams()) {
             var bizParams = method.businessParameters();
 
             return bizParams.size() == 1
@@ -530,11 +596,6 @@ public class RouteSourceGenerator {
         }
 
         out.println("import org.pragmatica.aether.http.handler.security.SecurityPolicy;");
-        if (anyMethodHasSecurityParams(methods)) {
-            out.println("import org.pragmatica.aether.http.handler.security.SecurityContext;");
-            out.println("import org.pragmatica.aether.http.handler.security.SecurityContextHolder;");
-        }
-
         if (usesCommonContentType(routeConfig)) {
             out.println("import org.pragmatica.http.CommonContentType;");
         }
@@ -822,7 +883,7 @@ public class RouteSourceGenerator {
                       ? routePath
                       : prefix + routePath;
         var fullPath = escapeJavaString(rawPath);
-        var httpMethod = routeDsl.method().toLowerCase();
+        var httpMethod = routeDsl.method().toLowerCase(Locale.ROOT);
         var responseType = method.responseType().toString();
         // Use business parameter type (excludes security params like Principal/SecurityContext)
         // Lazy: only resolve when route actually needs a body/parameter type
@@ -831,7 +892,9 @@ public class RouteSourceGenerator {
                     ? ","
                     : "";
         var security = securityExpression(routeConfig, handlerName);
-        var trailer = uploadTrailer(routeDsl) + versionedTrailer(version) + outputCall(routeDsl) + comma;
+        var trailer = uploadTrailer(routeDsl) + versionedTrailer(version) + outputCall(routeDsl) + successTrailer(routeDsl,
+                                                                                                                  method,
+                                                                                                                  sliceElement) + routeClose(method) + comma;
         // A refused route (F2) is still emitted, as a body-only route, so its one clear error is the only one: emitting
         // the parameter merge would add a misleading "add a record component" error for a MultipartRequest body.
         var hasPath = routeDsl.hasPathParams() && !paramsRefused;
@@ -915,7 +978,7 @@ public class RouteSourceGenerator {
             return false;
         }
 
-        var components = MethodModel.recordComponents(method.hasSecurityParams()
+        var components = MethodModel.recordComponents(method.hasInjectedParams()
                                                       ? method.businessParameterType()
                                                       : method.parameterType());
 
@@ -983,7 +1046,7 @@ public class RouteSourceGenerator {
     /// The single request-record parameter type of a route method (the business parameter when
     /// security params are present), or empty for methods that carry no single request record.
     private Option<TypeMirror> requestRecordType(MethodModel method) {
-        if (method.hasSecurityParams()) {
+        if (method.hasInjectedParams()) {
             return method.businessParameters()
                          .size() == 1
                    ? Option.some(method.businessParameterType())
@@ -1026,6 +1089,126 @@ public class RouteSourceGenerator {
                : "";
     }
 
+    /// #2805: the success response the route declares (`status`, `location`), emitted after the output call so a route
+    /// that declares neither generates the source it always did. `status = 204` on a result that is not `Unit`, and a
+    /// `location` placeholder that names no component of the result record, are build errors.
+    private String successTrailer(RouteDsl routeDsl, MethodModel method, TypeElement sliceElement) {
+        var success = routeDsl.success();
+
+        if (!success.declared()) {
+            return "";
+        }
+
+        var unit = isUnit(method.responseType());
+
+        if (!unit && success.status().filter(status -> status == 204).isPresent()) {
+            messager.printMessage(Diagnostic.Kind.ERROR,
+                                  "Route '" + method.name()
+                                 + "' declares status = 204, which answers with no body, but '" + method.name()
+                                 + "' returns " + method.responseType()
+                                 + "; return Promise<Unit> for a response with no body, or declare a status that carries one",
+                                  sliceElement);
+        }
+
+        var status = success.status().or(unit
+                                         ? 204
+                                         : 200);
+
+        return success.location()
+                      .map(template -> locationExpression(template, method, sliceElement))
+                      .map(location -> ".withSuccess(org.pragmatica.http.routing.SuccessSpec.successSpec(" + status
+                                      + ", value -> " + location
+                                      + "))")
+                      .or(".withSuccess(org.pragmatica.http.routing.SuccessSpec.successSpec(" + status + "))");
+    }
+
+    private static final Pattern LOCATION_FIELD = Pattern.compile("\\{([^}]*)}");
+
+    /// The `Location` template as a Java expression over the success value: literal text stays as written and each
+    /// `{field}` reads that component of the result record (an `Option` result is read inside), rendered as one path
+    /// segment. A value object component is rendered through its `valueMapping().lower()`, the inverse of the lift
+    /// a path segment of that type is parsed with.
+    private String locationExpression(String template, MethodModel method, TypeElement sliceElement) {
+        var record = resultRecord(method.responseType());
+        var matcher = LOCATION_FIELD.matcher(template);
+        var parts = new ArrayList<String>();
+        var start = 0;
+
+        while (matcher.find()) {
+            parts.add("\"" + escapeJavaString(template.substring(start, matcher.start())) + "\"");
+            parts.add(locationField(matcher.group(1), record, method, sliceElement));
+            start = matcher.end();
+        }
+
+        parts.add("\"" + escapeJavaString(template.substring(start)) + "\"");
+
+        return String.join(" + ", parts);
+    }
+
+    private String locationField(String field,
+                                 Option<TypeElement> record,
+                                 MethodModel method,
+                                 TypeElement sliceElement) {
+        var component = record.flatMap(type -> Option.from(type.getRecordComponents()
+                                                               .stream()
+                                                               .filter(candidate -> candidate.getSimpleName()
+                                                                                             .contentEquals(field))
+                                                               .findFirst()));
+
+        if (component.isEmpty()) {
+            messager.printMessage(Diagnostic.Kind.ERROR,
+                                  "Route '" + method.name()
+                                 + "' location names {" + field
+                                 + "}, but " + record.map(type -> "the result record " + type.getQualifiedName()
+                                                                 + " has no such component; its components are " + type.getRecordComponents()
+                                                                                                                       .stream()
+                                                                                                                       .map(c -> c.getSimpleName()
+                                                                                                                                  .toString())
+                                                                                                                       .toList())
+                                                     .or("the result type " + method.responseType()
+                                                        + " is not a record with fields to read"),
+                                  sliceElement);
+
+            return "\"\"";
+        }
+
+        var recordType = record.map(type -> type.getQualifiedName()
+                                                .toString()).or("");
+        var read = "((" + recordType + ") value)." + field + "()";
+        var rendered = component.flatMap(c -> ValueMappingResolver.resolve(c.asType()))
+                                .map(binding -> binding.voQualifiedName()
+                                               + ".valueMapping().lower().apply(" + read
+                                               + ")")
+                                .or(read);
+
+        return "org.pragmatica.http.routing.SuccessSpec.pathSegment(" + rendered + ")";
+    }
+
+    /// The record a `Location` template reads: the result type, or the element of an `Option` result.
+    private Option<TypeElement> resultRecord(TypeMirror responseType) {
+        return Option.some(responseType)
+                     .filter(DeclaredType.class::isInstance)
+                     .map(DeclaredType.class::cast)
+                     .map(this::optionElement)
+                     .map(DeclaredType::asElement)
+                     .filter(element -> element.getKind() == ElementKind.RECORD)
+                     .map(TypeElement.class::cast);
+    }
+
+    private DeclaredType optionElement(DeclaredType type) {
+        return isOption(type)
+               ? Option.from(type.getTypeArguments()
+                                 .stream()
+                                 .filter(DeclaredType.class::isInstance)
+                                 .map(DeclaredType.class::cast)
+                                 .findFirst()).or(type)
+               : type;
+    }
+
+    private boolean isOption(DeclaredType type) {
+        return "org.pragmatica.lang.Option".equals(types.erasure(type).toString());
+    }
+
     private String versionedTrailer(int version) {
         return version > 0
                ? ".versioned(" + version + ")"
@@ -1037,6 +1220,7 @@ public class RouteSourceGenerator {
 
         return switch (level) {
             case RouteSecurityLevel.Public _ -> "SecurityPolicy.publicRoute()";
+            case RouteSecurityLevel.OptionalAuth _ -> "SecurityPolicy.optional()";
             case RouteSecurityLevel.Authenticated _ -> "SecurityPolicy.authenticated()";
             case RouteSecurityLevel.Role(var name) -> "SecurityPolicy.roleRequired(\"" + escapeJavaString(name) + "\")";
             case RouteSecurityLevel.Unspecified _ -> "SecurityPolicy.unspecified()";
@@ -1077,11 +1261,11 @@ public class RouteSourceGenerator {
     }
 
     private boolean bodyIsRecord(MethodModel method) {
-        if (method.parameters().isEmpty() || (method.hasSecurityParams() && method.businessParameters().size() != 1)) {
+        if (method.parameters().isEmpty() || (method.hasInjectedParams() && method.businessParameters().size() != 1)) {
             return false;
         }
 
-        return ! MethodModel.recordComponents(method.hasSecurityParams()
+        return ! MethodModel.recordComponents(method.hasInjectedParams()
                                               ? method.businessParameterType()
                                               : method.parameterType()).isEmpty();
     }
@@ -1089,7 +1273,7 @@ public class RouteSourceGenerator {
     /// Resolve the parameter type used for `consumes` validation, preferring the business
     /// parameter type when security params are present.
     private String consumesParameterType(MethodModel method) {
-        if (method.hasSecurityParams()) {
+        if (method.hasInjectedParams()) {
             var biz = method.businessParameters();
 
             return biz.size() == 1
@@ -1133,7 +1317,7 @@ public class RouteSourceGenerator {
     /// For methods with security params, uses the business parameter type.
     /// For methods with no business params (only security), returns empty string (not used by no-param routes).
     private String resolveParameterType(MethodModel method) {
-        if (method.hasSecurityParams()) {
+        if (method.hasInjectedParams()) {
             var bizParams = method.businessParameters();
 
             if (bizParams.size() == 1) {
@@ -1430,9 +1614,9 @@ public class RouteSourceGenerator {
 
     /// Build the delegate method call with security params injected in the correct positions.
     /// For non-security methods, returns a simple delegate call.
-    /// For security methods, inserts __ctx.principal() or __ctx for security params.
+    /// For security methods, inserts the request's security context (or its principal) for security params.
     private String delegateCallWithSecurity(MethodModel method, Map<String, String> businessArgsByName) {
-        if (!method.hasSecurityParams()) {
+        if (!method.hasInjectedParams()) {
             var args = method.parameters()
                              .stream()
                              .map(p -> businessArgsByName.getOrDefault(p.name(),
@@ -1452,29 +1636,53 @@ public class RouteSourceGenerator {
 
     private String securityArgForParam(MethodModel.MethodParameterInfo param, Map<String, String> businessArgsByName) {
         if (MethodModel.isPrincipalParam(param)) {
-            return "__ctx.principal()";
+            return REQUEST_SECURITY + ".principal()";
         }
 
         if (MethodModel.isSecurityContextParam(param)) {
-            return "__ctx";
+            return REQUEST_SECURITY;
+        }
+
+        if (MethodModel.isRequestHeadersParam(param)) {
+            return REQUEST_HEADERS_FACTORY + "(__request.headers())";
         }
 
         return businessArgsByName.getOrDefault(param.name(), param.name());
     }
 
-    /// Generate a block lambda with security context extraction.
-    /// Wraps: `lambdaParams -> { var __ctx = ...; return delegateCall; }`
-    private void generateSecurityLambda(PrintWriter out, String lambdaParams, String delegateCall) {
-        out.println("                 .to(" + lambdaParams + " {");
-        out.println("                     var __ctx = SecurityContextHolder.currentContext().or(SecurityContext.securityContext());");
-        out.println("                     return " + delegateCall + ";");
-        out.println("                 })");
+    /// Generate the `.to(...)` handler of a route whose method takes injected parameters.
+    ///
+    /// The argument-binding lambda returns the request-bound handler `__request -> delegateCall`, which
+    /// [Route#withRequestContext] (see [#routeStart]) feeds the same request. Every injected value comes from that
+    /// request: RequestHeaders (#2879) from its headers, Principal/SecurityContext (#2157) from the security context the
+    /// edge validated and put on it. Nothing is read from ambient state, so an asynchronous step before the handler
+    /// (a body decode) cannot lose the caller.
+    private void generateInjectingLambda(PrintWriter out,
+                                         MethodModel method,
+                                         String lambdaParams,
+                                         String delegateCall) {
+        out.println("                 .to(" + lambdaParams
+                   + " org.pragmatica.lang.Promise.success(__request -> " + delegateCall
+                   + "))");
     }
 
-    /// Check if any method in the model has security parameters.
-    private boolean anyMethodHasSecurityParams(List<MethodModel> methods) {
-        return methods.stream()
-                      .anyMatch(MethodModel::hasSecurityParams);
+    /// The first line of a route expression. A route whose method takes injected parameters (#2879, #2157) is declared as a route
+    /// of request-bound handlers and completed by [Route#withRequestContext]; [#routeClose] supplies the matching
+    /// parenthesis ahead of the trailing comma.
+    private String routeStart(MethodModel method, String responseType, String httpMethod, String path) {
+        return method.hasInjectedParams()
+               ? "Route.withRequestContext(Route.<" + HANDLER_TYPE
+                + "<" + responseType
+                + ">>" + httpMethod
+                + "(\"" + path
+                + "\")"
+               : "Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")";
+    }
+
+    private String routeClose(MethodModel method) {
+        return method.hasInjectedParams()
+               ? ")"
+               : "";
     }
 
     private void generateNoParamsRoute(PrintWriter out,
@@ -1485,12 +1693,12 @@ public class RouteSourceGenerator {
                                        MethodModel method,
                                        String trailer,
                                        String security) {
-        out.println("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
+        out.println("            " + routeStart(method, responseType, httpMethod, path));
         out.println("                 .withoutParameters()");
-        if (method.hasSecurityParams()) {
+        if (method.hasInjectedParams()) {
             var delegateCall = delegateCallWithSecurity(method, Map.of());
 
-            generateSecurityLambda(out, "_ ->", delegateCall);
+            generateInjectingLambda(out, method, "_ ->", delegateCall);
         } else if (method.parameters().isEmpty()) {
             out.println("                 .to(_ -> delegate." + method.name() + "())");
         } else {
@@ -1515,11 +1723,11 @@ public class RouteSourceGenerator {
                                    String security,
                                    Map<String, ValueMappingResolver.Binding> voBindings) {
         var pathParams = routeDsl.pathParams();
-        var parameterType = method.hasSecurityParams()
+        var parameterType = method.hasInjectedParams()
                             ? method.businessParameterType().toString()
                             : method.parameterType().toString();
 
-        out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
+        out.print("            " + routeStart(method, responseType, httpMethod, path));
         out.println();
         out.println("                 .withPath(" + withPathArgs(routeDsl, voBindings) + ")");
         // Lambda binds every withPath element (spacers -> `_`); the constructor binds real params only.
@@ -1529,14 +1737,14 @@ public class RouteSourceGenerator {
                       ? String.join(", ", lambdaNames) + " -> "
                       : "(" + String.join(", ", lambdaNames) + ") -> ";
 
-        if (method.hasSecurityParams()) {
+        if (method.hasInjectedParams()) {
             var bizParam = method.businessParameters().getFirst();
             var delegateCall = constructAndDelegate(parameterType,
                                                     constructorArgs,
                                                     expr -> delegateCallWithSecurity(method,
                                                                                      Map.of(bizParam.name(), expr)));
 
-            generateSecurityLambda(out, handler, delegateCall);
+            generateInjectingLambda(out, method, handler, delegateCall);
         } else {
             out.println("                 .to(" + handler + constructAndDelegate(parameterType,
                                                                                  constructorArgs,
@@ -1559,11 +1767,11 @@ public class RouteSourceGenerator {
                                     String security,
                                     Map<String, ValueMappingResolver.Binding> voBindings) {
         var queryParams = routeDsl.queryParams();
-        var parameterType = method.hasSecurityParams()
+        var parameterType = method.hasInjectedParams()
                             ? method.businessParameterType().toString()
                             : method.parameterType().toString();
 
-        out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
+        out.print("            " + routeStart(method, responseType, httpMethod, path));
         out.println();
         out.println("                 .withQuery(" + queryParamList(queryParams, voBindings) + ")");
         var paramNames = queryParams.stream().map(QueryParam::name).toList();
@@ -1573,14 +1781,14 @@ public class RouteSourceGenerator {
                       ? handlerParams + " -> "
                       : "(" + handlerParams + ") -> ";
 
-        if (method.hasSecurityParams()) {
+        if (method.hasInjectedParams()) {
             var bizParam = method.businessParameters().getFirst();
             var delegateCall = constructAndDelegate(parameterType,
                                                     constructorArgs,
                                                     expr -> delegateCallWithSecurity(method,
                                                                                      Map.of(bizParam.name(), expr)));
 
-            generateSecurityLambda(out, handler, delegateCall);
+            generateInjectingLambda(out, method, handler, delegateCall);
         } else {
             out.println("                 .to(" + handler + constructAndDelegate(parameterType,
                                                                                  constructorArgs,
@@ -1602,15 +1810,15 @@ public class RouteSourceGenerator {
                                    MethodModel method,
                                    String trailer,
                                    String security) {
-        out.println("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
+        out.println("            " + routeStart(method, responseType, httpMethod, path));
         out.println("                 " + bodyBindingCall(routeDsl, parameterType));
-        if (method.hasSecurityParams()) {
+        if (method.hasInjectedParams()) {
             var bizParam = method.businessParameters().getFirst();
             var delegateCall = bodyHandlerExpr(parameterType,
                                                expr -> delegateCallWithSecurity(method,
                                                                                 Map.of(bizParam.name(), expr)));
 
-            generateSecurityLambda(out, "request ->", delegateCall);
+            generateInjectingLambda(out, method, "request ->", delegateCall);
         } else {
             out.println("                 .to(request -> " + bodyHandlerExpr(parameterType,
                                                                              expr -> "delegate." + method.name()
@@ -1634,7 +1842,7 @@ public class RouteSourceGenerator {
                                        Map<String, ValueMappingResolver.Binding> voBindings) {
         var pathParams = routeDsl.pathParams();
 
-        out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
+        out.print("            " + routeStart(method, responseType, httpMethod, path));
         out.println();
         out.println("                 .withPath(" + withPathArgs(routeDsl, voBindings) + ")");
         out.println("                 " + bodyBindingCall(routeDsl, parameterType));
@@ -1645,7 +1853,7 @@ public class RouteSourceGenerator {
         lambdaArgs.add("body");
         var handlerParams = String.join(", ", lambdaArgs);
 
-        if (method.hasSecurityParams()) {
+        if (method.hasInjectedParams()) {
             var bizParam = method.businessParameters().getFirst();
             var delegateCall = mergedConstructAndDelegate(parameterType,
                                                           method,
@@ -1654,7 +1862,7 @@ public class RouteSourceGenerator {
                                                           expr -> delegateCallWithSecurity(method,
                                                                                            Map.of(bizParam.name(), expr)));
 
-            generateSecurityLambda(out, "(" + handlerParams + ") ->", delegateCall);
+            generateInjectingLambda(out, method, "(" + handlerParams + ") ->", delegateCall);
         } else {
             out.println("                 .to((" + handlerParams
                        + ") -> " + mergedConstructAndDelegate(parameterType,
@@ -1680,7 +1888,7 @@ public class RouteSourceGenerator {
                                         Map<String, ValueMappingResolver.Binding> voBindings) {
         var queryParams = routeDsl.queryParams();
 
-        out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
+        out.print("            " + routeStart(method, responseType, httpMethod, path));
         out.println();
         out.println("                 .withQuery(" + queryParamList(queryParams, voBindings) + ")");
         out.println("                 " + bodyBindingCall(routeDsl, parameterType));
@@ -1690,7 +1898,7 @@ public class RouteSourceGenerator {
         allParams.add("body");
         var handlerParams = String.join(", ", allParams);
 
-        if (method.hasSecurityParams()) {
+        if (method.hasInjectedParams()) {
             var bizParam = method.businessParameters().getFirst();
             var delegateCall = mergedConstructAndDelegate(parameterType,
                                                           method,
@@ -1699,7 +1907,7 @@ public class RouteSourceGenerator {
                                                           expr -> delegateCallWithSecurity(method,
                                                                                            Map.of(bizParam.name(), expr)));
 
-            generateSecurityLambda(out, "(" + handlerParams + ") ->", delegateCall);
+            generateInjectingLambda(out, method, "(" + handlerParams + ") ->", delegateCall);
         } else {
             out.println("                 .to((" + handlerParams
                        + ") -> " + mergedConstructAndDelegate(parameterType,
@@ -1724,11 +1932,11 @@ public class RouteSourceGenerator {
                                         Map<String, ValueMappingResolver.Binding> voBindings) {
         var pathParams = routeDsl.pathParams();
         var queryParams = routeDsl.queryParams();
-        var parameterType = method.hasSecurityParams()
+        var parameterType = method.hasInjectedParams()
                             ? method.businessParameterType().toString()
                             : method.parameterType().toString();
 
-        out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
+        out.print("            " + routeStart(method, responseType, httpMethod, path));
         out.println();
         out.println("                 .withPath(" + withPathArgs(routeDsl, voBindings) + ")");
         out.println("                 .withQuery(" + queryParamList(queryParams, voBindings) + ")");
@@ -1745,14 +1953,14 @@ public class RouteSourceGenerator {
         constructorBindings.addAll(queryParamNames);
         var constructorArgs = String.join(", ", constructorBindings);
 
-        if (method.hasSecurityParams()) {
+        if (method.hasInjectedParams()) {
             var bizParam = method.businessParameters().getFirst();
             var delegateCall = constructAndDelegate(parameterType,
                                                     constructorArgs,
                                                     expr -> delegateCallWithSecurity(method,
                                                                                      Map.of(bizParam.name(), expr)));
 
-            generateSecurityLambda(out, "(" + handlerParams + ") ->", delegateCall);
+            generateInjectingLambda(out, method, "(" + handlerParams + ") ->", delegateCall);
         } else {
             out.println("                 .to((" + handlerParams
                        + ") -> " + constructAndDelegate(parameterType,
@@ -1777,7 +1985,7 @@ public class RouteSourceGenerator {
         var pathParams = routeDsl.pathParams();
         var queryParams = routeDsl.queryParams();
 
-        out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
+        out.print("            " + routeStart(method, responseType, httpMethod, path));
         out.println();
         out.println("                 .withPath(" + withPathArgs(routeDsl, voBindings) + ")");
         out.println("                 .withQuery(" + queryParamList(queryParams, voBindings) + ")");
@@ -1791,7 +1999,7 @@ public class RouteSourceGenerator {
         lambdaArgs.add("body");
         var handlerParams = String.join(", ", lambdaArgs);
 
-        if (method.hasSecurityParams()) {
+        if (method.hasInjectedParams()) {
             var bizParam = method.businessParameters().getFirst();
             var delegateCall = mergedConstructAndDelegate(parameterType,
                                                           method,
@@ -1800,7 +2008,7 @@ public class RouteSourceGenerator {
                                                           expr -> delegateCallWithSecurity(method,
                                                                                            Map.of(bizParam.name(), expr)));
 
-            generateSecurityLambda(out, "(" + handlerParams + ") ->", delegateCall);
+            generateInjectingLambda(out, method, "(" + handlerParams + ") ->", delegateCall);
         } else {
             out.println("                 .to((" + handlerParams
                        + ") -> " + mergedConstructAndDelegate(parameterType,
@@ -1829,7 +2037,7 @@ public class RouteSourceGenerator {
                                                       MethodModel method,
                                                       List<String> pathParamNames,
                                                       List<String> queryParamNames) {
-        var paramTypeMirror = method.hasSecurityParams()
+        var paramTypeMirror = method.hasInjectedParams()
                               ? method.businessParameterType()
                               : method.parameterType();
         var components = MethodModel.recordComponents(paramTypeMirror);

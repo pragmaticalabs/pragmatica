@@ -40,7 +40,7 @@ class ReturnTypeMappingValidationTest {
 
             @PgSql
             public interface UnmappedFieldRepo {
-                record Row(long id, String state) {}
+                record Row(long id, String state) { static Row row(long id, String state) { return new Row(id, state); } }
 
                 @Query("SELECT id, status FROM orders")
                 Promise<List<Row>> findAll();
@@ -68,7 +68,7 @@ class ReturnTypeMappingValidationTest {
 
             @PgSql
             public interface AliasedColumnRepo {
-                record Row(long id, String state) {}
+                record Row(long id, String state) { static Row row(long id, String state) { return new Row(id, state); } }
 
                 @Query("SELECT id, status AS state FROM orders")
                 Promise<List<Row>> findAll();
@@ -76,6 +76,33 @@ class ReturnTypeMappingValidationTest {
             """;
 
         var result = compile(source, "test/AliasedColumnRepo.java");
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.diagnostics()).doesNotContain(NO_MATCH);
+    }
+
+    /// #2894: an alias the lexer reads as a keyword word (`name`) used to extract as `???`, so a matching
+    /// `(SELECT 1) AS name` target warned that `name` had no SELECT column.
+    @Test
+    void subqueryAliasedAsKeywordWord_emitsNoWarning() throws Exception {
+        var source = """
+            package test;
+
+            import org.pragmatica.aether.pg.codegen.annotation.Query;
+            import org.pragmatica.aether.resource.db.PgSql;
+            import org.pragmatica.lang.Promise;
+            import java.util.List;
+
+            @PgSql
+            public interface KeywordAliasRepo {
+                record Row(long id, long name) { static Row row(long id, long name) { return new Row(id, name); } }
+
+                @Query("SELECT id, COALESCE((SELECT 1), 0) AS name FROM orders")
+                Promise<List<Row>> findAll();
+            }
+            """;
+
+        var result = compile(source, "test/KeywordAliasRepo.java");
 
         assertThat(result.success()).isTrue();
         assertThat(result.diagnostics()).doesNotContain(NO_MATCH);
@@ -93,7 +120,7 @@ class ReturnTypeMappingValidationTest {
 
             @PgSql
             public interface SelectStarRepo {
-                record Row(long id, String state) {}
+                record Row(long id, String state) { static Row row(long id, String state) { return new Row(id, state); } }
 
                 @Query("SELECT * FROM orders")
                 Promise<List<Row>> findAll();

@@ -257,27 +257,38 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
     /// node refuted a suspicion / restarted mid-drain, i.e. fresh evidence of life. Mere liveness at
     /// an already-seen incarnation does NOT cancel a drain (an operator-drained node keeps gossiping
     /// healthy at its current incarnation while it drains). Mirrors [`#rejoinIfNewer`]'s fencing.
+    ///
+    /// #2936: a refutation proves the node is alive, not that it can write to the quorum. While the member itself
+    /// reports quorum loss ([`MembershipContext#reportsQuorumLoss`]) the newer incarnation is recorded but the member
+    /// stays DEPARTING; the report's clearing arrives with a further incarnation bump and recovers it here, or the
+    /// DEPARTING timeout terminalizes it first and the same bump reopens it through [`#rejoinIfNewer`].
     private static void recoverFromDepartingIfNewer(MembershipContext ctx,
                                                     long incarnation,
                                                     TransitionRequest<MembershipState, MembershipEvent> tx) {
-        if (incarnation > ctx.lastSeenIncarnation()) {
+        if (incarnation <= ctx.lastSeenIncarnation()) {
+            tx.ignore();
+        } else if (ctx.reportsQuorumLoss()) {
+            tx.handle(() -> ctx.observeIncarnation(incarnation));
+        } else {
             ctx.observeIncarnation(incarnation);
             tx.transitionTo(ctx.memberState());
-        } else {
-            tx.ignore();
         }
     }
 
     /// Rejoin fencing in DEAD: a `SwimHealthy(inc)` reopens the identity only when `inc` exceeds the
     /// incarnation this identity died at; otherwise the gossip is stale and is ignored.
+    ///
+    /// #2936: while the member itself reports quorum loss ([`MembershipContext#reportsQuorumLoss`]) a newer
+    /// incarnation does not reopen it either; the report's clearing arrives with a further incarnation bump, which
+    /// still exceeds the terminal incarnation and reopens it then.
     private static void rejoinIfNewer(MembershipContext ctx,
                                       Dead current,
                                       long incarnation,
                                       TransitionRequest<MembershipState, MembershipEvent> tx) {
-        if (incarnation > current.terminalIncarnation()) {
-            tx.transitionTo(ctx.observedRejoin(incarnation));
-        } else {
+        if (incarnation <= current.terminalIncarnation() || ctx.reportsQuorumLoss()) {
             tx.ignore();
+        } else {
+            tx.transitionTo(ctx.observedRejoin(incarnation));
         }
     }
 }

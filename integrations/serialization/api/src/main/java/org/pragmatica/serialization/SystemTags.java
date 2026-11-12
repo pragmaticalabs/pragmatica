@@ -101,10 +101,10 @@ public interface SystemTags {
                                                        entry.getKey());
 
                           if (previousName != null) {
-                          throw new IllegalStateException("Tag %d is pinned to both %s and %s".formatted(entry.getValue(),
-                                                                                                         previousName,
-                                                                                                         entry.getKey()));
-                      }
+                              throw new IllegalStateException("Tag %d is pinned to both %s and %s".formatted(entry.getValue(),
+                                                                                                             previousName,
+                                                                                                             entry.getKey()));
+                          }
                       });
     }
 
@@ -319,6 +319,8 @@ public interface SystemTags {
         // #2244 F1: the out-of-band not-applied answer to a forwarded request, appended.
         pin(table, 521, "org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardNotApplied");
         pin(table, 522, "org.pragmatica.aether.http.forward.HttpForwardMessage.NotAppliedReason");
+        // #2879: the request headers a slice route handler receives; appended, next free slot of the HTTP block.
+        pin(table, 523, "org.pragmatica.aether.http.handler.RequestHeaders");
         // slice invocation  [base 640]
         // RETIRED 2026-08-27 (#571): `DHTNotification` was deleted — it had zero senders and zero
         // receivers. These two pins STAY, and deleting them would be the bug: the table is what makes
@@ -330,8 +332,13 @@ public interface SystemTags {
         // per this file's Rules section.
         pin(table, 640, "org.pragmatica.aether.dht.DHTNotification.Put");
         pin(table, 641, "org.pragmatica.aether.dht.DHTNotification.Removed");
-        pin(table, 642, "org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest");
+        // #2157: tag 642 was InvokeRequest's, before it gained `caller`. It stays the tag of that old shape (decode-only, see
+        // LegacyInvokeRequest): an invocation a node of the previous build sends during a rolling upgrade decodes as a request
+        // with no caller, instead of failing on the shorter body. The current shape took 644.
+        pin(table, 642, "org.pragmatica.aether.invoke.LegacyInvokeRequest");
         pin(table, 643, "org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse");
+        // #2157: InvokeRequest with `caller`; 644 is free on every origin branch and open PR head (scanned 2026-11-09).
+        pin(table, 644, "org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest");
         // slice core types  [base 704]
         pin(table, 704, "org.pragmatica.aether.slice.ConsistencyMode");
         pin(table, 705, "org.pragmatica.aether.slice.ExecutionMode");
@@ -767,6 +774,18 @@ public interface SystemTags {
         pin(table, 2890, "org.pragmatica.aether.http.handler.ObjectHandle");
         pin(table, 2891, "org.pragmatica.aether.http.handler.FileHandle");
         pin(table, 2892, "org.pragmatica.aether.http.handler.UploadHandle");
+        // #1715: the per-(source, role) node-id high-water. Inside the fix1715 reservation 2904..2907 of wire-tag-ranges.txt.
+        pin(table, 2904, "org.pragmatica.aether.slice.kvstore.AetherKey.NodeIdHighWaterKey");
+        pin(table, 2905, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeIdHighWaterValue");
+        // #2635: the empty consumer group's per-partition tombstone, inside the fix2635 reservation 2900..2901.
+        pin(table, 2900, "org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerGroupTombstone");
+        // #2834: the committed open set of the cluster FSM's leader-local warnings. Inside the fix2834 reservation 2902..2903 of
+        // wire-tag-ranges.txt (2900..2901 are fix2635's, PR #3025).
+        pin(table, 2902, "org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey");
+        pin(table, 2903, "org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue");
+        // #2981 step 1: the node lease renewal row. Inside the impl2981s1 reservation 2910..2911 of wire-tag-ranges.txt.
+        pin(table, 2910, "org.pragmatica.aether.slice.kvstore.AetherKey.NodeLeaseKey");
+        pin(table, 2911, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeLeaseValue");
         // ---- unpinned numbers up to 16383 RESERVED: reserve a range in wire-tag-ranges.txt first ----
         rejectDuplicateTags(table);
 

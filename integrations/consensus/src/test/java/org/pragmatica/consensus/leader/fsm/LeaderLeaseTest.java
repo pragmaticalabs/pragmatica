@@ -27,6 +27,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 
+import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// Verifies the leader-acting lease in [`LeaderElectionState.Led`] (Option A: a node in `Led(X)`
@@ -108,7 +109,7 @@ class LeaderLeaseTest {
     /// `adoptLeaderUnconditionally` (no grace timeout needed, mirroring the cold-boot fix path).
     private void driveToLed(FsmTestHarness<LeaderElectionState, ClusterFsmEvent> h, LeaderCommitted commit) {
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, PEER_A, PEER_B)));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, PEER_A, PEER_B), seq()));
         h.dispatch(new ConsensusReady());
         h.dispatch(commit);
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);

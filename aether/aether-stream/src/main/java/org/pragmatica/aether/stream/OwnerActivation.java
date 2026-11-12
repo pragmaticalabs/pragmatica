@@ -133,8 +133,21 @@ import org.slf4j.LoggerFactory;
 /// never activated, so an ex-owner that heals back re-runs the whole gate before it serves again.
 ///
 /// Residual (accepted, #1555 decision c): an append admitted on the previous owner in the instant before the
-/// ownership flip reaches it is not seen by this catch-up. At `confirmation_factor` 1 the acknowledgement is
-/// owner-local by definition, so this is part of that documented loss window; `confirmation_factor` >= 2 closes it.
+/// ownership flip reaches it is not seen by this catch-up, whose probe is a snapshot. At `confirmation_factor` 1 the
+/// acknowledgement is owner-local by definition, so this is part of that documented loss window. At
+/// `confirmation_factor` >= 2 such an append is acknowledged only if the new owner holds it, and only because the new
+/// owner is a member of the ISR the previous owner acknowledges on: the acknowledgement waits for every member of that
+/// ISR (its maximal form, `IsrMonitor`), and a member that has applied the newer record refuses the older owner epoch.
+/// That membership is an ELECTION rule, not a property of the confirmation factor: failover elects from the live ISR,
+/// and a planned move goes only to a live ISR member (#2981). Without that rule `confirmation_factor` >= 2 did not
+/// close it: a planned move to a node outside the ISR, under apply skew, lost an acknowledged record (#2981, TLA+
+/// model `Streams.tla`, invariant `AckedNeverLost`). Still open: nothing fences the previous owner itself, so the
+/// guarantee holds only while every path that commits an owner elects inside the previous owner's ISR, and the closure
+/// assumes the maximal ISR covers every committed ISR member; #2993 (an `IsrMonitor` expansion still in flight is
+/// forgotten by the next tick) is a known gap there. Direction B, an ownership check at acknowledgement time on the
+/// deposed owner, is the mechanism that closes N2 regardless of both (a separate later change).
+/// [mechanism: the election rule above with all-member acknowledgement; model-checked on three nodes, not reproduced at
+/// runtime]
 public final class OwnerActivation {
     private static final Logger log = LoggerFactory.getLogger(OwnerActivation.class);
 
@@ -391,6 +404,20 @@ public final class OwnerActivation {
             }
         }
 
+        /// #2960: every source the promoted owner could catch up from answered short without advancing it for `rounds` consecutive rounds
+        /// and was demoted (`PartitionBackfill.MAX_STALLED_ROUNDS`), so the round ends with no source left. The owner stays SYNCING and never
+        /// activates below the target (the rule is lossless); the redrive retries every tick. Reported once, cleared on progress or activation.
+        record CatchupStalled(String streamName, int partition, int rounds) implements ActivationBlock {
+            @Override
+            public String message() {
+                return ("Owner catch-up of %s[%d] cannot progress: every source answered short without advancing the owner for %d "
+                       + "consecutive rounds; the owner stays non-authoritative and never activates below the target, and the "
+                       + "redrive retries until a source holding the missing records answers in full").formatted(streamName,
+                                                                                                                 partition,
+                                                                                                                 rounds);
+            }
+        }
+
         /// `unreachable` have not answered the promotion probe for longer than `blockedLongerThan` and may hold a
         /// higher watermark; `responders` answered.
         record HoldersUnreachable(String streamName,
@@ -475,6 +502,24 @@ public final class OwnerActivation {
     @Contract
     public void peerRows(PeerRowReset reset) {
         this.peerRows = reset;
+    }
+
+    /// The offset up to which `peer`, which answered the probe with `watermark`, is a source for this owner: `watermark` capped at
+    /// the committed-lineage end an earlier clipped catch-up learned for it (I-27, #1759), while its tail is still the one observed
+    /// then. Late-bound ([#peerLineageEnd]).
+    @FunctionalInterface
+    public interface PeerLineageEnd {
+        long of(String stream, int partition, NodeId peer, long watermark);
+    }
+
+    private volatile PeerLineageEnd peerLineageEnd = (_, _, _, watermark) -> watermark;
+
+    /// Late-bind the committed-lineage end of a peer (#3071, ruling 37277a904f). The gate ranks, compares and verifies a peer only up
+    /// to it: a deposed epoch's tail the catch-up refuses never counts as ahead, so the gate cannot pull it again on every demand.
+    /// The refused tail is the peer's to repair. Unknown (the default) is the raw watermark. Set once at wiring.
+    @Contract
+    public void peerLineageEnd(PeerLineageEnd end) {
+        this.peerLineageEnd = end;
     }
 
     /// Late-bind the candidate's durable sealed floor, the bound the gate's relaxation for a divergent peer respects. Set once at
@@ -1467,8 +1512,9 @@ public final class OwnerActivation {
 
     private Promise<Unit> catchUpFromKept(String stream, int partition, long local, List<PeerWatermark> answered) {
         var source = Option.from(answered.stream()
-                                         .filter(peer -> peer.watermark() > local)
-                                         .max(Comparator.comparingLong(PeerWatermark::watermark)));
+                                         .filter(peer -> lineageEnd(stream, partition, peer) > local)
+                                         .max(Comparator.comparingLong(peer -> lineageEnd(stream, partition, peer))));
+        var sourceEnd = source.map(peer -> lineageEnd(stream, partition, peer));
         var others = answered.stream().filter(peer -> source.filter(peer::equals)
                                                             .isEmpty()).toList();
 
@@ -1476,7 +1522,32 @@ public final class OwnerActivation {
                                                                                           partition,
                                                                                           local,
                                                                                           source,
-                                                                                          others));
+                                                                                          others))
+                              .flatMap(_ -> rerankIfClipped(stream, partition, source, sourceEnd, answered));
+    }
+
+    /// #3071: a peer is ranked by its committed-lineage end ([#peerLineageEnd]), never its raw watermark, so a deposed epoch's tail
+    /// the catch-up refuses never counts as ahead. The end of a peer is learned by the pull that clips it: when this pull lowered
+    /// the source's end, the responders are ranked again against the new local head, since another one may hold more of the
+    /// lineage. Bounded: a re-rank needs a source whose end dropped in that very pull, and a peer's end drops at most once for the
+    /// tail it holds.
+    private Promise<Unit> rerankIfClipped(String stream,
+                                          int partition,
+                                          Option<PeerWatermark> source,
+                                          Option<Long> sourceEnd,
+                                          List<PeerWatermark> answered) {
+        return source.filter(peer -> sourceEnd.filter(end -> lineageEnd(stream, partition, peer) < end)
+                                              .isPresent())
+                     .fold(() -> Promise.success(Unit.unit()),
+                           _ -> catchUpFromKept(stream,
+                                                partition,
+                                                selfWatermark.localWatermark(stream, partition),
+                                                answered));
+    }
+
+    /// The offset up to which `peer` is a source for this owner ([#peerLineageEnd]).
+    private long lineageEnd(String stream, int partition, PeerWatermark peer) {
+        return peerLineageEnd.of(stream, partition, peer.node(), peer.watermark());
     }
 
     /// Every member answered: the unreachable run is over, and a report of it no longer describes the partition.
@@ -1555,7 +1626,7 @@ public final class OwnerActivation {
                                                    PeerWatermark source,
                                                    List<PeerWatermark> others) {
         return Promise.allOf(others.stream()
-                                   .filter(peer -> peer.watermark() > local)
+                                   .filter(peer -> lineageEnd(stream, partition, peer) > local)
                                    .map(peer -> verifyPair(stream, partition, source, peer))
                                    .toList())
                       .flatMap(results -> Result.allOf(results).async())
@@ -1564,7 +1635,7 @@ public final class OwnerActivation {
 
     /// Compare the last [#OVERLAP_WINDOW] offsets both peers' heads cover.
     private Promise<Unit> verifyPair(String stream, int partition, PeerWatermark source, PeerWatermark peer) {
-        var to = Math.min(source.watermark(), peer.watermark());
+        var to = Math.min(lineageEnd(stream, partition, source), lineageEnd(stream, partition, peer));
 
         if (to < 0) {
             return Promise.success(Unit.unit());
@@ -1617,7 +1688,7 @@ public final class OwnerActivation {
 
     /// Compare the last [#OVERLAP_WINDOW] offsets both heads cover; nothing overlaps when either side is empty.
     private Promise<Unit> verifyOverlap(String stream, int partition, long local, PeerWatermark peer) {
-        var to = Math.min(local, peer.watermark());
+        var to = Math.min(local, lineageEnd(stream, partition, peer));
 
         if (to < 0) {
             return Promise.success(Unit.unit());
@@ -1733,6 +1804,8 @@ public final class OwnerActivation {
         }
     }
 
+    /// The catch-up is asked for the source's RAW tail: it clips a deposed epoch's tail itself and learns the source's
+    /// committed-lineage end from that page. The run is then verified against that end, never the raw tail (#3071).
     private Promise<Unit> pullSuffix(String stream, int partition, PeerWatermark highest) {
         log.warn("Owner activation of {}[{}]: {} holds watermark {} ahead of local {} — catching up before acting as owner",
                  stream,
@@ -1747,7 +1820,7 @@ public final class OwnerActivation {
                                highest.watermark())
                       .flatMap(_ -> verifyReached(stream,
                                                   partition,
-                                                  highest.watermark()));
+                                                  lineageEnd(stream, partition, highest)));
     }
 
     private Promise<Unit> verifyReached(String stream, int partition, long target) {

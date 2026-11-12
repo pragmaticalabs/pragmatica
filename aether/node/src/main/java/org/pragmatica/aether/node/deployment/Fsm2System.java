@@ -18,6 +18,7 @@ import org.pragmatica.aether.deployment.cluster.fsm2.ClusterFsm;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
 import org.pragmatica.aether.deployment.cluster.fsm2.Seams;
 import org.pragmatica.aether.deployment.cluster.fsm2.Settings;
+import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.deployment.cluster.fsm2.Timing;
 import org.pragmatica.aether.deployment.node.machine.NodeFsm;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmConfig;
@@ -90,6 +91,7 @@ public final class Fsm2System {
                                 EffectTranslator.Targets translator,
                                 SeamPoller.Sources seamSources,
                                 AdmissionSeam admissions,
+                                Supplier<ClusterInput.DeadSet> dead,
                                 EngineMarkerGuard guard,
                                 FsmTimers.TimerService clock,
                                 boolean worker) {}
@@ -232,10 +234,13 @@ public final class Fsm2System {
                     .withSeedCores(seedCores(config.topology()));
     }
 
-    /// The configured core nodes, which `Absence.classOf` classes CORE without a directive (#2868).
+    /// The configured nodes of role `core` (an entry with no role label counts as core), which `Absence.classOf` classes CORE without a directive
+    /// (#2868). The same role rule as the poller's `coreRoleMembers` seam (#2887): a listed worker is judged by the worker rule.
     static Set<NodeId> seedCores(TopologyConfig topology) {
         return topology.coreNodes()
                        .stream()
+                       .filter(info -> MemberDescriptor.isCoreRole(info.labels()
+                                                                       .getOrDefault(NodeInfo.LABEL_ROLE, "core")))
                        .map(NodeInfo::id)
                        .collect(Collectors.toUnmodifiableSet());
     }
@@ -283,6 +288,7 @@ public final class Fsm2System {
                                                                                                          .admissions(c.seamSources()
                                                                                                                       .members()
                                                                                                                       .get()),
+                                                                                                  c.dead(),
                                                                                                   c.clock(),
                                                                                                   translator.clusterSink(),
                                                                                                   translator.stepObserver()),

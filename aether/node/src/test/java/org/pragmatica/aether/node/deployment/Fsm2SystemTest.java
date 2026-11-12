@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -54,6 +55,7 @@ import org.pragmatica.utility.react.ReactGate;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 import static org.awaitility.Awaitility.await;
 
 /// The FSM2 system over the production route table, a real `KVStore` applier and real interpreters (phase-3 design 4.1, 4.4, 5.1, 8.3): the
@@ -873,6 +875,89 @@ class Fsm2SystemTest {
                                           .doesNotContain(Thread.currentThread());
                 }
             }
+        }
+
+        /// #3002: what the caller chains on the returned promise (the node's teardown, which blocks) never runs on the thread that resolved the
+        /// wait. The hop executor finishes its task before `execute` returns, so a continuation attached before the hop must run on the hop's
+        /// thread; the earlier `flatMap` into the pooled quiesce resolved the returned promise inline on the resolver whenever the quiesce
+        /// finished first, and without the hop the continuation runs wherever the quiesce or the resolver left it.
+        @Test
+        void leaveQuorum_continuationRunsOnTheHop_neverOnTheThreadThatResolvedTheWait() {
+            var resolver = Executors.newSingleThreadExecutor(runnable -> new Thread(runnable, "resolver-3002"));
+
+            try (var harness = new Fsm2Harness(DeploymentEngine.LEGACY, false).assembled()) {
+                for (var round = 0; round < ROUNDS; round++) {
+                    var continuedOn = new AtomicReference<Thread>();
+                    var resolvedOn = new AtomicReference<Thread>();
+                    var delivered = Promise.<Unit> promise();
+                    var left = harness.wiring.leaveQuorum(() -> {}, () -> delivered, () -> {}, RUN_BEFORE_RETURN)
+                                             .map(_ -> recordOn(continuedOn));
+
+                    resolver.execute(() -> resolveOn(delivered, resolvedOn));
+
+                    assertThat(left.await(LEFT_BOUND).isSuccess()).as("the quorum is left").isTrue();
+                    assertThat(continuedOn.get().getName()).as("the continuation ran on the hop, round " + round).isEqualTo(HOP_THREAD);
+                    assertThat(continuedOn.get()).as("never on the resolver, round " + round).isNotSameAs(resolvedOn.get());
+                }
+            } finally {
+                resolver.shutdownNow();
+            }
+        }
+
+        /// #3002 through the production path: what the caller chains on the returned promise runs on neither the thread that resolved the wait nor
+        /// the pooled thread that ran the quiesce. Without the hop, the `flatMap` into the pooled quiesce resolves the returned promise either on
+        /// the quiesce's thread (the quiesce still pending when `flatMap` looked) or inline on the resolver (the quiesce already finished), so
+        /// this is RED in every round at the base; with the hop, a fresh virtual thread of the async executor resolves it.
+        @Test
+        void leaveQuorum_continuationRunsOffTheQuiesceAndOffTheResolver() {
+            var resolver = Executors.newSingleThreadExecutor(runnable -> new Thread(runnable, "resolver-3002"));
+
+            try (var harness = new Fsm2Harness(DeploymentEngine.LEGACY, false).assembled()) {
+                for (var round = 0; round < ROUNDS; round++) {
+                    var continuedOn = new AtomicReference<Thread>();
+                    var quiescedOn = new AtomicReference<Thread>();
+                    var resolvedOn = new AtomicReference<Thread>();
+                    var delivered = Promise.<Unit> promise();
+                    var left = harness.wiring.leaveQuorum(() -> {}, () -> delivered, () -> quiescedOn.set(Thread.currentThread()))
+                                             .map(_ -> recordOn(continuedOn));
+
+                    resolver.execute(() -> resolveOn(delivered, resolvedOn));
+
+                    assertThat(left.await(LEFT_BOUND).isSuccess()).as("the quorum is left").isTrue();
+                    assertThat(continuedOn.get()).as("off the resolver and off the quiesce's thread, round " + round)
+                                                 .isNotSameAs(resolvedOn.get())
+                                                 .isNotSameAs(quiescedOn.get());
+                }
+            } finally {
+                resolver.shutdownNow();
+            }
+        }
+
+        private static final String HOP_THREAD = "hop-3002";
+
+        /// Runs the task on a fresh thread and joins it before `execute` returns: the hop's promise is ALREADY resolved when anything is attached.
+        private static final Executor RUN_BEFORE_RETURN = StopDrain::runToCompletionOnFreshThread;
+
+        private static void runToCompletionOnFreshThread(Runnable task) {
+            var worker = Thread.ofPlatform().name(HOP_THREAD).unstarted(task);
+
+            worker.start();
+            joinUninterrupted(worker);
+        }
+
+        private static void joinUninterrupted(Thread worker) {
+            try {
+                worker.join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                fail("interrupted joining the hop task: " + e);
+            }
+        }
+
+        private static Unit recordOn(AtomicReference<Thread> continuedOn) {
+            continuedOn.set(Thread.currentThread());
+
+            return Unit.unit();
         }
 
         private static void resolveOn(Promise<Unit> delivered, AtomicReference<Thread> resolvedOn) {

@@ -19,6 +19,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
+import java.util.stream.IntStream;
 
 import org.pragmatica.aether.node.ClusterTestPorts;
 import org.pragmatica.aether.node.NodeCodecs;
@@ -105,17 +106,24 @@ class KvBackupStopFlushRaceTest {
     /// A client-side pre-push hook that stamps the time and then moves the remote head (an empty commit from a scratch clone) just before git sends
     /// the push: every push is a genuine lost race, against a head that DID move, for ever.
     private static void installRacingHook(Node node, String remote, Path stamps) {
+        installRacingHook(node, remote, stamps, 0);
+    }
+
+    /// The same hook whose stamp clock reads `skewMillis` ahead of the test's clock: the wall clock of a CI VM is not monotonic (#3053), so a stamp is
+    /// only ever a hint of the order of the pushes.
+    private static void installRacingHook(Node node, String remote, Path stamps, long skewMillis) {
         node.repository().prepare().onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
         var hook = node.repository().dir().resolve(".git").resolve("hooks").resolve("pre-push");
 
         write(hook,
-              "#!/bin/sh\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE\ndate +%s%3N >> '" + stamps + "'\nD=$(mktemp -d)\n"
+              "#!/bin/sh\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE\necho $(( $(date +%s%3N) + " + skewMillis + " )) >> '" + stamps + "'\n{ date +%s%3N; ps -eo pid,ppid,stat,etime,args; } >> '" + stamps + ".ctx' 2>&1\nD=$(mktemp -d)\n"
               + "git clone --quiet --branch backup '" + remote + "' \"$D/c\" && git -C \"$D/c\" -c user.email=s@x -c user.name=racer commit --quiet --allow-empty -m race"
               + " && git -C \"$D/c\" push --quiet origin backup\nrm -rf \"$D\"\nexit 0\n");
     }
 
     /// A service whose worker is never interrupted (a scheduler without `shutdownNow`) on a real executor, with a racing hook that loses every push.
-    private record Uninterrupted(KvBackupService service, CountDownLatch done, AtomicReference<Throwable> thrown, java.util.concurrent.ScheduledExecutorService executor) {}
+    private record Uninterrupted(KvBackupService service, CountDownLatch done, AtomicReference<Throwable> thrown, java.util.concurrent.ScheduledExecutorService executor,
+                                 List<BackupWarning> warnings, GitBackupRepository repository) {}
 
     private Uninterrupted uninterrupted(String remote, java.util.function.LongSupplier clock) {
         var stamps = temp.resolve("push.stamps");
@@ -134,7 +142,7 @@ class KvBackupStopFlushRaceTest {
         seedHead(remote);
         installRacingHook(node, remote, stamps);
 
-        return new Uninterrupted(service, done, thrown, executor);
+        return new Uninterrupted(service, done, thrown, executor, warnings, repository);
     }
 
     private static void runRecording(Runnable task, AtomicReference<Throwable> thrown, CountDownLatch done) {
@@ -158,10 +166,69 @@ class KvBackupStopFlushRaceTest {
         var ended = harness.done().await(20, TimeUnit.SECONDS);
         var elapsedMs = (System.nanoTime() - started) / 1_000_000;
 
-        harness.executor().shutdownNow();
+        settle(harness.executor());
         assertThat(ended).as("the task ended on its own, at the deadline").isTrue();
         assertThat(harness.thrown().get()).as("and not by an error such as StackOverflowError").isNull();
         assertThat(elapsedMs).isBetween(2_900L, 8_000L);
+    }
+
+    /// A stop that reaches a worker mid-pass, with nothing to interrupt it (the interrupt can be lost or late), still ends the writing: the pass in
+    /// flight, held in its commit while the stop is requested, pushes nothing once released (#2924: a push 391 ms after `stopFlushed` returned).
+    @Test
+    void aPassInFlightAtTheStop_pushesNothing_evenWhenTheWorkerIsNotInterrupted() throws Exception {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var harness = uninterrupted(remote, System::currentTimeMillis);
+        var node = temp.resolve("node");
+        var held = temp.resolve("commit.held");
+        var release = temp.resolve("commit.release");
+        var stamps = temp.resolve("push.stamps");
+
+        write(node.resolve(".git").resolve("hooks").resolve("pre-commit"),
+              "#!/bin/sh\ntouch '" + held + "'\nwhile [ ! -f '" + release + "' ]; do sleep 0.05; done\nexit 0\n");
+        harness.service().stopFlushed(TimeSpan.timeSpan(120).seconds());
+        awaitFile(held);
+        harness.service().stop();
+        Files.createFile(release);
+        var ended = harness.done().await(20, TimeUnit.SECONDS);
+
+        settle(harness.executor());
+        assertThat(ended).as("control: the pass ended").isTrue();
+        assertThat(Files.exists(stamps) ? Files.readString(stamps) : "").as("no push started after the stop").isEmpty();
+    }
+
+    /// Ends the worker and waits for it: a worker still unwinding writes into the `@TempDir` while JUnit deletes it (one cleanup failure in 50 rounds under CPU load).
+    private static void settle(java.util.concurrent.ExecutorService executor) throws InterruptedException {
+        executor.shutdownNow();
+        assertThat(executor.awaitTermination(15, TimeUnit.SECONDS)).as("the worker ended before the temp dir is deleted").isTrue();
+    }
+
+    private static void awaitFile(Path file) throws InterruptedException {
+        for (var attempt = 0; attempt < 400 && !Files.exists(file); attempt++) {
+            Thread.sleep(50);
+        }
+
+        assertThat(file).as("control: the pass was in flight at the stop").exists();
+    }
+
+    /// What the stop leaves behind when it interrupts a push in flight: git updates the remote ref atomically, so the remote is its old head or a
+    /// fast-forward of it, never half-written (`git fsck` clean, the seeded head intact), and the node's own commit stays queued locally, ahead of the
+    /// remote, for the next start to push. Here the push is held before any transfer, so the remote is still the seeded head.
+    @Test
+    void aPushInterruptedByTheStop_leavesTheRemoteIntact_andTheCommitQueuedLocally() throws Exception {
+        var remote = bareRemote(temp.resolve("remote.git"));
+
+        seedHead(remote);
+        var seededHead = git(Path.of(remote), "rev-parse", "backup").strip();
+        var node = node(remote, "node", 3);
+
+        node.repository().prepare().onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
+        write(node.repository().dir().resolve(".git").resolve("hooks").resolve("pre-push"), "#!/bin/sh\nsleep 20\nexit 0\n");
+        await(node.service().stopFlushed(TimeSpan.timeSpan(2).seconds()));
+        Thread.sleep(500);
+
+        assertThat(git(Path.of(remote), "fsck", "--no-progress")).doesNotContain("error", "fatal");
+        assertThat(git(Path.of(remote), "rev-parse", "backup").strip()).as("the remote head did not move").isEqualTo(seededHead);
+        assertThat(git(node.repository().dir(), "rev-list", "--count", seededHead + "..backup").strip()).as("the node's commit is queued locally").isEqualTo("1");
     }
 
     /// The stop alone ends the loop too, whatever the deadline says: `stop()` is what the caller's timeout does.
@@ -176,7 +243,7 @@ class KvBackupStopFlushRaceTest {
         harness.service().stop();
         var ended = harness.done().await(10, TimeUnit.SECONDS);
 
-        harness.executor().shutdownNow();
+        settle(harness.executor());
         assertThat(ended).as("the stop ended the loop").isTrue();
         assertThat(harness.thrown().get()).isNull();
     }
@@ -191,33 +258,74 @@ class KvBackupStopFlushRaceTest {
         harness.service().stopFlushed(TimeSpan.timeSpan(120).seconds());
         var ended = harness.done().await(15, TimeUnit.SECONDS);
 
-        harness.executor().shutdownNow();
+        settle(harness.executor());
         assertThat(ended).as("the clock passed the deadline and the loop ended, unstopped and uninterrupted").isTrue();
         assertThat(harness.thrown().get()).isNull();
     }
 
-    /// At the production bound the loop keeps deciding again until the end of the 10 s, the last push lands near it, and nothing is pushed once
-    /// `stopFlushed` has returned.
+    /// At the production bound the loop keeps deciding again until the end of the 10 s, and nothing is pushed once `stopFlushed` has returned.
+    /// The bound is read from the return of `stopFlushed`, not from the time of the last push: a pass is a clone, a race and a push and takes as long
+    /// as the machine lets it, and the loop checks the deadline only after a pass, so the last push may start any pass-duration before the bound
+    /// (#2924: 640 ms early on a loaded runner). The loop ending early returns early (a mutation at half the deadline returns at ~5 s) and one idling before the
+    /// deadline leaves a gap between its last decision and the return far beyond its own pass length; the clock is
+    /// the production one (`nanoTime`), so the bound has no margin to guess.
     @Test
     void reDecide_runsUntilTheProductionDeadline_andPushesNothingAfterTheStop() throws Exception {
+        runsUntilTheProductionDeadline(0);
+    }
+
+    /// The same run with the hook's stamps 3 s ahead of the test's clock (what a non-monotonic VM clock does to a stamp, #3053): the order of the
+    /// pushes against the stop is read from the count of the pushes at the return of the stop, not from a clock.
+    @Test
+    void reDecide_pushesNothingAfterTheStop_whateverTheStampClockReads() throws Exception {
+        runsUntilTheProductionDeadline(3_000);
+    }
+
+    private void runsUntilTheProductionDeadline(long skewMillis) throws Exception {
         var remote = bareRemote(temp.resolve("remote.git"));
         var stamps = temp.resolve("push.stamps");
         var node = node(remote, "node", 2);
 
         seedHead(remote);
-        installRacingHook(node, remote, stamps);
+        installRacingHook(node, remote, stamps, skewMillis);
         var startedEpoch = System.currentTimeMillis();
+        var startedNanos = System.nanoTime();
 
         await(node.service().stopFlushed(TimeSpan.timeSpan(10).seconds()));
-        var stoppedEpoch = System.currentTimeMillis();
+        var pushesAtTheStop = Files.readAllLines(stamps).size();
+        var returnedAfterMs = (System.nanoTime() - startedNanos) / 1_000_000;
 
         Thread.sleep(3_000);
         var lines = Files.readAllLines(stamps);
         var last = Long.parseLong(lines.getLast().strip()) - startedEpoch;
 
-        assertThat(last).as("the loop was still deciding again near the 10 s bound").isGreaterThanOrEqualTo(9_500L);
-        assertThat(last).as("nothing is pushed after the stop returned").isLessThanOrEqualTo(stoppedEpoch - startedEpoch + 200);
+        assertThat(returnedAfterMs).as("the loop kept deciding again until the 10 s bound; it never gave up early").isGreaterThanOrEqualTo(10_000L);
+        assertThat(lines).as("control: it did decide again, every push being a lost race").hasSizeGreaterThanOrEqualTo(2);
+        assertThat(returnedAfterMs - last).as("and it was still deciding at the end: the last decision is within two of its own longest passes (+500 ms) of the return")
+                                          .isLessThanOrEqualTo(2 * longestGap(lines) + 500);
+        assertThat(lines).as("nothing is pushed after the stop returned: " + pushesAtTheStop + " pushes had started at the return, stop returned at " + returnedAfterMs
+                           + " ms, at the last stamp:\n" + lastContext(stamps))
+                         .hasSize(pushesAtTheStop);
         assertThat(node.warnings()).extracting(BackupWarning::code).containsExactly(Code.BACKUP_STOP_FLUSH_FAILED);
+    }
+
+    /// What ran when the last hook started (diagnostic for #2924: the process list the hook saw).
+    private static String lastContext(Path stamps) throws java.io.IOException {
+        var context = Path.of(stamps + ".ctx");
+
+        if (!Files.exists(context)) {
+            return "(no context)";
+        }
+        var text = Files.readString(context);
+
+        return text.substring(Math.max(0, text.lastIndexOf("\n17") - 0)).lines().limit(80).collect(java.util.stream.Collectors.joining("\n"));
+    }
+
+    /// The longest gap between consecutive decisions (stamps), i.e. the longest pass this run produced.
+    private static long longestGap(List<String> stamps) {
+        var times = stamps.stream().map(line -> Long.parseLong(line.strip())).toList();
+
+        return IntStream.range(1, times.size()).mapToLong(i -> times.get(i) - times.get(i - 1)).max().orElse(0L);
     }
 
     // ---------------- what counts as a rejection ----------------
@@ -385,6 +493,135 @@ class KvBackupStopFlushRaceTest {
                 assertThat(node.warnings()).as("round %d: quiet", round).isEmpty();
             }
         }
+    }
+
+    // ---------------- the stop ends the push tree (#2924) ----------------
+
+    /// A `receive-pack` that answers late: git is alive and waiting for it, and starts the pre-push hook only when it answers (the hook runs once git
+    /// has the remote's refs). This is the delayed spawn of the hook the flake caught: the stop lands while git is alive and the hook is not yet started.
+    private static void slowReceivePack(GitBackupRepository repository, Path started, Path dir) {
+        var script = dir.resolve("slow-receive-pack");
+
+        write(script, "#!/bin/sh\ndate +%s%3N >> '" + started + "'\nsleep 1\nexec git receive-pack \"$@\"\n");
+        git(repository.dir(), "config", "remote.origin.receivepack", script.toString());
+    }
+
+    /// The worker is not interrupted (the interrupt can land late, or never): only `stop()` itself can end the push. With git alive and its hook not yet
+    /// started when `stop()` is called, the hook must never start. Before the fix `stop()` returned at once and the hook started a second later.
+    @Test
+    void stop_returnsOnlyWhenThePushTreeIsDead_soNoHookStartsAfterIt() throws Exception {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var harness = uninterrupted(remote, System::currentTimeMillis);
+        var started = temp.resolve("receive-pack.started");
+        var stamps = temp.resolve("push.stamps");
+
+        slowReceivePack(harness.repository(), started, temp);
+        harness.service().stopFlushed(TimeSpan.timeSpan(120).seconds());
+        awaitFile(started);
+        harness.service().stop();
+        var live = ProcessHandle.current().descendants().filter(handle -> isGit(handle)).count();
+        Thread.sleep(2_500);
+
+        assertThat(live).as("no git of the backup is alive when stop() returns").isZero();
+        assertThat(Files.exists(stamps) ? Files.readString(stamps) : "").as("the hook never started, before or after the return").isEmpty();
+        assertThat(harness.warnings()).as("the killed push is the flush's own failure; the stop itself reports no live tree")
+                                      .noneMatch(warning -> warning.detail().contains("still running"));
+        settle(harness.executor());
+    }
+
+    private static boolean isGit(ProcessHandle handle) {
+        return handle.info().command().map(command -> command.endsWith("/git")).orElse(false);
+    }
+
+    /// The remote is atomic to the end: a push killed by the stop leaves the remote at the seeded head and the commit queued locally.
+    @Test
+    void stop_duringAPush_leavesTheRemoteUnchanged() throws Exception {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var harness = uninterrupted(remote, System::currentTimeMillis);
+        var started = temp.resolve("receive-pack.started");
+        var seededHead = git(Path.of(remote), "rev-parse", "backup").strip();
+
+        slowReceivePack(harness.repository(), started, temp);
+        harness.service().stopFlushed(TimeSpan.timeSpan(120).seconds());
+        awaitFile(started);
+        harness.service().stop();
+        Thread.sleep(1_500);
+
+        assertThat(git(Path.of(remote), "fsck", "--no-progress")).doesNotContain("error", "fatal");
+        assertThat(git(Path.of(remote), "rev-parse", "backup").strip()).as("the remote head did not move").isEqualTo(seededHead);
+        settle(harness.executor());
+    }
+
+    /// Once stopped, the repository starts no git at all: the guard and the spawn are one step, so a push that was past the service's own check
+    /// still cannot start a process.
+    @Test
+    void afterStop_theRepositoryStartsNoGit() {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var node = node(remote, "node", 1);
+
+        node.service().stop();
+        var pushed = node.repository().push();
+
+        assertThat(pushed.isFailure()).isTrue();
+        pushed.onFailure(cause -> assertThat(cause.message()).contains("stopped"));
+    }
+
+    /// The worker's own reaction to an interrupt kills the tree too, with no `stop()` at all: git is alive and its hook not yet started when the
+    /// worker is interrupted, and the hook must never start.
+    @Test
+    void anInterruptedWorker_killsItsPushTree_withoutAStop() throws Exception {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var harness = uninterrupted(remote, System::currentTimeMillis);
+        var started = temp.resolve("receive-pack.started");
+        var stamps = temp.resolve("push.stamps");
+
+        slowReceivePack(harness.repository(), started, temp);
+        harness.service().stopFlushed(TimeSpan.timeSpan(120).seconds());
+        awaitFile(started);
+        settle(harness.executor());
+        Thread.sleep(2_500);
+
+        assertThat(Files.exists(stamps) ? Files.readString(stamps) : "").as("the hook never started").isEmpty();
+    }
+
+    /// A git that ran to its end is no longer in flight: the stop has nothing of it to kill.
+    @Test
+    void aCompletedGit_isNotInFlight() {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var node = node(remote, "node", 1);
+
+        node.repository().prepare().onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
+
+        assertThat(node.repository().halt()).isEmpty();
+    }
+
+    /// A tree that is not dead within the bound is reported, not passed off as a clean stop. A member that can never end is registered beside the real
+    /// push, so the outcome does not depend on how fast the host reaps the killed push.
+    @Test
+    void stop_reportsATreeThatIsNotDeadWithinTheBound() throws Exception {
+        var remote = bareRemote(temp.resolve("remote.git"));
+        var harness = uninterrupted(remote, System::currentTimeMillis);
+        var started = temp.resolve("receive-pack.started");
+
+        slowReceivePack(harness.repository(), started, temp);
+        harness.service().stopFlushed(TimeSpan.timeSpan(120).seconds());
+        awaitFile(started);
+        var neverEnds = org.mockito.Mockito.mock(ProcessBuilder.class);
+
+        var neverExits = new java.util.concurrent.CompletableFuture<ProcessHandle>();
+
+        org.mockito.Mockito.doReturn(GitProcessesTest.undying(neverExits)).when(neverEnds).start();
+        harness.repository().processes().start(neverEnds).unwrap();
+        try (var log = org.pragmatica.testlogging.LogCapture.capture(KvBackupService.class, org.apache.logging.log4j.Level.WARN, false)) {
+            harness.service().stopWithin(500);
+
+            assertThat(log.entries()).as("the overrun is also logged at WARN, for the operator reading the log")
+                                     .anyMatch(entry -> entry.level() == org.apache.logging.log4j.Level.WARN && entry.message().contains("still alive"));
+        }
+        assertThat(harness.warnings()).as("the stop's report (the killed push may add the flush's own failure, depending on which side wins the race)")
+                                      .anyMatch(warning -> warning.code() == Code.BACKUP_STOP_FLUSH_FAILED && warning.detail().contains("still running"));
+        neverExits.complete(null);
+        settle(harness.executor());
     }
 
     // ---------------- helpers ----------------

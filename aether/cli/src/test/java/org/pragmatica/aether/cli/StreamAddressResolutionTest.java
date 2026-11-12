@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli;
 
+import java.util.Locale;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.lang.Result;
@@ -74,8 +75,8 @@ class StreamAddressResolutionTest {
         var result = invoke("billing:invoices");
 
         assertFalse(result.isSuccess());
-        assertTrue(result.toString().toLowerCase().contains("format")
-                   || result.toString().toLowerCase().contains("namespace:name:version"),
+        assertTrue(result.toString().toLowerCase(Locale.ROOT).contains("format")
+                   || result.toString().toLowerCase(Locale.ROOT).contains("namespace:name:version"),
                   "expected a WRONG_FORMAT-shaped failure, got: " + result);
     }
 

@@ -117,6 +117,10 @@ final class NotificationDispatcher {
     /// when its burst is empty. Set once at wiring; the default ignores it.
     private volatile LongConsumer replayStart = _ -> {};
 
+    /// Told, on the delivering thread, the revision of each replay item AFTER its whole burst is delivered (empty burst included), so a subscriber can
+    /// act on the caught-up delivered view (#3028). Set once at wiring; the default ignores it.
+    private volatile LongConsumer replayEnd = _ -> {};
+
     private final ThreadLocal<Boolean> replaying = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private final ThreadLocal<Option<DeliveryBatch>> delivering = ThreadLocal.withInitial(Option::none);
     /// Mutation guard holder only (inline mode): true while this thread's drain is running, so a reentrant write appends.
@@ -176,6 +180,11 @@ final class NotificationDispatcher {
     @Contract
     void onReplayStart(LongConsumer listener) {
         replayStart = listener;
+    }
+
+    @Contract
+    void onReplayEnd(LongConsumer listener) {
+        replayEnd = listener;
     }
 
     String name() {
@@ -364,6 +373,9 @@ final class NotificationDispatcher {
                            : batch.notifications();
 
             messages.forEach(this::deliverOne);
+            if (batch.replay()) {
+                replayEnd.accept(batch.revision());
+            }
         } finally {
             replaying.set(Boolean.FALSE);
             delivering.set(Option.none());

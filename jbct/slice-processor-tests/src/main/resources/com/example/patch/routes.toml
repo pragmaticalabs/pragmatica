@@ -1,0 +1,10 @@
+prefix = "/api/patch"
+
+[routes]
+update = "PUT /profile"
+updateViaJackson = "PUT /profile-jackson"
+echo = "POST /echo"
+tags = "PUT /tags"
+
+[errors]
+default = 500

@@ -131,6 +131,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private volatile QuicSslContext serverSslContext;
     private volatile QuicSslContext clientSslContext;
     private final Map<NodeId, PeerState> peers = new ConcurrentHashMap<>();
+    /// #2981 step 6: the labels each peer presented in its most recent Hello; present iff the peer has completed a
+    /// handshake on this node. Written before routing in the attach funnel, overwritten on every reconnection (an
+    /// upgraded peer reconnects with new labels), dropped on terminal departure and shutdown. Read by the join guard
+    /// instead of the asynchronous SWIM descriptor.
+    private final Map<NodeId, Map<String, String>> helloLabels = new ConcurrentHashMap<>();
     /// #487 self-loopback lane. A send-to-self is delivered to the local handler on the SAME dispatch
     /// path real inbound frames use (an event-loop thread), NOT inline on the caller thread — otherwise
     /// self-delivery would break the per-sender FIFO + event-loop-thread contract every protocol on this
@@ -157,6 +162,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private record BackpressureEpisode(long startedNanos, AtomicLong writes) {}
 
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
+    /// Orders this transport's view-carrying observations (#2971). Each `processViewChange` takes the next value
+    /// BEFORE it reads `currentView()`, so the observation holding the highest sequence carries a view taken after
+    /// every lower-sequence observation's peer transition: a consumer that drops an observation older than the last
+    /// one it applied never loses a change, and a delayed older view cannot overwrite a newer one.
+    private final AtomicLong observationSequence = new AtomicLong(TransportObservation.NO_SEQUENCE);
     /// #1461: set by the first `stop()`, whether or not the network had started, and never cleared. A stop that
     /// arrived before `startOnPort` used to be a silent no-op (its CAS on `isRunning` failed), and the later start
     /// then armed a server, reconciler and keepalive nothing could stop. `isRunning` still says whether the
@@ -294,6 +304,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// Test hook (transport overhaul N33): told of every attach decision, DUPLICATE and REJECTED included, which
     /// no [PeerTransitionRecord] reports. Defaults to a no-op; set only through [#attachObserverForTests].
     private volatile Consumer<AttachObservation> attachObserver = ignored -> {};
+
+    /// Test hook (#2971): told of every view `currentView()` reads, on the reading thread, before the read returns to
+    /// the observation it builds. Lets a test hold an observation between its view read and anything after it, the
+    /// window the observation sequence must not depend on. Defaults to a no-op; set only through
+    /// [#viewReadObserverForTests].
+    private volatile Consumer<List<NodeId>> viewReadObserver = ignored -> {};
 
     /// REMOVE view-changes report a connectivity observation upstream via
     /// `PeerConnectivityReporter` on leader and follower alike (#691 removed the leader-only
@@ -745,13 +761,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // The same holds for the ready hooks (a caller that awaited the start has them fired) and for the failed-start
         // reset of `isRunning` (a retry after the failure is not turned away by a CAS the late handler had not cleared).
         // The start promise resolves on a Netty I/O thread and a dependent step runs on the resolving thread, so the hooks
-        // themselves are an ASYNC chain step (`fireReadyHooks`): the start still waits for them, but they never run on the
+        // run after a `continueOn()` hop (`fireReadyHooks`): the start still waits for them, but they never run on the
         // I/O thread (the only production hook binds SWIM's UDP port and awaits it).
         return serverRef.start(port)
                         .map(unit -> captureLoopbackLoop(serverRef, unit))
                         .withSuccess(_ -> armPeriodicTasks())
                         .withSuccess(_ -> transportReady.set(true))
-                        .flatMap(this::fireReadyHooks)
+                        .continueOn()
+                        .withSuccess(_ -> fireReadyHooks())
                         .withFailure(this::onStartFailed)
                         .mapToUnit();
     }
@@ -782,21 +799,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
     }
 
-    /// Runs as an async chain step of the start (off the I/O thread, before the start resolves), so a hook that throws must not fail the start it reports on: each hook is
+    /// Runs as a dependent step after `continueOn()` (off the I/O thread, before the start resolves), so a hook that throws must not fail the start it reports on: each hook is
     /// isolated and a throw is logged (the hooks after it still run, as the detached handler never guaranteed).
     ///
     /// FER (degrade forward): the start has already succeeded, so a hook's throw is absorbed with a WARN rather than reported
     /// as a failed start. Guarantee earned: the start's outcome is the transport's, not a hook's. Mechanism: a single run per
     /// hook; the WARN is the only record of a lost hook.
-    private Promise<Unit> fireReadyHooks(Unit unit) {
-        return Promise.promise(this::runReadyHooks);
-    }
-
     @Contract
-    private void runReadyHooks(Promise<Unit> done) {
+    private void fireReadyHooks() {
         readyHooks.forEach(this::runReadyHook);
         readyHooks.clear();
-        done.succeed(unit());
     }
 
     @Contract
@@ -1025,6 +1037,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var peer = peers.get(nodeId);
 
         firstObservedMissingMs.remove(nodeId);
+        helloLabels.remove(nodeId);
         if (peer == null) {
             endBackpressureEpisodes(nodeId);
             log.debug("departurePermanent for {} suppressed: peer absent (no transition)", nodeId);
@@ -1705,6 +1718,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// sees connections whose identity was verified against the dialed NodeId.
     private void onDialCompleted(NodeInfo dialed, QuicPeerConnection connection, long attempt) {
         journalDialerHello(dialed, connection);
+        helloLabels.put(connection.peerId(), connection.helloLabels());
         onPeerConnected(connection, dialed.address(), dialed.labels(), "dial attempt #" + attempt);
     }
 
@@ -1817,6 +1831,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private void onPeerConnected(QuicPeerConnection connection,
                                  NodeAddress peerAddress,
                                  Map<String, String> peerLabels) {
+        helloLabels.put(connection.peerId(), Map.copyOf(peerLabels));
         onPeerConnected(connection, peerAddress, peerLabels, "inbound Hello");
     }
 
@@ -2630,18 +2645,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// No `isEmpty` shortcut here: the map's size is updated after a new entry is visible, so the shortcut can miss
     /// an episode opened concurrently, and departure and channel close are the only events that would close it.
     private void closeBackpressureEpisode(NodeId peerId, StreamType streamType) {
-        Option.option(backpressureEpisodes.remove(new BackpressureLane(peerId, streamType)))
-              .onPresent(episode -> log.info("Backpressure on peer {} lane {} cleared: {} write(s) found it unwritable over {} ms",
-                                             peerId,
-                                             streamType,
-                                             episode.writes().get(),
-                                             TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - episode.startedNanos())));
+        Option.option(backpressureEpisodes.remove(new BackpressureLane(peerId, streamType))).onPresent(episode -> log.info("Backpressure on peer {} lane {} cleared: {} write(s) found it unwritable over {} ms",
+                                                                                                                           peerId,
+                                                                                                                           streamType,
+                                                                                                                           episode.writes()
+                                                                                                                                  .get(),
+                                                                                                                           TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - episode.startedNanos())));
     }
 
     /// Closes every open episode of a peer whose channel closed or who departed, each with its summary line.
     private void endBackpressureEpisodes(NodeId peerId) {
-        Stream.of(StreamType.values())
-              .forEach(streamType -> closeBackpressureEpisode(peerId, streamType));
+        Stream.of(StreamType.values()).forEach(streamType -> closeBackpressureEpisode(peerId, streamType));
     }
 
     /// Package-private test seam: the number of open backpressure episodes, so tests can show an entry is gone.
@@ -2821,11 +2835,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
         evicted.onPresent(this::closeDroppedConnection);
         // Close the per-peer ephemeral UDP socket. Without this, every reconnect leaks
         // one datagram channel because the client previously held a single volatile field
-        // and overwrote it on each `bind(0)`. See QuicClusterClient#closeDatagramChannel.
+        // and overwrote it on each `bind(0)`. Only the socket this link runs over (#3033): the socket of a
+        // concurrent own dial of the same peer is not this link's. See QuicClusterClient#closeDatagramChannelOf.
         var clientRef = client;
 
         if (clientRef != null) {
-            clientRef.closeDatagramChannel(peerId);
+            clientRef.closeDatagramChannelOf(peerId, connection);
         }
 
         log.warn("Node {} evicted stale (inactive) link — peer remains in topology, offline buffer preserved for reconnect",
@@ -3484,6 +3499,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return Option.option(peers.get(peerId)).map(PeerState::phase);
     }
 
+    /// Package-private test seam (#3033) — the dial client, so a test can run a dial that is not attached by this network.
+    QuicClusterClient clientForTests() {
+        return client;
+    }
+
     /// Package-private test seam (#1578) — the connection a peer is currently bound to, or empty when
     /// it has none. Lets the lane tests write on, and inspect, the lanes of the connection that
     /// survived a simultaneous dial.
@@ -3506,6 +3526,15 @@ public class QuicClusterNetwork implements ClusterNetwork {
         this.attachObserver = observer == null
                               ? ignored -> {}
                               : observer;
+    }
+
+    /// Package-private test hook (#2971) — observe every view read for a view-carrying observation, on the reading
+    /// thread, before the observation is built. A null observer restores the no-op.
+    @Contract
+    void viewReadObserverForTests(Consumer<List<NodeId>> observer) {
+        this.viewReadObserver = observer == null
+                                ? ignored -> {}
+                                : observer;
     }
 
     /// Package-private test seam (#1578) — dial `peer` through the production dial path, optionally
@@ -3554,6 +3583,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
     @Contract
     void onMessageReceivedForTests(NodeId sender, Object message) {
         onMessageReceived(sender, message);
+    }
+
+    @Override
+    public Option<Map<String, String>> peerHelloLabels(NodeId nodeId) {
+        return Option.option(helloLabels.get(nodeId));
     }
 
     /// Package-private test seam — drives the inbound-connection funnel `onPeerConnected` directly
@@ -3663,7 +3697,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
             return;
         }
-
+        // #2971: taken before any currentView() read below — see `observationSequence`.
+        var sequence = observationSequence.incrementAndGet();
         var activePeerCount = activeConnectedCount();
         var quorumSize = topologyManager.quorumSize();
         var clusterSize = topologyManager.clusterSize();
@@ -3687,7 +3722,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 // Connectivity observation feeds ReachabilityAggregator via the
                 // PeerObservationBuffer drain path. Symmetric to REMOVE below.
                 reportPeerConnection(peerId);
-                yield TransportObservation.peerJoined(peerId, currentView(), ObservationSource.QUIC);
+                yield TransportObservation.peerJoined(peerId, currentView(), ObservationSource.QUIC, sequence);
             }
             case REMOVE -> {
                 // Advisory QUIC-level disconnect signal, pushed into the local
@@ -3701,7 +3736,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 // `MembershipDecision.NodeRemoved` on the FSM's REMOVED delta edge; subscribers
                 // distinguish between the local (transport) and global (membership) facts.
                 peerStateListener.onPeerLeft(peerId);
-                yield TransportObservation.peerDisconnected(peerId, currentView(), ObservationSource.QUIC);
+                yield TransportObservation.peerDisconnected(peerId, currentView(), ObservationSource.QUIC, sequence);
             }
             case RECONNECT -> {
                 // Transparent reconnect — peer is already known to upstream consumers; no
@@ -3720,7 +3755,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 peerStateListener.onPeerReconnected(peerId);
                 log.debug("processViewChange RECONNECT for {} — emitting PeerReconnected (no connectivity observation)",
                           peerId);
-                yield TransportObservation.peerReconnected(peerId, currentView(), ObservationSource.QUIC);
+                yield TransportObservation.peerReconnected(peerId, currentView(), ObservationSource.QUIC, sequence);
             }
         };
 
@@ -3773,13 +3808,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     private List<NodeId> currentView() {
-        return Stream.concat(Stream.of(self.id()),
-                             peers.values()
-                                  .stream()
-                                  .filter(p -> p.phase() == PeerState.Phase.CONNECTED)
-                                  .map(PeerState::peerId))
-                     .sorted()
-                     .toList();
+        var view = Stream.concat(Stream.of(self.id()),
+                                 peers.values()
+                                      .stream()
+                                      .filter(p -> p.phase() == PeerState.Phase.CONNECTED)
+                                      .map(PeerState::peerId))
+                         .sorted()
+                         .toList();
+
+        viewReadObserver.accept(view);
+
+        return view;
     }
 
     // --- Internal: shutdown ---
@@ -3792,6 +3831,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
 
         peers.clear();
+        helloLabels.clear();
         reconnectBackoff.clear();
         if (promises.isEmpty()) {
             return Promise.unitPromise();

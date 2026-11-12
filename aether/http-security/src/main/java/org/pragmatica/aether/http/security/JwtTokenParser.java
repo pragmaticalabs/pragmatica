@@ -22,9 +22,14 @@ final class JwtTokenParser {
     private static final TypeToken<Map<String, Object>> MAP_TYPE = new TypeToken<>() {};
 
     private static final Base64.Decoder BASE64URL = Base64.getUrlDecoder();
+    /// The reading of a header that names no `alg` at all: RS256, as JWKS mode has always read it. HS256 mode refuses it
+    /// (it is not HS256). An `alg` that is PRESENT but empty or blank is a different token and is never mapped to this.
+    private static final String MISSING_ALG = "RS256";
 
     private JwtTokenParser() {}
 
+    /// `alg` is the header's own claim and [#MISSING_ALG] when the header names none. It is what the token SAYS; the
+    /// configured JWT mode, never this value, chooses how a signature is verified (#2880).
     record JwtHeader(String alg, String kid) {}
 
     record ParsedJwt(JwtHeader header, Map<String, Object> payload, byte[] signature, String signedContent) {}
@@ -54,7 +59,7 @@ final class JwtTokenParser {
     }
 
     private static Result<JwtHeader> extractHeader(Map<String, Object> headerMap) {
-        var alg = Option.option(headerMap.get("alg")).map(Object::toString).or("RS256");
+        var alg = Option.option(headerMap.get("alg")).map(Object::toString).or(MISSING_ALG);
         var kid = Option.option(headerMap.get("kid")).map(Object::toString).or("");
 
         return success(new JwtHeader(alg, kid));

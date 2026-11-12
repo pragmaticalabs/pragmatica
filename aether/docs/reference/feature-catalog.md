@@ -71,6 +71,7 @@ Migration execution/history now lives in the shared [`db-migrations`](../../db-m
 | 16 | Topology management | Battle-tested | Node discovery, addition/removal events, health tracking, grace period for departures |
 | 17 | Distributed KV-Store | Battle-tested | Rabia-consensus-replicated store with typed keys (SliceNode, SliceTarget, HttpRoute, AppBlueprint, VersionRouting, RollingUpdate, Threshold, LogLevel, Config, TopicSubscription, NodeArtifact, NodeRoutes). Writes: linearizable order via the single Rabia log. Reads: served from each node's local applied map — sequential, **not linearizable**, may trail the committed frontier. See [`guarantees.md`](guarantees.md) §1 |
 | 175 | ClusterGeneration choreography | Complete | Epoch-fenced cluster-wide snapshot (`ClusterGenerationSnapshot`, `Epoch`, `Spokesman`, `ClusterQuiescence`). Leader projects membership/communities/DHT partition ownership at each commit; every node caches the latest snapshot via pings and serves it locally. `GET /api/v1/cluster/generation` (always safe), `POST /api/v1/cluster/await-quiesced?epoch=T:C&timeout=30s` (synchronous barrier for tests/operators). CLI: `aether cluster generation`, `aether cluster await-quiesced`. Replaces retry/sleep/self-heal compensation in the integration test harness with a deterministic quiesced-await. See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) |
+| 1653 | Node-id reservation (`cluster node-ids reserve`) | Complete | Leader route `POST /api/v1/cluster/node-ids/reserve` (CLI `aether cluster node-ids reserve`) advances a committed per-`(source, role)` high-water (`NodeIdHighWaterKey`, backed up) in one compare-and-set leader transaction and answers only after the advance commits, so an id it returned is never issued again, whatever the caller does next. First reservation seeds above the bootstrap ids and every identity ever admitted. The provisioning-side reserve in `cluster apply` lands with #686. (#1715) |
 
 ## Networking & Routing
 
@@ -149,7 +150,7 @@ Migration execution/history now lives in the shared [`db-migrations`](../../db-m
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
 | 44 | SPI resource factories | Complete | ServiceLoader discovery, config-driven provisioning, type-safe qualifiers |
-| 45 | Database resources | Complete | JDBC, R2DBC, jOOQ, jOOQ-R2DBC, jOOQ-async, JPA, postgres-async (native async + R2DBC adapter) with connection pooling, query pipelining, configurable IO threads, transaction management, and LISTEN/NOTIFY |
+| 45 | Database resources | Complete | JDBC, R2DBC, jOOQ, jOOQ-R2DBC, jOOQ-async, JPA, postgres-async (native async + R2DBC adapter) with connection pooling, query pipelining, configurable IO threads, transaction management, and LISTEN/NOTIFY. **Node-shared SQL pools (#2973):** slices on one node whose datasource resolves to the same connection settings share one pool per connector type (`pool_scope = "slice"` keeps a private one); each slice gets its own handle, and the pool closes with its last holder. A per-node demand guard WARNs (operator warnings `datasource-demand-exceeds-server-limit`, `datasource-server-refused-connection`, each with an INFO recovery) when the node's pools exceed the PostgreSQL server's connection limit `[mechanism: one compute per share key; pinned against a real PostgreSQL by PgSharedPoolLiveTest, single provider, not a cluster run]` |
 | 45a | Aether Persistence (AEP) — PostgreSQL persistence | Complete | `@PgSql` type-safe persistence with compile-time SQL validation against migration-derived schema. Validates parameter types, return field mappings, column existence, NOT NULL coverage. Generates CRUD from method names (Spring Data conventions). 41-rule migration linter, record/enum codegen, named parameter rewriting, query narrowing, record expansion (INSERT VALUES + UPDATE SET). `pg-maven-plugin` for schema → Java generation. CLI scaffolding via `jbct add persistence`. **Grammar limitations** ([spec](../specs/pg-persistence-spec.md#sql-grammar-limitations)): nested block comments `/* /* */ */` are SUPPORTED via `%nest` (peglib 0.7.3, #619 / upstream siy/java-peglib#45) — a depth-counting scanner, since they are not a regular language and no DFA path can match them; and `$` is deliberately excluded from identifiers (quote as `"foo$bar"`), because allowing it makes dollar quoting unlexable — measured 0 occurrences repo-wide |
 | 45b | jOOQ XML schema export | Complete | `JooqXmlExporter` generates jOOQ `XMLDatabase` input from pg-tools static analysis. Maven goals: `export-jooq-xml` + `check-jooq-xml`. 25+ PG type mappings, enums, domains, indexes, multi-schema. No jOOQ dependency — hand-written StAX emission |
 | 45c | AEP documents on Postgres (`json`/`jsonb` → records) | Complete | Where the schema knows a `json`/`jsonb` column (CRUD tables, `@Query` params paired with it on the SQL syntax tree, record expansions), a record or enum maps to it as a document with no annotation, and binding a `String` to it is a compile error (casts to json/jsonb allowed, a cast to another type refused), as is an unpaired `String` in an `INSERT`/`UPDATE`/`DELETE` that references a table with json/jsonb columns. Elsewhere `@Jsonb` on a record component, `@Query` method or parameter maps the column to the declared record or enum. The factory encodes and decodes it with a generated reflection-free JSON codec (the slice router's generator, fixed defaults, no Jackson). Bound as `JsonText`, text with no declared type, so one value fits `json`, `jsonb` and `jsonb` operators (`@>`). `Option<T>` components and parameters read and write SQL `NULL`. A type the generator cannot handle, or a `@Jsonb` target on a known non-JSON column, fails the build. Escape hatch: a hand-written `ValueMapping<T, JsonText>`. Async transport only: jOOQ has no mapping. `[verified: aether/pg-tools/pg-codegen/src/test/java/org/pragmatica/aether/pg/codegen/processor/JsonbPostgresRoundTripTest.java (live PostgreSQL 16), JsonbMappingTest.java]` |
@@ -379,17 +380,17 @@ the rows disagree.
 known to have overclaimed at row level: row 39 (`Alert management`) read `Complete` while `AlertForwarder`
 was never constructed in production (#926). It now reads `Partial`, and the wiring was fixed
 in #957 -- which is what correcting ONE row looks like, not evidence that the rest have
-been checked. Read the total as "229 rows asserting a capability", not as 229 working
+been checked. Read the total as "230 rows asserting a capability", not as 230 working
 capabilities.
 
 | Status | Count |
 |--------|-------|
-| Complete | 170 |
+| Complete | 171 |
 | Cluster-tested | 0 |
 | Battle-tested | 23 |
 | Partial | 26 |
 | Planned | 10 |
-| Total | 229 |
+| Total | 230 |
 <!-- END GENERATED STATISTICS -->
 
 **Highest-priority gap** (a priority, not a status — the row's completion level is in the

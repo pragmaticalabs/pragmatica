@@ -47,6 +47,13 @@ class TerraConfigurationTest {
         }
     }
 
+    @Test void deployment_authenticatorSection_isAHostKeyAndReachesTheAuthenticator() throws Exception {
+        Files.writeString(directory.resolve("terra.toml"), "[authenticator.test-header]\ntoken = \"let-me-in\"\n");
+        var deployment = TerraConfiguration.deployment(directory).unwrap();
+
+        assertThat(TerraConfiguration.host(directory, deployment).unwrap().getString("authenticator.test-header.token").unwrap()).isEqualTo("let-me-in");
+    }
+
     @Test void environment_doubleUnderscore_preservesUnderscoredResourceKeys() {
         var source = TerraConfiguration.environment(Map.of("TERRA_DATABASE__JDBC_URL", "jdbc:test", "UNRELATED", "ignore")).unwrap();
         assertThat(source.asMap()).containsExactlyEntriesOf(Map.of("database.jdbc_url", "jdbc:test"));

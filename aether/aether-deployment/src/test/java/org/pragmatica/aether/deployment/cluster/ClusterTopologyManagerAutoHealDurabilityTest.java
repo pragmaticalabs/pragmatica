@@ -34,6 +34,7 @@ import org.pragmatica.net.tcp.NodeAddress;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -224,6 +225,70 @@ class ClusterTopologyManagerAutoHealDurabilityTest {
         assertThat(kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class).isEmpty())
                 .as("no disable record was written")
                 .isTrue();
+    }
+
+    /// #2944: a fence CONFLICT is transient and writes nothing, so the leader-side toggle retries it, re-reading the configuration each time:
+    /// the first read is stale (v1), the second is the committed v2, and the caller sees plain success with the v2 baseline recorded.
+    @Test
+    void disable_retriesTransientFenceConflict_andSucceedsAfterTheViewSettles() {
+        var stale = config(1L, 2);
+        commitConfig(config(2L, 3));
+        var reads = new AtomicInteger();
+        var ctm = newCtm(() -> kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class),
+                         () -> reads.getAndIncrement() == 0 ? Option.some(stale) : storedConfig());
+
+        reads.set(0);
+
+        var outcome = ctm.setAutoHealEnabled(false, "operator: maintenance").await();
+
+        assertThat(outcome.isSuccess()).as("the transient conflict never reaches the caller").isTrue();
+        assertThat(reads.get()).as("one conflicting attempt, one successful attempt").isEqualTo(2);
+        assertThat(kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class).unwrap().disabledAtConfigVersion()).isEqualTo(2L);
+    }
+
+    /// #2944: the retry is bounded; a view that never settles surfaces the CONFLICT itself (the management API answers 409 for it), after
+    /// exactly five attempts, and nothing is written.
+    @Test
+    void disable_surfacesTheFenceConflict_whenTheBoundIsExhausted() {
+        var stale = config(1L, 2);
+        commitConfig(config(2L, 3));
+        var reads = new AtomicInteger();
+        var ctm = newCtm(() -> kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class),
+                         () -> {
+                             reads.incrementAndGet();
+                             return Option.some(stale);
+                         });
+
+        reads.set(0);
+        var started = System.nanoTime();
+
+        var outcome = ctm.setAutoHealEnabled(false, "operator: maintenance").await();
+
+        assertThat((System.nanoTime() - started) / 1_000_000L).as("pauses of 50, 100, 150 and 200 ms between the five attempts")
+                                                               .isGreaterThanOrEqualTo(450L);
+        outcome.onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("a never-settling view must not succeed"))
+               .onFailure(cause -> assertThat(cause).isSameAs(HierarchyStateWriter.Refusal.CONFLICT));
+        assertThat(reads.get()).as("the documented bound: five attempts").isEqualTo(5);
+        assertThat(kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class).isEmpty()).isTrue();
+    }
+
+    /// #2944: a refusal that is not a transient conflict keeps its meaning and is not retried.
+    @Test
+    void disable_doesNotRetryARefusalThatIsNotAConflict() {
+        var reads = new AtomicInteger();
+        var ctm = newCtm(() -> kvStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class),
+                         () -> {
+                             reads.incrementAndGet();
+                             return storedConfig();
+                         });
+        ctm.setHierarchyStateWriter(HierarchyStateWriter.unavailable());
+        reads.set(0);
+
+        var outcome = ctm.setAutoHealEnabled(false, "operator: maintenance").await();
+
+        outcome.onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("an inactive writer must refuse"))
+               .onFailure(cause -> assertThat(cause).isSameAs(HierarchyStateWriter.Refusal.INACTIVE));
+        assertThat(reads.get()).as("INACTIVE is not retried").isEqualTo(1);
     }
 
     /// v2711 survivor 6: a disable made with no committed configuration records version 0 and no scaling, not a default version.

@@ -129,6 +129,38 @@ Per-request context carried via `ScopedValue` (no thread-local leaking):
 | `sampled` | Whether this request is sampled for detailed metrics |
 | `principal` | Security principal (if authenticated) |
 
+### The caller's identity across an inter-slice invoke (#2157)
+
+`principal` above is a trace string (logs, MDC, metrics). The caller's IDENTITY is the `SecurityContext` the edge validated,
+and it reaches a slice only as an explicit `SecurityContext`/`Principal` method parameter:
+
+| Hop | How the method gets the caller | Ambient `SecurityContextHolder` at the method |
+|-----|--------------------------------|-----------------------------------------------|
+| Entry route (HTTP) | the generated route reads it from the request (`RequestSecurity.securityOf`), which `AppHttpServer` (local and forwarded, the latter re-validated by the serving node) and Terra put on the request | bound on the entry thread only; nothing generated reads it |
+| Slice-to-slice call, local or remote | the generated proxy takes the `SecurityContext` argument, wraps the payload in a `CallerRequest`; `SliceInvoker` carries it as `InvokeRequest.caller` (remote) or hands it to `SliceBridge.invokeAsCaller` (local); the receiving `DefaultSliceBridge` gives a method that declares `CallerRequest` the payload and the caller | empty on a remote hop (`InvocationHandler` binds nothing from `caller`) |
+
+- `InvokeRequest.caller` is `Option<SecurityContext>`: the context exactly as validated (principal, roles, claims), or empty
+  for an unauthenticated caller and for every call not made on a caller's behalf. The sender never reads ambient state;
+  a call without an explicit `SecurityContext` argument carries nothing.
+- It is identity, never authorization: no route security on the receiving node reads it, and a context whose principal is
+  anonymous, or that is not a `SecurityContext`, is delivered as the anonymous context.
+- A method taking only a `Principal` keeps it in the payload on an inter-slice call (the caller holds no validated context).
+- `SecurityContext.toString()` withholds claim values, since the context now rides a logged message.
+- Wire: `InvokeRequest` with `caller` has tag 644. Tag 642 decodes the previous ten-component shape (`LegacyInvokeRequest`)
+  as a request with no caller, so a node of the previous build calling a slice during a rolling upgrade reaches its
+  `SecurityContext` parameter as the anonymous context (fail-closed); calls the other way fail until that node is upgraded.
+- A payload of two or more parameters (for example `RequestHeaders` and a business record beside a `SecurityContext`)
+  crosses as the caller's generated proxy record, which the caller's codec writes under the tag of the record the callee's
+  factory decodes it as.
+
+Pinned by `PrincipalPropagationTripwireTest` (`aether-invoke`: wire shape, value on the wire, delivery, the context-free
+call, the forged caller; permanent pins for the receiver's ambient state, the local hop and plain continuations; hazard
+tripwires for the executor hop), `GeneratedCallerPropagationTest` (`slice-processor-tests`: edge, one hop, two hops,
+unauthenticated, forged, each hop through the senders' and callee's real codecs and `DefaultSliceBridge`),
+`InvokeRequestWireCompatibilityTest` (`aether/node`: the previous build's bytes decode with no caller; the caller round
+trip), `TerraHttpServerTest` (`holder_*` pins and the request-carried context surviving async steps) and
+`TerraCallerPropagationTest` (`terra/examples`: edge to slice to slice on Terra, authenticated and public).
+
 ## EndpointRegistry
 
 Pure event-driven component - watches KV-Store, maintains local routing cache.

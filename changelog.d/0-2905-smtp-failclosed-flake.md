@@ -1,0 +1,2 @@
+### Fixed (2026-11-08 — #2905: `SmtpClientFailClosedTest` timed out under load)
+- **The fail-closed SMTP tests no longer race a 1 s wall-clock budget.** The session timer (`commandTimeout`, which bounds the whole session) and the test's `await` were both 1 s, so a loaded host made the timer fire first (`Timeout` instead of `Rejected`) or the `await` give up. Both are now 60 s, and the socket-closed wait 30 s; only the deliberate 300 ms timeout test relies on the clock. Test-only change; the 3yz-refused assertion is unchanged. [verified: loop before/after, see PR]

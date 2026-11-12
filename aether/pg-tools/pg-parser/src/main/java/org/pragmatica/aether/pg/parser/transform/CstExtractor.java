@@ -5,6 +5,7 @@ package org.pragmatica.aether.pg.parser.transform;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 import org.pragmatica.aether.pg.parser.ast.common.DataTypeName;
@@ -18,6 +19,10 @@ import org.pragmatica.aether.pg.parser.PostgresParser.SourceSpan;
 public final class CstExtractor {
     private CstExtractor() {}
 
+    /// The identifier a node spells. A label the lexer reads as a keyword or type word (`name`, `text`,
+    /// `int`, ...) has no `*Identifier` child — its lexeme is an anonymous or keyword-kind leaf — so it is
+    /// taken from the node's own first leaf and normalised like any other identifier. A node with no
+    /// lexeme at all is a parser defect and fails loudly instead of yielding a placeholder name.
     public static Identifier extractIdentifier(CstNavigator nav) {
         var quoted = nav.child("QuotedIdentifier");
 
@@ -42,7 +47,10 @@ public final class CstExtractor {
         }
 
         return classifyRawIdentifier(nav.span(),
-                                     nav.firstTokenText().or("???"));
+                                     nav.firstTokenText()
+                                        .orElse(nav::firstLeafText)
+                                        .expect("identifier node '" + nav.rule()
+                                               + "' carries no lexeme at " + nav.span()));
     }
 
     /// peglib 0.7.x lexes an identifier as ONE token — `ColId`, or the kind of whatever keyword rule
@@ -129,7 +137,7 @@ public final class CstExtractor {
                 default -> Option.<Identifier> empty();
             };
 
-            leaf.filter(id -> !keywords.contains(id.value().toLowerCase())).onPresent(result::add);
+            leaf.filter(id -> !keywords.contains(id.value().toLowerCase(Locale.ROOT))).onPresent(result::add);
         }
 
         return result;
@@ -223,7 +231,7 @@ public final class CstExtractor {
                     return Option.present(term.text());
                 }
                 case CstNode.NonTerminal nt -> {
-                    var deeper = deepLeafText(CstNavigator.of(nt));
+                    var deeper = deepLeafText(CstNavigator.cstNavigator(nt));
 
                     if (deeper.isPresent()) {
                         return deeper;
@@ -310,7 +318,7 @@ public final class CstExtractor {
                 case CstNode.Token tok -> result.add(classifyRawIdentifier(tok.span(), tok.text()));
                 case CstNode.Terminal term when!term.text().equals(",") -> result.add(classifyRawIdentifier(term.span(),
                                                                                                             term.text()));
-                case CstNode.NonTerminal nt -> result.add(extractIdentifier(CstNavigator.of(nt)));
+                case CstNode.NonTerminal nt -> result.add(extractIdentifier(CstNavigator.cstNavigator(nt)));
                 default -> {}
             }
         }
@@ -398,7 +406,7 @@ public final class CstExtractor {
     }
 
     private static String extractTimestampTypeName(CstNavigator nav) {
-        var text = deepLeafText(nav).or("timestamp").trim().toLowerCase();
+        var text = deepLeafText(nav).or("timestamp").trim().toLowerCase(Locale.ROOT);
 
         if (text.contains("timestamptz")) {
             return "timestamptz";
@@ -416,7 +424,7 @@ public final class CstExtractor {
     }
 
     private static String extractTimeTypeName(CstNavigator nav) {
-        var text = deepLeafText(nav).or("time").trim().toLowerCase();
+        var text = deepLeafText(nav).or("time").trim().toLowerCase(Locale.ROOT);
 
         if (text.contains("timetz")) {
             return "timetz";

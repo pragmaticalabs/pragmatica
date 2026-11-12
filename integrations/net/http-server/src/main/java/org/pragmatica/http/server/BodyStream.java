@@ -57,7 +57,7 @@ import static org.pragmatica.lang.Unit.unit;
 /// **Exactly one terminal call**, never overlapping an `accept`: [BodySink#complete] once the body ended ([#end]) and
 /// every chunk was accepted; [BodySink#fail] (through the transport's `onFailed`) when an `accept` failed; and
 /// [BodySink#abort] when the server ended the request ([#abort]), deferred until an outstanding `accept` resolves, but
-/// no longer than [Pacing#stallBound]: an `accept` that stays outstanding past that is abandoned and the sink is aborted
+/// no longer than [Pacing#stallBound] (or [#ABORT_FLOOR_SECONDS] when that is zero or less): an `accept` that stays outstanding past that is abandoned and the sink is aborted
 /// anyway (the one deliberate overlap), so a hung sink cannot hold the request's admission forever; the abandoned
 /// `accept`'s late resolution only releases its buffer. Every buffer held is released on every one of those exits.
 ///
@@ -81,6 +81,12 @@ final class BodyStream {
                   .error(HttpStatus.SERVICE_UNAVAILABLE, "Request body storage stalled; retry later");
         }
     }
+
+    /// The abort deadline when the stall bound is zero or less ("no bound" for the stall timer): a hung `accept` is never
+    /// waited on forever. Zero is a legitimate route setting for the idle clock, so the floor lives here, not in the
+    /// config parse, which would also refuse the settings that mean "none" for the other clocks. 30 s is the default
+    /// read timeout's order of magnitude.
+    static final long ABORT_FLOOR_SECONDS = 30;
 
     private final EventExecutor executor;
     private final Channel channel;
@@ -175,11 +181,15 @@ final class BodyStream {
     /// The abort waits for the outstanding `accept`, for at most the stall bound.
     private void deferAbort(Cause cause) {
         abortAfterAccept = some(cause);
-        abortTimer = pacing.stallBound().nanos() > 0
-                     ? some(executor.schedule(this::abortDeadline,
-                                              pacing.stallBound().nanos(),
-                                              TimeUnit.NANOSECONDS))
-                     : none();
+        abortTimer = some(executor.schedule(this::abortDeadline, abortDeadlineNanos(), TimeUnit.NANOSECONDS));
+    }
+
+    private long abortDeadlineNanos() {
+        var bound = pacing.stallBound().nanos();
+
+        return bound > 0
+               ? bound
+               : TimeUnit.SECONDS.toNanos(ABORT_FLOOR_SECONDS);
     }
 
     /// The `accept` is still outstanding at the deadline: it is abandoned and the sink aborted now. Its late resolution

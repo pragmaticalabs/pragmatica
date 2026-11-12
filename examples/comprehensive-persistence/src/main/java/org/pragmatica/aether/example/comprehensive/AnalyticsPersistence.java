@@ -19,7 +19,16 @@ public interface AnalyticsPersistence {
                        long customerId,
                        int orderCount,
                        BigDecimal revenue,
-                       Instant createdAt) {}
+                       Instant createdAt) {
+        static OrderMetric orderMetric(long id,
+                                       LocalDate eventDate,
+                                       long customerId,
+                                       int orderCount,
+                                       BigDecimal revenue,
+                                       Instant createdAt) {
+            return new OrderMetric(id, eventDate, customerId, orderCount, revenue, createdAt);
+        }
+    }
 
     record NewOrderMetric(LocalDate eventDate, long customerId, int orderCount, BigDecimal revenue) {}
 
@@ -29,7 +38,11 @@ public interface AnalyticsPersistence {
                          int totalOrders,
                          BigDecimal totalRevenue) {}
 
-    record RevenueTotal(long customerId, BigDecimal totalRevenue) {}
+    record RevenueTotal(long customerId, BigDecimal totalRevenue) {
+        static RevenueTotal revenueTotal(long customerId, BigDecimal totalRevenue) {
+            return new RevenueTotal(customerId, totalRevenue);
+        }
+    }
 
     @Table(OrderMetric.class)
     Promise<Option<OrderMetric>> findById(Long id);
@@ -42,7 +55,7 @@ public interface AnalyticsPersistence {
     @Table(OrderMetric.class)
     Promise<Unit> deleteById(Long id);
 
-    @Query("SELECT customer_id, sum(revenue) AS total_revenue "
+    @Query("SELECT customer_id, COALESCE(sum(revenue), 0) AS total_revenue "
           + "FROM order_metrics "
           + "WHERE customer_id = :customerId "
           + "GROUP BY customer_id")
@@ -53,10 +66,10 @@ public interface AnalyticsPersistence {
           + "WHERE customer_id = :customerId")
     Promise<List<OrderMetric>> metricsByCustomer(Long customerId);
 
-    @Query("SELECT count(*) FROM daily_snapshot")
+    @Query("SELECT count(*) AS count FROM daily_snapshot")
     Promise<Long> countSnapshots();
 
     @Query("WITH recent AS (SELECT customer_id, revenue FROM order_metrics WHERE created_at > :since) "
-          + "SELECT sum(revenue) AS total_revenue FROM recent WHERE customer_id = :customerId")
+          + "SELECT COALESCE(sum(revenue), 0) AS total_revenue FROM recent WHERE customer_id = :customerId")
     Promise<BigDecimal> recentRevenueForCustomer(Instant since, Long customerId);
 }

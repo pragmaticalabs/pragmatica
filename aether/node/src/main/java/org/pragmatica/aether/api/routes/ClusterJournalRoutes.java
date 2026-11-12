@@ -7,6 +7,7 @@ package org.pragmatica.aether.api.routes;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -91,7 +92,7 @@ public final class ClusterJournalRoutes implements RouteSource {
     }
 
     private static Result<List<Layer>> parseSingleLayer(String raw) {
-        return switch (raw.toLowerCase()) {
+        return switch (raw.toLowerCase(Locale.ROOT)) {
             case "fsm" -> Result.success(List.of(Layer.FSM));
             case "peer" -> Result.success(List.of(Layer.PEER));
             default -> INVALID_LAYER.result();

@@ -22,6 +22,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// R6 verification: `QuorumWaiting` is part of the always-listening KV poll path. On entry it
@@ -78,7 +79,7 @@ class QuorumWaitingKvPollTest {
         var h = buildHarness(consensusReady, kvLeader);
 
         // Seed topology so adoptLeaderIfInTopology accepts PEER_A.
-        h.dispatch(new ClusterFsmEvent.NodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B)));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B), seq()));
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
 
         // Synchronous: Dormant → QuorumWaiting.onEntry → adoptLeaderFromKvIfPresent →
@@ -101,7 +102,7 @@ class QuorumWaitingKvPollTest {
         var kvLeader = new AtomicReference<>(Option.<NodeId>none());
         var h = buildHarness(consensusReady, kvLeader);
 
-        h.dispatch(new ClusterFsmEvent.NodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B)));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B), seq()));
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
         assertThat(h.state())
                 .as("FSM in QuorumWaiting because consensus is not ready and KV is empty")

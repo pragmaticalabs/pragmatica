@@ -6,6 +6,7 @@ package org.pragmatica.aether.config;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
@@ -96,6 +97,9 @@ public final class ConfigValidator {
         promotionEscapeErrors(config.streaming(),
                               config.timeouts().swim().suspectTimeout(),
                               errors);
+        ownerLeaseErrors(config.streaming(),
+                         config.timeouts().swim().suspectTimeout(),
+                         errors);
         archiveRetentionErrors(config.slice(), errors);
         uploadErrors(config.appHttp().upload(),
                      errors);
@@ -119,7 +123,15 @@ public final class ConfigValidator {
 
         return appHttp.jwtConfig()
                       .fold(() -> Option.some(ConfigError.securityMisconfigured(JWT_WITHOUT_JWKS_REASON)),
-                            jwt -> unusableJwksUrl(jwt.jwksUrl()));
+                            ConfigValidator::unusableJwtKeySource);
+    }
+
+    /// #2880: HS256 mode has no JWKS to check; its secret was checked when the config was built (length) and by the
+    /// node start-up (presence), because pre-flight cannot see the environment that supplies it.
+    private static Option<ConfigError> unusableJwtKeySource(JwtConfig jwt) {
+        return jwt.keyMode() == JwtKeyMode.HS256
+               ? Option.empty()
+               : unusableJwksUrl(jwt.jwksUrl());
     }
 
     private static Option<ConfigError> unusableJwksUrl(String jwksUrl) {
@@ -242,6 +254,14 @@ public final class ConfigValidator {
             errors.add("streaming.caught_up_max_lag_offsets must be >= 0 (a negative bound rejects every replica, "
                       + "stopping replica-served reads and blocking the ring-release catch-up gate). Got: " + streaming.caughtUpMaxLagOffsets());
         }
+        // #263: a batch of zero events can never fill, and a non-positive window would flush every event on its own.
+        if (streaming.replicationBatchMaxEvents() < 1) {
+            errors.add("streaming.replication_batch_max_events must be >= 1. Got: " + streaming.replicationBatchMaxEvents());
+        }
+
+        if (streaming.replicationBatchMaxDelay().nanos() <= 0) {
+            errors.add("streaming.replication_batch_max_delay must be > 0. Got: " + streaming.replicationBatchMaxDelay());
+        }
         // #1604: 0 means "derive from the filesystem"; a negative cap has no meaning.
         if (streaming.segmentDiskMaxBytes() < 0) {
             errors.add("streaming.segment_disk_max_bytes must be >= 0 (0 derives the cap from the filesystem). Got: " + streaming.segmentDiskMaxBytes());
@@ -280,6 +300,39 @@ public final class ConfigValidator {
             errors.add("streaming.promotion_escape_after (%dms) must be at least %dms (the larger of two swim suspect_timeout windows and the replica contest's source-wait bound): an escape earlier than the alarm goes ahead before the operator is told".formatted(streaming.promotionEscapeAfter()
                                                                                                                                                                                                                                                                                 .millis(),
                                                                                                                                                                                                                                                                        floor.millis()));
+        }
+    }
+
+    /// #2981 owner lease (fence-lease design 7, step 4): `R < T` so a renewal lands before the lease it renews lapses;
+    /// `clock_drift_bound` in `[1e-3, 1)` (the wait `W = T (1 + rho) / (1 - rho) + 50 ms` is meaningless at or above 1, and a
+    /// NaN fails the range test); `T + W < suspect_timeout` keeps the lease wait inside the detection time a crash already
+    /// costs. The suspect-timeout bound is checked only when the drift bound is valid, since `W` is undefined otherwise.
+    private static void ownerLeaseErrors(StreamingConfig streaming, TimeSpan suspectTimeout, List<String> errors) {
+        var rho = streaming.clockDriftBound();
+
+        if (streaming.ownerLeaseRenewal().nanos() >= streaming.ownerLease().nanos()) {
+            errors.add("streaming.owner_lease_renewal (%dms) must be less than streaming.owner_lease (%dms)".formatted(streaming.ownerLeaseRenewal()
+                                                                                                                                .millis(),
+                                                                                                                       streaming.ownerLease()
+                                                                                                                                .millis()));
+        }
+
+        if (! (rho >= StreamingConfig.MIN_CLOCK_DRIFT_BOUND && rho < 1)) {
+            errors.add("streaming.clock_drift_bound must be >= %s and < 1. Got: %s".formatted(StreamingConfig.MIN_CLOCK_DRIFT_BOUND,
+                                                                                              rho));
+
+            return;
+        }
+
+        var lease = streaming.ownerLease().nanos();
+        var wait = streaming.ownerLeaseWait().nanos();
+
+        if (lease + wait >= suspectTimeout.nanos()) {
+            errors.add("streaming.owner_lease (%dms) plus the new owner's lease wait (%dms, owner_lease * (1 + clock_drift_bound) / (1 - clock_drift_bound) + 50ms) must be less than timeouts.swim.suspect_timeout (%dms)".formatted(streaming.ownerLease()
+                                                                                                                                                                                                                                               .millis(),
+                                                                                                                                                                                                                                      streaming.ownerLeaseWait()
+                                                                                                                                                                                                                                               .millis(),
+                                                                                                                                                                                                                                      suspectTimeout.millis()));
         }
     }
 
@@ -366,7 +419,7 @@ public final class ConfigValidator {
     }
 
     private static void gcErrors(NodeConfig node, List<String> errors) {
-        var gc = node.gc().toLowerCase();
+        var gc = node.gc().toLowerCase(Locale.ROOT);
         var isValid = VALID_GC.stream().anyMatch(gc::equals);
 
         if (!isValid) {

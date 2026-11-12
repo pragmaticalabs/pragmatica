@@ -5,6 +5,7 @@
 package org.pragmatica.aether.api.routes;
 
 import io.netty.buffer.ByteBuf;
+import java.util.Locale;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -445,7 +446,7 @@ class ScheduledTaskRoutesInjectTest {
                           .await();
 
             assertTrue(result.isFailure(), "Unknown task must produce failure result");
-            result.onFailure(cause -> assertTrue(cause.message().toLowerCase().contains("not found"),
+            result.onFailure(cause -> assertTrue(cause.message().toLowerCase(Locale.ROOT).contains("not found"),
                                                   "Failure must mention not-found: " + cause.message()));
             assertThat(invoker.invocations).isEmpty();
         }
@@ -463,7 +464,7 @@ class ScheduledTaskRoutesInjectTest {
                           .await();
 
             assertTrue(result.isFailure());
-            result.onFailure(cause -> assertTrue(cause.message().toLowerCase().contains("section"),
+            result.onFailure(cause -> assertTrue(cause.message().toLowerCase(Locale.ROOT).contains("section"),
                                                   "Failure must mention missing section: " + cause.message()));
         }
 
@@ -476,7 +477,7 @@ class ScheduledTaskRoutesInjectTest {
                           .await();
 
             assertTrue(result.isFailure());
-            result.onFailure(cause -> assertTrue(cause.message().toLowerCase().contains("artifact"),
+            result.onFailure(cause -> assertTrue(cause.message().toLowerCase(Locale.ROOT).contains("artifact"),
                                                   "Failure must mention missing artifact: " + cause.message()));
         }
 
@@ -489,7 +490,7 @@ class ScheduledTaskRoutesInjectTest {
                           .await();
 
             assertTrue(result.isFailure());
-            result.onFailure(cause -> assertTrue(cause.message().toLowerCase().contains("method"),
+            result.onFailure(cause -> assertTrue(cause.message().toLowerCase(Locale.ROOT).contains("method"),
                                                   "Failure must mention missing method: " + cause.message()));
         }
     }

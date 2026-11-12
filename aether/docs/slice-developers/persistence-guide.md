@@ -172,8 +172,18 @@ Promise<Unit> updateUser(long id, UpdateUserRequest request);
 | `Promise<Option<T>>` | Zero or one row |
 | `Promise<List<T>>` | Zero or more rows |
 | `Promise<Unit>` | No result (DML) |
-| `Promise<Long>` | Scalar count |
-| `Promise<Boolean>` | Scalar boolean |
+| `Promise<Long>` | Scalar count (an expression such as `count(*)` needs an alias: `SELECT count(*) AS n FROM t`) |
+| `Promise<Boolean>` | Scalar boolean (an expression such as `EXISTS(..)` needs an alias: `SELECT EXISTS(..) AS found`; see Nullable Columns) |
+| `Promise<V>`, `Promise<Option<V>>`, `Promise<List<V>>` where `V` declares `static ValueMapping<V, P> valueMapping()` | Scalar value object: the single column is read as `P` and decoded through `valueMapping().lift()`; a lift failure is a typed `RowDecode` failure of the method. A bare expression needs an alias, as for `Long` |
+
+**Row records are built through their factory.** A row record returned by `@Query` or a CRUD method must declare the
+type-named static factory (`UserRow` -> `static UserRow userRow(long id, String name, ...)`, parameters = components in
+order). The generated mapper calls it, never `new`: it returns `UserRow` (joined with `map`) or `Result<UserRow>` when the
+record has an invariant (joined with `flatMap`, so a rejected row is the method's failure). A record without it fails the
+build with a message naming the expected signature.
+
+**Transactions.** `PgSqlConnector.transactional(c -> ...)` hands the callback a `PgSqlConnector` bound to the
+transaction, so generated adapters compose with it directly: `UserPersistenceFactory.userPersistence(c)` inside the callback.
 
 ### Query Narrowing
 
@@ -248,7 +258,27 @@ record UserRow(long id, String name, Option<String> nickname) {}
 Promise<Unit> rename(long id, Option<String> nickname);
 ```
 
-A plain `String` component of a nullable column still reads `NULL` as `""`.
+A `@Query` output that is not proven non-null and is read into a non-`Option` component or scalar result fails the
+build, naming the method, the output, the reason and the fix (`COALESCE(..., <default>)`, or `Option<T>` on a record
+component). Nullability is computed per output expression, never from the column alone: a `NOT NULL` column is still
+NULL on the nullable side of an outer join, in `max`/`min`/`sum`/`avg` over an empty group, in a `CASE` without `ELSE`,
+through `NULLIF`, from an empty scalar subquery, or in a set operation with a nullable branch. Proven non-null: a
+`NOT NULL` column of the `FROM` root or of an inner-joined table, `count(..)`, a literal, `EXISTS (..)` and `NOT EXISTS (..)`, a scalar subquery that is a lone `count(..)` with no `GROUP BY`, `HAVING`, set operation, `LIMIT` or `OFFSET` (it always returns one row; a `max(..)` or grouped subquery stays nullable), `COALESCE` whose last
+argument is proven, and a cast, sign or parentheses over such an expression. A NULL-rejecting predicate on a bare
+column proves that column too (`col IS NOT NULL`, `=`, `<>`, `<`, `>`, `<=`, `>=`, `BETWEEN`, `LIKE`/`ILIKE`, `IN (..)`; a quantified `= ALL (..)`, `op ANY/SOME (..)` and `IS [NOT] DISTINCT FROM`, `IS [NOT] TRUE/FALSE/UNKNOWN` prove nothing),
+but only as a top-level `AND` conjunct of the `WHERE` of the same `SELECT`: not under `OR` or `NOT`, not inside a
+subquery, not in `HAVING`, not in an outer join's `ON`, and a predicate on an expression (`lower(col) = ..`,
+`col::text = ..`) proves nothing. It proves only that column, and a `WHERE` predicate on a column of the nullable side of a
+`LEFT JOIN` proves that column (the other columns of that side stay unproven). The converse also holds (#2962): an
+`Option<T>` record component on a PROVEN non-null output fails the build, naming the method, the output, the proof (the
+rule above that fired) and the fix (declare the plain `T`); declared types match proven nullability in both directions,
+and an output that is not proven may still be read into `Option<T>`. A scalar or `@Jsonb` single-output method reads its value through a non-nullable accessor,
+so `Promise<Option<T>>` (row optional) does not make a NULL value acceptable; use `COALESCE`. CRUD-generated methods
+are not analysed. An unaliased output is matched under the name PostgreSQL gives it (`max(total)` is `max`,
+`col::text` is `col`), and an output with no certain name is treated as possibly read by any field no named output
+covers. `SELECT *` over a derived table or CTE carries each inner output's nullability; when the columns cannot be
+listed, every field is unproven. A name that appears twice in the select list and is read by a record component is
+a build error (alias the outputs distinctly).
 
 ## JSON Documents (`json` / `jsonb`)
 

@@ -5,10 +5,15 @@
 package org.pragmatica.aether.invoke;
 
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.ExecutionOutcome;
+import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.Settlement;
+import org.pragmatica.aether.slice.CallerIdentity;
 import org.pragmatica.aether.slice.SliceBridge;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
@@ -25,6 +30,49 @@ class AdmittedSliceBridgeTest {
         assertThat(result.isFailure()).isTrue();
         assertThat(calls.get()).isZero();
         assertThat(gate.count.get()).isZero();
+    }
+
+    /// #2157: a same-node call made on a caller's behalf passes the same admission gate as [AdmittedSliceBridge#invoke]:
+    /// refused while draining, with the application never called, and counted as an arrival that settled REJECTED.
+    @Test
+    void invokeAsCaller_closedGate_rejectsWithoutCallingApplication_andCountsTheRefusal() {
+        var delegate = new CallerBridge(Promise.success(new byte[0]));
+        var gate = new Gate();
+        var counts = new Counts();
+        gate.open.set(false);
+        var bridge = new AdmittedSliceBridge(delegate, () -> gate, AdmittedSliceBridge.ExecutionRecorder.NONE, counts);
+        var result = bridge.invokeAsCaller("call", new byte[0], Option.some(CALLER)).await(TimeSpan.timeSpan(1).seconds());
+        assertThat(result.isFailure()).isTrue();
+        assertThat(delegate.callers).isEmpty();
+        assertThat(gate.count.get()).isZero();
+        assertThat(counts.events).containsExactly("arrived:call", "settled:call:" + Settlement.REJECTED);
+    }
+
+    /// #2157: an admitted call on a caller's behalf hands the caller to the delegate, holds the drain count until the
+    /// execution settles, is counted as an arrival that settled COMPLETED, and has its outcome recorded.
+    @Test
+    void invokeAsCaller_openGate_deliversTheCaller_countsAndRecordsTheExecution() {
+        var completion = Promise.<byte[]>promise();
+        var delegate = new CallerBridge(completion);
+        var gate = new Gate();
+        var counts = new Counts();
+        var outcomes = new CopyOnWriteArrayList<String>();
+        var bridge = new AdmittedSliceBridge(delegate, () -> gate, (method, outcome) -> record(outcomes, method, outcome), counts);
+        var result = bridge.invokeAsCaller("call", new byte[0], Option.some(CALLER));
+        assertThat(delegate.callers).containsExactly(Option.some(CALLER));
+        assertThat(gate.count.get()).as("admitted, pending").isEqualTo(1);
+        completion.succeed(new byte[0]);
+        assertThat(result.await(TimeSpan.timeSpan(1).seconds()).isSuccess()).isTrue();
+        assertThat(gate.drained.await(TimeSpan.timeSpan(1).seconds()).isSuccess()).isTrue();
+        assertThat(counts.events).containsExactly("arrived:call", "settled:call:" + Settlement.COMPLETED);
+        assertThat(outcomes).containsExactly("call:" + ExecutionOutcome.SUCCESS);
+    }
+
+    private static final CallerIdentity CALLER = new CallerIdentity() {};
+
+    private static Unit record(List<String> outcomes, String method, ExecutionOutcome outcome) {
+        outcomes.add(method + ":" + outcome);
+        return Unit.unit();
     }
 
     @Test
@@ -115,7 +163,7 @@ class AdmittedSliceBridgeTest {
         var gate = new Gate();
         var replies = new AtomicInteger();
         var bridge = new AdmittedSliceBridge(new Bridge(new AtomicInteger(), execution), () -> gate);
-        bridge.invokeWithReply("call", new byte[0], TimeSpan.timeSpan(1).seconds(), result -> {
+        bridge.invokeWithReply("call", new byte[0], Option.none(), TimeSpan.timeSpan(1).seconds(), result -> {
             assertThat(result.isSuccess()).isTrue();
             assertThat(gate.count.get()).isEqualTo(1);
             assertThat(gate.drained.isResolved()).isFalse();
@@ -135,7 +183,7 @@ class AdmittedSliceBridgeTest {
         var replies = new AtomicInteger();
         var replied = Promise.<Unit>promise();
         var bridge = new AdmittedSliceBridge(new Bridge(new AtomicInteger(), execution), () -> gate);
-        bridge.invokeWithReply("call", new byte[0], TimeSpan.timeSpan(10).millis(), result -> {
+        bridge.invokeWithReply("call", new byte[0], Option.none(), TimeSpan.timeSpan(10).millis(), result -> {
             assertThat(result.isFailure()).isTrue();
             replies.incrementAndGet();
             replied.succeed(Unit.unit());
@@ -158,7 +206,7 @@ class AdmittedSliceBridgeTest {
         var gate = new Gate();
         gate.open.set(false);
         var bridge = new AdmittedSliceBridge(new Bridge(calls, Promise.success(new byte[0])), () -> gate);
-        bridge.invokeWithReply("call", new byte[0], TimeSpan.timeSpan(1).seconds(), result -> {
+        bridge.invokeWithReply("call", new byte[0], Option.none(), TimeSpan.timeSpan(1).seconds(), result -> {
             assertThat(result.isFailure()).isTrue();
             replies.incrementAndGet();
         });
@@ -178,6 +226,25 @@ class AdmittedSliceBridgeTest {
             return true;
         }
         public void exit() { if (count.decrementAndGet() == 0) { drained.succeed(Unit.unit()); } }
+    }
+
+    static final class Counts implements AdmittedSliceBridge.CallRecorder {
+        final List<String> events = new CopyOnWriteArrayList<>();
+        public Unit arrived(String method) { events.add("arrived:" + method); return Unit.unit(); }
+        public Unit settled(String method, Settlement settlement) { events.add("settled:" + method + ":" + settlement); return Unit.unit(); }
+    }
+
+    /// A delegate that serves only [SliceBridge#invokeAsCaller], recording the caller each call was handed.
+    static final class CallerBridge implements SliceBridge {
+        final List<Option<CallerIdentity>> callers = new CopyOnWriteArrayList<>();
+        final Promise<byte[]> completion;
+        CallerBridge(Promise<byte[]> completion) { this.completion = completion; }
+        public Promise<byte[]> invoke(String method, byte[] input) { throw new AssertionError("invokeAsCaller must not fall back to invoke"); }
+        public Promise<byte[]> invokeAsCaller(String method, byte[] input, Option<CallerIdentity> caller) { callers.add(caller); return completion; }
+        public Promise<Unit> start() { return Promise.unitPromise(); }
+        public Promise<Unit> stop() { return Promise.unitPromise(); }
+        public ClassLoader classLoader() { return getClass().getClassLoader(); }
+        public List<String> methodNames() { return List.of("call"); }
     }
 
     record Bridge(AtomicInteger calls, Promise<byte[]> completion) implements SliceBridge {

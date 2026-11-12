@@ -10,6 +10,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Collection;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Executor;
@@ -58,6 +59,7 @@ import org.pragmatica.aether.node.deployment.AdmissionSeam;
 import org.pragmatica.aether.node.deployment.DeploymentWiring;
 import org.pragmatica.aether.node.deployment.EffectTranslator;
 import org.pragmatica.aether.node.deployment.Fsm2System;
+import org.pragmatica.aether.node.deployment.MembershipInputs;
 import org.pragmatica.aether.node.deployment.SeamPoller;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.TerminationRetirement;
@@ -1753,6 +1755,7 @@ public interface AetherNode extends ManageableNode {
                           Option<ProjectionNodeSupport> projectionNodeSupport,
                           StreamNamespacesService streamNamespacesService,
                           Map<String, StorageFactory.StorageSetup> storageSetups,
+                          StorageMaintenanceDriver storageMaintenanceDriver,
                           ClusterTopologyManager clusterTopologyManagerInstance,
                           EventLoopMetricsCollector eventLoopMetricsCollector,
                           CoreSwimHealthDetector swimHealthDetector,
@@ -1805,6 +1808,16 @@ public interface AetherNode extends ManageableNode {
                           NodeReactors reactors,
                           LeaderDeactivation leaderDeactivation) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
+
+            @Override
+            public StorageMaintenanceProgress storageMaintenanceProgress() {
+                return storageMaintenanceDriver.progress();
+            }
+
+            @Override
+            public Option<String> storageMaintenanceDegradation() {
+                return storageMaintenanceDriver.degradation();
+            }
 
             @Override
             public Option<PrefetchGossipStats> prefetchGossipStats() {
@@ -2650,6 +2663,10 @@ public interface AetherNode extends ManageableNode {
         Function<NodeId, Option<String>> cdmMemberSourceSupplier = nodeId -> Option.option(membershipFsmRef.get())
                                                                                    .flatMap(fsm -> fsm.memberDescriptor(nodeId))
                                                                                    .map(MemberDescriptor::source);
+        // #2937: local membership's DEAD set, through the same shared membershipFsmRef; empty until the FSM is installed.
+        Supplier<Map<NodeId, MemberDescriptor>> cdmDeadMembersSupplier = () -> Option.option(membershipFsmRef.get())
+                                                                                     .map(MembershipFsm::deadMembers)
+                                                                                     .or(Map.of());
         var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(config.self(),
                                                                                          clusterNode,
                                                                                          kvStore,
@@ -2667,7 +2684,8 @@ public interface AetherNode extends ManageableNode {
                                                                                          stableCdmDrainingNodesSupplier,
                                                                                          cdmMemberSourceSupplier,
                                                                                          config.deploymentDefaults()
-                                                                                               .communitySizing());
+                                                                                               .communitySizing(),
+                                                                                         cdmDeadMembersSupplier);
         var loadBalancerManager = config.environment()
                                         .flatMap(EnvironmentIntegration::loadBalancer)
                                         .map(provider -> LoadBalancerManager.loadBalancerManager(config.self(),
@@ -2789,6 +2807,11 @@ public interface AetherNode extends ManageableNode {
         var clusterEventsOwnerCheck = eventAggregatorOut.clusterEventsOwnerCheck();
         var eventAggregator = eventAggregatorOut.eventAggregator();
         var operatorWarningSink = eventAggregatorOut.operatorWarningSink();
+        // #2825: stream data of an earlier NodeId under the data root is reported, never touched
+        AbandonedStreamData.check(operatorWarningSink,
+                                  streamDataDir(config),
+                                  streamWalBaseDir(config),
+                                  config.self().id());
         // A0b: the storage instances were built before this sink existed; hand it to them now.
         StorageFactory.bindOperatorWarnings(storageSetups, operatorWarningSink);
         // D1 (KVStore dispatcher design §3.6): so was the node's store; its dispatcher events reach this node's sink from here on.
@@ -2931,6 +2954,7 @@ public interface AetherNode extends ManageableNode {
         // D1-react (KVStore dispatcher design §3.5.1 rows 25/28): registry-driven timer arms run on the scheduler's react executor.
         scheduledTaskManager.installReactExecutor(reactors.executor("ScheduledTaskRegistry"));
         var selfAddress = findSelfAddress(config);
+        // #3028 (design 4 rule 2): the last argument binds: after every delivered replay burst the legacy NDM sweeps the slices it holds without a delivered entry.
         var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManagerFromSnapshot(config.self(),
                                                                                             selfAddress,
                                                                                             delegateRouter,
@@ -2948,7 +2972,8 @@ public interface AetherNode extends ManageableNode {
                                                                                             config.timeouts()
                                                                                                   .deployment()
                                                                                                   .transitionRetryDelay(),
-                                                                                            currentGenerationEpochSupplier);
+                                                                                            currentGenerationEpochSupplier,
+                                                                                            deploymentWiring.replayEnd(kvStore));
         // #1935: a declared stream consumer that cannot be registered reaches THIS node's event log.
         nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);
         configChangeFeed.setOperatorWarningSink(operatorWarningSink);
@@ -3002,6 +3027,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                     operatorWarningSink));
         var delegatedStorageAdapter = storageMaintenanceOut.delegatedStorageAdapter();
         var storageMaintenanceDriver = storageMaintenanceOut.storageMaintenanceDriver();
+        // #800: the maintenance gauges, in the registry the Management API scrapes (the management server joins it below).
+        storageMaintenanceDriver.registerMeters(deploymentMeters);
         var consumerGroupRegistry = ConsumerGroupRegistry.consumerGroupRegistry();
         var consumerGroupCoordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(clusterNode,
                                                                                          consumerGroupRegistry,
@@ -3660,6 +3687,7 @@ public interface AetherNode extends ManageableNode {
                                   Option.some(projectionNodeSupport),
                                   streamNamespacesService,
                                   storageSetups,
+                                  storageMaintenanceDriver,
                                   clusterTopologyManager,
                                   eventLoopMetricsCollector,
                                   swimHealthDetector,
@@ -3760,10 +3788,12 @@ public interface AetherNode extends ManageableNode {
                                                                                                               Set::of,
                                                                                                               () -> deploymentMemberSources(membershipFsm),
                                                                                                               Map::of,
+                                                                                                              () -> coreRoleMembers(membershipFsm.memberDescriptors()),
                                                                                                               () -> membershipFsm.memberDescriptors()
                                                                                                                                  .keySet(),
                                                                                                               admissionSeam::tokenOf),
                                                                                        admissionSeam,
+                                                                                       () -> MembershipInputs.deadSet(membershipFsm.deadMembers()),
                                                                                        deploymentWiring.guard(),
                                                                                        FsmTimers.sharedScheduler(),
                                                                                        configuredWorker(config))));
@@ -3874,6 +3904,7 @@ public interface AetherNode extends ManageableNode {
                                                                             Option.some(projectionNodeSupport),
                                                                             streamNamespacesService,
                                                                             storageSetups,
+                                                                            storageMaintenanceDriver,
                                                                             clusterTopologyManager,
                                                                             eventLoopMetricsCollector,
                                                                             swimHealthDetector,
@@ -4197,6 +4228,17 @@ public interface AetherNode extends ManageableNode {
                    .or(Set.of());
     }
 
+    /// Every tracked member admitted with `role=core`, voter or not (#2887): a surplus core is never a voter, a swapped-out core stops being one
+    /// and a joining core is not yet one, yet each is a core. Includes DEAD members, so a departed core stays classed CORE.
+    static Set<NodeId> coreRoleMembers(Map<NodeId, MemberDescriptor> descriptors) {
+        return descriptors.entrySet()
+                          .stream()
+                          .filter(entry -> entry.getValue()
+                                                .isCore())
+                          .map(Map.Entry::getKey)
+                          .collect(Collectors.toUnmodifiableSet());
+    }
+
     static Set<NodeId> configuredVoters(AetherNodeConfig config) {
         return config.topology()
                      .coreNodes()
@@ -4449,10 +4491,34 @@ public interface AetherNode extends ManageableNode {
     /// (the minority measures `T` from its own local-quorum-loss observation). The read-path
     /// quiesce (`AppHttpServer::onQuorumStateChange`) stays IMMEDIATE on PASSIVE — read-path
     /// protection is cheap to undo on regain; only the process-exit drain gets the window.
+    ///
+    /// #2936 ruling: the edge also carries the consensus ROLE it proves into the detector's quorum REPORT — a #1790
+    /// demotion makes this node an observer BY ROLE (reported `OBSERVER`, never `LOST`, so peers keep forwarding to
+    /// it), an ACTIVE edge makes it a voter again, a plain PASSIVE leaves the role as it was. Package-private for the
+    /// route test.
     @Contract
-    private static void routeQuorumDisappearedToDrain(ClusterStateNotification notification,
-                                                      AtomicReference<QuorumLossDetector> quorumLossDetectorRef) {
-        Option.option(quorumLossDetectorRef.get()).onPresent(detector -> detector.onQuorumPresence(notification.state() != ClusterStateNotification.State.PASSIVE));
+    static void routeQuorumDisappearedToDrain(ClusterStateNotification notification,
+                                              AtomicReference<QuorumLossDetector> quorumLossDetectorRef) {
+        Option.option(quorumLossDetectorRef.get()).onPresent(detector -> detector.onConsensusEdge(notification.state() != ClusterStateNotification.State.PASSIVE,
+                                                                                                  consensusRole(notification)));
+    }
+
+    private static QuorumLossDetector.ConsensusRole consensusRole(ClusterStateNotification notification) {
+        if (notification.demoted()) {
+            return QuorumLossDetector.ConsensusRole.OBSERVER;
+        }
+
+        return notification.state() == ClusterStateNotification.State.ACTIVE
+               ? QuorumLossDetector.ConsensusRole.VOTER
+               : QuorumLossDetector.ConsensusRole.UNCHANGED;
+    }
+
+    /// #2936 ruling: an observer applying committed decisions again (`ConsensusObserving`) is passive BY ROLE, so its
+    /// quorum report says `OBSERVER` — this is the first published edge of a configured observer, and the recovery
+    /// edge of a demoted one that lost track. Package-private for the route test.
+    @Contract
+    static void routeObserverResumedToReport(AtomicReference<QuorumLossDetector> quorumLossDetectorRef) {
+        Option.option(quorumLossDetectorRef.get()).onPresent(QuorumLossDetector::onObserverResumed);
     }
 
     /// #517: self is in its own topology by the time assembly runs — `TopologyObserver.topologyObserver`
@@ -4474,7 +4540,7 @@ public interface AetherNode extends ManageableNode {
         var raw = Option.option(System.getenv("AETHER_PROVISIONED_BY"))
                         .filter(v -> !v.isBlank())
                         .map(String::trim)
-                        .map(String::toLowerCase);
+                        .map(text -> text.toLowerCase(Locale.ROOT));
 
         return raw.map(AetherNode::provisioningSourceFrom)
                   .or(AetherValue.ProvisioningSource.MANUAL);
@@ -5263,6 +5329,8 @@ public interface AetherNode extends ManageableNode {
                                               eventAggregator::onMembershipDecision));
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, eventAggregator::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(ObserverResumedNotification.class, eventAggregator::onObserverResumed));
+        entries.add(MessageRouter.Entry.route(ObserverResumedNotification.class,
+                                              _ -> routeObserverResumedToReport(quorumLossDetectorRef)));
         entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class,
                                               eventAggregator::onSelfShutdown));
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class, abTestManager::onDeploymentFailed));

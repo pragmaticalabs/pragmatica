@@ -130,6 +130,10 @@
                     <systemPropertyVariables>
                         <project.version>${project.version}</project.version>
                     </systemPropertyVariables>
+                    <!-- #2983: the HS256 secret ForgeJwtAppHttpForgeTest's sibling aether.toml needs, supplied the way a node gets it -->
+                    <environmentVariables>
+                        <AETHER_JWT_SECRET>a-test-only-shared-secret-of-32-bytes!</AETHER_JWT_SECRET>
+                    </environmentVariables>
                     <includes>
                         <include>**/*Test.java</include>
                     </includes>

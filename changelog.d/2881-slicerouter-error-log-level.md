@@ -1,0 +1,2 @@
+### Fixed (2026-11-08 — #2881: SliceRouter logged a WARN for every error)
+- **SliceRouter logged every failed request at WARN, including 4xx caller errors.** The level now keys on the resolved outer status: 4xx at DEBUG, 5xx (503 included) at WARN with the cause chain. At default levels a 4xx therefore leaves no server-side log line; the requestId in the RFC 9457 body still correlates. The response body is unchanged. [verified: aether/http-routing-adapter/src/test/java/org/pragmatica/aether/http/adapter/SliceRouterErrorLogLevelTest.java]

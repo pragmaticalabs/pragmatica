@@ -25,6 +25,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.topology.MembershipDecision;
 
+import java.lang.ref.WeakReference;
 import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
 import java.util.List;
@@ -330,6 +331,45 @@ class DHTRebalancerTest {
             assertThat(network.targets()).containsExactlyInAnyOrderElementsOf(expectedTargets);
             assertThat(pushedKeys(pushes)).contains(asString(probe));
             assertThat(observer.incompleteCount()).isZero();
+        }
+
+        /// #3049: the F7 re-evaluation is scheduled at the base deadline (10 s by default). A finished push must cancel it:
+        /// an uncancelled timer pins the run, its node, storage and observer until it fires, which retained whole stopped
+        /// clusters for 30 s in the co-drain test.
+        @Test
+        void pushOnDeparture_completedPush_releasesItsObserverBeforeTheBaseDeadline() {
+            var observerRef = completedPushObserver();
+
+            assertThat(collected(observerRef)).as("a finished push keeps nothing alive through its scheduled re-evaluation")
+                                              .isTrue();
+        }
+
+        private WeakReference<RecordingObserver> completedPushObserver() {
+            var ring = fiveNodeRing();
+            var node = dhtNode(LOCAL, memoryStorageEngine(), ring, CONFIG);
+            var probe = findKeyWithNewcomer(ring, LOCAL, CONFIG.effectiveReplicationFactor(ring.nodeCount()));
+
+            node.putLocal(probe, value("payload")).await();
+
+            var network = new AckingNetwork();
+            var rebalancer = dhtRebalancer(node, network, CONFIG);
+            network.ackVia(rebalancer::onMigrationDataAck);
+            var observer = new RecordingObserver();
+
+            rebalancer.pushOnDeparture(observer).await().onFailure(cause -> Assertions.fail(cause.message()));
+
+            return new WeakReference<>(observer);
+        }
+
+        private static boolean collected(WeakReference<?> reference) {
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4);
+
+            while (reference.get() != null && System.nanoTime() < deadline) {
+                System.gc();
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(50));
+            }
+
+            return reference.get() == null;
         }
 
         @Test

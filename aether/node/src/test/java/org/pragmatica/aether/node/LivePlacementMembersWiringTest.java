@@ -87,9 +87,12 @@ class LivePlacementMembersWiringTest {
     @Test
     void isrOwnershipWriters_areAuthorizedOnlyByThisNodesOwnCommittedLeader() {
         var code = assemblyCode();
-        var own = "streamIsrInputs(clusterEventsControllerRef),StreamPartitionOwnershipWriter.ownCommittedLeader(()->kvStore.getTyped(LeaderKey.INSTANCE,LeaderValue.class),config.self(),isLeaderSupplier)";
+        var own = "StreamPartitionOwnershipWriter.ownCommittedLeader(()->kvStore.getTyped(LeaderKey.INSTANCE,LeaderValue.class),config.self(),isLeaderSupplier)";
 
-        assertThat(code.split(Pattern.quote(own), -1)).as("the stream and the entity writer").hasSize(3);
+        assertThat(code.split(Pattern.quote("streamIsrInputs(clusterEventsControllerRef)," + own), -1)).as("the stream writer").hasSize(2);
+        assertThat(code.split(Pattern.quote("EntityOwnershipReconciler.hostingOnly(streamIsrInputs(clusterEventsControllerRef),arcHosting)," + own), -1))
+            .as("the entity writer, whose live view is narrowed to the slice's hosts (#2981)")
+            .hasSize(2);
         assertThat(code).doesNotContain("streamIsrInputs(clusterEventsControllerRef),()->kvStore.getTyped(LeaderKey.INSTANCE,LeaderValue.class)");
     }
 
@@ -132,7 +135,16 @@ class LivePlacementMembersWiringTest {
         assertThat(code).as("#2599: a compare's verification releases the ack the gate held back")
                         .containsOnlyOnce("streamPartitionManager.onEpochVerified(streamReplicationReceiveHandler::releaseDeferredAck);");
         assertThat(code).as("#2599: a removed stream's deferred acks are dropped with it")
-                        .containsOnlyOnce("streamPartitionManager.onStreamRemoved(streamReplicationReceiveHandler::forgetDeferredAcks);");
+                        .containsOnlyOnce("streamPartitionManager.onStreamRemoved(streamName->forgetRemovedStream(streamReplicationReceiveHandler,streamPartitionBackfill,streamName));");
+        assertThat(code).as("#2960: a removed stream drops its deferred acks and resolves its open all-stalled warning")
+                        .containsOnlyOnce("receiveHandler.forgetDeferredAcks(streamName);returnbackfill.clearStalledOf(streamName);");
+        assertThat(code).as("#2960: the all-stalled warning is raised only for a stream the manager still holds")
+                        .containsOnlyOnce("streamPartitionBackfill.streamExists(streamPartitionManager::streamExists);");
+        assertThat(code).as("#2960: a finished reconcile pass re-derives the open all-stalled warnings before it drives ownership")
+                        .containsOnlyOnce("(List<PartitionKey>reconciled)->reconcilePassComplete(streamPartitionBackfill,streamOwnershipWriter,clusterCommandApplier,streamOwnershipRetry,reconciled)")
+                        .containsOnlyOnce("backfill.reconcileStalled();driveStreamOwnership(writer,applier,retry,reconciled);");
+        assertThat(code).as("#2960: every redrive tick re-derives the open all-stalled warnings")
+                        .containsOnlyOnce("backfillExecutor.execute(backfill::reconcileStalled);");
         assertThat(code).as("#2599 G3: a backfill's ack goes out in the receive handler's per-partition section")
                         .containsOnlyOnce("streamPartitionBackfill.backfillAckSink(streamReplicationReceiveHandler::ackBackfill);");
         assertThat(code).containsOnlyOnce("streamReplicationManager.ownerEpochs(streamOwnerEpochSource);");

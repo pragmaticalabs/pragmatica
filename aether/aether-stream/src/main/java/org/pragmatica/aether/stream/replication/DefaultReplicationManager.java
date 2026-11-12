@@ -17,7 +17,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.LongSupplier;
 import java.util.stream.Collectors;
-import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -26,6 +25,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.net.quic.QuicClusterServer;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -118,7 +118,14 @@ final class DefaultReplicationManager implements ReplicationManager {
                               ReplicationTransport transport,
                               Runnable betweenSteps,
                               Fn2<ScheduledFuture<?>, Runnable, TimeSpan> timerScheduler) {
-        this(governorId, registry, transport, none(), ALWAYS_PROMOTE, betweenSteps, timerScheduler, System::nanoTime);
+        this(governorId,
+             registry,
+             transport,
+             _ -> none(),
+             ALWAYS_PROMOTE,
+             betweenSteps,
+             timerScheduler,
+             System::nanoTime);
     }
 
     /// Test seam (#2820): `timerScheduler` also schedules the re-sends of a chunk the transport refused to write, and
@@ -128,18 +135,20 @@ final class DefaultReplicationManager implements ReplicationManager {
                               ReplicationTransport transport,
                               Fn2<ScheduledFuture<?>, Runnable, TimeSpan> timerScheduler,
                               LongSupplier nanoClock) {
-        this(governorId, registry, transport, none(), ALWAYS_PROMOTE, NO_OP, timerScheduler, nanoClock);
+        this(governorId, registry, transport, _ -> none(), ALWAYS_PROMOTE, NO_OP, timerScheduler, nanoClock);
     }
 
-    private DefaultReplicationManager(NodeId governorId,
-                                      ReplicaRegistry registry,
-                                      ReplicationTransport transport,
-                                      Option<ReplicationBatcher> batcher,
-                                      EarliestRetainedOffset earliestRetained) {
+    /// #263, the production manager: its batcher is built by `batcherAround` around this manager's own send path
+    /// ([#replicateImmediately]: frame-size chunks, #2820 re-sends), so a batched event is sent exactly as a direct one.
+    DefaultReplicationManager(NodeId governorId,
+                              ReplicaRegistry registry,
+                              ReplicationTransport transport,
+                              EarliestRetainedOffset earliestRetained,
+                              Fn1<ReplicationBatcher, ReplicationBatcher.BatchSender> batcherAround) {
         this(governorId,
              registry,
              transport,
-             batcher,
+             sender -> some(batcherAround.apply(sender)),
              earliestRetained,
              NO_OP,
              SharedScheduler::schedule,
@@ -150,6 +159,21 @@ final class DefaultReplicationManager implements ReplicationManager {
                                       ReplicaRegistry registry,
                                       ReplicationTransport transport,
                                       Option<ReplicationBatcher> batcher,
+                                      EarliestRetainedOffset earliestRetained) {
+        this(governorId,
+             registry,
+             transport,
+             _ -> batcher,
+             earliestRetained,
+             NO_OP,
+             SharedScheduler::schedule,
+             System::nanoTime);
+    }
+
+    private DefaultReplicationManager(NodeId governorId,
+                                      ReplicaRegistry registry,
+                                      ReplicationTransport transport,
+                                      Fn1<Option<ReplicationBatcher>, ReplicationBatcher.BatchSender> batcherAround,
                                       EarliestRetainedOffset earliestRetained,
                                       Runnable betweenSteps,
                                       Fn2<ScheduledFuture<?>, Runnable, TimeSpan> timerScheduler,
@@ -157,11 +181,12 @@ final class DefaultReplicationManager implements ReplicationManager {
         this.governorId = governorId;
         this.registry = registry;
         this.transport = transport;
-        this.batcher = batcher;
         this.earliestRetained = earliestRetained;
         this.betweenSteps = betweenSteps;
         this.timerScheduler = timerScheduler;
         this.nanoClock = nanoClock;
+        // Last: the sender reads the fields above, and runs only after construction (a batch needs an event first).
+        this.batcher = batcherAround.apply(this::sendBatch);
     }
 
     /// Estimated bytes per `ReplicateEvents` chunk: half the transport frame limit. The other half
@@ -193,7 +218,8 @@ final class DefaultReplicationManager implements ReplicationManager {
 
     /// #1245: a contiguous run goes out in as few `ReplicateEvents` messages per replica as the frame limit
     /// allows — one, below it (the receive handler already applies multi-record batches and acks their
-    /// last offset). With a batcher wired, the run is handed to it event by event, as single publishes are.
+    /// last offset). With a batcher wired, the run is handed to it whole (#263): it follows the partition's open
+    /// batch on the send lane and is sent as one batch, so a wired batcher never splits it per event.
     @Contract
     @Override
     public void replicateEvents(String streamName,
@@ -206,6 +232,7 @@ final class DefaultReplicationManager implements ReplicationManager {
                .onEmpty(() -> replicateImmediately(streamName, partition, fromOffset, payloads, timestamps, ownerEpoch));
     }
 
+    /// The run into the batcher; its only refusal (BATCHER_CLOSED) is logged and dropped, see [#replicateEvent].
     @Contract
     private static void addRun(ReplicationBatcher batcher,
                                String streamName,
@@ -214,15 +241,13 @@ final class DefaultReplicationManager implements ReplicationManager {
                                List<byte[]> payloads,
                                List<Long> timestamps,
                                Epoch ownerEpoch) {
-        IntStream.range(0,
-                        payloads.size())
-                 .forEach(i -> addOne(batcher,
-                                      streamName,
-                                      partition,
-                                      fromOffset + i,
-                                      payloads.get(i),
-                                      timestamps.get(i),
-                                      ownerEpoch));
+        batcher.addRun(streamName, partition, fromOffset, payloads, timestamps, ownerEpoch)
+               .onFailure(cause -> log.warn("Events {}[{}]@{}..{} not replicated: {}",
+                                            streamName,
+                                            partition,
+                                            fromOffset,
+                                            fromOffset + payloads.size() - 1,
+                                            cause.message()));
     }
 
     /// One event into the batcher; its only refusal (BATCHER_CLOSED) is logged and dropped, see [#replicateEvent].
@@ -260,12 +285,12 @@ final class DefaultReplicationManager implements ReplicationManager {
     @Override
     public void handleAck(ReplicationMessage.ReplicateAck ack) {
         notifyObserver(ack);
-        registry.updateWatermark(ack.streamName(),
-                                 ack.partition(),
-                                 ack.replicaId(),
-                                 ack.confirmedOffset(),
-                                 promotionState(ack),
-                                 ack.ownerEpoch());
+        registry.advanceWatermark(ack.streamName(),
+                                  ack.partition(),
+                                  ack.replicaId(),
+                                  ack.confirmedOffset(),
+                                  promotionState(ack),
+                                  ack.ownerEpoch());
         notifyObserver(ack);
         if (underCurrentEpoch(ack.streamName(), ack.partition(), ack.ownerEpoch())) {
             resolvePendingAck(ack.streamName(), ack.partition(), ack.replicaId(), ack.confirmedOffset());
@@ -316,10 +341,34 @@ final class DefaultReplicationManager implements ReplicationManager {
         return registry;
     }
 
+    /// The batcher's send budget (#263); a manager without a batcher holds nothing and grants every reservation.
+    @Override
+    public Result<Unit> reserveSend(long bytes) {
+        return batcher.map(b -> b.reserve(bytes))
+                      .or(Result::unitResult);
+    }
+
+    @Contract
+    @Override
+    public void releaseSend(long bytes) {
+        batcher.onPresent(b -> b.release(bytes));
+    }
+
     @Contract
     @Override
     public void close() {
         batcher.onPresent(ReplicationBatcher::close);
+    }
+
+    /// The production batcher's [ReplicationBatcher.BatchSender] (#263): a drained batch takes the direct path.
+    @Contract
+    private void sendBatch(PartitionKey key, ReplicationBatcher.BatchSnapshot snapshot) {
+        replicateImmediately(key.streamName(),
+                             key.partition(),
+                             snapshot.fromOffset(),
+                             snapshot.payloads(),
+                             snapshot.timestamps(),
+                             snapshot.ownerEpoch());
     }
 
     private void replicateImmediately(String streamName,

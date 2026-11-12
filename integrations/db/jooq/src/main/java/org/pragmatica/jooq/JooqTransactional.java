@@ -85,32 +85,32 @@ final class DataSourceJooqTransactional implements JooqTransactional {
                                 Connection conn = null;
 
                                 try {
-                                conn = dataSource.getConnection();
-                                conn.setAutoCommit(false);
-                                var ops = new ConnectionJooqOperations(conn, dialect);
-                                var result = operation.apply(ops)
-                                                      .await();
-                                var connection = conn;
+                                    conn = dataSource.getConnection();
+                                    conn.setAutoCommit(false);
+                                    var ops = new ConnectionJooqOperations(conn, dialect);
+                                    var result = operation.apply(ops)
+                                                          .await();
+                                    var connection = conn;
 
-                                return result.fold(cause -> {
-                                                       rollback(connection);
+                                    return result.fold(cause -> {
+                                                           rollback(connection);
 
-                                                       throw new TransactionFailedException(cause);
-                                                   },
-                                                   value -> {
-                                                       commit(connection);
+                                                           throw new TransactionFailedException(cause);
+                                                       },
+                                                       value -> {
+                                                           commit(connection);
 
-                                                       return value;
-                                                   });
-                            } catch (TransactionFailedException e) {
-                                throw e;
-                            } catch (Exception e) {
-                                rollback(conn);
+                                                           return value;
+                                                       });
+                                } catch (TransactionFailedException e) {
+                                    throw e;
+                                } catch (Exception e) {
+                                    rollback(conn);
 
-                                throw e;
-                            } finally {
-                                close(conn);
-                            }
+                                    throw e;
+                                } finally {
+                                    close(conn);
+                                }
                             });
     }
 
@@ -170,13 +170,14 @@ final class ConnectionJooqOperations implements JooqOperations {
                                 var result = dsl.fetch(query);
 
                                 if (result.isEmpty()) {
-                                throw new JooqNoResultException("Query returned no results");
-                            }
+                                    throw new JooqNoResultException("Query returned no results");
+                                }
 
                                 if (result.size() > 1) {
-                                throw new JooqMultipleResultsException("Query returned " + result.size() + " results",
-                                                                       result.size());
-                            }
+                                    throw new JooqMultipleResultsException("Query returned " + result.size()
+                                                                          + " results",
+                                                                           result.size());
+                                }
 
                                 return result.get(0);
                             });

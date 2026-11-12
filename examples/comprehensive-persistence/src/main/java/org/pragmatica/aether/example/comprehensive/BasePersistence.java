@@ -18,20 +18,53 @@ public interface BasePersistence {
                          String customerEmail,
                          BigDecimal orderTotal,
                          String orderStatus,
-                         Instant orderCreatedAt) {}
+                         Instant orderCreatedAt) {
+        static CustomerOrder customerOrder(long orderId,
+                                           long customerId,
+                                           String customerName,
+                                           String customerEmail,
+                                           BigDecimal orderTotal,
+                                           String orderStatus,
+                                           Instant orderCreatedAt) {
+            return new CustomerOrder(orderId,
+                                     customerId,
+                                     customerName,
+                                     customerEmail,
+                                     orderTotal,
+                                     orderStatus,
+                                     orderCreatedAt);
+        }
+    }
 
     record CustomerRevenue(long customerId,
                            String customerName,
                            Long orderCount,
                            BigDecimal totalRevenue,
                            BigDecimal minOrderValue,
-                           BigDecimal maxOrderValue) {}
+                           BigDecimal maxOrderValue) {
+        static CustomerRevenue customerRevenue(long customerId,
+                                               String customerName,
+                                               Long orderCount,
+                                               BigDecimal totalRevenue,
+                                               BigDecimal minOrderValue,
+                                               BigDecimal maxOrderValue) {
+            return new CustomerRevenue(customerId, customerName, orderCount, totalRevenue, minOrderValue, maxOrderValue);
+        }
+    }
 
     record ProductSales(long productId,
                         String productSku,
                         String productName,
                         Long unitsSold,
-                        BigDecimal totalRevenue) {}
+                        BigDecimal totalRevenue) {
+        static ProductSales productSales(long productId,
+                                         String productSku,
+                                         String productName,
+                                         Long unitsSold,
+                                         BigDecimal totalRevenue) {
+            return new ProductSales(productId, productSku, productName, unitsSold, totalRevenue);
+        }
+    }
 
     record OrderDetail(long id,
                        long customerId,
@@ -39,9 +72,23 @@ public interface BasePersistence {
                        BigDecimal totalWithTax,
                        String status,
                        String metadata,
-                       UUID correlationId) {}
+                       UUID correlationId) {
+        static OrderDetail orderDetail(long id,
+                                       long customerId,
+                                       BigDecimal total,
+                                       BigDecimal totalWithTax,
+                                       String status,
+                                       String metadata,
+                                       UUID correlationId) {
+            return new OrderDetail(id, customerId, total, totalWithTax, status, metadata, correlationId);
+        }
+    }
 
-    record ProductWithTags(long id, String sku, String name, BigDecimal price, String[] tags) {}
+    record ProductWithTags(long id, String sku, String name, BigDecimal price, String[] tags) {
+        static ProductWithTags productWithTags(long id, String sku, String name, BigDecimal price, String[] tags) {
+            return new ProductWithTags(id, sku, name, price, tags);
+        }
+    }
 
     @Query("SELECT o.id AS order_id, c.id AS customer_id, c.name AS customer_name, "
           + "c.email AS customer_email, o.total AS order_total, o.status AS order_status, "
@@ -51,15 +98,15 @@ public interface BasePersistence {
     Promise<List<CustomerOrder>> findCustomerOrdersByStatus(String status);
 
     @Query("SELECT c.id AS customer_id, c.name AS customer_name, "
-          + "count(o.id) AS order_count, sum(o.total) AS total_revenue, "
-          + "min(o.total) AS min_order_value, max(o.total) AS max_order_value "
+          + "count(o.id) AS order_count, COALESCE(sum(o.total), 0) AS total_revenue, "
+          + "COALESCE(min(o.total), 0) AS min_order_value, COALESCE(max(o.total), 0) AS max_order_value "
           + "FROM customers c LEFT JOIN orders o ON o.customer_id = c.id "
           + "WHERE c.active = :active "
           + "GROUP BY c.id, c.name")
     Promise<List<CustomerRevenue>> customerRevenueReport(Boolean active);
 
     @Query("SELECT p.id AS product_id, p.sku AS product_sku, p.name AS product_name, "
-          + "sum(i.quantity) AS units_sold, sum(i.quantity * i.unit_price) AS total_revenue "
+          + "COALESCE(sum(i.quantity), 0) AS units_sold, COALESCE(sum(i.quantity * i.unit_price), 0) AS total_revenue "
           + "FROM products p JOIN order_items i ON i.product_id = p.id "
           + "JOIN orders o ON o.id = i.order_id "
           + "WHERE o.status = :status "
@@ -94,6 +141,6 @@ public interface BasePersistence {
           + "  SELECT id, total, customer_id FROM orders "
           + "  WHERE created_at > :since AND total > :minTotal"
           + ") "
-          + "SELECT sum(total) AS total_amount FROM recent_orders WHERE customer_id = :customerId")
+          + "SELECT COALESCE(sum(total), 0) AS total_amount FROM recent_orders WHERE customer_id = :customerId")
     Promise<BigDecimal> recentOrderTotalForCustomer(Instant since, BigDecimal minTotal, Long customerId);
 }

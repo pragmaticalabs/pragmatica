@@ -48,9 +48,15 @@ class ApiKeySecurityValidator implements HttpAuthenticator {
     }
 
     @Override
+    public Option<String> challengeScheme() {
+        return Option.some("ApiKey");
+    }
+
+    @Override
     public Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy) {
         return switch (policy) {
             case SecurityPolicy.Public() -> Result.success(SecurityContext.securityContext());
+            case SecurityPolicy.OptionalAuth() -> validateApiKeyIfPresented(request);
             case SecurityPolicy.ApiKeyRequired() -> validateApiKey(request);
             case SecurityPolicy.Authenticated() -> validateApiKey(request);
             case SecurityPolicy.RoleRequired _ -> validateApiKey(request);
@@ -58,6 +64,12 @@ class ApiKeySecurityValidator implements HttpAuthenticator {
             case SecurityPolicy.Unspecified() -> SecurityError.UNRESOLVED_POLICY.result();
             case SecurityPolicy.unused() -> SecurityError.UNRESOLVED_POLICY.result();
         };
+    }
+
+    /// #2946: no `X-API-Key` is anonymous; a presented key is held to the full check, so a wrong key is refused.
+    private Result<SecurityContext> validateApiKeyIfPresented(HttpRequestContext request) {
+        return extractApiKey(request.headers()).map(this::checkApiKey)
+                            .or(() -> Result.success(SecurityContext.securityContext()));
     }
 
     private Result<SecurityContext> validateApiKey(HttpRequestContext request) {

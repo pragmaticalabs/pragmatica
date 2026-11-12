@@ -16,6 +16,7 @@
 
 package org.pragmatica.lang;
 
+import java.util.Locale;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Option.None;
@@ -449,7 +450,7 @@ class OptionTest {
               .onPresent(result -> assertEquals("HELLO", result));
 
         // Test liftFn with null input returns empty
-        Option.lift1((String input) -> input.toUpperCase(), null)
+        Option.lift1((String input) -> input.toUpperCase(Locale.ROOT), null)
               .onPresentRun(() -> fail("Should be empty"));
 
         // Test liftFn with function returning null
@@ -956,7 +957,7 @@ class OptionTest {
     void instanceAllWithTwoFunctionsReturnsPresentWhenAllPresent() {
         var result = Option.present("hello")
                 .all(
-                        v -> Option.present(v.toUpperCase()),
+                        v -> Option.present(v.toUpperCase(Locale.ROOT)),
                         v -> Option.present(v.length())
                 )
                 .map((upper, len) -> upper + "-" + len);

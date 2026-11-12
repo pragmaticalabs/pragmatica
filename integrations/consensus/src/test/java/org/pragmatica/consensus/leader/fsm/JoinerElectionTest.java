@@ -31,6 +31,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
+import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #1803 (b): a node that has just JOINED a live cluster (an observer admitted as a voter) must not
@@ -98,7 +99,7 @@ class JoinerElectionTest {
         h.dispatch(new PassiveDirectory(List.of(LEADER, PEER)));
         h.dispatch(new LeaderCommitted(LEADER, 1L));
         context.get().installVoters(ELECTORATE);
-        h.dispatch(new ClusterFsmEvent.NodeAdded(LEADER, ELECTORATE));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(LEADER, ELECTORATE, seq()));
         h.dispatch(new VoterReadmitted());
     }
 
@@ -135,7 +136,7 @@ class JoinerElectionTest {
         var h = harness(kvLeader::get, LONG);
 
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, ELECTORATE));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, ELECTORATE, seq()));
         h.dispatch(new LeaderElectionEvents.ConsensusReady());
         assertThat(h.state()).as("precondition: waiting, nothing visible").isInstanceOf(LeaderElectionState.AwaitingKvSync.class);
 
@@ -189,7 +190,7 @@ class JoinerElectionTest {
         var h = harness(Option.none(), SHORT_GRACE);
 
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, ELECTORATE));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, ELECTORATE, seq()));
         h.dispatch(new LeaderElectionEvents.ConsensusReady());
         awaitNotAwaiting(h);
 
@@ -206,7 +207,7 @@ class JoinerElectionTest {
 
         installThroughTheManager(catchingUp::get);
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, ELECTORATE));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, ELECTORATE, seq()));
         h.dispatch(new LeaderElectionEvents.ConsensusReady());
         TimeUnit.MILLISECONDS.sleep(450);
 
@@ -228,7 +229,7 @@ class JoinerElectionTest {
 
         context.get().installKvSyncPending(() -> true);
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, ELECTORATE));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, ELECTORATE, seq()));
         h.dispatch(new LeaderElectionEvents.ConsensusReady());
         awaitNotAwaiting(h);
 

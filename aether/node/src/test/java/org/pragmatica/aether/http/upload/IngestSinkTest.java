@@ -72,11 +72,16 @@ class IngestSinkTest {
     }
 
     private IngestSink sink(ContentStore store, IngestSink.Body body) {
+        return sink(store, body, TimeSpan.timeSpan(30).seconds());
+    }
+
+    private IngestSink sink(ContentStore store, IngestSink.Body body, TimeSpan deleteBound) {
         return IngestSink.ingestSink(store,
                                      body,
                                      permits::incrementAndGet,
                                      (request, _) -> dispatched.set(request),
-                                     (_, cause) -> refused.set(cause));
+                                     (_, cause) -> refused.set(cause),
+                                     deleteBound);
     }
 
     private static IngestSink.Body binary() {
@@ -323,13 +328,54 @@ class IngestSinkTest {
         await(() -> catalog(store).isEmpty(), "the discarded upload's objects are deleted");
     }
 
+    /// #2921: the dispatch path answers once this promise resolves, so a delete that FAILS must still resolve it (as a
+    /// success: the failure is logged). Mutation: letting a failed delete fail the promise leaves every refusal that waits
+    /// on it unanswered.
+    @Test
+    void discardedUpload_whoseDeleteFails_stillResolvesSuccessfully() throws Exception {
+        var spy = new Spy(false);
+        var store = spy(store(storage(64L * MIB)), spy);
+        var sink = sink(store, binary());
+
+        assertThat(push(sink, random(MIB, 12), MIB)).isEmpty();
+        sink.complete(head("application/octet-stream"), writer());
+        await(() -> dispatched.get() != null, "the request is dispatched");
+        spy.deleteGate.resolve(Causes.cause("delete failed").result());
+
+        var discarded = IngestedRequest.discardedUpload(dispatched.get()).await(WAIT);
+
+        assertThat(spy.deletes.get()).as("the delete ran").isEqualTo(1);
+        assertThat(discarded.isSuccess()).as("a failed delete still ends the discard").isTrue();
+    }
+
+    /// #2921: as above for a delete that never resolves: it is given up on at the delete bound and the discard resolves.
+    @Test
+    void discardedUpload_whoseDeleteTimesOut_stillResolvesSuccessfully() throws Exception {
+        var spy = new Spy(false);
+        var store = spy(store(storage(64L * MIB)), spy);
+        var sink = sink(store, binary(), TimeSpan.timeSpan(300).millis());
+
+        assertThat(push(sink, random(MIB, 13), MIB)).isEmpty();
+        sink.complete(head("application/octet-stream"), writer());
+        await(() -> dispatched.get() != null, "the request is dispatched");
+
+        var discarded = IngestedRequest.discardedUpload(dispatched.get()).await(WAIT);
+
+        assertThat(spy.deleteGate.isResolved()).as("the delete itself never resolved").isFalse();
+        assertThat(discarded.isSuccess()).as("a timed-out delete still ends the discard").isTrue();
+    }
+
     // ---- observing the store the sink writes to ----
     /// What a [#spy] records and controls: writer aborts and object deletes seen, a gate every delete waits on, and whether
     /// commits fail.
     private static final class Spy {
         final AtomicInteger aborts = new AtomicInteger();
         final AtomicInteger deletes = new AtomicInteger();
+        final AtomicInteger creates = new AtomicInteger();
         final Promise<Unit> deleteGate = Promise.promise();
+        /// Every create / commit waits on these; resolved from the start, so a test holds one by replacing it.
+        volatile Promise<Unit> createGate = Promise.success(Unit.unit());
+        volatile Promise<Unit> commitGate = Promise.success(Unit.unit());
         final boolean failCommit;
 
         Spy(boolean failCommit) {
@@ -350,8 +396,17 @@ class IngestSinkTest {
         return (ContentStore) Proxy.newProxyInstance(ContentStore.class.getClassLoader(),
                                                      new Class<?>[]{ContentStore.class},
                                                      (_, method, args) -> switch (method.getName()) {
-                                                         case "create" -> ((Promise<ObjectWriter>) invoke(real, method, args))
-                                                             .map(writer -> spyWriter(writer, spy));
+                                                         case "create" -> {
+                                                             spy.creates.incrementAndGet();
+                                                             yield spy.createGate.flatMap(_ -> {
+                                                                 try {
+                                                                     return ((Promise<ObjectWriter>) invoke(real, method, args))
+                                                                         .map(writer -> spyWriter(writer, spy));
+                                                                 } catch (Throwable t) {
+                                                                     return Causes.fromThrowable(t).promise();
+                                                                 }
+                                                             });
+                                                         }
                                                          case "delete" -> {
                                                              spy.deletes.incrementAndGet();
                                                              yield spy.deleteGate.flatMap(_ -> real.delete((ObjectId) args[0]));
@@ -370,7 +425,13 @@ class IngestSinkTest {
                                                          }
                                                          case "commit" -> spy.failCommit
                                                                           ? Causes.cause("commit failed").promise()
-                                                                          : invoke(real, method, args);
+                                                                          : spy.commitGate.flatMap(_ -> {
+                                                                              try {
+                                                                                  return (Promise<?>) invoke(real, method, args);
+                                                                              } catch (Throwable t) {
+                                                                                  return Causes.fromThrowable(t).promise();
+                                                                              }
+                                                                          });
                                                          default -> invoke(real, method, args);
                                                      });
     }
@@ -508,6 +569,105 @@ class IngestSinkTest {
         assertThat(ref.size()).isEqualTo(1000);
         assertThat(handle.files().getFirst().object()).as("the wire handle is the reference's text form")
                                                       .isEqualTo(UploadObjects.objectHandle(ref));
+    }
+
+    // ---- #2876: a late completion of an abandoned accept ----
+    /// The server abandoned an accept whose commit hangs; the commit resolves after the abort. What it stored is deleted.
+    @Test
+    void abort_thenTheHungCommitResolves_leavesTheStoreEmpty() throws Exception {
+        var spy = new Spy(false);
+        var store = store(storage(64L * MIB));
+        var sink = sink(spy(store, spy), multipart(UploadSpec.uploadSpec(true, 0, 0)));
+        var hung = Promise.<Unit>promise();
+
+        spy.commitGate = hung;
+        sink.accept(ByteBuffer.wrap(multipartBody(random(100, 1), random(100, 2))));
+        sink.abort(BodySink.Ended.STALLED);
+        spy.deleteGate.succeed(Unit.unit());
+        await(() -> permits.get() == 1, "the clean-up settled and the permit was returned");
+        hung.succeed(Unit.unit());
+        await(() -> catalog(store).isEmpty() && spy.deletes.get() >= 1, "the late commit's object was deleted");
+
+        assertThat(catalog(store)).as("nothing the abandoned chain committed survives").isEmpty();
+    }
+
+    /// The same chain must also not go on: after the abort, the next file part's writer is never created.
+    @Test
+    void abort_thenTheHungCommitResolves_opensNoFurtherWriter() throws Exception {
+        var spy = new Spy(false);
+        var store = store(storage(64L * MIB));
+        var sink = sink(spy(store, spy), multipart(UploadSpec.uploadSpec(true, 0, 0)));
+        var hung = Promise.<Unit>promise();
+
+        spy.commitGate = hung;
+        spy.deleteGate.succeed(Unit.unit());
+        sink.accept(ByteBuffer.wrap(multipartBody(random(100, 1), random(100, 2))));
+        sink.abort(BodySink.Ended.STALLED);
+        await(() -> permits.get() == 1, "the clean-up settled and the permit was returned");
+        hung.succeed(Unit.unit());
+        await(() -> spy.deletes.get() >= 1, "the late commit's object was deleted");
+        Thread.sleep(200);
+
+        assertThat(spy.creates.get()).as("only the first file's writer was ever created").isEqualTo(1);
+        assertThat(spy.aborts.get()).isZero();
+    }
+
+    /// A file start whose create hangs and resolves after the abort: the writer it yields is aborted at once.
+    @Test
+    void abort_thenTheHungCreateResolves_abortsTheLateWriter_andStoresNothing() throws Exception {
+        var spy = new Spy(false);
+        var store = store(storage(64L * MIB));
+        var sink = sink(spy(store, spy), multipart(UploadSpec.uploadSpec(true, 0, 0)));
+        var hung = Promise.<Unit>promise();
+
+        spy.createGate = hung;
+        sink.accept(ByteBuffer.wrap(multipartBody(random(100, 1), random(100, 2))));
+        sink.abort(BodySink.Ended.STALLED);
+        await(() -> permits.get() == 1, "the clean-up settled and the permit was returned");
+        hung.succeed(Unit.unit());
+        await(() -> spy.aborts.get() == 1, "the late writer was aborted");
+        Thread.sleep(200);
+
+        assertThat(spy.aborts.get()).isEqualTo(1);
+        assertThat(spy.creates.get()).as("the chain stopped at the refused writer").isEqualTo(1);
+        assertThat(catalog(store)).isEmpty();
+    }
+
+    /// #2876: a delete that never resolves must not hold the request's admission: the clean-up gives up on it at the bound.
+    @Test
+    void abort_withAHungDelete_returnsThePermitAtTheDeleteBound() throws Exception {
+        var spy = new Spy(false);
+        var sink = sink(spy(store(storage(64L * MIB)), spy),
+                        multipart(UploadSpec.uploadSpec(true, 0, 0)),
+                        TimeSpan.timeSpan(300).millis());
+
+        assertThat(push(sink, firstFileCommittedSecondOpen(), 400_000)).isEmpty();
+        sink.abort(BodySink.Ended.DISCONNECTED);
+        await(() -> spy.deletes.get() == 1, "the committed file's delete started");
+
+        await(() -> permits.get() == 1, "the delete was given up on and the permit was returned");
+        assertThat(spy.deleteGate.isResolved()).as("the delete itself never resolved").isFalse();
+    }
+
+    /// #2876: the late commit's delete hangs too: the abandoned chain still ends (failed), it does not hang.
+    @Test
+    void abort_thenTheHungCommitResolves_withAHungDelete_theAbandonedChainEndsAtTheDeleteBound() throws Exception {
+        var spy = new Spy(false);
+        var sink = sink(spy(store(storage(64L * MIB)), spy),
+                        multipart(UploadSpec.uploadSpec(true, 0, 0)),
+                        TimeSpan.timeSpan(300).millis());
+        var hung = Promise.<Unit>promise();
+
+        spy.commitGate = hung;
+        var chain = sink.accept(ByteBuffer.wrap(multipartBody(random(100, 1), random(100, 2))));
+
+        sink.abort(BodySink.Ended.STALLED);
+        await(() -> permits.get() == 1, "the clean-up settled and the permit was returned");
+        hung.succeed(Unit.unit());
+        await(() -> spy.deletes.get() == 1, "the late commit's delete started");
+
+        await(chain::isResolved, "the abandoned chain ended though its delete never resolved");
+        assertThat(chain.await(WAIT).isFailure()).as("the chain failed as abandoned").isTrue();
     }
 
     private static byte[] multipartBody(byte[] first, byte[] second) {

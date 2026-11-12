@@ -12,7 +12,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -38,6 +41,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.aether.stream.replication.BackfillError.General.FLIGHT_TIMED_OUT;
 import static org.pragmatica.aether.stream.replication.BackfillError.General.INCOMPLETE_BACKFILL;
+import static org.pragmatica.aether.stream.replication.BackfillError.General.SOURCE_STALLED;
 import static org.pragmatica.aether.stream.replication.BackfillError.General.MALFORMED_RESPONSE;
 import static org.pragmatica.aether.stream.replication.BackfillError.General.NOT_HIGHEST_WATERMARK;
 import static org.pragmatica.aether.stream.replication.BackfillError.General.NO_SOURCE_REPLICA;
@@ -118,6 +122,11 @@ public final class PartitionBackfill {
     /// How many of the owner's newest records a replica that claims to hold them all compares before it is promoted
     /// (#1730 phase 2, the window the promotion gate compares as well).
     private static final long TAIL_VERIFY_WINDOW = 1024L;
+    /// The promotion gate's own catch-up ([#catchUpOwnerFrom]) weighs no other survivor: it would probe the same source again.
+    private static final LongSupplier NO_OTHER_SURVIVOR = () -> - 1L;
+    /// #2954: consecutive owner catch-up rounds a source may answer INCOMPLETE without the owner's head advancing before the round falls
+    /// back to the next-ranked source.
+    public static final int MAX_STALLED_ROUNDS = 3;
 
     private final ReplicaRegistry registry;
     private final AlignedRecovery partitionRecovery;
@@ -165,6 +174,9 @@ public final class PartitionBackfill {
     /// #1555 sticky ownership owner source; default: no committed owner, pure HRW (see [#hrwOwner]).
     private volatile OwnerResolver ownerResolver = (_, _) -> Option.none();
     private volatile OwnerActivation.BlockAlarm blockAlarm = _ -> Unit.unit();
+    /// #2960: whether a stream still exists on this node; read under [#oversizedOrder] by [#raiseStalled] and [#reconcileStalled], so a
+    /// destroyed stream raises nothing. Default: every stream exists (until wired).
+    private volatile Predicate<String> streamExists = _ -> true;
     /// Whether a node is named in a partition's COMMITTED in-sync set (#2080); default: never, so no escape (see [#committedIsr]).
     private volatile CommittedIsr committedIsr = (_, _, _) -> false;
     /// How long a co-replica must stay unreachable before an ISR-named candidate goes ahead without it (#2080, `[streaming]
@@ -180,6 +192,9 @@ public final class PartitionBackfill {
 
     /// The oversized-peer block last reported per partition, so a redrive of the same condition is silent (#1937).
     private final ConcurrentHashMap<PartitionKey, OwnerActivation.ActivationBlock> reportedOversized;
+    /// #2960: the all-stalled block last reported per partition, so the terminal state of an owner catch-up (every source demoted) raises
+    /// once and a redrive of it is silent. Recorded, raised, removed and resolved under [#oversizedOrder], like [#reportedOversized].
+    private final ConcurrentHashMap<PartitionKey, OwnerActivation.ActivationBlock> reportedStalled;
 
     /// Raise-before-resolve (#2004) for [#reportedOversized]: recording the block and raising it, and removing it and resolving it, each
     /// happen under this monitor, so a clear that lands while a raise is in flight waits for it and delivers [raise, resolve], never
@@ -196,6 +211,19 @@ public final class PartitionBackfill {
     /// offset and becomes a no-op once the replica reaches the owner's true tail — never a per-tick probe.
     /// A failed re-verify leaves `confirmedOffset` unchanged AND unrecorded, so the next tick retries.
     private final ConcurrentHashMap<PartitionKey, Long> reverifiedAtOffset;
+    /// I-27 (#1759, CTO A1): per partition and source replica, where that replica's committed lineage ENDS, learned when an owner
+    /// catch-up clipped its page ([#withinCommittedLineage]). The replica's `confirmedOffset` is its raw WAL tail, which may run past
+    /// the lineage into a deposed epoch's records; ranking by the raw tail would pick it again on every redrive. The entry is valid
+    /// only while the replica's tail is the one observed ([Lineage#rawTail]); a larger tail is new data and is re-read. Shared by
+    /// the per-run views.
+    private final ConcurrentHashMap<PartitionKey, ConcurrentHashMap<NodeId, Lineage>> committedLineageEnds;
+    /// #2954: per partition and source replica, the consecutive owner catch-up rounds in which the source answered INCOMPLETE and the
+    /// owner's head did not advance. Cleared for the source when it makes progress, and for the partition when any source reaches the
+    /// target. Shared by the per-run views.
+    private final ConcurrentHashMap<PartitionKey, ConcurrentHashMap<NodeId, Integer>> stalledRounds;
+
+    /// A source replica's committed-lineage end `end`, observed while its raw tail was `rawTail`.
+    private record Lineage(long rawTail, long end) {}
 
     /// Per-partition wall-clock instant (ms) of the last owner re-verify for a CAUGHT_UP non-owner replica
     /// (#333 write-idle residual). Sibling of {@link #firstNoSourceMs}: it quiesces the periodic re-verify so
@@ -273,6 +301,9 @@ public final class PartitionBackfill {
         this.firstNoSourceMs = new ConcurrentHashMap<>();
         this.unreachableSinceMs = new ConcurrentHashMap<>();
         this.reverifiedAtOffset = new ConcurrentHashMap<>();
+        this.committedLineageEnds = new ConcurrentHashMap<>();
+        this.stalledRounds = new ConcurrentHashMap<>();
+        this.reportedStalled = new ConcurrentHashMap<>();
         this.lastReverifyMs = new ConcurrentHashMap<>();
         this.inFlight = new ConcurrentHashMap<>();
         this.reportedOversized = new ConcurrentHashMap<>();
@@ -304,10 +335,14 @@ public final class PartitionBackfill {
         this.committedIsr = shared.committedIsr;
         this.promotionEscapeAfter = shared.promotionEscapeAfter;
         this.reverifiedAtOffset = shared.reverifiedAtOffset;
+        this.committedLineageEnds = shared.committedLineageEnds;
+        this.stalledRounds = shared.stalledRounds;
+        this.reportedStalled = shared.reportedStalled;
         this.lastReverifyMs = shared.lastReverifyMs;
         this.inFlight = shared.inFlight;
         this.ownerResolver = shared.ownerResolver;
         this.blockAlarm = shared.blockAlarm;
+        this.streamExists = shared.streamExists;
         this.reportedOversized = shared.reportedOversized;
         this.oversizedOrder = shared.oversizedOrder;
         this.current = current;
@@ -848,10 +883,12 @@ public final class PartitionBackfill {
     }
 
     private Promise<Long> runBackfill(String streamName, int partition, boolean mayRepair) {
+        reconcileStalled();
         var replicas = registry.replicasFor(streamName, partition);
 
         if (isQuarantined(streamName, partition)) {
             clearOversized(streamName, partition);
+            clearStalled(streamName, partition);
 
             return mayRepair && repairable(streamName, partition)
                    ? repairThenRun(streamName, partition)
@@ -863,6 +900,7 @@ public final class PartitionBackfill {
         }
 
         clearOversized(streamName, partition);
+        clearStalled(streamName, partition);
 
         return hrwOwner(streamName, partition).filter(owner -> !owner.equals(self))
                        .fold(() -> backfillViaRegistryOrColdStart(streamName, partition, replicas),
@@ -1663,6 +1701,13 @@ public final class PartitionBackfill {
         this.blockAlarm = alarm;
     }
 
+    /// Late-bind where a stream's existence is read (#2960): the all-stalled warning is raised only for a stream that exists, and
+    /// [#reconcileStalled] resolves it for one that does not. Set once at wiring.
+    @Contract
+    public void streamExists(Predicate<String> exists) {
+        this.streamExists = exists;
+    }
+
     /// Whether `node` is named in the COMMITTED in-sync set of `(stream, partition)` (`isrVersion > 0` and the set contains it).
     @FunctionalInterface
     public interface CommittedIsr {
@@ -1702,19 +1747,227 @@ public final class PartitionBackfill {
     /// {@link #probeThenPromoteOwner}, which probes the blind survivors' REAL tails before it may self-promote.
     private Promise<Long> promoteOwner(String streamName, int partition, List<ReplicaDescriptor> replicas) {
         var localWatermark = selfWatermark.localWatermark(streamName, partition);
+        var ahead = aheadSurvivors(replicas, localWatermark);
 
-        return aheadSurvivor(replicas, localWatermark).fold(() -> probeThenPromoteOwner(streamName,
-                                                                                        partition,
-                                                                                        replicas,
-                                                                                        localWatermark),
-                                                            survivor -> {
-                                                                clearOversized(streamName, partition);
+        if (ahead.isEmpty()) {
+            return probeThenPromoteOwner(streamName, partition, replicas, localWatermark);
+        }
 
-                                                                return catchupOwnerFromSurvivor(streamName,
-                                                                                                partition,
-                                                                                                survivor,
-                                                                                                localWatermark);
-                                                            });
+        clearOversized(streamName, partition);
+
+        return rankedCatchup(streamName,
+                             partition,
+                             ahead.stream()
+                                  .<Supplier<Promise<Long>>> map(survivor -> () -> demoteStalled(streamName,
+                                                                                                 partition,
+                                                                                                 survivor.nodeId(),
+                                                                                                 localWatermark,
+                                                                                                 () -> catchupOwnerFromSurvivor(streamName,
+                                                                                                                                partition,
+                                                                                                                                survivor,
+                                                                                                                                localWatermark)))
+                                  .toList());
+    }
+
+    /// I-27 (#1759, CTO ruling 2026-11-09, FER): the catch-up of the top-ranked source failed (unreadable, damaged, unreachable), so the
+    /// owner falls back to the NEXT-ranked source by committed-lineage end, each tried once per round. Every attempt keeps its own target
+    /// rule (its lineage end, raised to the best other end), so a fallback never activates the owner below a replica that holds more of
+    /// the committed lineage. A source that WAS read but whose run stayed short of the target ([BackfillError.General#INCOMPLETE_BACKFILL])
+    /// is the target rule holding the owner back, not an unreadable source: no fallback, until it has stalled for [#MAX_STALLED_ROUNDS]
+    /// rounds without progress ([#demoteStalled], #2954). The guarantee: a round activates only through a
+    /// source whose read succeeded and reached the target; when every source fails the last failure propagates, self stays SYNCING and the
+    /// redrive retries (a failed source is read again only in a later round, after the others were tried). Mechanism: a lazy chain over the
+    /// ranked attempts, each started only after the previous one failed.
+    private static Promise<Long> inRankOrder(List<Supplier<Promise<Long>>> attempts) {
+        return attempts.stream()
+                       .reduce(NO_SOURCE_REPLICA.<Long> promise(),
+                               PartitionBackfill::unlessShort,
+                               (first, _) -> first);
+    }
+
+    /// #2954 (CTO ruling, FER): a source that keeps answering INCOMPLETE (a short page, no lineage hold) without the owner's head advancing
+    /// would be retried forever, since [#inRankOrder] never falls back on a short run. After [#MAX_STALLED_ROUNDS] such consecutive rounds
+    /// the source's INCOMPLETE is replaced by [BackfillError.General#SOURCE_STALLED], which the chain treats like a failed read: the round
+    /// falls back to the next-ranked source, each keeping its own target rule, so the owner is never activated below the demoted source's
+    /// end. A source that makes progress (the head advanced) is kept, and its count restarts. The guarantee: a stalled source costs at most
+    /// [#MAX_STALLED_ROUNDS] rounds before another replica is read; with no other replica the failure propagates and self stays SYNCING.
+    /// Mechanism: a per-partition, per-source counter updated before the result reaches the chain.
+    private Promise<Long> demoteStalled(String streamName,
+                                        int partition,
+                                        NodeId source,
+                                        long localWatermark,
+                                        Supplier<Promise<Long>> attempt) {
+        return attempt.get()
+                      .replaceResult(result -> trackStall(streamName, partition, source, localWatermark, result));
+    }
+
+    /// [#inRankOrder], then the all-stalled signal (#2960): a round whose LAST failure is [BackfillError.General#SOURCE_STALLED] has run out of
+    /// sources, since each earlier one failed or was demoted before the chain reached it. The guarantee: that terminal state raises the
+    /// operator warning once per episode and never activates the owner; progress or activation clears it ([#clearStalled]).
+    /// Mechanism: a transform on the chain's final result, under the dedup of [#reportedStalled].
+    private Promise<Long> rankedCatchup(String streamName, int partition, List<Supplier<Promise<Long>>> attempts) {
+        return inRankOrder(attempts).replaceResult(result -> reportIfAllStalled(streamName, partition, result));
+    }
+
+    private Result<Long> reportIfAllStalled(String streamName, int partition, Result<Long> result) {
+        if (result.fold(SOURCE_STALLED::equals, _ -> false)) {
+            raiseStalled(streamName, partition);
+        }
+
+        return result;
+    }
+
+    Unit raiseStalled(String streamName, int partition) {
+        var block = new OwnerActivation.ActivationBlock.CatchupStalled(streamName, partition, MAX_STALLED_ROUNDS);
+        // `current` is read INSIDE the monitor, as in [#oversizedPeer]: a superseded flight must not raise after its successor's clear.
+        synchronized (oversizedOrder) {
+            if (mayRaiseStalled(streamName) && !block.equals(reportedStalled.put(partitionKey(streamName, partition),
+                                                                                 block))) {
+                blockAlarm.raise(block);
+            }
+        }
+
+        return Unit.unit();
+    }
+
+    /// Inside the monitor: the flight is the current one and the stream still exists (#2960 F2), so a destroyed stream is never given a report.
+    private boolean mayRaiseStalled(String streamName) {
+        return current.getAsBoolean() && streamExists.test(streamName);
+    }
+
+    /// The all-stalled state no longer holds (#2960): a source advanced the owner, the round activated it, no source answered ahead of it any more, or this node is no longer the partition's owner.
+    /// Forgetting the report lets the state raise again when it recurs; the alarm is told so the operator sees it end.
+    Unit clearStalled(String streamName, int partition) {
+        synchronized (oversizedOrder) {
+            if (current.getAsBoolean()) {
+                Option.option(reportedStalled.remove(partitionKey(streamName, partition))).onPresent(blockAlarm::resolved);
+            }
+        }
+
+        return Unit.unit();
+    }
+
+    /// Level trigger of the all-stalled warning (#2960). The guarantee: after a call returns, no open report is for a partition that is not
+    /// all-stalled NOW and held by this node, whatever route took it out of that state. A report stays open only while the stream exists, this
+    /// node is still a registered replica of the partition and its owner, the partition is not quarantined, and some source's stall counter is
+    /// at [#MAX_STALLED_ROUNDS]. Mechanism: every open report is re-derived from live state, so no exit has to be enumerated. Run on every
+    /// backfill round, every reconcile pass of the replica set (ownership and membership changes) and every redrive tick; raising stays
+    /// idempotent and dedup'd. A raise racing a replica-set removal can outlive the removal until the next of those, at most one redrive tick.
+    /// The ownership and quarantine reads happen before the monitor, which stays a leaf: a flip between them and the monitor costs at worst a
+    /// resolve that the next stalled round raises again, never a report left open.
+    public Unit reconcileStalled() {
+        var notHeld = reportedStalled.keySet().stream().filter(this::isNotHeldAsOwner).collect(Collectors.toSet());
+
+        synchronized (oversizedOrder) {
+            reportedStalled.keySet()
+                           .stream()
+                           .filter(key -> notHeld.contains(key) || !isStalledNow(key))
+                           .toList()
+                           .forEach(key -> clearStalled(key.streamName(),
+                                                        key.partition()));
+        }
+
+        return Unit.unit();
+    }
+
+    private boolean isNotHeldAsOwner(PartitionKey key) {
+        return isQuarantined(key.streamName(), key.partition()) || !isSelfOwner(key.streamName(), key.partition());
+    }
+
+    private boolean isStalledNow(PartitionKey key) {
+        return streamExists.test(key.streamName())
+               && isSelfReplica(key)
+               && hasStalledSource(key);
+    }
+
+    private boolean isSelfReplica(PartitionKey key) {
+        return registry.replicasFor(key.streamName(),
+                                    key.partition())
+                       .stream()
+                       .anyMatch(descriptor -> descriptor.nodeId()
+                                                         .equals(self));
+    }
+
+    private boolean hasStalledSource(PartitionKey key) {
+        return Option.option(stalledRounds.get(key))
+                     .map(rounds -> rounds.values()
+                                          .stream()
+                                          .anyMatch(count -> count >= MAX_STALLED_ROUNDS))
+                     .or(false);
+    }
+
+    /// The stream was destroyed (#2960): no partition of it can end its all-stalled state by a later round, so each open report is resolved.
+    /// Called from the stream-removed listener; a stream recreated under the same name starts with no report.
+    public Unit clearStalledOf(String streamName) {
+        synchronized (oversizedOrder) {
+            reportedStalled.keySet()
+                           .stream()
+                           .filter(key -> key.streamName()
+                                             .equals(streamName))
+                           .toList()
+                           .forEach(key -> clearStalled(key.streamName(),
+                                                        key.partition()));
+        }
+
+        return Unit.unit();
+    }
+
+    private Result<Long> trackStall(String streamName,
+                                    int partition,
+                                    NodeId source,
+                                    long localWatermark,
+                                    Result<Long> result) {
+        var key = partitionKey(streamName, partition);
+
+        if (result.isSuccess()) {
+            stalledRounds.remove(key);
+            clearStalled(streamName, partition);
+
+            return result;
+        }
+
+        if (!result.fold(INCOMPLETE_BACKFILL::equals, _ -> false)) {
+            return result;
+        }
+
+        var rounds = stalledRounds.computeIfAbsent(key, _ -> new ConcurrentHashMap<>());
+
+        if (selfWatermark.localWatermark(streamName, partition) > localWatermark) {
+            rounds.remove(source);
+            clearStalled(streamName, partition);
+
+            return result;
+        }
+
+        return rounds.merge(source, 1, Integer::sum) >= MAX_STALLED_ROUNDS
+               ? stalled(streamName, partition, source)
+               : result;
+    }
+
+    private static Result<Long> stalled(String streamName, int partition, NodeId source) {
+        log.warn("Backfill {}[{}]: source {} answered short without progress for {} rounds — falling back to the next-ranked source",
+                 streamName,
+                 partition,
+                 source,
+                 MAX_STALLED_ROUNDS);
+
+        return SOURCE_STALLED.result();
+    }
+
+    private static Promise<Long> unlessShort(Promise<Long> previous, Supplier<Promise<Long>> next) {
+        var settled = Promise.<Long> promise();
+
+        previous.onResult(result -> settleAfter(result, next, settled));
+
+        return settled;
+    }
+
+    private static Promise<Long> settleAfter(Result<Long> result, Supplier<Promise<Long>> next, Promise<Long> settled) {
+        return result.fold(cause -> cause == INCOMPLETE_BACKFILL
+                                    ? settled.resolve(result)
+                                    : next.get()
+                                          .onResult(settled::resolve),
+                           _ -> settled.resolve(result));
     }
 
     /// #1555 owner promotion gate: pull `(local watermark + 1) .. sourceTail` of `(streamName, partition)` from
@@ -1726,7 +1979,8 @@ public final class PartitionBackfill {
                                         partition,
                                         source,
                                         sourceTail,
-                                        selfWatermark.localWatermark(streamName, partition));
+                                        selfWatermark.localWatermark(streamName, partition),
+                                        NO_OTHER_SURVIVOR).onSuccess(_ -> clearStalled(streamName, partition));
     }
 
     /// The surviving NON-SELF replica holding the highest `confirmedOffset`, but only when it is STRICTLY
@@ -1736,10 +1990,56 @@ public final class PartitionBackfill {
     /// single best-effort pick) is what makes the target the true watermark, since any one survivor may hold
     /// a different acked subset.
     private Option<ReplicaDescriptor> aheadSurvivor(List<ReplicaDescriptor> replicas, long localWatermark) {
-        return Option.from(replicas.stream()
-                                   .filter(descriptor -> !descriptor.nodeId()
-                                                                    .equals(self))
-                                   .max(Comparator.comparingLong(ReplicaDescriptor::confirmedOffset))).filter(survivor -> survivor.confirmedOffset() > localWatermark);
+        return Option.from(aheadSurvivors(replicas, localWatermark).stream().findFirst());
+    }
+
+    /// Every surviving NON-SELF replica strictly ahead of `localWatermark`, ranked by committed-lineage end, highest first (ties keep
+    /// registry order); the head is {@link #aheadSurvivor}.
+    private List<ReplicaDescriptor> aheadSurvivors(List<ReplicaDescriptor> replicas, long localWatermark) {
+        return replicas.stream()
+                       .filter(descriptor -> !descriptor.nodeId()
+                                                        .equals(self))
+                       .filter(survivor -> lineageEnd(survivor) > localWatermark)
+                       .sorted(Comparator.comparingLong((ReplicaDescriptor descriptor) -> lineageEnd(descriptor)).reversed())
+                       .toList();
+    }
+
+    /// I-27 (#1759, CTO A1): the offset up to which `replica` is a source for the owner: its `confirmedOffset`, capped at the
+    /// committed-lineage end an earlier clipped catch-up learned for it, while its tail is still the one observed then.
+    private long lineageEnd(ReplicaDescriptor replica) {
+        return lineageEnd(replica.streamName(), replica.partition(), replica.nodeId(), replica.confirmedOffset());
+    }
+
+    /// I-27 (#1759, CTO P10): the offset up to which `node`, whose tail is `tail` (registry-known or probed), is a source for the
+    /// owner: `tail` capped at the committed-lineage end an earlier clipped catch-up learned for it, while `tail` is still the one
+    /// observed then.
+    public long lineageEnd(String streamName, int partition, NodeId node, long tail) {
+        return Option.option(committedLineageEnds.get(partitionKey(streamName, partition)))
+                     .flatMap(ends -> Option.option(ends.get(node)))
+                     .filter(lineage -> tail <= lineage.rawTail())
+                     .map(lineage -> Math.min(tail,
+                                              lineage.end()))
+                     .or(tail);
+    }
+
+    private void rememberLineageEnd(String streamName, int partition, NodeId source, long rawTail, long end) {
+        committedLineageEnds.computeIfAbsent(partitionKey(streamName, partition),
+                                             _ -> new ConcurrentHashMap<>())
+                            .put(source,
+                                 new Lineage(rawTail, end));
+    }
+
+    /// The highest [#lineageEnd] among the survivors other than `source`: what the owner must still reach before it may be
+    /// authoritative once `source`'s page was clipped, so a replica that holds more of the committed lineage is read on the next redrive.
+    private long otherSurvivorsEnd(String streamName, int partition, NodeId source) {
+        return registry.replicasFor(streamName, partition)
+                       .stream()
+                       .filter(descriptor -> !descriptor.nodeId()
+                                                        .equals(self) && !descriptor.nodeId()
+                                                                                    .equals(source))
+                       .mapToLong(this::lineageEnd)
+                       .max()
+                       .orElse(-1L);
     }
 
     /// Hold self NON-authoritative (SYNCING at the local watermark, so the read path forwards to the
@@ -1758,7 +2058,8 @@ public final class PartitionBackfill {
                                         partition,
                                         survivor.nodeId(),
                                         survivor.confirmedOffset(),
-                                        localWatermark);
+                                        localWatermark,
+                                        () -> otherSurvivorsEnd(streamName, partition, survivor.nodeId()));
     }
 
     /// Core promoted-owner catch-up against an explicit `(survivorNode, survivorTail)`. The local-registry
@@ -1780,7 +2081,8 @@ public final class PartitionBackfill {
                                                    int partition,
                                                    NodeId survivorNode,
                                                    long survivorTail,
-                                                   long localWatermark) {
+                                                   long localWatermark,
+                                                   LongSupplier othersEnd) {
         updateWatermark(streamName, partition, self, localWatermark, ReplicationState.SYNCING);
         var fromOffset = localWatermark + 1;
         var request = catchupRequest(survivorNode, streamName, partition, fromOffset);
@@ -1796,8 +2098,71 @@ public final class PartitionBackfill {
         return transport.requestCatchup(survivorNode,
                                         request,
                                         () -> progress(streamName, partition))
-                        .flatMap(response -> applyAndPromote(streamName, partition, survivorTail, response))
+                        .flatMap(response -> applyWithinLineage(streamName,
+                                                                partition,
+                                                                survivorNode,
+                                                                survivorTail,
+                                                                othersEnd,
+                                                                response))
                         .withSuccess(_ -> recordSurvivorConfirmed(streamName, partition, survivorNode, survivorTail));
+    }
+
+    /// I-27 (#1759, CTO A1, P10): the activating owner targets the source's committed-lineage end, never its raw tail. When the page
+    /// was clipped the end is remembered for the source ([#lineageEnd]) and the target is raised to `othersEnd` — the best
+    /// committed-lineage end among the OTHER survivors (registry-ranked or probed; `-1` on the promotion gate's own path), so the run
+    /// (clipped, or a fallback source ranked below an unreadable one) stays short of a replica that holds more of the lineage and the next redrive reads that replica instead of this source again.
+    private Promise<Long> applyWithinLineage(String streamName,
+                                             int partition,
+                                             NodeId survivorNode,
+                                             long survivorTail,
+                                             LongSupplier othersEnd,
+                                             ReplicationMessage.CatchupResponse response) {
+        var bound = lineageBound(response);
+        var end = bound.map(b -> Math.min(survivorTail, b - 1))
+                       .onPresent(e -> rememberLineageEnd(streamName, partition, survivorNode, survivorTail, e));
+        var target = Math.max(end.or(survivorTail), othersEnd.getAsLong());
+
+        return applyAndPromote(streamName,
+                               partition,
+                               target,
+                               bound.map(b -> clippedBefore(response, b)).or(response));
+    }
+
+    /// I-27 (#1759, CTO D1): the activating owner takes a source's records only up to the lowest offset a later committed epoch
+    /// re-assigned ([AlignedRecovery#reassignedFrom]): a replica serving its WAL ships what it holds, a deposed epoch's tail
+    /// included, vouched by its own history, and the receiver clips it. What is left out is never installed, and the end learned
+    /// here caps the source in the promotion gate's ranking ([#lineageEnd], #3071): the refused tail never counts as ahead.
+    private Option<Long> lineageBound(ReplicationMessage.CatchupResponse response) {
+        return partitionRecovery.reassignedFrom(response.streamName(),
+                                                response.partition(),
+                                                response.fromOffset(),
+                                                response.toOffset(),
+                                                response.history())
+                                .onPresent(bound -> log.warn("Backfill {}[{}]: source {} serves records from {} that a later committed epoch "
+                                                            + "re-assigned; they are not installed",
+                                                             response.streamName(),
+                                                             response.partition(),
+                                                             response.governorId(),
+                                                             bound));
+    }
+
+    private static ReplicationMessage.CatchupResponse clippedBefore(ReplicationMessage.CatchupResponse response,
+                                                                    long bound) {
+        var kept = (int) Math.clamp(bound - response.fromOffset(),
+                                    0L,
+                                    response.payloads().size());
+
+        return ReplicationMessage.CatchupResponse.catchupResponse(response.governorId(),
+                                                                  response.streamName(),
+                                                                  response.partition(),
+                                                                  response.fromOffset(),
+                                                                  response.fromOffset() + kept - 1,
+                                                                  response.payloads().subList(0, kept),
+                                                                  response.timestamps()
+                                                                          .subList(0,
+                                                                                   Math.min(kept,
+                                                                                            response.timestamps().size())),
+                                                                  response.history());
     }
 
     /// After a SUCCESSFUL owner catch-up the owner has just read `localWatermark + 1 .. survivorTail` FROM
@@ -1808,26 +2173,20 @@ public final class PartitionBackfill {
     /// "a CAUGHT_UP non-owner exists" check see the survivor CAUGHT_UP@survivorTail immediately, without
     /// waiting for the survivor's next live ack or the #333 redrive. Fires ONLY on a successful pull
     /// ({@link Promise#withSuccess}) and only for the survivor actually pulled from, at the tail actually
-    /// applied. Guarded MONOTONIC-UP: {@link ReplicaRegistry#updateWatermark} overwrites unconditionally, so
-    /// it is invoked only when `survivorTail` exceeds the survivor's currently-recorded offset — a concurrent
-    /// higher live ack is never clobbered down. On the local-registry HIT path this is a no-op (the survivor's
-    /// row already carries `survivorTail`).
+    /// applied. Routed through {@link ReplicaRegistry#advanceWatermark} (#2888) with the ZERO epoch this evidence carries, so
+    /// the monotone rule is decided under the row's own lock: a concurrent higher live ack is never clobbered down, and a row
+    /// already confirmed under a real owner epoch is not replaced by an uncounted ZERO-epoch row. On the local-registry HIT path
+    /// this is a no-op (the survivor's row already carries `survivorTail`).
+    @Contract
     private void recordSurvivorConfirmed(String streamName, int partition, NodeId survivorNode, long survivorTail) {
-        if (survivorTail > recordedOffset(streamName, partition, survivorNode)) {
-            updateWatermark(streamName, partition, survivorNode, survivorTail);
+        if (current.getAsBoolean()) {
+            registry.advanceWatermark(streamName,
+                                      partition,
+                                      survivorNode,
+                                      survivorTail,
+                                      ReplicationState.CAUGHT_UP,
+                                      Epoch.ZERO);
         }
-    }
-
-    /// The survivor's currently-recorded `confirmedOffset` in the owner's registry, or `-1` when it has no
-    /// row yet (blind). Used by {@link #recordSurvivorConfirmed} to keep the survivor-row update monotonic-up.
-    private long recordedOffset(String streamName, int partition, NodeId nodeId) {
-        return registry.replicasFor(streamName, partition)
-                       .stream()
-                       .filter(descriptor -> descriptor.nodeId()
-                                                       .equals(nodeId))
-                       .mapToLong(ReplicaDescriptor::confirmedOffset)
-                       .findFirst()
-                       .orElse(-1L);
     }
 
     /// Peer-watermark-blind fallback (#336): reached when the local-registry {@link #aheadSurvivor} finds NO
@@ -1848,6 +2207,7 @@ public final class PartitionBackfill {
 
         if (blind.isEmpty()) {
             clearOversized(streamName, partition);
+            clearStalled(streamName, partition);
 
             return ownerSelfPromote(streamName, partition);
         }
@@ -1875,31 +2235,51 @@ public final class PartitionBackfill {
                        .toList();
     }
 
-    /// Decide the promoted owner's next move from the probed REAL tails of the blind survivors:
-    ///   - the highest REACHABLE tail strictly exceeds `localWatermark` → catch up from that survivor (the
-    ///     fresh-owner fix: pull the partition the local registry could not see),
-    ///   - no reachable tail is ahead but some peer is UNREACHABLE → its watermark is unknown and might be
+    /// Decide the promoted owner's next move from the probed REAL tails of the blind survivors, each capped at its committed-lineage
+    /// end ([#lineageEnd]; I-27, #1759, CTO P10 — never ranked by a raw tail, which may run into a deposed epoch's records):
+    ///   - the highest REACHABLE lineage end strictly exceeds `localWatermark` → catch up from a survivor holding it (the
+    ///     fresh-owner fix: pull the partition the local registry could not see), held short of the best OTHER probed end so a
+    ///     clipped page does not activate the owner below a replica that holds more of the committed lineage,
+    ///   - no reachable lineage end is ahead but some peer is UNREACHABLE → its watermark is unknown and might be
     ///     ahead, so route to the bounded-wait {@link #escapeOwnerCatchup} (never self-promote empty past a
     ///     possibly-ahead peer; never wedge — self stays SYNCING so the redrive retries, then degrades),
     ///   - every peer reachable and none ahead → genuinely nothing ahead → {@link #ownerSelfPromote}.
     private Promise<Long> decideOwnerCatchup(String streamName, int partition, Probed probed, long localWatermark) {
         var peers = probed.peers();
         var results = probed.results();
-        var bestTail = results.stream().mapToLong(result -> result.or(-1L)).max().orElse(-1L);
+        var ends = probedEnds(streamName, partition, peers, results);
+        var bestEnd = ends.stream().mapToLong(Long::longValue).max().orElse(-1L);
 
-        if (bestTail > localWatermark) {
+        if (bestEnd > localWatermark) {
             clearOversized(streamName, partition);
 
-            return catchupOwnerFromSurvivor(streamName,
-                                            partition,
-                                            peerWithTail(peers, results, bestTail),
-                                            bestTail,
-                                            localWatermark);
+            return rankedCatchup(streamName,
+                                 partition,
+                                 IntStream.range(0,
+                                                 ends.size())
+                                          .boxed()
+                                          .filter(i -> ends.get(i) > localWatermark)
+                                          .sorted(Comparator.comparingLong((Integer i) -> ends.get(i)).reversed())
+                                          .<Supplier<Promise<Long>>> map(i -> () -> demoteStalled(streamName,
+                                                                                                  partition,
+                                                                                                  peers.get(i),
+                                                                                                  localWatermark,
+                                                                                                  () -> catchupOwnerFromSurvivor(streamName,
+                                                                                                                                 partition,
+                                                                                                                                 peers.get(i),
+                                                                                                                                 results.get(i)
+                                                                                                                                        .or(-1L),
+                                                                                                                                 localWatermark,
+                                                                                                                                 () -> othersMax(ends,
+                                                                                                                                                 i))))
+                                          .toList());
         }
 
         var oversizedAt = oversizedIndex(results);
 
         if (oversizedAt >= 0) {
+            clearStalled(streamName, partition);
+
             return oversizedPeer(streamName,
                                  partition,
                                  peers.get(oversizedAt),
@@ -1907,6 +2287,7 @@ public final class PartitionBackfill {
         }
 
         clearOversized(streamName, partition);
+        clearStalled(streamName, partition);
         if (results.stream().anyMatch(Result::isFailure)) {
             return escapeOwnerCatchup(streamName, partition, localWatermark, UNREACHABLE_REPLICA_BLOCKS_PROMOTION);
         }
@@ -1982,17 +2363,28 @@ public final class PartitionBackfill {
         return cause.promise();
     }
 
-    /// The reachable peer whose probed tail equals `tail` (index-aligned with `results`, since
-    /// {@link Promise#allOf} preserves order). `tail` is a strictly-positive reachable maximum here, so an
-    /// unreachable peer's `-1` can never match; the final fallback is unreachable in practice.
-    private NodeId peerWithTail(List<NodeId> peers, List<Result<Long>> results, long tail) {
-        for (var i = 0; i < peers.size(); i++) {
-            if (results.get(i).or(-1L) == tail) {
-                return peers.get(i);
-            }
-        }
+    /// The committed-lineage end ([#lineageEnd]) of each probed peer (index-aligned with `results`, since
+    /// {@link Promise#allOf} preserves order); an unreachable peer reads `-1`.
+    private List<Long> probedEnds(String streamName, int partition, List<NodeId> peers, List<Result<Long>> results) {
+        return IntStream.range(0,
+                               peers.size())
+                        .mapToObj(i -> results.get(i)
+                                              .map(tail -> lineageEnd(streamName,
+                                                                      partition,
+                                                                      peers.get(i),
+                                                                      tail))
+                                              .or(-1L))
+                        .toList();
+    }
 
-        return peers.getFirst();
+    /// The highest of `ends` other than the one at `source`, `-1` when there is none.
+    private static long othersMax(List<Long> ends, int source) {
+        return IntStream.range(0,
+                               ends.size())
+                        .filter(i -> i != source)
+                        .mapToLong(ends::get)
+                        .max()
+                        .orElse(-1L);
     }
 
     /// Liveness escape for a promoted owner blocked ONLY by an UNREACHABLE blind peer — the

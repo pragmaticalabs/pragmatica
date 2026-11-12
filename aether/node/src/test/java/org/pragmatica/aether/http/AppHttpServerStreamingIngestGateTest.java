@@ -12,6 +12,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -30,8 +31,13 @@ import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.QueryParams;
 import org.pragmatica.http.server.Disposition;
 import org.pragmatica.http.server.ResponseWriter;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.storage.ByteRange;
 import org.pragmatica.storage.ContentStore;
 import org.pragmatica.storage.ObjectRef;
@@ -549,6 +555,152 @@ class AppHttpServerStreamingIngestGateTest extends AppHttpServerIngestGateTest {
         assertThat(outcome.discarded()).as("kept: the slice may have claimed it").isZero();
     }
 
+    // ---- a refused stored upload is answered once its delete has finished, whether the delete succeeds or fails (#2921)
+
+    private static final long SLOW_DELETE_MILLIS = 400;
+    private static final Cause DELETE_FAILED = Causes.cause("the stored upload could not be deleted");
+
+    @Test
+    void storedUpload_refusedBySecurityAtDispatch_isAnswered401OnlyAfterItsDeleteFinished_whenTheDeleteIsSlow() throws Exception {
+        start(Protocol.H1, defaults(), 10 * MIB);
+
+        var outcome = dispatchStoredWithDelete("/api/big/", Option.none(), Option.none());
+
+        assertThat(outcome.status()).isEqualTo(Option.some(HttpStatus.UNAUTHORIZED));
+        assertThat(outcome.deleteFinishedAtAnswer()).as("the 401 was observable while the delete was in flight").isTrue();
+    }
+
+    @Test
+    void storedUpload_refusedBySecurityAtDispatch_isStillAnswered401_whenTheDeleteFails() throws Exception {
+        start(Protocol.H1, defaults(), 10 * MIB);
+
+        var outcome = dispatchStoredWithDelete("/api/big/", Option.none(), Option.some(DELETE_FAILED));
+
+        assertThat(outcome.status()).isEqualTo(Option.some(HttpStatus.UNAUTHORIZED));
+        assertThat(outcome.deleteFinishedAtAnswer()).as("answered after the failed delete ended").isTrue();
+    }
+
+    @Test
+    void storedUpload_whoseRouteNoLongerResolves_isAnswered404OnlyAfterItsDeleteFinished_whenTheDeleteIsSlow() throws Exception {
+        start(Protocol.H1, defaults(), 10 * MIB);
+
+        var outcome = dispatchStoredWithDelete("/api/no-such-route/x", Option.some(KEY_A), Option.none());
+
+        assertThat(outcome.status()).isEqualTo(Option.some(HttpStatus.NOT_FOUND));
+        assertThat(outcome.deleteFinishedAtAnswer()).as("the 404 was observable while the delete was in flight").isTrue();
+    }
+
+    @Test
+    void storedUpload_whoseRouteNoLongerResolves_isStillAnswered404_whenTheDeleteFails() throws Exception {
+        start(Protocol.H1, defaults(), 10 * MIB);
+
+        var outcome = dispatchStoredWithDelete("/api/no-such-route/x", Option.some(KEY_A), Option.some(DELETE_FAILED));
+
+        assertThat(outcome.status()).isEqualTo(Option.some(HttpStatus.NOT_FOUND));
+        assertThat(outcome.deleteFinishedAtAnswer()).as("answered after the failed delete ended").isTrue();
+    }
+
+    @Test
+    void storedUpload_refusedByTheRateLimit_isAnswered429OnlyAfterItsDeleteFinished_whenTheDeleteIsSlow() throws Exception {
+        start(Protocol.H1, defaults(), 10 * MIB);
+        dispatchFailure = org.pragmatica.aether.slice.RateGuardError.LimitExceeded.limitExceeded(1000, 10, 0, 0);
+
+        var outcome = dispatchStoredWithDelete("/api/upload/x", Option.some(KEY_A), Option.none());
+
+        assertThat(outcome.status()).isEqualTo(Option.some(HttpStatus.TOO_MANY_REQUESTS));
+        assertThat(outcome.deleteFinishedAtAnswer()).as("the 429 was observable while the delete was in flight").isTrue();
+    }
+
+    @Test
+    void storedUpload_refusedByTheRateLimit_isStillAnswered429_whenTheDeleteFails() throws Exception {
+        start(Protocol.H1, defaults(), 10 * MIB);
+        dispatchFailure = org.pragmatica.aether.slice.RateGuardError.LimitExceeded.limitExceeded(1000, 10, 0, 0);
+
+        var outcome = dispatchStoredWithDelete("/api/upload/x", Option.some(KEY_A), Option.some(DELETE_FAILED));
+
+        assertThat(outcome.status()).isEqualTo(Option.some(HttpStatus.TOO_MANY_REQUESTS));
+        assertThat(outcome.deleteFinishedAtAnswer()).as("answered after the failed delete ended").isTrue();
+    }
+
+    @Test
+    void storedUpload_forRemoteRouteWithoutAForwarder_isAnswered503OnlyAfterItsDeleteFinished_whenTheDeleteIsSlow() throws Exception {
+        start(Protocol.H1, defaults(), 10 * MIB);
+        publishRemoteRouteWithoutAForwarder();
+
+        var outcome = dispatchStoredWithDelete("/remote/x", Option.some(KEY_A), Option.none());
+
+        assertThat(outcome.status()).isEqualTo(Option.some(HttpStatus.SERVICE_UNAVAILABLE));
+        assertThat(outcome.deleteFinishedAtAnswer()).as("the 503 was observable while the delete was in flight").isTrue();
+    }
+
+    @Test
+    void storedUpload_forRemoteRouteWithoutAForwarder_isStillAnswered503_whenTheDeleteFails() throws Exception {
+        start(Protocol.H1, defaults(), 10 * MIB);
+        publishRemoteRouteWithoutAForwarder();
+
+        var outcome = dispatchStoredWithDelete("/remote/x", Option.some(KEY_A), Option.some(DELETE_FAILED));
+
+        assertThat(outcome.status()).isEqualTo(Option.some(HttpStatus.SERVICE_UNAVAILABLE));
+        assertThat(outcome.deleteFinishedAtAnswer()).as("answered after the failed delete ended").isTrue();
+    }
+
+    private void publishRemoteRouteWithoutAForwarder() throws Exception {
+        var node = org.pragmatica.consensus.NodeId.nodeId("serving-node").unwrap();
+        var entry = org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue.RouteEntry.activeRoute("POST", "/remote/", "create", "UNSPECIFIED", "UNSPECIFIED", 0, List.of(), List.of(), true, 4 * MIB, 0);
+
+        registerRoute(node, entry);
+        publishRouteTableUntilServed(Protocol.H1, "/remote/");
+    }
+
+    private record Gated(boolean deleteFinishedAtAnswer, Option<HttpStatus> status) {}
+
+    /// Dispatches a stored upload whose delete finishes only after `SLOW_DELETE_MILLIS`, with `deleteFailure` as its result
+    /// when present, and records whether the delete had finished by the time the answer was written.
+    private Gated dispatchStoredWithDelete(String path, Option<String> key, Option<Cause> deleteFailure) throws InterruptedException {
+        var finished = new AtomicBoolean();
+        var finishedAtAnswer = new AtomicBoolean();
+        var status = new AtomicReference<Option<HttpStatus>>(Option.none());
+        var delete = Promise.<Unit> promise();
+        var headers = Headers.headers(key.map(value -> Map.of("x-api-key", List.of(value)))
+                                         .or(Map.of()));
+        var stored = IngestedRequest.ingestedRequest(new Head("req-gated", HttpMethod.POST, path, headers, QueryParams.queryParams(Map.of())),
+                                                     UploadHandle.uploadHandle(List.of(), Map.of()),
+                                                     () -> delete);
+
+        Thread.ofVirtual().start(() -> finishDeleteLater(finished, delete, deleteFailure));
+        ((AppHttpServerAdapter) server).handleRequest(stored, answerRecorder(status, finished, finishedAtAnswer));
+        awaitAnswer(status);
+
+        return new Gated(finishedAtAnswer.get(), status.get());
+    }
+
+    private static void finishDeleteLater(AtomicBoolean finished, Promise<Unit> delete, Option<Cause> deleteFailure) {
+        try {
+            Thread.sleep(SLOW_DELETE_MILLIS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        finished.set(true);
+        delete.resolve(deleteFailure.fold(Result::unitResult, Cause::result));
+    }
+
+    private static ResponseWriter answerRecorder(AtomicReference<Option<HttpStatus>> status,
+                                                 AtomicBoolean finished,
+                                                 AtomicBoolean finishedAtAnswer) {
+        return new ResponseWriter() {
+            @Override
+            public void write(HttpStatus written, byte[] body, ContentType contentType) {
+                finishedAtAnswer.set(finished.get());
+                status.set(Option.some(written));
+            }
+
+            @Override
+            public ResponseWriter header(String name, String value) {
+                return this;
+            }
+        };
+    }
+
     private record Dispatched(int discarded, Option<HttpStatus> status) {}
 
     private Dispatched dispatchStored(String path, Option<String> key) throws InterruptedException {
@@ -558,7 +710,7 @@ class AppHttpServerStreamingIngestGateTest extends AppHttpServerIngestGateTest {
                                          .or(Map.of()));
         var stored = IngestedRequest.ingestedRequest(new Head("req-stored", HttpMethod.POST, path, headers, QueryParams.queryParams(Map.of())),
                                                      UploadHandle.uploadHandle(List.of(), Map.of()),
-                                                     discarded::incrementAndGet);
+                                                     () -> Promise.success(discarded.incrementAndGet()).mapToUnit());
 
         ((AppHttpServerAdapter) server).handleRequest(stored, statusRecorder(status));
         awaitAnswer(status);

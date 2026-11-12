@@ -1,0 +1,2 @@
+### Fixed (2026-11-10 — #2998: QuicDialAttemptTest port collision)
+- **`QuicDialAttemptTest` could fail with `BindException` under the module-parallel build** (#2998). The late core's UDP port was probed at test start and bound seconds later, so another module's socket could take it in between. Each port is now probed immediately before its bind; test-only. [verified: `QuicDialAttemptTest` 10 runs green on bigboy]

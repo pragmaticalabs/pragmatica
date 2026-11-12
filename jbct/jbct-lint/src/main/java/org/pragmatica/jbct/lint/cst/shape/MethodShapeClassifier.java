@@ -3,6 +3,7 @@ package org.pragmatica.jbct.lint.cst.shape;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -130,16 +131,13 @@ public final class MethodShapeClassifier {
 
     /// Iteration aggregator heads: the collection forms that fold a `Collection` of carriers into one
     /// carrier of a collection. Their presence marks Iteration regardless of the argument shape.
-    private static final Pattern AGGREGATOR_HEAD =
-        Pattern.compile("^(Result|Promise|Option)\\.(allOf|allOfOrCancel|allSuccess)$");
+    private static final Pattern AGGREGATOR_HEAD = Pattern.compile("^(Result|Promise|Option)\\.(allOf|allOfOrCancel|allSuccess)$");
 
     /// Stream sources: a `.stream()` / `.parallelStream()` receiver, or a `*Stream` static factory.
-    private static final Pattern STREAM_SOURCE_HEAD =
-        Pattern.compile(".*\\.(stream|parallelStream)$|^(Stream|IntStream|LongStream|DoubleStream)\\..*");
+    private static final Pattern STREAM_SOURCE_HEAD = Pattern.compile(".*\\.(stream|parallelStream)$|^(Stream|IntStream|LongStream|DoubleStream)\\..*");
 
     /// Functional return types marking a decorator/aspect definer even without a `with*` name.
-    private static final Pattern FUNCTIONAL_TYPE =
-        Pattern.compile("^(Fn0|Fn1|Fn2|Fn3|Function|BiFunction|Supplier|Consumer|Runnable|Predicate)$");
+    private static final Pattern FUNCTIONAL_TYPE = Pattern.compile("^(Fn0|Fn1|Fn2|Fn3|Function|BiFunction|Supplier|Consumer|Runnable|Predicate)$");
 
     /// Stream terminals: their presence with a source marks a stream pipeline (Iteration).
     private static final Set<String> STREAM_TERMINALS = Set.of("toList",
@@ -210,23 +208,23 @@ public final class MethodShapeClassifier {
     /// can promote an imperative method — accepted at INFO): custom-named mutators, direct field
     /// writes, and `StringBuilder.append`.
     private static final Set<String> MUTATION_SIGNALS = Set.of(".set(",
-                                                              ".put(",
-                                                              ".putIfAbsent(",
-                                                              ".add(",
-                                                              ".addAll(",
-                                                              ".remove(",
-                                                              ".removeAll(",
-                                                              ".incrementAndGet(",
-                                                              ".decrementAndGet(",
-                                                              ".getAndIncrement(",
-                                                              ".getAndDecrement(",
-                                                              ".getAndSet(",
-                                                              ".compareAndSet(",
-                                                              ".start(",
-                                                              ".offer(",
-                                                              ".poll(",
-                                                              ".push(",
-                                                              ".pop(");
+                                                               ".put(",
+                                                               ".putIfAbsent(",
+                                                               ".add(",
+                                                               ".addAll(",
+                                                               ".remove(",
+                                                               ".removeAll(",
+                                                               ".incrementAndGet(",
+                                                               ".decrementAndGet(",
+                                                               ".getAndIncrement(",
+                                                               ".getAndDecrement(",
+                                                               ".getAndSet(",
+                                                               ".compareAndSet(",
+                                                               ".start(",
+                                                               ".offer(",
+                                                               ".poll(",
+                                                               ".push(",
+                                                               ".pop(");
 
     /// A leading logger statement (phase-2 skippable preamble, #448): a `log` / `LOG` / `logger` /
     /// `LOGGER` receiver calling any method. Matched against the masked statement text so a logger
@@ -241,7 +239,7 @@ public final class MethodShapeClassifier {
     /// an abstract interface method (no body) or an empty body, both excluded from the census.
     public static Option<ShapeVerdict> classify(Cursor methodMember) {
         return methodBody(methodMember).flatMap(body -> classifyBody(methodMember, body))
-                                       .map(verdict -> foldNestedPatternIntoMixed(methodMember, verdict));
+                         .map(verdict -> foldNestedPatternIntoMixed(methodMember, verdict));
     }
 
     /// Phase 2 of MIXED (#448): a composition whose chain passes an INLINE LAMBDA carrying its own
@@ -291,13 +289,18 @@ public final class MethodShapeClassifier {
     /// Outer shapes that can be promoted to MIXED: the composition shapes. LEAF has no chain to nest
     /// in, UNCLASSIFIED is imperative code that is not mixing patterns, ASPECT is a deliberate
     /// decorator, and MIXED is already the answer.
-    private static final Set<MethodShape> PROMOTABLE_TO_MIXED =
-        Set.of(MethodShape.SEQUENCER, MethodShape.FORK_JOIN, MethodShape.CONDITION, MethodShape.ITERATION);
+    private static final Set<MethodShape> PROMOTABLE_TO_MIXED = Set.of(MethodShape.SEQUENCER,
+                                                                       MethodShape.FORK_JOIN,
+                                                                       MethodShape.CONDITION,
+                                                                       MethodShape.ITERATION);
 
     /// Lambda-body shapes that count as carrying a pattern. LEAF is a plain step (the conformant
     /// case) and UNCLASSIFIED is the absence of a pattern, so neither promotes.
-    private static final Set<MethodShape> NESTED_PATTERNS =
-        Set.of(MethodShape.SEQUENCER, MethodShape.FORK_JOIN, MethodShape.CONDITION, MethodShape.ITERATION, MethodShape.MIXED);
+    private static final Set<MethodShape> NESTED_PATTERNS = Set.of(MethodShape.SEQUENCER,
+                                                                   MethodShape.FORK_JOIN,
+                                                                   MethodShape.CONDITION,
+                                                                   MethodShape.ITERATION,
+                                                                   MethodShape.MIXED);
 
     private static Option<ShapeVerdict> classifyBody(Cursor methodMember, Cursor body) {
         var statements = realStatements(body);
@@ -343,9 +346,8 @@ public final class MethodShapeClassifier {
     /// A local-variable declaration all of whose initializers are pure (carry no [#MUTATION_SIGNALS]).
     /// A declaration with no initializer is not pure — it produces no value to feed the root.
     private static boolean isPureLocalVarDecl(Cursor statement) {
-        return childByRule(statement, RuleKind.LOCAL_VAR)
-            .map(local -> contains(local, RuleKind.VAR_INIT) && !containsMutationSignal(text(local)))
-            .or(false);
+        return childByRule(statement, RuleKind.LOCAL_VAR).map(local -> contains(local, RuleKind.VAR_INIT) && !containsMutationSignal(text(local)))
+                          .or(false);
     }
 
     /// True when the masked declaration text carries any mutation token. Masking blanks strings and
@@ -362,9 +364,8 @@ public final class MethodShapeClassifier {
     /// no `else`. Anything richer (an `else`, a braced body, a non-return/throw branch) is not a guard
     /// and falls through to imperative residue.
     private static boolean isGuardClause(Cursor statement) {
-        return childByRule(statement, RuleKind.STMT)
-            .map(MethodShapeClassifier::isGuardStmt)
-            .or(false);
+        return childByRule(statement, RuleKind.STMT).map(MethodShapeClassifier::isGuardStmt)
+                          .or(false);
     }
 
     private static boolean isGuardStmt(Cursor stmt) {
@@ -383,9 +384,8 @@ public final class MethodShapeClassifier {
 
     /// A single logger call statement (`log.*(…)` / `LOG.*(…)`), matched against masked statement text.
     private static boolean isLoggerStatement(Cursor statement) {
-        return childByRule(statement, RuleKind.STMT)
-            .map(stmt -> LOGGER_STATEMENT.matcher(MapperSafety.blankNonCode(text(stmt))).find())
-            .or(false);
+        return childByRule(statement, RuleKind.STMT).map(stmt -> LOGGER_STATEMENT.matcher(MapperSafety.blankNonCode(text(stmt))).find())
+                          .or(false);
     }
 
     private static boolean isLocalVarDecl(Cursor statement) {
@@ -417,7 +417,7 @@ public final class MethodShapeClassifier {
         }
 
         return statementExpression(statement).map(expr -> classifyExpression(methodMember, expr, false))
-                                             .or(new ShapeVerdict(MethodShape.UNCLASSIFIED, "no returned expression"));
+                                  .or(new ShapeVerdict(MethodShape.UNCLASSIFIED, "no returned expression"));
     }
 
     private static ShapeVerdict classifyExpression(Cursor methodMember, Cursor expr, boolean viaLambda) {
@@ -428,7 +428,10 @@ public final class MethodShapeClassifier {
         }
 
         if (isSwitchExpression(node) || isActualTernary(node)) {
-            return new ShapeVerdict(MethodShape.CONDITION, "root " + (isActualTernary(node) ? "ternary" : "switch-expression"));
+            return new ShapeVerdict(MethodShape.CONDITION,
+                                    "root " + (isActualTernary(node)
+                                               ? "ternary"
+                                               : "switch-expression"));
         }
 
         if (node.kindIs(RuleKind.POSTFIX)) {
@@ -444,7 +447,7 @@ public final class MethodShapeClassifier {
         }
 
         return lambdaBodyExpression(lambda).map(body -> classifyExpression(methodMember, body, true))
-                                           .or(new ShapeVerdict(MethodShape.UNCLASSIFIED, "multi-statement lambda body"));
+                                   .or(new ShapeVerdict(MethodShape.UNCLASSIFIED, "multi-statement lambda body"));
     }
 
     // ===== Phase-3 argument-lambda descent primitive (#448) =====
@@ -456,7 +459,6 @@ public final class MethodShapeClassifier {
     // JBCT-ZONE-03 / JBCT-NEST-01 / JBCT-PAT-02 are facets built on this descent — see their
     // rule classes. This ARGUMENT-lambda descent is distinct from [#classifyLambda], which owns
     // the separate factory-returns-a-lambda ASPECT case at a method's own top level.
-
     /// One lambda passed to a chain link: the link's method name (`map`, `flatMap`, `andThen`, …)
     /// and the LAMBDA cursor it received. The name lets a facet restrict itself to a link family
     /// (`map`/`flatMap` for zone mixing, `flatMap`/`andThen` for pattern mixing).
@@ -479,7 +481,9 @@ public final class MethodShapeClassifier {
         }
 
         var kids = children(postfix);
-        var headText = kids.isEmpty() ? "" : text(kids.getFirst()).trim();
+        var headText = kids.isEmpty()
+                       ? ""
+                       : text(kids.getFirst()).trim();
         var out = new ArrayList<LambdaLink>();
 
         for (var i = 1; i < kids.size(); i++) {
@@ -509,8 +513,10 @@ public final class MethodShapeClassifier {
     /// never applies the method-name `with*` aspect heuristic.
     public static ShapeVerdict classifyLambdaBody(Cursor methodMember, Cursor lambda) {
         return childByRule(lambda, RuleKind.BLOCK).flatMap(block -> classifyBody(methodMember, block))
-                                                  .orElse(() -> lambdaBodyExpression(lambda).map(body -> classifyExpression(methodMember, body, true)))
-                                                  .or(new ShapeVerdict(MethodShape.UNCLASSIFIED, "empty or multi-statement lambda body"));
+                          .orElse(() -> lambdaBodyExpression(lambda).map(body -> classifyExpression(methodMember,
+                                                                                                    body,
+                                                                                                    true)))
+                          .or(new ShapeVerdict(MethodShape.UNCLASSIFIED, "empty or multi-statement lambda body"));
     }
 
     private static ShapeVerdict classifyChain(Cursor methodMember, Spine spine, boolean viaLambda) {
@@ -528,11 +534,15 @@ public final class MethodShapeClassifier {
         }
 
         if (join && seq <= 1) {
-            return new ShapeVerdict(MethodShape.FORK_JOIN, "join head (" + spine.headText() + ") with a single combine step");
+            return new ShapeVerdict(MethodShape.FORK_JOIN,
+                                    "join head (" + spine.headText() + ") with a single combine step");
         }
 
         if (aggregator || streamPipeline) {
-            return new ShapeVerdict(MethodShape.ITERATION, aggregator ? "collection aggregator (" + spine.headText() + ")" : "stream source with a terminal");
+            return new ShapeVerdict(MethodShape.ITERATION,
+                                    aggregator
+                                    ? "collection aggregator (" + spine.headText() + ")"
+                                    : "stream source with a terminal");
         }
 
         if (seq >= 2) {
@@ -540,10 +550,14 @@ public final class MethodShapeClassifier {
         }
 
         if (seq == 1) {
-            return new ShapeVerdict(MethodShape.LEAF, "single-combinator transform (one-step sequencer is a leaf in disguise)");
+            return new ShapeVerdict(MethodShape.LEAF,
+                                    "single-combinator transform (one-step sequencer is a leaf in disguise)");
         }
 
-        return new ShapeVerdict(MethodShape.LEAF, spine.headInvoked() ? "atomic call (" + spine.headText() + ")" : "value reference (" + spine.headText() + ")");
+        return new ShapeVerdict(MethodShape.LEAF,
+                                spine.headInvoked()
+                                ? "atomic call (" + spine.headText() + ")"
+                                : "value reference (" + spine.headText() + ")");
     }
 
     /// A root that is neither a call chain, ternary, nor lambda — a bare arithmetic / boolean /
@@ -569,23 +583,26 @@ public final class MethodShapeClassifier {
             return false;
         }
 
-        var receiver = spine.headText().substring(0, spine.headText().length() - ".apply".length());
+        var receiver = spine.headText().substring(0,
+                                                  spine.headText().length() - ".apply".length());
 
         return paramNames(methodMember).contains(receiver);
     }
 
     private static boolean isStreamPipeline(Spine spine) {
-        var hasSource = STREAM_SOURCE_HEAD.matcher(spine.headText()).matches()
-                        || spine.linkMethods().stream().anyMatch(STREAM_SOURCE_LINKS::contains);
+        var hasSource = STREAM_SOURCE_HEAD.matcher(spine.headText()).matches() || spine.linkMethods()
+                                                                                       .stream()
+                                                                                       .anyMatch(STREAM_SOURCE_LINKS::contains);
         var hasTerminal = spine.linkMethods().stream().anyMatch(STREAM_TERMINALS::contains);
 
         return hasSource && hasTerminal;
     }
 
     private static int sequencingLinkCount(Spine spine) {
-        return (int) spine.linkMethods().stream()
-                                        .filter(SEQ_COMBINATORS::contains)
-                                        .count();
+        return (int) spine.linkMethods()
+                          .stream()
+                          .filter(SEQ_COMBINATORS::contains)
+                          .count();
     }
 
     /// Read the top-level links of a postfix chain: the head node's text plus, for each `POST_OP`,
@@ -607,7 +624,9 @@ public final class MethodShapeClassifier {
     /// LEAF→ASPECT edge. Both are within the accepted aspect/leaf census tolerance.
     private static Spine extractSpine(Cursor postfix) {
         var kids = children(postfix);
-        var headText = kids.isEmpty() ? "" : text(kids.getFirst()).trim();
+        var headText = kids.isEmpty()
+                       ? ""
+                       : text(kids.getFirst()).trim();
         var links = new ArrayList<String>();
         var headInvoked = false;
 
@@ -643,7 +662,9 @@ public final class MethodShapeClassifier {
 
         var segment = leadingIdentifier(headText, dot + 1);
 
-        return segment.isEmpty() ? Option.none() : Option.some(segment);
+        return segment.isEmpty()
+               ? Option.none()
+               : Option.some(segment);
     }
 
     /// The maximal run of Java identifier characters in `text` starting at `start` (empty when the
@@ -673,7 +694,7 @@ public final class MethodShapeClassifier {
             j++;
         }
 
-        return !name.isEmpty() && j < opText.length() && opText.charAt(j) == '('
+        return ! name.isEmpty() && j < opText.length() && opText.charAt(j) == '('
                ? Option.some(name)
                : Option.none();
     }
@@ -707,7 +728,10 @@ public final class MethodShapeClassifier {
     }
 
     private static boolean isActualTernary(Cursor node) {
-        return node.kindIs(RuleKind.TERNARY) && node instanceof Cursor.Branch branch && branch.children().count() > 1;
+        return node.kindIs(RuleKind.TERNARY)
+               && node instanceof Cursor.Branch branch
+               && branch.children()
+                        .count() > 1;
     }
 
     private static boolean isSwitchExpression(Cursor node) {
@@ -718,12 +742,12 @@ public final class MethodShapeClassifier {
     /// child of the enclosing `STMT` node (the `return`/`;`/`}` punctuation are leaves).
     private static Option<Cursor> statementExpression(Cursor statement) {
         return findFirst(statement, RuleKind.STMT).flatMap(MethodShapeClassifier::firstExpressionChild)
-                                                  .orElse(() -> firstExpressionChild(statement));
+                        .orElse(() -> firstExpressionChild(statement));
     }
 
     private static Option<Cursor> firstExpressionChild(Cursor stmt) {
         for (var child : children(stmt)) {
-            if (!(child instanceof Cursor.Leaf)) {
+            if (! (child instanceof Cursor.Leaf)) {
                 return Option.some(child);
             }
         }
@@ -763,7 +787,7 @@ public final class MethodShapeClassifier {
         var out = new ArrayList<Cursor>();
 
         for (var child : children(body)) {
-            if (!(child instanceof Cursor.Leaf)) {
+            if (! (child instanceof Cursor.Leaf)) {
                 out.add(child);
             }
         }
@@ -773,7 +797,7 @@ public final class MethodShapeClassifier {
 
     private static Set<String> paramNames(Cursor methodMember) {
         return methodParams(methodMember).map(MethodShapeClassifier::collectParamNames)
-                                         .or(Set.of());
+                           .or(Set.of());
     }
 
     private static Set<String> collectParamNames(Cursor params) {
@@ -793,7 +817,9 @@ public final class MethodShapeClassifier {
     private static String leadingWord(String text) {
         var matcher = LEADING_WORD.matcher(text);
 
-        return matcher.find() ? matcher.group(1) : "";
+        return matcher.find()
+               ? matcher.group(1)
+               : "";
     }
 
     // ===== Phase-3 absorbed-rule facets (#448) =====
@@ -805,15 +831,34 @@ public final class MethodShapeClassifier {
     // — the ONLY behavioural change from the regex originals. Because the facets return CST cursors
     // (the offending method or lambda) and the rules report at those cursors' own line/column, reported
     // locations are byte-identical to the regex era. Completeness vs. the regex is stated per facet.
-
     /// Zone-3 (implementation-level) verbs that must be wrapped in a Zone-2 step, not called inline in
     /// a carrier chain. Absorbed from `CstZoneMixingRule`; also the name-verb table for the
     /// JBCT-SHAPE-03 "mis-leveled up" arm ([#shapeZoneMismatches]).
-    private static final Set<String> ZONE_THREE_VERBS = Set.of("get", "set", "fetch", "parse", "calculate",
-                                                               "convert", "hash", "format", "encode", "decode",
-                                                               "extract", "split", "join", "log", "send",
-                                                               "receive", "read", "write", "add", "remove",
-                                                               "find", "query", "insert", "update", "delete");
+    private static final Set<String> ZONE_THREE_VERBS = Set.of("get",
+                                                               "set",
+                                                               "fetch",
+                                                               "parse",
+                                                               "calculate",
+                                                               "convert",
+                                                               "hash",
+                                                               "format",
+                                                               "encode",
+                                                               "decode",
+                                                               "extract",
+                                                               "split",
+                                                               "join",
+                                                               "log",
+                                                               "send",
+                                                               "receive",
+                                                               "read",
+                                                               "write",
+                                                               "add",
+                                                               "remove",
+                                                               "find",
+                                                               "query",
+                                                               "insert",
+                                                               "update",
+                                                               "delete");
 
     /// Zone-2 (orchestration-level) verbs — the abstraction altitude of a step interface or use-case
     /// orchestration, too abstract to head a bare Leaf. The name-verb table for the JBCT-SHAPE-03
@@ -824,32 +869,45 @@ public final class MethodShapeClassifier {
     /// `create`/`build` — so a single shared constant would silently change one of JBCT-ZONE-01/02's
     /// behaviour. Copying keeps those two rules untouched; the divergence is a pre-existing corpus
     /// fact, not this rule's to reconcile.
-    private static final Set<String> ZONE_TWO_VERBS = Set.of("validate", "process", "handle", "transform",
-                                                             "apply", "check", "load", "save",
-                                                             "manage", "configure", "initialize", "execute",
-                                                             "prepare", "complete", "resolve", "verify");
+    private static final Set<String> ZONE_TWO_VERBS = Set.of("validate",
+                                                             "process",
+                                                             "handle",
+                                                             "transform",
+                                                             "apply",
+                                                             "check",
+                                                             "load",
+                                                             "save",
+                                                             "manage",
+                                                             "configure",
+                                                             "initialize",
+                                                             "execute",
+                                                             "prepare",
+                                                             "complete",
+                                                             "resolve",
+                                                             "verify");
 
     /// A `.map`/`.flatMap` whose lambda argument calls `receiver.verb(` — verb captured in group 2.
-    private static final Pattern ZONE_CHAIN_CALL =
-        Pattern.compile("\\.(map|flatMap)\\s*\\([^)]*->\\s*[^)]*\\.([a-z][a-zA-Z]*)\\s*\\(");
+    private static final Pattern ZONE_CHAIN_CALL = Pattern.compile("\\.(map|flatMap)\\s*\\([^)]*->\\s*[^)]*\\.([a-z][a-zA-Z]*)\\s*\\(");
 
     /// A `.map`/`.flatMap` whose argument is a method reference `Type::verb` — verb captured in group 2.
-    private static final Pattern ZONE_METHOD_REF =
-        Pattern.compile("\\.(map|flatMap)\\s*\\([^:]*::([a-z][a-zA-Z]*)\\s*\\)");
+    private static final Pattern ZONE_METHOD_REF = Pattern.compile("\\.(map|flatMap)\\s*\\([^:]*::([a-z][a-zA-Z]*)\\s*\\)");
 
     /// A monadic-operation call (`.map(`, `.flatMap(`, …) inside a lambda body — two or more mark
     /// NEST-01. Absorbed from `CstNestedOperationsRule`; precompiled as one alternation (counting
     /// every match is equivalent to the former per-op scan) so it is not rebuilt per lambda.
-    private static final Pattern NEST_MONADIC_OP_CALL =
-        Pattern.compile("\\.(map|flatMap|fold|recover|filter|mapFailure|onSuccess|onFailure)\\s*\\(");
+    private static final Pattern NEST_MONADIC_OP_CALL = Pattern.compile("\\.(map|flatMap|fold|recover|filter|mapFailure|onSuccess|onFailure)\\s*\\(");
 
     /// A monadic op chained directly onto a closing paren (`).map(`) inside a lambda body — a re-chain.
     private static final Pattern NEST_RECHAIN = Pattern.compile("\\)\\s*\\.(map|flatMap|fold|recover|filter)\\s*\\(");
 
     /// Fork-Join call heads whose presence inside a `flatMap`/`andThen` lambda body marks PAT-02.
     /// Absorbed from `CstPatternMixingRule`.
-    private static final Set<String> FORK_JOIN_CALLS = Set.of("Result.all(", "Promise.all(", "Option.all(",
-                                                             "Result.allOf(", "Promise.allOf(", "Option.allOf(");
+    private static final Set<String> FORK_JOIN_CALLS = Set.of("Result.all(",
+                                                              "Promise.all(",
+                                                              "Option.all(",
+                                                              "Result.allOf(",
+                                                              "Promise.allOf(",
+                                                              "Option.allOf(");
 
     /// Chain-link names whose lambda argument is a Sequencer step (PAT-02's nesting site).
     private static final Set<String> SEQUENCER_LAMBDA_LINKS = Set.of("flatMap", "andThen");
@@ -893,9 +951,9 @@ public final class MethodShapeClassifier {
             var matcher = pattern.matcher(masked);
 
             while (matcher.find()) {
-                firstWord(matcher.group(2)).filter(verb -> ZONE_THREE_VERBS.contains(verb.toLowerCase()))
-                                           .filter(verb -> !verbs.contains(verb))
-                                           .onPresent(verbs::add);
+                firstWord(matcher.group(2)).filter(verb -> ZONE_THREE_VERBS.contains(verb.toLowerCase(Locale.ROOT)))
+                         .filter(verb -> !verbs.contains(verb))
+                         .onPresent(verbs::add);
             }
         }
 
@@ -920,7 +978,9 @@ public final class MethodShapeClassifier {
             sb.append(c);
         }
 
-        return sb.isEmpty() ? Option.none() : Option.some(sb.toString());
+        return sb.isEmpty()
+               ? Option.none()
+               : Option.some(sb.toString());
     }
 
     /// JBCT-NEST-01 facet: lambda bodies that nest two or more monadic operations, or re-chain a
@@ -931,8 +991,8 @@ public final class MethodShapeClassifier {
     /// Completeness: every real site the regex caught, minus the string/comment false positives.
     public static List<Cursor> nestedOperationLambdas(Cursor root) {
         return findAllLambdas(root).stream()
-                                   .filter(MethodShapeClassifier::lambdaBodyNestsOperations)
-                                   .toList();
+                             .filter(MethodShapeClassifier::lambdaBodyNestsOperations)
+                             .toList();
     }
 
     private static boolean lambdaBodyNestsOperations(Cursor lambda) {
@@ -954,7 +1014,6 @@ public final class MethodShapeClassifier {
 
         while (matcher.find()) {
             count++;
-
             if (count > 1) {
                 return count;
             }
@@ -985,7 +1044,7 @@ public final class MethodShapeClassifier {
     private static boolean bodyNestsForkJoin(Cursor lambda) {
         var masked = MapperSafety.blankNonCode(text(lambda)).trim();
 
-        return !isLoneForkJoinCall(masked) && FORK_JOIN_CALLS.stream().anyMatch(masked::contains);
+        return ! isLoneForkJoinCall(masked) && FORK_JOIN_CALLS.stream().anyMatch(masked::contains);
     }
 
     private static boolean isLoneForkJoinCall(String lambdaText) {
@@ -1016,7 +1075,6 @@ public final class MethodShapeClassifier {
                 depth++;
             } else if (c == ')') {
                 depth--;
-
                 if (depth == 0) {
                     return i == body.length() - 1;
                 }
@@ -1034,7 +1092,6 @@ public final class MethodShapeClassifier {
     // disagreements. The verb tables are [#ZONE_THREE_VERBS] / [#ZONE_TWO_VERBS]; the name verb is
     // the leading camelCase word of [FileTypeClassifier#methodName], run through the same
     // [#firstWord] split the ZONE-03 facet uses.
-
     /// One JBCT-SHAPE-03 hit: a method whose composition [MethodShape] disagrees with the abstraction
     /// zone of its name verb. `misLeveledUp` true means a Zone-3 implementation verb heads an
     /// orchestration shape (SEQUENCER / FORK_JOIN) — an implementation-named method doing
@@ -1075,8 +1132,8 @@ public final class MethodShapeClassifier {
     }
 
     private static Option<ShapeZoneMismatch> mismatchForShape(Cursor method, MethodShape shape) {
-        return firstWord(FileTypeClassifier.methodName(method)).map(String::toLowerCase)
-                                                               .flatMap(verb -> mismatchForVerb(method, shape, verb));
+        return firstWord(FileTypeClassifier.methodName(method)).map(txt -> txt.toLowerCase(Locale.ROOT))
+                        .flatMap(verb -> mismatchForVerb(method, shape, verb));
     }
 
     private static Option<ShapeZoneMismatch> mismatchForVerb(Cursor method, MethodShape shape, String verb) {

@@ -6,6 +6,7 @@ package org.pragmatica.jbct.slice.routing;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -453,6 +454,35 @@ class RouteDslTest {
 
             assertThat(result.isFailure()).isTrue();
             result.onFailure(cause -> assertThat(cause.message()).contains("Invalid route DSL format"));
+        }
+    }
+
+    /// #2805: the declared success and the declared limits are independent; setting one keeps the other.
+    @Nested
+    class Declarations {
+        private final RouteLimits limits = RouteLimits.routeLimits(1024, 1000);
+        private final RouteSuccess success = RouteSuccess.routeSuccess(Option.some(201), Option.some("/items/{id}"));
+
+        @Test
+        void withLimits_keepsTheDeclaredSuccess() {
+            var dsl = RouteDsl.parse("POST /items").unwrap().withSuccess(success).withLimits(limits);
+
+            assertThat(dsl.success()).isEqualTo(success);
+            assertThat(dsl.limits()).isEqualTo(limits);
+        }
+
+        @Test
+        void withSuccess_keepsTheDeclaredLimits() {
+            var dsl = RouteDsl.parse("POST /items").unwrap().withLimits(limits).withSuccess(success);
+
+            assertThat(dsl.success()).isEqualTo(success);
+            assertThat(dsl.limits()).isEqualTo(limits);
+        }
+
+        @Test
+        void aParsedRoute_declaresNoSuccess() {
+            assertThat(RouteDsl.parse("POST /items").unwrap().success()).isEqualTo(RouteSuccess.NONE);
+            assertThat(RouteSuccess.NONE.declared()).isFalse();
         }
     }
 }

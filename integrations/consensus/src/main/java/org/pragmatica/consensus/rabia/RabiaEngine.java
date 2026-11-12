@@ -205,7 +205,6 @@ public class RabiaEngine<C extends Command> {
     /// refused as a whole and never decoded row by row). Cleared by any successful restore. It is not a fence: only candidate
     /// selection ([#adoptableCandidate]) and the status read it.
     private volatile Option<RestoreFailures> restoreFailures = Option.none();
-
     /// Why the re-persist of a restored or adopted state failed (#1516): the second permanent fence the watchdog
     /// bounds. Set only by [#recordRestoredStateSaveFailure], and like `ownRestoreFailure` never cleared in-process:
     /// that arm too runs only after a genesis has resolved. It is deliberately NOT `authorityFailure` itself, which
@@ -910,7 +909,7 @@ public class RabiaEngine<C extends Command> {
             this.rosterPresent = rosterPresent;
             this.member = member;
         }
-        static Role of(boolean declared, boolean rosterPresent, boolean member) {
+        static Role role(boolean declared, boolean rosterPresent, boolean member) {
             if (!rosterPresent) {
                 return declared
                        ? PRE_GENESIS_OBSERVER
@@ -955,9 +954,9 @@ public class RabiaEngine<C extends Command> {
     Role role() {
         var roster = voters;
 
-        return Role.of(observerMode,
-                       roster.isPresent(),
-                       roster.map(v -> v.contains(self)).or(false));
+        return Role.role(observerMode,
+                         roster.isPresent(),
+                         roster.map(v -> v.contains(self)).or(false));
     }
 
     /// Ballots count only from installed voters at the current epoch. An old-epoch ballot for a slot at
@@ -1028,6 +1027,15 @@ public class RabiaEngine<C extends Command> {
     private final ParticipationMarker participationMarker;
     private final ConsensusMetrics metrics;
     private final boolean activationGated;
+    /// #2981 step 6: runs once per engine start, after quorum is first established and before the node's first
+    /// consensus apply (sync). Default no-op; failure refuses startup. NOT the `activationGated` authorizer.
+    private volatile Supplier<Promise<Unit>> preSyncCheck = () -> Promise.success(Unit.unit());
+    /// True until a check is installed, so an engine without one behaves exactly as before.
+    private volatile boolean preSyncDone = true;
+    private final AtomicBoolean preSyncRunning = new AtomicBoolean();
+    /// The newest accepted cluster-state edge; the pre-sync completion consults it, so a PASSIVE that arrived
+    /// during the wait suppresses sync.
+    private volatile ClusterStateNotification latestClusterState;
     private final TimeSpan phaseStallCheck;
     private volatile boolean activationAuthorized;
     private volatile boolean observerMode;
@@ -1050,7 +1058,7 @@ public class RabiaEngine<C extends Command> {
         PASSIVE,
         OBSERVING,
         ACTIVE;
-        static PublishedSense of(EngineState state) {
+        static PublishedSense publishedSense(EngineState state) {
             if (state.isActive()) {
                 return ACTIVE;
             }
@@ -1089,9 +1097,10 @@ public class RabiaEngine<C extends Command> {
     /// request opens a round ([#openSyncRound]); an activation completes it and a quorum-loss pause invalidates it ([#closeSyncRound]).
     /// A response is accepted only into an open round, so input that crosses a pause (answers to a request sent before it) or arrives
     /// after the adoption it was meant for cannot take a `Paused` engine to `Active` without a quorum ACTIVE, nor re-adopt on a
-    /// settled one. The flag starts open: a cold engine takes responses before its first request, as it always did. The rounds are
-    /// local; the protocol carries no round id, so answers to an earlier request of the SAME open round are still accepted.
-    private volatile boolean syncRoundOpen = true;
+    /// settled one. The flag starts CLOSED (#2981 step 6): only this engine's own request opens a round, so an unsolicited or stale
+    /// response cannot install state on an engine that has not yet passed its pre-sync check. The rounds are local; the protocol
+    /// carries no round id, so answers to an earlier request of the SAME open round are still accepted.
+    private volatile boolean syncRoundOpen = false;
     private final RabiaPersistence<C> persistence;
     /// Consecutive sync rounds that failed to reach the response threshold, driving the periodic
     /// stuck-in-`Syncing` WARN (#660). Reset when a sync round starts fresh, when state is adopted, and
@@ -1372,6 +1381,7 @@ public class RabiaEngine<C extends Command> {
         }
 
         log.trace("Node {} received cluster state {}", self, clusterStateNotification);
+        latestClusterState = clusterStateNotification;
         switch (clusterStateNotification.state()) {
             case ACTIVE -> handleClusterActive(clusterStateNotification);
             case PASSIVE -> pauseForQuorumLoss();
@@ -1380,6 +1390,12 @@ public class RabiaEngine<C extends Command> {
 
     private void handleClusterActive(ClusterStateNotification notification) {
         if (authorityFailure.isPresent()) {
+            return;
+        }
+
+        if (!preSyncDone) {
+            runPreSyncCheck();
+
             return;
         }
 
@@ -1410,6 +1426,44 @@ public class RabiaEngine<C extends Command> {
             // Stopped (cold start) or Observing — begin a sync round to catch up, then Active.
             clusterConnected();
         }
+    }
+
+    /// Install the pre-sync check (#2981 step 6). Install before [#start]; production never replaces the default
+    /// except through `RabiaNode` wiring.
+    @Contract
+    public void preSyncCheck(Supplier<Promise<Unit>> check) {
+        this.preSyncCheck = check;
+        this.preSyncDone = false;
+    }
+
+    /// Runs the pre-sync check without blocking the notifying thread: a wait already in flight absorbs repeated ACTIVE
+    /// edges, and the completion re-enters on the engine thread.
+    private void runPreSyncCheck() {
+        if (preSyncRunning.compareAndSet(false, true)) {
+            preSyncCheck.get().onResult(result -> safeExecute(() -> preSyncCompleted(result)));
+        }
+    }
+
+    private void preSyncCompleted(Result<Unit> result) {
+        preSyncRunning.set(false);
+        var _ = result.fold(this::refuseStartup, _ -> preSyncPassed());
+    }
+
+    private Unit preSyncPassed() {
+        preSyncDone = true;
+        Option.option(latestClusterState)
+              .filter(latest -> latest.state() == ClusterStateNotification.State.ACTIVE)
+              .onPresent(this::handleClusterActive);
+
+        return Unit.unit();
+    }
+
+    private Unit refuseStartup(Cause cause) {
+        log.error("Node {}: refusing to start consensus: {}", self, cause.message());
+        var _ = startPromise.get().fail(cause);
+        var _ = stop();
+
+        return Unit.unit();
     }
 
     /// Authorize a gated engine to start consensus participation.
@@ -3432,7 +3486,7 @@ public class RabiaEngine<C extends Command> {
     /// `ClusterStateNotification.ACTIVE` / `PASSIVE` on the cluster `MessageRouter`.
     @Contract
     private void notifyConsensusStateTransition() {
-        var next = PublishedSense.of(engineState.get());
+        var next = PublishedSense.publishedSense(engineState.get());
         var prev = lastPublishedSense.get();
 
         if (next == prev) {

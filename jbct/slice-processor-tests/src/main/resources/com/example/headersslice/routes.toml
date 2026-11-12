@@ -1,0 +1,18 @@
+prefix = "/api/headers"
+
+[routes]
+none = "GET /none"
+byPath = "GET /path/{id}"
+byQuery = "GET /query?name"
+byBody = "POST /body"
+pathBody = "PUT /items/{id}"
+queryBody = "POST /tagged?tag"
+pathQuery = "GET /pq/{id}?tag"
+pathQueryBody = "PUT /pqb/{id}?tag"
+upload = { route = "POST /upload", consumes = "multipart/form-data" }
+ordered = "POST /ordered"
+secured = "POST /secured"
+whoami = "GET /whoami"
+
+[errors]
+default = 500

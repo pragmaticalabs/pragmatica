@@ -238,11 +238,6 @@ final class RuntimeFixtures {
         volatile Cause unpublishFailure;
 
         @Override
-        public Promise<Unit> publishRoutes(Artifact artifact, ClassLoader classLoader, SliceInvokerFacade invokerFacade) {
-            return publishRoutes(artifact, classLoader, null, invokerFacade);
-        }
-
-        @Override
         public Promise<Unit> publishRoutes(Artifact artifact, ClassLoader classLoader, Object sliceInstance, SliceInvokerFacade invokerFacade) {
             calls.add("publish " + artifact);
 
@@ -264,11 +259,6 @@ final class RuntimeFixtures {
             return unpublishFailure != null
                    ? unpublishFailure.promise()
                    : Promise.unitPromise();
-        }
-
-        @Override
-        public Option<org.pragmatica.aether.http.handler.HttpRequestHandler> getHandler(Artifact artifact) {
-            return Option.none();
         }
 
         @Override

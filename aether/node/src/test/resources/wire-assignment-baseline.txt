@@ -134,12 +134,14 @@ SHAPE org.pragmatica.aether.http.handler.FileHandle (field:java.lang.String,file
 SHAPE org.pragmatica.aether.http.handler.HttpRequestContext (path:java.lang.String,method:java.lang.String,queryParams:java.util.Map<java.lang.String, java.util.List<java.lang.String>>,headers:java.util.Map<java.lang.String, java.util.List<java.lang.String>>,body:byte[],trailers:java.util.Map<java.lang.String, java.util.List<java.lang.String>>,requestId:java.lang.String,security:org.pragmatica.aether.http.handler.security.SecurityContext,upload:org.pragmatica.lang.Option<org.pragmatica.aether.http.handler.UploadHandle>)
 SHAPE org.pragmatica.aether.http.handler.HttpResponseData (statusCode:int,headers:java.util.Map<java.lang.String, java.lang.String>,body:byte[])
 SHAPE org.pragmatica.aether.http.handler.ObjectHandle (namespace:java.lang.String,id:java.lang.String,manifest:java.lang.String,size:long,digest:java.lang.String)
+SHAPE org.pragmatica.aether.http.handler.RequestHeaders (fields:java.util.Map<java.lang.String, java.util.List<java.lang.String>>)
 SHAPE org.pragmatica.aether.http.handler.UploadHandle (files:java.util.List<org.pragmatica.aether.http.handler.FileHandle>,fields:java.util.Map<java.lang.String, java.util.List<java.lang.String>>)
 SHAPE org.pragmatica.aether.http.handler.security.Principal (value:java.lang.String)
 SHAPE org.pragmatica.aether.http.handler.security.Role (value:java.lang.String)
 SHAPE org.pragmatica.aether.http.handler.security.SecurityContext (principal:org.pragmatica.aether.http.handler.security.Principal,roles:java.util.Set<org.pragmatica.aether.http.handler.security.Role>,claims:java.util.Map<java.lang.String, java.lang.String>,authorizationRole:org.pragmatica.aether.http.handler.security.AuthorizationRole)
-SHAPE org.pragmatica.aether.invoke.InvocationMessage$InvokeRequest (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,requestId:java.lang.String,targetSlice:org.pragmatica.aether.artifact.Artifact,method:org.pragmatica.aether.slice.MethodName,payload:byte[],expectResponse:boolean,depth:int,hops:int,sampled:boolean)
+SHAPE org.pragmatica.aether.invoke.InvocationMessage$InvokeRequest (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,requestId:java.lang.String,targetSlice:org.pragmatica.aether.artifact.Artifact,method:org.pragmatica.aether.slice.MethodName,payload:byte[],expectResponse:boolean,depth:int,hops:int,sampled:boolean,caller:org.pragmatica.lang.Option<org.pragmatica.aether.http.handler.security.SecurityContext>)
 SHAPE org.pragmatica.aether.invoke.InvocationMessage$InvokeResponse (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,requestId:java.lang.String,success:boolean,payload:byte[])
+SHAPE org.pragmatica.aether.invoke.LegacyInvokeRequest (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,requestId:java.lang.String,targetSlice:org.pragmatica.aether.artifact.Artifact,method:org.pragmatica.aether.slice.MethodName,payload:byte[],expectResponse:boolean,depth:int,hops:int,sampled:boolean)
 SHAPE org.pragmatica.aether.node.entityforward.EntityForwardMessage$EntityCancelTimerForward (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,keyspace:java.lang.String,key:byte[],token:java.lang.String,remainingMillis:long)
 SHAPE org.pragmatica.aether.node.entityforward.EntityForwardMessage$EntityCreateForward (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,keyspace:java.lang.String,key:byte[],initial:byte[],remainingMillis:long)
 SHAPE org.pragmatica.aether.node.entityforward.EntityForwardMessage$EntityDeleteForward (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,keyspace:java.lang.String,key:byte[],remainingMillis:long)
@@ -204,6 +206,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$DrainDeadlineKey (nodeId:org
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$EndpointKey (artifact:org.pragmatica.aether.artifact.Artifact,methodName:org.pragmatica.aether.slice.MethodName,instanceNumber:int)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$EntityCheckpointKey (keyspace:java.lang.String,partition:int)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$EntityKeyspaceRegistrationKey (keyspace:java.lang.String,node:org.pragmatica.consensus.NodeId)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$FsmWarningKey (code:java.lang.String,subject:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$GossipKeyRotationKey ()
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$GovernorAnnouncementKey (communityId:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$HttpNodeRouteKey (httpMethod:java.lang.String,pathPrefix:java.lang.String,nodeId:org.pragmatica.consensus.NodeId)
@@ -211,7 +214,9 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$JoinDeadlineKey (nodeId:org.
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$LogLevelKey (loggerName:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$NodeArtifactKey (nodeId:org.pragmatica.consensus.NodeId,artifact:org.pragmatica.aether.artifact.Artifact)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$NodeDepartureKey (nodeId:org.pragmatica.consensus.NodeId)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$NodeIdHighWaterKey (source:java.lang.String,role:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$NodeIdentityKey (nodeId:org.pragmatica.consensus.NodeId)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$NodeLeaseKey (nodeId:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$NodePlacementKey (nodeId:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$NodeReplacementKey (original:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$NodeRoutesKey (nodeId:org.pragmatica.consensus.NodeId,artifact:org.pragmatica.aether.artifact.Artifact)
@@ -272,6 +277,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$CommunityValue (sourceName
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ConfigValue (key:java.lang.String,value:java.lang.String,updatedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerAssignmentValue (assignee:org.pragmatica.consensus.NodeId,epoch:org.pragmatica.aether.slice.generation.Epoch,assignmentTerm:long,assignedAt:org.pragmatica.hlc.HlcTimestamp)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerAssignmentValue$AssignmentToken (assignee:org.pragmatica.consensus.NodeId,epoch:org.pragmatica.aether.slice.generation.Epoch)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerGroupTombstone (epoch:org.pragmatica.aether.slice.generation.Epoch)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerGroupValue (assignedTo:org.pragmatica.consensus.NodeId,consumerId:java.lang.String,assignedAt:long,epoch:org.pragmatica.aether.slice.generation.Epoch)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$DeploymentApplyValue (attemptId:java.lang.String,previous:org.pragmatica.lang.Option<org.pragmatica.aether.slice.kvstore.AetherValue$AppBlueprintValue>,openedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$DeploymentEngineValue (engine:org.pragmatica.aether.slice.kvstore.AetherValue$DeploymentEngine,mintedBy:org.pragmatica.consensus.NodeId,mintedAt:long)
@@ -285,6 +291,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$EndpointValue (nodeId:org.
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$EntityFoldCheckpointValue (throughOffset:long,blockIdHex:java.lang.String,timestamp:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$EntityKeyspaceRegistrationValue (partitionCount:int)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$EpochStart (epoch:org.pragmatica.aether.slice.generation.Epoch,startOffset:long,coversFrom:org.pragmatica.aether.slice.generation.Epoch)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$FsmWarningValue (members:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$Generation (viewSequence:long,counter:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$GossipKeyRotationValue (currentKeyId:int,currentKey:java.lang.String,previousKeyId:int,previousKey:java.lang.String,rotatedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$GovernorAnnouncementValue (governorId:org.pragmatica.consensus.NodeId,memberCount:int,members:java.util.List<org.pragmatica.consensus.NodeId>,tcpAddress:java.lang.String,announcedAt:long,communityTerm:long,communityEpoch:org.pragmatica.aether.slice.generation.Epoch,observedCoreEpoch:org.pragmatica.aether.slice.generation.Epoch,transitionedAt:org.pragmatica.hlc.HlcTimestamp,dissolved:boolean)
@@ -294,6 +301,8 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$JoinDeadlineValue (deadlin
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$LogLevelValue (loggerName:java.lang.String,level:java.lang.String,updatedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodeArtifactValue (state:org.pragmatica.aether.slice.SliceState,failureReason:org.pragmatica.lang.Option<java.lang.String>,fatal:boolean,instanceNumber:int,methods:java.util.List<java.lang.String>,transitionedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodeDepartureValue (state:org.pragmatica.aether.slice.kvstore.AetherValue$DepartureState,epoch:long,process:org.pragmatica.aether.slice.kvstore.AetherValue$ProcessIncarnation,cause:org.pragmatica.lang.Option<org.pragmatica.aether.slice.kvstore.AetherValue$DepartureCause>,decidedAt:long)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodeIdHighWaterValue (highWater:int)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodeLeaseValue (seq:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodeLifecycleValue (identity:org.pragmatica.lang.Option<org.pragmatica.aether.slice.kvstore.AetherValue$IdentityFacet>,capacity:org.pragmatica.lang.Option<org.pragmatica.aether.slice.kvstore.AetherValue$CapacityFacet>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodePlacementValue (sourceName:java.lang.String,observedZone:org.pragmatica.lang.Option<java.lang.String>,providerInstanceId:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodeReplacementValue (replacement:org.pragmatica.consensus.NodeId,role:java.lang.String,phase:org.pragmatica.aether.slice.kvstore.AetherValue$NodeReplacementPhase,phaseDeadlineMs:long,source:java.lang.String,targetVersion:java.lang.String,mode:java.lang.String,attempt:int,reason:java.lang.String,epoch:long)
@@ -477,7 +486,7 @@ SHAPE org.pragmatica.swim.SwimMessage$Announce (nodeInfo:org.pragmatica.consensu
 SHAPE org.pragmatica.swim.SwimMessage$AppGossip (from:org.pragmatica.consensus.NodeId,channel:int,payload:byte[])
 SHAPE org.pragmatica.swim.SwimMessage$IdentityRefused (from:org.pragmatica.consensus.NodeId,refused:org.pragmatica.consensus.NodeId,reason:java.lang.String)
 SHAPE org.pragmatica.swim.SwimMessage$MembershipUpdate (nodeId:org.pragmatica.consensus.NodeId,state:org.pragmatica.swim.SwimMember$MemberState,incarnation:long,address:java.net.InetSocketAddress,bootToken:long,labels:java.util.Map<java.lang.String, java.lang.String>)
-SHAPE org.pragmatica.swim.SwimMessage$Ping (from:org.pragmatica.consensus.NodeId,sequence:long,piggyback:java.util.List<org.pragmatica.swim.SwimMessage$MembershipUpdate>)
+SHAPE org.pragmatica.swim.SwimMessage$Ping (from:org.pragmatica.consensus.NodeId,sequence:long,piggyback:java.util.List<org.pragmatica.swim.SwimMessage$MembershipUpdate>,onBehalfOf:org.pragmatica.lang.Option<org.pragmatica.consensus.NodeId>)
 SHAPE org.pragmatica.swim.SwimMessage$PingReq (from:org.pragmatica.consensus.NodeId,target:org.pragmatica.consensus.NodeId,sequence:long)
 SHAPE org.pragmatica.swim.SwimMessage$WhoAmI (from:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.swim.SwimMessage$WhoAmIReply (observedAddress:java.net.InetSocketAddress)
@@ -566,13 +575,15 @@ TAG  org.pragmatica.aether.http.handler.FileHandle 2891
 TAG  org.pragmatica.aether.http.handler.HttpRequestContext 515
 TAG  org.pragmatica.aether.http.handler.HttpResponseData 516
 TAG  org.pragmatica.aether.http.handler.ObjectHandle 2890
+TAG  org.pragmatica.aether.http.handler.RequestHeaders 523
 TAG  org.pragmatica.aether.http.handler.UploadHandle 2892
 TAG  org.pragmatica.aether.http.handler.security.AuthorizationRole 517
 TAG  org.pragmatica.aether.http.handler.security.Principal 518
 TAG  org.pragmatica.aether.http.handler.security.Role 519
 TAG  org.pragmatica.aether.http.handler.security.SecurityContext 520
-TAG  org.pragmatica.aether.invoke.InvocationMessage$InvokeRequest 642
+TAG  org.pragmatica.aether.invoke.InvocationMessage$InvokeRequest 644
 TAG  org.pragmatica.aether.invoke.InvocationMessage$InvokeResponse 643
+TAG  org.pragmatica.aether.invoke.LegacyInvokeRequest 642
 TAG  org.pragmatica.aether.node.entityforward.EntityForwardMessage$EntityCancelTimerForward 1670
 TAG  org.pragmatica.aether.node.entityforward.EntityForwardMessage$EntityCreateForward 1661
 TAG  org.pragmatica.aether.node.entityforward.EntityForwardMessage$EntityDeleteForward 1662
@@ -648,6 +659,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherKey$DrainDeadlineKey 1104
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$EndpointKey 1105
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$EntityCheckpointKey 1106
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$EntityKeyspaceRegistrationKey 1107
+TAG  org.pragmatica.aether.slice.kvstore.AetherKey$FsmWarningKey 2902
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$GossipKeyRotationKey 1108
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$GovernorAnnouncementKey 1109
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$HttpNodeRouteKey 1110
@@ -655,7 +667,9 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherKey$JoinDeadlineKey 1111
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$LogLevelKey 1112
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$NodeArtifactKey 1113
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$NodeDepartureKey 2147
+TAG  org.pragmatica.aether.slice.kvstore.AetherKey$NodeIdHighWaterKey 2904
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$NodeIdentityKey 2193
+TAG  org.pragmatica.aether.slice.kvstore.AetherKey$NodeLeaseKey 2910
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$NodePlacementKey 1676
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$NodeReplacementKey 2129
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$NodeRoutesKey 1114
@@ -720,6 +734,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CommunityValue 1613
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ConfigValue 1614
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerAssignmentValue 1650
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerAssignmentValue$AssignmentToken 1651
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerGroupTombstone 2900
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ConsumerGroupValue 1615
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$DepartureCause 2158
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$DepartureState 2157
@@ -739,6 +754,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$EntityFoldCheckpointValue 1
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$EntityKeyspaceRegistrationValue 1621
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$EpochStart 1748
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$FreedCause 2200
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$FsmWarningValue 2903
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$Generation 2153
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$GossipKeyRotationValue 1622
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$GovernorAnnouncementValue 1623
@@ -750,6 +766,8 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$JoinDeadlineValue 1625
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$LogLevelValue 1626
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$NodeArtifactValue 1627
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$NodeDepartureValue 2152
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$NodeIdHighWaterValue 2905
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$NodeLeaseValue 2911
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$NodeLifecycleValue 2194
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$NodePlacementValue 1677
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$NodeReplacementPhase 2131

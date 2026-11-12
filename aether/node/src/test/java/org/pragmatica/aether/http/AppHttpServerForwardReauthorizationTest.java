@@ -16,6 +16,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.HttpProtocol;
+import org.pragmatica.aether.config.JwtConfig;
+import org.pragmatica.aether.config.SecurityMode;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.http.HttpRoutePublisher.LocalResolution;
 import org.pragmatica.aether.http.HttpRoutePublisher.LocalRouteInfo;
@@ -24,7 +27,6 @@ import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
-import org.pragmatica.aether.http.handler.HttpRequestHandler;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
@@ -79,7 +81,11 @@ class AppHttpServerForwardReauthorizationTest {
     }
 
     private AppHttpServer hostServing(StubRoutePublisher publisher, HttpRequestContext forwarded) {
-        return AppHttpServer.appHttpServer(AppHttpConfig.appHttpConfig(TEST_PORT, Set.of(VALID_API_KEY)),
+        return hostServing(AppHttpConfig.appHttpConfig(TEST_PORT, Set.of(VALID_API_KEY)), publisher, forwarded);
+    }
+
+    private AppHttpServer hostServing(AppHttpConfig config, StubRoutePublisher publisher, HttpRequestContext forwarded) {
+        return AppHttpServer.appHttpServer(config,
                                            ForwardingTimeouts.forwardingTimeouts(),
                                            SELF_NODE,
                                            HttpRouteRegistry.httpRouteRegistry(),
@@ -121,6 +127,166 @@ class AppHttpServerForwardReauthorizationTest {
         assertThat(relayed.statusCode()).isEqualTo(401);
         assertThat(relayed.headers()).containsEntry("WWW-Authenticate", "ApiKey realm=\"Aether\"");
         assertThat(router.handleCount()).isZero();
+    }
+
+    /// #2926: a refused (unknown) key relays 401 with the `invalid_token` error code, not 403 without a challenge.
+    @Test
+    void forwardedRequest_withAnInvalidKey_isRefusedWith401_andTheInvalidTokenChallenge() {
+        var host = hostServing("/api/admin/", SecurityPolicy.roleRequired("admin"), withInvalidKey("/api/admin/secret"));
+
+        host.onHttpForwardRequest(forwardRequest("corr-bad-key"));
+
+        var relayed = relayedResponse();
+
+        assertThat(relayed.statusCode()).isEqualTo(401);
+        assertThat(relayed.headers()).containsEntry("WWW-Authenticate", "ApiKey realm=\"Aether\", error=\"invalid_token\"");
+        assertThat(body(relayed)).doesNotContain("not-a-valid-key");
+        assertThat(router.handleCount()).isZero();
+    }
+
+    /// #2156: under JWT mode the relayed challenge names the FIRST configured `auth_schemes` entry.
+    @Test
+    void forwardedRequest_withoutACredential_underJwt_challengesWithTheFirstConfiguredScheme() {
+        var jwt = JwtConfig.jwtConfig("http://127.0.0.1:1/.well-known/jwks.json",
+                                      Option.empty(),
+                                      Option.empty(),
+                                      "role",
+                                      3600,
+                                      30,
+                                      List.of("Token", "Bearer"))
+                           .unwrap();
+        var config = AppHttpConfig.appHttpConfig(true,
+                                                 TEST_PORT,
+                                                 Map.of(),
+                                                 AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE,
+                                                 SecurityMode.JWT,
+                                                 Option.some(jwt),
+                                                 HttpProtocol.H1)
+                                  .unwrap();
+        var policy = SecurityPolicy.roleRequired("admin");
+        var host = hostServing(config,
+                               new StubRoutePublisher("GET", "/api/admin/", SELF_NODE, router, policy, policy),
+                               withoutCredential("/api/admin/secret"));
+
+        host.onHttpForwardRequest(forwardRequest("corr-jwt-anon"));
+
+        var relayed = relayedResponse();
+
+        assertThat(relayed.statusCode()).isEqualTo(401);
+        assertThat(relayed.headers()).containsEntry("WWW-Authenticate", "Token realm=\"Aether\"");
+        assertThat(router.handleCount()).isZero();
+    }
+
+    /// #2926: a malformed token under JWT mode relays 401 with the first scheme and `error="invalid_token"`.
+    @Test
+    void forwardedRequest_withAMalformedJwt_underJwt_isRefusedWith401_andTheInvalidTokenChallenge() {
+        var jwt = JwtConfig.jwtConfig("http://127.0.0.1:1/.well-known/jwks.json", Option.empty(), Option.empty(), "role", 3600, 30,
+                                      List.of("Token", "Bearer"))
+                           .unwrap();
+        var config = AppHttpConfig.appHttpConfig(true, TEST_PORT, Map.of(), AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE, SecurityMode.JWT,
+                                                 Option.some(jwt), HttpProtocol.H1)
+                                  .unwrap();
+        var policy = SecurityPolicy.roleRequired("admin");
+        var forwarded = HttpRequestContext.httpRequestContext("/api/admin/secret", "GET", Map.of(),
+                                                              Map.of("Authorization", List.of("Token not-a-jwt")), "req-fwd");
+        var host = hostServing(config, new StubRoutePublisher("GET", "/api/admin/", SELF_NODE, router, policy, policy), forwarded);
+
+        host.onHttpForwardRequest(forwardRequest("corr-jwt-bad"));
+
+        var relayed = relayedResponse();
+
+        assertThat(relayed.statusCode()).isEqualTo(401);
+        assertThat(relayed.headers()).containsEntry("WWW-Authenticate", "Token realm=\"Aether\", error=\"invalid_token\"");
+        assertThat(router.handleCount()).isZero();
+    }
+
+    /// #2926: a refusal on the FORWARD path is the same response as the direct refusal of the same request -- status,
+    /// presence and exact text of `WWW-Authenticate` (including `error=`). One real listener answers the request
+    /// directly; the same host object relays the same request as a forward. Every row's expected status and challenge
+    /// is also pinned literally, so two identically wrong paths cannot pass.
+    @Test
+    void forwardedRefusal_isTheDirectRefusal_status_andChallenge() throws Exception {
+        var invalidKey = Map.of("X-API-Key", "not-a-valid-key");
+        var validKey = Map.of("X-API-Key", VALID_API_KEY);
+        var malformedJwt = Map.of("Authorization", "Bearer not-a-jwt");
+        var unverifiableJwt = Map.of("Authorization", "Bearer " + jwtWithKid("k1"));
+
+        assertParity("401 invalid_token", apiKeyConfig(), invalidKey, 401, "ApiKey realm=\"Aether\", error=\"invalid_token\"");
+        assertParity("401 missing", apiKeyConfig(), Map.of(), 401, "ApiKey realm=\"Aether\"");
+        assertParity("403 role", apiKeyConfig(), validKey, 403, null);
+        assertParity("401 jwt invalid_token", jwtConfig(), malformedJwt, 401, "Bearer realm=\"Aether\", error=\"invalid_token\"");
+        assertParity("503 jwks", jwtConfig(), unverifiableJwt, 503, null);
+    }
+
+    private void assertParity(String label, AppHttpConfig config, Map<String, String> credential, int status, String challenge)
+        throws Exception {
+        network = new RecordingClusterNetwork();
+        serializer = new CapturingSerializer();
+        router = new CountingRouter();
+
+        var forwarded = HttpRequestContext.httpRequestContext("/api/admin/secret",
+                                                              "GET",
+                                                              Map.of(),
+                                                              credential.entrySet()
+                                                                        .stream()
+                                                                        .collect(java.util.stream.Collectors.toMap(Map.Entry::getKey,
+                                                                                                                   entry -> List.of(entry.getValue()))),
+                                                              "req-fwd");
+        var policy = SecurityPolicy.roleRequired("admin");
+        var host = hostServing(config, new StubRoutePublisher("GET", "/api/admin/", SELF_NODE, router, policy, policy), forwarded);
+
+        TlsProbe.requireStarted(host.start().await(), "app listener");
+
+        try {
+            var direct = directRefusal(TlsProbe.requireBoundPort(host.boundPort(), "app listener"), credential);
+
+            host.onHttpForwardRequest(forwardRequest("corr-parity"));
+
+            var relayed = relayedResponse();
+
+            assertThat(direct.statusCode()).as(label + " direct status").isEqualTo(status);
+            assertThat(relayed.statusCode()).as(label + " forwarded status").isEqualTo(status);
+            assertThat(direct.headers().firstValue("WWW-Authenticate").orElse(null)).as(label + " direct challenge").isEqualTo(challenge);
+            assertThat(relayed.headers().get("WWW-Authenticate")).as(label + " forwarded challenge").isEqualTo(challenge);
+            assertThat(router.handleCount()).as(label + " never dispatched").isZero();
+        } finally {
+            host.stop().await();
+        }
+    }
+
+    private static java.net.http.HttpResponse<String> directRefusal(int port, Map<String, String> credential) throws Exception {
+        var builder = java.net.http.HttpRequest.newBuilder()
+                                               .uri(java.net.URI.create("http://localhost:" + port + "/api/admin/secret"))
+                                               .GET();
+
+        credential.forEach(builder::header);
+
+        try (var client = java.net.http.HttpClient.newHttpClient()) {
+            return client.send(builder.build(), java.net.http.HttpResponse.BodyHandlers.ofString());
+        }
+    }
+
+    private static AppHttpConfig apiKeyConfig() {
+        return AppHttpConfig.appHttpConfig(0, Set.of(VALID_API_KEY));
+    }
+
+    /// The JWKS endpoint is unreachable: a structurally valid token with a `kid` the node cannot resolve is a key-fetch
+    /// failure, not a bad credential.
+    private static AppHttpConfig jwtConfig() {
+        var jwt = JwtConfig.jwtConfig("http://127.0.0.1:1/.well-known/jwks.json").unwrap();
+
+        return AppHttpConfig.appHttpConfig(true, 0, Map.of(), AppHttpConfig.DEFAULT_MAX_REQUEST_SIZE, SecurityMode.JWT,
+                                           Option.some(jwt), HttpProtocol.H1)
+                            .unwrap();
+    }
+
+    private static String jwtWithKid(String kid) {
+        var encoder = java.util.Base64.getUrlEncoder().withoutPadding();
+        var header = "{\"alg\":\"RS256\",\"typ\":\"JWT\",\"kid\":\"" + kid + "\"}";
+
+        return encoder.encodeToString(header.getBytes(java.nio.charset.StandardCharsets.UTF_8)) + "."
+               + encoder.encodeToString("{\"exp\":4102444800}".getBytes(java.nio.charset.StandardCharsets.UTF_8)) + "."
+               + encoder.encodeToString(new byte[] {1, 2, 3});
     }
 
     /// v1670 R2-N4: the route a forwarded request is re-authorized against and the router that serves it come from
@@ -216,6 +382,8 @@ class AppHttpServerForwardReauthorizationTest {
         assertThat(relayed.statusCode()).as("authorized admin forward: %s", body(relayed)).isEqualTo(200);
         assertThat(router.handleCount()).isEqualTo(1);
         assertThat(router.principalSeen()).as("the slice sees the forwarded caller's principal").isEqualTo("api-key:admin-caller");
+        assertThat(router.requestPrincipalSeen()).as("#2157: the router is handed the context THIS host validated, on the request")
+                                                .isEqualTo("api-key:admin-caller");
     }
 
     @Test
@@ -296,6 +464,10 @@ class AppHttpServerForwardReauthorizationTest {
         return HttpRequestContext.httpRequestContext(path, "GET", Map.of(), Map.of("X-API-Key", List.of(VALID_API_KEY)), "req-fwd");
     }
 
+    private static HttpRequestContext withInvalidKey(String path) {
+        return HttpRequestContext.httpRequestContext(path, "GET", Map.of(), Map.of("X-API-Key", List.of("not-a-valid-key")), "req-fwd");
+    }
+
     private static HttpRequestContext withoutCredential(String path) {
         return HttpRequestContext.httpRequestContext(path, "GET", Map.of(), Map.of(), "req-fwd");
     }
@@ -313,9 +485,16 @@ class AppHttpServerForwardReauthorizationTest {
             return principalSeen.get();
         }
 
+        private final java.util.concurrent.atomic.AtomicReference<String> requestPrincipalSeen = new java.util.concurrent.atomic.AtomicReference<>("");
+
+        String requestPrincipalSeen() {
+            return requestPrincipalSeen.get();
+        }
+
         @Override
         public Promise<HttpResponseData> handle(HttpRequestContext request) {
             handleCount.incrementAndGet();
+            requestPrincipalSeen.set(request.security().principal().value());
             principalSeen.set(org.pragmatica.aether.http.handler.security.SecurityContextHolder.currentContext()
                                                                                               .map(context -> context.principal()
                                                                                                                      .value())
@@ -390,11 +569,6 @@ class AppHttpServerForwardReauthorizationTest {
         }
 
         @Override
-        public Promise<Unit> publishRoutes(Artifact artifact, ClassLoader classLoader, SliceInvokerFacade invokerFacade) {
-            return Promise.success(unit());
-        }
-
-        @Override
         public Promise<Unit> publishRoutes(Artifact artifact,
                                            ClassLoader classLoader,
                                            Object sliceInstance,
@@ -410,11 +584,6 @@ class AppHttpServerForwardReauthorizationTest {
         @Override
         public Promise<Unit> unpublishRoutes(Artifact artifact) {
             return Promise.success(unit());
-        }
-
-        @Override
-        public Option<HttpRequestHandler> getHandler(Artifact artifact) {
-            return Option.none();
         }
 
         @Override

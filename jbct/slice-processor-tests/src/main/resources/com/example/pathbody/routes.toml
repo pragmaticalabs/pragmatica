@@ -1,0 +1,23 @@
+prefix = "/api/pathbody"
+
+[routes]
+addComment = "POST /articles/{slug}/comments"
+updateArticle = "PUT /articles/{slug}"
+renameArticle = "PUT /renamed/{slug}"
+mergedFirst = "PUT /merged-first/{id}"
+mergedFirstPlain = "POST /merged-first"
+plainFirstPlain = "POST /plain-first"
+plainFirst = "PUT /plain-first/{id}"
+nested = "PUT /nested/{id}"
+envelope = "POST /envelope"
+optNote = "PUT /opt-note/{id}"
+patchNote = "PUT /patch-note/{id}"
+listNote = "PUT /list-note/{id}"
+mapNote = "PUT /map-note/{id}"
+listedNote = "PUT /listed/{id}"
+listedNotes = "POST /listed"
+touch = "PUT /touch/{id}"
+wrapped = "PUT /wrapped/{id}"
+
+[errors]
+default = 500

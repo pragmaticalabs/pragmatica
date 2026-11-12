@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Set;
 
+import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
@@ -75,7 +76,9 @@ class GapPlacementTest {
         var w = MbWorld.world(CORE_1, CORE_2, CORE_3).target(ORDERS, 2, "SIDEWAYS").activate();
 
         assertThat(w.h.warns("invalid-placement")).hasSize(1);
-        assertThat(w.h.submits()).isEmpty();
+        assertThat(w.h.submitsBesides(ClusterModel.SubmitKind.WARNINGS)).isEmpty();
+        assertThat(w.h.warningPuts()).as("the open warning is persisted: exactly one WARNINGS put")
+                  .containsExactly(new FsmWarningKey("invalid-placement", ORDERS.asString()));
     }
 
     /// Red when: an instance outside the audience (on a worker, under CORE_ONLY) is retired before the instance in the audience is

@@ -83,10 +83,11 @@ public final class KvSnapshotter {
         return new Cut<>(snapshot.build(loaded), raw.revision());
     }
 
-    /// The cluster FSM's `Snapshot`: every entry sorted by key (a deterministic `Rebuild`), the seams and admissions the callers read now,
-    /// and the committed leader.
+    /// The cluster FSM's `Snapshot`: every entry sorted by key (a deterministic `Rebuild`), the seams, admissions and DEAD set (C17r) the
+    /// callers read now, and the committed leader.
     public Cut<ClusterInput.Snapshot> clusterSnapshot(Supplier<Seams> seams,
-                                                      Supplier<Map<NodeId, Admission>> admissions) {
+                                                      Supplier<Map<NodeId, Admission>> admissions,
+                                                      Supplier<ClusterInput.DeadSet> dead) {
         var raw = cut();
         var entries = raw.entries()
                          .stream()
@@ -96,7 +97,7 @@ public final class KvSnapshotter {
                                                               entry.getValue()))
                          .toList();
 
-        return new Cut<>(ClusterInput.Snapshot.snapshot(entries, seams.get(), admissions.get(), raw.leader()),
+        return new Cut<>(ClusterInput.Snapshot.snapshot(entries, seams.get(), admissions.get(), raw.leader(), dead.get()),
                          raw.revision());
     }
 

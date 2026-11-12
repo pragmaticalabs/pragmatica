@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Set;
 
+import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
@@ -270,11 +271,29 @@ class SlGateTest {
         @Test
         void unknownStatus_submitsNothing_andWarns() {
             var h = heldByPendingSchema();
-            var before = h.submits().size();
+            var before = h.submitsBesides(ClusterModel.SubmitKind.WARNINGS).size();
+            var warningsBefore = h.submits(ClusterModel.SubmitKind.WARNINGS).size();
 
             h.seed(new SchemaVersionKey("orders-db"), record(SchemaStatus.UNKNOWN));
             h.drain();
-            assertThat(h.submits()).hasSize(before);
+            assertThat(h.submitsBesides(ClusterModel.SubmitKind.WARNINGS)).hasSize(before);
+            assertThat(h.submits(ClusterModel.SubmitKind.WARNINGS)).as("exactly one WARNINGS transaction: the opened warning")
+                      .hasSize(warningsBefore + 1);
+            assertThat(h.warningPuts()).as("the open schema-status-unknown warning is persisted")
+                      .last()
+                      .isEqualTo(new FsmWarningKey("schema-status-unknown", "orders-db"));
+            assertThat(h.warns("schema-status-unknown")).hasSize(1);
+        }
+
+        /// #2834: once per episode. Red when: a second UNKNOWN status for the same datasource raises `schema-status-unknown` again.
+        @Test
+        void unknownStatus_repeated_warnsOncePerEpisode() {
+            var h = heldByPendingSchema();
+
+            h.seed(new SchemaVersionKey("orders-db"), record(SchemaStatus.UNKNOWN));
+            h.drain();
+            h.seed(new SchemaVersionKey("orders-db"), record(SchemaStatus.UNKNOWN));
+            h.drain();
             assertThat(h.warns("schema-status-unknown")).hasSize(1);
         }
 

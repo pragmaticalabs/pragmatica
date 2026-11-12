@@ -13,9 +13,12 @@ import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.nio.channels.FileChannel;
+import java.nio.channels.OverlappingFileLockException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -24,6 +27,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.IntSupplier;
 import java.util.stream.Stream;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -35,14 +39,20 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ClusterTestPortsTest {
     private static final int SWIM = CoreSwimHealthDetector.SWIM_PORT_OFFSET;
     /// TCP-only: the port is for an HTTP/1 management server and nothing UDP ever binds it.
-    /// Reservation forms caught: `ServerSocket(0`, `ServerSocket(0, backlog, addr)`, any `ServerSocketChannel`, and an
+    /// Reservation forms caught: `ServerSocket(0`, `ServerSocket(0, backlog, addr)`, `ServerSocketChannel.open()` with no argument or with an INET/INET6 family (a UNIX-family channel binds a filesystem path and reserves no port), and an
     /// explicit `bind(new InetSocketAddress(..., 0))`. A bare `new InetSocketAddress(.., 0)` is NOT matched: it is also
     /// how a live `HttpServer.create(...)` binds (GitBackupRepositoryTest), which would be a false positive.
     /// KNOWN GAP (#2016): a port held in a variable (`new ServerSocket(port)`, `bind(addrOf(p))`) is not caught. Such a
     /// call is also how tests deliberately HOLD a taken port, so no text pattern separates the two without false
     /// positives; telling them apart needs data flow (the port came from a closed socket), which this scan cannot see.
-    private static final java.util.regex.Pattern RESERVES = java.util.regex.Pattern.compile("ServerSocket\\(\\s*0|ServerSocketChannel|\\.bind\\(\\s*new (?:java\\.net\\.)?InetSocketAddress\\([^()]*(?:\\([^()]*\\))?[^()]*\\b0\\s*\\)\\s*\\)");
+    private static final java.util.regex.Pattern RESERVES = java.util.regex.Pattern.compile("ServerSocket\\(\\s*0|ServerSocketChannel\\.open\\(\\s*(?:\\)|(?:java\\.net\\.)?StandardProtocolFamily\\.INET)|\\.bind\\(\\s*new (?:java\\.net\\.)?InetSocketAddress\\([^()]*(?:\\([^()]*\\))?[^()]*\\b0\\s*\\)\\s*\\)");
+    private final List<int[]> reservations = new ArrayList<>();
     private static final String TCP_ONLY_MANAGEMENT_TEST = "ManagementServerDhtCatchUpGaugeTest.java";
+
+    @AfterEach
+    void dropLeftoverReservations() {
+        reservations.forEach(ClusterTestPorts::unreserve);
+    }
 
     @Test
     void issuedPort_hasFreeClusterUdpTcpAndSwimUdp() {
@@ -116,7 +126,7 @@ class ClusterTestPortsTest {
     /// socket closes, the SAME candidate is accepted, so the refusal came from the occupation and nothing else.
     @Test
     void freeClusterPort_skipsACandidateWhoseClusterUdpIsHeld_andAcceptsItOnceReleased() throws IOException {
-        var taken = occupiableClusterCandidate();
+        var taken = occupiableClusterCandidate(true);
 
         try (var held = new DatagramSocket(new InetSocketAddress(taken))) {
             var got = ClusterTestPorts.freeClusterPort(offering(taken));
@@ -128,7 +138,7 @@ class ClusterTestPortsTest {
 
     @Test
     void freeClusterPort_skipsACandidateWhoseSwimUdpIsHeld_andAcceptsItOnceReleased() throws IOException {
-        var taken = occupiableClusterCandidate();
+        var taken = occupiableClusterCandidate(true);
 
         try (var held = new DatagramSocket(new InetSocketAddress(taken + SWIM))) {
             assertThat(ClusterTestPorts.freeClusterPort(offering(taken))).as("SWIM UDP held").isNotEqualTo(taken);
@@ -139,7 +149,7 @@ class ClusterTestPortsTest {
     /// The both-protocol helper must skip a candidate whose TCP side is taken, and one whose UDP side is taken.
     @Test
     void freeTcpAndUdpPort_skipsACandidateWithTcpTaken() throws IOException {
-        var taken = occupiableClusterCandidate();
+        var taken = occupiableClusterCandidate(false);
 
         try (var held = new ServerSocket()) {
             held.bind(new InetSocketAddress(taken));
@@ -150,7 +160,7 @@ class ClusterTestPortsTest {
 
     @Test
     void freeTcpAndUdpPort_skipsACandidateWithUdpTaken() throws IOException {
-        var taken = occupiableClusterCandidate();
+        var taken = occupiableClusterCandidate(false);
 
         try (var held = new DatagramSocket(new InetSocketAddress(taken))) {
             assertThat(ClusterTestPorts.freeTcpAndUdpPort(offering(taken))).as("UDP held").isNotEqualTo(taken);
@@ -188,6 +198,27 @@ class ClusterTestPortsTest {
                                                                                           .isInstanceOf(IllegalStateException.class);
             child.kill();
             assertThat(ClusterTestPorts.freeClusterPort(() -> victim)).as("after the child died").isEqualTo(victim);
+        } finally {
+            child.kill();
+        }
+    }
+
+    /// #2902: the reservation a control test relies on is a real cross-JVM lock. It is refused for a port another JVM holds, and for a port it
+    /// took, a second claim on the same lock file overlaps (this JVM holds the lock), so no other allocator could take the port either.
+    @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    void reserve_isRefusedForAPortAnotherJvmHolds_andHoldsTheLockForThePortsItTook() throws Exception {
+        var child = PortHolder.start("new", "5");
+
+        try {
+            var victim = child.ports().getFirst();
+            var mine = occupiableClusterCandidate(false);
+
+            assertThat(ClusterTestPorts.reserve(victim)).as("child's port " + victim + " is locked by another JVM").isFalse();
+            // Opening and closing the lock file here drops this JVM's OS lock on it (POSIX), so `mine` is not used after the check.
+            try (var channel = FileChannel.open(ClusterTestPorts.LOCK_DIR.resolve(mine + ".lock"), StandardOpenOption.WRITE)) {
+                assertThatThrownBy(channel::tryLock).as("the lock on the reserved port " + mine + " is held").isInstanceOf(OverlappingFileLockException.class);
+            }
         } finally {
             child.kill();
         }
@@ -241,6 +272,18 @@ class ClusterTestPortsTest {
         }
     }
 
+    /// The tripwire pattern flags every TCP reservation form and no UNIX-family channel (#3101).
+    @Test
+    void reservesPattern_flagsTcpForms_andNotUnixDomainChannels() {
+        assertThat(RESERVES.matcher("new ServerSocket(0)").find()).as("ServerSocket(0").isTrue();
+        assertThat(RESERVES.matcher("ServerSocketChannel.open()").find()).as("open() no args").isTrue();
+        assertThat(RESERVES.matcher("ServerSocketChannel.open(StandardProtocolFamily.INET)").find()).as("INET").isTrue();
+        assertThat(RESERVES.matcher("ServerSocketChannel.open(StandardProtocolFamily.INET6)").find()).as("INET6").isTrue();
+        assertThat(RESERVES.matcher("ch.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0))").find()).as("bind InetSocketAddress 0").isTrue();
+        assertThat(RESERVES.matcher("ServerSocketChannel.open(StandardProtocolFamily.UNIX)").find()).as("UNIX family").isFalse();
+        assertThat(RESERVES.matcher("var a = UnixDomainSocketAddress.of(path); server.bind(a);").find()).as("UnixDomainSocketAddress").isFalse();
+    }
+
     /// Tripwire for the class: a node test that reserves a cluster port over TCP and lets a node bind UDP on it.
     @Test
     void nodeTests_doNotReserveAPortWithTcpServerSocket() throws IOException {
@@ -260,16 +303,21 @@ class ClusterTestPortsTest {
         }
     }
 
-    /// A window port free right now on cluster UDP, cluster TCP and SWIM UDP and NOT held by this JVM: a test occupies
-    /// it. A port this JVM already holds would be refused for that reason, and the released-port control would then fail
-    /// (seen on cloudbb-d1 in the full suite, where earlier tests had issued hundreds of ports).
-    private static int occupiableClusterCandidate() {
+    /// A window port free right now on cluster UDP, cluster TCP and SWIM UDP and NOT held by this JVM: a test occupies it.
+    /// #2902: the cross-JVM lock on it (and on its SWIM port, when `withSwim`) is taken first and kept through the whole test, so
+    /// no other allocator can issue it between the probe and the control "released, accepted again" (the allocation attempt adopts
+    /// the reservation, see [ClusterTestPorts#reserve]). A port another JVM holds is simply not chosen.
+    private int occupiableClusterCandidate(boolean withSwim) {
         for (int attempt = 0; attempt < 200; attempt++) {
             var port = ClusterTestPorts.windowCandidate();
+            var ports = withSwim ? new int[] {port, port + SWIM} : new int[] {port};
 
-            if (ClusterTestPorts.WINDOW.contains(port + SWIM) && !ClusterTestPorts.heldHere(port)
-                && !ClusterTestPorts.heldHere(port + SWIM) && ClusterTestPorts.isFreeClusterPort(port)) {
-                return port;
+            if (ClusterTestPorts.WINDOW.contains(port + SWIM) && ClusterTestPorts.reserve(ports)) {
+                if (ClusterTestPorts.isFreeClusterPort(port)) {
+                    reservations.add(ports);
+                    return port;
+                }
+                ClusterTestPorts.unreserve(ports);
             }
         }
         throw new IllegalStateException("no free window port to occupy");

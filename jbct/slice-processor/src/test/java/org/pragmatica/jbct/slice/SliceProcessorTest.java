@@ -12,6 +12,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import javax.tools.JavaFileObject;
 import javax.tools.StandardLocation;
@@ -602,15 +604,388 @@ class SliceProcessorTest {
         assertThat(diagnostics).contains("Generated routes: UploadService");
     }
 
+    /// #2805 (owner ruling 2026-11-08): `status = 204` on a result that is not `Unit` fails the build; a 204 response
+    /// carries no body, so the value would be dropped.
+    @Test
+    void status204_onNonUnitResult_failsTheBuild(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 204 }",
+                                            "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
+
+        assertThat(diagnostics).contains("declares status = 204, which answers with no body");
+    }
+
+    /// Positive control: the same declaration on a `Unit` result builds.
+    @Test
+    void status204_onUnitResult_builds(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 204 }",
+                                            "record Item(String name) {}\n\n    Promise<org.pragmatica.lang.Unit> create(Item request);");
+
+        assertThat(diagnostics).doesNotContain("declares status = 204");
+        assertThat(diagnostics).contains("Generated routes: UploadService");
+    }
+
+    /// #2805: a status that is not a success status is a clear build error naming the route and the accepted values.
+    @Test
+    void nonSuccessStatus_failsTheBuildWithAClearError(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 302 }",
+                                            "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
+
+        assertThat(diagnostics).contains("Route 'create' status must be a success status, one of [200, 201, 202, 204] written as a number; got 302");
+    }
+
+    /// Owner ruling 2026-11-08: only 200, 201, 202 and 204 are declarable; 203 is refused at build time.
+    @Test
+    void status203_failsTheBuildWithAClearError(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 203 }",
+                                            "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
+
+        assertThat(diagnostics).contains("Route 'create' status must be a success status, one of [200, 201, 202, 204] written as a number; got 203");
+    }
+
+    /// Owner ruling 2026-11-08: only 200, 201, 202 and 204 are declarable; 206 is refused at build time.
+    @Test
+    void status206_failsTheBuildWithAClearError(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 206 }",
+                                            "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
+
+        assertThat(diagnostics).contains("Route 'create' status must be a success status, one of [200, 201, 202, 204] written as a number; got 206");
+    }
+
+    @Test
+    void stringStatus_failsTheBuildWithAClearError(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = \"201\" }",
+                                            "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
+
+        assertThat(diagnostics).contains("Route 'create' status must be a success status, one of [200, 201, 202, 204] written as a number; got the string \"201\"");
+    }
+
+    @Test
+    void fractionalStatus_failsTheBuildWithAClearError(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 201.5 }",
+                                            "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
+
+        assertThat(diagnostics).contains("Route 'create' status must be a success status, one of [200, 201, 202, 204] written as a number; got 201.5");
+    }
+
+    @Test
+    void blankLocation_failsTheBuild(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 201, location = \" \" }",
+                                            "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
+
+        assertThat(diagnostics).contains("Route 'create' location must not be blank");
+    }
+
+    /// #2805: a `location` placeholder must name a component of the result record.
+    @Test
+    void locationNamingAnUnknownField_failsTheBuild(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 201, location = \"/items/{slug}\" }",
+                                            "record Item(String name) {}\n\n    Promise<Item> create(Item request);");
+
+        assertThat(diagnostics).contains("location names {slug}, but the result record upload.UploadService.Item has no such component; its components are [name]");
+    }
+
+    @Test
+    void locationOnANonRecordResult_failsTheBuild(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "create = { route = \"POST /items\", status = 201, location = \"/items/{slug}\" }",
+                                            "record Item(String name) {}\n\n    Promise<String> create(Item request);");
+
+        assertThat(diagnostics).contains("location names {slug}, but the result type java.lang.String is not a record with fields to read");
+    }
+
+    // ========== [errors] packages: Cause types outside the slice package (#2883) ==========
+
+    private static JavaFileObject causeIn(String pkg, String outer, String... inner) {
+        var members = Arrays.stream(inner)
+                            .map(name -> "    record " + name + "() implements " + outer
+                                         + " { public String message() { return \"" + name + "\"; } }\n")
+                            .collect(Collectors.joining());
+
+        return JavaFileObjects.forSourceString(pkg + "." + outer,
+                                               "package " + pkg + ";\n\n"
+                                               + "public sealed interface " + outer + " extends org.pragmatica.lang.Cause {\n"
+                                               + members + "}\n");
+    }
+
+    private static final String ERRORS_METHOD = "Promise<String> upload(String body);";
+
+    private String errorPackagesToml(String errors) {
+        return "prefix = \"/api\"\n\n[routes]\nupload = \"PUT /files/{id:Long}\"\n\n[errors]\n" + errors + "\n";
+    }
+
+    private String generatedRoutes(Path classes) throws IOException {
+        return Files.readString(classes.resolve(Path.of("upload", "UploadServiceRoutes.java")));
+    }
+
+    @Test
+    void errorsPackages_listedPackage_mapsItsCauseToTheDeclaredStatus(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithToml(classes,
+                                          errorPackagesToml("packages = [\"shared.errors\"]\nHTTP_429 = [\"*QuotaExceeded*\"]"),
+                                          ERRORS_METHOD,
+                                          List.of(causeIn("shared.errors", "QuotaError", "QuotaExceeded")));
+
+        assertThat(diagnostics).doesNotContain("do not exist");
+        assertThat(generatedRoutes(classes)).contains("case QuotaExceeded _ -> HttpError.httpError(HttpStatus.TOO_MANY_REQUESTS, cause);");
+    }
+
+    /// The slice's own package is always scanned; listing it again must not map its Causes twice. (A name repeated
+    /// within one list is collapsed earlier, when the base and slice configs merge.)
+    @Test
+    void errorsPackages_sliceOwnPackageListed_mapsItsCauseOnce(@TempDir Path classes) throws IOException {
+        compileWithToml(classes,
+                        errorPackagesToml("packages = [\"upload\"]\nHTTP_429 = [\"*OwnQuota*\"]"),
+                        ERRORS_METHOD,
+                        List.of(causeIn("upload", "OwnError", "OwnQuota")));
+
+        assertThat(generatedRoutes(classes).split("case OwnQuota _", -1).length - 1).isEqualTo(1);
+    }
+
+    @Test
+    void errorsPackages_unlistedPackage_isNotDiscovered(@TempDir Path classes) throws IOException {
+        compileWithToml(classes,
+                        errorPackagesToml("HTTP_429 = [\"*QuotaExceeded*\"]"),
+                        ERRORS_METHOD,
+                        List.of(causeIn("shared.errors", "QuotaError", "QuotaExceeded")));
+
+        assertThat(generatedRoutes(classes)).doesNotContain("QuotaExceeded");
+    }
+
+    @Test
+    void errorsPackages_missingPackage_failsTheBuildNamingIt(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithToml(classes,
+                                          errorPackagesToml("packages = [\"shared.errors\", \"shared.typo\"]"),
+                                          ERRORS_METHOD,
+                                          List.of(causeIn("shared.errors", "QuotaError", "QuotaExceeded")));
+
+        assertThat(diagnostics).contains("do not exist: shared.typo");
+        assertThat(diagnostics).doesNotContain("Generated routes: UploadService");
+    }
+
+    @Test
+    void errorsPackages_sameSimpleNameInTwoPackages_isMappedByQualifiedName(@TempDir Path classes) throws IOException {
+        compileWithToml(classes,
+                        errorPackagesToml("packages = [\"shared.one\", \"shared.two\"]\nHTTP_403 = [\"OneError.Denied\"]\nHTTP_409 = [\"TwoError.Denied\"]"),
+                        ERRORS_METHOD,
+                        List.of(causeIn("shared.one", "OneError", "Denied"), causeIn("shared.two", "TwoError", "Denied")));
+
+        var generated = generatedRoutes(classes);
+
+        assertThat(generated).contains("case shared.one.OneError.Denied _ -> HttpError.httpError(HttpStatus.FORBIDDEN, cause);");
+        assertThat(generated).contains("case shared.two.TwoError.Denied _ -> HttpError.httpError(HttpStatus.CONFLICT, cause);");
+    }
+
+    private static final String TWO_DENIED_PACKAGES = "packages = [\"shared.one\", \"shared.two\"]\n\n[errors.explicit]\n";
+
+    private static List<JavaFileObject> twoDenied() {
+        return List.of(causeIn("shared.one", "OneError", "Denied"), causeIn("shared.two", "TwoError", "Denied"));
+    }
+
+    @Test
+    void errorsExplicit_simpleNameMatchingTwoCauses_failsTheBuildNamingEveryMatch(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithToml(classes,
+                                          errorPackagesToml(TWO_DENIED_PACKAGES + "Denied = 404"),
+                                          ERRORS_METHOD,
+                                          twoDenied());
+
+        assertThat(diagnostics).contains("Ambiguous explicit error mapping 'Denied'");
+        assertThat(diagnostics).contains("shared.one.OneError.Denied, shared.two.TwoError.Denied");
+        assertThat(diagnostics).contains("fully-qualified name");
+        assertThat(diagnostics).doesNotContain("Generated routes: UploadService");
+    }
+
+    @Test
+    void errorsExplicit_fullyQualifiedKey_mapsOnlyThatTypeAndTheOtherKeepsTheDefault(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithToml(classes,
+                                          errorPackagesToml(TWO_DENIED_PACKAGES + "\"shared.one.OneError.Denied\" = 404"),
+                                          ERRORS_METHOD,
+                                          twoDenied());
+
+        var generated = generatedRoutes(classes);
+
+        assertThat(diagnostics).doesNotContain("Ambiguous explicit");
+        assertThat(diagnostics).doesNotContain("Dead explicit");
+        assertThat(generated).contains("case shared.one.OneError.Denied _ -> HttpError.httpError(HttpStatus.NOT_FOUND, cause);");
+        assertThat(generated).contains("case shared.two.TwoError.Denied _ -> HttpError.httpError(HttpStatus.INTERNAL_SERVER_ERROR, cause);");
+    }
+
+    @Test
+    void errorsExplicit_unambiguousSimpleName_stillMapsItsCause(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithToml(classes,
+                                          errorPackagesToml("packages = [\"shared.one\"]\n\n[errors.explicit]\nDenied = 404"),
+                                          ERRORS_METHOD,
+                                          List.of(causeIn("shared.one", "OneError", "Denied")));
+
+        assertThat(diagnostics).doesNotContain("Ambiguous explicit");
+        assertThat(generatedRoutes(classes)).contains("case Denied _ -> HttpError.httpError(HttpStatus.NOT_FOUND, cause);");
+    }
+
+    @Test
+    void errorsExplicit_simpleAndQualifiedKeyForOneType_qualifiedKeyDecides(@TempDir Path classes) throws IOException {
+        compileWithToml(classes,
+                        errorPackagesToml("packages = [\"shared.one\"]\n\n[errors.explicit]\nDenied = 404\n\"shared.one.OneError.Denied\" = 403"),
+                        ERRORS_METHOD,
+                        List.of(causeIn("shared.one", "OneError", "Denied")));
+
+        assertThat(generatedRoutes(classes)).contains("case Denied _ -> HttpError.httpError(HttpStatus.FORBIDDEN, cause);");
+    }
+
+    @Test
+    void errorsExplicit_twoAmbiguousKeys_reportOneMessagePerKeySortedAndNewlineJoined(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithToml(classes,
+                                          errorPackagesToml(TWO_DENIED_PACKAGES + "Zeta = 404\nDenied = 404\nAlpha = 404\nMid = 404\nBeta = 404"),
+                                          ERRORS_METHOD,
+                                          List.of(causeIn("shared.one", "OneError", "Alpha", "Beta", "Denied", "Mid", "Zeta"),
+                                                  causeIn("shared.two", "TwoError", "Alpha", "Beta", "Denied", "Mid", "Zeta")));
+
+        var keys = List.of("Alpha", "Beta", "Denied", "Mid", "Zeta");
+        var positions = keys.stream().map(key -> diagnostics.indexOf("Ambiguous explicit error mapping '" + key + "'")).toList();
+
+        assertThat(positions).doesNotContain(-1);
+        assertThat(positions).isInStrictOrder();
+        assertThat(diagnostics).contains("upload/routes.toml.\n  Ambiguous explicit error mapping 'Beta'");
+    }
+
+    /// #2957: a merged route whose path-bound component stays required in the body, because another route decodes the
+    /// record whole, is named at build time: route, record, component and why.
+    @Test
+    void mergedRoute_whoseComponentStaysRequiredBecauseOfAnotherRoute_warns(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWarnings(classes,
+                                            "merged = \"PUT /notes/{id}?tag\"\nplain = \"POST /notes\"",
+                                            "Promise<String> merged(Note note);\n    Promise<String> plain(Note note);",
+                                            List.of(record("Note", "String id, org.pragmatica.lang.Option<String> tag, String text")));
+
+        assertThat(diagnostics).contains("Route 'merged' (PUT /notes/{id}): component 'id' of upload.Note");
+        assertThat(diagnostics).contains("stays required in the JSON body");
+        assertThat(diagnostics).contains("another route of the slice decodes the record without binding that component");
+        assertThat(diagnostics).doesNotContain("Route 'plain'");
+        // Only a bound, required component is named: not the body's own `text`, not the optional bound `tag`.
+        assertThat(diagnostics).doesNotContain("component 'text'");
+        assertThat(diagnostics).doesNotContain("component 'tag'");
+    }
+
+    @Test
+    void mergedRoute_whoseComponentStaysRequiredBecauseOfNesting_warnsWithTheNestingReason(@TempDir Path classes)
+    throws IOException {
+        var diagnostics = compileWarnings(classes,
+                                            "merged = \"PUT /notes/{id}\"\nwrapped = \"POST /wrapped\"",
+                                            "Promise<String> merged(Note note);\n    Promise<String> wrapped(Wrap wrap);",
+                                            List.of(record("Note", "String id, String text"), record("Wrap", "Note note")));
+
+        assertThat(diagnostics).contains("Route 'merged' (PUT /notes/{id}): component 'id' of upload.Note");
+        assertThat(diagnostics).contains("also a component of another type the slice decodes or answers");
+    }
+
+    /// A response record that nests the request record is such a type too.
+    @Test
+    void mergedRoute_whoseRecordIsNestedInAResponse_warns(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWarnings(classes,
+                                            "merged = \"PUT /notes/{id}\"",
+                                            "Promise<Wrap> merged(Note note);",
+                                            List.of(record("Note", "String id, String text"), record("Wrap", "Note note")));
+
+        assertThat(diagnostics).contains("Route 'merged' (PUT /notes/{id}): component 'id' of upload.Note");
+        assertThat(diagnostics).contains("also a component of another type the slice decodes or answers");
+    }
+
+    /// #2963 N1: a container that reaches the merged record keeps the component strict, so every container form
+    /// warns -- as a response (List, Set, Option, Map, nested generics) and as a body of another route.
+    @ParameterizedTest(name = "response {0}")
+    @ValueSource(strings = {"java.util.List<Note>",
+                            "java.util.Set<Note>",
+                            "org.pragmatica.lang.Option<Note>",
+                            "java.util.Map<String, Note>",
+                            "java.util.List<java.util.List<Note>>",
+                            "org.pragmatica.lang.Option<java.util.List<Note>>"})
+    void mergedRoute_whoseRecordIsInsideAContainerResponse_warns(String response, @TempDir Path classes) throws IOException {
+        var diagnostics = compileWarnings(classes,
+                                          "merged = \"PUT /notes/{id}\"\nlisted = \"GET /notes\"",
+                                          "Promise<String> merged(Note note);\n    Promise<" + response + "> listed();",
+                                          List.of(record("Note", "String id, String text")));
+
+        assertThat(diagnostics).contains("Route 'merged' (PUT /notes/{id}): component 'id' of upload.Note");
+        assertThat(diagnostics).contains("also a component of another type the slice decodes or answers");
+    }
+
+    @Test
+    void mergedRoute_whoseRecordIsTheElementOfAnotherRoutesListBody_warns(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWarnings(classes,
+                                          "merged = \"PUT /notes/{id}\"\nbulk = \"POST /bulk\"",
+                                          "Promise<String> merged(Note note);\n    Promise<String> bulk(java.util.List<Note> notes);",
+                                          List.of(record("Note", "String id, String text")));
+
+        assertThat(diagnostics).contains("Route 'merged' (PUT /notes/{id}): component 'id' of upload.Note");
+        assertThat(diagnostics).contains("also a component of another type the slice decodes or answers");
+    }
+
+    /// Negative control for the container forms: a container of an UNRELATED record leaves the merged one relaxed.
+    @Test
+    void mergedRoute_whoseRecordIsNotInTheContainer_doesNotWarn(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWarnings(classes,
+                                          "merged = \"PUT /notes/{id}\"\nlisted = \"GET /others\"",
+                                          "Promise<String> merged(Note note);\n    Promise<java.util.List<Other>> listed();",
+                                          List.of(record("Note", "String id, String text"), record("Other", "String name")));
+
+        assertThat(diagnostics).doesNotContain("stays required in the JSON body");
+    }
+
+    /// #2963 N2: one warning per (route, component), however many uses keep the component strict.
+    @Test
+    void mergedRoute_whoseComponentStaysRequiredBySeveralUses_warnsExactlyOnce(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWarnings(classes,
+                                          "merged = \"PUT /notes/{id}\"\nplain = \"POST /notes\"\nlisted = \"GET /notes\"",
+                                          "Promise<String> merged(Note note);\n    Promise<String> plain(Note note);\n"
+                                         + "    Promise<java.util.List<Note>> listed();",
+                                          List.of(record("Note", "String id, String text")));
+
+        assertThat(occurrences(diagnostics, "Route 'merged' (PUT /notes/{id}): component 'id' of upload.Note")).isEqualTo(1);
+        assertThat(occurrences(diagnostics, "stays required in the JSON body")).isEqualTo(1);
+    }
+
+    /// Negative control for the three above: the same record on a merged route alone is relaxed, and draws no warning.
+    @Test
+    void mergedRoute_whoseComponentIsRelaxed_doesNotWarn(@TempDir Path classes) throws IOException {
+        var routes = "prefix = \"/api\"\n\n[routes]\nmerged = \"PUT /notes/{id}\"\n";
+        var diagnostics = compileDiagnostics(classes,
+                                             routes,
+                                             "Promise<String> merged(Note note);",
+                                             List.of(record("Note", "String id, String text")));
+
+        assertThat(joinMessages(diagnostics.stream())).contains("Generated routes: UploadService");
+        assertThat(joinMessages(diagnostics.stream().filter(SliceProcessorTest::isWarning)))
+            .doesNotContain("stays required in the JSON body");
+    }
+
+    private static int occurrences(String text, String needle) {
+        return text.split(java.util.regex.Pattern.quote(needle), -1).length - 1;
+    }
+
+    private static JavaFileObject record(String name, String components) {
+        return JavaFileObjects.forSourceString("upload." + name,
+                                               "package upload;\n\npublic record " + name + "(" + components + ") {}\n");
+    }
+
     private String compileWithRoutes(Path classes, String route, String method) throws IOException {
         return compileWithRoutes(classes, route, method, List.of());
     }
 
     private String compileWithRoutes(Path classes, String route, String method, List<JavaFileObject> extra) throws IOException {
+        return compileWithToml(classes, "prefix = \"/api\"\n\n[routes]\n" + route + "\n", method, extra);
+    }
+
+    private List<javax.tools.Diagnostic<? extends JavaFileObject>> compileDiagnostics(Path classes, String toml, String method, List<JavaFileObject> extra) throws IOException {
         var routes = classes.resolve(Path.of("upload", "routes.toml"));
 
         Files.createDirectories(routes.getParent());
-        Files.writeString(routes, "prefix = \"/api\"\n\n[routes]\n" + route + "\n");
+        Files.writeString(routes, toml);
         var source = JavaFileObjects.forSourceString("upload.UploadService",
                                                      """
             package upload;
@@ -648,10 +1023,28 @@ class SliceProcessorTest {
             task.call();
         }
 
-        return collector.getDiagnostics()
-                        .stream()
-                        .map(diagnostic -> diagnostic.getMessage(null))
-                        .collect(Collectors.joining("\n"));
+        return List.copyOf(collector.getDiagnostics());
+    }
+
+    private String compileWithToml(Path classes, String toml, String method, List<JavaFileObject> extra) throws IOException {
+        return joinMessages(compileDiagnostics(classes, toml, method, extra).stream());
+    }
+
+    /// Only what the processor reported as a WARNING: a NOTE or an ERROR carrying the same words does not count.
+    private String compileWarnings(Path classes, String route, String method, List<JavaFileObject> extra)
+    throws IOException {
+        return joinMessages(compileDiagnostics(classes, "prefix = \"/api\"\n\n[routes]\n" + route + "\n", method, extra)
+                                .stream()
+                                .filter(SliceProcessorTest::isWarning));
+    }
+
+    private static boolean isWarning(javax.tools.Diagnostic<? extends JavaFileObject> diagnostic) {
+        return diagnostic.getKind() == javax.tools.Diagnostic.Kind.WARNING;
+    }
+
+    private static String joinMessages(java.util.stream.Stream<javax.tools.Diagnostic<? extends JavaFileObject>> diagnostics) {
+        return diagnostics.map(diagnostic -> diagnostic.getMessage(null))
+                          .collect(Collectors.joining("\n"));
     }
 
     /// Loads a generated slice manifest through [java.util.Properties] rather than asserting on raw
@@ -741,6 +1134,91 @@ class SliceProcessorTest {
         var providerArtifactId = sliceManifestProperties(compilation, "SeatSellability").getProperty("slice.artifactId");
 
         assertThat(consumerManifest.getProperty("dependency.0.artifact")).isEqualTo("com.example:" + providerArtifactId);
+    }
+
+    /// #2982: a plain-interface step (non-@Slice interface with a static factory) is not a slice
+    /// dependency. The manifest, which the packaging step turns into the `[slices]` section of
+    /// `META-INF/dependencies/<Factory>`, and the generated factory must name the same set.
+    @Test
+    void should_list_only_real_slice_dependencies_when_a_plain_interface_step_is_present() throws Exception {
+        var provider = JavaFileObjects.forSourceString("com.example.app.payments.PaymentService",
+                                                       """
+            package com.example.app.payments;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+
+            @Slice
+            public interface PaymentService {
+                Promise<Boolean> processPayment(String paymentRequest);
+
+                static PaymentService paymentService() {
+                    return null;
+                }
+            }
+            """);
+        var plainStep = JavaFileObjects.forSourceString("com.example.app.steps.OrderValidator",
+                                                        """
+            package com.example.app.steps;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface OrderValidator {
+                Promise<Boolean> validate(String orderId);
+
+                static OrderValidator orderValidator() {
+                    return null;
+                }
+            }
+            """);
+        var consumer = JavaFileObjects.forSourceString("com.example.app.orders.OrderService",
+                                                       """
+            package com.example.app.orders;
+
+            import com.example.app.payments.PaymentService;
+            import com.example.app.steps.OrderValidator;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+
+            @Slice
+            public interface OrderService {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderService orderService(OrderValidator validator, PaymentService payments) {
+                    return null;
+                }
+            }
+            """);
+        var sources = commonSources();
+
+        sources.add(provider);
+        sources.add(plainStep);
+        sources.add(consumer);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor())
+                                         .withOptions("-Aslice.groupId=com.example", "-Aslice.artifactId=app")
+                                         .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var manifest = sliceManifestProperties(compilation, "OrderService");
+
+        assertThat(manifest.getProperty("dependencies.count")).isEqualTo("1");
+        assertThat(manifest.getProperty("dependency.0.interface")).isEqualTo("com.example.app.payments.PaymentService");
+        assertThat(manifest.getProperty("dependency.0.artifact")).isEqualTo("com.example:app-payment-service");
+        assertThat(manifest.stringPropertyNames().stream().anyMatch(name -> name.startsWith("dependency.1."))).isFalse();
+        assertThat(manifest.values()
+                           .stream()
+                           .anyMatch(value -> value.toString().contains("OrderValidator")
+                                              || value.toString().contains("order-validator"))).isFalse();
+
+        var factory = compilation.generatedSourceFile("com.example.app.orders.OrderServiceFactory")
+                                 .get()
+                                 .getCharContent(false)
+                                 .toString();
+
+        assertThat(factory).contains("record paymentService(MethodHandle<");
+        assertThat(factory).doesNotContain("record orderValidator(MethodHandle<");
     }
 
     /// The narrow case the superseded immediate-parent-package test did handle — provider and
@@ -2138,6 +2616,98 @@ class SliceProcessorTest {
         // Proxy for multi-param dep should generate inner request record
         assertThat(factoryContent).contains("search_SearchRequest");
         assertThat(factoryContent).contains("searchHandle.invoke(new search_SearchRequest(query, limit))");
+    }
+
+    /// #2157 A6-1: the multi-parameter payload record is a member of the factory, and the slice's codec writes it under the
+    /// tag of the record the callee's factory decodes it as, so the caller's bytes are the callee's record.
+    @Test
+    void multiParamDependencyProxy_payloadRecordIsEncodedUnderTheCalleesRecordTag() throws Exception {
+        var factoryContent = generatedFactory(aggregatorSources("Promise<String> aggregate(String query);"));
+
+        assertThat(factoryContent).contains("    record search_SearchRequest(String query, int limit) {}");
+        assertThat(factoryContent).contains("new SliceCodec.TypeCodec<test.AggregatorServiceFactory.search_SearchRequest>(");
+        assertThat(factoryContent).contains("SliceCodec.deterministicTag(\"external.SearchServiceFactory.SearchRequest\")");
+        assertThat(factoryContent).doesNotContain("SliceCodec.deterministicTag(\"test.AggregatorServiceFactory.search_SearchRequest\")");
+    }
+
+    /// The compile-time collision check covers the tag a proxy payload record is written under, not its own name:
+    /// `test.Collider71027` derives tag 101652, the tag of `external.SearchServiceFactory.SearchRequest`.
+    @Test
+    void multiParamDependencyProxy_tagCollisionIsCheckedOnTheCalleesRecordName() {
+        var collider = JavaFileObjects.forSourceString("test.Collider71027",
+                                                       """
+            package test;
+            public record Collider71027(String value) {}
+            """);
+        var sources = aggregatorSources("Promise<String> aggregate(Collider71027 query);");
+        sources.add(collider);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).hadErrorContaining("test.Collider71027 and external.SearchServiceFactory.SearchRequest both derive tag 101652");
+    }
+
+    /// The collision check also covers the names of enum and opaque (interface) types, by their fully-qualified
+    /// name: `test.Collider71027` as an enum or as an interface derives tag 101652 too.
+    @Test
+    void multiParamDependencyProxy_tagCollisionIsCheckedOnAnEnumsQualifiedName() {
+        var collider = JavaFileObjects.forSourceString("test.Collider71027",
+                                                       """
+            package test;
+            public enum Collider71027 { A, B }
+            """);
+        var sources = aggregatorSources("Promise<String> aggregate(Collider71027 query);");
+        sources.add(collider);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).hadErrorContaining("both derive tag 101652");
+    }
+
+    @Test
+    void multiParamDependencyProxy_tagCollisionIsCheckedOnAnInterfaceTypesQualifiedName() {
+        var collider = JavaFileObjects.forSourceString("test.Collider71027",
+                                                       """
+            package test;
+            public interface Collider71027 { String describe(); }
+            """);
+        var sources = aggregatorSources("Promise<String> aggregate(Collider71027 query);");
+        sources.add(collider);
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).hadErrorContaining("both derive tag 101652");
+    }
+
+    private List<JavaFileObject> aggregatorSources(String method) {
+        var searchService = JavaFileObjects.forSourceString("external.SearchService",
+                                                             """
+            package external;
+            import org.pragmatica.lang.Promise;
+            public interface SearchService {
+                Promise<String> search(String query, int limit);
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.AggregatorService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.SearchService;
+            @Slice
+            public interface AggregatorService {
+                %s
+                static AggregatorService aggregatorService(SearchService search) { return null; }
+            }
+            """.formatted(method));
+        var sources = commonSources();
+        sources.add(searchService);
+        sources.add(source);
+        return sources;
+    }
+
+    private String generatedFactory(List<JavaFileObject> sources) throws Exception {
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+        return compilation.generatedSourceFile("test.AggregatorServiceFactory")
+                          .get().getCharContent(false).toString();
     }
 
     @Test
@@ -5587,6 +6157,138 @@ class SliceProcessorTest {
         assertCompilation(compilation).succeeded();
     }
 
+    // ========== RequestHeaders injected parameter (#2879) ==========
+
+    private static final JavaFileObject REQUEST_HEADERS = JavaFileObjects.forSourceString(
+            "org.pragmatica.aether.http.handler.RequestHeaders",
+            """
+            package org.pragmatica.aether.http.handler;
+
+            public record RequestHeaders(java.util.Map<String, java.util.List<String>> fields) {
+                public static RequestHeaders empty() { return new RequestHeaders(java.util.Map.of()); }
+            }
+            """);
+
+    private Compilation compileProfileService(String method) {
+        var source = JavaFileObjects.forSourceString("test.ProfileService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.aether.http.handler.RequestHeaders;
+            import org.pragmatica.aether.http.handler.security.Principal;
+            @Slice
+            public interface ProfileService {
+                %s
+                static ProfileService profileService() { return null; }
+            }
+            """.formatted(method));
+        var sources = commonSources();
+        sources.add(PRINCIPAL);
+        sources.add(REQUEST_HEADERS);
+        sources.add(source);
+        return javac().withProcessors(new SliceProcessor()).compile(sources);
+    }
+
+    @Test
+    void should_fail_on_request_headers_method_with_multiple_business_params() {
+        var compilation = compileProfileService("Promise<String> updateProfile(RequestHeaders headers, String name, String email);");
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("exactly one request record");
+        assertCompilation(compilation).hadErrorContaining("ProfileService.updateProfile");
+        assertCompilation(compilation).hadErrorContaining("RequestHeaders");
+    }
+
+    @Test
+    void should_process_request_headers_method_with_single_business_param_in_either_order() {
+        assertCompilation(compileProfileService("Promise<String> getProfile(RequestHeaders headers, String userId);")).succeeded();
+        assertCompilation(compileProfileService("Promise<String> getProfile(String userId, RequestHeaders headers);")).succeeded();
+    }
+
+    @Test
+    void should_process_request_headers_method_without_any_business_param() {
+        assertCompilation(compileProfileService("Promise<String> whoAmI(RequestHeaders headers);")).succeeded();
+    }
+
+    @Test
+    void should_process_request_headers_beside_principal_and_one_business_param() {
+        assertCompilation(compileProfileService("Promise<String> getProfile(Principal principal, RequestHeaders headers, String userId);")).succeeded();
+    }
+
+    @Test
+    void should_fail_on_principal_and_request_headers_with_multiple_business_params() {
+        var compilation = compileProfileService("Promise<String> updateProfile(Principal principal, RequestHeaders headers, String name, String email);");
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("exactly one request record");
+    }
+
+    /// Headers exist at the HTTP edge only (#2879): the slice's generated factory keeps `RequestHeaders` as an
+    /// ordinary argument of the wire request, so a slice that calls this method passes the headers itself and nothing
+    /// is added on its behalf.
+    @Test
+    void request_headers_stay_an_explicit_argument_of_the_inter_slice_request() throws IOException {
+        var compilation = compileProfileService("Promise<String> getProfile(RequestHeaders headers, String userId);");
+
+        assertCompilation(compilation).succeeded();
+        var factory = compilation.generatedSourceFile("test.ProfileServiceFactory").get().getCharContent(false).toString();
+
+        assertThat(factory).contains("record GetProfileRequest(RequestHeaders headers, String userId)");
+    }
+
+    /// A caller that passes a null `RequestHeaders` to an inter-slice call sends empty headers (#2879): the generated
+    /// proxy normalizes the argument, as for the multi-param and the single-param shape.
+    @Test
+    void null_request_headers_on_an_inter_slice_call_are_sent_as_empty_headers() throws IOException {
+        var compilation = compileCallerOfHeadersService("Promise<String> getProfile(RequestHeaders headers, String userId);");
+
+        assertCompilation(compilation).succeeded();
+        var factory = compilation.generatedSourceFile("test.CallerServiceFactory").get().getCharContent(false).toString();
+
+        assertThat(factory).contains("(headers == null ? RequestHeaders.empty() : headers)");
+        assertThat(factory).contains("userId))");
+    }
+
+    @Test
+    void null_request_headers_as_the_only_argument_of_an_inter_slice_call_are_sent_as_empty_headers() throws IOException {
+        var compilation = compileCallerOfHeadersService("Promise<String> whoAmI(RequestHeaders headers);");
+
+        assertCompilation(compilation).succeeded();
+        var factory = compilation.generatedSourceFile("test.CallerServiceFactory").get().getCharContent(false).toString();
+
+        assertThat(factory).contains("Handle.invoke((headers == null ? RequestHeaders.empty() : headers))");
+    }
+
+    private Compilation compileCallerOfHeadersService(String method) {
+        var dependency = JavaFileObjects.forSourceString("external.HeadersService",
+                                                         """
+            package external;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.aether.http.handler.RequestHeaders;
+            public interface HeadersService {
+                %s
+            }
+            """.formatted(method));
+        var caller = JavaFileObjects.forSourceString("test.CallerService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import external.HeadersService;
+            @Slice
+            public interface CallerService {
+                Promise<String> call(String id);
+                static CallerService callerService(HeadersService headers) { return null; }
+            }
+            """);
+        var sources = commonSources();
+        sources.add(REQUEST_HEADERS);
+        sources.add(dependency);
+        sources.add(caller);
+        return javac().withProcessors(new SliceProcessor()).compile(sources);
+    }
+
     // ========== Promise.all() dependency-count batching (issues #395 / arity-15 ceiling) ==========
 
     @Test
@@ -5666,8 +6368,8 @@ class SliceProcessorTest {
             import org.pragmatica.lang.type.TypeToken;
 
             public record Topic<T>(String name, TypeToken<T> payloadType) {
-                public static <T> Topic<T> of(String name, TypeToken<T> payloadType) { return new Topic<>(name, payloadType); }
-                public static <T> Topic<T> of(String name, Class<T> payloadType) { return new Topic<>(name, null); }
+                public static <T> Topic<T> topic(String name, TypeToken<T> payloadType) { return new Topic<>(name, payloadType); }
+                public static <T> Topic<T> topic(String name, Class<T> payloadType) { return new Topic<>(name, null); }
             }
             """);
 
@@ -5707,7 +6409,7 @@ class SliceProcessorTest {
             import org.pragmatica.aether.slice.topic.Topic;
             import test.dto.OrderEvent;
             public interface Topics {
-                Topic<OrderEvent> ORDER_EVENTS = Topic.of("order-events", OrderEvent.class);
+                Topic<OrderEvent> ORDER_EVENTS = Topic.topic("order-events", OrderEvent.class);
             }
             """);
 

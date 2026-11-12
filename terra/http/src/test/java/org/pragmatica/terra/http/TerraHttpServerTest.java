@@ -15,13 +15,17 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.http.adapter.ErrorMapper;
+import org.pragmatica.aether.http.adapter.RequestSecurity;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.adapter.SliceRouterFactory;
+import org.pragmatica.aether.http.handler.RequestHeaders;
 import org.pragmatica.aether.http.handler.security.SecurityContextHolder;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.aether.http.security.HttpAuthenticator;
@@ -81,6 +85,112 @@ class TerraHttpServerTest {
             assertThat(get(client, host, "/admin", "X-API-Key", "admin-secret").statusCode()).isEqualTo(200);
             assertThat(get(client, host, "/__terra/health/ready").statusCode()).isEqualTo(200);
             assertThat(get(client, host, "/missing").statusCode()).isEqualTo(404);
+        } finally { close(host); }
+    }
+
+    /// #2926: 401 for every unauthenticated request, with the RFC 6750 challenge; 403 (no challenge) only for a role.
+    @Test void serve_apiKeyRefusals_challengeOn401_andNoneOn403() throws Exception {
+        var routes = List.<Route<?>>of(
+            Route.<String>get("/private").withoutParameters().to(_ -> Promise.success("ok")).withSecurity(SecurityPolicy.unspecified()).asText(),
+            Route.<String>get("/admin").withoutParameters().to(_ -> Promise.success("admin")).withSecurity(SecurityPolicy.roleRequired("admin")).asText());
+        var host = start(routes, HttpAuthenticator.apiKeyValidator(KEYS), new AtomicInteger());
+        try (var client = HttpClient.newHttpClient()) {
+            var missing = get(client, host, "/private");
+            assertThat(missing.statusCode()).isEqualTo(401);
+            assertThat(missing.headers().firstValue("WWW-Authenticate")).contains("ApiKey realm=\"Terra\"");
+            var invalid = get(client, host, "/private", "X-API-Key", "bad");
+            assertThat(invalid.statusCode()).isEqualTo(401);
+            assertThat(invalid.headers().firstValue("WWW-Authenticate")).contains("ApiKey realm=\"Terra\", error=\"invalid_token\"");
+            assertThat(invalid.body()).doesNotContain("Invalid API key").contains("Invalid credentials");
+            var empty = get(client, host, "/private", "X-API-Key", "");
+            assertThat(empty.statusCode()).isEqualTo(401);
+            assertThat(empty.headers().firstValue("WWW-Authenticate")).contains("ApiKey realm=\"Terra\", error=\"invalid_token\"");
+            var forbidden = get(client, host, "/admin", "X-API-Key", "reader-secret");
+            assertThat(forbidden.statusCode()).isEqualTo(403);
+            assertThat(forbidden.headers().firstValue("WWW-Authenticate")).isEmpty();
+        } finally { close(host); }
+    }
+
+    /// #2946: `optional` authenticates if a credential is presented. None is served with an empty context, a refused
+    /// one is the #2926 401 + `invalid_token` challenge, a valid one reaches the route as its validated context;
+    /// `public` keeps ignoring the credential and a required route still refuses a missing one.
+    @Test void serve_optionalAuthApiKey_anonymousServed_invalidIs401_validReachesTheRoute() throws Exception {
+        var routes = List.<Route<?>>of(
+            Route.<String>get("/opt").withoutParameters().to(_ -> Promise.success(contextOf())).withSecurity(SecurityPolicy.optional()).asText(),
+            Route.<String>get("/open").withoutParameters().to(_ -> Promise.success(contextOf())).withSecurity(SecurityPolicy.publicRoute()).asText(),
+            Route.<String>get("/admin").withoutParameters().to(_ -> Promise.success("admin")).withSecurity(SecurityPolicy.roleRequired("admin")).asText());
+        var host = start(routes, HttpAuthenticator.apiKeyValidator(KEYS), new AtomicInteger());
+        try (var client = HttpClient.newHttpClient()) {
+            var anonymous = get(client, host, "/opt");
+            assertThat(anonymous.statusCode()).isEqualTo(200);
+            assertThat(anonymous.body()).startsWith("authenticated=false");
+            var invalid = get(client, host, "/opt", "X-API-Key", "bad");
+            assertThat(invalid.statusCode()).isEqualTo(401);
+            assertThat(invalid.headers().firstValue("WWW-Authenticate")).contains("ApiKey realm=\"Terra\", error=\"invalid_token\"");
+            assertThat(invalid.body()).doesNotContain("authenticated=");
+            var valid = get(client, host, "/opt", "X-API-Key", "reader-secret");
+            assertThat(valid.statusCode()).isEqualTo(200);
+            assertThat(valid.body()).startsWith("authenticated=true").contains("reader");
+            assertThat(get(client, host, "/open", "X-API-Key", "bad").body()).startsWith("authenticated=false");
+            assertThat(get(client, host, "/admin").statusCode()).isEqualTo(401);
+        } finally { close(host); }
+    }
+
+    @Test void serve_optionalAuthJwt_garbageExpiredForgedAndWrongAlgAre401_validReachesTheRoute() throws Exception {
+        var secret = "a-test-only-shared-secret-of-32-bytes!";
+        var jwt = org.pragmatica.aether.config.JwtConfig.jwtConfig("", org.pragmatica.lang.Option.<String>empty(),
+            org.pragmatica.lang.Option.<String>empty(), "role", 3600, 30, List.of("Token", "Bearer"),
+            org.pragmatica.aether.config.JwtKeyMode.HS256,
+            org.pragmatica.lang.Option.some(org.pragmatica.aether.config.JwtSecret.jwtSecret(secret).unwrap())).unwrap();
+        var route = Route.<String>get("/opt").withoutParameters().to(_ -> Promise.success(contextOf())).withSecurity(SecurityPolicy.optional()).asText();
+        var host = start(List.of(route), HttpAuthenticator.jwtValidator(jwt), new AtomicInteger());
+        var now = System.currentTimeMillis() / 1000;
+        var hs = "{\"alg\":\"HS256\"}";
+        try (var client = HttpClient.newHttpClient()) {
+            assertThat(get(client, host, "/opt").body()).startsWith("authenticated=false");
+            for (var bad : List.of("Token not-a-jwt",
+                                   "Token " + hsToken(hs, "{\"sub\":\"alice\",\"exp\":" + (now - 3600) + "}", secret),
+                                   "Token " + hsToken(hs, "{\"sub\":\"alice\",\"exp\":" + (now + 3600) + "}", "another-shared-secret-of-32-bytes!!!"),
+                                   "Token " + hsToken("{\"alg\":\"RS256\",\"kid\":\"k1\"}", "{\"sub\":\"alice\",\"exp\":" + (now + 3600) + "}", secret))) {
+                var refused = get(client, host, "/opt", "Authorization", bad);
+                assertThat(refused.statusCode()).as(bad).isEqualTo(401);
+                assertThat(refused.headers().firstValue("WWW-Authenticate")).as(bad).contains("Token realm=\"Terra\", error=\"invalid_token\"");
+            }
+            var valid = get(client, host, "/opt", "Authorization", "Bearer " + hsToken(hs, "{\"sub\":\"alice\",\"exp\":" + (now + 3600) + "}", secret));
+            assertThat(valid.statusCode()).isEqualTo(200);
+            assertThat(valid.body()).startsWith("authenticated=true").contains("alice");
+        } finally { close(host); }
+    }
+
+    private static String contextOf() {
+        return SecurityContextHolder.currentContext().map(c -> "authenticated=" + c.isAuthenticated() + " principal=" + c.principal().value()).or("no-context");
+    }
+
+    private static String hsToken(String header, String claims, String secret) throws Exception {
+        var encoder = java.util.Base64.getUrlEncoder().withoutPadding();
+        var utf8 = java.nio.charset.StandardCharsets.UTF_8;
+        var signed = encoder.encodeToString(header.getBytes(utf8)) + "." + encoder.encodeToString(claims.getBytes(utf8));
+        var mac = javax.crypto.Mac.getInstance("HmacSHA256");
+        mac.init(new javax.crypto.spec.SecretKeySpec(secret.getBytes(utf8), "HmacSHA256"));
+        return signed + "." + encoder.encodeToString(mac.doFinal(signed.getBytes(java.nio.charset.StandardCharsets.US_ASCII)));
+    }
+
+    @Test void serve_jwtRefusals_challengeNamesTheFirstConfiguredScheme() throws Exception {
+        var jwt = org.pragmatica.aether.config.JwtConfig.jwtConfig("http://127.0.0.1:1/keys", org.pragmatica.lang.Option.<String>empty(),
+            org.pragmatica.lang.Option.<String>empty(), "role", 3600, 30, List.of("Token", "Bearer")).unwrap();
+        var route = Route.<String>get("/jwt").withoutParameters().to(_ -> Promise.success("ok")).withSecurity(SecurityPolicy.roleRequired("admin")).asText();
+        var host = start(List.of(route), HttpAuthenticator.jwtValidator(jwt), new AtomicInteger());
+        try (var client = HttpClient.newHttpClient()) {
+            var missing = get(client, host, "/jwt");
+            assertThat(missing.statusCode()).isEqualTo(401);
+            assertThat(missing.headers().firstValue("WWW-Authenticate")).contains("Token realm=\"Terra\"");
+            var malformed = get(client, host, "/jwt", "Authorization", "Token not-a-jwt");
+            assertThat(malformed.statusCode()).isEqualTo(401);
+            assertThat(malformed.headers().firstValue("WWW-Authenticate")).contains("Token realm=\"Terra\", error=\"invalid_token\"");
+            var forged = get(client, host, "/jwt", "Authorization", "Bearer a.b.c");
+            assertThat(forged.statusCode()).isEqualTo(401);
+            assertThat(forged.headers().firstValue("WWW-Authenticate")).contains("Token realm=\"Terra\", error=\"invalid_token\"");
+            assertThat(forged.body()).doesNotContain("Base64").doesNotContain("Signature");
         } finally { close(host); }
     }
 
@@ -193,6 +303,36 @@ class TerraHttpServerTest {
         } finally { close(host); }
     }
 
+    /// #2880: a provider authenticator that throws is a 500 with a generic body, whatever the exception said.
+    @Test void serve_throwingProviderAuthenticator_answers500WithAGenericBody() throws Exception {
+        var routes = List.<Route<?>>of(Route.<String>get("/private").withoutParameters().to(_ -> Promise.success("never"))
+            .withSecurity(SecurityPolicy.authenticated()).asText());
+        var throwing = new GuardedAuthenticator("test-provider", (_, _) -> { throw new IllegalStateException("db-password=hunter2"); });
+        var host = start(routes, throwing, new AtomicInteger());
+        try (var client = HttpClient.newHttpClient()) {
+            var response = get(client, host, "/private");
+
+            assertThat(response.statusCode()).isEqualTo(500);
+            assertThat(response.body()).doesNotContain("hunter2").doesNotContain("IllegalStateException").doesNotContain("test-provider");
+        } finally { close(host); }
+    }
+
+    /// #2926 (CTO ruling): an unreachable JWKS is the server failing -- 503 and no challenge, not 500 and not 401.
+    @Test void serve_jwtWithUnreachableJwks_is503_withoutAChallenge() throws Exception {
+        var jwt = org.pragmatica.aether.config.JwtConfig.jwtConfig("http://127.0.0.1:1/keys").unwrap();
+        var route = Route.<String>get("/jwt").withoutParameters().to(_ -> Promise.success("ok")).withSecurity(SecurityPolicy.roleRequired("admin")).asText();
+        var host = start(List.of(route), HttpAuthenticator.jwtValidator(jwt), new AtomicInteger());
+        var encoder = java.util.Base64.getUrlEncoder().withoutPadding();
+        var utf8 = java.nio.charset.StandardCharsets.UTF_8;
+        var token = encoder.encodeToString("{\"alg\":\"RS256\",\"kid\":\"k1\"}".getBytes(utf8)) + "."
+            + encoder.encodeToString("{\"exp\":4102444800}".getBytes(utf8)) + "." + encoder.encodeToString(new byte[] {1, 2, 3});
+        try (var client = HttpClient.newHttpClient()) {
+            var response = get(client, host, "/jwt", "Authorization", "Bearer " + token);
+            assertThat(response.statusCode()).isEqualTo(503);
+            assertThat(response.headers().firstValue("WWW-Authenticate")).isEmpty();
+        } finally { close(host); }
+    }
+
     @Test void serve_jwtWithLiveJwks_verifiesSignatureClaimsAndRole() throws Exception {
         var generator = java.security.KeyPairGenerator.getInstance("RSA");
         generator.initialize(2048);
@@ -282,6 +422,25 @@ class TerraHttpServerTest {
         } finally { close(host); }
     }
 
+    // #2805: Terra secures every route by rebuilding it; the rebuilt route keeps the declared success status and Location.
+    @Test void serve_declaredSuccessStatus_survivesTheSecurityRebuild() throws Exception {
+        var routes = List.<Route<?>>of(
+            Route.<String>get("/created").withoutParameters().to(_ -> Promise.success("made")).withSecurity(SecurityPolicy.publicRoute()).asText()
+                .withSuccess(SuccessSpec.successSpec(201, _ -> "/created/1")),
+            Route.<Unit>get("/accepted").withoutParameters().to(_ -> Promise.unitPromise()).withSecurity(SecurityPolicy.publicRoute()).asText()
+                .withSuccess(SuccessSpec.successSpec(202)),
+            Route.<Unit>get("/done").withoutParameters().to(_ -> Promise.unitPromise()).withSecurity(SecurityPolicy.publicRoute()).asText());
+        var host = start(routes, HttpAuthenticator.denyUnlessPublicValidator(), new AtomicInteger());
+        try (var client = HttpClient.newHttpClient()) {
+            var created = get(client, host, "/created");
+            assertThat(created.statusCode()).isEqualTo(201);
+            assertThat(created.body()).isEqualTo("made");
+            assertThat(created.headers().firstValue("Location")).contains("/created/1");
+            assertThat(get(client, host, "/accepted").statusCode()).isEqualTo(202);
+            assertThat(get(client, host, "/done").statusCode()).isEqualTo(204);
+        } finally { close(host); }
+    }
+
     @Test void serve_nullHandlerPromise_failsAndDoesNotHangDrain() throws Exception {
         var route = Route.<String>get("/null").withoutParameters().to(_ -> null)
             .withSecurity(SecurityPolicy.publicRoute()).asText();
@@ -289,6 +448,142 @@ class TerraHttpServerTest {
         try (var client = HttpClient.newHttpClient()) {
             assertThat(get(client, host, "/null").statusCode()).isEqualTo(500);
         } finally { close(host); }
+    }
+
+    // ---- #2157 part a (P9a): Terra ScopedValue binding vs async steps ---------------------------------------
+    // TerraHttpRoutes.invoke binds SecurityContextHolder only while route.handler().handle(..) is on the stack.
+    // Two async mechanisms: a plain Promise.map continuation never passes through ContextPropagation (permanent pin,
+    // no twin: no propagation fix can reach it); an executor hop (Promise.async) captures the ContextPropagation
+    // snapshot while still inside the binding, so a registered SPI that carries the SecurityContext would restore it
+    // (ENABLED hazard tripwire, no twin: the ruled carrier is the explicit parameter). This module registers no ContextPropagation.
+
+    /// A handler that returns a Promise resolved later by another thread reads an empty holder in its plain map
+    /// continuation: the binding ended when `handle` returned (and is not inherited by the resolving thread anyway).
+    @Test void holder_readInPlainContinuationResolvedAfterHandleReturned_isEmpty_permanentPin() throws Exception {
+        var body = serve("/async", gate -> awaitedPrincipal(gate), true);
+
+        assertThat(body).as("plain map continuation after handle returned: a non-empty holder means the Promise continuation model changed").isEqualTo("none");
+    }
+
+    /// The handler hops to the executor from inside the binding; the hop captures the ContextPropagation snapshot there.
+    @Test void holder_readAfterExecutorHopFromHandler_isEmpty_today() throws Exception {
+        assertThat(serve("/hop", gate -> hoppedPrincipal(), false)).as("#2157: a ContextPropagation now carries the SecurityContext across executor hops; the ruled carrier is the explicit parameter, so revisit the async-hazard notes").isEqualTo("none");
+    }
+
+    private static String serve(String path, Function<AtomicReference<Promise<Unit>>, Promise<String>> handler, boolean gated) throws Exception {
+        var gate = new AtomicReference<Promise<Unit>>();
+        var route = Route.<String>get(path).withoutParameters().to(_ -> handler.apply(gate))
+            .withSecurity(SecurityPolicy.unspecified()).asText();
+        var host = start(List.of(route), HttpAuthenticator.apiKeyValidator(KEYS), new AtomicInteger());
+        try (var client = HttpClient.newHttpClient()) {
+            var response = CompletableFuture.supplyAsync(() -> {
+                try { return get(client, host, path, "X-API-Key", "reader-secret"); } catch (Exception e) { throw new IllegalStateException(e); }
+            });
+            if (gated) {
+                // the handler has returned its pending Promise (and its scope has ended on the request thread) before the gate is opened here
+                while (gate.get() == null) { Thread.onSpinWait(); }
+                gate.get().succeed(Unit.unit());
+            }
+            return response.get(5, TimeUnit.SECONDS).body();
+        } finally { close(host); }
+    }
+
+    private static Promise<String> awaitedPrincipal(AtomicReference<Promise<Unit>> gate) {
+        var pending = Promise.<Unit>promise();
+        var principal = pending.map(_ -> currentPrincipalOrNone());
+        gate.set(pending);
+        return principal;
+    }
+
+    private static Promise<String> hoppedPrincipal() {
+        return Promise.<String>promise().async(promise -> promise.succeed(currentPrincipalOrNone()));
+    }
+
+    private static String currentPrincipalOrNone() {
+        return SecurityContextHolder.currentContext().map(c -> c.principal().value()).or("none");
+    }
+
+    /// A body route: the question the analysis left open is whether decoding the body is an async step that lets a
+    /// generated lambda run outside the binding. Today it does not: the lambda still reads the caller's principal.
+    @Test void holder_readInBodyRouteLambda_seesCaller_today() throws Exception {
+        var route = Route.<String>post("/body").withBody(String.class).to(body -> Promise.success(body + ":" + SecurityContextHolder.currentContext().map(c -> c.principal().value()).or("none")))
+            .withSecurity(SecurityPolicy.unspecified()).asText();
+        var host = start(List.of(route), HttpAuthenticator.apiKeyValidator(KEYS), new AtomicInteger());
+        try (var client = HttpClient.newHttpClient()) {
+            var response = client.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + host.port() + "/body"))
+                .timeout(Duration.ofSeconds(5)).header("X-API-Key", "reader-secret").header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("\"x\"")).build(), HttpResponse.BodyHandlers.ofString());
+
+            assertThat(response.body()).as("body-decoded lambda: the holder is still bound today; if this fails the decode became async (the hazard is real for body routes)").contains(":reader");
+        } finally { close(host); }
+    }
+
+    /// #2157 part b: a generated route takes the caller's context from the REQUEST (`RequestSecurity.securityOf`),
+    /// so it sees the caller after the binding ended (a continuation resolved later) and after an executor hop, where
+    /// the holder is empty (pins above). A public route with no credential gets the anonymous context.
+    @Test void serve_requestSecurity_survivesAsyncSteps_whereTheHolderDoesNot() throws Exception {
+        var gate = new AtomicReference<Promise<Unit>>();
+        var later = Route.withRequestContext(Route.<Handler<String>>get("/s/later").withoutParameters()
+            .to(_ -> Promise.success(request -> laterPrincipal(gate, request)))
+            .withSecurity(SecurityPolicy.unspecified()).asText());
+        var hop = Route.withRequestContext(Route.<Handler<String>>get("/s/hop").withoutParameters()
+            .to(_ -> Promise.success(request -> Promise.<String>promise().async(promise -> promise.succeed(requestPrincipal(request)))))
+            .withSecurity(SecurityPolicy.unspecified()).asText());
+        var open = Route.withRequestContext(Route.<Handler<String>>get("/s/open").withoutParameters()
+            .to(_ -> Promise.success(request -> Promise.success(requestPrincipal(request))))
+            .withSecurity(SecurityPolicy.publicRoute()).asText());
+        var host = start(List.of(later, hop, open), HttpAuthenticator.apiKeyValidator(KEYS), new AtomicInteger());
+        try (var client = HttpClient.newHttpClient()) {
+            var pending = CompletableFuture.supplyAsync(() -> {
+                try { return get(client, host, "/s/later", "X-API-Key", "reader-secret"); } catch (Exception e) { throw new IllegalStateException(e); }
+            });
+            while (gate.get() == null) { Thread.onSpinWait(); }
+            gate.get().succeed(Unit.unit());
+
+            assertThat(pending.get(5, TimeUnit.SECONDS).body()).isEqualTo("later:api-key:reader|holder:none");
+            assertThat(get(client, host, "/s/hop", "X-API-Key", "reader-secret").body()).isEqualTo("api-key:reader|holder:none");
+            assertThat(get(client, host, "/s/open").body()).startsWith("anonymous|");
+        } finally { close(host); }
+    }
+
+    private static Promise<String> laterPrincipal(AtomicReference<Promise<Unit>> gate, RequestContext request) {
+        var pending = Promise.<Unit>promise();
+        var principal = pending.map(_ -> "later:" + requestPrincipal(request));
+        gate.set(pending);
+        return principal;
+    }
+
+    private static String requestPrincipal(RequestContext request) {
+        return RequestSecurity.securityOf(request).principal().value() + "|holder:" + currentPrincipalOrNone();
+    }
+
+    /// #2879: a Terra route declared the way a slice's generated route is (`Route.withRequestContext`) hands the
+    /// slice the headers of the request on the wire: case-insensitive, every value of a repeated name, in order.
+    @Test void serve_requestHeadersRoutes_receiveTheWireHeaders_forNoParamPathAndBodyShapes() throws Exception {
+        var none = Route.withRequestContext(Route.<Handler<String>>get("/h/none").withoutParameters()
+            .to(_ -> Promise.success(request -> Promise.success(describe(request, "none"))))
+            .withSecurity(SecurityPolicy.publicRoute()).asText());
+        var path = Route.withRequestContext(Route.<Handler<String>>get("/h/path/").withPath(PathParameter.aLong())
+            .to(id -> Promise.success(request -> Promise.success(describe(request, "id=" + id))))
+            .withSecurity(SecurityPolicy.publicRoute()).asText());
+        var body = Route.withRequestContext(Route.<Handler<String>>post("/h/body").withBody(String.class)
+            .to(text -> Promise.success(request -> Promise.success(describe(request, "text=" + text))))
+            .withSecurity(SecurityPolicy.publicRoute()).asText());
+        var host = start(List.of(none, path, body), HttpAuthenticator.denyUnlessPublicValidator(), new AtomicInteger());
+        try (var client = HttpClient.newHttpClient()) {
+            assertThat(get(client, host, "/h/none", "X-Probe", "a", "x-probe", "b").body()).isEqualTo("none|a|a,b");
+            assertThat(get(client, host, "/h/path/7", "X-Probe", "a", "x-probe", "b").body()).isEqualTo("id=7|a|a,b");
+            var posted = client.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + host.port() + "/h/body"))
+                .timeout(Duration.ofSeconds(5)).header("X-Probe", "a").header("x-probe", "b").header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("\"hi\"")).build(), HttpResponse.BodyHandlers.ofString());
+            assertThat(posted.body()).isEqualTo("text=hi|a|a,b");
+            assertThat(get(client, host, "/h/none").body()).as("a request without the header: none, and an empty list").isEqualTo("none|none|");
+        } finally { close(host); }
+    }
+
+    private static String describe(RequestContext request, String detail) {
+        var headers = RequestHeaders.requestHeaders(request.headers());
+        return detail + "|" + headers.first("X-PROBE").or("none") + "|" + String.join(",", headers.all("x-probe"));
     }
 
     private static TerraHttpServer start(List<Route<?>> routes, HttpAuthenticator auth, AtomicInteger released) {

@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.util.Locale;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
 
 import java.io.IOException;
@@ -61,6 +62,8 @@ public final class ClusterTestPorts {
     static final Path LOCK_DIR = Path.of("/tmp/aether-test-ports");
     static final Window WINDOW = Window.choose(EphemeralRange.ofThisHost());
     private static final Map<Integer, FileChannel> HELD = new ConcurrentHashMap<>();
+    /// #2902: locks a TEST took ahead of an allocation attempt ([#reserve]); an attempt adopts them instead of racing for them.
+    private static final Map<Integer, FileChannel> RESERVED = new ConcurrentHashMap<>();
 
     static {
         prepareLockDir();
@@ -79,7 +82,7 @@ public final class ClusterTestPorts {
             if (Files.isReadable(linux)) {
                 return parse(read(linux), linux.toString());
             }
-            if (System.getProperty("os.name", "").toLowerCase().contains("mac")) {
+            if (System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac")) {
                 return parse(sysctl("net.inet.ip.portrange.first", "net.inet.ip.portrange.last"),
                              "sysctl net.inet.ip.portrange.first/last");
             }
@@ -158,15 +161,21 @@ public final class ClusterTestPorts {
 
     /// A cluster port whose cluster UDP, cluster TCP and SWIM UDP ports are locked for this JVM and were free at the call.
     public static int freeClusterPort() {
-        return freeClusterPort(ClusterTestPorts::windowCandidate);
+        return freeClusterPort(ClusterTestPorts::windowCandidate, false);
     }
 
-    /// Candidate source injected so a test can offer a taken or already-issued port and watch it be refused.
+    /// Candidate source injected so a test can offer a taken or already-issued port and watch it be refused. Only this seam
+    /// adopts a port a test [#reserve]d; the random draws of the public form never do.
     static int freeClusterPort(IntSupplier candidates) {
+        return freeClusterPort(candidates, true);
+    }
+
+    private static int freeClusterPort(IntSupplier candidates, boolean adoptReserved) {
         for (int attempt = 0; attempt < ATTEMPTS; attempt++) {
             var candidate = candidates.getAsInt();
 
-            if (WINDOW.contains(candidate) && WINDOW.contains(candidate + SWIM_OFFSET) && claimAll(candidate, candidate + SWIM_OFFSET)) {
+            if (WINDOW.contains(candidate) && WINDOW.contains(candidate + SWIM_OFFSET)
+                && claimAll(adoptReserved, candidate, candidate + SWIM_OFFSET)) {
                 return candidate;
             }
         }
@@ -177,14 +186,18 @@ public final class ClusterTestPorts {
     /// A port free on BOTH TCP and UDP, for a listener whose protocol (H1, H3, BOTH) the test does not fix. Not for a
     /// cluster port: that one also needs the SWIM port, see [#freeClusterPort].
     public static int freeTcpAndUdpPort() {
-        return freeTcpAndUdpPort(ClusterTestPorts::windowCandidate);
+        return freeTcpAndUdpPort(ClusterTestPorts::windowCandidate, false);
     }
 
     static int freeTcpAndUdpPort(IntSupplier candidates) {
+        return freeTcpAndUdpPort(candidates, true);
+    }
+
+    private static int freeTcpAndUdpPort(IntSupplier candidates, boolean adoptReserved) {
         for (int attempt = 0; attempt < ATTEMPTS; attempt++) {
             var candidate = candidates.getAsInt();
 
-            if (WINDOW.contains(candidate) && claimAll(candidate)) {
+            if (WINDOW.contains(candidate) && claimAll(adoptReserved, candidate)) {
                 return candidate;
             }
         }
@@ -224,26 +237,59 @@ public final class ClusterTestPorts {
 
     /// True when this JVM already holds the lock on `port` (issued, or part of an issued cluster port).
     static boolean heldHere(int port) {
-        return HELD.containsKey(port);
+        return HELD.containsKey(port) || RESERVED.containsKey(port);
+    }
+
+    /// #2902: takes the cross-JVM lock on every port and keeps it, so that no other allocator can issue them while a test occupies
+    /// the sockets on them. Nothing is probed. A refusal (held here or by another JVM) takes nothing. An allocation attempt
+    /// ([#freeClusterPort]) on a reserved port skips only the lock step: it probes the sockets, and on a refusal the reservation
+    /// stays; on success the lock becomes the issued port's. Release what is left with [#unreserve].
+    static synchronized boolean reserve(int... ports) {
+        for (int i = 0; i < ports.length; i++) {
+            if (heldHere(ports[i]) || !lock(ports[i], RESERVED)) {
+                unreserve(java.util.Arrays.copyOf(ports, i));
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// Drops the reservation of every port in `ports` that is still reserved (an issued port is not touched).
+    static synchronized void unreserve(int... ports) {
+        for (int port : ports) {
+            closeQuietly(RESERVED.remove(port));
+        }
     }
 
     /// Locks every port in `ports`, then probes them; on any refusal, releases what this call locked.
-    private static synchronized boolean claimAll(int first, int... rest) {
+    private static synchronized boolean claimAll(boolean adoptReserved, int first, int... rest) {
         var ports = new int[rest.length + 1];
 
         ports[0] = first;
         System.arraycopy(rest, 0, ports, 1, rest.length);
         for (int i = 0; i < ports.length; i++) {
-            if (!lock(ports[i])) {
+            if (!(adoptReserved && RESERVED.containsKey(ports[i])) && !lock(ports[i], HELD)) {
                 releaseFirst(ports, i);
                 return false;
             }
         }
         if (allFree(ports)) {
+            adoptReserved(ports);
             return true;
         }
         releaseFirst(ports, ports.length);
         return false;
+    }
+
+    /// An issued port's lock lives in `HELD`, whether this call took it or a test reserved it first.
+    private static void adoptReserved(int[] ports) {
+        for (int port : ports) {
+            var reserved = RESERVED.remove(port);
+
+            if (reserved != null) {
+                HELD.put(port, reserved);
+            }
+        }
     }
 
     private static boolean allFree(int[] ports) {
@@ -269,8 +315,8 @@ public final class ClusterTestPorts {
     }
 
     /// Caller holds the class monitor. Opens the lock file only when this JVM holds no descriptor for it (POSIX trap).
-    private static boolean lock(int port) {
-        if (HELD.containsKey(port)) {
+    private static boolean lock(int port, Map<Integer, FileChannel> into) {
+        if (HELD.containsKey(port) || RESERVED.containsKey(port)) {
             return false;
         }
         FileChannel channel;
@@ -289,7 +335,7 @@ public final class ClusterTestPorts {
             closeQuietly(channel);
             return false;
         }
-        HELD.put(port, channel);
+        into.put(port, channel);
         return true;
     }
 

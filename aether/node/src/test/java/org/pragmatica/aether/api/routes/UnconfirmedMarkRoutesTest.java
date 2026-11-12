@@ -114,6 +114,7 @@ class UnconfirmedMarkRoutesTest {
         assertThat(statusOf(new UnconfirmedClearRefusal.NotMarked(new NodeId("core-old")))).isEqualTo(HttpStatus.NOT_FOUND);
         assertThat(statusOf(new UnconfirmedClearRefusal.NodeLive(new NodeId("core-old")))).isEqualTo(HttpStatus.CONFLICT);
         assertThat(statusOf(new UnconfirmedClearRefusal.Changed(new NodeId("core-old")))).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(statusOf(new UnconfirmedClearRefusal.Conflicted(new NodeId("core-old")))).isEqualTo(HttpStatus.CONFLICT);
         assertThat(statusOf(new UnconfirmedClearRefusal.NotActive())).isEqualTo(HttpStatus.CONFLICT);
         assertThat(statusOf(new UnconfirmedClearRefusal.InstanceStillListed(new NodeId("core-old"), "i-1", "RUNNING"))).isEqualTo(HttpStatus.CONFLICT);
         assertThat(statusOf(new UnconfirmedClearRefusal.ProviderUnreachable(new NodeId("core-old"), "down"))).isEqualTo(HttpStatus.CONFLICT);
@@ -145,6 +146,17 @@ class UnconfirmedMarkRoutesTest {
     void theRouteIsLeaderBound_aPost_withTheDocumentedPath() {
         assertThat(ManagementRoute.NODE_UNCONFIRMED_CLEAR.target()).isEqualTo(RouteTarget.LEADER);
         assertThat(ManagementRoute.NODE_UNCONFIRMED_CLEAR.assemble(List.of("core-old")).unwrap()).endsWith("/nodes/unconfirmed/clear/core-old");
+    }
+
+    /// #2944: the absence of the phrase "retry the request" in a clear's refusal is what keeps the CLI from re-posting a clear (it retries a 409
+    /// only on that phrase), so a re-posted clear can never meet a later incarnation's mark. Pinned for the exact-delete refusal and its sibling.
+    @Test
+    void conflictedAndChangedRefusals_carryNoRetryHint_neitherInProcessNorOnTheWire() {
+        for (var refusal : new UnconfirmedClearRefusal[] {new UnconfirmedClearRefusal.Conflicted(new NodeId("core-old")),
+                                                          new UnconfirmedClearRefusal.Changed(new NodeId("core-old"))}) {
+            assertThat(refusal.message()).doesNotContain("retry the request");
+            assertThat(UnconfirmedMarkRoutes.asManagementError(refusal).message()).doesNotContain("retry the request");
+        }
     }
 
     private static HttpStatus statusOf(Cause refusal) {

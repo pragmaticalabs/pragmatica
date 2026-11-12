@@ -4,9 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.deployment;
 
+import java.util.Map;
+import java.util.stream.Collectors;
+
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
+import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.lang.Contract;
 
@@ -35,6 +40,20 @@ public final class MembershipInputs {
 
     public static MembershipInputs membershipInputs(Target target, AdmissionSeam admissions, SeamPoller seams) {
         return new MembershipInputs(target, admissions, seams);
+    }
+
+    /// C17r (#2937): local membership's DEAD set as the `Rebuild` snapshot carries it, split by the removal input each id takes: a
+    /// core-role member `NodeRemoved`, any other `WorkerLeave`, the same role split the delta projector applies to their joins
+    /// (`MemberDescriptor.isCoreRole`).
+    public static ClusterInput.DeadSet deadSet(Map<NodeId, MemberDescriptor> dead) {
+        var byClass = dead.entrySet()
+                          .stream()
+                          .collect(Collectors.partitioningBy(entry -> entry.getValue()
+                                                                           .isCore(),
+                                                             Collectors.mapping(Map.Entry::getKey,
+                                                                                Collectors.toSet())));
+
+        return ClusterInput.DeadSet.deadSet(byClass.get(true), byClass.get(false));
     }
 
     /// CI-8: membership admitted a core.

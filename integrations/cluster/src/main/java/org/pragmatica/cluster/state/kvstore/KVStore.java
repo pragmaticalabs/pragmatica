@@ -977,6 +977,14 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         dispatcher.onReplayStart(listener);
     }
 
+    /// Registers the listener told the revision of every replay item ([#replayNotifications()]) on the delivering thread, AFTER the item's burst is
+    /// delivered and whether or not the burst is empty: the delivered view ([#delivered]) then reflects the installed snapshot (#3028). One listener;
+    /// a second registration replaces the first.
+    @Contract
+    public void onReplayEnd(LongConsumer listener) {
+        dispatcher.onReplayEnd(listener);
+    }
+
     /// The replay item carries no notifications: its burst is computed when the delivery loop dequeues it (§3.7).
     private long enqueueReplay() {
         return currentSeq;
@@ -1182,6 +1190,12 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         return Map.copyOf(storage);
     }
 
+    /// A point read of the DELIVERED view: the value subscribers were last told for `key`, which may trail `storage` by the batches applied and not yet
+    /// delivered (#3028: a catch-up sweep compares local state with what was delivered, never with a snapshot mid-install).
+    public Option<V> delivered(K key) {
+        return Option.option(lastReplayedView.get(key));
+    }
+
     /// A point read; on the delivering thread, a read of a key some later applied batch wrote counts a read-ahead
     /// (design §3.4, the fence).
     public synchronized Option<V> get(K key) {
@@ -1206,6 +1220,18 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         }
 
         return Option.some((VV) raw);
+    }
+
+    /// Lock-free typed lookup for the node lease checks (#2981 §2.2): unlike [#getTyped] it does not take the store
+    /// monitor, so it never waits behind a batch the apply thread is applying, and it counts no read-ahead. `storage` is a
+    /// `ConcurrentHashMap` of immutable values, so a reader sees, per key, the old or the new value, never a torn one.
+    /// During `reset` and a snapshot install a key can read ABSENT; the lease checks treat absence as "the record does not
+    /// name me" and fail closed, so use it only where absence is safe to read as "not mine" (#2981 step 2 moves the whole `OwnershipRecordSource` lambda to it). Returns
+    /// `Option.none()` when the key is absent OR the stored value isn't an instance of `valueClass`.
+    public <VV> Option<VV> peekTyped(StructuredKey key, Class<VV> valueClass) {
+        return Option.option(storage.get(key))
+                     .filter(valueClass::isInstance)
+                     .map(valueClass::cast);
     }
 
     /// Iterates over entries matching the specified key and value types.

@@ -81,10 +81,14 @@ public sealed interface Strays {
     }
 
     private static ClusterModel condemn(ClusterModel m, Ctx ctx, SlicePair pair) {
-        m.strayWarned = Idx.add(m.strayWarned, pair.artifact(), pair.node());
-        ctx.warn("stray-instance",
-                 pair.artifact().asString(),
-                 "Condemning stray instance of " + pair.artifact() + " on " + pair.node().id());
+        // #2834: once per condemned instance: an open warning, this leader's or inherited from the committed open set (`Warnings.inherit`), is not raised again.
+        if (!Idx.members(m.strayWarned, pair.artifact()).contains(pair.node())) {
+            m.strayWarned = Idx.add(m.strayWarned, pair.artifact(), pair.node());
+            ctx.warn("stray-instance",
+                     pair.artifact().asString(),
+                     "Condemning stray instance of " + pair.artifact() + " on " + pair.node().id());
+        }
+
         ctx.metric("aether_deployment_fsm_stray_total", Map.of("fsm", "cluster", "action", "condemn"));
 
         return Outbox.goal(m, pair, SliceGoal.UNLOADED, GoalMode.FRESH, Option.none(), "stray");

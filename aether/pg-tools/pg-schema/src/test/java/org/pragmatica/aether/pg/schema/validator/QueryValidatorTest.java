@@ -4,8 +4,11 @@
 
 package org.pragmatica.aether.pg.schema.validator;
 
+import java.util.Locale;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.pg.parser.PostgresParser;
 import org.pragmatica.aether.pg.parser.transform.CstNavigator;
@@ -817,6 +820,55 @@ class QueryValidatorTest {
         @Test void selectOutputColumnNames_selectWithSubquery_usesOuterProjection() {
             assertThat(outputColumns("SELECT id, name FROM users WHERE id IN (SELECT user_id FROM orders)"))
                 .isEqualTo(Option.present(List.of("id", "name")));
+        }
+
+        @Test void selectOutputColumnNames_subqueryInTarget_isNotATarget() {
+            assertThat(outputColumns("SELECT EXISTS(SELECT 1 FROM users WHERE id = 1) AS found"))
+                .isEqualTo(Option.present(List.of("found")));
+        }
+
+        @Test void selectOutputColumnNames_castAliasAndTableAlias_useTheTargetAlias() {
+            assertThat(outputColumns("SELECT CAST(count(*) AS int) AS n FROM users AS u"))
+                .isEqualTo(Option.present(List.of("n")));
+        }
+
+        @Test void selectOutputColumnNames_qualifiedColumnOverTableAlias_isTheColumn() {
+            assertThat(outputColumns("SELECT u.name FROM users AS u")).isEqualTo(Option.present(List.of("name")));
+        }
+
+        /// #2894 regression: an alias the lexer reads as a keyword / type word used to extract as the
+        /// placeholder `???`. Every such word must come back as its own lexeme, folded like an unquoted identifier.
+        @ParameterizedTest
+        @ValueSource(strings = {"name", "text", "user", "Name", "timestamp", "interval", "char", "varchar",
+                                "boolean", "int", "integer", "bigint", "numeric", "json", "jsonb", "bit"})
+        void selectOutputColumnNames_keywordLikeAlias_isTheAliasLexeme(String alias) {
+            assertThat(outputColumns("SELECT lower(name) AS " + alias + " FROM users"))
+                .isEqualTo(Option.present(List.of(alias.toLowerCase(Locale.ROOT))));
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {"name", "text", "user", "timestamp", "int", "json"})
+        void selectOutputColumnNames_quotedKeywordLikeAlias_keepsCase(String alias) {
+            var quoted = alias.substring(0, 1).toUpperCase(Locale.ROOT) + alias.substring(1);
+
+            assertThat(outputColumns("SELECT lower(name) AS \"" + quoted + "\" FROM users"))
+                .isEqualTo(Option.present(List.of(quoted)));
+        }
+
+        @Test void selectOutputColumnNames_quotedAlias_isTheAlias() {
+            assertThat(outputColumns("SELECT count(*) AS \"total\" FROM users"))
+                .isEqualTo(Option.present(List.of("total")));
+        }
+
+        @Test void selectOutputColumnNames_unaliasedExpressions_areAbsent() {
+            assertThat(outputColumns("SELECT count(*) FROM users")).isEqualTo(Option.empty());
+            assertThat(outputColumns("SELECT CAST(count(*) AS bigint) FROM users")).isEqualTo(Option.empty());
+            assertThat(outputColumns("SELECT max(u.id) FROM users u")).isEqualTo(Option.empty());
+        }
+
+        @Test void selectOutputColumnNames_returningCastAlias_isTheAlias() {
+            assertThat(outputColumns("UPDATE users SET active = true RETURNING CAST(id AS bigint) AS v"))
+                .isEqualTo(Option.present(List.of("v")));
         }
 
         @Test void selectOutputColumnNames_star_isAbsent() {

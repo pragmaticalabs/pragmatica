@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.Callable;
 import java.util.stream.IntStream;
 
@@ -84,7 +85,7 @@ class ClusterRotateKeyCommand implements Callable<Integer> {
     private String normalizedRole() {
         return option(role).filter(Verify.Is::present)
                      .map(String::trim)
-                     .map(String::toUpperCase)
+                     .map(txt -> txt.toUpperCase(Locale.ROOT))
                      .or(DEFAULT_ROLE);
     }
 

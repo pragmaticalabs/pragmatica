@@ -45,3 +45,4 @@ B9.cdm.NodeShuttingDown -> legacy
 B9.cdm.SelfShutdown -> legacy
 B9.cdm.WorkerLeave -> legacy
 B9.ndm.NodeShuttingDown -> legacy
+C3.ndm.ReplayEnd -> legacy

@@ -267,9 +267,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
     private String advertisedVersion(NodeId nodeId) {
         var node = nodeSupplier.get();
 
-        return org.pragmatica.aether.node.AdvertisedVersion.of(nodeId,
-                                                               node.topologyManager(),
-                                                               Option.option(node.membershipFsm()));
+        return org.pragmatica.aether.node.AdvertisedVersion.advertisedVersion(nodeId,
+                                                                              node.topologyManager(),
+                                                                              Option.option(node.membershipFsm()));
     }
 
     /// Readiness-broadcast (failover-readability): 503 carrying the current leader id + best-effort

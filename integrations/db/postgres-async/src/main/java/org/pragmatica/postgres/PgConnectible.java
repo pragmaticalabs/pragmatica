@@ -20,6 +20,7 @@ public abstract class PgConnectible implements Connectible {
     final Supplier<Promise<ProtocolStream>> obtainStream;
     protected final String password;
     protected final String database;
+    protected final String applicationName;
     protected final Charset encoding;
 
     PgConnectible(ConnectibleBuilder.ConnectibleConfiguration properties,
@@ -27,6 +28,7 @@ public abstract class PgConnectible implements Connectible {
         this.username = properties.username();
         this.password = properties.password();
         this.database = properties.database();
+        this.applicationName = properties.applicationName();
         this.dataConverter = properties.dataConverter();
         this.validationQuery = properties.validationQuery();
         this.encoding = Charset.forName(properties.encoding());

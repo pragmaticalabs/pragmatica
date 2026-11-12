@@ -25,6 +25,7 @@ public class CstValueObjectFactoryRule implements CstLintRule {
     private static final Pattern RECORD_NAME_PATTERN = Pattern.compile("\\brecord\\s+(\\w+)");
     private static final Pattern INTERFACE_NAME_PATTERN = Pattern.compile("\\binterface\\s+(\\w+)");
     private static final Pattern IDENTIFIER_PATTERN = Pattern.compile("\\b([A-Za-z_$][A-Za-z0-9_$]*)\\b");
+
     private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*\\(");
 
     /// Records nested in an interface carrying one of these annotations are framework shapes,
@@ -34,7 +35,7 @@ public class CstValueObjectFactoryRule implements CstLintRule {
     /// but it does carry an in-file marker: a `Topic<Self>` constant, see [#declaresSelfTopic].)
     private static final Set<String> FRAMEWORK_SHAPE_ANNOTATIONS = Set.of("Slice", "PgSql");
 
-    /// A pub-sub fact record's marker constant: `static final Topic<Self> TOPIC = Topic.of(...)`.
+    /// A pub-sub fact record's marker constant: `static final Topic<Self> TOPIC = Topic.topic(...)`.
     /// Group 1 is the topic's payload type, which must be the DECLARING record — a `Topic<Other>`
     /// constant makes the record a publisher's holder, not the fact itself, and is not exempt.
     private static final Pattern TOPIC_TYPE_PATTERN = Pattern.compile("(?:[A-Za-z_$][\\w$]*\\s*\\.\\s*)*Topic\\s*<\\s*([A-Za-z_$][\\w$]*)\\s*>");
@@ -113,14 +114,14 @@ public class CstValueObjectFactoryRule implements CstLintRule {
     }
 
     /// Whether the record declares a `Topic` constant parameterized by ITSELF — the pub-sub fact
-    /// contract (`public static final Topic<SeatReleased> TOPIC = Topic.of(...)` inside
+    /// contract (`public static final Topic<SeatReleased> TOPIC = Topic.topic(...)` inside
     /// `SeatReleased`). Such a record is a message on a topic, published and consumed through the
     /// slice runtime rather than constructed by a validating factory (#647). Only constants
     /// declared DIRECTLY by the record count, so a nested type's topic does not exempt its outer.
     private boolean declaresSelfTopic(Cursor root, Cursor record, String recordName) {
         return findAll(record, CstNodes::isFieldDecl).stream()
-                     .filter(field -> FileTypeClassifier.directlyEncloses(root, record, field))
-                     .anyMatch(field -> isSelfTopicConstant(field, recordName));
+                      .filter(field -> FileTypeClassifier.directlyEncloses(root, record, field))
+                      .anyMatch(field -> isSelfTopicConstant(field, recordName));
     }
 
     private boolean isSelfTopicConstant(Cursor field, String recordName) {

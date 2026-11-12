@@ -7,6 +7,7 @@ package org.pragmatica.aether.http;
 import java.nio.charset.StandardCharsets;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
@@ -19,6 +20,8 @@ import org.pragmatica.aether.slice.RateGuardError;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.AuthSchemes;
+import org.pragmatica.aether.config.JwtConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SecurityMode;
 import org.pragmatica.aether.config.UploadConfig;
@@ -1252,7 +1255,8 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                              local));
     }
 
-    /// A request refused on dispatch reaches no slice, so an upload the ingress stored for it is deleted [G] first.
+    /// A request refused on dispatch reaches no slice, so an upload the ingress stored for it is deleted [G] first; the
+    /// refusal is answered once the delete has finished, whether it succeeded or failed (#2921).
     @Contract
     private void refuseDispatch(HttpRequest request,
                                 ResponseWriter response,
@@ -1260,8 +1264,11 @@ class AppHttpServerAdapter implements AppHttpServer {
                                 String path,
                                 String requestId,
                                 String method) {
-        IngestedRequest.discardUpload(request);
-        handleSecurityFailure(response, cause, path, requestId, method);
+        IngestedRequest.discardedUpload(request).onResultRun(() -> handleSecurityFailure(response,
+                                                                                         cause,
+                                                                                         path,
+                                                                                         requestId,
+                                                                                         method));
     }
 
     private SecurityPolicy resolveEffectivePolicy(String method,
@@ -1336,7 +1343,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private static boolean requiresAuthentication(SecurityPolicy policy) {
-        return ! (policy instanceof SecurityPolicy.Public());
+        return ! (policy instanceof SecurityPolicy.Public || policy instanceof SecurityPolicy.OptionalAuth);
     }
 
     private static Result<SecurityContext> enforceRoleIfRequired(SecurityContext context, SecurityPolicy policy) {
@@ -1431,6 +1438,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                                       () -> dispatchWithinPartLimits(request,
                                                                                                                      response,
                                                                                                                      routeTable,
+                                                                                                                     securityContext,
                                                                                                                      method,
                                                                                                                      normalizedPath,
                                                                                                                      path,
@@ -1445,6 +1453,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     private void dispatchWithinPartLimits(HttpRequest request,
                                           ResponseWriter response,
                                           RouteTable routeTable,
+                                          SecurityContext securityContext,
                                           String method,
                                           String normalizedPath,
                                           String path,
@@ -1455,6 +1464,7 @@ class AppHttpServerAdapter implements AppHttpServer {
         partLimitBreach(request, spec).onEmpty(() -> dispatchToRoute(request,
                                                                      response,
                                                                      routeTable,
+                                                                     securityContext,
                                                                      method,
                                                                      normalizedPath,
                                                                      requestId,
@@ -1478,6 +1488,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     private void dispatchToRoute(HttpRequest request,
                                  ResponseWriter response,
                                  RouteTable routeTable,
+                                 SecurityContext securityContext,
                                  String method,
                                  String normalizedPath,
                                  String requestId,
@@ -1489,7 +1500,14 @@ class AppHttpServerAdapter implements AppHttpServer {
         // instance is still serving. Only requests needing REMOTE forwarding consult the snapshot
         // and the route-ready barrier.
         if (local.isPresent()) {
-            dispatchLocalRoute(request, response, routeTable, method, normalizedPath, local.unwrap(), requestId);
+            dispatchLocalRoute(request,
+                               response,
+                               routeTable,
+                               securityContext,
+                               method,
+                               normalizedPath,
+                               local.unwrap(),
+                               requestId);
 
             return;
         }
@@ -1508,6 +1526,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     private void dispatchLocalRoute(HttpRequest request,
                                     ResponseWriter response,
                                     RouteTable routeTable,
+                                    SecurityContext securityContext,
                                     String method,
                                     String normalizedPath,
                                     LocalResolution local,
@@ -1528,7 +1547,7 @@ class AppHttpServerAdapter implements AppHttpServer {
             }
         }
 
-        handleLocalRoute(request, response, localRouteKey, local.router(), requestId);
+        handleLocalRoute(request, response, securityContext, localRouteKey, local.router(), requestId);
     }
 
     private void dispatchRemoteRoute(HttpRequest request,
@@ -1539,9 +1558,16 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     /// A stored upload whose route no longer resolves reaches no slice: its objects are deleted [G] before it is answered
-    /// as any request without a route is.
+    /// as any request without a route is, whether the delete succeeded or failed (#2921).
+    @Contract
     private void sendNoRouteFound(ResponseWriter response, HttpRequest request, String method, String requestId) {
-        IngestedRequest.discardUpload(request);
+        IngestedRequest.discardedUpload(request).onResultRun(() -> answerNoRouteFound(response,
+                                                                                      request,
+                                                                                      method,
+                                                                                      requestId));
+    }
+
+    private void answerNoRouteFound(ResponseWriter response, HttpRequest request, String method, String requestId) {
         var routeReady = isRouteReady();
 
         if (!routeReady && httpRoutePublisher.isPresent()) {
@@ -1690,7 +1716,7 @@ class AppHttpServerAdapter implements AppHttpServer {
         var statusAndMessage = mapSecurityError(cause);
 
         recordSecurityDenial(cause, path, requestId, method);
-        maybeAddAuthenticateHeader(response, statusAndMessage.status());
+        maybeAddAuthenticateHeader(response, statusAndMessage.status(), cause);
         sendProblem(response, statusAndMessage.status(), statusAndMessage.clientMessage(), path, requestId);
     }
 
@@ -1701,9 +1727,9 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     @Contract
-    private void maybeAddAuthenticateHeader(ResponseWriter response, HttpStatus status) {
+    private void maybeAddAuthenticateHeader(ResponseWriter response, HttpStatus status, Cause cause) {
         if (status == HttpStatus.UNAUTHORIZED) {
-            addAuthenticateHeader(response);
+            addAuthenticateHeader(response, cause);
         }
     }
 
@@ -1719,27 +1745,46 @@ class AppHttpServerAdapter implements AppHttpServer {
         };
     }
 
-    private record SecurityStatusMessage(HttpStatus status, String clientMessage) {}
+    record SecurityStatusMessage(HttpStatus status, String clientMessage) {}
 
-    private static SecurityStatusMessage mapSecurityError(Cause cause) {
+    /// #2926: package-visible so the status of every [SecurityError] case can be asserted without the HTTP pipeline.
+    /// 503 with no challenge when the key fetch itself failed (the server, not the credential, is at fault), 401 for every
+    /// authentication failure (missing, invalid, expired, wrong issuer/audience, unknown key, bad
+    /// signature), 403 only for an authenticated caller lacking a role; the client text never says which check failed.
+    static SecurityStatusMessage mapSecurityError(Cause cause) {
         return switch (cause) {
             case SecurityError.MissingCredentials mc -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED, mc.message());
             case SecurityError.TokenExpired _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED, "Token expired");
-            case SecurityError.SignatureInvalid _, SecurityError.IssuerMismatch _, SecurityError.AudienceMismatch _, SecurityError.KeyNotFound _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN,
+            case SecurityError.SignatureInvalid _, SecurityError.IssuerMismatch _, SecurityError.AudienceMismatch _, SecurityError.KeyNotFound _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED,
                                                                                                                                                                               "Invalid token");
-            case SecurityError.InvalidCredentials _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN,
+            case SecurityError.InvalidCredentials _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED,
                                                                                  "Invalid credentials");
-            case SecurityError.InsufficientRole _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN, cause.message());
-            case SecurityError.JwksFetchFailed _ -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED,
+            case SecurityError.InsufficientRole _, SecurityError.AccessDenied _ -> new SecurityStatusMessage(HttpStatus.FORBIDDEN,
+                                                                                                             cause.message());
+            case SecurityError.JwksFetchFailed _ -> new SecurityStatusMessage(HttpStatus.SERVICE_UNAVAILABLE,
                                                                               "Authentication temporarily unavailable");
             default -> new SecurityStatusMessage(HttpStatus.UNAUTHORIZED, "Authentication failed");
         };
     }
 
-    private void addAuthenticateHeader(ResponseWriter response) {
+    /// #2156: the JWT challenge names the FIRST configured `auth_schemes` entry. JWT mode without a `JwtConfig` is
+    /// refused at config load (#909); the default scheme only satisfies the type.
+    private String jwtChallenge(Cause cause) {
+        return SecurityError.challenge(config.jwtConfig()
+                                             .map(JwtConfig::challengeScheme)
+                                             .or(AuthSchemes.DEFAULT.getFirst()),
+                                       "Aether",
+                                       cause);
+    }
+
+    private static String apiKeyChallenge(Cause cause) {
+        return SecurityError.challenge("ApiKey", "Aether", cause);
+    }
+
+    private void addAuthenticateHeader(ResponseWriter response, Cause cause) {
         switch (config.securityMode()) {
-            case JWT -> response.header("WWW-Authenticate", "Bearer realm=\"Aether\"");
-            case API_KEY -> response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"");
+            case JWT -> response.header("WWW-Authenticate", jwtChallenge(cause));
+            case API_KEY -> response.header("WWW-Authenticate", apiKeyChallenge(cause));
             case NONE -> {}
         }
     }
@@ -1832,6 +1877,7 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     private void handleLocalRoute(HttpRequest request,
                                   ResponseWriter response,
+                                  SecurityContext securityContext,
                                   HttpNodeRouteKey routeKey,
                                   Option<SliceRouter> servingRouter,
                                   String requestId) {
@@ -1840,7 +1886,12 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                              request.path(),
                                                              routeKey,
                                                              requestId))
-                     .onPresent(router -> invokeLocalRouter(request, response, router, routeKey, requestId));
+                     .onPresent(router -> invokeLocalRouter(request,
+                                                            response,
+                                                            securityContext,
+                                                            router,
+                                                            routeKey,
+                                                            requestId));
     }
 
     private void handleMissingLocalRouter(ResponseWriter response,
@@ -1851,12 +1902,15 @@ class AppHttpServerAdapter implements AppHttpServer {
         sendProblem(response, HttpStatus.INTERNAL_SERVER_ERROR, "Local router not found", path, requestId);
     }
 
+    /// #2157: the router is handed the request WITH the context this host validated, so a generated route passes the
+    /// caller to the slice method's `Principal`/`SecurityContext` parameter from the request, not from ambient state.
     private void invokeLocalRouter(HttpRequest request,
                                    ResponseWriter response,
+                                   SecurityContext securityContext,
                                    SliceRouter router,
                                    HttpNodeRouteKey routeKey,
                                    String requestId) {
-        var httpCtx = toHttpRequestContext(request, requestId);
+        var httpCtx = toHttpRequestContext(request, requestId).withSecurity(securityContext);
         var routeInfo = resolveRouteInfo(routeKey.httpMethod(), routeKey.pathPrefix());
         var startTime = System.nanoTime();
 
@@ -1912,19 +1966,18 @@ class AppHttpServerAdapter implements AppHttpServer {
                                           HttpRequestContext httpCtx,
                                           HttpRequest request) {
         routeInfo.onPresent(info -> recordMetricsFailure(info, startTime, httpCtx.body().length, cause));
-        discardUnreached(request, cause);
-        handleLocalRouteFailure(response, path, requestId, cause);
+        discardUnreached(request, cause).onResultRun(() -> handleLocalRouteFailure(response, path, requestId, cause));
     }
 
     /// A stored upload whose request the node refused before the slice ran (invocation admission, rate limit) reaches no
     /// slice: its objects are deleted [G]. Any other failure may have run the slice, which may have claimed the upload, so
-    /// the objects stay for the unclaimed TTL.
-    @Contract
-    private static void discardUnreached(HttpRequest request, Cause cause) {
-        switch (cause) {
-            case InvocationAdmission.Error _, RateGuardError.LimitExceeded _ -> IngestedRequest.discardUpload(request);
-            default -> {}
-        }
+    /// the objects stay for the unclaimed TTL. The refusal is answered once the delete has finished, whether it succeeded
+    /// or failed (#2921).
+    private static Promise<Unit> discardUnreached(HttpRequest request, Cause cause) {
+        return switch (cause) {
+            case InvocationAdmission.Error _, RateGuardError.LimitExceeded _ -> IngestedRequest.discardedUpload(request);
+            default -> Promise.unitPromise();
+        };
     }
 
     private void handleLocalRouteFailure(ResponseWriter response, String path, String requestId, Cause cause) {
@@ -1992,12 +2045,11 @@ class AppHttpServerAdapter implements AppHttpServer {
                   requestId);
         if (httpForwarder.isEmpty()) {
             log.error("HTTP forwarding not configured [{}]", requestId);
-            IngestedRequest.discardUpload(request);
-            sendProblem(response,
-                        HttpStatus.SERVICE_UNAVAILABLE,
-                        "HTTP forwarding not available",
-                        request.path(),
-                        requestId);
+            IngestedRequest.discardedUpload(request).onResultRun(() -> sendProblem(response,
+                                                                                   HttpStatus.SERVICE_UNAVAILABLE,
+                                                                                   "HTTP forwarding not available",
+                                                                                   request.path(),
+                                                                                   requestId));
 
             return;
         }
@@ -2007,12 +2059,17 @@ class AppHttpServerAdapter implements AppHttpServer {
         httpForwarder.unwrap()
                      .forward(httpCtx, route, requestId)
                      .onSuccess(responseData -> sendResponse(response, responseData, requestId))
-                     .onFailure(cause -> discardUnsent(request, cause))
-                     .onFailure(cause -> sendProblem(response,
-                                                     forwardFailureStatus(cause),
-                                                     HttpError.clientMessage(cause),
-                                                     request.path(),
-                                                     requestId));
+                     .onFailure(cause -> answerForwardFailure(request, response, cause, requestId));
+    }
+
+    /// The failure is answered only once the unsent upload is deleted, so a client that has the answer can rely on the
+    /// objects being gone (#2915).
+    private void answerForwardFailure(HttpRequest request, ResponseWriter response, Cause cause, String requestId) {
+        discardUnsent(request, cause).onResultRun(() -> sendProblem(response,
+                                                                    forwardFailureStatus(cause),
+                                                                    HttpError.clientMessage(cause),
+                                                                    request.path(),
+                                                                    requestId));
     }
 
     /// Every app listener, HTTP/1.1 and HTTP/3, at start and at certificate rotation, is configured here, so the
@@ -2035,12 +2092,11 @@ class AppHttpServerAdapter implements AppHttpServer {
     /// A stored upload whose forward never left this node ([ForwardError.NotSent], [ForwardError.TooLargeToForward]) reached
     /// no slice: its objects are deleted [G]. A forward that may have reached a node (outcome unknown) keeps them: the
     /// serving node may have claimed the upload.
-    @Contract
-    private static void discardUnsent(HttpRequest request, Cause cause) {
-        switch (cause) {
-            case ForwardError.NotSent _, ForwardError.TooLargeToForward _ -> IngestedRequest.discardUpload(request);
-            default -> {}
-        }
+    private static Promise<Unit> discardUnsent(HttpRequest request, Cause cause) {
+        return switch (cause) {
+            case ForwardError.NotSent _, ForwardError.TooLargeToForward _ -> IngestedRequest.discardedUpload(request);
+            default -> Promise.unitPromise();
+        };
     }
 
     /// A [ForwardError] names its own status: 503 per the 2026-10-07 ruling (know 14a3606152), whose detail says
@@ -2168,7 +2224,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                request.sender().id(),
                                                                0,
                                                                true,
-                                                               () -> serveForwarded(httpCtx,
+                                                               () -> serveForwarded(httpCtx.withSecurity(securityContext),
                                                                                     request,
                                                                                     network,
                                                                                     ser,
@@ -2231,22 +2287,22 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                          request,
                                                          ser,
                                                          HttpResponseData.httpResponseData(status.code(),
-                                                                                           refusalHeaders(status),
+                                                                                           refusalHeaders(status, cause),
                                                                                            json.getBytes(StandardCharsets.UTF_8))))
                    .onFailure(serializationFailure -> sendForwardError(network,
                                                                        request,
                                                                        "Forwarded request refused: " + statusAndMessage.clientMessage()));
     }
 
-    private Map<String, String> refusalHeaders(HttpStatus status) {
+    private Map<String, String> refusalHeaders(HttpStatus status, Cause cause) {
         var contentType = Map.entry("Content-Type", "application/problem+json");
 
         return switch (config.securityMode()) {
             case JWT -> status == HttpStatus.UNAUTHORIZED
-                        ? Map.ofEntries(contentType, Map.entry("WWW-Authenticate", "Bearer realm=\"Aether\""))
+                        ? Map.ofEntries(contentType, Map.entry("WWW-Authenticate", jwtChallenge(cause)))
                         : Map.ofEntries(contentType);
             case API_KEY -> status == HttpStatus.UNAUTHORIZED
-                            ? Map.ofEntries(contentType, Map.entry("WWW-Authenticate", "ApiKey realm=\"Aether\""))
+                            ? Map.ofEntries(contentType, Map.entry("WWW-Authenticate", apiKeyChallenge(cause)))
                             : Map.ofEntries(contentType);
             case NONE -> Map.ofEntries(contentType);
         };
@@ -2577,7 +2633,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private static org.pragmatica.http.ContentCategory guessCategory(String headerText) {
-        var lower = headerText.toLowerCase();
+        var lower = headerText.toLowerCase(Locale.ROOT);
 
         if (lower.contains("json")) {
             return org.pragmatica.http.ContentCategory.JSON;

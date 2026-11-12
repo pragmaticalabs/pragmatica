@@ -40,7 +40,7 @@ class CompileFailureValidationTest {
 
                 @PgSql
                 public interface BadSelectRepo {
-                    record Row(String email) {}
+                    record Row(String email) { static Row row(String email) { return new Row(email); } }
 
                     @Query("SELECT u.typo_col FROM users u WHERE u.id = :id")
                     Promise<Option<Row>> find(long id);
@@ -65,7 +65,7 @@ class CompileFailureValidationTest {
 
                 @PgSql
                 public interface UnknownTableRepo {
-                    record Row(String name) {}
+                    record Row(String name) { static Row row(String name) { return new Row(name); } }
 
                     @Query("SELECT name FROM nonexistent_table WHERE id = :id")
                     Promise<Option<Row>> find(long id);
@@ -90,7 +90,7 @@ class CompileFailureValidationTest {
 
                 @PgSql
                 public interface BadWhereRepo {
-                    record Row(long id) {}
+                    record Row(long id) { static Row row(long id) { return new Row(id); } }
 
                     @Query("SELECT u.id FROM users u WHERE u.bogus_col = :value")
                     Promise<Option<Row>> find(String value);
@@ -118,7 +118,7 @@ class CompileFailureValidationTest {
 
                 @PgSql
                 public interface BadJoinRepo {
-                    record Row(long id) {}
+                    record Row(long id) { static Row row(long id) { return new Row(id); } }
 
                     @Query("SELECT u.id FROM users u JOIN orders o ON u.missing_fk = o.user_id")
                     Promise<List<Row>> findAll();
@@ -143,7 +143,7 @@ class CompileFailureValidationTest {
 
                 @PgSql
                 public interface UnknownAliasRepo {
-                    record Row(long id) {}
+                    record Row(long id) { static Row row(long id) { return new Row(id); } }
 
                     @Query("SELECT x.id FROM users u JOIN orders o ON u.id = o.user_id")
                     Promise<List<Row>> findAll();
@@ -168,7 +168,7 @@ class CompileFailureValidationTest {
 
                 @PgSql
                 public interface AliasFailRepo {
-                    record Row(String name) {}
+                    record Row(String name) { static Row row(String name) { return new Row(name); } }
 
                     @Query("SELECT z.name FROM users u WHERE u.id = :id")
                     Promise<Option<Row>> find(long id);
@@ -268,7 +268,7 @@ class CompileFailureValidationTest {
 
                 @PgSql
                 public interface SubqueryRepo {
-                    record Row(long id) {}
+                    record Row(long id) { static Row row(long id) { return new Row(id); } }
 
                     @Query("SELECT u.id FROM users u WHERE u.id IN (SELECT o.user_id FROM ghost_orders o)")
                     Promise<List<Row>> findAll();
@@ -322,7 +322,7 @@ class CompileFailureValidationTest {
 
                 @PgSql
                 public interface WritingCteRepo {
-                    record Row(long id) {}
+                    record Row(long id) { static Row row(long id) { return new Row(id); } }
 
                     @Query("WITH inserted AS (INSERT INTO users (name, email) VALUES (:name, :email) RETURNING id) SELECT id FROM inserted")
                     Promise<Option<Row>> createUser(String name, String email);
@@ -350,7 +350,7 @@ class CompileFailureValidationTest {
 
                 @PgSql
                 public interface UpdatingCteRepo {
-                    record Row(long id) {}
+                    record Row(long id) { static Row row(long id) { return new Row(id); } }
 
                     @Query("WITH updated AS (UPDATE users SET name = :name WHERE id = :id RETURNING id) SELECT id FROM updated")
                     Promise<Option<Row>> rename(long id, String name);
@@ -377,7 +377,7 @@ class CompileFailureValidationTest {
 
                 @PgSql
                 public interface DeletingCteRepo {
-                    record Row(long id) {}
+                    record Row(long id) { static Row row(long id) { return new Row(id); } }
 
                     @Query("WITH removed AS (DELETE FROM users WHERE id = :id RETURNING id) SELECT id FROM removed")
                     Promise<List<Row>> purge(long id);
@@ -404,9 +404,9 @@ class CompileFailureValidationTest {
 
                 @PgSql
                 public interface ReadingCteRepo {
-                    record Row(long id, String name) {}
+                    record Row(long id, String name) { static Row row(long id, String name) { return new Row(id, name); } }
 
-                    @Query("WITH active_users AS (SELECT id, name FROM users WHERE active = true) SELECT id, name FROM active_users")
+                    @Query("WITH active_users AS (SELECT id, name FROM users WHERE active = true) SELECT COALESCE(id, 0) AS id, COALESCE(name, '') AS name FROM active_users")
                     Promise<List<Row>> activeUsers();
                 }
                 """;

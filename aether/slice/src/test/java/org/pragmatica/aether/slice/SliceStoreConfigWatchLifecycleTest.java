@@ -94,7 +94,7 @@ class SliceStoreConfigWatchLifecycleTest {
                                                    List.of(repository),
                                                    sharedLoader,
                                                    STUB_INVOKER,
-                                                   noResources(),
+                                                   resources,
                                                    SliceActionConfig.sliceActionConfig(),
                                                    Option.some(IntrinsicConfigProvider.intrinsicConfigProvider("node", Map.of("watched.key", "v"))),
                                                    Option.empty(),
@@ -338,7 +338,7 @@ class SliceStoreConfigWatchLifecycleTest {
                                                   List.of(repository),
                                                   sharedLoader,
                                                   STUB_INVOKER,
-                                                  noResources(),
+                                                  resources,
                                                   SliceActionConfig.sliceActionConfig(),
                                                   Option.some(IntrinsicConfigProvider.intrinsicConfigProvider("node", Map.of("watched.key", "v"))),
                                                   Option.some(SliceCodec.sliceCodec(List.of())),
@@ -366,6 +366,54 @@ class SliceStoreConfigWatchLifecycleTest {
             out.closeEntry();
         }
         return path.toUri().toURL();
+    }
+
+    /// #2975: records every scope the store releases resources for.
+    private final RecordingResources resources = new RecordingResources();
+
+    private static final class RecordingResources implements ResourceProviderFacade {
+        private final List<String> released = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+        @Override
+        public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+            return Causes.cause("no resources in this test").promise();
+        }
+
+        @Override
+        public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
+            return Causes.cause("no resources in this test").promise();
+        }
+
+        @Override
+        public Promise<Unit> releaseAll(String sliceId) {
+            released.add(sliceId);
+
+            return Promise.unitPromise();
+        }
+    }
+
+    /// T18 (#2975): a load that registered the slice and then failed releases the resources it provisioned, under the
+    /// slice's own scope, through the same facade call an unload's generated `stop()` makes. A load that did not
+    /// register the slice releases nothing: the live instance owns those resources.
+    @Test
+    void unwindingAFailedLoad_releasesTheResourcesItProvisioned_onlyWhenThisLoadRegisteredTheSlice() {
+        store.unwindFailedLoad(D, true).await();
+
+        assertThat(resources.released).as("an earlier load owns the instance and its resources").isEmpty();
+
+        store.unwindFailedLoad(D, false).await();
+
+        assertThat(resources.released).containsExactly(D.asString());
+    }
+
+    /// T18 through a real failed load: the codec of the slice throws after the slice was created and registered.
+    @Test
+    void aLoadFailingAfterCreation_releasesTheSlicesResources() {
+        assertThat(storeWithNodeCodec().loadSlice(CODEC_THROWS).await().isFailure()).as("precondition: the load fails").isTrue();
+
+        // The unwind is attached as an event on the failed load, so it may complete just after the caller sees the failure.
+        await().atMost(Duration.ofSeconds(5))
+               .untilAsserted(() -> assertThat(resources.released).containsExactly(CODEC_THROWS.asString()));
     }
 
     private static ResourceProviderFacade noResources() {

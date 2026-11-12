@@ -101,6 +101,22 @@ class AppHttpServerSecurityModeTest {
             var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
             assertThat(response.statusCode()).isEqualTo(401);
+            assertThat(response.headers().firstValue("WWW-Authenticate")).as("RFC 6750 section 3: no error code when no credential was presented")
+                                                                          .contains("ApiKey realm=\"Aether\"");
+        }
+
+        @Test
+        void rejectsEmptyKey() throws Exception {
+            var request = HttpRequest.newBuilder()
+                                     .uri(URI.create("http://localhost:" + port + "/some/path"))
+                                     .header("X-API-Key", "")
+                                     .GET()
+                                     .build();
+
+            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            assertThat(response.statusCode()).isEqualTo(401);
+            assertThat(response.headers().firstValue("WWW-Authenticate")).contains("ApiKey realm=\"Aether\", error=\"invalid_token\"");
         }
 
         @Test
@@ -139,7 +155,8 @@ class AppHttpServerSecurityModeTest {
 
             var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
-            assertThat(response.statusCode()).isIn(401, 403);
+            assertThat(response.statusCode()).as("#2926: an unknown key is unauthenticated, not forbidden").isEqualTo(401);
+            assertThat(response.headers().firstValue("WWW-Authenticate")).contains("ApiKey realm=\"Aether\", error=\"invalid_token\"");
         }
     }
 

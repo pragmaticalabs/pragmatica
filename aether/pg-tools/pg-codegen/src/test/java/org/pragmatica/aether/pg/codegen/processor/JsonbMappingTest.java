@@ -76,7 +76,7 @@ class JsonbMappingTest {
                 import org.pragmatica.lang.Promise;
                 import org.pragmatica.lang.Unit;
 
-                record Profile(String name, String city) {}
+                record Profile(String name, String city) { static Profile profile(String name, String city) { return new Profile(name, city); } }
 
                 @PgSql
                 public interface AuditRepo {
@@ -147,12 +147,12 @@ class JsonbMappingTest {
             var nick = """
                 package other;
 
-                import org.pragmatica.aether.slice.mapping.ValueMapping;
+                import org.pragmatica.lang.vo.ValueMapping;
                 import org.pragmatica.lang.Result;
 
                 public record Nick(String value) {
                     public static Result<Nick> nick(String raw) { return Result.success(new Nick(raw)); }
-                    public static ValueMapping<Nick, String> valueMapping() { return ValueMapping.of(Nick::value, Nick::nick); }
+                    public static ValueMapping<Nick, String> valueMapping() { return ValueMapping.valueMapping(Nick::value, Nick::nick); }
                 }
                 """;
             var repo = """
@@ -163,7 +163,7 @@ class JsonbMappingTest {
                 import org.pragmatica.lang.Option;
                 import org.pragmatica.lang.Promise;
 
-                record TagRow(long id, Option<other.Nick> nick) {}
+                record TagRow(long id, Option<other.Nick> nick) { static TagRow tagRow(long id, Option<other.Nick> nick) { return new TagRow(id, nick); } }
 
                 @PgSql
                 public interface TagRepo {
@@ -190,7 +190,7 @@ class JsonbMappingTest {
                 import org.pragmatica.aether.resource.db.PgSql;
                 import org.pragmatica.lang.Promise;
 
-                record Profile(String name) {}
+                record Profile(String name) { static Profile profile(String name) { return new Profile(name); } }
 
                 @PgSql
                 public interface OnlyDocRepo {
@@ -223,9 +223,9 @@ class JsonbMappingTest {
                 import org.pragmatica.lang.Option;
                 import org.pragmatica.lang.Promise;
 
-                record Profile(String name) {}
+                record Profile(String name) { static Profile profile(String name) { return new Profile(name); } }
 
-                record DocumentRow(long id, @Jsonb Profile profile, @Jsonb other.Profile legacy) {}
+                record DocumentRow(long id, @Jsonb Profile profile, @Jsonb other.Profile legacy) { static DocumentRow documentRow(long id, Profile profile, other.Profile legacy) { return new DocumentRow(id, profile, legacy); } }
 
                 @PgSql
                 public interface TwinRepo {
@@ -373,7 +373,7 @@ class JsonbMappingTest {
 
                 enum Mood { CALM, BUSY }
 
-                record DocumentRow(long id, Mood profile, Mood legacy, String title) {}
+                record DocumentRow(long id, Mood profile, Mood legacy, String title) { static DocumentRow documentRow(long id, Mood profile, Mood legacy, String title) { return new DocumentRow(id, profile, legacy, title); } }
 
                 @PgSql
                 public interface EnumRepo {
@@ -401,9 +401,9 @@ class JsonbMappingTest {
                 import org.pragmatica.lang.Option;
                 import org.pragmatica.lang.Promise;
 
-                record Task(Runnable action) {}
+                record Task(Runnable action) { static Task task(Runnable action) { return new Task(action); } }
 
-                record DocumentRow(long id, Task profile) {}
+                record DocumentRow(long id, Task profile) { static DocumentRow documentRow(long id, Task profile) { return new DocumentRow(id, profile); } }
 
                 @PgSql
                 public interface InferredTaskRepo {
@@ -427,7 +427,7 @@ class JsonbMappingTest {
 
                 import org.pragmatica.aether.resource.db.JsonText;
                 import org.pragmatica.aether.resource.db.PgSql;
-                import org.pragmatica.aether.slice.mapping.ValueMapping;
+                import org.pragmatica.lang.vo.ValueMapping;
                 import org.pragmatica.lang.Option;
                 import org.pragmatica.lang.Promise;
                 import org.pragmatica.lang.Result;
@@ -435,11 +435,11 @@ class JsonbMappingTest {
                 record Settings(String raw) {
                     static Result<Settings> settings(JsonText text) { return Result.success(new Settings(text.value())); }
                     static ValueMapping<Settings, JsonText> valueMapping() {
-                        return ValueMapping.of(settings -> JsonText.jsonText(settings.raw()), Settings::settings);
+                        return ValueMapping.valueMapping(settings -> JsonText.jsonText(settings.raw()), Settings::settings);
                     }
                 }
 
-                record DocumentRow(long id, Option<Settings> previous) {}
+                record DocumentRow(long id, Option<Settings> previous) { static DocumentRow documentRow(long id, Option<Settings> previous) { return new DocumentRow(id, previous); } }
 
                 @PgSql
                 public interface SettingsRowRepo {
@@ -464,7 +464,7 @@ class JsonbMappingTest {
                 import org.pragmatica.lang.Promise;
                 import org.pragmatica.lang.Unit;
 
-                record Profile(String name) {}
+                record Profile(String name) { static Profile profile(String name) { return new Profile(name); } }
 
                 @PgSql
                 public interface CastRepo {
@@ -489,9 +489,9 @@ class JsonbMappingTest {
                 import org.pragmatica.lang.Option;
                 import org.pragmatica.lang.Promise;
 
-                record Extra(String note) {}
+                record Extra(String note) { static Extra extra(String note) { return new Extra(note); } }
 
-                record DocumentRow(long id, Option<Extra> extraDoc) {}
+                record DocumentRow(long id, Option<Extra> extraDoc) { static DocumentRow documentRow(long id, Option<Extra> extraDoc) { return new DocumentRow(id, extraDoc); } }
 
                 @PgSql
                 public interface ExtraRepo {
@@ -514,9 +514,9 @@ class JsonbMappingTest {
                 import org.pragmatica.lang.Option;
                 import org.pragmatica.lang.Promise;
 
-                record Title(String text) {}
+                record Title(String text) { static Title title(String text) { return new Title(text); } }
 
-                record DocumentRow(long id, Title title) {}
+                record DocumentRow(long id, Title title) { static DocumentRow documentRow(long id, Title title) { return new DocumentRow(id, title); } }
 
                 @PgSql
                 public interface TextRepo {
@@ -544,9 +544,9 @@ class JsonbMappingTest {
                 import org.pragmatica.lang.Option;
                 import org.pragmatica.lang.Promise;
 
-                record Profile(String name) {}
+                record Profile(String name) { static Profile profile(String name) { return new Profile(name); } }
 
-                record DocumentRow(long id, Profile profile, other.Profile legacy) {}
+                record DocumentRow(long id, Profile profile, other.Profile legacy) { static DocumentRow documentRow(long id, Profile profile, other.Profile legacy) { return new DocumentRow(id, profile, legacy); } }
 
                 @PgSql
                 public interface InferredTwinRepo {
@@ -569,7 +569,7 @@ class JsonbMappingTest {
         @Test
         void crudInsertStringComponent_isCompileError() throws Exception {
             assertRefused(STRING_REPO_HEADER + """
-                record DocumentRow(long id, String profile, String legacy, String title) {}
+                record DocumentRow(long id, String profile, String legacy, String title) { static DocumentRow documentRow(long id, String profile, String legacy, String title) { return new DocumentRow(id, profile, legacy, title); } }
 
                 @PgSql
                 public interface StringRepo {
@@ -582,7 +582,7 @@ class JsonbMappingTest {
         @Test
         void crudInsertStringOnCamelCaseJsonColumn_isCompileError() throws Exception {
             assertRefused(STRING_REPO_HEADER + """
-                record DocumentRow(long id, String title) {}
+                record DocumentRow(long id, String title) { static DocumentRow documentRow(long id, String title) { return new DocumentRow(id, title); } }
 
                 @PgSql
                 public interface StringRepo {
@@ -595,7 +595,7 @@ class JsonbMappingTest {
         @Test
         void crudInsertScalarStringParam_isCompileError() throws Exception {
             assertRefused(STRING_REPO_HEADER + """
-                record DocumentRow(long id, String title) {}
+                record DocumentRow(long id, String title) { static DocumentRow documentRow(long id, String title) { return new DocumentRow(id, title); } }
 
                 @PgSql
                 public interface StringRepo {
@@ -608,7 +608,7 @@ class JsonbMappingTest {
         @Test
         void crudConditionStringParam_isCompileError() throws Exception {
             assertRefused(STRING_REPO_HEADER + """
-                record DocumentRow(long id, String title) {}
+                record DocumentRow(long id, String title) { static DocumentRow documentRow(long id, String title) { return new DocumentRow(id, title); } }
 
                 @PgSql
                 public interface StringRepo {
@@ -644,12 +644,12 @@ class JsonbMappingTest {
         @Test
         void valueObjectLoweredToString_isCompileError() throws Exception {
             assertRefused(STRING_REPO_HEADER + """
-                import org.pragmatica.aether.slice.mapping.ValueMapping;
+                import org.pragmatica.lang.vo.ValueMapping;
                 import org.pragmatica.lang.Result;
 
                 record Raw(String text) {
                     static Result<Raw> raw(String text) { return Result.success(new Raw(text)); }
-                    static ValueMapping<Raw, String> valueMapping() { return ValueMapping.of(Raw::text, Raw::raw); }
+                    static ValueMapping<Raw, String> valueMapping() { return ValueMapping.valueMapping(Raw::text, Raw::raw); }
                 }
 
                 @PgSql
@@ -674,7 +674,7 @@ class JsonbMappingTest {
         @Test
         void queryExpandedStringComponent_isCompileError() throws Exception {
             assertRefused(STRING_REPO_HEADER + """
-                record Entry(long id, String profile, String legacy, String title) {}
+                record Entry(long id, String profile, String legacy, String title) { static Entry entry(long id, String profile, String legacy, String title) { return new Entry(id, profile, legacy, title); } }
 
                 @PgSql
                 public interface StringRepo {
@@ -689,7 +689,7 @@ class JsonbMappingTest {
             var source = STRING_REPO_HEADER + """
                 import org.pragmatica.aether.resource.db.JsonText;
 
-                record DocumentRow(long id, String profile, String legacy) {}
+                record DocumentRow(long id, String profile, String legacy) { static DocumentRow documentRow(long id, String profile, String legacy) { return new DocumentRow(id, profile, legacy); } }
 
                 @PgSql
                 public interface AllowedRepo {
@@ -737,7 +737,7 @@ class JsonbMappingTest {
                 import org.pragmatica.lang.Promise;
                 import org.pragmatica.lang.Unit;
 
-                record Titled(long id, String title) {}
+                record Titled(long id, String title) { static Titled titled(long id, String title) { return new Titled(id, title); } }
 
                 @PgSql
                 public interface ExpandRepo {
@@ -761,7 +761,7 @@ class JsonbMappingTest {
                 import org.pragmatica.lang.Option;
                 import org.pragmatica.lang.Promise;
 
-                record Profile(String name) {}
+                record Profile(String name) { static Profile profile(String name) { return new Profile(name); } }
 
                 @PgSql
                 public interface RowRepo {
@@ -787,7 +787,7 @@ class JsonbMappingTest {
 
                 enum Mood { CALM, BUSY }
 
-                record MoodRow(long id, Mood profile) {}
+                record MoodRow(long id, Mood profile) { static MoodRow moodRow(long id, Mood profile) { return new MoodRow(id, profile); } }
 
                 @PgSql
                 public interface EnumRepo {
@@ -812,9 +812,9 @@ class JsonbMappingTest {
                 import org.pragmatica.lang.Option;
                 import org.pragmatica.lang.Promise;
 
-                record Profile(String name) {}
+                record Profile(String name) { static Profile profile(String name) { return new Profile(name); } }
 
-                record ProfileRow(long id, Profile profile) {}
+                record ProfileRow(long id, Profile profile) { static ProfileRow profileRow(long id, Profile profile) { return new ProfileRow(id, profile); } }
 
                 @PgSql
                 public interface QueryRowRepo {
@@ -838,7 +838,7 @@ class JsonbMappingTest {
                 import org.pragmatica.aether.resource.db.PgSql;
                 import org.pragmatica.lang.Promise;
 
-                record Profile(String name) {}
+                record Profile(String name) { static Profile profile(String name) { return new Profile(name); } }
 
                 @PgSql
                 public interface ExpressionRepo {
@@ -882,7 +882,7 @@ class JsonbMappingTest {
                 import org.pragmatica.lang.Option;
                 import org.pragmatica.lang.Promise;
 
-                record Task(Runnable action) {}
+                record Task(Runnable action) { static Task task(Runnable action) { return new Task(action); } }
 
                 @PgSql
                 public interface TaskRepo {
@@ -912,9 +912,9 @@ class JsonbMappingTest {
                 import org.pragmatica.lang.Option;
                 import org.pragmatica.lang.Promise;
 
-                record Task(Runnable action) {}
+                record Task(Runnable action) { static Task task(Runnable action) { return new Task(action); } }
 
-                record TaskRow(long id, @Jsonb Task profile) {}
+                record TaskRow(long id, @Jsonb Task profile) { static TaskRow taskRow(long id, Task profile) { return new TaskRow(id, profile); } }
 
                 @PgSql
                 public interface TaskRowRepo {
@@ -942,7 +942,7 @@ class JsonbMappingTest {
                 import org.pragmatica.aether.resource.db.PgSql;
                 import org.pragmatica.lang.Promise;
 
-                record Profile(String name) {}
+                record Profile(String name) { static Profile profile(String name) { return new Profile(name); } }
 
                 @PgSql
                 public interface ListRepo {
@@ -997,9 +997,9 @@ class JsonbMappingTest {
                 import org.pragmatica.lang.Option;
                 import org.pragmatica.lang.Promise;
 
-                record Title(String text) {}
+                record Title(String text) { static Title title(String text) { return new Title(text); } }
 
-                record DocumentRow(long id, @Jsonb Title title) {}
+                record DocumentRow(long id, @Jsonb Title title) { static DocumentRow documentRow(long id, Title title) { return new DocumentRow(id, title); } }
 
                 @PgSql
                 public interface TitleRepo {
@@ -1024,11 +1024,11 @@ class JsonbMappingTest {
                 import org.pragmatica.lang.Promise;
                 import org.pragmatica.lang.Unit;
 
-                record Title(String text) {}
+                record Title(String text) { static Title title(String text) { return new Title(text); } }
 
-                record Profile(String name) {}
+                record Profile(String name) { static Profile profile(String name) { return new Profile(name); } }
 
-                record DocumentRow(long id, @Jsonb Profile profile, @Jsonb Profile legacy, @Jsonb Title title) {}
+                record DocumentRow(long id, @Jsonb Profile profile, @Jsonb Profile legacy, @Jsonb Title title) { static DocumentRow documentRow(long id, Profile profile, Profile legacy, Title title) { return new DocumentRow(id, profile, legacy, title); } }
 
                 @PgSql
                 public interface TitleInsertRepo {
@@ -1054,9 +1054,9 @@ class JsonbMappingTest {
                 import org.pragmatica.lang.Option;
                 import org.pragmatica.lang.Promise;
 
-                record Title(String text) {}
+                record Title(String text) { static Title title(String text) { return new Title(text); } }
 
-                record DocumentRow(long id, @Jsonb Title documentTitle) {}
+                record DocumentRow(long id, @Jsonb Title documentTitle) { static DocumentRow documentRow(long id, Title documentTitle) { return new DocumentRow(id, documentTitle); } }
 
                 @PgSql
                 public interface CamelRepo {
@@ -1088,7 +1088,7 @@ class JsonbMappingTest {
                 import org.pragmatica.lang.Option;
                 import org.pragmatica.lang.Promise;
 
-                record Profile(String name) {}
+                record Profile(String name) { static Profile profile(String name) { return new Profile(name); } }
 
                 @PgSql
                 public interface ClashRepo {
@@ -1116,7 +1116,7 @@ class JsonbMappingTest {
                 import org.pragmatica.aether.resource.db.PgSql;
                 import org.pragmatica.lang.Promise;
 
-                record Profile(String name) {}
+                record Profile(String name) { static Profile profile(String name) { return new Profile(name); } }
 
                 @PgSql
                 public interface UnmarkedParamRepo {
@@ -1142,7 +1142,7 @@ class JsonbMappingTest {
                 import org.pragmatica.aether.resource.db.PgSql;
                 import org.pragmatica.lang.Promise;
 
-                record Title(String text) {}
+                record Title(String text) { static Title title(String text) { return new Title(text); } }
 
                 @PgSql
                 public interface TitleRepo {
@@ -1167,7 +1167,7 @@ class JsonbMappingTest {
                 import org.pragmatica.lang.Option;
                 import org.pragmatica.lang.Promise;
 
-                record DocumentRow(long id, String title) {}
+                record DocumentRow(long id, String title) { static DocumentRow documentRow(long id, String title) { return new DocumentRow(id, title); } }
 
                 @PgSql
                 public interface CrudRepo {
@@ -1217,9 +1217,9 @@ class JsonbMappingTest {
                 import org.pragmatica.lang.Option;
                 import org.pragmatica.lang.Promise;
 
-                record Profile(String name) {}
+                record Profile(String name) { static Profile profile(String name) { return new Profile(name); } }
 
-                record ProfileRow(long id, Profile profile) {}
+                record ProfileRow(long id, Profile profile) { static ProfileRow profileRow(long id, Profile profile) { return new ProfileRow(id, profile); } }
 
                 @PgSql
                 public interface UnmarkedRepo {
@@ -1250,18 +1250,13 @@ class JsonbMappingTest {
         import org.pragmatica.lang.Promise;
         import org.pragmatica.lang.Unit;
 
-        record Address(String city, String zip) {}
+        record Address(String city, String zip) { static Address address(String city, String zip) { return new Address(city, zip); } }
 
-        record Profile(String name, Option<String> nick, List<Address> addresses, Address home) {}
+        record Profile(String name, Option<String> nick, List<Address> addresses, Address home) { static Profile profile(String name, Option<String> nick, List<Address> addresses, Address home) { return new Profile(name, nick, addresses, home); } }
 
-        record Probe(String name) {}
+        record Probe(String name) { static Probe probe(String name) { return new Probe(name); } }
 
-        record DocumentRow(long id,
-                           @Jsonb Profile profile,
-                           @Jsonb Option<Profile> previous,
-                           @Jsonb Profile legacy,
-                           String title,
-                           Option<String> nick) {}
+        record DocumentRow(long id, @Jsonb Profile profile, @Jsonb Option<Profile> previous, @Jsonb Profile legacy, String title, Option<String> nick) { static DocumentRow documentRow(long id, Profile profile, Option<Profile> previous, Profile legacy, String title, Option<String> nick) { return new DocumentRow(id, profile, previous, legacy, title, nick); } }
 
         @PgSql
         public interface DocRepo {
@@ -1298,15 +1293,15 @@ class JsonbMappingTest {
         import org.pragmatica.lang.Promise;
         import org.pragmatica.lang.Unit;
 
-        record Address(String city, String zip) {}
+        record Address(String city, String zip) { static Address address(String city, String zip) { return new Address(city, zip); } }
 
-        record Profile(String name, Option<String> nick, List<Address> addresses, Address home) {}
+        record Profile(String name, Option<String> nick, List<Address> addresses, Address home) { static Profile profile(String name, Option<String> nick, List<Address> addresses, Address home) { return new Profile(name, nick, addresses, home); } }
 
-        record Probe(String name) {}
+        record Probe(String name) { static Probe probe(String name) { return new Probe(name); } }
 
-        record DocumentRow(long id, Profile profile, Option<Profile> previous, Profile legacy, String title, Option<String> nick) {}
+        record DocumentRow(long id, Profile profile, Option<Profile> previous, Profile legacy, String title, Option<String> nick) { static DocumentRow documentRow(long id, Profile profile, Option<Profile> previous, Profile legacy, String title, Option<String> nick) { return new DocumentRow(id, profile, previous, legacy, title, nick); } }
 
-        record Entry(long id, Profile profile, Profile legacy, String title) {}
+        record Entry(long id, Profile profile, Profile legacy, String title) { static Entry entry(long id, Profile profile, Profile legacy, String title) { return new Entry(id, profile, legacy, title); } }
 
         @PgSql
         public interface InferredRepo {
@@ -1322,7 +1317,7 @@ class JsonbMappingTest {
             @Table(DocumentRow.class)
             Promise<List<DocumentRow>> findByTitleAndLegacy(String title, Profile legacy);
 
-            @Query("SELECT count(*) FROM documents WHERE profile = :probe")
+            @Query("SELECT count(*) AS count FROM documents WHERE profile = :probe")
             Promise<Long> countEqual(Probe probe);
 
             @Query("UPDATE documents SET previous = :previous WHERE id = :id")
@@ -1359,7 +1354,7 @@ class JsonbMappingTest {
         import org.pragmatica.lang.Promise;
         import org.pragmatica.lang.Unit;
 
-        record NickRow(long id, Option<String> nick) {}
+        record NickRow(long id, Option<String> nick) { static NickRow nickRow(long id, Option<String> nick) { return new NickRow(id, nick); } }
 
         @PgSql
         public interface NickRepo {
@@ -1376,7 +1371,7 @@ class JsonbMappingTest {
 
         import org.pragmatica.aether.pg.codegen.annotation.Query;
         import org.pragmatica.aether.resource.db.PgSql;
-        import org.pragmatica.aether.slice.mapping.ValueMapping;
+        import org.pragmatica.lang.vo.ValueMapping;
         import org.pragmatica.lang.Option;
         import org.pragmatica.lang.Promise;
         import org.pragmatica.lang.Result;
@@ -1384,10 +1379,10 @@ class JsonbMappingTest {
 
         record Nick(String value) {
             static Result<Nick> nick(String raw) { return Result.success(new Nick(raw)); }
-            static ValueMapping<Nick, String> valueMapping() { return ValueMapping.of(Nick::value, Nick::nick); }
+            static ValueMapping<Nick, String> valueMapping() { return ValueMapping.valueMapping(Nick::value, Nick::nick); }
         }
 
-        record TagRow(long id, Option<Nick> nick) {}
+        record TagRow(long id, Option<Nick> nick) { static TagRow tagRow(long id, Option<Nick> nick) { return new TagRow(id, nick); } }
 
         @PgSql
         public interface TagRepo {
@@ -1405,7 +1400,7 @@ class JsonbMappingTest {
         import org.pragmatica.aether.pg.codegen.annotation.Query;
         import org.pragmatica.aether.resource.db.JsonText;
         import org.pragmatica.aether.resource.db.PgSql;
-        import org.pragmatica.aether.slice.mapping.ValueMapping;
+        import org.pragmatica.lang.vo.ValueMapping;
         import org.pragmatica.lang.Option;
         import org.pragmatica.lang.Promise;
         import org.pragmatica.lang.Result;
@@ -1414,11 +1409,11 @@ class JsonbMappingTest {
         record Settings(String raw) {
             static Result<Settings> settings(JsonText text) { return Result.success(new Settings(text.value())); }
             static ValueMapping<Settings, JsonText> valueMapping() {
-                return ValueMapping.of(settings -> JsonText.jsonText(settings.raw()), Settings::settings);
+                return ValueMapping.valueMapping(settings -> JsonText.jsonText(settings.raw()), Settings::settings);
             }
         }
 
-        record SettingsRow(long id, Settings profile) {}
+        record SettingsRow(long id, Settings profile) { static SettingsRow settingsRow(long id, Settings profile) { return new SettingsRow(id, profile); } }
 
         @PgSql
         public interface SettingsRepo {
@@ -2252,7 +2247,7 @@ class JsonbMappingTest {
 
         private void assertExpanded(String sql) throws Exception {
             var generated = factory(compile(STRING_REPO_HEADER + """
-                record TitleOnly(String title) {}
+                record TitleOnly(String title) { static TitleOnly titleOnly(String title) { return new TitleOnly(title); } }
 
                 @PgSql
                 public interface ExpandRepo {
@@ -2318,9 +2313,9 @@ class JsonbMappingTest {
     @Test
     void crudNoParamCondition_doesNotShiftTheNextParam() throws Exception {
         var result = compile(STRING_REPO_HEADER + """
-            record TitleOnly(String title) {}
+            record TitleOnly(String title) { static TitleOnly titleOnly(String title) { return new TitleOnly(title); } }
 
-            record DocumentRow(long id, String title) {}
+            record DocumentRow(long id, String title) { static DocumentRow documentRow(long id, String title) { return new DocumentRow(id, title); } }
 
             @PgSql
             public interface CrudRepo {

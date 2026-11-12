@@ -77,13 +77,12 @@ class PublishedImageConfigFailsClosedTest {
 
     private static final String BOOTSTRAP_KEY = "bootstrap-admin-key-value";
     private static final String BOOTSTRAP_KEY_ID = "bootstrap-admin";
-    /// `MissingCredentials` -> 401, `InvalidCredentials` -> 403, per
-    /// [ManagementServerImpl#resolveSecurityErrorStatus]. The distinction is the point: a caller
-    /// PRESENTING the formerly-baked key is refused as INVALID (403), which proves the key was
-    /// looked up and not found. A caller presenting nothing is refused as MISSING (401). Asserting
-    /// the wrong one of these would still be asserting a refusal, but not this refusal.
+    /// Both are 401 since #2926, per [ManagementServerImpl#resolveSecurityErrorStatus]; the distinction
+    /// between them is now the `InvalidCredentials` type and the `error="invalid_token"` challenge
+    /// parameter. A caller PRESENTING the formerly-baked key is refused as INVALID, which proves the key
+    /// was looked up and not found. A caller presenting nothing is refused as MISSING. Asserting the
+    /// wrong one of these would still be asserting a refusal, but not this refusal.
     private static final int HTTP_UNAUTHORIZED = 401;
-    private static final int HTTP_FORBIDDEN = 403;
 
     private KVStore<AetherKey, AetherValue> kvStore;
 
@@ -116,7 +115,9 @@ class PublishedImageConfigFailsClosedTest {
                 .onFailure(cause -> {
                     assertThat(cause).isInstanceOf(SecurityError.InvalidCredentials.class);
                     assertThat(ManagementServerImpl.resolveSecurityErrorStatus(cause).code())
-                        .isEqualTo(HTTP_FORBIDDEN);
+                        .isEqualTo(HTTP_UNAUTHORIZED);
+                    assertThat(ManagementServerImpl.authenticateChallenge(cause))
+                        .isEqualTo("ApiKey realm=\"Aether\", error=\"invalid_token\"");
                 });
         }
 

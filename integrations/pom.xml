@@ -15,6 +15,13 @@
     <name>Pragmatica Lite Integrations</name>
     <description>Integration modules for popular Java libraries</description>
 
+    <properties>
+        <!-- #3029: was inherited true from the root pom, which made the CI gate (`jbct-maven-plugin:check`) skip every module under
+             integrations/. No module here declares a jbct-maven-plugin execution, so a lifecycle build is unchanged. Rule pins live
+             in each module's jbct.toml. -->
+        <jbct.skip>false</jbct.skip>
+    </properties>
+
     <modules>
         <module>json</module>
         <module>metrics</module>

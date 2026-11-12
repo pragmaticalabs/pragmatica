@@ -18,7 +18,17 @@ public interface UserPersistence {
                    boolean active,
                    Instant createdAt,
                    Instant updatedAt,
-                   Instant deletedAt) {}
+                   Instant deletedAt) {
+        static UserRow userRow(long id,
+                               String name,
+                               String email,
+                               boolean active,
+                               Instant createdAt,
+                               Instant updatedAt,
+                               Instant deletedAt) {
+            return new UserRow(id, name, email, active, createdAt, updatedAt, deletedAt);
+        }
+    }
 
     @Table(UserRow.class)
     Promise<Option<UserRow>> findById(Long id);
@@ -32,6 +42,6 @@ public interface UserPersistence {
     Promise<List<UserRow>> findByDeletedAtIsNull();
     Promise<List<UserRow>> findByDeletedAtIsNotNull();
 
-    @Query("SELECT count(*) FROM users WHERE active = :active AND deleted_at IS NULL")
+    @Query("SELECT count(*) AS count FROM users WHERE active = :active AND deleted_at IS NULL")
     Promise<Long> countActiveUsers(Boolean active);
 }

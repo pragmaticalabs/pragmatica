@@ -102,7 +102,7 @@ public class PgTransactionPool extends PgConnectible {
                     .flatMap(stream -> {
                                  var conn = new PgConnection(stream, dataConverter, 0);
 
-                                 return conn.connect(username, password, database);
+                                 return conn.connect(username, password, database, applicationName);
                              })
                     .flatMap(this::validateConnection)
                     .withResult(result -> result.fold(cause -> {
@@ -215,8 +215,8 @@ public class PgTransactionPool extends PgConnectible {
                                    },
                                    _ -> {
                                        if (remaining.decrementAndGet() == 0) {
-                                       result.succeed(unit());
-                                   }
+                                           result.succeed(unit());
+                                       }
 
                                        return null;
                                    }));

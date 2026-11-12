@@ -35,7 +35,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface UserRepo {
 
-                    record UserRow(String name, String email) {}
+                    record UserRow(String name, String email) { static UserRow userRow(String name, String email) { return new UserRow(name, email); } }
 
                     @Query("SELECT name, email FROM users WHERE email = :email AND name = :name")
                     Promise<Option<UserRow>> findByEmailAndName(String email, String name);
@@ -75,7 +75,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface OrderRepo {
 
-                    record OrderRow(long id, String status) {}
+                    record OrderRow(long id, String status) { static OrderRow orderRow(long id, String status) { return new OrderRow(id, status); } }
 
                     Promise<Option<OrderRow>> findById(Long id);
                 }
@@ -110,7 +110,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface StatsRepo {
 
-                    @Query("SELECT COUNT(*) FROM events WHERE type = :eventType")
+                    @Query("SELECT COUNT(*) AS count FROM events WHERE type = :eventType")
                     Promise<Long> countByType(String eventType);
                 }
                 """;
@@ -175,8 +175,8 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface InsertRepo {
 
-                    record CreateUserRequest(String name, String email, boolean active) {}
-                    record UserRow(long id, String name, String email, boolean active) {}
+                    record CreateUserRequest(String name, String email, boolean active) { static CreateUserRequest createUserRequest(String name, String email, boolean active) { return new CreateUserRequest(name, email, active); } }
+                    record UserRow(long id, String name, String email, boolean active) { static UserRow userRow(long id, String name, String email, boolean active) { return new UserRow(id, name, email, active); } }
 
                     @Query("INSERT INTO users VALUES(:request) RETURNING *")
                     Promise<UserRow> createUser(CreateUserRequest request);
@@ -211,8 +211,8 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface NoWarnRepo {
 
-                    record CreateOrderRequest(long userId, java.math.BigDecimal total, String status) {}
-                    record OrderRow(long id, long userId, java.math.BigDecimal total, String status) {}
+                    record CreateOrderRequest(long userId, java.math.BigDecimal total, String status) { static CreateOrderRequest createOrderRequest(long userId, java.math.BigDecimal total, String status) { return new CreateOrderRequest(userId, total, status); } }
+                    record OrderRow(long id, long userId, java.math.BigDecimal total, String status) { static OrderRow orderRow(long id, long userId, java.math.BigDecimal total, String status) { return new OrderRow(id, userId, total, status); } }
 
                     @Query("INSERT INTO orders VALUES(:request) RETURNING *")
                     Promise<OrderRow> createOrder(CreateOrderRequest request);
@@ -430,7 +430,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface UpdateRepo {
 
-                    record UpdateRequest(String name, String email) {}
+                    record UpdateRequest(String name, String email) { static UpdateRequest updateRequest(String name, String email) { return new UpdateRequest(name, email); } }
 
                     @Query("UPDATE users SET :request WHERE id = :id")
                     Promise<Unit> updateUser(long id, UpdateRequest request);
@@ -463,7 +463,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface UserCrudRepo {
 
-                    record UserRow(long id, String name, String email) {}
+                    record UserRow(long id, String name, String email) { static UserRow userRow(long id, String name, String email) { return new UserRow(id, name, email); } }
 
                     Promise<UserRow> insert(UserRow user);
                 }
@@ -500,7 +500,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface TypeRepo {
 
-                    record Row(long id, String name) {}
+                    record Row(long id, String name) { static Row row(long id, String name) { return new Row(id, name); } }
 
                     @Query("SELECT id, name FROM items WHERE id = :id")
                     Promise<Option<Row>> findById(Long id);
@@ -539,9 +539,9 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface TagRepo {
 
-                    record Post(long id, String[] tags) {}
+                    record Post(long id, String[] tags) { static Post post(long id, String[] tags) { return new Post(id, tags); } }
 
-                    @Query("SELECT id, tags FROM posts WHERE id = :id")
+                    @Query("SELECT id, COALESCE(tags, '{}') AS tags FROM posts WHERE id = :id")
                     Promise<Option<Post>> findPost(long id);
                 }
                 """;
@@ -572,9 +572,9 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface ScoreRepo {
 
-                    record Rank(long id, Integer[] scores) {}
+                    record Rank(long id, Integer[] scores) { static Rank rank(long id, Integer[] scores) { return new Rank(id, scores); } }
 
-                    @Query("SELECT id, scores FROM ranks WHERE id = :id")
+                    @Query("SELECT id, COALESCE(scores, '{}') AS scores FROM ranks WHERE id = :id")
                     Promise<Option<Rank>> findRank(long id);
                 }
                 """;
@@ -610,7 +610,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface RichParamRepo {
 
-                    record EventRow(UUID id, BigDecimal amount, Instant occurredAt) {}
+                    record EventRow(UUID id, BigDecimal amount, Instant occurredAt) { static EventRow eventRow(UUID id, BigDecimal amount, Instant occurredAt) { return new EventRow(id, amount, occurredAt); } }
 
                     @Query("SELECT id, amount, occurred_at FROM events_uuid WHERE id = :id AND amount > :threshold AND occurred_at >= :since")
                     Promise<Option<EventRow>> findEvent(UUID id, BigDecimal threshold, Instant since);
@@ -649,7 +649,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface RecordParamRepo {
 
-                    record NewLedgerEntry(UUID accountId, BigDecimal amount) {}
+                    record NewLedgerEntry(UUID accountId, BigDecimal amount) { static NewLedgerEntry newLedgerEntry(UUID accountId, BigDecimal amount) { return new NewLedgerEntry(accountId, amount); } }
 
                     @Query("INSERT INTO ledger VALUES(:entry)")
                     Promise<Unit> insert(NewLedgerEntry entry);
@@ -698,7 +698,7 @@ class AnnotationProcessorE2ETest {
                 @AnalyticsPgSql
                 public interface AnalyticsRepo {
 
-                    record UserRow(long id, String name, String email) {}
+                    record UserRow(long id, String name, String email) { static UserRow userRow(long id, String name, String email) { return new UserRow(id, name, email); } }
 
                     @Query("SELECT id, name, email FROM users WHERE id = :id")
                     Promise<Option<UserRow>> findById(long id);
@@ -740,7 +740,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface TotalsRepo {
 
-                    @Query("SELECT sum(total) AS total_amount FROM orders WHERE status = :status")
+                    @Query("SELECT COALESCE(sum(total), 0) AS total_amount FROM orders WHERE status = :status")
                     Promise<BigDecimal> totalByStatus(String status);
                 }
                 """;
@@ -774,7 +774,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface TimeRepo {
 
-                    @Query("SELECT max(created_at) AS latest FROM orders")
+                    @Query("SELECT COALESCE(max(created_at), CAST('1970-01-01T00:00:00Z' AS timestamptz)) AS latest FROM orders")
                     Promise<Instant> latestCreatedAt();
                 }
                 """;
@@ -804,7 +804,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface UuidRepo {
 
-                    @Query("SELECT correlation_id FROM orders WHERE id = :id")
+                    @Query("SELECT COALESCE(correlation_id, '00000000-0000-0000-0000-000000000000') AS correlation_id FROM orders WHERE id = :id")
                     Promise<UUID> correlationFor(Long id);
                 }
                 """;
@@ -834,7 +834,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface DateRepo {
 
-                    @Query("SELECT event_date FROM events WHERE id = :id")
+                    @Query("SELECT COALESCE(event_date, CAST('1970-01-01' AS date)) AS event_date FROM events WHERE id = :id")
                     Promise<LocalDate> eventDate(Long id);
                 }
                 """;
@@ -892,7 +892,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface NullableTotalsRepo {
 
-                    @Query("SELECT sum(total) AS total_amount FROM orders WHERE status = :status")
+                    @Query("SELECT COALESCE(sum(total), 0) AS total_amount FROM orders WHERE status = :status")
                     Promise<Option<BigDecimal>> totalByStatus(String status);
                 }
                 """;
@@ -924,7 +924,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface UuidListRepo {
 
-                    @Query("SELECT correlation_id FROM orders WHERE status = :status")
+                    @Query("SELECT COALESCE(correlation_id, '00000000-0000-0000-0000-000000000000') AS correlation_id FROM orders WHERE status = :status")
                     Promise<List<UUID>> correlationIds(String status);
                 }
                 """;
@@ -954,7 +954,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface SumRepo {
 
-                    @Query("SELECT sum(amount) AS total FROM items")
+                    @Query("SELECT COALESCE(sum(amount), 0) AS total FROM items")
                     Promise<Long> totalAmount();
                 }
                 """;
@@ -980,7 +980,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface ExistsRepo {
 
-                    @Query("SELECT EXISTS(SELECT 1 FROM orders WHERE id = :id)")
+                    @Query("SELECT COALESCE(EXISTS(SELECT 1 FROM orders WHERE id = :id), false) AS found")
                     Promise<Boolean> existsById(Long id);
                 }
                 """;
@@ -991,7 +991,7 @@ class AnnotationProcessorE2ETest {
 
             var generated = result.generatedSource("test.ExistsRepoFactory");
             assertThat(generated).isNotNull();
-            assertThat(generated).contains("row.getBoolean(\"exists\")");
+            assertThat(generated).contains("row.getBoolean(\"found\")");
         }
 
         @Test
@@ -1078,7 +1078,7 @@ class AnnotationProcessorE2ETest {
                 @PgSql
                 public interface EventRepo {
 
-                    record EventRow(long id, String title) {}
+                    record EventRow(long id, String title) { static EventRow eventRow(long id, String title) { return new EventRow(id, title); } }
 
                     @Query("SELECT id, title FROM event_management WHERE id = :id")
                     Promise<Option<EventRow>> findById(long id);
@@ -1131,7 +1131,7 @@ class AnnotationProcessorE2ETest {
                 @WidgetsPgSql
                 public interface WidgetRepo {
 
-                    record WidgetRow(long id, String label) {}
+                    record WidgetRow(long id, String label) { static WidgetRow widgetRow(long id, String label) { return new WidgetRow(id, label); } }
 
                     @Query("SELECT id, label FROM widgets WHERE id = :id")
                     Promise<Option<WidgetRow>> findById(long id);

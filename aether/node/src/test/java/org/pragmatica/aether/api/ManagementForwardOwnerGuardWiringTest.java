@@ -127,6 +127,33 @@ class ManagementForwardOwnerGuardWiringTest {
                 .doesNotContain("No partition owner resolvable");
     }
 
+    /// #2569 window wiring, positive control: a reply the transport refuses is re-sent while the request's budget covers the hold.
+    @Test
+    void onHttpForwardRequest_resendsARefusedReply_whileTheRequestsBudgetCoversTheHold() throws InterruptedException {
+        network.refuseAll();
+
+        server("/api/v1/no/such/route", Option.some(OTHER)).onHttpForwardRequest(forwardRequest());
+        var deadline = System.nanoTime() + 5_000_000_000L;
+
+        while (network.sentMessages().size() < 2 && System.nanoTime() < deadline) {
+            Thread.sleep(25);
+        }
+
+        assertThat(network.sentMessages()).as("the first send was refused, so the same reply goes out again").hasSizeGreaterThanOrEqualTo(2);
+    }
+
+    /// #2569 window wiring: the re-send window is the budget the request arrived with. A request with 150 ms left cannot cover the
+    /// 200 ms minimum first hold, so the refused reply is not re-sent; a window that ignores the request budget (10 s) would re-send.
+    @Test
+    void onHttpForwardRequest_doesNotResend_whenTheRequestsOwnBudgetCannotCoverTheFirstHold() throws InterruptedException {
+        network.refuseAll();
+
+        server("/api/v1/no/such/route", Option.some(OTHER)).onHttpForwardRequest(forwardRequest(150));
+        Thread.sleep(800);
+
+        assertThat(network.sentMessages()).as("one send, no re-send: the window is the request's budget").hasSize(1);
+    }
+
     private HttpForwardResponse soleResponse() {
         assertThat(network.sentMessages()).hasSize(1);
 
@@ -134,12 +161,16 @@ class ManagementForwardOwnerGuardWiringTest {
     }
 
     private static HttpForwardRequest forwardRequest() {
+        return forwardRequest(HEALTHY_BUDGET_MILLIS);
+    }
+
+    private static HttpForwardRequest forwardRequest(long remainingMillis) {
         return new HttpForwardRequest(SENDER,
                                       "corr-owner-guard",
                                       "req-owner-guard",
                                       new byte[] {1},
                                       Pipeline.MANAGEMENT,
-                                      HEALTHY_BUDGET_MILLIS);
+                                      remainingMillis);
     }
 
     private ManagementServerImpl server(String path, Option<NodeId> owner) {
@@ -195,6 +226,11 @@ class ManagementForwardOwnerGuardWiringTest {
 
     private static final class RecordingClusterNetwork implements ClusterNetwork {
         private final List<ProtocolMessage> sentMessages = new ArrayList<>();
+        private volatile boolean refusing;
+
+        void refuseAll() {
+            refusing = true;
+        }
 
         synchronized List<ProtocolMessage> sentMessages() {
             return List.copyOf(sentMessages);
@@ -211,7 +247,9 @@ class ManagementForwardOwnerGuardWiringTest {
         @Override public synchronized <M extends ProtocolMessage> Promise<WriteOutcome> send(NodeId nodeId, M message) {
             sentMessages.add(message);
 
-            return Promise.success(new WriteOutcome.Sent(nodeId));
+            return Promise.success(refusing
+                                   ? new WriteOutcome.BackpressureRefused(nodeId)
+                                   : new WriteOutcome.Sent(nodeId));
         }
 
         @Override

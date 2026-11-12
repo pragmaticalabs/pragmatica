@@ -2,6 +2,7 @@ package org.pragmatica.examples.promise;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 
 import org.pragmatica.lang.Promise;
@@ -40,7 +41,7 @@ public class ComprehensivePromiseExamples {
         // Transform promise value
         Promise<String> transformed = computed.map(value -> "Result: " + value);
         // Chain promises
-        Promise<String> chained = transformed.flatMap(str -> Promise.promise(() -> Result.success(str.toUpperCase())));
+        Promise<String> chained = transformed.flatMap(str -> Promise.promise(() -> Result.success(str.toUpperCase(Locale.ROOT))));
     }
 
     /// Example 2: Error handling patterns
@@ -122,7 +123,7 @@ public class ComprehensivePromiseExamples {
             return Result.success(Option.option(value));
         });
         // No flattening needed when using Promise<T> directly
-        Promise<String> processed = resultPromise.map(String::toUpperCase);
+        Promise<String> processed = resultPromise.map(text -> text.toUpperCase(Locale.ROOT));
     }
 
     // ========================================

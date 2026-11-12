@@ -46,7 +46,8 @@ public record GitBackupRepository(Path dir,
                                   Option<String> remote,
                                   String branch,
                                   TimeSpan timeout,
-                                  Map<String, String> environment) {
+                                  Map<String, String> environment,
+                                  GitProcesses processes) {
     public static final String FILE = "kv-backup.txt";
     /// The operator's genesis declaration: `<lineage> <incarnation>`. Committed beside [#FILE] by
     /// `aether backup declare-genesis`; the only thing that lets a different lineage replace the head.
@@ -86,7 +87,8 @@ public record GitBackupRepository(Path dir,
                                        remote.filter(url -> !url.isBlank()),
                                        branch,
                                        timeout,
-                                       Map.copyOf(environment));
+                                       Map.copyOf(environment),
+                                       new GitProcesses());
     }
 
     /// Every way a git operation can fail.
@@ -105,6 +107,16 @@ public record GitBackupRepository(Path dir,
             static final Fn1<PushRejected, String> FACTORY = Causes.forOneValue("push is not a fast-forward: %s",
                                                                                 PushRejected::new);
         }
+    }
+
+    /// Close the repository to git: from here on no git is started, and the ones in flight are handed back for [#reap] (#2924).
+    List<Process> halt() {
+        return processes.close();
+    }
+
+    /// Kill the git processes `inFlight` (from [#halt]) with everything they started, within `boundMillis`. `true` when all are dead.
+    boolean reap(List<Process> inFlight, long boundMillis) {
+        return GitProcesses.kill(inFlight, boundMillis);
     }
 
     public boolean hasRemote() {
@@ -325,9 +337,8 @@ public record GitBackupRepository(Path dir,
     }
 
     private Result<GitResult> run(List<String> args) {
-        return Result.lift(GitBackupRepository::unavailable,
-                           () -> processBuilder(args).start())
-                     .flatMap(this::collect);
+        return processes.start(processBuilder(args))
+                        .flatMap(this::collect);
     }
 
     private ProcessBuilder processBuilder(List<String> args) {
@@ -363,16 +374,18 @@ public record GitBackupRepository(Path dir,
                      .onFailure(_ -> abandon(process))
                      .map(finished -> finished
                                       ? completed(process, output)
-                                      : timedOut(process));
+                                      : timedOut(process))
+                     .onResultRun(() -> processes.finished(process));
     }
 
-    /// The wait ended in an interruption (the stop's deadline): kill git and whatever it started, and leave the interrupt visible to the caller. On a
-    /// local remote the server side is among the children, so nothing in flight lands afterwards. Over a network a push the server has already received
-    /// can still land; that is harmless, a fast-forward of the node's own decided state. What is guaranteed is that no git of ours outlives the stop.
+    /// The wait ended in an interruption (the stop's deadline): kill git and whatever it started, and leave the interrupt visible to the caller. The
+    /// tree is frozen before it is killed ([GitProcesses#kill]), so git cannot fork its hook between the decision and the kill (#2924). A tree that is
+    /// not dead within the command bound stays in flight ([GitProcesses#killOrKeep]), as a timed-out one does, so the stop's close hands it over again
+    /// instead of the registry forgetting it. On a local remote the server side is among the children, so nothing in flight lands afterwards. Over a
+    /// network a push the server has already received can still land; that is harmless, a fast-forward of the node's own decided state.
     @Contract
-    private static void abandon(Process process) {
-        process.descendants().forEach(ProcessHandle::destroyForcibly);
-        process.destroyForcibly();
+    private void abandon(Process process) {
+        processes.killOrKeep(process, timeout.millis());
         Thread.currentThread().interrupt();
     }
 
@@ -380,14 +393,33 @@ public record GitBackupRepository(Path dir,
         return new GitResult(process.exitValue(), outputOf(output));
     }
 
+    /// The command outlived its bound: kill git and everything it started, before the process leaves the in-flight set. A tree that is not dead within
+    /// the bound stays in flight, so the stop kills it, and the result says so. Guarantee earned: a git that timed out is never forgotten while a
+    /// process of its tree still runs.
     private GitResult timedOut(Process process) {
-        process.destroyForcibly();
+        var dead = processes.killOrKeep(process, timeout.millis());
 
-        return new GitResult(-1, "timed out after " + timeout);
+        return new GitResult(-1,
+                             "timed out after " + timeout + (dead
+                                                             ? ""
+                                                             : "; its process tree was still running at the bound and is left to the stop"));
     }
 
     private String outputOf(FutureTask<String> output) {
-        return Result.lift(() -> output.get(timeout.millis(), TimeUnit.MILLISECONDS)).or("");
+        return Result.lift(GitBackupRepository::keepInterrupt,
+                           () -> output.get(timeout.millis(),
+                                            TimeUnit.MILLISECONDS))
+                     .or("");
+    }
+
+    /// The stop's interrupt can land while the output is read, after git exited: it must stay visible to the caller, or the worker goes on with the
+    /// rest of its pass as if nothing had stopped it (#2924: a push after the stop returned).
+    private static BackupRepositoryError keepInterrupt(Throwable cause) {
+        if (cause instanceof InterruptedException) {
+            Thread.currentThread().interrupt();
+        }
+
+        return unavailable(cause);
     }
 
     /// The ssh git runs, never allowed to prompt: the operator's own `GIT_SSH_COMMAND` (a key, a port) is
@@ -397,7 +429,7 @@ public record GitBackupRepository(Path dir,
                          .or("ssh") + " -o BatchMode=yes";
     }
 
-    private static BackupRepositoryError unavailable(Throwable cause) {
+    static BackupRepositoryError unavailable(Throwable cause) {
         return BackupRepositoryError.GitUnavailable.FACTORY.apply(Causes.fromThrowable(cause));
     }
 

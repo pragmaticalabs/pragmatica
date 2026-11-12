@@ -84,7 +84,8 @@ aether status
 
 The CLI will display user-friendly error messages for authentication and authorization failures:
 - `Authentication required` (401) — API key not provided
-- `Access denied` (403) — Invalid API key or insufficient role for the requested operation
+- `Authentication required` (401) also covers an invalid API key (#2926)
+- `Access denied` (403) — Insufficient role for the requested operation
 
 ### Authorization Roles
 
@@ -2288,6 +2289,27 @@ aether cluster clear-placement stable --reason "old-worker is drained and its in
 The clear closes the operation and nothing else: the previous worker and the replacement are NOT removed, drained or terminated, and the next
 reconcile pass recomputes the community from what is there. Exit codes: 0 cleared, 3 the community has no operation, 1 any other refusal (the
 operation is not parked, or the node is not the leader) or failure, 64 a missing or blank `--reason`.
+
+### `aether cluster node-ids reserve`
+
+Reserve node ids `<source>-<role>-<n>` for one source and role (#1715). The core leader advances a committed per-`(source, role)` high-water counter
+and answers only after the advance is committed, so an id this command prints is never issued again: not to another caller, not after a restore, and
+not if you never provision anything with it (the ordinal is then a gap, never a reuse). Wraps `POST /api/v1/cluster/node-ids/reserve`.
+
+```bash
+aether cluster node-ids reserve --source hetzner-eu --role worker --count 3
+# Reserved: hetzner-eu-worker-4, hetzner-eu-worker-5, hetzner-eu-worker-6
+```
+
+| Option | Description |
+|--------|-------------|
+| `--source` | Source name (required) |
+| `--role` | Node role: core, worker or spot (default: core) |
+| `--count` | Number of ids to reserve, 1 to 1000 (required) |
+
+The first reservation for a source and role starts above the ids bootstrap took (the persisted configuration's count) and above every id ever admitted as
+a node of that source and role. A reservation that loses the compare-and-set to a concurrent one retries, and is refused with `409` after three losses,
+with nothing reserved. `--output json` returns the response of the REST endpoint. `cluster apply` does not call this command yet.
 
 ### `aether cluster governors`
 

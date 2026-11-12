@@ -52,17 +52,17 @@ class ValueMappingMappingTest {
 
                 import org.pragmatica.aether.pg.codegen.annotation.Query;
                 import org.pragmatica.aether.resource.db.PgSql;
-                import org.pragmatica.aether.slice.mapping.ValueMapping;
+                import org.pragmatica.lang.vo.ValueMapping;
                 import org.pragmatica.lang.Promise;
                 import org.pragmatica.lang.Result;
                 import org.pragmatica.lang.Unit;
 
                 record AccountId(UUID value) {
                     static Result<AccountId> accountId(UUID raw) { return Result.success(new AccountId(raw)); }
-                    static ValueMapping<AccountId, UUID> valueMapping() { return ValueMapping.of(AccountId::value, AccountId::accountId); }
+                    static ValueMapping<AccountId, UUID> valueMapping() { return ValueMapping.valueMapping(AccountId::value, AccountId::accountId); }
                 }
 
-                record LedgerEntry(AccountId accountId, java.math.BigDecimal amount) {}
+                record LedgerEntry(AccountId accountId, java.math.BigDecimal amount) { static LedgerEntry ledgerEntry(AccountId accountId, java.math.BigDecimal amount) { return new LedgerEntry(accountId, amount); } }
 
                 @PgSql
                 public interface LedgerRepo {
@@ -95,14 +95,14 @@ class ValueMappingMappingTest {
 
                 import org.pragmatica.aether.pg.codegen.annotation.Query;
                 import org.pragmatica.aether.resource.db.PgSql;
-                import org.pragmatica.aether.slice.mapping.ValueMapping;
+                import org.pragmatica.lang.vo.ValueMapping;
                 import org.pragmatica.lang.Promise;
                 import org.pragmatica.lang.Result;
                 import org.pragmatica.lang.Unit;
 
                 record AccountId(UUID value) {
                     static Result<AccountId> accountId(UUID raw) { return Result.success(new AccountId(raw)); }
-                    static ValueMapping<AccountId, UUID> valueMapping() { return ValueMapping.of(AccountId::value, AccountId::accountId); }
+                    static ValueMapping<AccountId, UUID> valueMapping() { return ValueMapping.valueMapping(AccountId::value, AccountId::accountId); }
                 }
 
                 @PgSql
@@ -152,7 +152,7 @@ class ValueMappingMappingTest {
                 import org.pragmatica.aether.resource.db.PgSql;
                 import org.pragmatica.lang.Promise;
 
-                record PlainId(UUID value) {}
+                record PlainId(UUID value) { static PlainId plainId(UUID value) { return new PlainId(value); } }
 
                 @PgSql
                 public interface PlainParamRepo {
@@ -180,8 +180,8 @@ class ValueMappingMappingTest {
                 import org.pragmatica.lang.Option;
                 import org.pragmatica.lang.Promise;
 
-                record PlainId(UUID value) {}
-                record BadRow(PlainId id, java.math.BigDecimal amount) {}
+                record PlainId(UUID value) { static PlainId plainId(UUID value) { return new PlainId(value); } }
+                record BadRow(PlainId id, java.math.BigDecimal amount) { static BadRow badRow(PlainId id, java.math.BigDecimal amount) { return new BadRow(id, amount); } }
 
                 @PgSql
                 public interface PlainFieldRepo {
@@ -205,13 +205,13 @@ class ValueMappingMappingTest {
 
                 import org.pragmatica.aether.pg.codegen.annotation.Query;
                 import org.pragmatica.aether.resource.db.PgSql;
-                import org.pragmatica.aether.slice.mapping.ValueMapping;
+                import org.pragmatica.lang.vo.ValueMapping;
                 import org.pragmatica.lang.Promise;
                 import org.pragmatica.lang.Result;
 
                 record TextId(String value) {
                     static Result<TextId> textId(String raw) { return Result.success(new TextId(raw)); }
-                    static ValueMapping<TextId, String> valueMapping() { return ValueMapping.of(TextId::value, TextId::textId); }
+                    static ValueMapping<TextId, String> valueMapping() { return ValueMapping.valueMapping(TextId::value, TextId::textId); }
                 }
 
                 @PgSql
@@ -279,7 +279,7 @@ class ValueMappingMappingTest {
                 import org.pragmatica.lang.Option;
                 import org.pragmatica.lang.Promise;
 
-                record RawRow(UUID id, java.math.BigDecimal amount) {}
+                record RawRow(UUID id, java.math.BigDecimal amount) { static RawRow rawRow(UUID id, java.math.BigDecimal amount) { return new RawRow(id, amount); } }
 
                 @PgSql
                 public interface RawRepo {
@@ -310,17 +310,17 @@ class ValueMappingMappingTest {
 
         import org.pragmatica.aether.pg.codegen.annotation.Query;
         import org.pragmatica.aether.resource.db.PgSql;
-        import org.pragmatica.aether.slice.mapping.ValueMapping;
+        import org.pragmatica.lang.vo.ValueMapping;
         import org.pragmatica.lang.Option;
         import org.pragmatica.lang.Promise;
         import org.pragmatica.lang.Result;
 
         record EventId(UUID value) {
             static Result<EventId> eventId(UUID raw) { return Result.success(new EventId(raw)); }
-            static ValueMapping<EventId, UUID> valueMapping() { return ValueMapping.of(EventId::value, EventId::eventId); }
+            static ValueMapping<EventId, UUID> valueMapping() { return ValueMapping.valueMapping(EventId::value, EventId::eventId); }
         }
 
-        record EventRow(EventId id, java.math.BigDecimal amount) {}
+        record EventRow(EventId id, java.math.BigDecimal amount) { static EventRow eventRow(EventId id, java.math.BigDecimal amount) { return new EventRow(id, amount); } }
 
         @PgSql
         public interface EventRepo {
@@ -334,7 +334,7 @@ class ValueMappingMappingTest {
 
         import org.pragmatica.aether.pg.codegen.annotation.Query;
         import org.pragmatica.aether.resource.db.PgSql;
-        import org.pragmatica.aether.slice.mapping.ValueMapping;
+        import org.pragmatica.lang.vo.ValueMapping;
         import org.pragmatica.lang.Cause;
         import org.pragmatica.lang.utils.Causes;
         import org.pragmatica.lang.Option;
@@ -348,10 +348,10 @@ class ValueMappingMappingTest {
                        ? Result.success(new OrderStatus(raw))
                        : BAD_STATUS.result();
             }
-            static ValueMapping<OrderStatus, String> valueMapping() { return ValueMapping.of(OrderStatus::value, OrderStatus::orderStatus); }
+            static ValueMapping<OrderStatus, String> valueMapping() { return ValueMapping.valueMapping(OrderStatus::value, OrderStatus::orderStatus); }
         }
 
-        record StatusRow(OrderStatus status) {}
+        record StatusRow(OrderStatus status) { static StatusRow statusRow(OrderStatus status) { return new StatusRow(status); } }
 
         @PgSql
         public interface OrderStatusRepo {

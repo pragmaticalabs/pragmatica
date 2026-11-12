@@ -3,16 +3,23 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource;
 
+import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.ServiceLoader;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 
 import org.pragmatica.aether.resource.json.JsonSectionConfig;
 import org.pragmatica.config.ConfigError;
+import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
+import org.pragmatica.aether.resource.db.MisplacedPoolScope;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.ProviderBasedConfigService;
@@ -26,6 +33,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.pragmatica.lang.Option.option;
 
@@ -56,6 +64,14 @@ public final class SpiResourceProvider implements ResourceProvider {
     private final Map<CacheKey, Promise<Provisioned<?>>> promiseCache;
     private final Map<Class<?>, Object> runtimeExtensions;
     private final Fn2<Result<?>, String, Class<?>> configLoader;
+    /// The [NodeShareable] factories that passed the registration check (D3.3), by identity. A marker that declares
+    /// `provision(C, ProvisioningContext)` or `sectionBinder()` is demoted: it stays a per-slice factory.
+    private final Set<ResourceFactory<?, ?>> shareable;
+    private final List<Class<?>> demoted;
+    /// The node's shared pools (#2973). A separate map from `promiseCache` by design: an entry here is keyed by the pool's
+    /// share key, holds its holders in the same value, and every transition is one per-key `compute` (see [SharedPools]).
+    private final SharedPools sharedPools;
+    private final PoolDemandGuard guard;
 
     private SpiResourceProvider(Fn2<Result<?>, String, Class<?>> configLoader) {
         this(configLoader, discoverFactories());
@@ -74,6 +90,87 @@ public final class SpiResourceProvider implements ResourceProvider {
         this.promiseCache = new ConcurrentHashMap<>();
         this.runtimeExtensions = new ConcurrentHashMap<>();
         this.factories = indexByResourceType(discovered);
+        this.demoted = demotedMarkers(discovered);
+        this.shareable = shareableFactories(discovered);
+        this.sharedPools = SharedPools.sharedPools(this::closeThroughOwningFactory);
+        this.guard = PoolDemandGuard.poolDemandGuard(this::operatorWarningSink);
+    }
+
+    /// The marked factories that keep the marker's claim as far as it can be checked: neither forbidden method is
+    /// declared on the class or a superclass.
+    private Set<ResourceFactory<?, ?>> shareableFactories(List<ResourceFactory<?, ?>> discovered) {
+        Set<ResourceFactory<?, ?>> marked = Collections.newSetFromMap(new IdentityHashMap<>());
+
+        discovered.stream()
+                  .filter(factory -> factory instanceof NodeShareable<?, ?>)
+                  .filter(factory -> !demoted.contains(factory.getClass()))
+                  .forEach(marked::add);
+
+        return Collections.unmodifiableSet(marked);
+    }
+
+    /// D3.3: a [NodeShareable] that declares `provision(C, ProvisioningContext)` or `sectionBinder()` could read slice
+    /// context, so it is demoted to a per-slice factory, with one WARN naming the class. This holds for third-party code
+    /// the repository never compiles.
+    private static List<Class<?>> demotedMarkers(List<ResourceFactory<?, ?>> discovered) {
+        var demoted = discovered.stream()
+                                .filter(factory -> factory instanceof NodeShareable<?, ?>)
+                                .map(Object::getClass)
+                                .filter(SpiResourceProvider::declaresContextAccess)
+                                .distinct()
+                                .<Class<?>> map(type -> type)
+                                .toList();
+
+        demoted.forEach(SpiResourceProvider::warnDemoted);
+
+        return demoted;
+    }
+
+    private static boolean declaresContextAccess(Class<?> type) {
+        return Option.option(type)
+                     .filter(current -> current != Object.class)
+                     .map(current -> Arrays.stream(current.getDeclaredMethods()).anyMatch(SpiResourceProvider::isContextAccess) || declaresContextAccess(current.getSuperclass()))
+                     .or(false);
+    }
+
+    private static boolean isContextAccess(Method method) {
+        return isContextProvision(method) || isSectionBinder(method);
+    }
+
+    private static boolean isContextProvision(Method method) {
+        return method.getName()
+                     .equals("provision")
+               && method.getParameterCount() == 2
+               && method.getParameterTypes() [1] == ProvisioningContext.class;
+    }
+
+    private static boolean isSectionBinder(Method method) {
+        return method.getName()
+                     .equals("sectionBinder") && method.getParameterCount() == 0;
+    }
+
+    private static Unit warnDemoted(Class<?> type) {
+        System.getLogger(SpiResourceProvider.class.getName()).log(System.Logger.Level.WARNING,
+                                                                  type.getName()
+                                                                 + " is marked NodeShareable but declares provision(C, ProvisioningContext) or"
+                                                                 + " sectionBinder(), so its output may depend on the slice: it is treated as a per-slice factory");
+
+        return Unit.unit();
+    }
+
+    /// The shared pools currently in the map, for tests.
+    int sharedPoolCount() {
+        return sharedPools.size();
+    }
+
+    /// The marked factories demoted at registration, for tests.
+    List<Class<?>> demotedFactories() {
+        return demoted;
+    }
+
+    private OperatorWarningSink operatorWarningSink() {
+        return option(runtimeExtensions.get(OperatorWarningSink.class)).map(OperatorWarningSink.class::cast)
+                     .or(OperatorWarningSink::logOnly);
     }
 
     private static List<ResourceFactory<?, ?>> discoverFactories() {
@@ -161,8 +258,9 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// Per-slice instances are NOT a behaviour change — the context overload was uncached, and
     /// generated code provisions once per slice inside its static create path, so each slice
     /// already got its own. What is new is that the instance is now memoized within the slice and
-    /// released when that slice unloads. Genuinely shared pools, if ever wanted, are a deliberate
-    /// design change with their own ticket — not something to acquire from a cache key.
+    /// released when that slice unloads. Genuinely shared pools are a deliberate design change with
+    /// their own ticket, #2973, and they do not come from this cache key: they take the bound path
+    /// below, keyed by what the pool connects with, never by a section or a slice.
     ///
     /// WHAT A RACE WITH `releaseAll` OF THE SAME SCOPE GUARANTEES, and by what mechanism: the
     /// entry is inserted and removed through `ConcurrentHashMap`'s per-key atomics only, so the
@@ -177,11 +275,36 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// that, and the slice-loading FSM sequences create before stop so the race is not reached in
     /// production. A provision that FAILS evicts its own entry (see below), so the failure is not
     /// memoized.
-    @SuppressWarnings("unchecked")
+    ///
+    /// NODE-SHARED POOLS (#2973) take a second path, gated before any extra work: only a context call attributed to a
+    /// slice, for a resource type at least one of whose factories is a (non-demoted) [NodeShareable]. Every other call
+    /// takes the path below unchanged, so its timing and failure shape are today's. See [#provideBound].
     private <T> Promise<T> provideShared(Class<T> resourceType,
                                          String configSection,
                                          Option<ProvisioningContext> contextOpt) {
         var scope = provisioningScope(contextOpt);
+
+        return contextOpt.filter(_ -> !UNATTRIBUTED_SCOPE.equals(scope))
+                         .flatMap(context -> shareableList(resourceType).map(list -> provideBound(list,
+                                                                                                  resourceType,
+                                                                                                  configSection,
+                                                                                                  context,
+                                                                                                  scope)))
+                         .or(() -> provideCached(resourceType, configSection, contextOpt, scope));
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> Option<List<ResourceFactory<T, ?>>> shareableList(Class<T> resourceType) {
+        return option(factories.get(resourceType)).filter(list -> list.stream()
+                                                                      .anyMatch(shareable::contains))
+                     .map(list -> (List<ResourceFactory<T, ?>>)(List<?>) list);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> Promise<T> provideCached(Class<T> resourceType,
+                                         String configSection,
+                                         Option<ProvisioningContext> contextOpt,
+                                         String scope) {
         var key = new CacheKey(resourceType, configSection, scope);
         var cached = promiseCache.computeIfAbsent(key, _ -> createProvisioned(resourceType, configSection, contextOpt));
         // The eviction is a DEPENDENT TRANSFORM (`withFailure`), not an `onFailure` event, and it
@@ -197,6 +320,127 @@ public final class SpiResourceProvider implements ResourceProvider {
         // and can never evict a newer entry.
         return (Promise<T>) cached.withFailure(_ -> promiseCache.remove(key, cached))
                                   .map(Provisioned::resource);
+    }
+
+    /// The node-shared path (#2973 D1.1): the section is bound ONCE, through the slice's own composite, and the factory
+    /// whose `supports()` matches decides. A marked factory's share key, when present, names the node pool this slice
+    /// joins; an absent key (`pool_scope = "slice"`) or an unmarked factory keeps a per-slice entry under today's cache
+    /// key, provisioned with THIS bound config, never a second bind.
+    ///
+    /// Changed linearization point, and the only thing that now prevents a leak: here the holder is added after the
+    /// asynchronous bind, so a `releaseAll(scope)` issued between `provide` and the bind misses the holder, and the late
+    /// holder pins the pool until a release or node stop. Production relies on the slice-loading FSM sequencing create
+    /// before stop (see above). An enabled tripwire test pins the current behaviour.
+    @SuppressWarnings("unchecked")
+    private <T, C> Promise<T> provideBound(List<ResourceFactory<T, ?>> factoryList,
+                                           Class<T> resourceType,
+                                           String configSection,
+                                           ProvisioningContext context,
+                                           String scope) {
+        var enriched = Option.some(enrichWithRuntimeExtensions(context));
+        var first = (ResourceFactory<T, C>) factoryList.getFirst();
+
+        return loadConfig(configSection, first, enriched).flatMap(config -> routeBound(factoryList,
+                                                                                       config,
+                                                                                       resourceType,
+                                                                                       configSection,
+                                                                                       enriched,
+                                                                                       scope));
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T, C> Promise<T> routeBound(List<ResourceFactory<T, ?>> factoryList,
+                                         C config,
+                                         Class<T> resourceType,
+                                         String configSection,
+                                         Option<ProvisioningContext> context,
+                                         String scope) {
+        return factoryList.stream()
+                          .map(factory -> (ResourceFactory<T, C>) factory)
+                          .filter(factory -> factory.supports(config))
+                          .findFirst()
+                          .map(factory -> provideWith(factory, config, resourceType, configSection, context, scope))
+                          .orElseGet(() -> new SliceLoadingFailure.Fatal.ResourceFactoryNotFound(resourceType.getName()).promise());
+    }
+
+    private <T, C> Promise<T> provideWith(ResourceFactory<T, C> factory,
+                                          C config,
+                                          Class<T> resourceType,
+                                          String configSection,
+                                          Option<ProvisioningContext> context,
+                                          String scope) {
+        return asShareable(factory).flatMap(shared -> shared.shareKey(config)
+                                                            .map(key -> sharedPools.acquire(key,
+                                                                                            scope,
+                                                                                            shared,
+                                                                                            () -> provisionBound(factory,
+                                                                                                                 config,
+                                                                                                                 resourceType,
+                                                                                                                 configSection,
+                                                                                                                 context),
+                                                                                            configSection
+                                                                                           + "@" + shared.demand(config)
+                                                                                                         .endpoint())))
+                          .or(() -> provideSlicePool(factory, config, resourceType, configSection, context, scope));
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T, C> Option<NodeShareable<T, C>> asShareable(ResourceFactory<T, C> factory) {
+        return shareable.contains(factory)
+               ? Option.some((NodeShareable<T, C>) factory)
+               : Option.none();
+    }
+
+    /// A per-slice entry under today's key, for an unmarked factory or `pool_scope = "slice"`. The entry is a placeholder
+    /// inserted by `computeIfAbsent`, and the provision runs after it returns, so no factory code runs under the bin
+    /// lock. The eviction of a failed provision is today's.
+    @SuppressWarnings("unchecked")
+    private <T, C> Promise<T> provideSlicePool(ResourceFactory<T, C> factory,
+                                               C config,
+                                               Class<T> resourceType,
+                                               String configSection,
+                                               Option<ProvisioningContext> context,
+                                               String scope) {
+        var key = new CacheKey(resourceType, configSection, scope);
+        var placeholder = Promise.<Provisioned<?>> promise();
+        var cached = promiseCache.computeIfAbsent(key, _ -> placeholder);
+
+        if (cached == placeholder) {
+            // Contained: a factory that throws synchronously fails the placeholder (evicted below) instead of
+            // leaving it unresolved, which would hang this slice's own retry.
+            Promise.unitPromise()
+                   .flatMap(_ -> provisionBound(factory, config, resourceType, configSection, context))
+                   .onResult(placeholder::resolve);
+        }
+
+        return (Promise<T>) cached.withFailure(_ -> promiseCache.remove(key, cached))
+                                  .map(Provisioned::resource);
+    }
+
+    /// Provision through `factory` with the bound `config`. A pool of a marked factory registers with the demand guard
+    /// once it has opened, and the guard's probe runs detached from this path.
+    private <T, C> Promise<Provisioned<?>> provisionBound(ResourceFactory<T, C> factory,
+                                                          C config,
+                                                          Class<T> resourceType,
+                                                          String configSection,
+                                                          Option<ProvisioningContext> context) {
+        return invokeProvision(factory, config, context).<Provisioned<?>> map(resource -> Provisioned.provisioned(resource,
+                                                                                                                  factory))
+                              .mapError(cause -> classifyProvisionFailure(resourceType, configSection, cause))
+                              .withSuccess(provisioned -> guardOpened(provisioned, factory, config, configSection));
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T, C> Unit guardOpened(Provisioned<?> provisioned,
+                                    ResourceFactory<T, C> factory,
+                                    C config,
+                                    String configSection) {
+        return asShareable(factory).map(shared -> guard.opened(provisioned.poolId(),
+                                                               (T) provisioned.resource(),
+                                                               shared,
+                                                               shared.demand(config),
+                                                               configSection + "@" + shared.demand(config).endpoint()))
+                          .or(Unit.unit());
     }
 
     /// The slice a provisioning call belongs to, or [#UNATTRIBUTED_SCOPE] when the caller supplied
@@ -227,9 +471,10 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// alone. That single-remover property is the whole of what "atomic" means here; there is no
     /// second structure to keep in step (see `promiseCache`).
     ///
-    /// NOTE on "last consumer": with a scoped key each entry has exactly one consumer identity, so
-    /// release is per-scope, not cross-slice refcounting. No test here claims cross-slice
-    /// refcounting, because nothing in the current model exercises it.
+    /// NOTE on "last consumer": with a scoped key each `promiseCache` entry has exactly one consumer
+    /// identity, so its release is per-scope. Node-shared pools (#2973) are the one cross-slice case:
+    /// `releaseAll` removes this scope as a holder of each shared pool it holds, and only the release
+    /// that removes the last holder closes the pool (see [SharedPools]).
     @Override
     public Promise<Unit> releaseAll(String sliceId) {
         // The shared unattributed scope is released by nobody here. Relying instead on "no real
@@ -237,7 +482,7 @@ public final class SpiResourceProvider implements ResourceProvider {
         // an invariant, and a slice id that collided would quietly close a pool still in use.
         return UNATTRIBUTED_SCOPE.equals(sliceId)
                ? Promise.unitPromise()
-               : releaseScope(sliceId);
+               : releaseScope(sliceId, sharedPools.releaseScope(sliceId));
     }
 
     /// Close the shared (unattributed) scope: every resource provisioned through the context-free
@@ -248,14 +493,18 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// use-after-close for every other holder. The only point at which no consumer remains is node
     /// shutdown, so that is the only caller. Same detach-then-close single-remover discipline as
     /// `releaseAll`, so a second call finds nothing and closes nothing.
+    ///
+    /// It also closes the node's shared pools (#2973): it refuses every later shared acquire with
+    /// [ResourceProvisioningError.ProviderClosed], then drains them, closing each pool exactly once.
     public Promise<Unit> closeShared() {
-        return releaseScope(UNATTRIBUTED_SCOPE);
+        return releaseScope(UNATTRIBUTED_SCOPE, sharedPools.closeAll());
     }
 
-    private Promise<Unit> releaseScope(String scope) {
-        var closeFutures = new ArrayList<Promise<Unit>>();
+    /// Releases `scope`'s entries, plus the shared-pool releases the caller already started (`shared`).
+    private Promise<Unit> releaseScope(String scope, List<Promise<Unit>> shared) {
+        var closeFutures = new ArrayList<Promise<Unit>>(shared);
 
-        for (var entry : List.copyOf(promiseCache.entrySet())) {
+        for (var entry : new ArrayList<>(promiseCache.entrySet())) {
             var key = entry.getKey();
 
             if (!scope.equals(key.scope())) {
@@ -265,7 +514,7 @@ public final class SpiResourceProvider implements ResourceProvider {
             var cached = entry.getValue();
 
             if (promiseCache.remove(key, cached)) {
-                closeFutures.add(cached.flatMap(SpiResourceProvider::closeThroughOwningFactory));
+                closeFutures.add(cached.flatMap(this::closeThroughOwningFactory));
             }
         }
 
@@ -289,6 +538,9 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// Close through the factory that built the resource, with a close that THROWS turned into a
     /// failed promise rather than trusted to the convention.
     ///
+    /// THE ONE CLOSE FUNNEL (#2973): per-slice entries, shared pools (their last holder's release and the node-stop
+    /// drain) and the unattributed scope all close here, so the demand guard deregisters a pool here and nowhere else.
+    ///
     /// `releaseAll` applies this inline through `flatMap` on an already-resolved entry, so an
     /// exception escaping a factory's `close` — or an `AsyncCloseable.close()` the default
     /// dispatch invokes — would exit the release loop with every later entry still unreleased.
@@ -296,8 +548,10 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// failed promises (review of #900, NOTE 2). The default close already absorbs and logs its own
     /// failures; this is the guard for the overrides and the implementors that do not.
     @SuppressWarnings("unchecked")
-    private static Promise<Unit> closeThroughOwningFactory(Provisioned<?> provisioned) {
+    private Promise<Unit> closeThroughOwningFactory(Provisioned<?> provisioned) {
         var factory = (ResourceFactory<Object, ?>) provisioned.factory();
+
+        guard.closed(provisioned.poolId());
 
         return Result.lift(throwable -> closeThrew(provisioned, throwable),
                            () -> factory.close(provisioned.resource()))
@@ -384,8 +638,8 @@ public final class SpiResourceProvider implements ResourceProvider {
             var typed = (ResourceFactory<T, C>) factory;
 
             if (typed.supports(config)) {
-                return invokeProvision(typed, config, contextOpt).<Provisioned<?>> map(resource -> new Provisioned<>(resource,
-                                                                                                                     typed))
+                return invokeProvision(typed, config, contextOpt).<Provisioned<?>> map(resource -> Provisioned.provisioned(resource,
+                                                                                                                           typed))
                                       .mapError(cause -> classifyProvisionFailure(resourceType, configSection, cause));
             }
         }
@@ -533,7 +787,16 @@ public final class SpiResourceProvider implements ResourceProvider {
     private static Fn2<Result<?>, String, Class<?>> loaderFromComposite(ConfigurationProvider composite) {
         var svc = ProviderBasedConfigService.providerBasedConfigService(composite);
 
-        return (section, configClass) -> svc.config(section, configClass);
+        return (section, configClass) -> refuseMisplacedPoolScope(composite, section, configClass).flatMap(_ -> svc.config(section,
+                                                                                                                           configClass));
+    }
+
+    private static Result<Unit> refuseMisplacedPoolScope(ConfigurationProvider composite,
+                                                         String section,
+                                                         Class<?> configClass) {
+        return DatabaseConnectorConfig.class.equals(configClass)
+               ? MisplacedPoolScope.refuseMisplacedPoolScope(composite, section)
+               : Result.unitResult();
     }
 
     /// Identity of a cached resource. `scope` is the provisioning slice's id, or
@@ -543,5 +806,12 @@ public final class SpiResourceProvider implements ResourceProvider {
 
     /// A provisioned resource together with the factory that actually built it, so the release
     /// path closes through the SAME factory rather than guessing at the head of the priority list.
-    private record Provisioned<T>(T resource, ResourceFactory<T, ?> factory) {}
+    ///
+    /// `poolId` is a fresh identity per provisioning, so the demand guard can deregister exactly the pool being closed
+    /// (#2973). `resource` is always the underlying instance, never a holder's view.
+    record Provisioned<T>(T resource, ResourceFactory<T, ?> factory, Object poolId) {
+        static <T> Provisioned<T> provisioned(T resource, ResourceFactory<T, ?> factory) {
+            return new Provisioned<>(resource, factory, new Object());
+        }
+    }
 }

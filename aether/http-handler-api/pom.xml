@@ -11,7 +11,7 @@
 
     <artifactId>http-handler-api</artifactId>
     <name>Aether HTTP Handler API</name>
-    <description>HTTP handler interfaces for cluster-wide HTTP routing. Provides HttpRequestHandler, HttpRequestContext, and HttpResponseData contracts.</description>
+    <description>HTTP handler interfaces for cluster-wide HTTP routing. Provides the HttpRequestContext, HttpResponseData and HttpRouteDefinition contracts.</description>
 
     <licenses>
         <license>
