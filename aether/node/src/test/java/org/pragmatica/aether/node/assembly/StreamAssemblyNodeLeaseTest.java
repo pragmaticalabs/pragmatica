@@ -24,6 +24,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -53,6 +54,7 @@ class StreamAssemblyNodeLeaseTest {
     private final List<KVCommand<AetherKey>> submitted = new CopyOnWriteArrayList<>();
     private final List<OperatorWarning> raised = new CopyOnWriteArrayList<>();
     private long slot;
+    private volatile boolean autoCommit;
 
     /// Mutation: the `NodeLeaseKey` route not added to `entries` -> RED (the committed renewal never validates the lease).
     @Test
@@ -74,6 +76,57 @@ class StreamAssemblyNodeLeaseTest {
         store.reset();
 
         assertThat(lease.valid()).isFalse();
+    }
+
+    /// Design §2.1 / §8 (NEW-3) through the assembly's wiring: after a store reset, an OLDER row naming this node re-applied (what a
+    /// restore of an older snapshot delivers) is refused, and so is a renewal SUBMITTED before the reset and delivered after it;
+    /// only a renewal submitted after the reset validates the lease again. "Refused" = the lease stays invalid, so every owner
+    /// check (admission, `ownerAdvance`, the ack continuation, the announcement) refuses.
+    @Test
+    void nodeLease_afterAReset_anOlderRowAndARenewalSubmittedBeforeIt_areRefused_aRenewalSubmittedAfterValidates() {
+        var lease = wiredLease();
+
+        lease.renew();
+        var olderRow = List.copyOf(submitted);
+        commitSubmitted();
+        await().atMost(Duration.ofSeconds(5)).until(lease::valid);
+        lease.renew();
+        var submittedBeforeReset = List.copyOf(submitted);
+        submitted.clear();
+
+        store.reset();
+        assertThat(lease.valid()).as("control: the reset revoked").isFalse();
+        commit(olderRow);
+        assertThat(lease.valid()).as("an older row naming this node, re-applied after the reset, is refused").isFalse();
+        commit(submittedBeforeReset);
+        assertThat(lease.valid()).as("a renewal submitted before the reset and delivered after it does not clear").isFalse();
+        lease.renew();
+        commitSubmitted();
+        await().atMost(Duration.ofSeconds(5)).until(lease::valid);
+    }
+
+    /// Liveness (design §2.4): with the renewal running at its configured period `R` and each renewal delivered at once, a lease
+    /// revoked by a store reset is valid again within `R` (plus a delivery margin).
+    @Test
+    void nodeLease_revokedByAReset_isValidAgainWithinOneRenewalPeriod() {
+        var renewal = StreamingConfig.streamingConfig()
+                                     .ownerLeaseRenewal();
+        var lease = wiredLease();
+
+        autoCommit = true;
+        var renewing = SharedScheduler.scheduleAtFixedRate(lease::renew, renewal);
+
+        try {
+            await().atMost(Duration.ofSeconds(5)).until(lease::valid);
+            store.reset();
+            var revokedAt = System.nanoTime();
+
+            assertThat(lease.valid()).as("control: the reset revoked").isFalse();
+            await().atMost(Duration.ofNanos(renewal.nanos() + 500_000_000L)).pollInterval(Duration.ofMillis(5)).until(lease::valid);
+            assertThat(System.nanoTime() - revokedAt).isLessThanOrEqualTo(renewal.nanos() + 500_000_000L);
+        } finally {
+            renewing.cancel(false);
+        }
     }
 
     /// Mutation: `kvStore.onReplayStart(_ -> lease.revoke())` dropped -> RED (the replay leaves the lease valid).
@@ -117,6 +170,7 @@ class StreamAssemblyNodeLeaseTest {
         assertThat(source).containsOnlyOnce("hlcClock),nodeLease,streamPartitionManager::confirmationFactorFor);");
         assertThat(source).containsOnlyOnce("streamPartitionManager.ownerLease(nodeLease);");
         assertThat(source).containsOnlyOnce("streamPartitionManager.ownerActivated(ownerActivation::isActivated);");
+        assertThat(source).containsOnlyOnce("nodeLease.onValidityRegained(streamPartitionManager::onLeaseRegained);");
         assertThat(source).containsOnlyOnce("defer.accept(()->SharedScheduler.scheduleAtFixedRate(nodeLease::renew,streamingConfig.ownerLeaseRenewal()));");
     }
 
@@ -181,17 +235,25 @@ class StreamAssemblyNodeLeaseTest {
     }
 
     private Promise<List<Object>> submit(List<KVCommand<AetherKey>> commands) {
+        if (autoCommit) {
+            commit(commands);
+            return Promise.success(List.of());
+        }
         submitted.addAll(commands);
 
         return Promise.success(List.of());
     }
 
-    @SuppressWarnings({"unchecked", "rawtypes"})
     private void commitSubmitted() {
+        commit(List.copyOf(submitted));
+        submitted.clear();
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private synchronized void commit(List<KVCommand<AetherKey>> commands) {
         var raw = (KVStore) store;
 
-        raw.processCommitted(raw.createBatch((List) List.copyOf(submitted)), ++slot);
-        submitted.clear();
+        raw.processCommitted(raw.createBatch((List) commands), ++slot);
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
