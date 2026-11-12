@@ -222,7 +222,7 @@ class V1873ProbeTest {
         record.set(Option.some(recordAt(E1).withEpochStart(500L)));
         activation = activation();
         manager.ownerServeGate(activation::admit);
-        manager.ownerLease(() -> true);
+        manager.ownerLease(OwnerLease.TEST_VALID);
         manager.ownershipRecords((_, _) -> record.get());
 
         var first = manager.readServing(STREAM, PARTITION, 400L, 10, E1);
@@ -244,7 +244,7 @@ class V1873ProbeTest {
         record.set(Option.some(recordAt(E1)));
         activation = activation();
         manager.ownerServeGate(activation::admit);
-        manager.ownerLease(() -> true);
+        manager.ownerLease(OwnerLease.TEST_VALID);
         manager.ownershipRecords((_, _) -> record.get());
         assertThat(activation.activate(STREAM, PARTITION).await().isSuccess()).as("premise: first activation").isTrue();
         assertThat(commits).as("premise: the first owner recorded its start").containsExactly("start@0");

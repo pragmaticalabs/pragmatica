@@ -14,6 +14,7 @@ import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.aether.stream.OwnerLease;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.control.ControlKind;
 import org.pragmatica.aether.stream.control.ControlLog;
@@ -58,7 +59,7 @@ class ControlRetentionFloorTest {
     @BeforeEach
     void setUp() {
         manager = streamPartitionManager(Long.MAX_VALUE);
-        manager.ownerLease(() -> true);
+        manager.ownerLease(OwnerLease.TEST_VALID);
         manager.ownershipRecords((_, _) -> Option.some(StreamPartitionOwnershipValue.streamPartitionOwnershipValue(NodeId.nodeId("ctl-owner")
                                                                                                                          .unwrap(),
                                                                                                                    Epoch.ZERO,

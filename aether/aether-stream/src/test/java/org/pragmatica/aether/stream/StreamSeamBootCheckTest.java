@@ -54,6 +54,7 @@ class StreamSeamBootCheckTest {
     private static final Set<StreamSeam> SAFETY_RELEVANT = Set.of(StreamSeam.OWNER_EPOCH_SOURCE,
                                                                   StreamSeam.PARTITION_FLAGS,
                                                                   StreamSeam.OWNERSHIP_RECORDS,
+                                                                  StreamSeam.OWNER_LEASE,
                                                                   StreamSeam.PLACEMENT_ROLE_SUPPLIER,
                                                                   StreamSeam.CATCHUP_SOURCE,
                                                                   StreamSeam.OWNER_RELEASE_GUARD,
@@ -81,7 +82,7 @@ class StreamSeamBootCheckTest {
     }
 
     @Test
-    void safetyRelevant_isExactlyTheNineSeamsWhosePermissiveDefaultIsAlarmed() {
+    void safetyRelevant_isExactlyTheTenSeamsWhosePermissiveDefaultIsAlarmed() {
         var classed = Arrays.stream(StreamSeam.values())
                             .filter(StreamSeam::safetyRelevant)
                             .collect(Collectors.toSet());
@@ -91,13 +92,13 @@ class StreamSeamBootCheckTest {
 
     @Test
     void unboundSafetySeamCount_countsOnlyTheSafetyRelevantDefaults() {
-        assertThat(walManager.unboundSafetySeamCount()).as("nothing bound: the nine safety-relevant seams").isEqualTo(9);
+        assertThat(walManager.unboundSafetySeamCount()).as("nothing bound: the ten safety-relevant seams").isEqualTo(10);
 
         walManager.operatorWarnings(OperatorWarningSink.logOnly());
-        assertThat(walManager.unboundSafetySeamCount()).as("binding a seam that is not safety-relevant changes nothing").isEqualTo(9);
+        assertThat(walManager.unboundSafetySeamCount()).as("binding a seam that is not safety-relevant changes nothing").isEqualTo(10);
 
         walManager.ownerServeGate((_, _) -> Result.unitResult());
-        assertThat(walManager.unboundSafetySeamCount()).as("binding a safety-relevant seam takes it off the count").isEqualTo(8);
+        assertThat(walManager.unboundSafetySeamCount()).as("binding a safety-relevant seam takes it off the count").isEqualTo(9);
     }
 
     @Test
@@ -138,7 +139,7 @@ class StreamSeamBootCheckTest {
         var errors = capture.messages(Level.ERROR);
 
         assertThat(errors).as("one ERROR line").hasSize(1);
-        assertThat(errors.getFirst()).contains("9 safety-relevant seam(s)");
+        assertThat(errors.getFirst()).contains("10 safety-relevant seam(s)");
         SAFETY_RELEVANT.forEach(seam -> assertThat(errors.getFirst()).as("names %s", seam).contains(seam.name()));
         assertThat(errors.getFirst()).as("EPOCH_STARTS is not alarmed").doesNotContain(StreamSeam.EPOCH_STARTS.name());
     }
@@ -162,7 +163,7 @@ class StreamSeamBootCheckTest {
     private static void bindSafetyRelevant(StreamPartitionManager manager) {
         manager.ownerEpochSource((_, _) -> Epoch.ZERO);
         manager.partitionFlags(new SilentFlags());
-        manager.ownerLease(() -> true);
+        manager.ownerLease(OwnerLease.TEST_VALID);
         manager.ownershipRecords((_, _) -> Option.none());
         manager.placementRoleSupplier((_, _) -> org.pragmatica.aether.stream.replication.ReplicaSetController.Role.OWNER);
         manager.replicaCatchupSource((_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(Integer.MAX_VALUE, true));

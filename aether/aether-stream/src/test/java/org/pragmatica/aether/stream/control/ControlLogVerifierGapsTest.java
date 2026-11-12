@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import org.pragmatica.aether.stream.OwnerLease;
 import org.pragmatica.aether.stream.EvictionListener;
 import org.pragmatica.aether.stream.control.ControlOutcome.Admitted;
 import org.pragmatica.aether.stream.control.ControlOutcome.OutcomeUnknown;
@@ -168,7 +169,7 @@ class ControlLogVerifierGapsTest {
     @Test
     void admission_noOwnershipRecord_isIndexUnavailable() {
         try (var owner = owner(1, 1)) {
-            owner.manager().ownerLease(() -> true);
+            owner.manager().ownerLease(OwnerLease.TEST_VALID);
             owner.manager().ownershipRecords((_, _) -> Option.none());
 
             assertThat(owner.manager().committedIsrVersion(STREAM, PARTITION)).isZero();

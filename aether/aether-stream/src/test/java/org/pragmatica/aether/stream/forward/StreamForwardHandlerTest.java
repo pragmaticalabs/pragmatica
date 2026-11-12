@@ -8,6 +8,7 @@ package org.pragmatica.aether.stream.forward;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.stream.OwnerLease;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
@@ -265,7 +266,7 @@ class StreamForwardHandlerTest {
             for (var i = 0; i < 5; i++) {
                 partitionManager.publishLocal(STREAM, PARTITION, ("r" + i).getBytes(), 100L + i);
             }
-            partitionManager.ownerLease(() -> true);
+            partitionManager.ownerLease(OwnerLease.TEST_VALID);
             partitionManager.ownershipRecords((_, _) -> Option.some(new org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue(GOVERNOR,
                                                                                                                                                      e2,
                                                                                                                                                      2L,

@@ -1418,6 +1418,19 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void ownerLease(OwnerLease lease) {
         this.ownerLease = lease;
+        boundSeams.add(StreamSeam.OWNER_LEASE);
+    }
+
+    /// The ownership-record seam as bound, for the boot check of `StreamAssembly` (compared BY IDENTITY to
+    /// [OwnerActivation.OwnershipRecordSource#UNWIRED]).
+    public OwnerActivation.OwnershipRecordSource ownershipRecordSeam() {
+        return ownershipRecords;
+    }
+
+    /// The lease seam as bound, for the boot check of `StreamAssembly` (compared BY IDENTITY to [OwnerLease#UNWIRED] and
+    /// [OwnerLease#TEST_VALID]).
+    public OwnerLease ownerLeaseSeam() {
+        return ownerLease;
     }
 
     /// #2981 step 2: late-bind the side-effect-free activation view the owner visibility check reads ([#ownerAdvance]).

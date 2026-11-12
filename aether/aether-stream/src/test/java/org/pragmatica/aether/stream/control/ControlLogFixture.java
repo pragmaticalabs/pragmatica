@@ -21,6 +21,7 @@ import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.aether.stream.OwnerLease;
 import org.pragmatica.aether.stream.EvictionListener;
 import org.pragmatica.aether.stream.LastSealedOffsetSource;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
@@ -238,7 +239,7 @@ final class ControlLogFixture {
 
         manager.ownerEpochSource((_, _) -> ownerEpoch.get());
         manager.placementRoleSupplier((_, _) -> role.get());
-        manager.ownerLease(() -> true);
+        manager.ownerLease(OwnerLease.TEST_VALID);
         manager.ownershipRecords((_, _) -> Option.some(ownership(ownerEpoch.get(), isrVersion)));
         var controlLog = ControlLog.controlLog(wrap.apply(ControlPartitionLog.partitionManagerLog(manager,
                                                                                                  Option.none(),

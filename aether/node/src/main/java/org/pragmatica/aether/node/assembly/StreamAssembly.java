@@ -92,10 +92,12 @@ import org.pragmatica.aether.stream.LinearizableOwnerServe;
 import org.pragmatica.aether.stream.NodeLease;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.OwnerActivation;
+import org.pragmatica.aether.stream.OwnerLease;
 import org.pragmatica.aether.stream.OwnerPeerReads;
 import org.pragmatica.aether.stream.SegmentTierPressure;
 import org.pragmatica.aether.stream.StreamConsumerRuntime;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.StreamSeam;
 import org.pragmatica.aether.stream.StreamPublisherFactory;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.StreamWriteRouter;
@@ -331,6 +333,28 @@ public sealed interface StreamAssembly {
         return (stream, partition) -> kvStore.peekTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
                                                                                                                 partition),
                                                         StreamPartitionOwnershipValue.class);
+    }
+
+    /// #2981 step 2 (design §2.2): node startup fails when the partition manager's ownership-record seam or lease seam is still its
+    /// `UNWIRED` sentinel, or the lease is the test-scope "valid" object. Compared BY IDENTITY, so it holds without a WAL and
+    /// whatever `boundSeams` says. Names the offending seam.
+    @Contract
+    @SuppressWarnings("JBCT-EX-01")
+    static void verifyOwnerSeamsWired(OwnerActivation.OwnershipRecordSource records, OwnerLease lease) {
+        if (records == OwnerActivation.OwnershipRecordSource.UNWIRED) {
+            throw new IllegalStateException("Stream seam " + StreamSeam.OWNERSHIP_RECORDS
+                                           + " is still UNWIRED: refusing to start without the committed ownership records");
+        }
+
+        if (lease == OwnerLease.UNWIRED) {
+            throw new IllegalStateException("Stream seam " + StreamSeam.OWNER_LEASE
+                                           + " is still UNWIRED: refusing to start without the node lease");
+        }
+
+        if (lease == OwnerLease.TEST_VALID) {
+            throw new IllegalStateException("Stream seam " + StreamSeam.OWNER_LEASE
+                                           + " is the test-scope valid lease: refusing to start with a lease that never lapses");
+        }
     }
 
     static List<MessageRouter.Entry<?>> committedOwnershipRoutes(OwnerActivation ownerActivation) {
@@ -1092,6 +1116,8 @@ public sealed interface StreamAssembly {
         // #2201 A-14: every seam of the manager is bound by now (the last ones above); a safety-relevant seam still at its
         // permissive default on a node with a WAL is named at ERROR (and counted by `aether.streams.seams.unbound.safety`).
         streamPartitionManager.reportUnboundSafetySeams();
+        // #2981 step 2 (design §2.2, "Production cannot run unwired"): independent of the WAL and of boundSeams, which count an explicit UNWIRED as bound.
+        verifyOwnerSeamsWired(streamPartitionManager.ownershipRecordSeam(), streamPartitionManager.ownerLeaseSeam());
         // #932: one thread each per node, both daemon and neither closed on stop — nine of each survived a
         // nine-node stop. The controller's close() is shutdownNow on the executor it owns; the backfill
         // executor is this method's own. Controller first: its reconcile is what submits to the backfill.

@@ -39,7 +39,7 @@ class StreamPartitionManagerEpochReadTest {
     void setUp() {
         manager = streamPartitionManager();
         manager.createStream(StreamConfig.streamConfig(STREAM));
-        manager.ownerLease(() -> true);
+        manager.ownerLease(OwnerLease.TEST_VALID);
         manager.ownershipRecords((_, _) -> record.get());
         // #2981 step 2: a CF >= 2 owner exposes its appends only while the applied record names it (design §2.2 check 3), so the
         // records are published under one; each test then sets the record its read is validated against.

@@ -69,6 +69,24 @@ class StreamSeamRegistryTest {
         assertThat(walManager.unboundSafetySeamCount()).isZero();
     }
 
+    /// #2981 step 2 (S7): the lease seam is a registered seam; the boot check reads both sentinels back off the manager.
+    @Test
+    void ownerLeaseAndRecordSeams_defaultToTheirSentinels_andReadBackWhatWasBound() {
+        assertThat(walManager.ownershipRecordSeam()).isSameAs(OwnerActivation.OwnershipRecordSource.UNWIRED);
+        assertThat(walManager.ownerLeaseSeam()).isSameAs(OwnerLease.UNWIRED);
+        assertThat(walManager.unboundSeams()).contains(StreamSeam.OWNER_LEASE);
+
+        OwnerActivation.OwnershipRecordSource records = (_, _) -> Option.none();
+        OwnerLease lease = () -> true;
+
+        walManager.ownershipRecords(records);
+        walManager.ownerLease(lease);
+
+        assertThat(walManager.ownershipRecordSeam()).isSameAs(records);
+        assertThat(walManager.ownerLeaseSeam()).isSameAs(lease);
+        assertThat(walManager.unboundSeams()).doesNotContain(StreamSeam.OWNER_LEASE);
+    }
+
     @Test
     void unboundSafetySeamCount_countsTheSafetyRelevantDefaults_onAManagerWithAWal_only() {
         assertThat(walManager.unboundSafetySeamCount()).as("a WAL manager with nothing bound").isPositive();
@@ -96,7 +114,7 @@ class StreamSeamRegistryTest {
         manager.ownerEpochSource((_, _) -> Epoch.ZERO);
         manager.partitionFlags(NO_FLAGS);
         manager.operatorWarnings(OperatorWarningSink.logOnly());
-        manager.ownerLease(() -> true);
+        manager.ownerLease(OwnerLease.TEST_VALID);
         manager.ownershipRecords((_, _) -> Option.none());
         manager.tieredReader(new SealedTierFixture().reader());
         manager.epochStarts((_, _) -> List.of());
