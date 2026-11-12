@@ -20,8 +20,10 @@ import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.util.Collection;
 import java.util.List;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -363,34 +365,12 @@ public sealed interface Promise<T> permits PromiseImpl {
     }
 
     /// **[Side Effect]**
-    /// Run an asynchronous action once the promise is resolved.
-    ///
-    /// This method is an independent action and executed asynchronously.
-    ///
-    /// @param action Action to be executed once a promise is resolved.
-    ///
-    /// @return Current promise instance.
-    default Promise<T> onResultAsync(Consumer<Result<T>> action) {
-        return onResult(action);
-    }
-
-    /// **[Side Effect]**
     /// Run the provided action once the promise is resolved, regardless of success or failure.
     ///
     /// @param action Action to execute when promise resolves
     ///
     /// @return current promise instance
     default Promise<T> onResultRun(Runnable action) {
-        return onResult(_ -> action.run());
-    }
-
-    /// **[Side Effect]**
-    /// Run the provided action asynchronously once the promise is resolved, regardless of success or failure.
-    ///
-    /// @param action Action to execute when promise resolves
-    ///
-    /// @return current promise instance
-    default Promise<T> onResultRunAsync(Runnable action) {
         return onResult(_ -> action.run());
     }
 
@@ -425,16 +405,6 @@ public sealed interface Promise<T> permits PromiseImpl {
     }
 
     /// **[Side Effect]**
-    /// Run an action asynchronously once the promise is resolved with success. This is an alias for [#onSuccess(Consumer)].
-    ///
-    /// @param action Action to be executed once the promise is resolved with success
-    ///
-    /// @return current promise instance
-    default Promise<T> onSuccessAsync(Consumer<T> action) {
-        return onSuccess(action);
-    }
-
-    /// **[Side Effect]**
     /// Run an action once the promise is resolved with success. The action is executed asynchronously.
     ///
     /// @param action Action to be executed once the promise is resolved with success.
@@ -442,16 +412,6 @@ public sealed interface Promise<T> permits PromiseImpl {
     /// @return Current promise instance.
     default Promise<T> onSuccessRun(Runnable action) {
         return onResult(result -> result.onSuccessRun(action));
-    }
-
-    /// **[Side Effect]**
-    /// Run an action asynchronously once the promise is resolved with success. This is an alias for [#onSuccessRun(Runnable)].
-    ///
-    /// @param action Action to be executed once the promise is resolved with success
-    ///
-    /// @return current promise instance
-    default Promise<T> onSuccessRunAsync(Runnable action) {
-        return onSuccessRun(action);
     }
 
     /// **[Side Effect]**
@@ -475,31 +435,11 @@ public sealed interface Promise<T> permits PromiseImpl {
     }
 
     /// **[Side Effect]**
-    /// Run an action asynchronously once the promise is resolved with failure. This is an alias for [#onFailure(Consumer)].
-    ///
-    /// @param action Action to be executed once the promise is resolved with failure
-    ///
-    /// @return current promise instance
-    default Promise<T> onFailureAsync(Consumer<Cause> action) {
-        return onFailure(action);
-    }
-
-    /// **[Side Effect]**
     /// Run an action once the promise is resolved with success. The action is executed asynchronously.
     ///
     /// @param action Action to be executed
     default Promise<T> onFailureRun(Runnable action) {
         return onResult(result -> result.onFailureRun(action));
-    }
-
-    /// **[Side Effect]**
-    /// Run an action asynchronously once the promise is resolved with failure. This is an alias for [#onFailureRun(Runnable)].
-    ///
-    /// @param action Action to be executed once the promise is resolved with failure
-    ///
-    /// @return current promise instance
-    default Promise<T> onFailureRunAsync(Runnable action) {
-        return onFailureRun(action);
     }
 
     /// **[Pure Transform]**
@@ -714,7 +654,8 @@ public sealed interface Promise<T> permits PromiseImpl {
     Result<T> await(TimeSpan timeout);
 
     /// **[Factory]**
-    /// This method is necessary to make [Result] and [Promise] API consistent.
+    /// This method is necessary to make [Result] and [Promise] API consistent. It returns this instance and does NOT
+    /// change the thread on which later steps run; use [#continueOn(Executor)] or [#continueOn()] for a thread hop.
     ///
     /// @return current instance
     default Promise<T> async() {
@@ -754,6 +695,52 @@ public sealed interface Promise<T> permits PromiseImpl {
         AsyncExecutor.INSTANCE.runAsync(delay, () -> PromiseImpl.runContained(this, action));
 
         return this;
+    }
+
+    /// **[Pure Transform]**
+    /// Continue on the given executor. Returns a new promise that is resolved, with this promise's result unchanged
+    /// (success value or failure cause alike), ONLY by a task submitted to `executor` once this promise settles. The hop
+    /// is always taken: whether this promise is still pending or already resolved when `continueOn` is called, the
+    /// returned promise is never resolved with this promise's result on the caller's thread or on the thread that resolved
+    /// this promise (a rejected submission is the one exception, below).
+    ///
+    /// Guarantee, per step:
+    /// - Dependent steps (`map`, `flatMap`, `fold`, `withResult`, ...) chained on the RETURNED promise before it
+    ///   resolves start on a thread of `executor`. A step attached after the returned promise has already resolved
+    ///   runs on the attaching thread, as for any resolved promise. Event handlers (`onResult`, `onSuccess`,
+    ///   `onFailure`, ...) on the returned promise keep their own dispatch: they run on the built-in virtual-thread
+    ///   pool, not on `executor`.
+    /// - Two `continueOn` branches taken from the same promise are independent tasks with no mutual order.
+    /// - Continuations attached elsewhere to this promise are unaffected; they run where they would run without the
+    ///   hop.
+    /// - If `executor` rejects the task ([RejectedExecutionException]), the returned promise FAILS with a
+    ///   [CoreError.Exception] carrying the rejection. The result is never delivered inline as a fallback, and the
+    ///   returned promise never stays unresolved. That failure is delivered on the thread that attempted the
+    ///   submission, so failure-path steps chained on the returned promise run there.
+    ///
+    /// The captured [ContextPropagation] snapshot of the submitting thread is restored around the resolution, as
+    /// for [#async(Consumer)].
+    ///
+    /// Contrast with [#async()], which returns this instance and does NOT hop.
+    ///
+    /// @param executor Executor that resolves the returned promise.
+    ///
+    /// @return New promise instance, resolved by a task on `executor` with this promise's result.
+    default Promise<T> continueOn(Executor executor) {
+        return PromiseImpl.continueOn(this, executor);
+    }
+
+    /// **[Pure Transform]**
+    /// Continue on the built-in virtual-thread pool, the pool that runs [#async(Consumer)] and
+    /// [Promise#promise(Consumer)]. Same guarantee as [#continueOn(Executor)]: dependent steps chained on the
+    /// returned promise before it resolves start on a fresh virtual thread of that pool, whether this promise was
+    /// pending or already resolved when `continueOn` was called.
+    ///
+    /// Contrast with [#async()], which returns this instance and does NOT hop.
+    ///
+    /// @return New promise instance, resolved on a virtual thread with this promise's result.
+    default Promise<T> continueOn() {
+        return continueOn(AsyncExecutor.INSTANCE.executor());
     }
 
     /// **[Pure Transform]**
@@ -3284,6 +3271,11 @@ enum AsyncExecutor {
 
         return pool;
     }
+    // The virtual-thread-per-task pool behind runAsync(Runnable), for Promise.continueOn(), which captures and
+    // restores the ContextPropagation snapshot itself.
+    Executor executor() {
+        return executor;
+    }
     @Contract
     void runAsync(Runnable runnable) {
         var snapshot = ContextPropagation.INSTANCE.capture();
@@ -3713,6 +3705,31 @@ final class PromiseImpl<T> implements Promise<T> {
     /// batch loops hand it whatever they collected without a null check of their own.
     private static void rethrowIfFatal(Throwable escape) {
         Causes.rethrowIfFatal(escape);
+    }
+
+    /// [Promise#continueOn(Executor)]: the hopped promise is resolved only by the task submitted from
+    /// [#resolveOn(Executor, PromiseImpl, Result)], never by `source`'s own completion.
+    static <T> Promise<T> continueOn(Promise<T> source, Executor executor) {
+        var hopped = new PromiseImpl<T>(null);
+
+        source.onResult(result -> resolveOn(executor, hopped, result));
+
+        return hopped;
+    }
+
+    /// Submits the resolution of `target` to `executor`, restoring the submitting thread's context snapshot. A
+    /// rejected submission fails `target` with the rejection (FER: the caller observes the failure instead of a
+    /// promise that never resolves); the result itself is never delivered on this thread.
+    private static <T> Unit resolveOn(Executor executor, PromiseImpl<T> target, Result<T> result) {
+        var snapshot = ContextPropagation.INSTANCE.capture();
+
+        try {
+            executor.execute(() -> ContextPropagation.INSTANCE.runWith(snapshot, () -> target.resolve(result)));
+        } catch (RejectedExecutionException rejected) {
+            target.resolve(CoreError.exception(rejected).result());
+        }
+
+        return Unit.unit();
     }
 
     /// The consumer given to `async`/`Promise.promise(consumer)` is entrusted with resolving the promise

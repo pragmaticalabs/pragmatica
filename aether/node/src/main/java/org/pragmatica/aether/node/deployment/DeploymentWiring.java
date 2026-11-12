@@ -7,6 +7,7 @@ package org.pragmatica.aether.node.deployment;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.Executor;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.LongConsumer;
@@ -577,14 +578,28 @@ public final class DeploymentWiring {
     /// Under LEGACY the drain is a no-op and the order is the one the node always had.
     ///
     /// #2688: `delivered` is taken right after PASSIVE is routed and resolves once the reactions that edge queued (the `LeaderChange` the FSM routes onto
-    /// a react executor) have run; the quiesce, which would drop them, waits for it. The returned promise resolves after the quiesce. The quiesce is
-    /// itself the pooled step, started once `delivered` has resolved, so the quiesce runs on a pooled
-    /// thread in every ordering (`delivered` resolved before this call or after it), never on the thread that resolved `delivered` and never on the
-    /// caller. A continuation the caller chains on the returned promise runs on that pooled thread, or on the caller's own thread if the quiesce has
-    /// already finished, and never on the thread that resolved `delivered`: that is the react executor whose reactions it waited for, or the shared timeout scheduler when the caller bounded the wait, and the node's
-    /// teardown chained here blocks (the final cursor commits are awaited, bounded). Promise continuations run inline on the resolving thread, so a
-    /// hop that only started a pooled task and then mapped its result could still run the quiesce inline when the task finished first (#2806).
+    /// a react executor) have run; the quiesce, which would drop them, waits for it. The returned promise resolves after the quiesce.
+    ///
+    /// Threads, per step (#2806, #3002):
+    /// - The quiesce is a pooled task started once `delivered` has resolved, so it runs on a pooled virtual thread in every ordering (`delivered`
+    ///   resolved before this call or after it), never on the thread that resolved `delivered` and never on the caller.
+    /// - The returned promise is resolved ONLY by a task on the async executor ([Promise#continueOn()]), after the quiesce. A continuation the caller
+    ///   chains on it therefore runs on that executor's thread, or on the caller's own thread if the hop has already finished when it is attached,
+    ///   and never on the thread that resolved `delivered`: that is the react executor whose reactions it waited for, or the shared timeout
+    ///   scheduler when the caller bounded the wait, and the node's teardown chained here blocks (the final cursor commits are awaited, bounded).
+    ///   Without the hop, the `flatMap` into the pooled quiesce resolved the returned promise inline on the thread that resolved `delivered`
+    ///   whenever the quiesce finished before `flatMap` looked at it (#3002).
     public Promise<Unit> leaveQuorum(Runnable routePassive, Supplier<Promise<Unit>> delivered, Runnable quiesce) {
+        return leftQuorum(routePassive, delivered, quiesce).continueOn();
+    }
+
+    /// Test seam (#3002): `hop` runs the task that resolves the returned promise ([Promise#continueOn(Executor)]); production uses the async
+    /// executor. A test executor that finishes the task before `execute` returns forces the "already resolved when attached" ordering.
+    Promise<Unit> leaveQuorum(Runnable routePassive, Supplier<Promise<Unit>> delivered, Runnable quiesce, Executor hop) {
+        return leftQuorum(routePassive, delivered, quiesce).continueOn(hop);
+    }
+
+    private Promise<Unit> leftQuorum(Runnable routePassive, Supplier<Promise<Unit>> delivered, Runnable quiesce) {
         routePassive.run();
         var reactionsRun = delivered.get();
 
