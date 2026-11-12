@@ -18,6 +18,8 @@ package org.pragmatica.testing;
 
 import java.util.function.BooleanSupplier;
 
+import org.pragmatica.lang.Contract;
+
 import org.testcontainers.DockerClientFactory;
 
 
@@ -44,7 +46,9 @@ public final class DockerRequirement {
         return dockerAvailable(DockerRequirement::isRequired, DockerRequirement::probe);
     }
 
-    /// The decision with its inputs injected (the require switch and the availability probe).
+    /// The decision with its inputs injected (the require switch and the availability probe). The throw is the signature
+    /// JUnit dictates: a failed precondition in class setup is an exception, there is no Result channel there.
+    @Contract
     static boolean dockerAvailable(BooleanSupplier required, BooleanSupplier probe) {
         var available = probe.getAsBoolean();
 
