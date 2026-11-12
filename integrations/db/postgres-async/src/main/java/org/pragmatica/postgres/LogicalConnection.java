@@ -125,12 +125,12 @@ public class LogicalConnection implements Connection {
                                         int currentPhysicalId = System.identityHashCode(conn);
 
                                         if (entry.physicalId() == currentPhysicalId) {
-                                        lastPhysicalId = currentPhysicalId;
+                                            lastPhysicalId = currentPhysicalId;
 
-                                        return Promise.success(wrapPreparedStatement(sql,
-                                                                                     entry.name(),
-                                                                                     conn));
-                                    }
+                                            return Promise.success(wrapPreparedStatement(sql,
+                                                                                         entry.name(),
+                                                                                         conn));
+                                        }
 
                                         var newName = nextStatementName();
 
@@ -160,14 +160,14 @@ public class LogicalConnection implements Connection {
                                 return conn.preparedStatementOf(sql, parametersTypes)
                                            .map(pgPs -> {
                                                     if (statementRegistry != null) {
-                                                    var name = pgPs.sname();
+                                                        var name = pgPs.sname();
 
-                                                    statementRegistry.put(sql,
-                                                                          new StatementEntry(sql,
-                                                                                             name,
-                                                                                             parametersTypes,
-                                                                                             currentPhysicalId));
-                                                }
+                                                        statementRegistry.put(sql,
+                                                                              new StatementEntry(sql,
+                                                                                                 name,
+                                                                                                 parametersTypes,
+                                                                                                 currentPhysicalId));
+                                                    }
 
                                                     return wrapPreparedStatement(sql,
                                                                                  pgPs.sname(),
@@ -266,8 +266,8 @@ public class LogicalConnection implements Connection {
                           .withSuccess(_ -> {
                                            subscriptionCount--;
                                            if (subscriptionCount <= 0 && state == State.PINNED) {
-                                           returnPhysical();
-                                       }
+                                               returnPhysical();
+                                           }
                                        })
                           .mapToUnit();
     }

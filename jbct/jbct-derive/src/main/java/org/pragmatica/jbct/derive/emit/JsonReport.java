@@ -17,6 +17,7 @@ import org.pragmatica.jbct.derive.result.VectorPosition;
 import org.pragmatica.jbct.derive.result.Verification;
 import org.pragmatica.jbct.lint.Diagnostic;
 
+
 /// Machine output for `derive` (SPEC.md §4 emit): the full [DeriveResult] as compact JSON, for the
 /// artifacts repo and for diffing runs. It renders the same content as the markdown report — vector,
 /// pressure matrix (inert rows included), decision records, halts, judgment points — so the two
@@ -44,31 +45,41 @@ public sealed interface JsonReport permits JsonReport.unused {
     private static String meta(Meta meta) {
         return Json.object(List.of(Json.str("system", meta.system()),
                                    Json.str("era", meta.era()),
-                                   Json.str("mode", kebab(meta.mode().name()))));
+                                   Json.str("mode",
+                                            kebab(meta.mode().name()))));
     }
 
     private static String strike(Strike strike) {
         return Json.object(List.of(Json.str("axis", strike.axisLabel()),
                                    Json.str("value", strike.value()),
-                                   Json.str("struck_by", strike.struckBy().cite())));
+                                   Json.str("struck_by",
+                                            strike.struckBy().cite())));
     }
 
     private static String pressure(Pressure pressure) {
-        return Json.object(List.of(Json.str("axis", pressure.axis().label()),
-                                   Json.str("mode", kebab(pressure.mode().name())),
+        return Json.object(List.of(Json.str("axis",
+                                            pressure.axis().label()),
+                                   Json.str("mode",
+                                            kebab(pressure.mode().name())),
                                    Json.str("direction", pressure.direction()),
                                    Json.str("mechanism", pressure.mechanism()),
                                    Json.raw("citing", Json.stringArray(cites(pressure)))));
     }
 
     private static String combination(Combination combination) {
-        return Json.object(List.of(Json.str("axis", combination.axis().label()),
+        return Json.object(List.of(Json.str("axis",
+                                            combination.axis().label()),
                                    Json.str("note", combination.note()),
-                                   Json.raw("members", Json.stringArray(combination.members().stream().map(Pressure::citations).toList()))));
+                                   Json.raw("members",
+                                            Json.stringArray(combination.members()
+                                                                        .stream()
+                                                                        .map(Pressure::citations)
+                                                                        .toList()))));
     }
 
     private static String decision(DecisionRecord decision) {
-        return Json.object(List.of(Json.str("axis", decision.axis().label()),
+        return Json.object(List.of(Json.str("axis",
+                                            decision.axis().label()),
                                    Json.str("position", decision.position()),
                                    Json.str("forced_by", decision.forcedBy()),
                                    Json.str("via", decision.via()),
@@ -77,33 +88,41 @@ public sealed interface JsonReport permits JsonReport.unused {
     }
 
     private static String position(VectorPosition position) {
-        return Json.object(List.of(Json.str("axis", position.axis().label()),
+        return Json.object(List.of(Json.str("axis",
+                                            position.axis().label()),
                                    Json.str("value", position.value()),
-                                   Json.str("resolution", kebab(position.resolution().name())),
-                                   Json.raw("citing", Json.stringArray(position.citing()))));
+                                   Json.str("resolution",
+                                            kebab(position.resolution().name())),
+                                   Json.raw("citing",
+                                            Json.stringArray(position.citing()))));
     }
 
     private static String recovery(RecoveryAssignment assignment) {
         return Json.object(List.of(Json.str("operation", assignment.operation()),
-                                   Json.str("class", kebab(assignment.recoveryClass().name())),
+                                   Json.str("class",
+                                            kebab(assignment.recoveryClass().name())),
                                    Json.str("rationale", assignment.rationale())));
     }
 
     private static String verification(Verification verification) {
         return Json.object(List.of(Json.str("rule", verification.rule()),
                                    Json.str("scope", verification.scope()),
-                                   Json.str("status", kebab(verification.status().name())),
+                                   Json.str("status",
+                                            kebab(verification.status().name())),
                                    Json.str("detail", verification.detail())));
     }
 
     private static String halt(Halt halt) {
-        return Json.object(List.of(Json.str("kind", kebab(halt.kind().name())),
+        return Json.object(List.of(Json.str("kind",
+                                            kebab(halt.kind().name())),
                                    Json.str("detail", halt.detail()),
-                                   Json.raw("renegotiation_menu", Json.stringArray(halt.renegotiationMenu()))));
+                                   Json.raw("renegotiation_menu",
+                                            Json.stringArray(halt.renegotiationMenu()))));
     }
 
     private static String judgment(JudgmentPoint judgment) {
-        return Json.object(List.of(Json.str("kind", kebab(judgment.kind().name())),
+        return Json.object(List.of(Json.str("kind",
+                                            kebab(judgment.kind().name())),
                                    Json.str("subject", judgment.subject()),
                                    Json.str("detail", judgment.detail())));
     }
@@ -116,7 +135,10 @@ public sealed interface JsonReport permits JsonReport.unused {
     }
 
     private static List<String> cites(Pressure pressure) {
-        return pressure.citing().stream().map(AnswerRow::cite).toList();
+        return pressure.citing()
+                       .stream()
+                       .map(AnswerRow::cite)
+                       .toList();
     }
 
     private static <T> String array(List<T> items, Function<T, String> renderer) {
@@ -124,6 +146,7 @@ public sealed interface JsonReport permits JsonReport.unused {
     }
 
     private static String kebab(String enumName) {
-        return enumName.toLowerCase().replace('_', '-');
+        return enumName.toLowerCase()
+                       .replace('_', '-');
     }
 }

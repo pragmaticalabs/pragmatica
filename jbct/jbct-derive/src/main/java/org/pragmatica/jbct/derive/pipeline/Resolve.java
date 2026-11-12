@@ -20,6 +20,7 @@ import org.pragmatica.jbct.derive.result.VectorPosition;
 import org.pragmatica.jbct.derive.result.VectorPosition.Resolution;
 import org.pragmatica.lang.Option;
 
+
 /// Resolve — the derivation's judgment boundary (SPEC.md §4). It applies the mechanical selection
 /// rules where the book is mechanical, and EMITS a [JudgmentPoint] everywhere the book names a
 /// judgment (SPEC.md §1; the golden-asserted hard constraint):
@@ -84,11 +85,14 @@ public sealed interface Resolve permits Resolve.unused {
 
     private static ResolveResult assemble(AnswerSheet sheet, List<Strike> strikes, List<AxisOutcome> outcomes) {
         var vector = outcomes.stream().map(AxisOutcome::position).toList();
-        var decisions = outcomes.stream().flatMap(outcome -> outcome.decision().stream()).toList();
-        var halts = Stream.concat(outcomes.stream().flatMap(outcome -> outcome.halts().stream()),
+        var decisions = outcomes.stream().flatMap(outcome -> outcome.decision()
+                                                                    .stream()).toList();
+        var halts = Stream.concat(outcomes.stream().flatMap(outcome -> outcome.halts()
+                                                                              .stream()),
                                   strikeCollisions(outcomes, strikes).stream())
                           .toList();
-        var judgments = Stream.of(outcomes.stream().flatMap(outcome -> outcome.judgments().stream()).toList(),
+        var judgments = Stream.of(outcomes.stream().flatMap(outcome -> outcome.judgments()
+                                                                              .stream()).toList(),
                                   recoveryJudgments(sheet),
                                   targetJudgments(sheet),
                                   constraintJudgments(sheet))
@@ -99,26 +103,32 @@ public sealed interface Resolve permits Resolve.unused {
     }
 
     // ---- strike collision: a mandate forbids the very value a demand forces (exact token match) ----
-
     private static List<Halt> strikeCollisions(List<AxisOutcome> outcomes, List<Strike> strikes) {
-        return outcomes.stream().flatMap(outcome -> collisionsFor(outcome, strikes).stream()).toList();
+        return outcomes.stream()
+                       .flatMap(outcome -> collisionsFor(outcome, strikes).stream())
+                       .toList();
     }
 
     private static List<Halt> collisionsFor(AxisOutcome outcome, List<Strike> strikes) {
         return strikes.stream()
                       .filter(strike -> strikeHits(outcome, strike))
                       .map(strike -> Halt.of(Halt.Kind.CONTRADICTION,
-                                             "a mandate strikes " + strike.display() + " but the derivation forces it on "
-                                             + outcome.position().axis().label()))
+                                             "a mandate strikes " + strike.display()
+                                            + " but the derivation forces it on " + outcome.position()
+                                                                                           .axis()
+                                                                                           .label()))
                       .toList();
     }
 
     private static boolean strikeHits(AxisOutcome outcome, Strike strike) {
-        return strike.axis().map(axis -> axis == outcome.position().axis() && outcome.forcedValues().contains(strike.value())).or(false);
+        return strike.axis()
+                     .map(axis -> axis == outcome.position()
+                                                 .axis() && outcome.forcedValues()
+                                                                   .contains(strike.value()))
+                     .or(false);
     }
 
     // ---- SUBSTRATE: burst forces event-based; a per-scope mix is a split ----
-
     private static AxisOutcome substrate(List<Pressure> pressures) {
         var burst = moving(pressures, Axis.SUBSTRATE);
 
@@ -140,7 +150,6 @@ public sealed interface Resolve permits Resolve.unused {
     }
 
     // ---- STATE: replay forces event-sourced, audit forces audit-log; both same-scope contradict ----
-
     private static AxisOutcome state(List<Pressure> pressures) {
         var replay = mechanism(pressures, "replay-log");
         var audit = mechanism(pressures, "audit-log");
@@ -148,13 +157,17 @@ public sealed interface Resolve permits Resolve.unused {
         if (!replay.isEmpty() && !audit.isEmpty() && shareScope(replay, audit)) {
             return stateContradiction(replay, audit);
         }
+
         if (!replay.isEmpty()) {
             return stateForced("event-sourced", "replay is demanded (F3)", replay, List.of("event-sourced"));
         }
 
         return audit.isEmpty()
                ? nullKept(Axis.STATE)
-               : stateForced("current-state + audit-log-as-data", "audit is not replay (F3)", audit, List.of("audit-log-as-data", "audit-log"));
+               : stateForced("current-state + audit-log-as-data",
+                             "audit is not replay (F3)",
+                             audit,
+                             List.of("audit-log-as-data", "audit-log"));
     }
 
     private static AxisOutcome stateForced(String value, String via, List<Pressure> members, List<String> tokens) {
@@ -177,28 +190,35 @@ public sealed interface Resolve permits Resolve.unused {
         var judgment = JudgmentPoint.of(JudgmentPoint.Kind.CONTRADICTION_CHOICE,
                                         Axis.STATE.label(),
                                         "audit (current-state + log) versus replay (event-sourced) at the same scope — the choice is judgment");
-        var position = new VectorPosition(Axis.STATE, "CONTRADICTION — see renegotiation menu", citeStrings(members), Resolution.DEFERRED);
+        var position = new VectorPosition(Axis.STATE,
+                                          "CONTRADICTION — see renegotiation menu",
+                                          citeStrings(members),
+                                          Resolution.DEFERRED);
 
         return new AxisOutcome(position, Option.none(), List.of(), List.of(halt), List.of(judgment));
     }
 
     // ---- TOPOLOGY: scope-exclusion + own-shape-diverges path splits; the shape is judgment (F21) ----
-
     private static Option<String> primaryPath(AnswerSheet sheet) {
         return sheet.rows()
                     .stream()
                     .filter(AnswerRow::isAnswered)
                     .filter(row -> row.question() == QuestionId.Q1)
                     .filter(Resolve::isSystemClock)
-                    .filter(row -> row.scope().kind() == ScopeKind.PATH)
-                    .map(row -> row.scope().display())
+                    .filter(row -> row.scope()
+                                      .kind() == ScopeKind.PATH)
+                    .map(row -> row.scope()
+                                   .display())
                     .findFirst()
                     .map(Option::some)
                     .orElseGet(Option::none);
     }
 
     private static boolean isSystemClock(AnswerRow row) {
-        return row.shape().map(String::toLowerCase).filter("system-clock"::equals).isPresent();
+        return row.shape()
+                  .map(String::toLowerCase)
+                  .filter("system-clock"::equals)
+                  .isPresent();
     }
 
     private static boolean isSplitSource(Pressure pressure, Option<String> primary) {
@@ -206,13 +226,15 @@ public sealed interface Resolve permits Resolve.unused {
     }
 
     private static boolean isSecondaryPath(Pressure pressure, Option<String> primary) {
-        return pressure.mode() == Pressure.Mode.PRESS
-            && pressure.citing().stream().anyMatch(row -> isSecondaryPathScope(row, primary));
+        return pressure.mode() == Pressure.Mode.PRESS && pressure.citing()
+                                                                 .stream()
+                                                                 .anyMatch(row -> isSecondaryPathScope(row, primary));
     }
 
     private static boolean isSecondaryPathScope(AnswerRow row, Option<String> primary) {
-        return row.scope().kind() == ScopeKind.PATH
-            && !primary.map(path -> path.equals(row.scope().display())).or(false);
+        return row.scope()
+                  .kind() == ScopeKind.PATH && !primary.map(path -> path.equals(row.scope().display()))
+                                                       .or(false);
     }
 
     private static AxisOutcome topology(List<Pressure> splitSources) {
@@ -242,11 +264,11 @@ public sealed interface Resolve permits Resolve.unused {
     private static JudgmentPoint topologyShapeJudgment(String scope) {
         return JudgmentPoint.of(JudgmentPoint.Kind.TOPOLOGY_SHAPE,
                                 scope,
-                                "the split boundary is mechanical (F24); what the '" + scope + "' component becomes — its model/product — is judgment");
+                                "the split boundary is mechanical (F24); what the '" + scope
+                               + "' component becomes — its model/product — is judgment");
     }
 
     // ---- READ_WRITE: latency/contention recorded; the rung is judgment (F12/F13) ----
-
     private static AxisOutcome readWrite(List<Pressure> pressures) {
         var moving = moving(pressures, Axis.READ_WRITE);
 
@@ -267,7 +289,6 @@ public sealed interface Resolve permits Resolve.unused {
     }
 
     // ---- PERSISTENCE: volume/residency recorded; rung + partition key are judgment ----
-
     private static AxisOutcome persistence(List<Pressure> pressures) {
         var moving = moving(pressures, Axis.PERSISTENCE);
 
@@ -295,7 +316,6 @@ public sealed interface Resolve permits Resolve.unused {
     }
 
     // ---- RECOVERY: per effectful operation, design-out first; ties are judgment ----
-
     private static AxisOutcome recoveryAxis(AnswerSheet sheet) {
         var value = sheet.domainShapes().isEmpty()
                     ? "—"
@@ -309,14 +329,18 @@ public sealed interface Resolve permits Resolve.unused {
     }
 
     private static List<RecoveryAssignment> recovery(AnswerSheet sheet) {
-        return sheet.domainShapes().stream().map(Resolve::recoveryFor).toList();
+        return sheet.domainShapes()
+                    .stream()
+                    .map(Resolve::recoveryFor)
+                    .toList();
     }
 
     private static RecoveryAssignment recoveryFor(DomainShape shape) {
         if (reshapesToSafe(shape)) {
             return RecoveryAssignment.of(shape.operation(),
                                          RecoveryAssignment.RecoveryClass.DESIGN_OUT,
-                                         "reshapeable " + shape.reshapeable() + " — the failure is designed out (checked first)");
+                                         "reshapeable " + shape.reshapeable()
+                                        + " — the failure is designed out (checked first)");
         }
 
         var ber = hasDefinedInverse(shape);
@@ -324,8 +348,10 @@ public sealed interface Resolve permits Resolve.unused {
 
         if (ber && fer) {
             return RecoveryAssignment.tie(shape.operation(),
-                                          "a defined inverse ('" + shape.inverse() + "') AND decay — BER versus FER is a judgment");
+                                          "a defined inverse ('" + shape.inverse()
+                                         + "') AND decay — BER versus FER is a judgment");
         }
+
         if (ber) {
             return RecoveryAssignment.of(shape.operation(),
                                          RecoveryAssignment.RecoveryClass.BER,
@@ -343,37 +369,38 @@ public sealed interface Resolve permits Resolve.unused {
 
     private static List<JudgmentPoint> recoveryJudgments(AnswerSheet sheet) {
         return recovery(sheet).stream()
-                              .filter(RecoveryAssignment::isTie)
-                              .map(assignment -> JudgmentPoint.of(JudgmentPoint.Kind.RECOVERY_TIE,
-                                                                  assignment.operation(),
-                                                                  assignment.rationale()))
-                              .toList();
+                       .filter(RecoveryAssignment::isTie)
+                       .map(assignment -> JudgmentPoint.of(JudgmentPoint.Kind.RECOVERY_TIE,
+                                                           assignment.operation(),
+                                                           assignment.rationale()))
+                       .toList();
     }
 
     private static boolean reshapesToSafe(DomainShape shape) {
-        return shape.reshapeable().stream().map(String::toLowerCase).anyMatch(Resolve::isSafeReshape);
+        return shape.reshapeable()
+                    .stream()
+                    .map(String::toLowerCase)
+                    .anyMatch(Resolve::isSafeReshape);
     }
 
     /// Safe reshapes that design the failure out. `status-transition` is the schema-v0.2 vocabulary
     /// for append-shaped lifecycle operations (incorporate / dissolve / restore); schema v0.1 sheets
     /// that write `none` instead fall through to BER — a documented schema gap, not engine judgment.
     private static boolean isSafeReshape(String reshape) {
-        return reshape.equals("idempotent")
-            || reshape.equals("commutative")
-            || reshape.equals("append-only")
-            || reshape.equals("status-transition");
+        return reshape.equals("idempotent") || reshape.equals("commutative") || reshape.equals("append-only") || reshape.equals("status-transition");
     }
 
     private static boolean hasDefinedInverse(DomainShape shape) {
-        return !isNone(shape.inverse()) && !shape.inverse().isBlank();
+        return ! isNone(shape.inverse()) && !shape.inverse()
+                                                  .isBlank();
     }
 
     private static boolean isNone(String inverse) {
-        return inverse.trim().equalsIgnoreCase("none");
+        return inverse.trim()
+                      .equalsIgnoreCase("none");
     }
 
     // ---- judgment points that read the sheet directly ----
-
     private static List<JudgmentPoint> targetJudgments(AnswerSheet sheet) {
         return sheet.rows()
                     .stream()
@@ -404,9 +431,14 @@ public sealed interface Resolve permits Resolve.unused {
 
     private static boolean isSystemMandateWithoutStrike(AnswerRow row) {
         return row.question() == QuestionId.Q6
-            && row.kind().map(String::toLowerCase).filter("mandate"::equals).isPresent()
-            && row.strikes().isEmpty()
-            && row.scope().isSystem();
+               && row.kind()
+                     .map(String::toLowerCase)
+                     .filter("mandate"::equals)
+                     .isPresent()
+               && row.strikes()
+                     .isEmpty()
+               && row.scope()
+                     .isSystem();
     }
 
     private static JudgmentPoint constraintJudgment(AnswerRow row) {
@@ -416,7 +448,6 @@ public sealed interface Resolve permits Resolve.unused {
     }
 
     // ---- shared helpers ----
-
     private static List<Pressure> moving(List<Pressure> pressures, Axis axis) {
         return pressures.stream()
                         .filter(Pressure::moves)
@@ -426,28 +457,39 @@ public sealed interface Resolve permits Resolve.unused {
 
     private static List<Pressure> mechanism(List<Pressure> pressures, String mechanism) {
         return pressures.stream()
-                        .filter(pressure -> pressure.mechanism().equals(mechanism))
+                        .filter(pressure -> pressure.mechanism()
+                                                    .equals(mechanism))
                         .toList();
     }
 
     private static boolean hasMechanism(List<Pressure> pressures, String mechanism) {
-        return pressures.stream().anyMatch(pressure -> pressure.mechanism().equals(mechanism));
+        return pressures.stream()
+                        .anyMatch(pressure -> pressure.mechanism()
+                                                      .equals(mechanism));
     }
 
     private static boolean shareScope(List<Pressure> left, List<Pressure> right) {
-        return scopeNames(left).stream().anyMatch(scopeNames(right)::contains);
+        return scopeNames(left).stream()
+                         .anyMatch(scopeNames(right)::contains);
     }
 
     private static List<String> scopeNames(List<Pressure> pressures) {
         return pressures.stream()
-                        .flatMap(pressure -> pressure.citing().stream())
-                        .map(row -> row.scope().display())
+                        .flatMap(pressure -> pressure.citing()
+                                                     .stream())
+                        .map(row -> row.scope()
+                                       .display())
                         .distinct()
                         .toList();
     }
 
     private static List<String> citeStrings(List<Pressure> pressures) {
-        return pressures.stream().flatMap(pressure -> pressure.citing().stream()).map(AnswerRow::cite).distinct().toList();
+        return pressures.stream()
+                        .flatMap(pressure -> pressure.citing()
+                                                     .stream())
+                        .map(AnswerRow::cite)
+                        .distinct()
+                        .toList();
     }
 
     private static String citations(List<Pressure> pressures) {
@@ -459,7 +501,9 @@ public sealed interface Resolve permits Resolve.unused {
     }
 
     private static List<Pressure> concat(List<Pressure> left, List<Pressure> right) {
-        return Stream.concat(left.stream(), right.stream()).toList();
+        return Stream.concat(left.stream(),
+                             right.stream())
+                     .toList();
     }
 
     private static AxisOutcome nullKept(Axis axis) {
@@ -470,7 +514,11 @@ public sealed interface Resolve permits Resolve.unused {
                                List.of());
     }
 
-    private static AxisOutcome forced(Axis axis, String value, List<Pressure> members, DecisionRecord decision, List<String> forcedValues) {
+    private static AxisOutcome forced(Axis axis,
+                                      String value,
+                                      List<Pressure> members,
+                                      DecisionRecord decision,
+                                      List<String> forcedValues) {
         return new AxisOutcome(new VectorPosition(axis, value, citeStrings(members), Resolution.FORCED),
                                Option.some(decision),
                                forcedValues,
@@ -484,7 +532,12 @@ public sealed interface Resolve permits Resolve.unused {
                                         String via,
                                         String revisitWhen,
                                         List<JudgmentPoint> judgments) {
-        var decision = new DecisionRecord(axis, value, citations(members), via, "the chosen rung's standing cost", revisitWhen);
+        var decision = new DecisionRecord(axis,
+                                          value,
+                                          citations(members),
+                                          via,
+                                          "the chosen rung's standing cost",
+                                          revisitWhen);
 
         return new AxisOutcome(new VectorPosition(axis, value, citeStrings(members), Resolution.DEFERRED),
                                Option.some(decision),

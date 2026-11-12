@@ -124,4 +124,52 @@ public sealed interface MigrationError extends Cause {
                  + "; then retry the migration.";
         }
     }
+
+    /// FDB-2b (#2591, F4): a history INSERT met an existing `(version, type)` row. Under a working fence it cannot
+    /// happen for a versioned script (the runner holds the only claim to apply it), so it means the fence or the
+    /// history table is inconsistent; it is a FAILED outcome and never converted to success. A changed repeatable
+    /// (`version = 0`) still fails here as before (#2636).
+    record HistoryRowCollision(int version, String type, String detail) implements MigrationError {
+        public static HistoryRowCollision historyRowCollision(int version, String type, String detail) {
+            return new HistoryRowCollision(version, type, detail);
+        }
+
+        @Override
+        public String message() {
+            return "History row (version " + version
+                 + ", type " + type
+                 + ") already exists in aether_schema_history (" + detail
+                 + "): the migration fence or the history table is inconsistent. To recover: make sure no other runner"
+                 + " is migrating this database, check that row, remove it if it is stale, then retry the migration.";
+        }
+    }
+
+    /// FDB-2b (#2591): on a tier-3 engine (CockroachDB, DB2, SQLite) only a script that runs entirely in one
+    /// transaction can be fenced (its lock and its history row commit together), so a script holding a statement that
+    /// cannot run in a transaction is refused before its first statement.
+    record NonTransactionalScriptUnfenced(String engine, String filename, String statement) implements MigrationError {
+        public static NonTransactionalScriptUnfenced nonTransactionalScriptUnfenced(String engine,
+                                                                                    String filename,
+                                                                                    String statement) {
+            return new NonTransactionalScriptUnfenced(engine, filename, statement);
+        }
+
+        @Override
+        public String message() {
+            return "Migration '" + filename
+                 + "' refused on " + engine
+                 + ": it holds a statement that cannot run in a transaction (" + abbreviated(statement)
+                 + "), and " + engine
+                 + " can only fence a script that runs in one. No statement was run. To recover: move that statement"
+                 + " to a migration of its own on an engine that fences it, or run it by hand and baseline.";
+        }
+
+        private static String abbreviated(String text) {
+            var oneLine = text.strip().replaceAll("\\s+", " ");
+
+            return oneLine.length() > 80
+                   ? oneLine.substring(0, 80) + "..."
+                   : oneLine;
+        }
+    }
 }

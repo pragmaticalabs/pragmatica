@@ -415,13 +415,13 @@ public interface LeaderManager {
             return org.pragmatica.lang.Unit.unit();
         }
 
+        /// A leader that lost eligibility is removed view-free (#3044): no read of the view, no re-dispatched view.
         private void installLeaderEligibility(List<NodeId> members) {
             var previous = context.currentLeader();
 
             context.installVoters(members);
             previous.filter(node -> !context.isEligible(node))
-                    .onPresent(node -> fsm.dispatch(new ClusterFsmEvent.NodeGone(node,
-                                                                                 context.currentTopology())));
+                    .onPresent(node -> fsm.dispatch(new LeaderElectionEvents.PeerRemovedFromView(node)));
         }
 
         @Override
@@ -534,16 +534,14 @@ public interface LeaderManager {
         @Contract
         @Override
         public void peerObservedFaulty(PeerObservedFaulty peerObservedFaulty) {
-            // SWIM-FAULTY treated as departure for FSM purposes.
+            // SWIM-FAULTY removes exactly the faulty peer, view-free (#3044): SWIM's snapshot is not a sequenced
+            // transport view, so it never replaces the stored one (it would also drop SUSPECT peers and re-add peers
+            // the transport has evicted).
             if (localMode) {
                 dispatchLocalModeAdoption(peerObservedFaulty.topology().stream().filter(context::isEligible).toList());
             }
 
-            fsm.dispatch(new ClusterFsmEvent.NodeGone(peerObservedFaulty.nodeId(),
-                                                      peerObservedFaulty.topology()
-                                                                        .stream()
-                                                                        .filter(context::isEligible)
-                                                                        .toList()));
+            fsm.dispatch(new LeaderElectionEvents.PeerRemovedFromView(peerObservedFaulty.nodeId()));
         }
 
         @Contract

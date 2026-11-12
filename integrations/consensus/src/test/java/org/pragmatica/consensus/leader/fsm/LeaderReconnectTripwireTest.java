@@ -34,6 +34,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
+import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// A-03 (cluster T assessment, rc4 `7c786db0d3`): a follower's link to its leader flaps. The transport emits
@@ -109,7 +110,7 @@ class LeaderReconnectTripwireTest {
             router.addRoute(Send.class, (Consumer<Send>) _ -> sends.incrementAndGet());
             manager = new FsmBackedLeaderManager(harness.fsm(), ctx, false);
             harness.dispatch(new ClusterFsmEvent.QuorumEstablished());
-            harness.dispatch(new ClusterFsmEvent.NodeAdded(N2, ALL));
+            harness.dispatch(new ClusterFsmEvent.NodeAdded(N2, ALL, seq()));
             harness.dispatch(new ConsensusReady());
             if (led) {
                 harness.dispatch(new LeaderCommitted(N1, 1L));
@@ -130,8 +131,8 @@ class LeaderReconnectTripwireTest {
     /// The follower after its leader link flapped: disconnected (view without the leader), then reconnected.
     private Follower afterTheLeaderLinkFlapped() {
         follower = new Follower();
-        follower.manager.peerDisconnected(new PeerDisconnected(N1, List.of(N2, N3), ObservationSource.QUIC));
-        follower.manager.peerReconnected(new PeerReconnected(N1, ALL, ObservationSource.QUIC));
+        follower.manager.peerDisconnected(new PeerDisconnected(N1, List.of(N2, N3), ObservationSource.QUIC, seq()));
+        follower.manager.peerReconnected(new PeerReconnected(N1, ALL, ObservationSource.QUIC, seq()));
 
         return follower;
     }
@@ -140,7 +141,7 @@ class LeaderReconnectTripwireTest {
     void leaderManager_asksNoPreVoteQuestion_whenAPeerReconnects() {
         follower = new Follower();
 
-        follower.manager.peerReconnected(new PeerReconnected(N1, ALL, ObservationSource.QUIC));
+        follower.manager.peerReconnected(new PeerReconnected(N1, ALL, ObservationSource.QUIC, seq()));
 
         assertThat(follower.sends.get()).as("a reconnect is a join, not a loss of the leader: no pre-vote round").isZero();
         assertThat(follower.followsTheLeader()).isTrue();
@@ -150,9 +151,9 @@ class LeaderReconnectTripwireTest {
     void leaderManager_storesOnlyEligibleNodes_whenAReconnectRestoresTheView() {
         follower = new Follower();
         follower.ctx.installVoters(List.of(N1, N2));
-        follower.manager.peerDisconnected(new PeerDisconnected(N1, List.of(N2, N3), ObservationSource.QUIC));
+        follower.manager.peerDisconnected(new PeerDisconnected(N1, List.of(N2, N3), ObservationSource.QUIC, seq()));
 
-        follower.manager.peerReconnected(new PeerReconnected(N1, ALL, ObservationSource.QUIC));
+        follower.manager.peerReconnected(new PeerReconnected(N1, ALL, ObservationSource.QUIC, seq()));
         follower.ctx.installVoters(ALL);
 
         assertThat(follower.ctx.currentTopology()).as("node-3 was not a voter when the view was stored").containsExactlyInAnyOrder(N1, N2);
@@ -163,7 +164,7 @@ class LeaderReconnectTripwireTest {
         var electing = anElectingRankTwoNode();
         var tickBefore = electing.tickFuture().get();
 
-        follower.manager.peerReconnected(new PeerReconnected(N1, ALL, ObservationSource.QUIC));
+        follower.manager.peerReconnected(new PeerReconnected(N1, ALL, ObservationSource.QUIC, seq()));
 
         assertThat(electing.tickFuture().get() == tickBefore).as("the rank staircase tick is not rescheduled by an unchanged-view reconnect").isTrue();
     }
@@ -174,7 +175,7 @@ class LeaderReconnectTripwireTest {
 
         follower.ctx.installVoters(List.of(N1, N2));
         var tickBefore = electing.tickFuture().get();
-        follower.manager.peerReconnected(new PeerReconnected(N3, ALL, ObservationSource.QUIC));
+        follower.manager.peerReconnected(new PeerReconnected(N3, ALL, ObservationSource.QUIC, seq()));
 
         assertThat(electing.tickFuture().get() == tickBefore).as("a non-voter coming back changes no eligible view, so no event").isTrue();
     }
@@ -184,9 +185,9 @@ class LeaderReconnectTripwireTest {
         var electing = anElectingRankTwoNode();
         var tickBefore = electing.tickFuture().get();
 
-        follower.manager.peerDisconnected(new PeerDisconnected(N3, List.of(N1, N2), ObservationSource.QUIC));
+        follower.manager.peerDisconnected(new PeerDisconnected(N3, List.of(N1, N2), ObservationSource.QUIC, seq()));
         var tickAfterDisconnect = electing.tickFuture().get();
-        follower.manager.peerReconnected(new PeerReconnected(N3, ALL, ObservationSource.QUIC));
+        follower.manager.peerReconnected(new PeerReconnected(N3, ALL, ObservationSource.QUIC, seq()));
 
         assertThat(tickAfterDisconnect == tickBefore).as("control: a changed view does reschedule").isFalse();
         assertThat(follower.ctx.currentTopology()).as("the reconnected peer is back in the view").contains(N3);
@@ -195,9 +196,9 @@ class LeaderReconnectTripwireTest {
     @Test
     void leaderManager_refreshesTheView_whenAReconnectedPeerIsStillStoredButTheViewChanged() {
         follower = new Follower();
-        follower.manager.peerDisconnected(new PeerDisconnected(N3, List.of(N1, N2), ObservationSource.QUIC));
+        follower.manager.peerDisconnected(new PeerDisconnected(N3, List.of(N1, N2), ObservationSource.QUIC, seq()));
 
-        follower.manager.peerReconnected(new PeerReconnected(N1, ALL, ObservationSource.QUIC));
+        follower.manager.peerReconnected(new PeerReconnected(N1, ALL, ObservationSource.QUIC, seq()));
 
         assertThat(follower.ctx.currentTopology()).as("node-1 was already stored, but the view gained node-3").contains(N3);
     }

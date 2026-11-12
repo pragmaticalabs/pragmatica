@@ -9,14 +9,17 @@ import org.pragmatica.db.migration.ParsedMigration.MigrationType;
 import org.pragmatica.db.migration.SchemaHistoryEvolution.Step;
 import org.pragmatica.db.migration.SchemaHistoryRepository.MigrationProgress;
 import org.pragmatica.db.migration.SchemaHistoryRepository.MigrationStatus;
+import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.aether.resource.db.RowMapper;
 import org.pragmatica.aether.resource.db.SqlConnector;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
+import static org.pragmatica.db.migration.MigrationError.HistoryRowCollision.historyRowCollision;
 import static org.pragmatica.db.migration.MigrationError.PhysicalDatasourceOwnershipConflict.physicalDatasourceOwnershipConflict;
 import static org.pragmatica.lang.Result.all;
 
@@ -231,7 +234,11 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
 
     private Promise<Unit> persistSchemaVersion(SqlConnector connector, int previousVersion) {
         return previousVersion == 0
-               ? connector.update(INSERT_META_SQL, SchemaHistoryEvolution.LATEST_VERSION)
+               ? connector.update(insertIfAbsent(INSERT_META_SQL,
+                                                 SchemaHistoryEvolution.META_TABLE,
+                                                 "INTEGER",
+                                                 connector.databaseType()),
+                                  SchemaHistoryEvolution.LATEST_VERSION)
                           .mapToUnit()
                : connector.update(UPDATE_META_SQL, SchemaHistoryEvolution.LATEST_VERSION)
                           .mapToUnit();
@@ -255,12 +262,44 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
                                        String datasourceName,
                                        String owner,
                                        Option<String> stored) {
-        return stored.fold(() -> insertOwner(connector, owner), current -> matchOwner(datasourceName, owner, current));
+        return stored.fold(() -> insertOwner(connector, owner, datasourceName),
+                           current -> matchOwner(datasourceName, owner, current));
     }
 
-    private Promise<Unit> insertOwner(SqlConnector connector, String owner) {
-        return connector.update(INSERT_OWNER_SQL, owner)
-                        .mapToUnit();
+    private Promise<Unit> insertOwner(SqlConnector connector, String owner, String datasourceName) {
+        return connector.update(insertIfAbsent(INSERT_OWNER_SQL,
+                                               SchemaHistoryEvolution.OWNER_TABLE,
+                                               "VARCHAR(256)",
+                                               connector.databaseType()),
+                                owner)
+                        .flatMap(_ -> reconcileAfterInsert(connector, owner, datasourceName));
+    }
+
+    /// Tier 3 (design §2.2, H1): the bootstrap inserts are `INSERT ... SELECT ... WHERE NOT EXISTS`, so two runners that
+    /// both found the row absent cannot both insert it. The loser's insert writes nothing, so after it the row is read
+    /// again and matched: the winner's owner is compared like any stored owner. On a session-fenced engine the plain
+    /// insert is the only writer and there is nothing to reconcile.
+    private Promise<Unit> reconcileAfterInsert(SqlConnector connector, String owner, String datasourceName) {
+        return MigrationFence.isSessionFenced(connector.databaseType())
+               ? Promise.unitPromise()
+               : readOwnerBase(connector).flatMap(stored -> stored.fold(Promise::unitPromise,
+                                                                        current -> matchOwner(datasourceName,
+                                                                                              owner,
+                                                                                              current)));
+    }
+
+    /// `INSERT INTO t (c) VALUES (?)` becomes `INSERT INTO t (c) SELECT CAST(? AS type) [FROM dummy] WHERE NOT EXISTS
+    /// (SELECT 1 FROM t)` on a tier-3 engine; unchanged elsewhere.
+    private static String insertIfAbsent(String plainInsert, String table, String sqlType, DatabaseType type) {
+        return MigrationFence.isSessionFenced(type)
+               ? plainInsert
+               : plainInsert.substring(0, plainInsert.indexOf(" VALUES"))
+                + " SELECT CAST(? AS " + sqlType
+                + ")" + (type == DatabaseType.DB2
+                         ? " FROM SYSIBM.SYSDUMMY1"
+                         : "")
+                + " WHERE NOT EXISTS (SELECT 1 FROM " + table
+                + ")";
     }
 
     /// Compared on `ArtifactBase` (version stripped), so a republished version of the SAME blueprint
@@ -287,7 +326,26 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
                                 migration.appliedBy(),
                                 migration.appliedAt(),
                                 migration.executionMs())
+                        .mapError(cause -> collisionOr(cause, migration))
                         .mapToUnit();
+    }
+
+    /// FDB-2b (design §2.3): an insert that meets an existing `(version, type)` row is [MigrationError.HistoryRowCollision],
+    /// a FAILED outcome, never converted to success. The database's integrity-constraint SQLSTATE class (23) names it;
+    /// SQLite's driver reports no SQLSTATE, so its message is read.
+    private static Cause collisionOr(Cause cause, SchemaHistoryRepository.AppliedMigration migration) {
+        return isUniqueViolation(cause)
+               ? historyRowCollision(migration.version(),
+                                     migration.type().name(),
+                                     cause.message())
+               : cause;
+    }
+
+    private static boolean isUniqueViolation(Cause cause) {
+        return cause instanceof DatabaseConnectorError error && (error instanceof DatabaseConnectorError.ConstraintViolation || error.sqlState()
+                                                                                                                                     .map(state -> state.startsWith("23"))
+                                                                                                                                     .or(false) || error.message()
+                                                                                                                                                        .contains("UNIQUE constraint failed"));
     }
 
     /// UPSERT the `IN_PROGRESS` checkpoint row for `(version, type)` via delete-then-insert so a

@@ -52,7 +52,9 @@ public final class ShapeCensus {
         }
 
         private double rate(int part) {
-            return totalMethods == 0 ? 0.0 : (double) part / totalMethods;
+            return totalMethods == 0
+                   ? 0.0
+                   : (double) part / totalMethods;
         }
 
         /// A one-block human summary: per-shape counts, total, and residual rate — the text a test or
@@ -64,7 +66,9 @@ public final class ShapeCensus {
                 builder.append(String.format("  %-13s %d%n", shape, count(shape)));
             }
 
-            return builder.append(String.format("  residual (MIXED+UNCLASSIFIED): %.2f%%%n", residualRate() * 100)).toString();
+            return builder.append(String.format("  residual (MIXED+UNCLASSIFIED): %.2f%%%n",
+                                                residualRate() * 100))
+                          .toString();
         }
     }
 
@@ -91,15 +95,13 @@ public final class ShapeCensus {
     }
 
     private static void tallyInto(Cursor root, Map<MethodShape, Integer> counts) {
-        findAllMethods(root).forEach(method -> MethodShapeClassifier.classify(method)
-                                                                    .onPresent(verdict -> counts.merge(verdict.shape(), 1, Integer::sum)));
+        findAllMethods(root).forEach(method -> MethodShapeClassifier.classify(method).onPresent(verdict -> counts.merge(verdict.shape(),
+                                                                                                                        1,
+                                                                                                                        Integer::sum)));
     }
 
     private static CensusReport report(Map<MethodShape, Integer> counts) {
-        var total = counts.values()
-                          .stream()
-                          .mapToInt(Integer::intValue)
-                          .sum();
+        var total = counts.values().stream().mapToInt(Integer::intValue).sum();
 
         return new CensusReport(Map.copyOf(counts), total);
     }

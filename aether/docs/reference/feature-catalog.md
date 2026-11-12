@@ -71,6 +71,7 @@ Migration execution/history now lives in the shared [`db-migrations`](../../db-m
 | 16 | Topology management | Battle-tested | Node discovery, addition/removal events, health tracking, grace period for departures |
 | 17 | Distributed KV-Store | Battle-tested | Rabia-consensus-replicated store with typed keys (SliceNode, SliceTarget, HttpRoute, AppBlueprint, VersionRouting, RollingUpdate, Threshold, LogLevel, Config, TopicSubscription, NodeArtifact, NodeRoutes). Writes: linearizable order via the single Rabia log. Reads: served from each node's local applied map — sequential, **not linearizable**, may trail the committed frontier. See [`guarantees.md`](guarantees.md) §1 |
 | 175 | ClusterGeneration choreography | Complete | Epoch-fenced cluster-wide snapshot (`ClusterGenerationSnapshot`, `Epoch`, `Spokesman`, `ClusterQuiescence`). Leader projects membership/communities/DHT partition ownership at each commit; every node caches the latest snapshot via pings and serves it locally. `GET /api/v1/cluster/generation` (always safe), `POST /api/v1/cluster/await-quiesced?epoch=T:C&timeout=30s` (synchronous barrier for tests/operators). CLI: `aether cluster generation`, `aether cluster await-quiesced`. Replaces retry/sleep/self-heal compensation in the integration test harness with a deterministic quiesced-await. See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) |
+| 1653 | Node-id reservation (`cluster node-ids reserve`) | Complete | Leader route `POST /api/v1/cluster/node-ids/reserve` (CLI `aether cluster node-ids reserve`) advances a committed per-`(source, role)` high-water (`NodeIdHighWaterKey`, backed up) in one compare-and-set leader transaction and answers only after the advance commits, so an id it returned is never issued again, whatever the caller does next. First reservation seeds above the bootstrap ids and every identity ever admitted. The provisioning-side reserve in `cluster apply` lands with #686. (#1715) |
 
 ## Networking & Routing
 
@@ -379,17 +380,17 @@ the rows disagree.
 known to have overclaimed at row level: row 39 (`Alert management`) read `Complete` while `AlertForwarder`
 was never constructed in production (#926). It now reads `Partial`, and the wiring was fixed
 in #957 -- which is what correcting ONE row looks like, not evidence that the rest have
-been checked. Read the total as "229 rows asserting a capability", not as 229 working
+been checked. Read the total as "230 rows asserting a capability", not as 230 working
 capabilities.
 
 | Status | Count |
 |--------|-------|
-| Complete | 170 |
+| Complete | 171 |
 | Cluster-tested | 0 |
 | Battle-tested | 23 |
 | Partial | 26 |
 | Planned | 10 |
-| Total | 229 |
+| Total | 230 |
 <!-- END GENERATED STATISTICS -->
 
 **Highest-priority gap** (a priority, not a status — the row's completion level is in the

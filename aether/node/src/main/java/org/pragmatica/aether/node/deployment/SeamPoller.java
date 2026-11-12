@@ -53,6 +53,7 @@ public final class SeamPoller {
                           Supplier<Set<NodeId>> superseded,
                           Supplier<Map<NodeId, String>> memberSource,
                           Supplier<Map<String, CommunityPlacement>> communityPolicies,
+                          Supplier<Set<NodeId>> coreRoleMembers,
                           Supplier<Set<NodeId>> members,
                           ToLongFunction<NodeId> tokenOf) {}
 
@@ -99,7 +100,8 @@ public final class SeamPoller {
                            sources.localAlive().get(),
                            sources.superseded().get(),
                            sources.memberSource().get(),
-                           sources.communityPolicies().get());
+                           sources.communityPolicies().get(),
+                           sources.coreRoleMembers().get());
     }
 
     /// Starts the 5 s cadence. The first sample is taken at once so the FSM does not wait a full interval for its first view. A poller already

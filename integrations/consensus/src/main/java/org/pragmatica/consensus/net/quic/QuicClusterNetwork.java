@@ -131,6 +131,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private volatile QuicSslContext serverSslContext;
     private volatile QuicSslContext clientSslContext;
     private final Map<NodeId, PeerState> peers = new ConcurrentHashMap<>();
+    /// #2981 step 6: the labels each peer presented in its most recent Hello; present iff the peer has completed a
+    /// handshake on this node. Written before routing in the attach funnel, overwritten on every reconnection (an
+    /// upgraded peer reconnects with new labels), dropped on terminal departure and shutdown. Read by the join guard
+    /// instead of the asynchronous SWIM descriptor.
+    private final Map<NodeId, Map<String, String>> helloLabels = new ConcurrentHashMap<>();
     /// #487 self-loopback lane. A send-to-self is delivered to the local handler on the SAME dispatch
     /// path real inbound frames use (an event-loop thread), NOT inline on the caller thread — otherwise
     /// self-delivery would break the per-sender FIFO + event-loop-thread contract every protocol on this
@@ -1036,6 +1041,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var peer = peers.get(nodeId);
 
         firstObservedMissingMs.remove(nodeId);
+        helloLabels.remove(nodeId);
         if (peer == null) {
             endBackpressureEpisodes(nodeId);
             log.debug("departurePermanent for {} suppressed: peer absent (no transition)", nodeId);
@@ -1716,6 +1722,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// sees connections whose identity was verified against the dialed NodeId.
     private void onDialCompleted(NodeInfo dialed, QuicPeerConnection connection, long attempt) {
         journalDialerHello(dialed, connection);
+        helloLabels.put(connection.peerId(), connection.helloLabels());
         onPeerConnected(connection, dialed.address(), dialed.labels(), "dial attempt #" + attempt);
     }
 
@@ -1828,6 +1835,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private void onPeerConnected(QuicPeerConnection connection,
                                  NodeAddress peerAddress,
                                  Map<String, String> peerLabels) {
+        helloLabels.put(connection.peerId(), Map.copyOf(peerLabels));
         onPeerConnected(connection, peerAddress, peerLabels, "inbound Hello");
     }
 
@@ -2641,18 +2649,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// No `isEmpty` shortcut here: the map's size is updated after a new entry is visible, so the shortcut can miss
     /// an episode opened concurrently, and departure and channel close are the only events that would close it.
     private void closeBackpressureEpisode(NodeId peerId, StreamType streamType) {
-        Option.option(backpressureEpisodes.remove(new BackpressureLane(peerId, streamType)))
-              .onPresent(episode -> log.info("Backpressure on peer {} lane {} cleared: {} write(s) found it unwritable over {} ms",
-                                             peerId,
-                                             streamType,
-                                             episode.writes().get(),
-                                             TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - episode.startedNanos())));
+        Option.option(backpressureEpisodes.remove(new BackpressureLane(peerId, streamType))).onPresent(episode -> log.info("Backpressure on peer {} lane {} cleared: {} write(s) found it unwritable over {} ms",
+                                                                                                                           peerId,
+                                                                                                                           streamType,
+                                                                                                                           episode.writes()
+                                                                                                                                  .get(),
+                                                                                                                           TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - episode.startedNanos())));
     }
 
     /// Closes every open episode of a peer whose channel closed or who departed, each with its summary line.
     private void endBackpressureEpisodes(NodeId peerId) {
-        Stream.of(StreamType.values())
-              .forEach(streamType -> closeBackpressureEpisode(peerId, streamType));
+        Stream.of(StreamType.values()).forEach(streamType -> closeBackpressureEpisode(peerId, streamType));
     }
 
     /// Package-private test seam: the number of open backpressure episodes, so tests can show an entry is gone.
@@ -3582,6 +3589,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
         onMessageReceived(sender, message);
     }
 
+    @Override
+    public Option<Map<String, String>> peerHelloLabels(NodeId nodeId) {
+        return Option.option(helloLabels.get(nodeId));
+    }
+
     /// Package-private test seam — drives the inbound-connection funnel `onPeerConnected` directly
     /// (Fix A) so tests can assert the tombstone-readmit decision (REMOVED peer + proof-of-life →
     /// readmit + attach; without proof-of-life → REJECTED) without standing up a live QUIC
@@ -3823,6 +3835,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
 
         peers.clear();
+        helloLabels.clear();
         reconnectBackoff.clear();
         if (promises.isEmpty()) {
             return Promise.unitPromise();

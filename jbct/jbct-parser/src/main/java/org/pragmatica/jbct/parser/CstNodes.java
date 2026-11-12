@@ -43,10 +43,10 @@ public final class CstNodes {
     /// matching on [#text] silently fails the moment someone writes a comment on that line,
     /// which reads as the annotation having no effect at all.
     public static String tokenText(Cursor node) {
-        var tokens = node.cst()
-                         .tokens();
+        var tokens = node.cst().tokens();
 
-        return IntStream.rangeClosed(node.firstTokenIdx(), node.lastTokenIdx())
+        return IntStream.rangeClosed(node.firstTokenIdx(),
+                                     node.lastTokenIdx())
                         .filter(t -> !tokens.isTrivia(t))
                         .mapToObj(tokens::textAt)
                         .collect(Collectors.joining());
@@ -272,15 +272,13 @@ public final class CstNodes {
     /// non-trivia token before the `TypeArgs` subtree, or the segment's last token when there
     /// is none. A single-token segment is a collapsed leaf and IS the identifier.
     private static Option<String> segmentIdentifier(Cursor segment) {
-        var tokens = segment.cst()
-                            .tokens();
+        var tokens = segment.cst().tokens();
         var end = childByRule(segment, RuleKind.TYPE_ARGS).map(args -> args.firstTokenIdx() - 1)
-                          .or(segment.lastTokenIdx());
+                             .or(segment.lastTokenIdx());
 
         for (int t = end; t >= segment.firstTokenIdx(); t--) {
             if (!tokens.isTrivia(t)) {
-                return Option.some(tokens.textAt(t)
-                                         .toString());
+                return Option.some(tokens.textAt(t).toString());
             }
         }
 
@@ -398,9 +396,9 @@ public final class CstNodes {
     /// that passes a `TypeKind` — which is what `findFirstInterface` and friends return.
     public static List<Cursor> typeBodyMembers(Cursor typeDecl) {
         return typeBody(typeDecl).map(body -> children(body).stream()
-                                                            .filter(CstNodes::isMemberWrapper)
-                                                            .toList())
-                                 .or(List.of());
+                                                      .filter(CstNodes::isMemberWrapper)
+                                                      .toList())
+                       .or(List.of());
     }
 
     private static Option<Cursor> typeBody(Cursor typeDecl) {
@@ -434,7 +432,7 @@ public final class CstNodes {
     /// declaration.
     public static String memberDeclText(Cursor member) {
         return memberDecl(member).map(CstNodes::text)
-                                 .or(() -> text(member));
+                         .or(() -> text(member));
     }
 
     /// The node a diagnostic about `member` should point at — its declaration, falling back
@@ -459,10 +457,10 @@ public final class CstNodes {
     /// they do for a class's `Member` node.
     public static Option<Cursor> memberDecl(Cursor member) {
         return children(member).stream()
-                               .filter(child -> !child.kindIs(RuleKind.ANNOTATION))
-                               .findFirst()
-                               .map(Option::some)
-                               .orElseGet(Option::none);
+                       .filter(child -> !child.kindIs(RuleKind.ANNOTATION))
+                       .findFirst()
+                       .map(Option::some)
+                       .orElseGet(Option::none);
     }
 
     public static List<Cursor> findAllMethods(Cursor root) {
