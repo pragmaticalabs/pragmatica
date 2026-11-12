@@ -2921,7 +2921,7 @@ public interface AetherNode extends ManageableNode {
         // writes no NodeArtifactKey and the legacy source would leave the detector, and #1573 auto-rollback, inert.
         var allInstancesFailedDetector = AllInstancesFailedDetector.allInstancesFailedDetector(metricsCollector::allObservations,
                                                                                                deploymentWiring.source("B22.AllInstancesFailedDetector.activeInstances",
-                                                                                                                       () -> observedActiveInstances(kvStore,
+                                                                                                                       () -> ObservedSourceWiring.observedActiveInstances(kvStore,
                                                                                                                                                      Option.option(membershipFsmRef.get()),
                                                                                                                                                      admissionSeam),
                                                                                                                        () -> activeInstancesByArtifact(deploymentMap,
@@ -4201,16 +4201,6 @@ public interface AetherNode extends ManageableNode {
     /// as the all-instances-failed detector needs them. An instance left in KV on a node membership has declared
     /// DEAD serves nothing and is not a host; a counted node that stopped reporting still is — and its stale
     /// metrics make the version undecidable. An unparsable artifact or node id is skipped, never guessed.
-    /// F5b: the FSM2 form of [#activeInstancesByArtifact(DeploymentMap, Option)]: ACTIVE current observed rows on counted nodes.
-    private static Map<Artifact, Set<NodeId>> observedActiveInstances(KVStore<AetherKey, AetherValue> kvStore,
-                                                                      Option<MembershipFsm> membershipFsm,
-                                                                      AdmissionSeam admissionSeam) {
-        return membershipFsm.map(fsm -> AllInstancesFailedDetector.observedActiveInstances(kvStore,
-                                                                                           fsm::isCountedMember,
-                                                                                           admissionSeam::tokenOf))
-                            .or(Map.of());
-    }
-
     private static Map<Artifact, Set<NodeId>> activeInstancesByArtifact(DeploymentMap deploymentMap,
                                                                         Option<MembershipFsm> membershipFsm) {
         return membershipFsm.map(fsm -> activeInstancesByArtifact(deploymentMap, fsm))
@@ -5072,9 +5062,9 @@ public interface AetherNode extends ManageableNode {
                                                          deploymentMap::onNodeArtifactPut)
                                                   .onPut(AetherKey.NodeArtifactKey.class, controlLoop::onNodeArtifactPut)
                                                   .onPut(AetherKey.SliceObservedKey.class,
-                                                         deploymentWiring.<ValuePut<AetherKey.SliceObservedKey, AetherValue.SliceObservedValue>> fsm2Reader("B22.ControlLoop.SliceObservedKey.put",
-                                                                                                                                                            put -> controlLoop.onSliceObservedPut(put,
-                                                                                                                                                                                                  deploymentWiring.admissions()::tokenOf)))
+                                                         deploymentWiring.fsm2Reader("B22.ControlLoop.SliceObservedKey.put",
+                                                                    ObservedSourceWiring.controlLoopObservedPut(controlLoop,
+                                                                                                                deploymentWiring.admissions())))
                                                   .onPut(AetherKey.NodeArtifactKey.class,
                                                          eventAggregator::onNodeArtifactPut)
                                                   .onPut(AetherKey.CommunityKey.class, eventAggregator::onCommunityPut)
@@ -5096,7 +5086,7 @@ public interface AetherNode extends ManageableNode {
                                                             controlLoop::onNodeArtifactRemove)
                                                   .onRemove(AetherKey.SliceObservedKey.class,
                                                             deploymentWiring.fsm2Reader("B22.ControlLoop.SliceObservedKey.remove",
-                                                                                        controlLoop::onSliceObservedRemove))
+                                                                                        ObservedSourceWiring.controlLoopObservedRemove(controlLoop)))
                                                   .onPut(AetherKey.NodeRoutesKey.class,
                                                          httpRouteRegistry::onNodeRoutesPut)
                                                   .onPut(AetherKey.NodeRoutesKey.class, appHttpServer::onNodeRoutesPut)
