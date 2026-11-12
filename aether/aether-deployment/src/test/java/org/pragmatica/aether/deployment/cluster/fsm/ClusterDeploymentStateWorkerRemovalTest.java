@@ -593,6 +593,27 @@ class ClusterDeploymentStateWorkerRemovalTest {
                    .untilAsserted(() -> assertThat(directive().isPresent()).as("the bound firing afterwards must not run the join again").isFalse());
         }
 
+        /// A removal that settles with no join waiting must not leave its entry behind: the entry is the join's wait handle.
+        @Test
+        void removalSettles_entryDropped_withoutAJoin() {
+            joinWorker(W);
+            var commit = Promise.<Unit>promise();
+
+            cluster.gate = commit;
+            leaveWorker(W);
+            assertThat(context.removalsInFlight()).as("the removal is pending").containsKey(W);
+            commit.succeed(Unit.unit());
+
+            await().atMost(5, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(context.removalsInFlight()).as("settled removal leaves no entry").doesNotContainKey(W));
+        }
+
+        /// [guess: 2 x the 30 s consensus applyTimeout] pinned so a change to it is a decision, not an accident.
+        @Test
+        void removalWaitBound_defaultsToTwiceApplyTimeout() {
+            assertThat(context.removalWaitBound()).isEqualTo(timeSpan(60).seconds());
+        }
+
         @Test
         void workerJoin_removalNeverResolves_joinRunsAfterBound() {
             joinWorker(W);
