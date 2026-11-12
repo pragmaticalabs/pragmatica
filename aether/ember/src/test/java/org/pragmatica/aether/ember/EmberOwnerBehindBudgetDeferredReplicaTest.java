@@ -7,11 +7,10 @@ package org.pragmatica.aether.ember;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.List;
-import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -20,10 +19,10 @@ import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
-import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.ember.StreamTripwireSupport.PARTITION;
@@ -33,21 +32,19 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.sleepQuietly;
 /// NT-149 (#2923, the multi-node test for #1759): an owner that is BEHIND catches up from a replica whose partition is
 /// budget-deferred (held as a WAL, no ring), and activates at that replica's tail.
 ///
-/// Three real nodes, one partition at the default replication (owner + two replicas). One replica's node is started with an
-/// off-heap budget below one partition's floor ([#TINY_BUDGET], the per-node harness seam
-/// [EmberCluster#withStreamingConfig(String, StreamingConfig)]), so its replica is deferred: it holds the partition's WAL and
-/// never builds a ring. The OTHER replica, `behind`, stops receiving replication, so the owner shrinks it out of the in-sync
-/// set and acknowledges records with the deferred replica alone. Then the owner is killed: the deferred replica is the only
-/// node holding the acknowledged tail, `behind` becomes the owner while behind it, and can reach the tail only by pulling it
-/// from the deferred replica's WAL.
+/// Three real nodes, one partition at the default replication (owner + two replicas), the in-sync lag bound raised so no
+/// member leaves the set mid-test. `behind` stops receiving replication, so the owner and `deferred` alone hold the late
+/// records. `deferred` is then restarted with an off-heap budget below one partition's floor (the per-node harness seam
+/// [EmberCluster#withStreamingConfig(String, StreamingConfig)]): its WAL holds the tail and it builds no ring. Then the owner
+/// is killed: `behind` takes over behind the only holder of the tail, which is the budget-deferred replica, and can reach
+/// that tail only by pulling it from the replica's WAL.
 ///
-/// Asserts: the new owner holds and serves every acknowledged record; the deferred replica still has no ring and its
-/// allocated bytes did not move. Red when the owner's catch-up cannot use a deferred replica as its source (the owner then
-/// never reaches the tail).
+/// Asserts: the new owner holds the replica's tail and completes its activation at it; the deferred replica still has no
+/// ring and its allocated bytes did not move. Red when the owner's catch-up cannot use a deferred replica as its source.
 @PortBudget
 class EmberOwnerBehindBudgetDeferredReplicaTest {
     private static final String PREFIX = "nt149";
-    private static final String DEFERRED_NODE = PREFIX + "-3";
+    private static final String STREAM = "nt149";
     private static final long TINY_BUDGET = 64 * 1024L;
     private static final long RING_BYTES = 64L * 1024 * 1024;
     private static final int EARLY = 3;
@@ -58,6 +55,8 @@ class EmberOwnerBehindBudgetDeferredReplicaTest {
     private static final long PUBLISH_WAIT_SECONDS = 150;
     private static final long FAILOVER_BUDGET_MS = 180_000L;
     private static final long CATCHUP_BUDGET_MS = 120_000L;
+    private static final long DEFERRAL_SETTLE_MS = 15_000L;
+    private static final TimeSpan ADD_BOUND = TimeSpan.timeSpan(120).seconds();
 
     private EmberCluster cluster;
     private Path dataDir;
@@ -76,77 +75,96 @@ class EmberOwnerBehindBudgetDeferredReplicaTest {
         cluster = EmberTestPorts.startedCluster(StreamTripwireSupport.PORTS, this::threeNodes, START_BOUND);
         StreamTripwireSupport.awaitLeader(cluster);
 
-        var stream = createStreamNotOwnedByTheDeferredNode();
-        var key = engineKey(stream);
+        var key = engineKey(STREAM);
+
+        StreamTripwireSupport.createStream(cluster.allNodes().getFirst(),
+                                           StreamConfig.streamConfig(key, 1, RetentionPolicy.retentionPolicy(20_000, RING_BYTES, 3_600_000L), "earliest"));
+
         var record = StreamTripwireSupport.awaitFullIsr(cluster, key, ISR_BUDGET_MS);
         var owner = cluster.getNode(record.owner().id()).unwrap();
-        var deferred = cluster.getNode(DEFERRED_NODE).unwrap();
-        var behind = cluster.allNodes().stream().filter(node -> node != owner && node != deferred).findFirst().orElseThrow();
+        var replicas = cluster.allNodes().stream().filter(node -> node != owner).toList();
+        var deferred = replicas.get(0);
+        var behind = replicas.get(1);
 
         for (var i = 0; i < EARLY; i++) {
-            assertThat(publish(owner, key, "early-" + i).join()).as("early-%d acknowledged with the whole in-sync set", i).isGreaterThanOrEqualTo(0L);
+            assertThat(publish(owner, key, "early-" + i).join().acked()).as("early-%d acknowledged with the whole in-sync set", i).isTrue();
         }
         awaitHolds(deferred, key, EARLY);
         awaitHolds(behind, key, EARLY);
 
-        assertThat(deferred.streamPartitionManager().partitionBuffer(key, PARTITION).isEmpty()).as("precondition: the deferred replica built no ring").isTrue();
-
-        // From here `behind` receives no replication: the owner shrinks it out of the in-sync set and acknowledges with `deferred` alone.
+        // From here `behind` receives no replication: the late records are held by the owner and `deferred` only, and stay unacknowledged.
         var replicationLost = new AtomicBoolean(true);
 
         behind.setInboundFaultFilter((_, message) -> !(replicationLost.get() && message instanceof ReplicationMessage));
 
-        var late = new ArrayList<CompletableFuture<Long>>();
+        var late = new ArrayList<CompletableFuture<Response>>();
 
         for (var i = 0; i < LATE; i++) {
             late.add(publish(owner, key, "late-" + i));
             sleepQuietly(100L);
         }
-        late.forEach(future -> assertThat(future.join()).as("late publish acknowledged once `behind` left the in-sync set").isGreaterThanOrEqualTo(0L));
-        assertThat(texts(behind, key)).as("precondition: `behind` stayed at the early records").containsExactly("early-0", "early-1", "early-2");
+        awaitHolds(deferred, key, EARLY + LATE);
+        assertThat(behind.streamPartitionManager().appendedHead(key, PARTITION)).as("precondition: `behind` stayed at the early records").isEqualTo((long) (EARLY - 1));
 
-        var allocatedBefore = deferred.streamPartitionManager().totalAllocatedBytes();
+        // `deferred` restarts with an off-heap budget below one partition's floor: its WAL holds the tail, and it can build no ring.
+        var deferredId = deferred.self().id();
 
-        assertThat(deferred.streamPartitionManager().partitionBuffer(key, PARTITION).isEmpty()).as("precondition: the deferred replica still has no ring").isTrue();
-        awaitWalTail(deferred, key, EARLY + LATE);
+        cluster.killNode(deferredId).await(STOP_BOUND).onFailure(cause -> org.junit.jupiter.api.Assertions.fail("replica kill failed: " + cause.message()));
+        cluster.withStreamingConfig(deferredId, tinyBudget());
+        cluster.addCoreNode(deferredId).await(ADD_BOUND).onFailure(cause -> org.junit.jupiter.api.Assertions.fail("replica did not rejoin: " + cause.message()));
 
-        // The owner dies; `behind` is the only candidate that can serve as owner, and it is behind the only holder of the tail.
-        var killed = owner.self().id();
+        var restarted = cluster.getNode(deferredId).unwrap();
 
-        cluster.killNode(killed).await(STOP_BOUND).onFailure(cause -> org.junit.jupiter.api.Assertions.fail("owner kill failed: " + cause.message()));
-        replicationLost.set(false);
+        StreamTripwireSupport.awaitUntil(() -> restarted.streamPartitionManager().maxTotalBytes() == TINY_BUDGET,
+                                         30_000L,
+                                         "precondition: the restarted replica runs with the tiny budget");
+        sleepQuietly(DEFERRAL_SETTLE_MS);
+        assertThat(restarted.streamPartitionManager().partitionBuffer(key, PARTITION).isEmpty()).as("precondition: the restarted replica built no ring").isTrue();
 
-        var newOwner = awaitNewOwner(key, killed);
+        var allocatedBefore = restarted.streamPartitionManager().totalAllocatedBytes();
+        var capture = StreamTripwireSupport.captureLogs();
 
-        assertThat(newOwner).as("the owner that took over is the one that was behind").isSameAs(behind);
-        StreamTripwireSupport.awaitUntil(() -> texts(newOwner, key).size() == EARLY + LATE,
-                                         CATCHUP_BUDGET_MS,
-                                         "the new owner reached the deferred replica's tail (holds: " + texts(newOwner, key) + ")");
-        assertThat(texts(newOwner, key)).containsExactly("early-0", "early-1", "early-2", "late-0", "late-1", "late-2", "late-3", "late-4");
-        assertThat(deferred.streamPartitionManager().partitionBuffer(key, PARTITION).isEmpty()).as("the deferred replica stayed unmaterialized").isTrue();
-        assertThat(deferred.streamPartitionManager().totalAllocatedBytes()).as("the deferred replica's budget is unchanged").isEqualTo(allocatedBefore);
-    }
+        try {
+            // The owner dies; `behind` is in the in-sync set, behind the only holder of the tail, and a budget-deferred one at that.
+            var killed = owner.self().id();
 
-    /// The deferred node cannot own a partition (an owner needs a ring), so a stream whose owner landed on it is not used.
-    private String createStreamNotOwnedByTheDeferredNode() {
-        for (var attempt = 0; attempt < 12; attempt++) {
-            var stream = "nt149s" + attempt;
-            var key = engineKey(stream);
+            cluster.killNode(killed).await(STOP_BOUND).onFailure(cause -> org.junit.jupiter.api.Assertions.fail("owner kill failed: " + cause.message()));
+            replicationLost.set(false);
 
-            StreamTripwireSupport.createStream(cluster.allNodes().getFirst(),
-                                               StreamConfig.streamConfig(key, 1, RetentionPolicy.retentionPolicy(20_000, RING_BYTES, 3_600_000L), "earliest"));
+            var newOwner = awaitNewOwner(key, killed);
 
-            var record = StreamTripwireSupport.awaitFullIsr(cluster, key, ISR_BUDGET_MS);
-
-            if (!record.owner().id().equals(DEFERRED_NODE)) {
-                return stream;
-            }
+            assertThat(newOwner).as("the owner that took over is the one that was behind").isSameAs(behind);
+            StreamTripwireSupport.awaitUntil(() -> newOwner.streamPartitionManager().appendedHead(key, PARTITION) == EARLY + LATE - 1L,
+                                             CATCHUP_BUDGET_MS,
+                                             "the new owner reached the deferred replica's tail (head " + newOwner.streamPartitionManager().appendedHead(key, PARTITION) + ")");
+            StreamTripwireSupport.awaitUntil(() -> activated(capture, key),
+                                             CATCHUP_BUDGET_MS,
+                                             "the new owner activated at the replica's tail");
+            assertThat(restarted.streamPartitionManager().partitionBuffer(key, PARTITION).isEmpty()).as("the deferred replica stayed unmaterialized").isTrue();
+            assertThat(restarted.streamPartitionManager().totalAllocatedBytes()).as("the deferred replica's budget is unchanged").isEqualTo(allocatedBefore);
+        } finally {
+            capture.close();
         }
-
-        throw new AssertionError("every candidate stream was owned by " + DEFERRED_NODE);
     }
 
-    private static CompletableFuture<Long> publish(AetherNode owner, String key, String payload) {
+    private static boolean activated(LogCapture capture, String key) {
+        return StreamTripwireSupport.logLines(capture, Level.INFO)
+                                    .stream()
+                                    .anyMatch(line -> line.contains("Owner activation of " + key + "[0] complete at watermark " + (EARLY + LATE - 1)));
+    }
+
+    private static StreamingConfig tinyBudget() {
+        return baseStreaming().withMemoryBudget(TINY_BUDGET, StreamingConfig.DERIVE_SEAL_PENDING_CAP_BYTES);
+    }
+
+    /// The in-sync-set lag bound is raised so `behind` is not shrunk out of the set while the test builds the scene.
+    private static StreamingConfig baseStreaming() {
+        return StreamingConfig.streamingConfig().withIsrLagMax(TimeSpan.timeSpan(30).minutes());
+    }
+
+    private record Response(boolean acked, String body) {}
+
+    private static CompletableFuture<Response> publish(AetherNode owner, String key, String payload) {
         var manager = owner.streamPartitionManager();
         var confirmations = manager.confirmationFactorFor(key) - 1;
 
@@ -158,33 +176,13 @@ class EmberOwnerBehindBudgetDeferredReplicaTest {
                                                           .async()
                                                           .flatMap(offset -> manager.awaitReplication(key, PARTITION, offset, confirmations).map(_ -> offset))
                                                           .await(TimeSpan.timeSpan(PUBLISH_WAIT_SECONDS).seconds())
-                                                          .fold(cause -> {
-                                                                    throw new AssertionError("publish " + payload + " failed: " + cause.message());
-                                                                },
-                                                                offset -> offset));
-    }
-
-    private static List<String> texts(AetherNode node, String key) {
-        return node.streamPartitionManager()
-                   .readLocal(key, PARTITION, 0L, 100)
-                   .map(events -> events.stream().map(EmberOwnerBehindBudgetDeferredReplicaTest::text).toList())
-                   .or(List.of());
-    }
-
-    private static String text(RawEvent event) {
-        return new String(event.data(), StandardCharsets.UTF_8);
+                                                          .fold(cause -> new Response(false, cause.message()), offset -> new Response(true, "offset " + offset)));
     }
 
     private static void awaitHolds(AetherNode node, String key, int count) {
         StreamTripwireSupport.awaitUntil(() -> node.streamPartitionManager().appendedHead(key, PARTITION) + 1 >= count,
                                          30_000L,
                                          node.self().id() + " holds " + count + " records");
-    }
-
-    private static void awaitWalTail(AetherNode node, String key, int count) {
-        StreamTripwireSupport.awaitUntil(() -> node.streamPartitionManager().appendedHead(key, PARTITION) + 1 >= count,
-                                         30_000L,
-                                         node.self().id() + " holds " + count + " records in its WAL");
     }
 
     private AetherNode awaitNewOwner(String key, String killed) {
@@ -210,8 +208,7 @@ class EmberOwnerBehindBudgetDeferredReplicaTest {
 
         var built = StreamTripwireSupport.threeNodes(basePort, PREFIX, dataDir);
 
-        built.withStreamingConfig(DEFERRED_NODE,
-                                  StreamingConfig.streamingConfig().withMemoryBudget(TINY_BUDGET, StreamingConfig.DERIVE_SEAL_PENDING_CAP_BYTES));
+        built.withStreamingConfig(baseStreaming());
 
         return built;
     }
