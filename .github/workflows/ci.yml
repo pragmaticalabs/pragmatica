@@ -325,6 +325,7 @@ jobs:
         run: >
           mvn verify -B -Pwith-e2e -pl aether/forge/forge-tests
           -Dfailsafe.excludedGroups=Heavy,quarantine
+          -Dfailsafe.forkedProcessTimeoutInSeconds=1800
         timeout-minutes: 30
 
       - name: Upload Forge test results
