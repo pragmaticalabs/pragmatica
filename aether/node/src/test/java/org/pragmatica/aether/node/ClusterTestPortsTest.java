@@ -39,13 +39,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ClusterTestPortsTest {
     private static final int SWIM = CoreSwimHealthDetector.SWIM_PORT_OFFSET;
     /// TCP-only: the port is for an HTTP/1 management server and nothing UDP ever binds it.
-    /// Reservation forms caught: `ServerSocket(0`, `ServerSocket(0, backlog, addr)`, any `ServerSocketChannel`, and an
+    /// Reservation forms caught: `ServerSocket(0`, `ServerSocket(0, backlog, addr)`, `ServerSocketChannel.open()` with no argument or with an INET/INET6 family (a UNIX-family channel binds a filesystem path and reserves no port), and an
     /// explicit `bind(new InetSocketAddress(..., 0))`. A bare `new InetSocketAddress(.., 0)` is NOT matched: it is also
     /// how a live `HttpServer.create(...)` binds (GitBackupRepositoryTest), which would be a false positive.
     /// KNOWN GAP (#2016): a port held in a variable (`new ServerSocket(port)`, `bind(addrOf(p))`) is not caught. Such a
     /// call is also how tests deliberately HOLD a taken port, so no text pattern separates the two without false
     /// positives; telling them apart needs data flow (the port came from a closed socket), which this scan cannot see.
-    private static final java.util.regex.Pattern RESERVES = java.util.regex.Pattern.compile("ServerSocket\\(\\s*0|ServerSocketChannel|\\.bind\\(\\s*new (?:java\\.net\\.)?InetSocketAddress\\([^()]*(?:\\([^()]*\\))?[^()]*\\b0\\s*\\)\\s*\\)");
+    private static final java.util.regex.Pattern RESERVES = java.util.regex.Pattern.compile("ServerSocket\\(\\s*0|ServerSocketChannel\\.open\\(\\s*(?:\\)|(?:java\\.net\\.)?StandardProtocolFamily\\.INET)|\\.bind\\(\\s*new (?:java\\.net\\.)?InetSocketAddress\\([^()]*(?:\\([^()]*\\))?[^()]*\\b0\\s*\\)\\s*\\)");
     private final List<int[]> reservations = new ArrayList<>();
     private static final String TCP_ONLY_MANAGEMENT_TEST = "ManagementServerDhtCatchUpGaugeTest.java";
 
@@ -270,6 +270,18 @@ class ClusterTestPortsTest {
             assertThat(held.getLocalPort()).isEqualTo(clusterPort + SWIM);
             assertThat(ClusterTestPorts.isFreeClusterPort(clusterPort)).isFalse();
         }
+    }
+
+    /// The tripwire pattern flags every TCP reservation form and no UNIX-family channel (#3101).
+    @Test
+    void reservesPattern_flagsTcpForms_andNotUnixDomainChannels() {
+        assertThat(RESERVES.matcher("new ServerSocket(0)").find()).as("ServerSocket(0").isTrue();
+        assertThat(RESERVES.matcher("ServerSocketChannel.open()").find()).as("open() no args").isTrue();
+        assertThat(RESERVES.matcher("ServerSocketChannel.open(StandardProtocolFamily.INET)").find()).as("INET").isTrue();
+        assertThat(RESERVES.matcher("ServerSocketChannel.open(StandardProtocolFamily.INET6)").find()).as("INET6").isTrue();
+        assertThat(RESERVES.matcher("ch.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0))").find()).as("bind InetSocketAddress 0").isTrue();
+        assertThat(RESERVES.matcher("ServerSocketChannel.open(StandardProtocolFamily.UNIX)").find()).as("UNIX family").isFalse();
+        assertThat(RESERVES.matcher("var a = UnixDomainSocketAddress.of(path); server.bind(a);").find()).as("UnixDomainSocketAddress").isFalse();
     }
 
     /// Tripwire for the class: a node test that reserves a cluster port over TCP and lets a node bind UDP on it.
