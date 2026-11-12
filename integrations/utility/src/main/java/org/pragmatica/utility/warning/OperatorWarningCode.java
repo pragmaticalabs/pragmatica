@@ -1194,8 +1194,8 @@ public enum OperatorWarningCode {
                                   WarningLevel.INFO,
                                   STREAM_DATA_ABANDONED,
                                   true),
-    /// R-4.1.7 (#970): a blueprint apply received no slice report for the whole `[timeouts.deployment] apply_deadline` (less the time its schema
-    /// gate paused the clock) and was closed by the deadline: ROLLED_BACK under ALL_OR_NOTHING, FAILED under BEST_EFFORT, cause
+    /// R-4.1.7 (#970): an FSM2 blueprint apply (LEGACY ignores the deadline) did not resolve (every declared slice ACTIVE) within `[timeouts.deployment] apply_deadline` (less the time its schema
+    /// gate paused the clock; slice progress never resets the clock; leader churn shorter than the deadline can postpone it, see #3120) and was closed by the deadline: ROLLED_BACK under ALL_OR_NOTHING, FAILED under BEST_EFFORT, cause
     /// `apply-deadline-exceeded`. Subject is the blueprint. Closed by [#APPLY_DEADLINE_CLEARED]. Operator action: republish or delete the blueprint.
     APPLY_DEADLINE_EXCEEDED("apply-deadline-exceeded", "deployment", WarningLevel.WARNING),
     /// The recovery of [#APPLY_DEADLINE_EXCEEDED], same subject: the blueprint's outcome was replaced (a republish) or removed.
