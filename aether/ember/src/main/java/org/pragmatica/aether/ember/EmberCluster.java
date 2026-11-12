@@ -253,6 +253,10 @@ public final class EmberCluster {
     /// [Option#none] keeps the default. Nodes already started keep theirs.
     private final AtomicReference<Option<TimeSpan>> communityAbsence = new AtomicReference<>(Option.none());
 
+    /// The `coreAbsence` window (the worker-side fence) every node created FROM NOW ON is configured with, in place of the
+    /// default. [Option#none] keeps the default. Nodes already started keep theirs.
+    private final AtomicReference<Option<TimeSpan>> coreAbsence = new AtomicReference<>(Option.none());
+
     /// The `[streaming]` section every node is created with. Defaults to [StreamingConfig#streamingConfig()];
     /// [#withStreamingConfig] overrides it (e.g. `reshuffle_concurrency = 1` to make a partition's
     /// materialization queue behind another).
@@ -543,6 +547,14 @@ public final class EmberCluster {
     @Contract
     public void withCommunityAbsenceForNewNodes(TimeSpan window) {
         communityAbsence.set(Option.some(window));
+    }
+
+    /// TEST SEAM (#3028) — the `coreAbsence` window of every node created after this call, so a test can order a worker's
+    /// fence (exit code 2) before or after the cores' removal of it. Keep it strictly below the `communityAbsence` window
+    /// (#590). Nodes already started keep their window. Harness-scoped; production paths never call this.
+    @Contract
+    public void withCoreAbsenceForNewNodes(TimeSpan window) {
+        coreAbsence.set(Option.some(window));
     }
 
     /// TEST SEAM (#1777) — the DHT replication EVERY node is created with, in place of FULL. MUST be called before
@@ -1615,8 +1627,10 @@ public final class EmberCluster {
                                   defaults.storageMaintenance());
     }
 
-    private static TimeoutsConfig withCommunityAbsence(TimeoutsConfig base, TimeSpan window) {
+    private static TimeoutsConfig withAbsence(TimeoutsConfig base, Option<TimeSpan> core, Option<TimeSpan> community) {
         var cluster = base.cluster();
+        var coreWindow = core.or(cluster.coreAbsence());
+        var communityWindow = community.or(cluster.communityAbsence());
 
         return new TimeoutsConfig(base.invocation(),
                                   base.forwarding(),
@@ -1626,8 +1640,8 @@ public final class EmberCluster {
                                                                      cluster.reconciliationInterval(),
                                                                      cluster.pingInterval(),
                                                                      cluster.channelProtection(),
-                                                                     cluster.coreAbsence(),
-                                                                     window,
+                                                                     coreWindow,
+                                                                     communityWindow,
                                                                      cluster.offlineBufferCap()),
                                   base.consensus(),
                                   base.election(),
@@ -1651,14 +1665,10 @@ public final class EmberCluster {
         var helloTimeout = raised
                            ? RAISED_HELLO_TIMEOUT
                            : TopologyConfig.DEFAULT_HELLO_TIMEOUT;
-        var nodeTimeouts = communityAbsence.get()
-                                           .map(window -> withCommunityAbsence(raised
-                                                                               ? RAISED_TIMEOUTS
-                                                                               : TimeoutsConfig.timeoutsConfig(),
-                                                                               window))
-                                           .or(raised
-                                               ? RAISED_TIMEOUTS
-                                               : TimeoutsConfig.timeoutsConfig());
+        var baseTimeouts = raised
+                           ? RAISED_TIMEOUTS
+                           : TimeoutsConfig.timeoutsConfig();
+        var nodeTimeouts = withAbsence(baseTimeouts, coreAbsence.get(), communityAbsence.get());
         Option<MembershipConfig> membership = raised
                                               ? RAISED_MEMBERSHIP
                                               : Option.empty();
