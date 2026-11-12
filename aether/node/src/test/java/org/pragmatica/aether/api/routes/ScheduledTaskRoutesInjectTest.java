@@ -22,6 +22,7 @@ import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.kvstore.SliceRowSource;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
@@ -527,7 +528,7 @@ class ScheduledTaskRoutesInjectTest {
             kvStore.putNodeArtifact(ACTIVE_HOST, artifact(ARTIFACT), SliceState.ACTIVE);
             kvStore.putNodeArtifact(REGISTERED_BY, artifact(ARTIFACT), SliceState.UNLOAD);
 
-            var hint = ScheduledTaskRoutes.selectHostingHint(kvStore, SELF, artifact(ARTIFACT), REGISTERED_BY);
+            var hint = ScheduledTaskRoutes.selectHostingHint(kvStore, SliceRowSource.legacy(), SELF, artifact(ARTIFACT), REGISTERED_BY);
 
             assertEquals(ACTIVE_HOST.id(), hint,
                           "Hint must point at the node holding the ACTIVE placement, not registration history");
@@ -541,7 +542,7 @@ class ScheduledTaskRoutesInjectTest {
             kvStore.putNodeArtifact(SELF, artifact(ARTIFACT), SliceState.ACTIVE);
             kvStore.putNodeArtifact(ACTIVE_HOST, artifact(ARTIFACT), SliceState.ACTIVE);
 
-            var hint = ScheduledTaskRoutes.selectHostingHint(kvStore, SELF, artifact(ARTIFACT), REGISTERED_BY);
+            var hint = ScheduledTaskRoutes.selectHostingHint(kvStore, SliceRowSource.legacy(), SELF, artifact(ARTIFACT), REGISTERED_BY);
 
             assertEquals(ACTIVE_HOST.id(), hint, "Hint must exclude the receiving node");
         }
@@ -552,7 +553,7 @@ class ScheduledTaskRoutesInjectTest {
             var otherArtifact = artifact("org.example:other:1.0.0");
             kvStore.putNodeArtifact(ACTIVE_HOST, otherArtifact, SliceState.ACTIVE);
 
-            var hint = ScheduledTaskRoutes.selectHostingHint(kvStore, SELF, artifact(ARTIFACT), REGISTERED_BY);
+            var hint = ScheduledTaskRoutes.selectHostingHint(kvStore, SliceRowSource.legacy(), SELF, artifact(ARTIFACT), REGISTERED_BY);
 
             assertEquals(REGISTERED_BY.id(), hint,
                           "ACTIVE placement for a different artifact must not win the hint");
@@ -565,7 +566,7 @@ class ScheduledTaskRoutesInjectTest {
             kvStore.putNodeArtifact(ACTIVE_HOST, artifact(ARTIFACT), SliceState.ACTIVATING);
             kvStore.putNodeArtifact(REGISTERED_BY, artifact(ARTIFACT), SliceState.LOADED);
 
-            var hint = ScheduledTaskRoutes.selectHostingHint(kvStore, SELF, artifact(ARTIFACT), REGISTERED_BY);
+            var hint = ScheduledTaskRoutes.selectHostingHint(kvStore, SliceRowSource.legacy(), SELF, artifact(ARTIFACT), REGISTERED_BY);
 
             assertEquals(REGISTERED_BY.id(), hint,
                           "With no ACTIVE placement the hint must fall back to registeredBy");
@@ -575,7 +576,7 @@ class ScheduledTaskRoutesInjectTest {
         void selectHostingHint_fallsBackToRegisteredBy_whenStoreEmpty() {
             var kvStore = new TestKVStore();
 
-            var hint = ScheduledTaskRoutes.selectHostingHint(kvStore, SELF, artifact(ARTIFACT), REGISTERED_BY);
+            var hint = ScheduledTaskRoutes.selectHostingHint(kvStore, SliceRowSource.legacy(), SELF, artifact(ARTIFACT), REGISTERED_BY);
 
             assertEquals(REGISTERED_BY.id(), hint, "Empty placement must never yield an empty hint");
         }

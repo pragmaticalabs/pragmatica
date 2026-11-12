@@ -16,7 +16,12 @@ import java.util.function.Supplier;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
+import org.pragmatica.aether.slice.kvstore.ObservedSliceFeed;
+import org.pragmatica.aether.slice.kvstore.ObservedSliceListener;
+import org.pragmatica.aether.slice.kvstore.SliceRowSource;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
@@ -102,6 +107,7 @@ public final class DeploymentWiring {
         bindings.put("B13.StopDrain", nodeTarget("fsm2:Fsm2System.drainNode"));
         bindings.put("B16.Seams", engineTarget("fsm2:SeamPoller"));
         bindings.put("B20.LineageMint", "marker=" + engine);
+        bindings.put("B21.SliceRows", nodeTarget("fsm2:SliceRowSource.observed"));
         this.routes = Fsm2Routes.fsm2Routes(routeTargets(node, this::deliverToNode, this::deliverToCluster));
     }
 
@@ -234,6 +240,15 @@ public final class DeploymentWiring {
         return admissions;
     }
 
+    /// B21 (deployment state machine spec 1.6.1): where a reader that scans the store reads the per-node slice rows. The `NodeArtifactKey`
+    /// rows under LEGACY; under FSM2 the current `SliceObservedKey` rows, stale only when the seam's token for the node is known and differs
+    /// from the row's (C8: an unknown token reads current).
+    public SliceRowSource sliceRows() {
+        return isFsm2()
+               ? SliceRowSource.observed(admissions::tokenOf)
+               : SliceRowSource.legacy();
+    }
+
     // -- the FSM2 engine -------------------------------------------------------------------------------------------
     /// Attaches the assembled FSM2 system: a core's whole system, a worker's node half. Refused under LEGACY, and refused when the system's role
     /// is not the node's (a core's system handed to a worker, or the reverse).
@@ -324,6 +339,35 @@ public final class DeploymentWiring {
     private void recordNodeRoutes() {
         List.of("SliceDesiredKey", "SliceObservedKey", "SliceTargetKey", "VersionRoutingKey").forEach(family -> bindings.put("B1.node." + family,
                                                                                                                              "fsm2:Fsm2Routes"));
+    }
+
+    /// B21 (deployment state machine spec 1.6.1, R-1.6.6): the routes of the readers outside the two FSMs that follow the observed rows. Under
+    /// FSM2, on a core and on a worker alike, the `SliceObservedKey` puts and removes feed the `state` listeners through a state feed and the
+    /// `traffic` listeners through a traffic feed, which also follows the `NodeDepartureKey` records; both read tokens through the admission
+    /// seam. Under LEGACY nothing is registered here: those readers keep their `NodeArtifactKey` routes, each bound through [#legacy].
+    @Contract
+    public void registerReaders(KVNotificationRouter.Builder<AetherKey, AetherValue> builder,
+                                List<ObservedSliceListener> state,
+                                List<ObservedSliceListener> traffic) {
+        if (isFsm2()) {
+            registerObservedFeeds(builder,
+                                  ObservedSliceFeed.stateFeed(admissions::tokenOf, state),
+                                  ObservedSliceFeed.trafficFeed(admissions::tokenOf, traffic));
+        }
+    }
+
+    private void registerObservedFeeds(KVNotificationRouter.Builder<AetherKey, AetherValue> builder,
+                                       ObservedSliceFeed stateFeed,
+                                       ObservedSliceFeed trafficFeed) {
+        builder.onPut(SliceObservedKey.class, stateFeed::onObservedPut)
+               .onRemove(SliceObservedKey.class, stateFeed::onObservedRemove)
+               .onPut(SliceObservedKey.class, trafficFeed::onObservedPut)
+               .onRemove(SliceObservedKey.class, trafficFeed::onObservedRemove)
+               .onPut(NodeDepartureKey.class, trafficFeed::onDeparturePut)
+               .onRemove(NodeDepartureKey.class, trafficFeed::onDepartureRemove);
+        bindings.put("B21.readers.state.SliceObservedKey", "fsm2:ObservedSliceFeed.stateFeed");
+        bindings.put("B21.readers.traffic.SliceObservedKey", "fsm2:ObservedSliceFeed.trafficFeed");
+        bindings.put("B21.readers.traffic.NodeDepartureKey", "fsm2:ObservedSliceFeed.trafficFeed");
     }
 
     /// B2, B7, B8, B9: the message routes the FSM2 engine consumes. Under LEGACY none; for a worker the quorum edge (B2) only.

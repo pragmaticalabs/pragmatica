@@ -13,13 +13,20 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
+import org.pragmatica.aether.slice.kvstore.ObservedSliceListener;
+import org.pragmatica.aether.slice.kvstore.ObservedSlices;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 
 
-public sealed interface DeploymentMap {
+/// The per-node slice states of the cluster, as this node's committed mirror shows them. Under LEGACY it is fed the `NodeArtifactKey` rows;
+/// under FSM2 it is an [ObservedSliceListener] on the state feed (deployment state machine spec 1.6.1): the current observed rows, in the
+/// legacy state vocabulary ([ObservedSlices#sliceState]). Stream consumer placement reads it through [#byArtifact].
+public sealed interface DeploymentMap extends ObservedSliceListener {
     @SuppressWarnings("JBCT-RET-01")
     void onNodeArtifactPut(ValuePut<NodeArtifactKey, NodeArtifactValue> valuePut);
 
@@ -58,6 +65,21 @@ final class IndexedDeploymentMap implements DeploymentMap {
     public void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) {
         var key = valueRemove.cause().key();
 
+        index.remove(new SliceNodeKey(key.artifact(), key.nodeId()));
+    }
+
+    /// FSM2: a shown row's state replaces the pair's entry. The feed shows no tombstone, so the mapping always yields a state.
+    @SuppressWarnings("JBCT-RET-01")
+    @Override
+    public void onObservedSlice(SliceObservedKey key, SliceObservedValue row) {
+        ObservedSlices.sliceState(row.state())
+                      .onPresent(state -> index.put(new SliceNodeKey(key.artifact(), key.nodeId()), state));
+    }
+
+    /// FSM2: the pair's row is no longer shown.
+    @SuppressWarnings("JBCT-RET-01")
+    @Override
+    public void onObservedSliceGone(SliceObservedKey key) {
         index.remove(new SliceNodeKey(key.artifact(), key.nodeId()));
     }
 

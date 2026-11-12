@@ -41,6 +41,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.SliceRowSource;
 import org.pragmatica.aether.node.projection.ProjectionNodeSupport;
 import org.pragmatica.aether.node.stream.ConsensusBatchCounters;
 import org.pragmatica.aether.node.stream.StreamConsumerManager;
@@ -112,6 +113,12 @@ public interface ManageableNode {
     }
 
     KVStore<AetherKey, AetherValue> kvStore();
+
+    /// Where the per-node slice rows of [#kvStore] are read (deployment state machine spec 1.6.1): the deployment engine's source. Default the
+    /// LEGACY rows for node doubles; a node answers its wiring's source.
+    default SliceRowSource sliceRows() {
+        return SliceRowSource.legacy();
+    }
 
     /// D1-react (KVStore dispatcher design §3.6): the node's react executors, one per C9 component, for the per-component
     /// `react.queue.depth`, high-water and engine-stopped drop gauges. Default empty for node doubles.

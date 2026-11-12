@@ -22,7 +22,8 @@ import org.pragmatica.lang.Option;
 ///
 /// A rolled-back blueprint removes its `SliceTargetKey`; its UNLOAD commands are separate consensus
 /// rounds and can fail (measured: `Consensus apply timed out after 30000ms` during a rollback),
-/// leaving a `NodeArtifactKey` behind that the node's KV-convergence redeploy then dutifully loaded
+/// leaving a `NodeArtifactKey` behind (LEGACY; under FSM2 the node's load trigger is the leader's
+/// `SliceDesiredKey` goal, deployment state machine spec 1.6.1) that the node's KV-convergence redeploy then dutifully loaded
 /// and served — with no owning blueprint, on a stream address the rolled-back blueprint never
 /// committed. The node-side gate (`NodeDeploymentState.Active`), the leader's ACTIVATE substitution
 /// and the orphan sweep (`StaleEntryCleaner`) all read THIS predicate from the committed store, never

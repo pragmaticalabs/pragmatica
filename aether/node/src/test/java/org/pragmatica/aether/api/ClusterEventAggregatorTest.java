@@ -39,6 +39,11 @@ import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.Generation;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
@@ -2686,6 +2691,45 @@ class ClusterEventAggregatorTest {
         assertThat(events.getFirst().summary()).contains("node-2")
                                                .contains(ROLLBACK_ARTIFACT.asString())
                                                .contains("Reactivation after quorum restore failed");
+    }
+
+    /// FSM2 (deployment state machine spec 1.6.1): the aggregator reads the observed rows the state feed shows. A FAILED observed row is one
+    /// WARNING `DeploymentFailed` with the row's reason. Red if the aggregator reads only `NodeArtifactKey` puts.
+    @Test
+    void observedFailedRow_emitsOneWarningDeploymentFailed_namingNodeArtifactAndReason() {
+        var h = Harness.create();
+        var key = SliceObservedKey.sliceObservedKey(new NodeId("node-2"), ROLLBACK_ARTIFACT);
+
+        h.aggregator().onObservedSlice(key, observedRow(SliceObservedState.FAILED, Option.some("activation timed out")));
+
+        var events = h.events();
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst()).isInstanceOf(ClusterEvent.DeploymentFailed.class);
+        assertThat(events.getFirst().severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(events.getFirst().summary()).contains("node-2")
+                                               .contains(ROLLBACK_ARTIFACT.asString())
+                                               .contains("activation timed out");
+    }
+
+    /// FSM2: the first observed write of a chain is LOADING (there is no observed LOAD), so LOADING starts the deployment and ACTIVE completes
+    /// it; the states between raise nothing, and a row gone raises nothing.
+    @Test
+    void observedLoadingThenActive_emitsStartedThenCompleted_andNothingElse() {
+        var h = Harness.create();
+        var key = SliceObservedKey.sliceObservedKey(new NodeId("node-3"), ROLLBACK_ARTIFACT);
+
+        h.aggregator().onObservedSlice(key, observedRow(SliceObservedState.LOADING, Option.none()));
+        h.aggregator().onObservedSlice(key, observedRow(SliceObservedState.LOADED, Option.none()));
+        h.aggregator().onObservedSlice(key, observedRow(SliceObservedState.ACTIVATING, Option.none()));
+        h.aggregator().onObservedSlice(key, observedRow(SliceObservedState.ACTIVE, Option.none()));
+        h.aggregator().onObservedSliceGone(key);
+
+        assertThat(h.events()).extracting(event -> event.getClass().getSimpleName())
+                              .containsExactly("DeploymentStarted", "DeploymentCompleted");
+    }
+
+    private static SliceObservedValue observedRow(SliceObservedState state, Option<String> reason) {
+        return new SliceObservedValue(state, 1L, new Generation(1L, 1L), new ProcessIncarnation(1L, 0L), reason, false, 0, List.of(), 0L);
     }
 
     // --- production retention -------------------------------------------------------------------
