@@ -13,7 +13,16 @@ import org.pragmatica.aether.api.DynamicConfigManager;
 import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerGroupKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerGroupValue;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
+import org.pragmatica.cluster.node.ClusterNode;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.ContentType;
@@ -108,6 +117,52 @@ class ManagementCompositeAndIdParseStatusTest {
         var body = new StreamRoutes.LeaveGroupRequest("g1", "orders", "c1");
 
         assertThat(statusOf(routes.routes(), ManagementRoute.CONSUMER_GROUP_LEAVE, List.of(), body)).isEqualTo(HttpStatus.CONFLICT);
+    }
+
+    // ---- (3b) #2642: the deposed-leader refusal is an expected race outcome, not a server fault ----
+
+    @Test
+    void consumerGroupJoin_answers409_whenARebalanceIsSuperseded() {
+        var routes = StreamRoutes.streamRoutes(() -> node(Map.of("self", NodeId.nodeId("node-1").unwrap())), supersededCoordinator(), null);
+        var body = new StreamRoutes.JoinGroupRequest("g1", "orders", 4, "c1");
+
+        assertThat(statusOf(routes.routes(), ManagementRoute.CONSUMER_GROUP_JOIN, List.of(), body)).isEqualTo(HttpStatus.CONFLICT);
+    }
+
+    @Test
+    void consumerGroupLeave_answers409_whenARebalanceIsSuperseded() {
+        var routes = StreamRoutes.streamRoutes(() -> node(Map.of()), supersededCoordinator(), null);
+        var body = new StreamRoutes.LeaveGroupRequest("g1", "orders", "c1");
+
+        assertThat(statusOf(routes.routes(), ManagementRoute.CONSUMER_GROUP_LEAVE, List.of(), body)).isEqualTo(HttpStatus.CONFLICT);
+    }
+
+    @Test
+    void streamsGroupCreate_answers409_whenARebalanceIsSuperseded() {
+        var routes = StreamApiRoutes.streamApiRoutes(() -> node(Map.of("self", NodeId.nodeId("node-1").unwrap())),
+                                                     null,
+                                                     supersededCoordinator(),
+                                                     null);
+        var body = new StreamApiRoutes.GroupCreateRequest("g1", null);
+
+        assertThat(statusOf(routes.routes(), ManagementRoute.STREAMS_GROUP_CREATE, List.of("ns", "orders", "1.0.0", "groups"), body))
+            .isEqualTo(HttpStatus.CONFLICT);
+    }
+
+    /// A REAL active coordinator (term 1) whose registry already holds an assignment committed under term 5: every rebalance it
+    /// derives is refused with `CoordinatorError.SUPERSEDED` before anything is submitted, so the cluster node is never reached.
+    @SuppressWarnings("unchecked")
+    private static ConsumerGroupCoordinator supersededCoordinator() {
+        var registry = ConsumerGroupRegistry.consumerGroupRegistry();
+        var committed = Epoch.epoch(1L, 5L, 0L);
+
+        registry.onConsumerGroupPut(new ValuePut<>(new KVCommand.Put<>(new ConsumerGroupKey("g1", "orders", 0),
+                                                                       (AetherValue) ConsumerGroupValue.consumerGroupValue(NodeId.nodeId("node-9").unwrap(), "c0", committed)),
+                                                   Option.none()));
+        var coordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(mock(ClusterNode.class), registry, () -> Epoch.epoch(1L, 1L, 0L));
+
+        coordinator.onLeaderChange(new LeaderChange(Option.some(NodeId.nodeId("node-1").unwrap()), true));
+        return coordinator;
     }
 
     // ---- (4) stream and topic addresses (namespace / name / version) and their not-found refusals ----
