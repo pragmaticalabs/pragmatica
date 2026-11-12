@@ -17,6 +17,7 @@ import org.pragmatica.aether.resource.db.DatabaseConnector;
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
 import org.pragmatica.aether.resource.db.PoolConfig;
 import org.pragmatica.aether.resource.db.SqlConnector;
+import org.pragmatica.testing.DockerRequirement;
 import org.testcontainers.containers.PostgreSQLContainer;
 
 import static org.assertj.core.api.Assertions.assertThat;

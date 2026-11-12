@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.config;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.stream.Collectors;
 
 import org.pragmatica.config.toml.TomlDocument;
@@ -87,7 +88,10 @@ public record JbctConfig(FormatterConfig formatter,
             if (lint.disabledRules().contains(entry.getKey())) {
                 sb.append(entry.getKey()).append(" = \"off\"\n");
             } else {
-                sb.append(entry.getKey()).append(" = \"").append(entry.getValue().name().toLowerCase()).append("\"\n");
+                sb.append(entry.getKey())
+                  .append(" = \"")
+                  .append(entry.getValue().name().toLowerCase(Locale.ROOT))
+                  .append("\"\n");
             }
         }
 

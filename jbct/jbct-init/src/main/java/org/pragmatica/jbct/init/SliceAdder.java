@@ -3,6 +3,7 @@ package org.pragmatica.jbct.init;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Locale;
 import java.util.regex.Pattern;
 
 import org.pragmatica.lang.Cause;
@@ -144,12 +145,12 @@ public final class SliceAdder {
         return Option.option(packageOverride)
                      .filter(Verify.Is::notBlank)
                      .map(config::resolvePackage)
-                     .or(() -> config.basePackage() + "." + sliceName.toLowerCase());
+                     .or(() -> config.basePackage() + "." + sliceName.toLowerCase(Locale.ROOT));
     }
 
     private String substituteVariables(String template) {
         var factoryMethodName = Character.toLowerCase(sliceName.charAt(0)) + sliceName.substring(1);
-        var kebabCase = sliceName.replaceAll("([a-z])([A-Z])", "$1-$2").toLowerCase();
+        var kebabCase = sliceName.replaceAll("([a-z])([A-Z])", "$1-$2").toLowerCase(Locale.ROOT);
 
         return template.replace("{{slicePackage}}", slicePackage)
                        .replace("{{sliceName}}", sliceName)

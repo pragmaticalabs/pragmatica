@@ -761,13 +761,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // The same holds for the ready hooks (a caller that awaited the start has them fired) and for the failed-start
         // reset of `isRunning` (a retry after the failure is not turned away by a CAS the late handler had not cleared).
         // The start promise resolves on a Netty I/O thread and a dependent step runs on the resolving thread, so the hooks
-        // themselves are an ASYNC chain step (`fireReadyHooks`): the start still waits for them, but they never run on the
+        // run after a `continueOn()` hop (`fireReadyHooks`): the start still waits for them, but they never run on the
         // I/O thread (the only production hook binds SWIM's UDP port and awaits it).
         return serverRef.start(port)
                         .map(unit -> captureLoopbackLoop(serverRef, unit))
                         .withSuccess(_ -> armPeriodicTasks())
                         .withSuccess(_ -> transportReady.set(true))
-                        .flatMap(this::fireReadyHooks)
+                        .continueOn()
+                        .withSuccess(_ -> fireReadyHooks())
                         .withFailure(this::onStartFailed)
                         .mapToUnit();
     }
@@ -798,21 +799,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
     }
 
-    /// Runs as an async chain step of the start (off the I/O thread, before the start resolves), so a hook that throws must not fail the start it reports on: each hook is
+    /// Runs as a dependent step after `continueOn()` (off the I/O thread, before the start resolves), so a hook that throws must not fail the start it reports on: each hook is
     /// isolated and a throw is logged (the hooks after it still run, as the detached handler never guaranteed).
     ///
     /// FER (degrade forward): the start has already succeeded, so a hook's throw is absorbed with a WARN rather than reported
     /// as a failed start. Guarantee earned: the start's outcome is the transport's, not a hook's. Mechanism: a single run per
     /// hook; the WARN is the only record of a lost hook.
-    private Promise<Unit> fireReadyHooks(Unit unit) {
-        return Promise.promise(this::runReadyHooks);
-    }
-
     @Contract
-    private void runReadyHooks(Promise<Unit> done) {
+    private void fireReadyHooks() {
         readyHooks.forEach(this::runReadyHook);
         readyHooks.clear();
-        done.succeed(unit());
     }
 
     @Contract

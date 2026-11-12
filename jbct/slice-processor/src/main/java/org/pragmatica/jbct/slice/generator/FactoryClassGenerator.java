@@ -24,6 +24,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -2000,10 +2001,10 @@ public class FactoryClassGenerator {
 
         if (i < name.length()) {
             return name.substring(0, i - 1)
-                       .toLowerCase() + name.substring(i - 1);
+                       .toLowerCase(Locale.ROOT) + name.substring(i - 1);
         }
 
-        return name.toLowerCase();
+        return name.toLowerCase(Locale.ROOT);
     }
 
     private String capitalize(String name) {
@@ -2498,11 +2499,11 @@ public class FactoryClassGenerator {
 
             if (i == name.length() || i == 1) {
                 return name.substring(0, i)
-                           .toLowerCase() + name.substring(i);
+                           .toLowerCase(Locale.ROOT) + name.substring(i);
             }
 
             return name.substring(0, i - 1)
-                       .toLowerCase() + name.substring(i - 1);
+                       .toLowerCase(Locale.ROOT) + name.substring(i - 1);
         }
 
         /// Generates the full config access expression for use inside Result.all().

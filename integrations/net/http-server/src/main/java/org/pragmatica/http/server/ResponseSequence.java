@@ -76,7 +76,7 @@ final class ResponseSequence {
     }
 
     /// The connection's sequence; one without a timeout when none was installed.
-    static ResponseSequence of(Channel channel) {
+    static ResponseSequence responseSequence(Channel channel) {
         var created = new ResponseSequence(channel.eventLoop(),
                                            TimeSpan.timeSpan(0).millis());
 

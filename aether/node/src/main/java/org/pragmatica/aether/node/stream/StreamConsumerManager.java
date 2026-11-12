@@ -694,7 +694,7 @@ public interface StreamConsumerManager {
         /// blue-green collapse (see `TopicGroupDeclarationSource`) and is never flagged as a collision.
         private List<SubscriptionKey> desiredFor(ConsumerDeclaration declaration,
                                                  Map<ConsumerGroupKey, List<ArtifactBase>> collisions) {
-            var colliding = Option.option(collisions.get(ConsumerGroupKey.of(declaration)));
+            var colliding = Option.option(collisions.get(ConsumerGroupKey.consumerGroupKey(declaration)));
 
             if (colliding.isPresent()) {
                 return declineColliding(declaration, colliding.unwrap());
@@ -844,7 +844,7 @@ public interface StreamConsumerManager {
         /// encounter order, so resolution picks the same first match the full-list scan did.
         private static Map<ConsumerGroupKey, List<ConsumerDeclaration>> declarationsByGroup(List<ConsumerDeclaration> declarations) {
             return declarations.stream()
-                               .collect(Collectors.groupingBy(ConsumerGroupKey::of));
+                               .collect(Collectors.groupingBy(ConsumerGroupKey::consumerGroupKey));
         }
 
         private static List<ArtifactBase> distinctBases(List<ConsumerDeclaration> declarations) {
@@ -1076,7 +1076,7 @@ public interface StreamConsumerManager {
         /// change to how `desired` is built cannot silently turn a collision into an arbitrary winner.
         private Option<ConsumerDeclaration> declarationFor(SubscriptionKey key,
                                                            Map<ConsumerGroupKey, List<ConsumerDeclaration>> byGroup) {
-            var matches = byGroup.getOrDefault(ConsumerGroupKey.of(key), List.of());
+            var matches = byGroup.getOrDefault(ConsumerGroupKey.consumerGroupKey(key), List.of());
             var bases = distinctBases(matches);
 
             if (bases.size() > 1) {
@@ -1464,11 +1464,11 @@ public interface StreamConsumerManager {
     /// fighting over that same group", which the physical key can never see because it is not
     /// supposed to know about the artifact at all.
     record ConsumerGroupKey(String streamName, String consumerGroup) {
-        static ConsumerGroupKey of(ConsumerDeclaration declaration) {
+        static ConsumerGroupKey consumerGroupKey(ConsumerDeclaration declaration) {
             return new ConsumerGroupKey(declaration.streamName(), declaration.consumerGroup());
         }
 
-        static ConsumerGroupKey of(SubscriptionKey key) {
+        static ConsumerGroupKey consumerGroupKey(SubscriptionKey key) {
             return new ConsumerGroupKey(key.streamName(), key.consumerGroup());
         }
     }

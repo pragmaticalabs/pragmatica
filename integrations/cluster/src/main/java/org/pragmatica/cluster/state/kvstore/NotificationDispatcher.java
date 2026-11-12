@@ -117,6 +117,11 @@ final class NotificationDispatcher {
     /// an install is signalled even when its burst is empty. A LIST, not one slot (#2981 C1): FSM2's install signal and the node lease's revoke
     /// both listen, and a single slot would let whichever registers second silently displace the other. Appended at wiring.
     private final List<LongConsumer> replayStartListeners = new CopyOnWriteArrayList<>();
+
+    /// Told, on the delivering thread, the revision of each replay item AFTER its whole burst is delivered (empty burst included), so a subscriber can
+    /// act on the caught-up delivered view (#3028). Set once at wiring; the default ignores it.
+    private volatile LongConsumer replayEnd = _ -> {};
+
     private final ThreadLocal<Boolean> replaying = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private final ThreadLocal<Option<DeliveryBatch>> delivering = ThreadLocal.withInitial(Option::none);
     /// Mutation guard holder only (inline mode): true while this thread's drain is running, so a reentrant write appends.
@@ -176,6 +181,11 @@ final class NotificationDispatcher {
     @Contract
     void onReplayStart(LongConsumer listener) {
         replayStartListeners.add(listener);
+    }
+
+    @Contract
+    void onReplayEnd(LongConsumer listener) {
+        replayEnd = listener;
     }
 
     String name() {
@@ -364,6 +374,9 @@ final class NotificationDispatcher {
                            : batch.notifications();
 
             messages.forEach(this::deliverOne);
+            if (batch.replay()) {
+                replayEnd.accept(batch.revision());
+            }
         } finally {
             replaying.set(Boolean.FALSE);
             delivering.set(Option.none());

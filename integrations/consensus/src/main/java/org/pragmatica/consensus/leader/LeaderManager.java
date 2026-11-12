@@ -516,19 +516,31 @@ public interface LeaderManager {
         @Contract
         @Override
         public void peerDisconnected(PeerDisconnected peerDisconnected) {
-            // Local mode needs the new leader to appear BEFORE the NodeGone event so the FSM
-            // stays in Led (different leader) rather than going Led → ReElecting → Led, which
-            // would emit an intermediate "no leader" notification unexpected for legacy consumers.
-            if (localMode) {
-                dispatchLocalModeAdoption(peerDisconnected.topology().stream().filter(context::isEligible).toList());
-            }
+            var nodeGone = new ClusterFsmEvent.NodeGone(peerDisconnected.nodeId(),
+                                                        peerDisconnected.topology()
+                                                                        .stream()
+                                                                        .filter(context::isEligible)
+                                                                        .toList(),
+                                                        peerDisconnected.sequence());
 
-            fsm.dispatch(new ClusterFsmEvent.NodeGone(peerDisconnected.nodeId(),
-                                                      peerDisconnected.topology()
-                                                                      .stream()
-                                                                      .filter(context::isEligible)
-                                                                      .toList(),
-                                                      peerDisconnected.sequence()));
+            if (localMode) {
+                disconnectLocally(nodeGone);
+            } else {
+                fsm.dispatch(nodeGone);
+            }
+        }
+
+        /// Local mode needs the new leader to appear BEFORE the `NodeGone` event, so the FSM stays in `Led` (different
+        /// leader) rather than going `Led` → `ReElecting` → `Led`, which would emit an intermediate "no leader"
+        /// notification (#3044). The view is applied first, through the same fence the FSM uses: a stale eviction
+        /// (older than a view already applied) neither adopts nor dispatches. An applied one adopts from the STORED
+        /// view, then dispatches; the FSM's own `applyTopology` finds the event already applied, so `Led` does not
+        /// lose the leader the adoption has just moved.
+        private void disconnectLocally(ClusterFsmEvent.NodeGone nodeGone) {
+            if (context.applyTopology(nodeGone)) {
+                electLocallyIfPossible();
+                fsm.dispatch(nodeGone);
+            }
         }
 
         @Contract
@@ -537,11 +549,25 @@ public interface LeaderManager {
             // SWIM-FAULTY removes exactly the faulty peer, view-free (#3044): SWIM's snapshot is not a sequenced
             // transport view, so it never replaces the stored one (it would also drop SUSPECT peers and re-add peers
             // the transport has evicted).
+            // Local mode removes the peer first and, only if it was removed, adopts from the STORED view and then
+            // dispatches (#3044), so `Led` never sees an intermediate "no leader"; the FSM's removal then finds the peer
+            // gone. A refused removal (the last node stays) neither adopts nor dispatches: in local mode the leader is the
+            // first entry of the stored view, so nothing was removed and nothing may move, and a dispatch would make `Led`
+            // lose a leader that no local commit can restore.
+            // Non-local mode dispatches even when nothing was removed: a removal is never stale, and `Led` loses a
+            // removed leader unconditionally even when the stored view no longer holds it.
             if (localMode) {
-                dispatchLocalModeAdoption(peerObservedFaulty.topology().stream().filter(context::isEligible).toList());
+                removeLocally(peerObservedFaulty.nodeId());
+            } else {
+                fsm.dispatch(new LeaderElectionEvents.PeerRemovedFromView(peerObservedFaulty.nodeId()));
             }
+        }
 
-            fsm.dispatch(new LeaderElectionEvents.PeerRemovedFromView(peerObservedFaulty.nodeId()));
+        private void removeLocally(NodeId nodeId) {
+            if (context.removeFromView(nodeId)) {
+                electLocallyIfPossible();
+                fsm.dispatch(new LeaderElectionEvents.PeerRemovedFromView(nodeId));
+            }
         }
 
         @Contract
@@ -586,16 +612,6 @@ public interface LeaderManager {
         public void selfShutdown(SelfShutdown selfShutdown) {
             // Self-shutdown is not a cluster decision — local view collapsing.
             fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());
-        }
-
-        private void dispatchLocalModeAdoption(List<NodeId> topology) {
-            var sorted = topology.stream().sorted().toList();
-
-            if (sorted.isEmpty()) {
-                return;
-            }
-
-            fsm.dispatch(new LeaderElectionEvents.LeaderCommitted(sorted.getFirst()));
         }
 
         @Contract

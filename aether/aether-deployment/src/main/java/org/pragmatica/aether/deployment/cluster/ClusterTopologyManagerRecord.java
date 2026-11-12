@@ -9,6 +9,7 @@ import java.time.Instant;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -3378,7 +3379,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return instance.status()
                        .getClass()
                        .getSimpleName()
-                       .toUpperCase();
+                       .toUpperCase(Locale.ROOT);
     }
 
     /// The delete carries the exact value read, so a mark replaced since (a later incarnation's) fails the commit and survives.

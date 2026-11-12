@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.util.Locale;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -149,7 +150,7 @@ class MetricsRoutesTest {
                                 .await();
 
             assertTrue(result.isFailure());
-            result.onFailure(cause -> assertTrue(cause.message().toLowerCase().contains("metric"),
+            result.onFailure(cause -> assertTrue(cause.message().toLowerCase(Locale.ROOT).contains("metric"),
                                                   "Failure must mention missing metric: " + cause.message()));
         }
 
@@ -162,7 +163,7 @@ class MetricsRoutesTest {
                                 .await();
 
             assertTrue(result.isFailure());
-            result.onFailure(cause -> assertTrue(cause.message().toLowerCase().contains("starttime"),
+            result.onFailure(cause -> assertTrue(cause.message().toLowerCase(Locale.ROOT).contains("starttime"),
                                                   "Failure must mention the bad window: " + cause.message()));
         }
 
@@ -175,7 +176,7 @@ class MetricsRoutesTest {
                                 .await();
 
             assertTrue(result.isFailure());
-            result.onFailure(cause -> assertTrue(cause.message().toLowerCase().contains("interval"),
+            result.onFailure(cause -> assertTrue(cause.message().toLowerCase(Locale.ROOT).contains("interval"),
                                                   "Failure must mention bad interval: " + cause.message()));
         }
     }

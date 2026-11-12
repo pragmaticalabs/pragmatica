@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.shared;
 
 import java.net.URI;
+import java.util.Locale;
 import java.util.Set;
 
 import org.pragmatica.lang.Result;
@@ -50,7 +51,7 @@ public sealed interface UrlValidation permits UrlValidation.unused {
             return SecurityError.UrlRejected.urlRejected(url, "no host specified").result();
         }
 
-        var hostLower = host.toLowerCase();
+        var hostLower = host.toLowerCase(Locale.ROOT);
 
         if (!TRUSTED_DOMAINS.contains(hostLower)) {
             return SecurityError.DomainRejected.domainRejected(url, hostLower).result();

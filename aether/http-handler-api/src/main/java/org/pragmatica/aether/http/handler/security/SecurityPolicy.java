@@ -3,6 +3,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.http.handler.security;
 
+import java.util.Locale;
+
 import org.pragmatica.http.routing.security.Access;
 import org.pragmatica.http.routing.security.RequestSecurityContext;
 import org.pragmatica.http.routing.security.RouteSecurityPolicy;
@@ -200,7 +202,7 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
     }
 
     static SecurityPolicy fromBlueprintString(String value) {
-        return switch (value.toLowerCase()
+        return switch (value.toLowerCase(Locale.ROOT)
                             .strip()) {
             case "public" -> publicRoute();
             case "optional" -> optional();
@@ -264,7 +266,7 @@ public sealed interface SecurityPolicy extends RouteSecurityPolicy {
     }
 
     private static SecurityPolicy parseBlueprintRoleOrDefault(String value) {
-        var stripped = value.strip().toLowerCase();
+        var stripped = value.strip().toLowerCase(Locale.ROOT);
 
         if (stripped.startsWith("role:")) {
             return roleRequired(value.strip().substring(5));

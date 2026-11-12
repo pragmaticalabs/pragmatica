@@ -92,7 +92,7 @@ public record NodeFsmTimings(long loadMs,
                                   deployment.deactivating().millis(),
                                   deployment.unloading().millis(),
                                   deployment.activationChain().millis(),
-                                  of(SliceState.ACTIVATING),
+                                  stateTimeoutMs(SliceState.ACTIVATING),
                                   TOMBSTONE_GRACE_MS,
                                   load,
                                   submitTimeout.plus(WRITE_ATTEMPT_MARGIN).millis(),
@@ -143,7 +143,7 @@ public record NodeFsmTimings(long loadMs,
         };
     }
 
-    private static long of(SliceState state) {
+    private static long stateTimeoutMs(SliceState state) {
         return state.timeout()
                     .map(TimeSpan::millis)
                     .or(ACTIVATING_CHECK_MS);

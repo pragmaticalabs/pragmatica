@@ -16,7 +16,7 @@ import org.pragmatica.lang.Option;
 /// handshake; a bootstrap peer is in the topology only as configured (no version), and its version arrives with its handshake into the
 /// membership descriptor, next to role and source. The topology label wins when present; `""` means unknown.
 public sealed interface AdvertisedVersion {
-    static String of(NodeId id, TopologyManager topology, Option<MembershipFsm> membership) {
+    static String advertisedVersion(NodeId id, TopologyManager topology, Option<MembershipFsm> membership) {
         return topology.get(id)
                        .flatMap(info -> Option.option(info.labels().get(NodeInfo.LABEL_VERSION)))
                        .filter(version -> !version.isBlank())

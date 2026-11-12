@@ -115,12 +115,15 @@ public sealed interface Directory {
     private static ClusterModel giveUp(ClusterModel m, Ctx ctx, NodeId node) {
         m.assignmentRefusals = m.assignmentRefusals.remove(node);
         m.pendingJoins = m.pendingJoins.remove(node);
-        m.unplacedWarned = m.unplacedWarned.add(node);
-        ctx.warn(ASSIGNMENT_UNPLACED,
-                 node.id(),
-                 "Worker " + node.id()
-                + " has no community: its assignment changed before commit " + MAX_ASSIGNMENT_ATTEMPTS
-                + " times in a row. It takes one when it is admitted again");
+        // #2834: once per episode: an open warning, this leader's or inherited from the committed open set (`Warnings.inherit`), is not raised again.
+        if (!m.unplacedWarned.contains(node)) {
+            m.unplacedWarned = m.unplacedWarned.add(node);
+            ctx.warn(ASSIGNMENT_UNPLACED,
+                     node.id(),
+                     "Worker " + node.id()
+                    + " has no community: its assignment changed before commit " + MAX_ASSIGNMENT_ATTEMPTS
+                    + " times in a row. It takes one when it is admitted again");
+        }
 
         return m;
     }
@@ -360,10 +363,15 @@ public sealed interface Directory {
     // (D.6 row 22). No join stays pending for the worker (no directive is queued), so only its next join runs J5 again: a seams refresh
     // that adds a policy places it at that rejoin, not by itself.
     private static ClusterModel unplaceable(ClusterModel m, Ctx ctx, NodeId node, String source) {
-        m.noPolicyWarned = m.noPolicyWarned.add(node);
-        ctx.warn("worker-no-community-policy",
-                 node.id(),
-                 "No community policy accepts worker " + node.id() + " of source " + source + "; it gets no directive");
+        // #2834: once per episode: an open warning, this leader's or inherited from the committed open set (`Warnings.inherit`), is not raised again.
+        if (!m.noPolicyWarned.contains(node)) {
+            m.noPolicyWarned = m.noPolicyWarned.add(node);
+            ctx.warn("worker-no-community-policy",
+                     node.id(),
+                     "No community policy accepts worker " + node.id()
+                    + " of source " + source
+                    + "; it gets no directive");
+        }
 
         return m;
     }
@@ -423,16 +431,19 @@ public sealed interface Directory {
                                              NodeId node,
                                              String source,
                                              CommunityPolicy policy) {
-        m.growthBlocked = m.growthBlocked.add(source);
-        ctx.warn(GROWTH_BLOCKED,
-                 source,
-                 "No community can take worker " + node.id()
-                + " of source " + source
-                + ": its communities are at the " + CommunityPolicy.CEILING
-                + " ceiling and the source is at the bound of " + policy.maxCommunities()
-                + " (max_size " + policy.maxSize()
-                + "). Raise community_policy.max_communities or max_size, or add worker capacity under another source; "
-                + "the worker takes a community when it rejoins");
+        // #2834: once per episode: an open warning, this leader's or inherited from the committed open set (`Warnings.inherit`), is not raised again.
+        if (!m.growthBlocked.contains(source)) {
+            m.growthBlocked = m.growthBlocked.add(source);
+            ctx.warn(GROWTH_BLOCKED,
+                     source,
+                     "No community can take worker " + node.id()
+                    + " of source " + source
+                    + ": its communities are at the " + CommunityPolicy.CEILING
+                    + " ceiling and the source is at the bound of " + policy.maxCommunities()
+                    + " (max_size " + policy.maxSize()
+                    + "). Raise community_policy.max_communities or max_size, or add worker capacity under another source; "
+                    + "the worker takes a community when it rejoins");
+        }
 
         return m;
     }

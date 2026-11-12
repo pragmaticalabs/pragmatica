@@ -6,6 +6,7 @@ package org.pragmatica.aether.pg.codegen.processor;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 import org.pragmatica.aether.pg.codegen.BatchedAllRenderer;
@@ -118,7 +119,7 @@ public final class FactoryGenerator {
     }
 
     public static String toSqlConstantName(String methodName) {
-        return NamingConvention.toSnakeCase(methodName).toUpperCase();
+        return NamingConvention.toSnakeCase(methodName).toUpperCase(Locale.ROOT);
     }
 
     private static void appendHeader(StringBuilder sb,

@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.lang.Option;
@@ -43,10 +44,14 @@ class GapRebalanceTest {
         var h = lopsided();
 
         h.activate();
-        assertThat(h.submits()).as("first imbalanced tick: hysteresis, no move").isEmpty();
+        assertThat(h.submitsBesides(ClusterModel.SubmitKind.WARNINGS)).as("first imbalanced tick: hysteresis, no move")
+                  .isEmpty();
+        assertThat(h.warningPuts()).as("the worker-absence-unjudgeable warning of the core class is persisted, once")
+                  .containsExactly(new FsmWarningKey("worker-absence-unjudgeable", "core"));
         assertThat(h.model().imbalancedTicks.size()).isEqualTo(3);
         h.deliver(new ClusterInput.Reconcile());
-        assertThat(h.submits()).as("the second tick moves exactly one artifact: a load and an unload").hasSize(2);
+        assertThat(h.submitsBesides(ClusterModel.SubmitKind.WARNINGS)).as("the second tick moves exactly one artifact: a load and an unload")
+                  .hasSize(2);
         assertThat(goalOf(h, CORE_1, A)).isEqualTo(Option.some(SliceGoal.UNLOADED));
         assertThat(goalOf(h, CORE_2, A)).as("the least-loaded core, ties by id")
                   .isEqualTo(Option.some(SliceGoal.LOADED));
@@ -72,7 +77,9 @@ class GapRebalanceTest {
         h.activate();
         h.deliver(new ClusterInput.Reconcile());
         h.deliver(new ClusterInput.Reconcile());
-        assertThat(h.submits()).isEmpty();
+        assertThat(h.submitsBesides(ClusterModel.SubmitKind.WARNINGS)).isEmpty();
+        assertThat(h.warningPuts()).as("the worker-absence-unjudgeable warning of the core class is persisted, once")
+                  .containsExactly(new FsmWarningKey("worker-absence-unjudgeable", "core"));
     }
 
     /// Red when: the donor is chosen among all allocatable cores instead of the cores that host the artifact, so a move names a

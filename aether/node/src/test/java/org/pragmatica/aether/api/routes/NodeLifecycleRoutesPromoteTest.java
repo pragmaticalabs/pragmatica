@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.util.Locale;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -87,7 +88,7 @@ class NodeLifecycleRoutesPromoteTest {
                                 .await();
 
             assertThat(result.isFailure()).isTrue();
-            result.onFailure(cause -> assertThat(cause.message().toLowerCase()).contains("targetrole"));
+            result.onFailure(cause -> assertThat(cause.message().toLowerCase(Locale.ROOT)).contains("targetrole"));
         }
 
         @Test
@@ -106,7 +107,7 @@ class NodeLifecycleRoutesPromoteTest {
                                 .await();
 
             assertThat(result.isFailure()).isTrue();
-            result.onFailure(cause -> assertThat(cause.message().toUpperCase()).contains("CORE"));
+            result.onFailure(cause -> assertThat(cause.message().toUpperCase(Locale.ROOT)).contains("CORE"));
         }
 
         @Test

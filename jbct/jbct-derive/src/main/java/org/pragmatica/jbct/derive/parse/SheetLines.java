@@ -24,7 +24,7 @@ public record SheetLines(Map<String, List<Integer>> arrayHeaders) {
     }
 
     /// Scan the raw sheet text and index every array-table header by name.
-    public static SheetLines of(String content) {
+    public static SheetLines sheetLines(String content) {
         Map<String, List<Integer>> headers = new LinkedHashMap<>();
         String[] lines = content.split("\n", -1);
 

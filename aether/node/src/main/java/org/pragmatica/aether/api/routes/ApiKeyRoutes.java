@@ -6,6 +6,7 @@ package org.pragmatica.aether.api.routes;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ScheduledFuture;
 import java.util.function.Supplier;
@@ -121,7 +122,7 @@ public final class ApiKeyRoutes implements RouteSource {
     private Promise<Object> createKey(CreateKeyRequest request) {
         var role = request.authorizationRole() == null || request.authorizationRole().isBlank()
                    ? ApiKeyValue.DEFAULT_ROLE
-                   : request.authorizationRole().toUpperCase();
+                   : request.authorizationRole().toUpperCase(Locale.ROOT);
         var keyValue = ApiKeyValue.apiKeyValue(request.keyId(), request.keyHash(), request.gracePeriodMs(), role);
         var keyCommand = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(ApiKeyKey.apiKeyKey(request.keyId()),
                                                                                   keyValue);

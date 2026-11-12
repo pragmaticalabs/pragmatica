@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.derive.pipeline;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.stream.Stream;
 
 import org.pragmatica.jbct.derive.model.AnswerRow;
@@ -57,7 +58,7 @@ public sealed interface Press permits Press.unused {
 
     private static Stream<Pressure> containedPressure(AnswerRow row) {
         return row.shape()
-                  .map(String::toLowerCase)
+                  .map(text -> text.toLowerCase(Locale.ROOT))
                   .map(shape -> Stream.of(Pressure.inert(loadAxis(shape),
                                                          "F18 thin-tier: the author states this load is contained by an existing tier — axis-invisible",
                                                          row)))
@@ -75,7 +76,7 @@ public sealed interface Press permits Press.unused {
 
     private static Stream<Pressure> shaped(AnswerRow row, ShapeRule rule) {
         return row.shape()
-                  .map(String::toLowerCase)
+                  .map(text -> text.toLowerCase(Locale.ROOT))
                   .map(shape -> rule.apply(shape, row))
                   .or(Stream.of());
     }
@@ -113,7 +114,7 @@ public sealed interface Press permits Press.unused {
 
     private static Stream<Pressure> kinded(AnswerRow row) {
         return row.kind()
-                  .map(String::toLowerCase)
+                  .map(text -> text.toLowerCase(Locale.ROOT))
                   .map(kind -> constraintKind(kind, row))
                   .or(Stream.of());
     }

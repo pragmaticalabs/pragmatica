@@ -4,6 +4,7 @@
 
 package org.pragmatica.aether.config;
 
+import java.util.Locale;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -124,6 +125,24 @@ class RepositoryTypeTest {
             RepositoryType.repositoryType("   ")
                           .onSuccessRun(Assertions::fail)
                           .onFailure(cause -> assertThat(cause.message()).contains("cannot be blank"));
+        }
+    }
+
+    @Test
+    void repositoryType_succeeds_forUpperCaseBuiltin_underTurkishLocale() {
+        underTurkishLocale(() -> RepositoryType.repositoryType("BUILTIN")
+                                               .onFailureRun(Assertions::fail)
+                                               .onSuccess(type -> assertThat(type).isInstanceOf(RepositoryType.Builtin.class)));
+    }
+
+    private static void underTurkishLocale(Runnable body) {
+        var saved = Locale.getDefault();
+
+        try {
+            Locale.setDefault(Locale.forLanguageTag("tr-TR"));
+            body.run();
+        } finally {
+            Locale.setDefault(saved);
         }
     }
 }

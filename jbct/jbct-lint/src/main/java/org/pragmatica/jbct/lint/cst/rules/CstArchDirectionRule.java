@@ -1,5 +1,6 @@
 package org.pragmatica.jbct.lint.cst.rules;
 
+import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -139,7 +140,7 @@ public class CstArchDirectionRule implements CstLintRule {
 
     private static String name(Layer layer) {
         return layer.name()
-                    .toLowerCase();
+                    .toLowerCase(Locale.ROOT);
     }
 
     private boolean isFramework(String referencedPackage) {

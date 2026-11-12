@@ -3636,6 +3636,19 @@ public sealed interface AetherValue {
     /// that FAILED proves nothing, and a mark that only ever met failures keeps `absent` false and keeps being re-checked.
     record UnconfirmedTerminationValue(String cause, boolean seen, boolean absent) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {}
 
+    /// #2834: an open leader-local warning of the cluster FSM, keyed by `FsmWarningKey(code, subject)`. `members` are the parts of a
+    /// subject that covers several instances (a stray's condemned nodes, a schema hold's held nodes with their hold signature), keyed by
+    /// node id; empty for a single-instance subject. Held sorted by node id: every node encodes the same bytes.
+    record FsmWarningValue(Map<String, String> members) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {
+        public FsmWarningValue {
+            members = Collections.unmodifiableSortedMap(new TreeMap<>(members));
+        }
+
+        public static FsmWarningValue fsmWarningValue(Map<String, String> members) {
+            return new FsmWarningValue(members);
+        }
+    }
+
     /// #1543 replacement steps. `DONE` and `ROLLED_BACK` are terminal and inert; `FAILED_KEPT_BOTH` is terminal
     /// and keeps both nodes until an operator settles it. `REVERTING` swaps the original back into the electorate
     /// after a failed canary, before the replacement is terminated.

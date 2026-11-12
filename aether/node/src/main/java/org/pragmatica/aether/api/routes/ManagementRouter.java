@@ -6,6 +6,7 @@ package org.pragmatica.aether.api.routes;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
@@ -141,7 +142,7 @@ public final class ManagementRouter {
 
     private static Option<HttpMethod> parseMethod(String method) {
         return Result.lift(org.pragmatica.lang.utils.Causes::fromThrowable,
-                           () -> HttpMethod.valueOf(method.toUpperCase()))
+                           () -> HttpMethod.valueOf(method.toUpperCase(Locale.ROOT)))
                      .option();
     }
 

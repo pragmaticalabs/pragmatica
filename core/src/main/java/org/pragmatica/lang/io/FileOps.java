@@ -51,9 +51,9 @@ public sealed interface FileOps {
         return Result.lift(e -> new FileError.WalkFailed(start, e.getMessage()),
                            () -> {
                                try (var stream = Files.walk(start)) {
-                               return stream.filter(predicate)
-                                            .toList();
-                           }
+                                   return stream.filter(predicate)
+                                                .toList();
+                               }
                            });
     }
 
@@ -67,8 +67,8 @@ public sealed interface FileOps {
         return Result.lift(e -> new FileError.WalkFailed(dir, e.getMessage()),
                            () -> {
                                try (var stream = Files.list(dir)) {
-                               return stream.toList();
-                           }
+                                   return stream.toList();
+                               }
                            });
     }
 
@@ -147,8 +147,8 @@ public sealed interface FileOps {
         return Result.lift(e -> new FileError.WriteFailed(directory, e.getMessage()),
                            () -> {
                                try (var channel = FileChannel.open(directory, StandardOpenOption.READ)) {
-                               channel.force(true);
-                           }
+                                   channel.force(true);
+                               }
 
                                return unit();
                            });
@@ -161,17 +161,17 @@ public sealed interface FileOps {
                                                                 StandardOpenOption.CREATE,
                                                                 StandardOpenOption.TRUNCATE_EXISTING,
                                                                 StandardOpenOption.WRITE)) {
-                               var buffer = ByteBuffer.wrap(content);
+                                   var buffer = ByteBuffer.wrap(content);
 
-                               while (buffer.hasRemaining()) {
-                               file.write(buffer);
-                           }
-                               // force(true), not force(false): a freshly created file's size and
-                               // link count live in the inode, so fdatasync alone can leave the
-                               // bytes durable and the file itself not. Pinned by
-                               // FileOpsTest.writeBytesDurable_forcesFileAndParentDirectory_beforeReturning.
-                               file.force(true);
-                           }
+                                   while (buffer.hasRemaining()) {
+                                       file.write(buffer);
+                                   }
+                                   // force(true), not force(false): a freshly created file's size and
+                                   // link count live in the inode, so fdatasync alone can leave the
+                                   // bytes durable and the file itself not. Pinned by
+                                   // FileOpsTest.writeBytesDurable_forcesFileAndParentDirectory_beforeReturning.
+                                   file.force(true);
+                               }
 
                                return unit();
                            });

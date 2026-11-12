@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.derive.pipeline;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -74,7 +75,7 @@ public sealed interface Verify permits Verify.unused {
 
     private static boolean isSystemClock(AnswerRow row) {
         return row.shape()
-                  .map(String::toLowerCase)
+                  .map(txt -> txt.toLowerCase(Locale.ROOT))
                   .filter("system-clock"::equals)
                   .isPresent();
     }
@@ -217,8 +218,8 @@ public sealed interface Verify permits Verify.unused {
 
     // ---- shared ----
     private static Halt toHalt(Verification line) {
-        return Halt.of(Halt.Kind.FLOORS_EXCEED_BUDGET,
-                       line.rule() + " @ " + line.scope() + ": " + line.detail());
+        return Halt.halt(Halt.Kind.FLOORS_EXCEED_BUDGET,
+                         line.rule() + " @ " + line.scope() + ": " + line.detail());
     }
 
     private static List<Verification> concat(List<Verification> head, List<Verification> tail) {

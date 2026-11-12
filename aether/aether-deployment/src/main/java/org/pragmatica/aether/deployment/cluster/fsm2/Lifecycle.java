@@ -38,6 +38,7 @@ public sealed interface Lifecycle {
         m.seams = snapshot.seams();
         snapshot.admissions().forEach((node, admission) -> m.admissions = m.admissions.put(node, admission));
         snapshot.entries().forEach(entry -> Indexer.indexPut(m, ctx, entry.key(), entry.value()));
+        Warnings.inherit(m, ctx);
         m.inherited = inheritedAtRebuild(m);
         m.announcementSeenAt = PMap.empty(m.scans);
         m.absentSince = PMap.empty(m.scans);

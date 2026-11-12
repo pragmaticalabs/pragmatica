@@ -311,7 +311,9 @@ class NodeDeploymentStateStreamGuardAndLoadChainTest {
 
     // ---------------------------------------------------------------- helpers
 
+    /// #3028: seeds the committed entry too; without it the quorum-return sweep unloads the slice instead of reactivating it.
     private void seedActiveDeployment() {
+        seed(SELF, SliceState.ACTIVE);
         ((NodeDeploymentState.Active) harness.state()).deployments()
                 .put(SLICE_KEY, NodeDeploymentManager.SliceDeployment.sliceDeployment(SLICE_KEY, SliceState.ACTIVE, 0L));
     }

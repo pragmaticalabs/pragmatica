@@ -1672,7 +1672,7 @@ class ManagementServerImpl implements ManagementServer {
 
     private static Option<org.pragmatica.http.HttpMethod> parseRoutingMethod(String raw) {
         return Result.lift(Causes::fromThrowable,
-                           () -> org.pragmatica.http.HttpMethod.valueOf(raw.toUpperCase()))
+                           () -> org.pragmatica.http.HttpMethod.valueOf(raw.toUpperCase(Locale.ROOT)))
                      .option();
     }
 
@@ -1848,7 +1848,7 @@ class ManagementServerImpl implements ManagementServer {
 
         if (securityEnabled) {
             var method = Result.lift(Causes::fromThrowable,
-                                     () -> HttpMethod.valueOf(context.method().toUpperCase()))
+                                     () -> HttpMethod.valueOf(context.method().toUpperCase(Locale.ROOT)))
                                .option();
 
             if (method.isEmpty()) {

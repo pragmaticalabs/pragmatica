@@ -980,6 +980,14 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         dispatcher.onReplayStart(listener);
     }
 
+    /// Registers the listener told the revision of every replay item ([#replayNotifications()]) on the delivering thread, AFTER the item's burst is
+    /// delivered and whether or not the burst is empty: the delivered view ([#delivered]) then reflects the installed snapshot (#3028). One listener;
+    /// a second registration replaces the first.
+    @Contract
+    public void onReplayEnd(LongConsumer listener) {
+        dispatcher.onReplayEnd(listener);
+    }
+
     /// The replay item carries no notifications: its burst is computed when the delivery loop dequeues it (§3.7).
     private long enqueueReplay() {
         return currentSeq;
@@ -1193,6 +1201,12 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         dispatcher.onSnapshotRead();
 
         return Map.copyOf(storage);
+    }
+
+    /// A point read of the DELIVERED view: the value subscribers were last told for `key`, which may trail `storage` by the batches applied and not yet
+    /// delivered (#3028: a catch-up sweep compares local state with what was delivered, never with a snapshot mid-install).
+    public Option<V> delivered(K key) {
+        return Option.option(lastReplayedView.get(key));
     }
 
     /// A point read; on the delivering thread, a read of a key some later applied batch wrote counts a read-ahead

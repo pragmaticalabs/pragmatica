@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.config;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -293,7 +294,7 @@ record PartialConfig(PartialFormatter formatter,
         /// Parse a TOML severity token. An unrecognised token yields [Option#none()]; the layer parser
         /// refuses it (see [PartialLint]) rather than treating the rule as unset.
         static Option<RuleSetting> ruleSetting(String raw) {
-            return switch (raw.toLowerCase()) {
+            return switch (raw.toLowerCase(Locale.ROOT)) {
                 case "off", "disabled" -> some(OFF);
                 case "error" -> some(ERROR);
                 case "warning", "warn" -> some(WARNING);

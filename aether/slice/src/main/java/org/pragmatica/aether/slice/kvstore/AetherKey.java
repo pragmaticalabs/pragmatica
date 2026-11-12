@@ -3,6 +3,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.kvstore;
 
+import java.util.Locale;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.slice.MethodName;
@@ -398,7 +400,7 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
 
         public static HttpNodeRouteKey httpNodeRouteKey(String httpMethod, String pathPrefix, NodeId nodeId) {
-            return new HttpNodeRouteKey(httpMethod.toUpperCase(), normalizePrefix(pathPrefix), nodeId);
+            return new HttpNodeRouteKey(httpMethod.toUpperCase(Locale.ROOT), normalizePrefix(pathPrefix), nodeId);
         }
 
         public static Result<HttpNodeRouteKey> httpNodeRouteKey(String key) {
@@ -1308,6 +1310,20 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         @Override
         public String asString() {
             return "unconfirmed-termination/" + nodeId.id();
+        }
+    }
+
+    /// #2834: one open warning of a leader-local family of the cluster FSM (D.6), by its opener code and subject. Written by the leader in
+    /// the drain that raised the opener and removed in the drain that raised its recovery, so a new leader inherits the exact open set and
+    /// closes what no longer holds. Runtime state: its subjects name nodes and artifacts a restored cluster no longer has.
+    record FsmWarningKey(String code, String subject) implements RuntimeKey {
+        @Override
+        public String asString() {
+            return "fsm-warning/" + code + "/" + subject;
+        }
+
+        public static FsmWarningKey fsmWarningKey(String code, String subject) {
+            return new FsmWarningKey(code, subject);
         }
     }
 

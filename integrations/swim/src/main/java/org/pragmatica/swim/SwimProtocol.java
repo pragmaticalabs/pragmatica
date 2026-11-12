@@ -101,6 +101,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// tombstone immediately. The TTL exists purely to reclaim map entries for ids
     /// that never come back.
     private static final long TOMBSTONE_TTL_MULTIPLIER = 10L;
+    /// Bound of [#deathRecords]: one record of two longs per dead id, and ids that are never reaped (DOCKER, SSH)
+    /// accumulate. Past the cap the oldest record is evicted with a warning; an evicted id falls back to the
+    /// tombstone-only gate. `[guess: cap]` (#3028 design §3.1).
+    private static final int DEATH_RECORD_CAP = 4096;
     /// Sequence of the unsolicited `Ack`s that answer an ANNOUNCE with the membership view (#1783).
     /// The probe sequence counter starts at 1, so no pending probe ever matches it.
     private static final long SYNC_ACK_SEQUENCE = 0L;
@@ -338,6 +342,12 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// local to [#announceJoin] and a stopped protocol kept announcing for up to 30 s.
     private final AtomicReference<Option<ScheduledFuture<?>>> announceFuture = new AtomicReference<>(none());
 
+    /// Identity retained from [#announceJoin] for the isolated-and-alone ANNOUNCE ([#announceWhileAlone]).
+    private volatile Option<AnnounceIdentity> announceIdentity = none();
+    /// Every seed address this node was given, by [#announceJoin]'s `seeds` or by [#addSeedMember] (production registers
+    /// its seeds only through the latter). Kept after a seed is swept from the member map: the isolated-and-alone ANNOUNCE
+    /// ([#announceWhileAlone]) draws on it.
+    private final Set<InetSocketAddress> seedAddresses = ConcurrentHashMap.newKeySet();
     /// #501: `true` from [#stop] until the next [#start]. Cancelling [#announceFuture] is not on its
     /// own enough to tie the announce loop's lifetime to [#stop], because two announces can still
     /// escape a stopped protocol: an [#announceJoin] that resolved this protocol before the stop and
@@ -411,6 +421,16 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// The tombstone is cleared by an authoritative self-ANNOUNCE (partition-heal) and
     /// superseded by a strictly higher incarnation (genuine restart/refutation).
     private final Map<NodeId, Tombstone> tombstones = new ConcurrentHashMap<>();
+    /// Death records (#3028 design §3.1): per dead id, the FAULTY incarnation and the boot token this node held for it,
+    /// both snapshotted at the FAULTY edge ([#emitFaultyEdgePair]) and never re-read live. Unlike [#tombstones] a
+    /// record is NOT bounded by the TTL sweep: it is cleared only by a refutation at a higher incarnation, by evidence
+    /// from a different process (a different non-zero token), or by the id's retirement ([#onRetired]). It refuses a
+    /// stale aliveness claim whatever the tombstone's age and whoever relays it ([#blockedByDeathRecord]). A record
+    /// with token `0` (the token was unknown at the edge) could never produce a notice, so it would gate only while the
+    /// id's tombstone lives, which is exactly the tombstone gate: such a record is therefore not written at all
+    /// ([#recordDeath]). Memory only: a restarted holder falls back to the tombstone gate. Capped at
+    /// [#DEATH_RECORD_CAP].
+    private final Map<NodeId, DeathRecord> deathRecords = new ConcurrentHashMap<>();
     /// Per-peer "ever observed HEALTHY at least once" flag. Cold-boot suppression:
     /// a never-healthy peer is emitted as `UnknownObserved` instead of `FaultyObserved`
     /// (spec §4.2 "Behavior contract: Cold-boot mode").
@@ -515,6 +535,27 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// is the incarnation at which the id was tombstoned; a strictly-higher incoming
     /// incarnation supersedes it. `createdAtMs` bounds map growth via the TTL sweep.
     private record Tombstone(long incarnation, long createdAtMs) {}
+
+    /// What a node alone in the cluster needs to ask a seed for the view again (#3028 D4b): the identity of
+    /// [#announceJoin]. The seed addresses are [#seedAddresses].
+    private record AnnounceIdentity(NodeInfo self, String clusterName) {}
+
+    /// A [#deathRecords] entry: the FAULTY incarnation and the non-zero boot token snapshotted at the FAULTY edge.
+    /// `createdAtMs` orders eviction at the cap.
+    private record DeathRecord(long incarnation, long bootToken, long createdAtMs) {
+        /// A claim token of `0` is unknown (third-party gossip, a stray Ack), never different, so only the
+        /// incarnation is compared; a non-zero token equal to the record's is the same process. A non-zero claim
+        /// token that differs is another process and is not covered.
+        boolean covers(long claimToken) {
+            return claimToken == 0L || claimToken == bootToken;
+        }
+
+        /// A stale aliveness claim of the recorded process itself: its own token (never `0`, unlike [#covers]) at an
+        /// incarnation the record does not lose to. Only such a claim earns a death notice (#3028 design §3.2).
+        boolean answersWithNotice(long claimIncarnation, long claimToken) {
+            return claimToken == bootToken && claimIncarnation <= incarnation;
+        }
+    }
 
     /// An ANNOUNCE held until its source address answers a probe.
     private record AddressCandidate(Announce announce, InetSocketAddress source, long issuedAt) {
@@ -662,6 +703,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         if (!inMembershipScope(nodeId) || selfId.equals(nodeId)) {
             return;
         }
+
+        seedAddresses.add(address);
         // Mirror the ANNOUNCE guard (`if (!members.containsKey(...))`): only introduce
         // an UNKNOWN id. A re-seed of a member already tracked (notably a SUSPECT victim
         // whose suspect-window is counting down to FAULTY) must be a no-op — otherwise
@@ -1011,8 +1054,88 @@ public final class SwimProtocol implements SwimMessageHandler {
         reevaluateColdBootSuppressedFaulty();
         reevaluateTransportVetoedFaulty();
         cleanupFaultyMembers();
-        selectNextProbeTarget().onPresent(this::probeTarget);
+        probeRound();
         sendAppGossip();
+    }
+
+    /// One probe per round: the least-recently-probed probable member, or, with none and the self-isolation latch set,
+    /// one isolation ping ([#probeWhileIsolated]).
+    private void probeRound() {
+        selectNextProbeTarget().onPresent(this::probeTarget).onEmpty(this::probeWhileIsolated);
+    }
+
+    /// #3028 design §3.4 (S1) `[guess: design rule]`: a latched node probes nobody ([#isProbable] excludes FAULTY), so
+    /// it sends one Ping per round to one FAULTY peer it still holds, least-recently-probed first (round-robin). A peer
+    /// that holds this node dead answers with its death notice, which this node refutes; the peer then re-admits it,
+    /// and the peer's own refuted claim re-admits the peer here, which clears the latch (a verified Ack alone does not
+    /// while this node's death record for the peer refuses it). Peers already swept from the member map are not
+    /// reached here ([#announceWhileAlone], D4b, covers them).
+    private void probeWhileIsolated() {
+        if (!selfIsolated) {
+            return;
+        }
+
+        selectIsolationProbeTarget().onPresent(this::sendIsolationPing).onEmpty(this::announceWhileAlone);
+    }
+
+    /// #3028 D4b: a latched node whose member map is empty (every peer swept) has no peer left to ping, so it asks ONE
+    /// seed for the view again, after a random delay below one protocol period (`[guess: design rule]`: spreads
+    /// simultaneous recoveries). The reply is merged like the join ANNOUNCE's. No retry state: the next round repeats
+    /// while the node stays alone.
+    private void announceWhileAlone() {
+        if (!members.isEmpty()) {
+            return;
+        }
+
+        announceIdentity.onPresent(this::scheduleSeedAnnounce);
+    }
+
+    private void scheduleSeedAnnounce(AnnounceIdentity target) {
+        var seeds = List.copyOf(seedAddresses);
+
+        if (seeds.isEmpty()) {
+            return;
+        }
+
+        var seed = seeds.get(ThreadLocalRandom.current().nextInt(seeds.size()));
+        var delayMs = ThreadLocalRandom.current().nextLong(Math.max(1L,
+                                                                    config.period().millis()));
+
+        SharedScheduler.schedule(() -> sendSeedAnnounce(target, seed),
+                                 TimeSpan.timeSpan(delayMs).millis());
+    }
+
+    private void sendSeedAnnounce(AnnounceIdentity target, InetSocketAddress seed) {
+        if (!announceStopped.get()) {
+            transport.send(seed,
+                           Announce.announce(target.self(),
+                                             target.clusterName(),
+                                             selfIncarnation.get(),
+                                             selfBootToken.get()));
+        }
+    }
+
+    private Option<SwimMember> selectIsolationProbeTarget() {
+        return Option.from(members.values()
+                                  .stream()
+                                  .filter(member -> member.state() == MemberState.FAULTY)
+                                  .min(Comparator.comparingLong(this::lastProbedAtOf).thenComparing(member -> member.nodeId()
+                                                                                                                    .id())));
+    }
+
+    /// The piggyback leads with this node's identity entry ([#ackPiggyback]), so the self-`Alive` claim a peer's death
+    /// notice answers is always present, whatever the gossip buffer holds. No pending probe is registered (D4): a lost isolation ping is the expected outcome while isolated, so its
+    /// timeout must neither raise the LHM score nor send PingReqs nor suspect the peer. Design-out: the send failure
+    /// is absorbed at debug level because the next round retries another peer.
+    private void sendIsolationPing(SwimMember target) {
+        var ping = Ping.ping(selfId, sequenceCounter.incrementAndGet(), ackPiggyback());
+
+        lastProbedAt.put(target.nodeId(), probeOrdinal.incrementAndGet());
+        transport.send(target.address(),
+                       ping)
+                 .onFailure(cause -> LOG.debug("SWIM isolation ping to {} failed: {}",
+                                               target.nodeId().id(),
+                                               cause.message()));
     }
 
     /// Once per probe round: each registered channel's payload goes to ONE random ALIVE member, in a datagram of its own.
@@ -1330,6 +1453,61 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// still supersedes and re-admits (genuine restart / partition-heal).
     private boolean blockedByTombstone(NodeId id, long incomingIncarnation) {
         return isTombstoned(id, incomingIncarnation);
+    }
+
+    /// Admission gate of the death record (#3028 design §3.1, M1 (b)): refuse an aliveness claim `Alive(id, i)`
+    /// carrying `claimToken` when a record exists, `record.incarnation >= i` and the record covers the token
+    /// ([DeathRecord#covers]), whatever the tombstone's age. Any claim the record does not refuse clears it: a higher
+    /// incarnation is a refutation (clear (a)), a different non-zero token is a new process (clear (b)).
+    private boolean blockedByDeathRecord(NodeId id, long claimIncarnation, long claimToken) {
+        return option(deathRecords.get(id)).map(record -> refuseOrClear(id, record, claimIncarnation, claimToken))
+                     .or(false);
+    }
+
+    private boolean refuseOrClear(NodeId id, DeathRecord record, long claimIncarnation, long claimToken) {
+        if (claimIncarnation <= record.incarnation() && record.covers(claimToken)) {
+            return true;
+        }
+
+        deathRecords.remove(id, record);
+
+        return false;
+    }
+
+    /// Write the death record at the FAULTY edge, snapshotting the boot token this node holds for `peer` now; it is
+    /// never re-read live (M3). No record when the token is unknown (`0`): such a record could never notify, and
+    /// would gate exactly as the tombstone does (D1b), so a token learned after the edge never turns into a
+    /// permanent refusal. A retired id gets none: retirement is itself a clear.
+    @Contract
+    private void recordDeath(NodeId peer, long incarnation) {
+        var token = bootTokenOf(peer);
+
+        if (token == 0L || isRetired(peer)) {
+            return;
+        }
+
+        putDeathRecord(peer, new DeathRecord(incarnation, token, System.currentTimeMillis()));
+    }
+
+    @Contract
+    private void putDeathRecord(NodeId peer, DeathRecord record) {
+        deathRecords.put(peer, record);
+        if (deathRecords.size() > DEATH_RECORD_CAP) {
+            deathRecords.entrySet()
+                        .stream()
+                        .min(Comparator.comparingLong(entry -> entry.getValue()
+                                                                    .createdAtMs()))
+                        .ifPresent(this::evictDeathRecord);
+        }
+    }
+
+    @Contract
+    private void evictDeathRecord(Map.Entry<NodeId, DeathRecord> eldest) {
+        deathRecords.remove(eldest.getKey(), eldest.getValue());
+        LOG.warn("SWIM death-record cap {} reached: evicted the record of {} (incarnation {}); that id falls back to the tombstone gate",
+                 DEATH_RECORD_CAP,
+                 eldest.getKey().id(),
+                 eldest.getValue().incarnation());
     }
 
     /// Wave-6 H8 fix: residency is measured from the FAULTY-edge stamp
@@ -1775,7 +1953,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     private void handlePing(InetSocketAddress sender, Ping ping) {
         recordInboundReachability();
         processPiggyback(ping.piggyback(), ping.from(), Option.none());
-        var ack = Ack.ack(selfId, ping.sequence(), ackPiggyback());
+        var ack = Ack.ack(selfId, ping.sequence(), ackPiggybackWith(pingDeathNotice(ping)));
 
         transport.send(sender, ack);
     }
@@ -2027,6 +2205,75 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
 
         return List.copyOf(ordered);
+    }
+
+    /// [#ackPiggyback] with a death notice appended after trimming (#3028 design §3.3): one entry beyond
+    /// `maxPiggyback`, and trailing gossip trimmed again while the byte budget is exceeded, never the leading
+    /// identity. So the notice never evicts the identity and survives `maxPiggyback = 1`.
+    private List<MembershipUpdate> ackPiggybackWith(Option<MembershipUpdate> notice) {
+        var piggyback = ackPiggyback();
+
+        return notice.map(entry -> appendBeyondCap(piggyback,
+                                                   leadingIdentityCount(piggyback),
+                                                   entry))
+                     .or(piggyback);
+    }
+
+    private int leadingIdentityCount(List<MembershipUpdate> piggyback) {
+        return piggyback.isEmpty() || !piggyback.getFirst()
+                                                .nodeId()
+                                                .equals(selfId)
+               ? 0
+               : 1;
+    }
+
+    /// Append `extra` past the `maxPiggyback` count: entries after the first `floor` are trimmed from the tail while
+    /// the list with `extra` exceeds the datagram byte budget; `extra` itself is always sent.
+    private List<MembershipUpdate> appendBeyondCap(List<MembershipUpdate> entries, int floor, MembershipUpdate extra) {
+        var ordered = new ArrayList<>(entries);
+        var extraBytes = PiggybackBuffer.estimatedBytes(extra);
+
+        while (ordered.size() > floor && estimatedBytesOf(ordered) + extraBytes > piggybackBudgetBytes) {
+            ordered.removeLast();
+        }
+
+        ordered.add(extra);
+
+        return List.copyOf(ordered);
+    }
+
+    /// The death notice a Ping earns (#3028 design §3.2): the pinger's own self-`Alive` is the claim compared with the
+    /// record, and so is the entry for the requester a relayer names in `onBehalfOf` (D3, [#withRequesterIdentity]).
+    /// Every other third-party `Alive` in the piggyback is gossip, already refused by the death-record gate, and earns
+    /// no notice.
+    private Option<MembershipUpdate> pingDeathNotice(Ping ping) {
+        return Option.from(ping.piggyback()
+                               .stream()
+                               .filter(update -> isAnswerable(ping,
+                                                              update.nodeId()))
+                               .flatMap(update -> deathNoticeFor(update).stream())
+                               .findFirst());
+    }
+
+    private static boolean isAnswerable(Ping ping, NodeId claimant) {
+        return claimant.equals(ping.from()) || ping.onBehalfOf()
+                                                   .filter(claimant::equals)
+                                                   .isPresent();
+    }
+
+    /// `Faulty(X, record.incarnation, record.bootToken)` for an `Alive` claim the death record answers with a notice
+    /// ([DeathRecord#answersWithNotice]). The claimant refutes it through [#handleSelfUpdate]: an equal incarnation
+    /// bumps to `max + 1`.
+    private Option<MembershipUpdate> deathNoticeFor(MembershipUpdate claim) {
+        return option(deathRecords.get(claim.nodeId())).filter(_ -> claim.state() == MemberState.ALIVE)
+                     .filter(record -> record.answersWithNotice(claim.incarnation(),
+                                                                claim.bootToken()))
+                     .map(record -> MembershipUpdate.membershipUpdate(claim.nodeId(),
+                                                                      MemberState.FAULTY,
+                                                                      record.incarnation(),
+                                                                      claim.address(),
+                                                                      record.bootToken(),
+                                                                      claim.labels()));
     }
 
     private static int estimatedBytesOf(List<MembershipUpdate> updates) {
@@ -2292,7 +2539,8 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                              announce.clusterName(),
                                                              announce.incarnation()));
         replyWithMembershipSnapshot(sender,
-                                    announce.nodeInfo().id());
+                                    announce.nodeInfo().id(),
+                                    announceDeathNotice(sender, announce));
     }
 
     /// Join ack: answer an accepted ANNOUNCE with this node's current view, so the joiner learns the
@@ -2308,8 +2556,14 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// Bounded: at most [#SYNC_MAX_DATAGRAMS] datagrams, each within the piggyback byte budget. The member
     /// order is shuffled per reply, so the ANNOUNCE retries (every 500ms until the join ack arrives) cover a view
     /// larger than one reply.
+    ///
+    /// A death notice (#3028 design §3.2, D1c) follows the pages as one more datagram, so an ANNOUNCE the death record
+    /// refused still learns why. The refusal never goes through [#refuseAnnounce], whose `IdentityRefused` makes the
+    /// receiver exit.
     @Contract
-    private void replyWithMembershipSnapshot(InetSocketAddress sender, NodeId announcer) {
+    private void replyWithMembershipSnapshot(InetSocketAddress sender,
+                                             NodeId announcer,
+                                             Option<MembershipUpdate> notice) {
         var pages = PiggybackBuffer.pack(snapshotFor(announcer),
                                          config.maxPiggyback(),
                                          piggybackBudgetBytes,
@@ -2318,12 +2572,26 @@ public final class SwimProtocol implements SwimMessageHandler {
         if (pages.isEmpty()) {
             // The ack is also the joiner's stop signal: a view with nothing to tell must still answer.
             transport.send(sender,
-                           Ack.ack(selfId, SYNC_ACK_SEQUENCE, List.of()));
+                           Ack.ack(selfId,
+                                   SYNC_ACK_SEQUENCE,
+                                   notice.stream().toList()));
 
             return;
         }
 
         pages.forEach(page -> transport.send(sender, Ack.ack(selfId, SYNC_ACK_SEQUENCE, page)));
+        notice.onPresent(entry -> transport.send(sender,
+                                                 Ack.ack(selfId, SYNC_ACK_SEQUENCE, List.of(entry))));
+    }
+
+    /// The ANNOUNCE's incarnation and boot token are the claim compared with the death record (#3028 design §3.2).
+    private Option<MembershipUpdate> announceDeathNotice(InetSocketAddress sender, Announce announce) {
+        return deathNoticeFor(MembershipUpdate.membershipUpdate(announce.nodeInfo().id(),
+                                                                MemberState.ALIVE,
+                                                                announce.incarnation(),
+                                                                sender,
+                                                                announce.bootToken(),
+                                                                announce.nodeInfo().labels()));
     }
 
     /// Live members worth telling a joiner about: ALIVE and SUSPECT (hearsay the joiner's own merge rules
@@ -2404,8 +2672,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// ALIVE. Like the gossip-SUSPECT-of-unknown path ([#applyNewSuspectMember]), an unconfirmed
     /// member is born OBSERVED; an unknown ALIVE/FAULTY gossip is still honoured in its gossiped state.
     private void introduceAnnouncedObserved(Announce announce, InetSocketAddress probeAddress) {
-        if (blockedByTombstone(announce.nodeInfo().id(),
-                               announce.incarnation())) {
+        if (blockedByDeathRecord(announce.nodeInfo().id(),
+                                 announce.incarnation(),
+                                 announce.bootToken()) || blockedByTombstone(announce.nodeInfo().id(),
+                                                                             announce.incarnation())) {
             return;
         }
 
@@ -2507,6 +2777,8 @@ public final class SwimProtocol implements SwimMessageHandler {
             selfIncarnation.updateAndGet(cur -> Math.max(cur, incarnation));
             selfBootToken.compareAndSet(0L, bootToken);
             selfLabels = withQuorumReport(gossipLabels(self.labels()), selfLabels);
+            announceIdentity = option(new AnnounceIdentity(self, clusterName));
+            seedAddresses.addAll(seeds);
             if (seeds.isEmpty()) {
                 return;
             }
@@ -2616,6 +2888,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// the conflicting token, the resident process is treated as dead — FAULTY now, unless it already
     /// is — so a same-address new process answering probes can never keep the old member alive.
     private void onRetired(NodeId peer) {
+        deathRecords.remove(peer);
         option(members.get(peer)).onPresent(this::declareRetiredDead);
     }
 
@@ -2746,10 +3019,20 @@ public final class SwimProtocol implements SwimMessageHandler {
                                         requesterAddress,
                                         target.nodeId(),
                                         System.currentTimeMillis()));
-        var piggyback = piggybackBuffer.peekUpdates(config.maxPiggyback(), piggybackBudgetBytes);
-        var ping = Ping.ping(selfId, relaySeq, piggyback);
+        var piggyback = withRequesterIdentity(piggybackBuffer.peekUpdates(config.maxPiggyback(), piggybackBudgetBytes),
+                                              pingReq.from());
+        var ping = Ping.relayedPing(selfId, relaySeq, piggyback, pingReq.from());
 
         transport.send(target.address(), ping);
+    }
+
+    /// The relayed Ping carries the requester's identity entry as this node holds it (#3028 design §3.2, D3), so the
+    /// target's death-record gate applies to it. Appended beyond `maxPiggyback` ([#appendBeyondCap]). The entry is
+    /// third-party to the target (this node is the pinger); the Ping's `onBehalfOf` marks it so it earns a death notice ([#pingDeathNotice]).
+    private List<MembershipUpdate> withRequesterIdentity(List<MembershipUpdate> gossip, NodeId requester) {
+        return option(members.get(requester)).map(this::snapshotUpdate)
+                     .map(entry -> appendBeyondCap(gossip, 0, entry))
+                     .or(gossip);
     }
 
     /// Promote to ALIVE at the member's OBSERVED incarnation (Wave-6 C4 fix).
@@ -2769,7 +3052,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// a real return arrives via self-ANNOUNCE (clears the tombstone) or a higher
     /// incarnation (supersedes). A non-tombstoned member is promoted normally.
     private void markAliveIfNeeded(NodeId nodeId) {
-        if (blockedByTombstone(nodeId, 0L)) {
+        if (blockedByDeathRecord(nodeId, 0L, 0L) || blockedByTombstone(nodeId, 0L)) {
             return;
         }
 
@@ -2837,7 +3120,7 @@ public final class SwimProtocol implements SwimMessageHandler {
             // higher incarnation supersedes the tombstone (genuine restart). Gated at the
             // call site (not inside `applyNewMember`) so the authoritative self-ANNOUNCE
             // re-add path in `handleAnnounce` stays open.
-            if (isTombstoned(update.nodeId(), update.incarnation())) {
+            if (isAlivenessClaimBlocked(update) || isTombstoned(update.nodeId(), update.incarnation())) {
                 return;
             }
 
@@ -2902,6 +3185,14 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                           selfAddress,
                                                           selfBootToken.get(),
                                                           selfLabels));
+    }
+
+    /// The death-record gate for gossip introducing an unknown id: a FAULTY update is not an aliveness claim, so it
+    /// neither meets the gate nor clears a record.
+    private boolean isAlivenessClaimBlocked(MembershipUpdate update) {
+        return update.state() != MemberState.FAULTY && blockedByDeathRecord(update.nodeId(),
+                                                                            update.incarnation(),
+                                                                            update.bootToken());
     }
 
     private void applyNewMember(MembershipUpdate update) {
@@ -3062,7 +3353,10 @@ public final class SwimProtocol implements SwimMessageHandler {
         // to FAULTY); a strictly-higher incarnation supersedes the tombstone and is
         // allowed (genuine restart). Self-ANNOUNCE clears the tombstone via a separate
         // path (`handleAnnounce`) and is unaffected.
-        if (isReAdmitTowardAlive(existing, update) && blockedByTombstone(update.nodeId(), update.incarnation())) {
+        if (isReAdmitTowardAlive(existing, update) && (blockedByDeathRecord(update.nodeId(),
+                                                                            update.incarnation(),
+                                                                            update.bootToken()) || blockedByTombstone(update.nodeId(),
+                                                                                                                      update.incarnation()))) {
             return;
         }
         // Labels are identity, not state: a resident member that has none yet adopts the labels this
@@ -3520,8 +3814,9 @@ public final class SwimProtocol implements SwimMessageHandler {
     ///
     /// Intended semantic consequence: a member refuted AFTER its FAULTY edge (within
     /// residency) is re-admitted SWIM-side (`HealthyObserved` fires), but the cluster
-    /// FSM death already broadcast here is TERMINAL by design — the rejoin path
-    /// handles the returning node with a new identity.
+    /// FSM death already broadcast here is not terminal: the same process, refuting the
+    /// death notice (#3028 §3.1-§3.2), is re-admitted under its own identity, and its
+    /// `HealthyObserved` edge drives the restore path.
     private void emitFaultyAndDeparted(NodeId peer, long incarnation) {
         lastEmittedHealth.compute(peer, (_, prev) -> emitFaultyEdgePair(peer, prev, incarnation));
     }
@@ -3533,6 +3828,7 @@ public final class SwimProtocol implements SwimMessageHandler {
 
         deliverObservation(new SwimObservation.FaultyObserved(peer, incarnation));
         deliverObservation(new SwimObservation.DepartedObserved(peer, incarnation));
+        recordDeath(peer, incarnation);
 
         return SwimHealth.FAULTY;
     }
@@ -3735,6 +4031,11 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     /// Test-only: whether the self-isolation latch (P2) is currently set.
+    @Contract
+    void joinAcknowledgedForTest() {
+        joinAckReceived = true;
+    }
+
     boolean selfIsolatedForTest() {
         return selfIsolated;
     }
@@ -3749,6 +4050,22 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// anti-oscillation regression tests to assert tombstone set/clear/supersede.
     boolean tombstonedForTest(NodeId peer) {
         return tombstones.containsKey(peer);
+    }
+
+    /// Test-only: the death record held for `peer`, as `{incarnation, bootToken}`.
+    Option<long[]> deathRecordForTest(NodeId peer) {
+        return option(deathRecords.get(peer)).map(record -> new long[]{record.incarnation(), record.bootToken()});
+    }
+
+    /// Test-only: write a death record through the capped write path, with an explicit creation time.
+    @Contract
+    void putDeathRecordForTest(NodeId peer, long incarnation, long bootToken, long createdAtMs) {
+        putDeathRecord(peer, new DeathRecord(incarnation, bootToken, createdAtMs));
+    }
+
+    /// Test-only: the number of death records held.
+    int deathRecordCountForTest() {
+        return deathRecords.size();
     }
 
     /// Test-only: distinct (member, attempted address) conflicts reported so far. Synchronous, unlike the
@@ -3854,6 +4171,12 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// `announceJoin` seeds it (pre-announce sentinel).
     public long selfIncarnation() {
         return selfIncarnation.get();
+    }
+
+    /// Test-only: one [#probeRound], including the isolation ping (#3028 §3.4).
+    @Contract
+    void probeRoundForTest() {
+        probeRound();
     }
 
     /// Test-only: run one least-recently-probed selection-and-probe cycle (the

@@ -5,6 +5,7 @@ package org.pragmatica.aether.cli.cluster;
 
 import java.security.SecureRandom;
 import java.util.Base64;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.Callable;
 
@@ -50,7 +51,7 @@ class ClusterCreateKeyCommand implements Callable<Integer> {
     private Result<String> generateAndCreate() {
         var normalizedRole = role == null
                              ? "VIEWER"
-                             : role.trim().toUpperCase();
+                             : role.trim().toUpperCase(Locale.ROOT);
 
         if (!VALID_ROLES.contains(normalizedRole)) {
             return new CreateKeyError.InvalidRole(role).result();
@@ -91,7 +92,7 @@ class ClusterCreateKeyCommand implements Callable<Integer> {
     private int onSuccess(String json) {
         return OutputFormatter.printAction(json,
                                            parent.outputOptions(),
-                                           "Key created with role " + role.toUpperCase()
+                                           "Key created with role " + role.toUpperCase(Locale.ROOT)
                                           + ". Save the keyValue — the cluster only stores the hash.");
     }
 

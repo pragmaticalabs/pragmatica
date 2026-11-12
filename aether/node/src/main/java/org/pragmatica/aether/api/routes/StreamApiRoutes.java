@@ -9,6 +9,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
@@ -651,7 +652,7 @@ public final class StreamApiRoutes implements RouteSource {
     }
 
     private static ReadPreference parseReadPreference(String value) {
-        return switch (value.toUpperCase()) {
+        return switch (value.toUpperCase(Locale.ROOT)) {
             case "ANY_REPLICA", "ANY-REPLICA" -> ReadPreference.ANY_REPLICA;
             case "NEAREST" -> ReadPreference.NEAREST;
             case "LINEARIZABLE" -> ReadPreference.LINEARIZABLE;

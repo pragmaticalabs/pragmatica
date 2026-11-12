@@ -2,6 +2,7 @@ package org.pragmatica.config.source;
 
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -105,7 +106,7 @@ public final class EnvironmentConfigSource implements ConfigSource {
 
     /// Convert SCREAMING_SNAKE_CASE to dot.notation.lowercase.
     private static String normalizeKey(String key) {
-        return key.toLowerCase()
+        return key.toLowerCase(Locale.ROOT)
                   .replace('_', '.');
     }
 }

@@ -5,6 +5,7 @@ package org.pragmatica.aether.pg.schema.linter.rules;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 import org.pragmatica.aether.pg.schema.event.SchemaEvent;
 import org.pragmatica.aether.pg.schema.linter.LintDiagnostic;
@@ -259,7 +260,7 @@ public final class SchemaDesignRules {
             var results = new ArrayList<LintDiagnostic>();
 
             if (event instanceof SchemaEvent.TableCreated e) {
-                if (!e.name().equals(e.name().toLowerCase())) {
+                if (!e.name().equals(e.name().toLowerCase(Locale.ROOT))) {
                     results.add(LintDiagnostic.warning(id(),
                                                        "Table name '" + e.name()
                                                       + "' contains uppercase — requires perpetual quoting",
@@ -268,7 +269,7 @@ public final class SchemaDesignRules {
                 }
 
                 for (var col : e.columns()) {
-                    if (!col.name().equals(col.name().toLowerCase())) {
+                    if (!col.name().equals(col.name().toLowerCase(Locale.ROOT))) {
                         results.add(LintDiagnostic.warning(id(),
                                                            "Column name '" + col.name()
                                                           + "' contains uppercase — requires perpetual quoting",
@@ -354,7 +355,7 @@ public final class SchemaDesignRules {
             var results = new ArrayList<LintDiagnostic>();
 
             if (event instanceof SchemaEvent.TableCreated e) {
-                if (RESERVED.contains(e.name().toLowerCase())) {
+                if (RESERVED.contains(e.name().toLowerCase(Locale.ROOT))) {
                     results.add(LintDiagnostic.warning(id(),
                                                        "Table name '" + e.name()
                                                       + "' is a reserved word — requires quoting in queries",
@@ -363,7 +364,7 @@ public final class SchemaDesignRules {
                 }
 
                 for (var col : e.columns()) {
-                    if (RESERVED.contains(col.name().toLowerCase())) {
+                    if (RESERVED.contains(col.name().toLowerCase(Locale.ROOT))) {
                         results.add(LintDiagnostic.warning(id(),
                                                            "Column name '" + col.name() + "' is a reserved word",
                                                            e.span(),

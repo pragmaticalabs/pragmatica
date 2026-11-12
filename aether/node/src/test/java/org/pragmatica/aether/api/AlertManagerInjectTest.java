@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
+import java.util.Locale;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -257,7 +258,7 @@ class AlertManagerInjectTest {
                                 Option.empty(),
                                 Option.empty())
                         .onSuccess(_ -> fail("Blank name must be rejected"))
-                        .onFailure(cause -> Assertions.assertTrue(cause.message().toLowerCase().contains("name"),
+                        .onFailure(cause -> Assertions.assertTrue(cause.message().toLowerCase(Locale.ROOT).contains("name"),
                                                                    "Failure message must mention name: " + cause.message()))
                         .await();
         }
@@ -270,7 +271,7 @@ class AlertManagerInjectTest {
                                 Option.empty(),
                                 Option.empty())
                         .onSuccess(_ -> fail("Invalid severity must be rejected"))
-                        .onFailure(cause -> Assertions.assertTrue(cause.message().toLowerCase().contains("severity"),
+                        .onFailure(cause -> Assertions.assertTrue(cause.message().toLowerCase(Locale.ROOT).contains("severity"),
                                                                    "Failure message must mention severity: " + cause.message()))
                         .await();
         }
@@ -283,7 +284,7 @@ class AlertManagerInjectTest {
                                 Option.empty(),
                                 Option.empty())
                         .onSuccess(_ -> fail("Blank message must be rejected"))
-                        .onFailure(cause -> Assertions.assertTrue(cause.message().toLowerCase().contains("message"),
+                        .onFailure(cause -> Assertions.assertTrue(cause.message().toLowerCase(Locale.ROOT).contains("message"),
                                                                    "Failure message must mention message: " + cause.message()))
                         .await();
         }

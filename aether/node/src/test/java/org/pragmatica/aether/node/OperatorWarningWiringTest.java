@@ -46,6 +46,13 @@ class OperatorWarningWiringTest {
         assertThat(code).containsOnlyOnce("kvDispatchEvents.operatorWarnings(operatorWarningSink);");
     }
 
+    /// #1109 / #3103: the leader's committed-target gate raises into the node's ONE sink (bound to the aggregator by
+    /// `assembly_bindsOneSinkToThisNodesAggregator`); `AetherNodeLeaderAwaitedTargetBootTest` watches what the leader hands to its sink.
+    @Test
+    void assembly_givesTheSinkToTheClusterDeploymentManager() {
+        assertThat(assemblyCode()).containsOnlyOnce("clusterDeploymentManager.setOperatorWarningSink(operatorWarningSink);");
+    }
+
     @Test
     void assembly_givesTheSinkToSwimCoreAbsenceAndReplication() {
         var code = assemblyCode();

@@ -31,6 +31,7 @@ public sealed interface Reconcile {
         }
 
         Outbox.expire(m, ctx);
+        Warnings.reconcile(m);
         Outbox.replayAwaiting(m);
         Blueprints.sweepAwaited(m, ctx);
         Blueprints.redrive(m, ctx);

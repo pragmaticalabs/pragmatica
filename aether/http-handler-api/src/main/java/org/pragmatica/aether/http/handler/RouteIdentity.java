@@ -5,6 +5,7 @@ package org.pragmatica.aether.http.handler;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.regex.Pattern;
 
@@ -25,7 +26,7 @@ public record RouteIdentity(String method, String prefix, int arity, List<String
 
     public RouteIdentity {
         Objects.requireNonNull(method, "method");
-        method = method.toUpperCase();
+        method = method.toUpperCase(Locale.ROOT);
         prefix = normalizePrefix(prefix);
         spacers = List.copyOf(Objects.requireNonNull(spacers, "spacers"));
         spacerSlots = List.copyOf(Objects.requireNonNull(spacerSlots, "spacerSlots"));

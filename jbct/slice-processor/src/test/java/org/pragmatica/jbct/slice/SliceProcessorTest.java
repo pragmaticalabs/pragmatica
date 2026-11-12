@@ -6368,8 +6368,8 @@ class SliceProcessorTest {
             import org.pragmatica.lang.type.TypeToken;
 
             public record Topic<T>(String name, TypeToken<T> payloadType) {
-                public static <T> Topic<T> of(String name, TypeToken<T> payloadType) { return new Topic<>(name, payloadType); }
-                public static <T> Topic<T> of(String name, Class<T> payloadType) { return new Topic<>(name, null); }
+                public static <T> Topic<T> topic(String name, TypeToken<T> payloadType) { return new Topic<>(name, payloadType); }
+                public static <T> Topic<T> topic(String name, Class<T> payloadType) { return new Topic<>(name, null); }
             }
             """);
 
@@ -6409,7 +6409,7 @@ class SliceProcessorTest {
             import org.pragmatica.aether.slice.topic.Topic;
             import test.dto.OrderEvent;
             public interface Topics {
-                Topic<OrderEvent> ORDER_EVENTS = Topic.of("order-events", OrderEvent.class);
+                Topic<OrderEvent> ORDER_EVENTS = Topic.topic("order-events", OrderEvent.class);
             }
             """);
 

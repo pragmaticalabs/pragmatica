@@ -44,10 +44,12 @@ import com.sun.source.util.Trees;
 
 /// JBCT-ASYNC-01, type-attributed: every `Promise` callback must be justified.
 ///
-/// `Promise.onSuccess/onFailure/onResult` and their `*Run`/`*Async` forms are events: each runs on its own virtual thread,
-/// concurrently with the promise's dependents (the awaiting caller, the next `map`/`flatMap`) and in no order relative to them.
-/// Any effect a callback has, other than the three that nothing downstream can order against, may therefore land after the code
-/// that follows the promise has already looked. `withSuccess`/`withFailure`/`withResult` and a plain chain step run in chain
+/// `Promise.onSuccess/onFailure/onResult` and their `*Run` forms are events. Where one runs depends on when it is attached:
+/// on a promise still pending at that moment, every event callback of that promise runs after resolution on ONE virtual thread,
+/// in sequence, concurrently with the promise's dependents (the awaiting caller, the next `map`/`flatMap`) and in no order
+/// relative to them; on a promise already resolved at that moment, the callback runs inline on the attaching thread before the
+/// call returns. The attaching code cannot in general know which case it is in, so any effect a callback has, other than the
+/// three that nothing downstream can order against, may land after the code that follows the promise has already looked. `withSuccess`/`withFailure`/`withResult` and a plain chain step run in chain
 /// order, before any dependent sees the value. `Result.on*` runs inline and is never looked at: the receiver is identified by
 /// the resolved method symbol (owner `org.pragmatica.lang.Promise`), not by its spelling, after attribution, so it is exact and
 /// cross-file.
@@ -77,13 +79,7 @@ public final class AsyncCallbackCheck implements TaskListener {
                                                         "onResult",
                                                         "onSuccessRun",
                                                         "onFailureRun",
-                                                        "onResultRun",
-                                                        "onSuccessAsync",
-                                                        "onFailureAsync",
-                                                        "onResultAsync",
-                                                        "onSuccessRunAsync",
-                                                        "onFailureRunAsync",
-                                                        "onResultRunAsync");
+                                                        "onResultRun");
 
     private static final Set<String> VERBS = Set.of("put",
                                                     "putAll",

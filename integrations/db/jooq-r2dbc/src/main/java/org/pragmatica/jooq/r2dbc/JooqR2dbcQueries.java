@@ -84,7 +84,7 @@ public interface JooqR2dbcQueries {
     private static <R extends Record> Promise<List<R>> fetchCopy(Connection connection,
                                                                  SQLDialect dialect,
                                                                  ResultQuery<R> query) {
-        return QueryParams.of(query)
+        return QueryParams.queryParams(query)
                           .async()
                           .flatMap(params -> runFetch(DSL.using(connection, dialect),
                                                       query,
@@ -102,7 +102,7 @@ public interface JooqR2dbcQueries {
     }
 
     private static Promise<Integer> executeCopy(Connection connection, SQLDialect dialect, RowCountQuery query) {
-        return QueryParams.of(query)
+        return QueryParams.queryParams(query)
                           .async()
                           .flatMap(params -> runExecute(DSL.using(connection, dialect),
                                                         query,

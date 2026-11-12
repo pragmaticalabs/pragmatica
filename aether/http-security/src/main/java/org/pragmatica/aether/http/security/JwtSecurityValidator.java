@@ -4,6 +4,7 @@
 package org.pragmatica.aether.http.security;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -262,7 +263,7 @@ class JwtSecurityValidator implements HttpAuthenticator {
     private static AuthorizationRole extractAuthorizationRole(Map<String, Object> payload, String roleClaim) {
         return Option.option(payload.get(roleClaim))
                      .map(Object::toString)
-                     .map(String::toUpperCase)
+                     .map(text -> text.toUpperCase(Locale.ROOT))
                      .flatMap(JwtSecurityValidator::parseAuthorizationRole)
                      .or(AuthorizationRole.VIEWER);
     }

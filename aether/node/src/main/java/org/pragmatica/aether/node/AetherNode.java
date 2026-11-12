@@ -10,6 +10,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Collection;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Executor;
@@ -2953,6 +2954,7 @@ public interface AetherNode extends ManageableNode {
         // D1-react (KVStore dispatcher design §3.5.1 rows 25/28): registry-driven timer arms run on the scheduler's react executor.
         scheduledTaskManager.installReactExecutor(reactors.executor("ScheduledTaskRegistry"));
         var selfAddress = findSelfAddress(config);
+        // #3028 (design 4 rule 2): the last argument binds: after every delivered replay burst the legacy NDM sweeps the slices it holds without a delivered entry.
         var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManagerFromSnapshot(config.self(),
                                                                                             selfAddress,
                                                                                             delegateRouter,
@@ -2970,7 +2972,8 @@ public interface AetherNode extends ManageableNode {
                                                                                             config.timeouts()
                                                                                                   .deployment()
                                                                                                   .transitionRetryDelay(),
-                                                                                            currentGenerationEpochSupplier);
+                                                                                            currentGenerationEpochSupplier,
+                                                                                            deploymentWiring.replayEnd(kvStore));
         // #1935: a declared stream consumer that cannot be registered reaches THIS node's event log.
         nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);
         configChangeFeed.setOperatorWarningSink(operatorWarningSink);
@@ -4537,7 +4540,7 @@ public interface AetherNode extends ManageableNode {
         var raw = Option.option(System.getenv("AETHER_PROVISIONED_BY"))
                         .filter(v -> !v.isBlank())
                         .map(String::trim)
-                        .map(String::toLowerCase);
+                        .map(text -> text.toLowerCase(Locale.ROOT));
 
         return raw.map(AetherNode::provisioningSourceFrom)
                   .or(AetherValue.ProvisioningSource.MANUAL);
