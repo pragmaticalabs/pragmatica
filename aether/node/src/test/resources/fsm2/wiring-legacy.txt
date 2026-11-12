@@ -30,6 +30,9 @@ B19.ForceClearDirectiveDelete -> off
 B2.ClusterStateNotification -> legacy+gate
 B20.EngineMarkerGuard -> guard
 B20.LineageMint -> marker=LEGACY
+B22.AllInstancesFailedDetector.activeInstances -> legacy
+B22.ControlLoop.SliceObservedKey.put -> off
+B22.ControlLoop.SliceObservedKey.remove -> off
 B3.ActivationDriver -> legacy+gate
 B4.PassiveClientSwitch -> legacy+gate
 B5.ConfigApplied -> legacy

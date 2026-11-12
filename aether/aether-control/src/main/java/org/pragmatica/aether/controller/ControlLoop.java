@@ -9,6 +9,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
+import java.util.function.ToLongFunction;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.controller.fsm.ControlLoopContext;
@@ -18,12 +19,16 @@ import org.pragmatica.aether.controller.fsm.ControlLoopState;
 import org.pragmatica.aether.controller.fsm.ScalingDecisionRecord;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
+import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -73,6 +78,13 @@ public interface ControlLoop {
 
     @MessageReceiver
     void onNodeArtifactRemove(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove);
+
+    /// F5b (phase-3 design 8.2 D-10, spec 1.6.1): the FSM2 source of [#onNodeArtifactPut]. A current row records its
+    /// state; a stale row (R-1.6.2, judged against `admittedToken`) and an UNLOADED row clear it, as a removal would.
+    void onSliceObservedPut(ValuePut<SliceObservedKey, SliceObservedValue> valuePut, ToLongFunction<NodeId> admittedToken);
+
+    /// F5b: the FSM2 source of [#onNodeArtifactRemove].
+    void onSliceObservedRemove(ValueRemove<SliceObservedKey, SliceObservedValue> valueRemove);
 
     @MessageReceiver
     void onQuorumStateChange(ClusterStateNotification notification);
@@ -256,6 +268,47 @@ public interface ControlLoop {
             var key = valueRemove.cause().key();
 
             ctx.clearSliceState(new SliceNodeKey(key.artifact(), key.nodeId()));
+        }
+
+        @Override
+        public void onSliceObservedPut(ValuePut<SliceObservedKey, SliceObservedValue> valuePut,
+                                       ToLongFunction<NodeId> admittedToken) {
+            var key = valuePut.cause().key();
+            var value = valuePut.cause().value();
+            var sliceNodeKey = new SliceNodeKey(key.artifact(), key.nodeId());
+
+            observedState(value, admittedToken.applyAsLong(key.nodeId()))
+                .onPresent(state -> ctx.recordSliceState(sliceNodeKey, state))
+                .onEmpty(() -> ctx.clearSliceState(sliceNodeKey));
+        }
+
+        @Override
+        public void onSliceObservedRemove(ValueRemove<SliceObservedKey, SliceObservedValue> valueRemove) {
+            var key = valueRemove.cause().key();
+
+            ctx.clearSliceState(new SliceNodeKey(key.artifact(), key.nodeId()));
+        }
+
+        /// The legacy state the scaling gates read for one observed row; empty for a stale or UNLOADED row, which no
+        /// longer holds the slice on that node.
+        private static Option<SliceState> observedState(SliceObservedValue row, long admittedToken) {
+            return row.isStaleAgainst(admittedToken)
+                   ? Option.none()
+                   : sliceState(row.state());
+        }
+
+        private static Option<SliceState> sliceState(SliceObservedState observed) {
+            return switch (observed) {
+                case LOADING -> Option.some(SliceState.LOADING);
+                case LOADED -> Option.some(SliceState.LOADED);
+                case ACTIVATING -> Option.some(SliceState.ACTIVATING);
+                case ACTIVE -> Option.some(SliceState.ACTIVE);
+                case DEACTIVATING -> Option.some(SliceState.DEACTIVATING);
+                case FAILED -> Option.some(SliceState.FAILED);
+                case UNLOADING -> Option.some(SliceState.UNLOADING);
+                case UNKNOWN -> Option.some(SliceState.UNKNOWN);
+                case UNLOADED -> Option.none();
+            };
         }
 
         @Override

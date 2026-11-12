@@ -4475,6 +4475,13 @@ public sealed interface AetherValue {
         public long fenceVersion() {
             return version;
         }
+
+        /// Spec R-1.6.2 (C8), for readers outside the cluster FSM: the row is stale iff its boot token and the node's admitted
+        /// boot token are both known (non-zero) and differ. Positive evidence only: an unknown token on either side reads as
+        /// current.
+        public boolean isStaleAgainst(long admittedToken) {
+            return incarnation.bootToken() != 0L && admittedToken != 0L && incarnation.bootToken() != admittedToken;
+        }
     }
 
     /// The open apply of one blueprint, under [AetherKey.DeploymentApplyKey] (spec R-4.1.1): `attemptId` names the
