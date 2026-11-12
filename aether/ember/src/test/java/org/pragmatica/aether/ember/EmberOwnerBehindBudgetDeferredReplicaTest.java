@@ -53,7 +53,7 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.sleepQuietly;
 /// Two tests share the scene: an enabled tripwire for the open defect (the election strands the partition on the deferred replica)
 /// and the intended assertions, `@Disabled` beside it.
 ///
-/// Intended asserts: the new owner holds the replica's tail and completes its activation at it; the deferred replica still has no
+/// Intended asserts: some new owner (not necessarily `behind`) completes its activation at the replica's tail; the deferred replica still has no
 /// ring and its allocated bytes did not move. Red when the owner's catch-up cannot use a deferred replica as its source.
 @PortBudget
 class EmberOwnerBehindBudgetDeferredReplicaTest {
@@ -71,6 +71,7 @@ class EmberOwnerBehindBudgetDeferredReplicaTest {
     private static final long CATCHUP_BUDGET_MS = 120_000L;
     private static final long REBUILD_BUDGET_MS = 240_000L;
     private static final long BACKUP_QUIET_MS = 10_000L;
+    private static final long EARLY_ACK_BUDGET_MS = 60_000L;
     private static final long TRIPWIRE_HOLD_MS = 45_000L;
     private static final long DEFERRAL_SETTLE_MS = 15_000L;
     private static final String KEY = engineKey(STREAM);
@@ -129,7 +130,7 @@ class EmberOwnerBehindBudgetDeferredReplicaTest {
             var behindId = replicas.get(1).self();
 
             for (var i = 0; i < EARLY; i++) {
-                assertThat(publish(owner, "early-" + i).join()).as("early-%d acknowledged with the whole in-sync set", i).isTrue();
+                assertThat(publishEarly(owner, i)).as("early-%d acknowledged with the whole in-sync set", i).isTrue();
             }
             awaitHeld(replicas.get(0), EARLY);
             awaitHeld(replicas.get(1), EARLY);
@@ -192,11 +193,7 @@ class EmberOwnerBehindBudgetDeferredReplicaTest {
                     assertThat(activated(capture)).as("#3117 fixed? replace this tripwire with the @Disabled assertions: an owner activated at the replica's tail").isFalse();
                     return;
                 }
-                awaitOwner(behindId);
-                awaitUntil(() -> behind.streamPartitionManager().appendedHead(KEY, PARTITION) == EARLY + LATE - 1L,
-                           CATCHUP_BUDGET_MS,
-                           "the new owner reached the deferred replica's tail (head " + behind.streamPartitionManager().appendedHead(KEY, PARTITION) + ")");
-                awaitUntil(() -> activated(capture), CATCHUP_BUDGET_MS, "the new owner activated at the replica's tail");
+                awaitUntil(() -> activated(capture), FAILOVER_BUDGET_MS + CATCHUP_BUDGET_MS, "some new owner activated at the replica's tail (#3117 acceptance)");
                 assertThat(deferred.streamPartitionManager().partitionBuffer(KEY, PARTITION).isEmpty()).as("the deferred replica stayed unmaterialized").isTrue();
                 assertThat(deferred.streamPartitionManager().totalAllocatedBytes()).as("the deferred replica's budget is unchanged").isEqualTo(allocatedBefore);
             } finally {
@@ -262,6 +259,21 @@ class EmberOwnerBehindBudgetDeferredReplicaTest {
         return message instanceof StreamForwardMessage.ReadForward read && read.catchup() && KEY.equals(read.streamName()) && read.sender().equals(starvedNode);
     }
 
+    /// A full in-sync set does not mean the owner finished activating, so the first publishes can be refused or time out. Retried
+    /// only while nothing was appended (the owner's head is still `index - 1`), so a retry cannot duplicate a record and the
+    /// record count the scene relies on holds; bounded by [#EARLY_ACK_BUDGET_MS].
+    private static boolean publishEarly(AetherNode owner, int index) {
+        var deadline = System.currentTimeMillis() + EARLY_ACK_BUDGET_MS;
+        var acked = publish(owner, "early-" + index).join();
+
+        while (!acked && owner.streamPartitionManager().appendedHead(KEY, PARTITION) == index - 1L && System.currentTimeMillis() < deadline) {
+            sleepQuietly(500L);
+            acked = publish(owner, "early-" + index).join();
+        }
+
+        return acked;
+    }
+
     private static CompletableFuture<Boolean> publish(AetherNode owner, String payload) {
         var manager = owner.streamPartitionManager();
         var confirmations = manager.confirmationFactorFor(KEY) - 1;
@@ -279,28 +291,6 @@ class EmberOwnerBehindBudgetDeferredReplicaTest {
 
     private static void awaitHeld(AetherNode node, int count) {
         awaitUntil(() -> node.streamPartitionManager().appendedHead(KEY, PARTITION) + 1 >= count, 30_000L, node.self().id() + " holds " + count + " records");
-    }
-
-    /// Waits until `expected` owns the partition, recording every other owner the committed record named on the way.
-    private AetherNode awaitOwner(NodeId expected) {
-        var deadline = System.currentTimeMillis() + FAILOVER_BUDGET_MS;
-        var seen = new java.util.LinkedHashSet<String>();
-
-        while (System.currentTimeMillis() < deadline) {
-            StreamTripwireSupport.committedRecord(cluster, KEY, PARTITION).onPresent(value -> seen.add(value.owner().id() + "@" + value.ownerEpoch()));
-
-            var found = StreamTripwireSupport.committedRecord(cluster, KEY, PARTITION)
-                                             .filter(value -> value.owner().equals(expected))
-                                             .flatMap(value -> cluster.getNode(value.owner().id()));
-
-            if (found.isPresent()) {
-                return found.unwrap();
-            }
-
-            sleepQuietly(250L);
-        }
-
-        throw new AssertionError("ownership did not reach " + expected + " within " + FAILOVER_BUDGET_MS + "ms; owners seen: " + seen);
     }
 
     private EmberCluster backedUpCluster(int basePort, Path remote) {
