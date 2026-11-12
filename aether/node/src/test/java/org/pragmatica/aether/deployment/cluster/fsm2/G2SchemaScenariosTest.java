@@ -6,11 +6,13 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaMigrationLockKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaMigrationLockValue;
@@ -303,6 +305,7 @@ class G2SchemaScenariosTest {
         var h = threeCores();
 
         h.seedQuietly(new SliceTargetKey(ORDERS.base()), ownedTarget(ORDERS, 1, 1, OWNER));
+        h.seedQuietly(new AppBlueprintKey(OWNER), blueprint("org.example:app:1.0.0", false, "attempt-1", slice(ORDERS, 1, 1, Set.of())));
         h.activate();
         h.seed(new SchemaVersionKey("ds"), schema(SchemaStatus.PENDING));
         h.advanceBySeconds(600L);
