@@ -259,7 +259,7 @@ class RefutedDrainQuorumLossTest {
         await().atMost(6, TimeUnit.SECONDS)
                .untilAsserted(() -> assertThat(survivor.memberStates()).containsEntry(SUSPECT, "Member"));
 
-        survivor.onSwimSuspect(SUSPECT, 4L);
+        survivor.onSwimSuspect(SUSPECT, 1L);
         survivor.onDownHysteresisMet(SUSPECT);
         survivor.onSwimHealthy(SUSPECT, 4L);
 
