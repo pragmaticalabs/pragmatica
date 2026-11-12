@@ -167,22 +167,25 @@ public sealed interface Schemas {
                                .filter(value -> isStalled(m, ctx, value))
                                .sorted(Comparator.comparing(SchemaVersionValue::datasourceName))
                                .toList();
-        var names = stalled.stream()
-                           .map(SchemaVersionValue::datasourceName)
-                           .collect(Collectors.toSet());
+        var names = stalled.stream().map(SchemaVersionValue::datasourceName).collect(Collectors.toSet());
 
         stalled.forEach(value -> stallOpened(m, ctx, value));
         m.schemaStalledWarned.toList()
                              .stream()
                              .sorted()
                              .filter(datasource -> !names.contains(datasource))
-                             .forEach(datasource -> stallEnded(m, ctx, datasource, endedMessage(datasource)));
+                             .forEach(datasource -> stallEnded(m,
+                                                               ctx,
+                                                               datasource,
+                                                               endedMessage(datasource)));
 
         return m;
     }
 
     private static boolean isStalled(ClusterModel m, Ctx ctx, SchemaVersionValue value) {
-        return isUnsettled(value) && lockExpired(m, ctx, value.datasourceName()) && isQuiet(ctx, value);
+        return isUnsettled(value)
+               && lockExpired(m, ctx, value.datasourceName())
+               && isQuiet(ctx, value);
     }
 
     private static boolean isUnsettled(SchemaVersionValue value) {
@@ -218,24 +221,27 @@ public sealed interface Schemas {
     }
 
     private static String endedMessage(String datasource) {
-        return "Schema migration for datasource " + datasource + " progressed: its record has a live lock, a terminal status or a fresh write";
+        return "Schema migration for datasource " + datasource
+             + " progressed: its record has a live lock, a terminal status or a fresh write";
     }
 
     /// The report names the datasource, the recorded status, the slices the record holds and the lever. The lever is chosen by the predicate
     /// the retry route uses (`SchemaStatus#canRetryManually`), so the warning never names a route that would refuse the record.
     private static String stalledMessage(ClusterModel m, Ctx ctx, SchemaVersionValue value) {
         return "Schema migration for datasource %s is stalled: status %s for %ds with no live migration lock; holds slices %s. %s".formatted(value.datasourceName(),
-                                                                                                                                              value.status(),
-                                                                                                                                              (ctx.nowMs() - value.updatedAt()) / 1000L,
-                                                                                                                                              slicesOwnedBy(m, value.owningBlueprint()),
-                                                                                                                                              lever(value));
+                                                                                                                                             value.status(),
+                                                                                                                                             (ctx.nowMs() - value.updatedAt()) / 1000L,
+                                                                                                                                             slicesOwnedBy(m,
+                                                                                                                                                           value.owningBlueprint()),
+                                                                                                                                             lever(value));
     }
 
     private static String lever(SchemaVersionValue value) {
         return value.status()
                     .canRetryManually()
                ? "Recovery: aether schema retry " + value.datasourceName()
-               : "No manual retry (the retry route refuses " + value.status() + "); the next leader's rebuild resets the record to PENDING and re-runs it";
+               : "No manual retry (the retry route refuses " + value.status()
+                + "); the next leader's rebuild resets the record to PENDING and re-runs it";
     }
 
     // -- C1: rebuild-time recovery ---------------------------------------------------------------------------------
