@@ -232,9 +232,9 @@ public interface MemoResult<K, V> {
             return computation.apply(key)
                               .onSuccess(value -> {
                                              synchronized (cache) {
-                                             cache.put(key,
-                                                       ResultCacheEntry.resultCacheEntry(value));
-                                         }
+                                                 cache.put(key,
+                                                           ResultCacheEntry.resultCacheEntry(value));
+                                             }
                                          });
         }
 

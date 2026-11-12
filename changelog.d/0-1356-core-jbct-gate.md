@@ -1,0 +1,2 @@
+### Fixed (2026-11-12 — #1356: `core` was never covered by CI's JBCT gate)
+- **`core` now overrides `jbct.skip=false`**, so CI's `jbct-maven-plugin:check` runs on its 70 files instead of printing `Skipping JBCT check` (the root pom's `jbct.skip=true` was inherited). Seven files that failed the rc5 formatter (`Option`, `Memo`, `FileOps`, `Idempotency`, `MemoResult`, `CircuitBreaker`, `RateLimiter`) were reformatted in a whitespace-only commit. Lint findings stay warnings.
