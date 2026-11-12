@@ -239,6 +239,26 @@ class OwnerAdvanceLeaseTest {
         assertThat(visible()).isEqualTo(-1L);
     }
 
+    /// G8 (CTO ruling): the lapsed-lease fallback never passes the caller's bound. A committed mark outlives the node's replica
+    /// life (only `purgePartitionState` removes it), so a node promoted to OWNER can hold a mark above what its peers have
+    /// acknowledged; `min(durable, mark)` alone would expose those unacknowledged records under a lapsed lease.
+    @Test
+    void lapsedLease_staleCommittedMarkFromAReplicaLife_neverPassesTheOwnerBound() {
+        var role = new AtomicReference<>(ReplicaSetController.Role.OWNER);
+
+        manager = wired(streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replicationWithPeer()));
+        manager.placementRoleSupplier((_, _) -> role.get());
+        createStream(2);
+        role.set(ReplicaSetController.Role.NONE);
+        manager.commitAdvanced(STREAM, PARTITION, 5L, Epoch.ZERO);
+        role.set(ReplicaSetController.Role.OWNER);
+        leaseValid.set(false);
+        publish("e0");
+        publish("e1");
+        assertThat(durable()).as("control: the owner holds both records durably, below the stale mark").isEqualTo(1L);
+        assertThat(visible()).as("no peer acknowledged anything: the fallback stays under the owner bound").isEqualTo(-1L);
+    }
+
     /// F-1a-6: the owner's tick announces nothing (neither the local committed event nor the replica message) while the lease is
     /// not valid, and announces again once it is.
     @Test
