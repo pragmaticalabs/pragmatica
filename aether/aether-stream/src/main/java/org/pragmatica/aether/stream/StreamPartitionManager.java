@@ -3576,7 +3576,10 @@ public final class StreamPartitionManager implements AutoCloseable {
                        .onSuccess(_ -> option(preserved.get()).onPresent(segment -> reportPreserved(streamName,
                                                                                                     partition,
                                                                                                     segment)))
-                       .onSuccess(_ -> reportRetraction(streamName, partition, keep, retractedFrom.get()))
+                       .onSuccess(_ -> reportRetraction(streamName,
+                                                        partition,
+                                                        keep,
+                                                        retractedFrom.get()))
                        .map(removed -> new TailCut(keep, removed, keep + 1, keep + removed, epoch));
         } finally {
             // Every exit closes the cut's bracket (#2087): the cut refused, failed in the durable copy, failed to shrink the ring, or threw. A
@@ -3612,7 +3615,17 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           Object token) {
         beginCut(streamName, partition, token);
 
-        return cutSteps(streamName, partition, divergedAtOffset, keep, authority, wal, ring, epoch, wrote, preserved, retractedFrom);
+        return cutSteps(streamName,
+                        partition,
+                        divergedAtOffset,
+                        keep,
+                        authority,
+                        wal,
+                        ring,
+                        epoch,
+                        wrote,
+                        preserved,
+                        retractedFrom);
     }
 
     private Result<Unit> cutSteps(String streamName,
@@ -3634,10 +3647,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                               keep,
                                                                                                               ring,
                                                                                                               retractedFrom))
-                         .flatMap(_ -> witnessBeforeCut(streamName,
-                                                                                                            partition,
-                                                                                                            wal,
-                                                                                                            prospective))
+                         .flatMap(_ -> witnessBeforeCut(streamName, partition, wal, prospective))
                          .onSuccess(_ -> wrote.set(wal.isPresent()))
                          .flatMap(_ -> preserveBeforeCut(streamName, partition, wal, ring, prospective, preserved))
                          .flatMap(_ -> wal.map(appendLog -> appendLog.truncateSuffix(keep))
@@ -3741,7 +3751,11 @@ public final class StreamPartitionManager implements AutoCloseable {
                : belowVisible(streamName, partition, keep, visible, retractedFrom);
     }
 
-    private Result<Unit> belowVisible(String streamName, int partition, long keep, long visible, AtomicLong retractedFrom) {
+    private Result<Unit> belowVisible(String streamName,
+                                      int partition,
+                                      long keep,
+                                      long visible,
+                                      AtomicLong retractedFrom) {
         return confirmationFactorFor(streamName) >= 2
                ? new StreamError.TruncateBelowVisible(streamName, partition, keep, visible).<Unit> result()
                : Result.unitResult().onSuccess(_ -> retractedFrom.set(visible));
