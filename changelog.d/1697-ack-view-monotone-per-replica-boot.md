@@ -10,5 +10,8 @@
   positional, so a node on the previous build cannot decode acks from a node on this build, or the reverse. Upgrade by
   replacing every node.
 - Not guaranteed: tokens are unordered, so an ack from a SUPERSEDED process that arrives after the new process's ack also
-  replaces the row, until the current process's next ack replaces it again. In production a restarted process gets a
-  new node id, so this case arises only with Forge/Ember same-id restarts.
+  replaces the row. That is an over-count (the unsafe direction), lasting until the current process's NEXT ack, so it is
+  bounded by an event, not by time; it is still better than before, when the over-count was kept for good. It is reachable by a
+  Forge/Ember restart that reuses the node id; whether a production crash-restart with the same node id can ack first is
+  [unverified]. Evidence that names no process re-raises a replaced row only within the row's epoch, and its production
+  writer (`PartitionBackfill`) passes epoch zero, so a row confirmed under a real epoch refuses it.
