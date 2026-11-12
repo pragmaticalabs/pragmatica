@@ -854,13 +854,13 @@ class ClusterConfigRoutesApplyTest {
             var store = storeWith(configAt(STORED_VERSION));
             var ran = new AtomicBoolean();
 
-            var cause = refusal(routedApply(store, hook(ran, () -> store.seed(ClusterConfigKey.CURRENT, configAt(STORED_VERSION + 1)))),
+            var cause = refusal(routedApply(store, hook(ran, () -> store.seed(ClusterConfigKey.CURRENT, otherContentAt(STORED_VERSION)))),
                                 ClusterConfigError.VersionConflict.class);
 
             assertThat(ran).as("instrument: the competing config write must have been injected").isTrue();
             assertThat(cause.expected()).isEqualTo(STORED_VERSION);
-            assertThat(cause.actual()).isEqualTo(STORED_VERSION + 1);
-            assertThat(committedConfig(store).configVersion()).as("the competing write survives").isEqualTo(STORED_VERSION + 1);
+            assertThat(cause.actual()).as("same version, other content: only the fenced expected value can tell").isEqualTo(STORED_VERSION);
+            assertThat(committedConfig(store)).as("the competing write survives").isEqualTo(otherContentAt(STORED_VERSION));
         }
 
         @Test
@@ -912,13 +912,13 @@ class ClusterConfigRoutesApplyTest {
 
             var result = ClusterConfigRoutes.clusterConfigRoutes(() -> nodeWith(store),
                                                                  ClusterConfigApplier.NoTopologyManager.INSTANCE,
-                                                                 hook(ran, () -> store.seed(ClusterConfigKey.CURRENT, configAt(STORED_VERSION + 1))))
+                                                                 hook(ran, () -> store.seed(ClusterConfigKey.CURRENT, otherContentAt(STORED_VERSION))))
                                             .handleScale(new ScaleRequest("hetzner", "worker", 4, STORED_VERSION))
                                             .await();
 
             assertThat(ran).as("instrument: the competing write must have been injected").isTrue();
-            assertThat(refusal(result, ClusterConfigError.VersionConflict.class).actual()).isEqualTo(STORED_VERSION + 1);
-            assertThat(committedConfig(store).configVersion()).isEqualTo(STORED_VERSION + 1);
+            assertThat(refusal(result, ClusterConfigError.VersionConflict.class).actual()).isEqualTo(STORED_VERSION);
+            assertThat(committedConfig(store)).isEqualTo(otherContentAt(STORED_VERSION));
         }
 
         @Test
@@ -928,12 +928,12 @@ class ClusterConfigRoutesApplyTest {
 
             var result = ClusterConfigRoutes.clusterConfigRoutes(() -> nodeWith(store),
                                                                  ClusterConfigApplier.NoTopologyManager.INSTANCE,
-                                                                 hook(ran, () -> store.seed(ClusterConfigKey.CURRENT, bootstrapSeedAt(2L))))
+                                                                 hook(ran, () -> store.seed(ClusterConfigKey.CURRENT, otherContentAt(1L))))
                                             .handleUpgrade(new UpgradeRequest("1.1.0", 1L))
                                             .await();
 
             assertThat(ran).as("instrument: the competing write must have been injected").isTrue();
-            assertThat(refusal(result, ClusterConfigError.VersionConflict.class).actual()).isEqualTo(2L);
+            assertThat(refusal(result, ClusterConfigError.VersionConflict.class).actual()).isEqualTo(1L);
             assertThat(committedConfig(store).version()).as("the refused upgrade must not land").isEqualTo("1.0.0");
         }
 
@@ -960,8 +960,9 @@ class ClusterConfigRoutesApplyTest {
             return committedOperatorConfig(configVersion);
         }
 
-        private static ClusterConfigValue bootstrapSeedAt(long configVersion) {
-            return ClusterConfigValue.bootstrapSeed("prod", "1.0.0", List.of(new TopologyEntry("", TopologyEntry.CORE_ROLE, 3)), 3, 3, "bootstrap-seed", configVersion);
+        /// Same version as the stored config, different content: a re-read at write time would adopt it and pass the CAS.
+        private static ClusterConfigValue otherContentAt(long configVersion) {
+            return ClusterConfigValue.bootstrapSeed("prod", "1.0.0", List.of(new TopologyEntry("", TopologyEntry.CORE_ROLE, 5)), 5, 5, "competing-writer", configVersion);
         }
 
         private static <C extends Cause> C refusal(Result<?> result, Class<C> type) {
