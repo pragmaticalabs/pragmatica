@@ -857,6 +857,23 @@ class ClusterCursorStoreTest {
                                .matches(r -> r.map(o -> o instanceof CommitOutcome.Fenced).or(false));
         }
 
+        /// #2596: the blind path is for a forwarding node only. A node that does not forward reads the authoritative state, so an
+        /// empty read of the cursor while the assignment still names it is a write that has not landed: LocalOnly, never Persisted.
+        @Test
+        void commit_nonForwardingNode_cursorNotYetReadable_staysLocalOnly() {
+            var local = ClusterCursorStore.clusterCursorStore(recordingLocal(new AtomicReference<>()),
+                                                              SELF,
+                                                              this::workerReplicaRead,
+                                                              assignedToSelf(),
+                                                              _ -> Promise.unitPromise(),
+                                                              () -> false);
+
+            var outcome = local.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
+
+            assertThat(outcome).describedAs("#2596: nothing was applied and the node does not forward, so it is not Persisted; got %s", outcome)
+                               .matches(r -> r.map(o -> o instanceof CommitOutcome.LocalOnly).or(false));
+        }
+
         /// #2596 guess: the assignment mirror a blind worker consults lags the core by one decision. The core already moved the
         /// assignment to a peer and refused the Put, yet the worker reports Persisted. The consequence is a redelivery, never a skip:
         /// the core holds no checkpoint, so the successor resumes before the offset, and once the mirror catches up the same commit is Fenced.
