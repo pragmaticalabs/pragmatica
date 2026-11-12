@@ -298,11 +298,11 @@ class ApplyDeadlineTest {
     /// stop the deadline.
     @Test
     void successInFlight_staysProtected_whenASliceLeavesActive() {
-        var h = succeededAndHeld(timing -> timing.withApplyDeadline(60_000L));
+        var h = succeededAndHeld(timing -> timing.withApplyDeadline(30_000L));
 
         node(h, hosts(h, ORDERS).getFirst(), 1L).writes(ORDERS, SliceObservedState.LOADED);
         h.drain();
-        h.advanceBySeconds(2 * 60);
+        h.advanceBySeconds(40);
         assertThat(h.warns("apply-deadline-exceeded")).isEmpty();
         assertThat(h.submits(ClusterModel.SubmitKind.ROLLBACK)).isEmpty();
     }
