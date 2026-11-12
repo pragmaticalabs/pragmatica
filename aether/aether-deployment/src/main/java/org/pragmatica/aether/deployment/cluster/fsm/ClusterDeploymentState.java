@@ -482,7 +482,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             SharedScheduler.schedule(() -> releaseJoin(decision, pending, released, true), ctx.removalWaitBound());
         }
 
-        private void releaseJoin(WorkerJoinDecision decision, Promise<Unit> pending, AtomicBoolean released, boolean boundExpired) {
+        private void releaseJoin(WorkerJoinDecision decision,
+                                 Promise<Unit> pending,
+                                 AtomicBoolean released,
+                                 boolean boundExpired) {
             if (!released.compareAndSet(false, true)) {
                 return;
             }
@@ -3518,9 +3521,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                                                                                                                   previousDirective,
                                                                                                                                                   Option.none())),
                                                                                                                  List.of()))
-                                                                        .onFailure(cause -> log.error("Failed to remove keys for departed node {}: {}",
-                                                                                                      removedNode,
-                                                                                                      cause.message())));
+                                                     .onFailure(cause -> log.error("Failed to remove keys for departed node {}: {}",
+                                                                                   removedNode,
+                                                                                   cause.message())));
         }
 
         /// #3028 M2: publish the departure chain so a join of the same node can wait for it ([`#processWorkerJoin`]); the entry is dropped when
@@ -3528,7 +3531,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private Promise<Unit> trackRemoval(NodeId removedNode, Promise<Unit> chain) {
             ctx.removalsInFlight().put(removedNode, chain);
 
-            return chain.onResultRun(() -> ctx.removalsInFlight().remove(removedNode, chain));
+            return chain.onResultRun(() -> ctx.removalsInFlight()
+                                              .remove(removedNode, chain));
         }
 
         /// #1717 — a departed node with no slice footprint yields an EMPTY batch, which consensus rejects with

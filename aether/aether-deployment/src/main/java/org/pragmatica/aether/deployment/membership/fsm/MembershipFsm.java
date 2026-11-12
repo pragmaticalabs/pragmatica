@@ -123,7 +123,6 @@ public final class MembershipFsm {
 
     /// FSM kind tag — groups all per-member FSMs under one name for observer dashboards.
     private static final String FSM_KIND = "membership";
-
     /// #3028 S3: how often a rejoin refused for quorum loss is re-offered to a DEAD member [guess: 2 s, a few SWIM periods].
     private static final TimeSpan REJOIN_REOFFER = TimeSpan.timeSpan(2).seconds();
     /// Up-hysteresis promotion threshold for this **edge-driven** manager (= 1). SWIM emits
@@ -2044,7 +2043,7 @@ public final class MembershipFsm {
         /// exceeds the incarnation it died at, and it `reportsQuorumLoss`. True when the caller must schedule the
         /// re-offer (none is pending yet), so at most one re-offer timer exists per member.
         synchronized boolean armRejoinReoffer(long incarnation, boolean reportsQuorumLoss) {
-            if (!(fsm.current() instanceof MembershipState.Dead dead) || incarnation <= dead.terminalIncarnation() || !reportsQuorumLoss) {
+            if (! (fsm.current() instanceof MembershipState.Dead dead) || incarnation <= dead.terminalIncarnation() || !reportsQuorumLoss) {
                 return false;
             }
 
