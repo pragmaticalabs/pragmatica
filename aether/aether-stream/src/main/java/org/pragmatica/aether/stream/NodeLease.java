@@ -7,7 +7,9 @@ package org.pragmatica.aether.stream;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
@@ -46,12 +48,18 @@ import org.slf4j.LoggerFactory;
 ///
 /// The renewal loop never consults validity: a revoked node keeps renewing, which is how it regains the lease.
 ///
-/// Step 1 of #2981: nothing consumes the lease yet. Production wiring (renewal route, `reset`/`replayStart` revoke) lands
-/// in step 2, after `KVStore.onReplayStart` becomes a listener list (§2.1 "Wiring").
-public interface NodeLease {
+/// Step 2 of #2981 wires it (`StreamAssembly.nodeLease`): the renewal route, the `reset`/`replayStart` revoke, the operator
+/// events, and the owner checks of `StreamPartitionManager` and `OwnerActivation` through [OwnerLease].
+public interface NodeLease extends OwnerLease {
     /// Whether the lease is valid at this instant. Runs the A-CLK-2 cross-check and reports a lapse to [Events] once per
     /// lapse.
+    @Override
     boolean valid();
+
+    /// Registers a listener told, on the delivering thread, every time an own renewal turns an invalid lease valid (the renewal
+    /// edge of design §2.2/§2.4: parked acks are re-checked and `visible` is re-derived). Registration appends.
+    @Contract
+    void onValidityRegained(Runnable listener);
 
     /// Revokes the lease now (`reset`, `replayStart`); re-stamps the revocation time on every call, so only a renewal
     /// submitted after the LATEST revocation clears it.
@@ -95,15 +103,22 @@ public interface NodeLease {
         }
     }
 
-    /// Where lapses and clock-rate divergence are raised. TODO(#2981 step 5): route to the operator events
-    /// `STREAM_OWNER_LEASE_LAPSED` and `NODE_CLOCK_RATE_DIVERGENCE`, which land in step 5's PR; until then
-    /// [#loggingEvents] logs them.
+    /// Where lapses and clock-rate divergence, and their recoveries, are raised. Production routes them to the operator events
+    /// `STREAM_OWNER_LEASE_LAPSED`/`_RESTORED` and `NODE_CLOCK_RATE_DIVERGENCE`/`_NORMAL` (`StreamAssembly.leaseEvents`).
     interface Events {
         @Contract
         void lapsed(LapseReason reason, long nanos);
 
+        /// The lease is valid again after a reported lapse (once per reported lapse).
+        @Contract
+        void restored();
+
         @Contract
         void clockRateDivergence(long monotonicNanos, long wallNanos);
+
+        /// The clock rates agree again after a reported divergence (once per divergence episode).
+        @Contract
+        void clockRateNormal();
 
         static Events loggingEvents() {
             return LoggingEvents.INSTANCE;
@@ -133,7 +148,10 @@ public interface NodeLease {
                                  new ConcurrentHashMap<>(),
                                  new ConcurrentHashMap<>(),
                                  new AtomicLong(TimeUnit.MILLISECONDS.toMicros(clock.wallMillis())),
-                                 CancellableTask.cancellableTask());
+                                 CancellableTask.cancellableTask(),
+                                 new AtomicBoolean(),
+                                 new AtomicBoolean(),
+                                 new CopyOnWriteArrayList<>());
     }
 
     /// The two clock readings taken when a renewal is submitted.
@@ -231,10 +249,20 @@ enum LoggingEvents implements NodeLease.Events {
     }
     @Contract
     @Override
+    public void restored() {
+        log.info("Node lease restored");
+    }
+    @Contract
+    @Override
     public void clockRateDivergence(long monotonicNanos, long wallNanos) {
         log.warn("Node clock rate divergence: monotonic advanced {} ns while wall advanced {} ns",
                  monotonicNanos,
                  wallNanos);
+    }
+    @Contract
+    @Override
+    public void clockRateNormal() {
+        log.info("Node clock rates agree again");
     }
 }
 
@@ -250,7 +278,10 @@ record LiveNodeLease(NodeId self,
                      Map<Long, NodeLease.Anchor> pending,
                      Map<NodeId, Long> applied,
                      AtomicLong seq,
-                     CancellableTask task) implements NodeLease {
+                     CancellableTask task,
+                     AtomicBoolean lapseRaised,
+                     AtomicBoolean divergenceRaised,
+                     List<Runnable> regainedListeners) implements NodeLease {
     private static final Logger log = LoggerFactory.getLogger(LiveNodeLease.class);
 
     @Override
@@ -280,6 +311,12 @@ record LiveNodeLease(NodeId self,
         var now = clock.nanoTime();
 
         state.updateAndGet(current -> current.revokedAt(now));
+    }
+
+    @Contract
+    @Override
+    public void onValidityRegained(Runnable listener) {
+        regainedListeners.add(listener);
     }
 
     @Override
@@ -341,22 +378,39 @@ record LiveNodeLease(NodeId self,
     private void extendFrom(NodeLease.Anchor anchor) {
         var before = state.getAndUpdate(current -> current.extendedBy(anchor, durationNanos));
         var after = before.extendedBy(anchor, durationNanos);
+        var now = clock.nanoTime();
 
         if (after.anchorMovedFrom(before)) {
             checkRate(after.anchorNanos() - before.anchorNanos(),
                       TimeUnit.MILLISECONDS.toNanos(after.anchorWallMillis() - before.anchorWallMillis()));
         }
+        if (!before.validAt(now) && after.validAt(now)) {
+            regained();
+        }
+    }
+
+    /// The renewal edge: the recovery event once per reported lapse, then every regained listener.
+    @Contract
+    private void regained() {
+        if (lapseRaised.compareAndSet(true, false)) {
+            events.restored();
+        }
+        regainedListeners.forEach(Runnable::run);
     }
 
     @Contract
     private void checkRate(long monotonicNanos, long wallNanos) {
         if (Math.abs(wallNanos - monotonicNanos) > rho * monotonicNanos) {
+            divergenceRaised.set(true);
             events.clockRateDivergence(monotonicNanos, wallNanos);
+        } else if (divergenceRaised.compareAndSet(true, false)) {
+            events.clockRateNormal();
         }
     }
 
     private boolean revokeOnSuspend(NodeLease.LeaseState current, long now, long gap) {
         if (state.compareAndSet(current, current.revokedAt(now))) {
+            lapseRaised.set(true);
             events.lapsed(NodeLease.LapseReason.CLOCK_SUSPEND, gap);
         }
 
@@ -365,6 +419,7 @@ record LiveNodeLease(NodeId self,
 
     private boolean noteLapse(NodeLease.LeaseState current, long now) {
         if (!current.lapseReported() && state.compareAndSet(current, current.lapseNoted())) {
+            lapseRaised.set(true);
             events.lapsed(NodeLease.LapseReason.EXPIRED, now - current.expiry());
         }
 

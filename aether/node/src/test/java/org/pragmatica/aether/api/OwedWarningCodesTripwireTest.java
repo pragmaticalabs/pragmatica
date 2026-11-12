@@ -35,10 +35,6 @@ class OwedWarningCodesTripwireTest {
     private static Map<OperatorWarningCode, String> owed() {
         var map = new LinkedHashMap<OperatorWarningCode, String>();
 
-        map.put(OperatorWarningCode.STREAM_OWNER_LEASE_LAPSED, "steps 1-2");
-        map.put(OperatorWarningCode.STREAM_OWNER_LEASE_RESTORED, "steps 1-2");
-        map.put(OperatorWarningCode.NODE_CLOCK_RATE_DIVERGENCE, "steps 1-2");
-        map.put(OperatorWarningCode.NODE_CLOCK_RATE_NORMAL, "steps 1-2");
         map.put(OperatorWarningCode.STREAM_TRUNCATION_REFUSED, "step 2");
         map.put(OperatorWarningCode.STREAM_TRUNCATION_QUARANTINE_CLEARED, "steps 2-3");
         map.put(OperatorWarningCode.STREAM_TRUNCATION_RETRACTED, "step 2");

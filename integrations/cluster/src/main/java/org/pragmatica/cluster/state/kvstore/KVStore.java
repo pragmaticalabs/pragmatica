@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
@@ -59,6 +60,8 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// Serializes writers and the append of their batches, so batches enter the delivery FIFO in commit order (design
     /// §3.1 step 3), without blocking read-only store captures. Inline delivery also runs under it.
     private final Object mutationLock = new Object();
+    /// Told before a [#reset()] empties the store (#2981): registration appends.
+    private final List<Runnable> resetListeners = new CopyOnWriteArrayList<>();
     /// The delivery side (design §3.1-§3.7): sequence numbers, the FIFO, the delivery loop, waits and the fence.
     private final NotificationDispatcher dispatcher;
     /// Monitor: the notifications of the batch being applied.
@@ -1152,8 +1155,18 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         return dispatcher.threadName();
     }
 
+    /// Registers a listener told, on the resetting thread and BEFORE the store is emptied, that a [#reset()] is about to install an empty
+    /// view (#2981 §2.1 r7 S2: a later restore may install a view OLDER than the one a node lease was renewed under, so the lease is revoked
+    /// first). Registration appends; listeners run in registration order.
+    @Contract
+    public void onReset(Runnable listener) {
+        resetListeners.add(listener);
+    }
+
     @Override
     public Unit reset() {
+        resetListeners.forEach(Runnable::run);
+
         return mutate(this::resetStorage);
     }
 
