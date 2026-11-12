@@ -45,7 +45,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///
 /// The holder is a plain JDBC session through the pooler that takes the fence with the runner's own grant
 /// (`pg_try_advisory_lock(0x41455448, 1)`), or a real runner. Lock state is read on the server directly (`pg_locks`).
-/// Self-skips without Docker unless `CI_REQUIRE_DOCKER=1`.
+/// Self-skips without Docker unless `-Daether.requireDocker=true`.
 @Timeout(value = 300, unit = TimeUnit.SECONDS)
 class MigrationFencePoolerTest {
     private static final String BOUNCER_IMAGE = "edoburu/pgbouncer:v1.26.1-p0";

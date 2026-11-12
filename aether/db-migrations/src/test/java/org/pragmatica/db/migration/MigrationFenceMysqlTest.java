@@ -45,7 +45,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// FDB-2a (#2591): the tier-1 MySQL migration fence (`GET_LOCK` on a 51-character name derived from the schema),
 /// against a LIVE MySQL 8.0 through the PRODUCTION Hikari JDBC connector. Untagged: it runs in required CI (ruling Q4).
 /// The lock name is computed HERE independently of the production code, so a wrong name in production is a red, not
-/// a shared mistake. Self-skips without Docker unless `CI_REQUIRE_DOCKER=1`.
+/// a shared mistake. Self-skips without Docker unless `-Daether.requireDocker=true`.
 @Timeout(value = 180, unit = TimeUnit.SECONDS)
 class MigrationFenceMysqlTest {
     private static final String OWNER = "fence-test-blueprint";

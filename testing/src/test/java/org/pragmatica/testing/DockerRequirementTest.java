@@ -17,8 +17,8 @@
 
 package org.pragmatica.testing;
 
-import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ConditionEvaluationResult;
@@ -26,55 +26,40 @@ import org.junit.jupiter.api.extension.ConditionEvaluationResult;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/// Pins both arms of the Docker guard (#3089) with the environment and the probe injected, so the outcome never depends
+/// Pins both arms of the Docker guard (#3089) with the require switch and the probe injected, so the outcome never depends
 /// on whether the host running the test has Docker.
 class DockerRequirementTest {
-    private static final Map<String, String> REQUIRED = Map.of(DockerRequirement.REQUIRE_VARIABLE, "1");
-    private static final Map<String, String> UNSET = Map.of();
+    private static final BooleanSupplier REQUIRED = () -> true;
+    private static final BooleanSupplier UNSET = () -> false;
 
     @Test
-    void dockerAvailable_requiredAndMissing_failsNamingTheVariable() {
-        assertThatThrownBy(() -> DockerRequirement.dockerAvailable(REQUIRED::get, () -> false))
+    void dockerAvailable_requiredAndMissing_failsNamingTheProperty() {
+        assertThatThrownBy(() -> DockerRequirement.dockerAvailable(REQUIRED, () -> false))
             .isInstanceOf(AssertionError.class)
-            .hasMessageContaining("CI_REQUIRE_DOCKER=1")
+            .hasMessageContaining("-Daether.requireDocker=true")
             .hasMessageContaining("refusing to skip");
     }
 
     @Test
-    void dockerAvailable_requiredWithTrueSpelling_alsoFails() {
-        var env = Map.of(DockerRequirement.REQUIRE_VARIABLE, "TRUE");
-
-        assertThatThrownBy(() -> DockerRequirement.dockerAvailable(env::get, () -> false))
-            .isInstanceOf(AssertionError.class);
-    }
-
-    @Test
     void dockerAvailable_notRequiredAndMissing_reportsUnavailableSoCallerSkips() {
-        assertThat(DockerRequirement.dockerAvailable(UNSET::get, () -> false)).isFalse();
-    }
-
-    @Test
-    void dockerAvailable_otherValueOfVariable_doesNotRequire() {
-        var env = Map.of(DockerRequirement.REQUIRE_VARIABLE, "0");
-
-        assertThat(DockerRequirement.dockerAvailable(env::get, () -> false)).isFalse();
+        assertThat(DockerRequirement.dockerAvailable(UNSET, () -> false)).isFalse();
     }
 
     @Test
     void dockerAvailable_requiredAndPresent_isTrue() {
-        assertThat(DockerRequirement.dockerAvailable(REQUIRED::get, () -> true)).isTrue();
+        assertThat(DockerRequirement.dockerAvailable(REQUIRED, () -> true)).isTrue();
     }
 
     @Test
     void dockerAvailable_notRequiredAndPresent_isTrue() {
-        assertThat(DockerRequirement.dockerAvailable(UNSET::get, () -> true)).isTrue();
+        assertThat(DockerRequirement.dockerAvailable(UNSET, () -> true)).isTrue();
     }
 
     @Test
     void dockerAvailable_probesExactlyOnce() {
         var probes = new AtomicInteger();
 
-        DockerRequirement.dockerAvailable(UNSET::get, () -> probes.incrementAndGet() > 0);
+        DockerRequirement.dockerAvailable(UNSET, () -> probes.incrementAndGet() > 0);
 
         assertThat(probes).hasValue(1);
     }
@@ -86,7 +71,7 @@ class DockerRequirementTest {
 
     @Test
     void condition_dockerMissingAndNotRequired_disablesTheClass() {
-        ConditionEvaluationResult result = new DockerCondition(() -> DockerRequirement.dockerAvailable(UNSET::get, () -> false))
+        ConditionEvaluationResult result = new DockerCondition(() -> DockerRequirement.dockerAvailable(UNSET, () -> false))
             .evaluateExecutionCondition(null);
 
         assertThat(result.isDisabled()).isTrue();
@@ -94,7 +79,7 @@ class DockerRequirementTest {
 
     @Test
     void condition_dockerMissingAndRequired_throwsInsteadOfDisabling() {
-        var condition = new DockerCondition(() -> DockerRequirement.dockerAvailable(REQUIRED::get, () -> false));
+        var condition = new DockerCondition(() -> DockerRequirement.dockerAvailable(REQUIRED, () -> false));
 
         assertThatThrownBy(() -> condition.evaluateExecutionCondition(null)).isInstanceOf(AssertionError.class);
     }

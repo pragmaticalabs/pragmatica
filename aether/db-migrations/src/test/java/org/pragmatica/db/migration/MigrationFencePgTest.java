@@ -51,7 +51,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// (a `gate` table held ACCESS EXCLUSIVE, a history row held FOR UPDATE), and the test waits for the runner's own
 /// session (`application_name` `aether-mig:<node>`) to be lock-waiting: no sleeps decide an interleaving. A
 /// rollback-proof counter (`nextval`) counts entries into a script. Self-skips without Docker unless
-/// `CI_REQUIRE_DOCKER=1`.
+/// `-Daether.requireDocker=true`.
 @Timeout(value = 180, unit = TimeUnit.SECONDS)
 class MigrationFencePgTest {
     private static final int FENCE_CLASS = 0x41455448;

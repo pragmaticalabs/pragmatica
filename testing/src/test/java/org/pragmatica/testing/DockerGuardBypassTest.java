@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// Fails the build when a test guards on Docker without going through [DockerRequirement] / [RequiresDocker] (#3089):
 /// a raw availability probe or the testcontainers skip switch would turn "no Docker" back into a silent pass under
-/// `CI_REQUIRE_DOCKER=1`.
+/// `-Daether.requireDocker=true`.
 class DockerGuardBypassTest {
     private static final Pattern BYPASS = Pattern.compile("isDockerAvailable|disabledWithoutDocker");
     private static final Set<String> SKIPPED_DIRECTORIES = Set.of("target", ".git", ".m2-local", "node_modules");
