@@ -31,6 +31,9 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.utility.react.ReactExecutor;
 import org.pragmatica.statemachine.Fsm;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 
 /// Shared context for the leader-election FSM. Holds:
 /// - Configuration that never changes during the FSM's lifetime (self, expectedCluster, router,
@@ -46,6 +49,7 @@ import org.pragmatica.statemachine.Fsm;
 /// Thread safety: atomic fields are thread-safe on their own. The context is referenced by all
 /// state instances for a given FSM; states mutate atomic fields directly inside their handlers.
 public final class LeaderElectionContext {
+    private static final Logger log = LoggerFactory.getLogger(LeaderElectionContext.class);
     public static final TimeSpan DEFAULT_PROPOSAL_RETRY_DELAY = TimeSpan.timeSpan(500).millis();
     public static final TimeSpan DEFAULT_BASE_ELECTION_DELAY = TimeSpan.timeSpan(2).seconds();
     public static final TimeSpan DEFAULT_PER_RANK_DELAY = TimeSpan.timeSpan(1).seconds();
@@ -783,20 +787,21 @@ public final class LeaderElectionContext {
                               .toList();
     }
 
-    @Contract
-    public void setCurrentTopology(List<NodeId> topology) {
-        applyTopology(topology, ClusterFsmEvent.TopologyChange.NO_SEQUENCE);
-    }
-
-    /// Applies the event's view unless it is stale (#2971): a sequenced event whose sequence is not above the last
-    /// applied one is dropped, because the newer view already reflects every change the older one observed. The
-    /// ordering holds among the transport's own sequenced observations only: unsequenced writes (SWIM-observed
-    /// faults, `installLeaderEligibility`, local mode, `setCurrentTopology`) replace the view unconditionally and are
-    /// not fenced (#3044). The check and the write are one atomic step (`getAndUpdate`), so a delayed older
-    /// transport event cannot overwrite a newer view however its handler interleaves. Returns `false` only for a
-    /// dropped stale event.
+    /// Applies the event's view unless it is dropped. A sequenced event whose sequence is not above the last applied
+    /// one is stale (#2971): the newer view already reflects every change the older one observed. An unsequenced
+    /// event ([ClusterFsmEvent.TopologyChange#NO_SEQUENCE]) is always dropped (#3044): only the transport's sequenced
+    /// observations replace the view, and the one unsequenced write is the view-free [#removeFromView(NodeId)]. The
+    /// check and the write are one atomic step (`getAndUpdate`), so a delayed older transport event cannot overwrite
+    /// a newer view however its handler interleaves. Returns `false` iff the event was dropped.
     public boolean applyTopology(ClusterFsmEvent.TopologyChange event) {
-        return applyTopology(event.topology(), event.sequence());
+        var applied = applyTopology(event.topology(), event.sequence());
+
+        if (!applied && event.sequence() == ClusterFsmEvent.TopologyChange.NO_SEQUENCE) {
+            log.debug("Dropped unsequenced wholesale view write {}: only sequenced transport views replace the view",
+                      event);
+        }
+
+        return applied;
     }
 
     /// Removes exactly `node` from the stored view, view-free (#3044): the one write that carries no sequenced view.
@@ -831,8 +836,9 @@ public final class LeaderElectionContext {
                 return new Replace(List.copyOf(sorted), sequence);
             }
 
-            boolean isStaleAgainst(SequencedTopology current) {
-                return sequence > ClusterFsmEvent.TopologyChange.NO_SEQUENCE && sequence <= current.sequence();
+            /// An unsequenced replace is always dropped (#3044); a sequenced one is dropped when stale (#2971).
+            boolean isDroppedAgainst(SequencedTopology current) {
+                return sequence == ClusterFsmEvent.TopologyChange.NO_SEQUENCE || sequence <= current.sequence();
             }
         }
 
@@ -852,17 +858,17 @@ public final class LeaderElectionContext {
             };
         }
 
-        /// Replace: `true` unless the candidate is stale (a newer empty view counts as applied: its sequence advances
+        /// Replace: `true` unless the candidate is dropped (a newer empty view counts as applied: its sequence advances
         /// the fence). Remove: `true` iff the node was removed.
         boolean applies(ViewCandidate candidate, NodeId self) {
             return switch (candidate) {
-                case ViewCandidate.Replace replace -> !replace.isStaleAgainst(this);
+                case ViewCandidate.Replace replace -> !replace.isDroppedAgainst(this);
                 case ViewCandidate.Remove remove -> admitsRemovalOf(remove.node(), self);
             };
         }
 
         private SequencedTopology replacedBy(ViewCandidate.Replace candidate) {
-            if (candidate.isStaleAgainst(this)) {
+            if (candidate.isDroppedAgainst(this)) {
                 return this;
             }
 

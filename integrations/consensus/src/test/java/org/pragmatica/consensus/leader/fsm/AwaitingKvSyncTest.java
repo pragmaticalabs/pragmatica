@@ -27,6 +27,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// Verifies the cold-boot self-proposal race fix: when a fresh node boots into a cluster of
@@ -90,7 +91,7 @@ class AwaitingKvSyncTest {
         // Drive Dormant → QuorumWaiting → AwaitingKvSync.
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
         // Populate topology so adoptLeaderIfInTopology accepts the leader.
-        h.dispatch(new ClusterFsmEvent.NodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B)));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B), seq()));
         h.dispatch(new ConsensusReady());
         assertThat(h.state())
                 .as("FSM advances to AwaitingKvSync, NOT directly to Electing")
@@ -121,7 +122,7 @@ class AwaitingKvSyncTest {
         // the synthesized LeaderCommitted event. (The harness's `consensusReadySupplier`
         // returns true → entering QuorumWaiting auto-dispatches ConsensusReady → enters
         // AwaitingKvSync — so we must seed topology in Dormant first.)
-        h.dispatch(new ClusterFsmEvent.NodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B)));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B), seq()));
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
 
         // Synchronous: AwaitingKvSync.onEntry → adoptLeaderFromKvIfPresent → LeaderCommitted →
@@ -140,7 +141,7 @@ class AwaitingKvSyncTest {
         var h = buildHarness(Option.none(), Option.none(), SHORT_KV_SYNC_GRACE);
 
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, PEER_A, PEER_B)));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, PEER_A, PEER_B), seq()));
         h.dispatch(new ConsensusReady());
 
         assertThat(h.state())
@@ -169,7 +170,7 @@ class AwaitingKvSyncTest {
 
         // First, drive a full cycle to set hasEverHadLeader.
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, PEER_A, PEER_B)));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, PEER_A, PEER_B), seq()));
         h.dispatch(new ConsensusReady());
         h.dispatch(new LeaderCommitted(SELF));
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);

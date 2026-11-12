@@ -18,6 +18,8 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
+import org.pragmatica.consensus.fsm.ClusterFsmRouter;
+import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderManager.FsmBackedLeaderManager;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady;
@@ -27,6 +29,7 @@ import org.pragmatica.consensus.net.NetworkServiceMessage.Send;
 import org.pragmatica.consensus.topology.TransportObservation.ObservationSource;
 import org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected;
 import org.pragmatica.consensus.topology.TransportObservation.PeerJoined;
+import org.pragmatica.consensus.topology.TransportObservation.PeerObservedFaulty;
 import org.pragmatica.consensus.topology.TransportObservation.PeerReconnected;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -36,10 +39,12 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.statemachine.FsmTestHarness;
 
 import java.util.List;
+import java.util.Random;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -57,6 +62,7 @@ class PeerObservationOrderTest {
     private static final NodeId N1 = new NodeId("node-1");
     private static final NodeId N2 = new NodeId("node-2");
     private static final NodeId N3 = new NodeId("node-3");
+    private static final NodeId N4 = new NodeId("node-4");
     private static final List<NodeId> ALL = List.of(N1, N2, N3);
     private static final List<NodeId> WITHOUT_N1 = List.of(N2, N3);
     private static final TimeSpan LONG = TimeSpan.timeSpan(60).seconds();
@@ -128,7 +134,7 @@ class PeerObservationOrderTest {
             var node = new Node(LeaderElectionContext::dormant, preVote);
 
             node.harness.dispatch(new ClusterFsmEvent.QuorumEstablished());
-            node.harness.dispatch(new ClusterFsmEvent.NodeAdded(N2, ALL));
+            node.harness.dispatch(new ClusterFsmEvent.NodeAdded(N2, ALL, 1L));
             node.harness.dispatch(new ConsensusReady());
             node.harness.dispatch(new LeaderCommitted(N1, 1L));
 
@@ -173,10 +179,10 @@ class PeerObservationOrderTest {
     void lateEviction_afterANewerReconnectThatRestoredThePeer_keepsThePeer() {
         node = Node.following();
 
-        node.manager.peerDisconnected(new PeerDisconnected(N1, WITHOUT_N1, ObservationSource.QUIC, 1L));
-        node.manager.peerReconnected(new PeerReconnected(N1, ALL, ObservationSource.QUIC, 3L));
-        assertThat(node.ctx.currentTopology()).as("control: the reconnect restored the leader").contains(N1);
         node.manager.peerDisconnected(new PeerDisconnected(N1, WITHOUT_N1, ObservationSource.QUIC, 2L));
+        node.manager.peerReconnected(new PeerReconnected(N1, ALL, ObservationSource.QUIC, 4L));
+        assertThat(node.ctx.currentTopology()).as("control: the reconnect restored the leader").contains(N1);
+        node.manager.peerDisconnected(new PeerDisconnected(N1, WITHOUT_N1, ObservationSource.QUIC, 3L));
 
         assertThat(node.ctx.currentTopology()).as("the older eviction's view does not overwrite the reconnect's").contains(N1);
         assertThat(node.suspectsTheLeader()).isFalse();
@@ -201,17 +207,21 @@ class PeerObservationOrderTest {
         assertThat(node.ctx.currentTopology()).as("a sequence already applied is not applied again").doesNotContain(N1);
     }
 
+    /// #3044 §2.1: only sequenced transport observations replace the view. After the view at sequence 5, an
+    /// unsequenced eviction, `NodeGone` and join reach neither the view nor the leader's suspicion.
     @Test
-    void unsequencedObservations_applyInArrivalOrder() {
+    void unsequencedWholesaleWrite_isDropped() {
         node = Node.following();
+        node.manager.peerDisconnected(new PeerDisconnected(N3, List.of(N1, N2), ObservationSource.QUIC, 5L));
 
-        node.manager.peerDisconnected(new PeerDisconnected(N1, WITHOUT_N1, ObservationSource.QUIC, Long.MAX_VALUE));
-        node.manager.peerJoined(new PeerJoined(N1, ALL, ObservationSource.QUIC));
-
-        assertThat(node.ctx.currentTopology()).as("an unordered join is applied unconditionally").contains(N1);
-        assertThat(node.suspectsTheLeader()).isFalse();
         node.manager.peerDisconnected(new PeerDisconnected(N1, WITHOUT_N1, ObservationSource.QUIC));
-        assertThat(node.ctx.currentTopology()).as("an unordered eviction is applied unconditionally").doesNotContain(N1);
+        node.harness.dispatch(new ClusterFsmEvent.NodeGone(N1, List.of(N2)));
+        node.manager.peerJoined(new PeerJoined(N3, ALL, ObservationSource.QUIC));
+
+        assertThat(node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N3, ALL))).as("an unsequenced write is dropped").isFalse();
+        assertThat(node.ctx.currentTopology()).as("the view at sequence 5 is unchanged").containsExactly(N1, N2);
+        assertThat(node.followsTheLeader()).isTrue();
+        assertThat(node.suspectsTheLeader()).as("a dropped eviction does not suspect the leader").isFalse();
     }
 
     @Test
@@ -225,17 +235,124 @@ class PeerObservationOrderTest {
     }
 
     @Test
-    void unsequencedWrite_doesNotLowerTheFence() {
+    void unsequencedWholesaleWrite_changesNothing() {
         node = Node.following();
 
         assertThat(node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N1, ALL, 5L))).isTrue();
-        assertThat(node.ctx.applyTopology(new ClusterFsmEvent.NodeGone(N3, List.of(N1, N2)))).isTrue();
-        assertThat(node.ctx.applyTopology(new ClusterFsmEvent.NodeGone(N1, WITHOUT_N1, 4L))).as("still older than 5").isFalse();
+        assertThat(node.ctx.applyTopology(new ClusterFsmEvent.NodeGone(N3, List.of(N1, N2)))).as("an unsequenced write is dropped").isFalse();
+        assertThat(node.ctx.currentTopology()).as("an unsequenced write changes no content").containsExactlyElementsOf(ALL);
+        assertThat(node.ctx.applyTopology(new ClusterFsmEvent.NodeGone(N1, WITHOUT_N1, 5L))).as("an unsequenced write moved no fence: 5 is still stale").isFalse();
+        assertThat(node.ctx.applyTopology(new ClusterFsmEvent.NodeGone(N3, List.of(N1, N2), 6L))).as("an unsequenced write does not raise the fence").isTrue();
         assertThat(node.ctx.currentTopology()).containsExactly(N1, N2);
-        node.ctx.setCurrentTopology(List.of(N1, N3));
-        assertThat(node.ctx.currentTopology()).as("setCurrentTopology is an unordered write").containsExactly(N1, N3);
-        assertThat(node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N2, ALL, 6L))).as("an unordered write does not raise the fence").isTrue();
-        assertThat(node.ctx.currentTopology()).containsExactly(N1, N2, N3);
+    }
+
+    /// #3044 3a: after the transport evicted the leader, a SWIM Faulty for ANOTHER peer used to write SWIM's snapshot,
+    /// which still carried the leader, so the follower stopped suspecting a leader whose link is down. SWIM now
+    /// removes exactly the faulty peer.
+    @Test
+    void swimFaultyForAnotherPeer_afterTransportEvictionOfTheLeader_keepsTheLeaderSuspected() {
+        node = Node.following();
+        node.manager.peerDisconnected(new PeerDisconnected(N1, WITHOUT_N1, ObservationSource.QUIC, 2L));
+        assertThat(node.suspectsTheLeader()).as("control: the eviction removed the leader from the view").isTrue();
+
+        node.manager.peerObservedFaulty(new PeerObservedFaulty(N3, List.of(N1, N2), ObservationSource.SWIM));
+
+        assertThat(node.ctx.currentTopology()).as("SWIM's snapshot does not restore the evicted leader").containsExactly(N2);
+        assertThat(node.suspectsTheLeader()).as("the leader stays suspected").isTrue();
+    }
+
+    /// #3044 3b: a leader that loses eligibility is removed view-free. The harness records no event for a transition
+    /// (`Fsm` is final, `Transition` carries none), so the dispatched event is read from what it does to the STORED
+    /// view: a view-carrying change would rewrite the view wholesale and delete node 4 (a voter-to-be the narrower voter
+    /// set filters out), the view-free removal keeps it. The follower leaves `Led` exactly once and names NO suspect.
+    /// No pre-vote: the leader is ineligible.
+    @Test
+    void installVoterConfiguration_inLed_leaderDropped_dispatchesOneViewFreeRemoval_andLeavesLed() {
+        node = Node.following(false);
+        node.ctx.installVoters(List.of(N1, N2, N3, N4));
+        node.manager.peerJoined(new PeerJoined(N4, List.of(N1, N2, N3, N4), ObservationSource.QUIC, 2L));
+        var transitionsBefore = node.harness.transitions().size();
+
+        node.manager.installVoterConfiguration(VoterConfiguration.voterConfiguration(2L, List.of(N2, N3)).unwrap());
+        node.ctx.installVoters(List.of(N1, N2, N3, N4));
+
+        assertThat(node.harness.transitions().stream().skip(transitionsBefore).filter(transition -> transition.from() instanceof LeaderElectionState.Led))
+            .as("the follower leaves Led exactly once").hasSize(1);
+        assertThat(node.harness.state()).as("a view-free removal loses the leader naming no suspect")
+                                        .isInstanceOfSatisfying(LeaderElectionState.ReElecting.class,
+                                                                reElecting -> assertThat(reElecting.suspect()).isEqualTo(Option.none()));
+        assertThat(node.ctx.currentTopology()).as("no view-carrying event: the stored view lost the leader only")
+                                              .containsExactly(N2, N3, N4);
+    }
+
+    /// #3044 3b discriminator: the removal writes exactly the leader out of the STORED view. `currentTopology()` reads
+    /// the stored view through the installed voters, so the stored view is read back by widening the voters again.
+    /// The old wholesale rewrite stored the eligibility-filtered view and so also deleted node 4 (a voter-to-be that
+    /// the narrower voter set had filtered out); the removal deletes node 1 only.
+    @Test
+    void installVoterConfiguration_inLed_leaderDropped_removesExactlyTheLeaderFromTheStoredView() {
+        node = Node.following(false);
+        node.ctx.installVoters(List.of(N1, N2, N3, N4));
+        node.manager.peerJoined(new PeerJoined(N4, List.of(N1, N2, N3, N4), ObservationSource.QUIC, 2L));
+        assertThat(node.ctx.currentTopology()).as("control: the four-node view is stored").containsExactly(N1, N2, N3, N4);
+
+        node.manager.installVoterConfiguration(VoterConfiguration.voterConfiguration(2L, List.of(N2, N3)).unwrap());
+        node.ctx.installVoters(List.of(N1, N2, N3, N4));
+
+        assertThat(node.ctx.currentTopology()).as("only the leader left the stored view").containsExactly(N2, N3, N4);
+        assertThat(node.harness.state()).as("the leader is lost").isInstanceOf(LeaderElectionState.ReElecting.class);
+    }
+
+    /// #3044 S2: whatever SWIM's snapshots carry, interleaved with sequenced transport views, the stored view after
+    /// eligibility filtering stays inside the newest applied transport view: a removal never adds.
+    @Test
+    void removalDelta_neverAdds() {
+        node = new Node(LeaderElectionContext::dormant);
+        var random = new Random(3044);
+        var newest = ALL;
+        var snapshotsAddingANode = 0;
+        node.manager.peerJoined(new PeerJoined(N1, ALL, ObservationSource.QUIC, 1L));
+
+        for (long sequence = 2; sequence < 400; sequence++) {
+            if (random.nextInt(3) == 0) {
+                newest = randomView(random);
+                node.manager.peerDisconnected(new PeerDisconnected(N1, newest, ObservationSource.QUIC, sequence));
+            } else {
+                var snapshot = randomView(random);
+                snapshotsAddingANode += addsANode(snapshot, node.ctx.currentTopology()) ? 1 : 0;
+                node.manager.peerObservedFaulty(new PeerObservedFaulty(ALL.get(random.nextInt(ALL.size())), snapshot, ObservationSource.SWIM));
+            }
+            assertThat(newest).as("stored view inside the newest transport view at sequence %d", sequence).containsAll(node.ctx.currentTopology());
+        }
+        assertThat(snapshotsAddingANode).as("control: some snapshots carried a node outside the stored view").isPositive();
+    }
+
+    private static List<NodeId> randomView(Random random) {
+        var view = ALL.stream().filter(_ -> random.nextBoolean()).toList();
+
+        return view.isEmpty()
+               ? List.of(ALL.get(random.nextInt(ALL.size())))
+               : view;
+    }
+
+    private static boolean addsANode(List<NodeId> snapshot, List<NodeId> stored) {
+        return !stored.containsAll(snapshot);
+    }
+
+    /// #3044 §3.4: `ClusterFsmRouter` still maps a SWIM Faulty to an unsequenced `NodeGone`; wired into leader
+    /// election, the fence drops it, so the router cannot reopen 3a. View and sequence stay as they were.
+    @Test
+    void clusterFsmRouter_faulty_isDroppedByTheLeaderElectionFence() {
+        node = Node.following();
+        var router = MessageRouter.mutable();
+        ClusterFsmRouter.wire(router, node.harness.fsm(), new AtomicLong());
+        assertThat(node.ctx.applyTopology(new ClusterFsmEvent.NodeAdded(N1, ALL, 5L))).isTrue();
+
+        router.route(new PeerObservedFaulty(N1, WITHOUT_N1, ObservationSource.SWIM));
+
+        assertThat(node.ctx.currentTopology()).as("the router's Faulty leaves the view").containsExactlyElementsOf(ALL);
+        assertThat(node.ctx.applyTopology(new ClusterFsmEvent.NodeGone(N3, List.of(N1, N2), 5L))).as("the sequence is still 5").isFalse();
+        assertThat(node.ctx.applyTopology(new ClusterFsmEvent.NodeGone(N3, List.of(N1, N2), 6L))).as("the sequence did not move past 5").isTrue();
     }
 
     @Test
