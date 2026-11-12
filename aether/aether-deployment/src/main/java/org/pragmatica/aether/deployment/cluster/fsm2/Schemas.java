@@ -102,6 +102,7 @@ public sealed interface Schemas {
     /// C12, the removal: a reported datasource whose record is removed is closed with the reason subject-gone (D.6 row 17).
     static ClusterModel onRemove(ClusterModel m, Ctx ctx, String datasource) {
         readable(m, ctx, datasource, Recoveries.gone(datasource, "its schema record was removed"));
+        stallEnded(m, ctx, datasource, Recoveries.gone(datasource, "its schema record was removed"));
 
         return Indexer.removeSchema(m, datasource);
     }
@@ -143,6 +144,98 @@ public sealed interface Schemas {
                                            .asString())
                         .sorted()
                         .toList();
+    }
+
+    // -- #2773: the stall sweep ------------------------------------------------------------------------------------
+    /// The longest a record legitimately stays PENDING with no live lock: the orchestrator writes PENDING and re-dispatches after a backoff
+    /// of at most 45 s (a transient retry's `calculateBackoff(MAX_RETRIES - 1)` and the fenced-in-the-database cap, both pinned equal to this
+    /// by `G2SchemaScenariosTest`). A held lock is a live attempt, so a record with a live lock is never stalled.
+    long RETRY_CEILING_MS = 45_000L;
+    /// Reconcile ticks of grace past the ceiling before a record is reported (the tick is the sweep's granularity).
+    int STALL_GRACE_TICKS = 2;
+
+    /// Step 2d of the reconcile: the level-triggered stall check. A PENDING or MIGRATING record with no live lock and no write for longer than
+    /// [#RETRY_CEILING_MS] plus the grace is stalled: nothing in this term re-dispatches it (a failed lock Put abandons the attempt without a
+    /// retry). The leader reports it once per episode and closes the report when the condition ends. It dispatches and writes nothing:
+    // Design-out: no recovery writer here. A MIGRATING reset in-term would multiply unfenced re-runs on datasources without a database fence
+    // (`schema-migration-unfenced`); the rebuild's reset (C1) stays the only automatic one, and the warning names it. Guarantee: a stall is
+    // reported within the ceiling + grace + one tick of its start by the leader that is acting; mechanism: the `FsmWarningKey` open set
+    // (`Warnings`), which a successor inherits at `Rebuild`, so the report survives a leader change.
+    static ClusterModel sweepStalls(ClusterModel m, Ctx ctx) {
+        var stalled = m.schemas.values()
+                               .stream()
+                               .filter(value -> isStalled(m, ctx, value))
+                               .sorted(Comparator.comparing(SchemaVersionValue::datasourceName))
+                               .toList();
+        var names = stalled.stream()
+                           .map(SchemaVersionValue::datasourceName)
+                           .collect(Collectors.toSet());
+
+        stalled.forEach(value -> stallOpened(m, ctx, value));
+        m.schemaStalledWarned.toList()
+                             .stream()
+                             .sorted()
+                             .filter(datasource -> !names.contains(datasource))
+                             .forEach(datasource -> stallEnded(m, ctx, datasource, endedMessage(datasource)));
+
+        return m;
+    }
+
+    private static boolean isStalled(ClusterModel m, Ctx ctx, SchemaVersionValue value) {
+        return isUnsettled(value) && lockExpired(m, ctx, value.datasourceName()) && isQuiet(ctx, value);
+    }
+
+    private static boolean isUnsettled(SchemaVersionValue value) {
+        return value.status() == SchemaStatus.PENDING || value.status() == SchemaStatus.MIGRATING;
+    }
+
+    private static boolean isQuiet(Ctx ctx, SchemaVersionValue value) {
+        return ctx.nowMs() - value.updatedAt() > stallAfterMs(ctx);
+    }
+
+    private static long stallAfterMs(Ctx ctx) {
+        return RETRY_CEILING_MS + STALL_GRACE_TICKS * ctx.settings()
+                                                         .timing()
+                                                         .tick();
+    }
+
+    private static ClusterModel stallOpened(ClusterModel m, Ctx ctx, SchemaVersionValue value) {
+        if (!m.schemaStalledWarned.contains(value.datasourceName())) {
+            m.schemaStalledWarned = m.schemaStalledWarned.add(value.datasourceName());
+            ctx.warn(Warnings.SCHEMA_STALLED, value.datasourceName(), stalledMessage(m, ctx, value));
+        }
+
+        return m;
+    }
+
+    private static ClusterModel stallEnded(ClusterModel m, Ctx ctx, String datasource, String why) {
+        if (m.schemaStalledWarned.contains(datasource)) {
+            m.schemaStalledWarned = m.schemaStalledWarned.remove(datasource);
+            ctx.warn(Recoveries.SCHEMA_MIGRATION_PROGRESSED, datasource, why);
+        }
+
+        return m;
+    }
+
+    private static String endedMessage(String datasource) {
+        return "Schema migration for datasource " + datasource + " progressed: its record has a live lock, a terminal status or a fresh write";
+    }
+
+    /// The report names the datasource, the recorded status, the slices the record holds and the lever. The lever is chosen by the predicate
+    /// the retry route uses (`SchemaStatus#canRetryManually`), so the warning never names a route that would refuse the record.
+    private static String stalledMessage(ClusterModel m, Ctx ctx, SchemaVersionValue value) {
+        return "Schema migration for datasource %s is stalled: status %s for %ds with no live migration lock; holds slices %s. %s".formatted(value.datasourceName(),
+                                                                                                                                              value.status(),
+                                                                                                                                              (ctx.nowMs() - value.updatedAt()) / 1000L,
+                                                                                                                                              slicesOwnedBy(m, value.owningBlueprint()),
+                                                                                                                                              lever(value));
+    }
+
+    private static String lever(SchemaVersionValue value) {
+        return value.status()
+                    .canRetryManually()
+               ? "Recovery: aether schema retry " + value.datasourceName()
+               : "No manual retry (the retry route refuses " + value.status() + "); the next leader's rebuild resets the record to PENDING and re-runs it";
     }
 
     // -- C1: rebuild-time recovery ---------------------------------------------------------------------------------

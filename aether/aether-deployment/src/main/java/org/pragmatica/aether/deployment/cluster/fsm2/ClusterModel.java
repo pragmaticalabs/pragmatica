@@ -176,6 +176,8 @@ public final class ClusterModel {
     PSet<Artifact> retryExhaustedWarned = PSet.empty(scans);
     /// D.6 row 17: datasources reported `schema-status-unknown` whose episode is open.
     PSet<String> schemaUnknownWarned = PSet.empty(scans);
+    /// #2773: datasources reported `schema-migration-stalled` whose episode is open.
+    PSet<String> schemaStalledWarned = PSet.empty(scans);
     /// D.6 row 20: condemned stray instances reported `stray-instance`, until their observed row disappears, as the nodes of each artifact
     /// (the warning's subject): `stray-instance-removed` is raised only when the last condemned instance of the artifact is gone.
     PMap<Artifact, PSet<NodeId>> strayWarned = PMap.empty(scans);
@@ -297,6 +299,7 @@ public final class ClusterModel {
         c.invalidPlacementWarned = invalidPlacementWarned.rebound(meter);
         c.retryExhaustedWarned = retryExhaustedWarned.rebound(meter);
         c.schemaUnknownWarned = schemaUnknownWarned.rebound(meter);
+        c.schemaStalledWarned = schemaStalledWarned.rebound(meter);
         c.strayWarned = strayWarned.rebound(meter);
         c.exclusionEndReasons = exclusionEndReasons.rebound(meter);
         c.assignmentRefusals = assignmentRefusals.rebound(meter);

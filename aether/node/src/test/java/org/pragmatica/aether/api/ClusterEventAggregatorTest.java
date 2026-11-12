@@ -2079,6 +2079,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.RETRY_EXHAUSTED_SETTLED,
                 OperatorWarningCode.SCHEMA_HOLD_CLEARED,
                 OperatorWarningCode.SCHEMA_STATUS_READABLE,
+                OperatorWarningCode.SCHEMA_MIGRATION_PROGRESSED,
                 OperatorWarningCode.STRAY_INSTANCE_REMOVED,
                 OperatorWarningCode.WORKER_ABSENCE_JUDGEABLE,
                 OperatorWarningCode.WORKER_COMMUNITY_POLICY_MATCHED,
@@ -2870,7 +2871,7 @@ class ClusterEventAggregatorTest {
     }
 
     /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the three consumer pairs of #2201
-    /// C-16 (behind the ring, the hole, and the cursor expiry), the held detach flush of #1960, the 13 FSM2 recoveries of the D.6 ruling (#2761), the oversized-event refusal and the
+    /// C-16 (behind the ring, the hole, and the cursor expiry), the held detach flush of #1960, the 13 FSM2 recoveries of the D.6 ruling (#2761) and the schema-migration stall pair (#2773), the oversized-event refusal and the
     /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the refused consensus restore of #2316, a stream partition's WAL fail-stop of #2201); every other code keeps the plain 60 s throttle.
     /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the departure sole-copy pair of #2034); every other code keeps the plain 60 s throttle.
     /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the refused consensus restore of #2316); every other code keeps the plain 60 s throttle.
@@ -2978,6 +2979,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.JOIN_MATCHED,
                 OperatorWarningCode.RETRY_EXHAUSTED_SETTLED,
                 OperatorWarningCode.SCHEMA_STATUS_READABLE,
+                OperatorWarningCode.SCHEMA_MIGRATION_PROGRESSED,
                 OperatorWarningCode.STRAY_INSTANCE_REMOVED,
                 OperatorWarningCode.WORKER_ABSENCE_JUDGEABLE,
                 OperatorWarningCode.WORKER_COMMUNITY_POLICY_MATCHED,
@@ -3074,6 +3076,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.RETRY_EXHAUSTED_UNSETTLED,
                 OperatorWarningCode.SCHEMA_HOLD,
                 OperatorWarningCode.SCHEMA_STATUS_UNKNOWN,
+                OperatorWarningCode.SCHEMA_MIGRATION_STALLED,
                 OperatorWarningCode.SLICE_UNRESPONSIVE,
                 OperatorWarningCode.STRAY_INSTANCE,
                 OperatorWarningCode.WORKER_ABSENCE_UNJUDGEABLE,

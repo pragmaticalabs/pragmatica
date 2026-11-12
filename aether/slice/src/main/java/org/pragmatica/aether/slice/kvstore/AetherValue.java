@@ -656,7 +656,15 @@ public sealed interface AetherValue {
         /// Never SUCCEEDED; reported as an unreadable outcome rather than a successful one.
         /// Must stay LAST -- a new constant appended after it, or inserted before it, is read as
         /// UNKNOWN by an older node either way.
-        UNKNOWN
+        UNKNOWN;
+
+        /// Whether the operator's retry lever (`POST /api/v1/schema/retry/{datasource}`, `aether schema retry`) accepts a record in
+        /// this status: FAILED (a permanently failed migration) and PENDING (#724: a migration that never ran). MIGRATING already has a
+        /// runner in flight, and re-arming a COMPLETED record would replay a migration nothing marked failed. The retry route and the
+        /// cluster FSM's stall warning (#2773) both ask this, so the warning names the lever only when the route would accept it.
+        public boolean canRetryManually() {
+            return this == FAILED || this == PENDING;
+        }
     }
 
     record SliceNodeValue(SliceState state, Option<String> failureReason, boolean fatal, long transitionedAt) implements AetherValue {
