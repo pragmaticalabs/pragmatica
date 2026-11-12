@@ -88,8 +88,8 @@ class ApplyDeadlineTest {
     }
 
     /// The apply's slice is ACTIVE and the SUCCEEDED outcome is submitted but unsettled (held).
-    private static FsmHarness succeededAndHeld() {
-        var h = publishedApply();
+    private static FsmHarness succeededAndHeld(UnaryOperator<Timing> timing) {
+        var h = publishedApply(DeploymentAtomicity.ALL_OR_NOTHING, timing);
         var host = hosts(h, ORDERS).getFirst();
 
         node(h, host, 1L).follows(ORDERS);
@@ -287,7 +287,7 @@ class ApplyDeadlineTest {
     /// by the deadline.
     @Test
     void successInFlight_isNotTerminatedByTheDeadline() {
-        var h = succeededAndHeld();
+        var h = succeededAndHeld(UnaryOperator.identity());
 
         h.advanceBySeconds(20 * 60);
         assertThat(h.warns("apply-deadline-exceeded")).isEmpty();
@@ -298,11 +298,11 @@ class ApplyDeadlineTest {
     /// stop the deadline.
     @Test
     void successInFlight_staysProtected_whenASliceLeavesActive() {
-        var h = succeededAndHeld();
+        var h = succeededAndHeld(timing -> timing.withApplyDeadline(60_000L));
 
         node(h, hosts(h, ORDERS).getFirst(), 1L).writes(ORDERS, SliceObservedState.LOADED);
         h.drain();
-        h.advanceBySeconds(20 * 60);
+        h.advanceBySeconds(2 * 60);
         assertThat(h.warns("apply-deadline-exceeded")).isEmpty();
         assertThat(h.submits(ClusterModel.SubmitKind.ROLLBACK)).isEmpty();
     }
@@ -325,8 +325,10 @@ class ApplyDeadlineTest {
 
         h.advanceBySeconds(16 * 60);
         assertThat(h.warns("apply-deadline-exceeded")).hasSize(1);
+        var next = outcome(h).map(DeploymentOutcomeValue::outcomeVersion).or(0L) + 1L;
+
         h.seed(new DeploymentOutcomeKey(ID),
-               new DeploymentOutcomeValue(DeploymentOutcomeStatus.FAILED, List.of(), "slice-failed", FsmHarness.START_WALL, 9L, ATTEMPT));
+               new DeploymentOutcomeValue(DeploymentOutcomeStatus.FAILED, List.of(), "slice-failed", FsmHarness.START_WALL, next, ATTEMPT));
         h.advanceBySeconds(60);
         assertThat(h.warns("apply-deadline-cleared")).hasSize(1);
     }
