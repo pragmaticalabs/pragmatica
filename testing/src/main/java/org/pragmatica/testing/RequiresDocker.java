@@ -26,7 +26,7 @@ import java.lang.annotation.Target;
 import org.junit.jupiter.api.extension.ExtendWith;
 
 /// Skips the annotated test class when no Docker daemon is reachable, or fails it when `CI_REQUIRE_DOCKER` demands
-/// Docker (see [DockerRequirement]). The `@Testcontainers(disabledWithoutDocker = true)` replacement.
+/// Docker (see [DockerRequirement]). Replaces the testcontainers extension's own skip switch.
 @Documented
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.TYPE)

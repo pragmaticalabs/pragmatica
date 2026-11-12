@@ -25,7 +25,7 @@ import org.junit.jupiter.api.extension.ExtensionContext;
 
 /// Class-level Docker precondition behind [RequiresDocker]: enabled when a daemon is reachable, otherwise disabled
 /// (skip) - or, under `CI_REQUIRE_DOCKER`, an error that fails the class (see [DockerRequirement]). It replaces
-/// `@Testcontainers(disabledWithoutDocker = true)`, which skips regardless of the variable.
+/// the testcontainers extension's own skip switch, which skips regardless of the variable.
 public final class DockerCondition implements ExecutionCondition {
     private final BooleanSupplier dockerAvailable;
 
