@@ -198,11 +198,13 @@ class G2SchemaScenariosTest {
     }
 
     // #2773: the ceiling the sweep waits out IS the orchestrator's: the fenced-in-the-database cap and the largest transient retry backoff.
+    // The transient maximum is BACKOFF_BASE_MS * 3^(MAX_RETRIES - 1) (calculateBackoff is package-private; SchemaOrchestratorServiceTest pins calculateBackoff(2) = 45 s).
     // Red when: either orchestrator constant moves without the sweep.
     @Test
     void stall_ceiling_equalsTheOrchestratorBackoffs() {
+        assertThat(SchemaOrchestratorService.MAX_RETRIES).as("the 3^2 factor below is MAX_RETRIES - 1").isEqualTo(3);
         assertThat(Schemas.RETRY_CEILING_MS).isEqualTo(SchemaOrchestratorService.HELD_BACKOFF_CAP_MS)
-                  .isEqualTo(SchemaOrchestratorService.calculateBackoff(SchemaOrchestratorService.MAX_RETRIES - 1));
+                  .isEqualTo(SchemaOrchestratorService.BACKOFF_BASE_MS * 3L * 3L);
     }
 
     // #2773: a live lock is a live attempt (the holder renews it for as long as it runs), so a long migration is never reported.
