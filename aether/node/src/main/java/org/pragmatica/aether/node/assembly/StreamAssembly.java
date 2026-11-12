@@ -968,6 +968,8 @@ public sealed interface StreamAssembly {
 
         defer.accept(() -> SharedScheduler.scheduleAtFixedRate(nodeLease::renew, streamingConfig.ownerLeaseRenewal()));
         streamPartitionManager.ownerLease(nodeLease);
+        // #2981 step 2 (design §2.2, §2.4): a renewal edge re-derives owner visibility and re-checks parked ack waiters.
+        nodeLease.onValidityRegained(streamPartitionManager::onLeaseRegained);
         // #1555 owner promotion gate: this node acts as a partition's owner (appends, servedByOwner, owner reads)
         // only after a no-op consensus round has refreshed its committed ownership view, the record still names
         // it, and it has caught up to every live placement member's watermark. The round is ALWAYS ordered here,

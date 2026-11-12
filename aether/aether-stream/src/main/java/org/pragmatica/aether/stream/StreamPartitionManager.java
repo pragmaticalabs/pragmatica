@@ -2812,9 +2812,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #2087: the owner's visible position moved: tell the replicas. Runs on the ring's serial notifier -- never under
     /// the append lock, never on a publisher's thread -- and the notifier coalesces advances, so a burst of acks is one
     /// message per drain, not one per ack. A node that is not this partition's owner announces nothing.
+    ///
+    /// #2981 step 2 (design §2.2 check 3, F-1a-6): nor does an owner whose lease is not valid now (confirmation factor 1 and a
+    /// manager with both lease seams unwired excepted): its local `committed` event is visibility too and pauses with it. The tick
+    /// ([#repeatVisible]) announces again once a renewal lands.
     @Contract
     private void announceVisible(String streamName, int partition, long visible) {
-        if (placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER) {
+        if (placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER && announcementLeased(streamName)) {
             partitionLogEvents.committed(streamName, partition, visible);
             replicationManager.announceCommitted(streamName,
                                                  partition,
@@ -4810,9 +4814,18 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
     }
 
-    /// #2981 step 2 (design §2.2, §2.4): this node's lease went from invalid to valid. Every parked ack waiter is re-checked.
+    private boolean announcementLeased(String streamName) {
+        return ownerChecksBypassed(confirmationFactorFor(streamName)) || ownerLease.valid();
+    }
+
+    /// #2981 step 2 (design §2.2, §2.4): this node's lease went from invalid to valid. The owner re-derives `visible` of every
+    /// partition placement names it owner of (one [#refreshVisible] each, through [#ownerAdvance]), then every parked ack waiter
+    /// is re-checked. `AetherNode` binds it to the lease's validity-regained edge.
     @Contract
     public void onLeaseRegained() {
+        materializedHeads().stream()
+                           .filter(head -> placementRoleSupplier.roleFor(head.streamName(), head.partition()) == Role.OWNER)
+                           .forEach(head -> refreshVisible(head.streamName(), head.partition()));
         parkedAcks.forEach(this::recheckParked);
     }
 

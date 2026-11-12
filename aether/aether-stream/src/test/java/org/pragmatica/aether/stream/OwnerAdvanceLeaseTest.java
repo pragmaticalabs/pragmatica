@@ -26,6 +26,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
@@ -143,7 +144,7 @@ class OwnerAdvanceLeaseTest {
     }
 
     /// `restoreVisible`'s NONE arm (role unresolved): the same rule as the OWNER arm. Only a role that resolves to NONE between the
-    /// materialization decision and the restore reaches it, so the role answers OWNER once (the decision), then NONE.
+    /// materialization decision and the restore reaches it, so the role answers NONE only to `restoreVisible` itself.
     @Test
     void restoreVisible_noneArm_underALapsedLease_staysAtTheReplicaBound_thenAValidLeaseRestoresIt() {
         restartedWithThreeRecords(ReplicaSetController.Role.NONE, false);
@@ -208,6 +209,55 @@ class OwnerAdvanceLeaseTest {
         assertThat(visible()).isEqualTo(-1L);
     }
 
+    // ---- the renewal edge and the announcement (S6) ------------------------------------------------------------------------
+
+    /// Design §2.2 check 3: a renewal edge re-derives `visible` of an owned partition without waiting for the next ack or write.
+    @Test
+    void renewalEdge_rederivesTheVisiblePositionOfAnOwnedPartition() {
+        var replication = replicationWithPeer();
+        manager = wired(streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication));
+        createStream(2);
+        publish("e0");
+        leaseValid.set(false);
+        replication.handleAck(replicateAck(PEER, STREAM, PARTITION, 0L));
+        assertThat(visible()).as("control: paused under the lapse").isEqualTo(-1L);
+        leaseValid.set(true);
+        manager.onLeaseRegained();
+        assertThat(visible()).isEqualTo(0L);
+    }
+
+    /// The renewal edge re-derives only partitions placement names this node OWNER of: a replica's visible stays bounded by
+    /// what its owner reported (here nothing), never by the owner rule.
+    @Test
+    void renewalEdge_leavesAReplicaPartitionAtItsReplicaBound() {
+        manager = wired(streamPartitionManager(Long.MAX_VALUE));
+        manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
+        createStream(2);
+        appendRecovered("r0");
+        assertThat(durable()).as("control: the replica holds the record durably").isEqualTo(0L);
+        manager.onLeaseRegained();
+        assertThat(visible()).isEqualTo(-1L);
+    }
+
+    /// F-1a-6: the owner's tick announces nothing (neither the local committed event nor the replica message) while the lease is
+    /// not valid, and announces again once it is.
+    @Test
+    void tick_underALapsedLease_announcesNothing_thenAValidLeaseAnnouncesAgain() throws InterruptedException {
+        var committed = new CopyOnWriteArrayList<Long>();
+        manager = wired(streamPartitionManager(Long.MAX_VALUE));
+        manager.partitionLogEvents(committedInto(committed));
+        createStream(2);
+        publish("e0");
+        awaitFirst(committed);
+        committed.clear();
+        leaseValid.set(false);
+        manager.repeatVisible();
+        assertThat(committed).as("a lapsed owner announces nothing").isEmpty();
+        leaseValid.set(true);
+        manager.repeatVisible();
+        assertThat(committed).as("control: under a valid lease the tick announces visible").containsExactly(0L);
+    }
+
     // ---- structural rule ----------------------------------------------------------------------------------------------------
 
     /// Design §8 (R3-S1): in `StreamPartitionManager`, `advanceVisible(` is called only inside `ownerAdvance` and the REPLICA
@@ -232,6 +282,27 @@ class OwnerAdvanceLeaseTest {
         return visible();
     }
 
+    private static PartitionLogEvents committedInto(List<Long> committed) {
+        return new PartitionLogEvents() {
+            @Override
+            public void committed(String streamName, int partition, long through) {
+                committed.add(through);
+            }
+
+            @Override
+            public void truncated(String streamName, int partition, long keepThrough) {}
+        };
+    }
+
+    private static void awaitFirst(List<Long> committed) throws InterruptedException {
+        var deadline = System.nanoTime() + 5_000_000_000L;
+
+        while (committed.isEmpty() && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        assertThat(committed).as("control: the append announced visible once").isNotEmpty();
+    }
+
     private void restartedWithThreeRecords(ReplicaSetController.Role role, boolean leaseOnRestart) {
         Option.option(manager).onPresent(StreamPartitionManager::close);
         clear(walDir);
@@ -244,13 +315,17 @@ class OwnerAdvanceLeaseTest {
         manager.close();
         leaseValid.set(leaseOnRestart);
         manager = wired(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir)));
-        var answered = new AtomicBoolean();
-
-        manager.placementRoleSupplier((_, _) -> answered.getAndSet(true)
+        manager.placementRoleSupplier((_, _) -> askedByRestoreVisible()
                                                 ? role
                                                 : ReplicaSetController.Role.OWNER);
         createStream(2);
         assertThat(manager.partitionBuffer(STREAM, PARTITION).isPresent()).as("control: the ring was rebuilt").isTrue();
+    }
+
+    private static boolean askedByRestoreVisible() {
+        return StackWalker.getInstance()
+                          .walk(frames -> frames.anyMatch(frame -> frame.getMethodName()
+                                                                        .equals("restoreVisible")));
     }
 
     private StreamPartitionManager wired(StreamPartitionManager spm) {
