@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.io.TimeSpan;
@@ -165,6 +166,141 @@ class RefutedDrainQuorumLossTest {
         Thread.sleep(4500);
 
         assertThat(survivor.memberStates()).as("the re-offer is refused again while the report holds").containsEntry(SUSPECT, "Dead");
+    }
+
+    /// #3028 S3 pin (mutant f9): the pending flag is released when the timer fires, so a re-offer refused AGAIN schedules
+    /// the next one; otherwise the first refused re-offer ends the chain and the regained quorum is never noticed.
+    @Test
+    void rejoinRefusedDuringQuorumLoss_chainSurvivesARefusedReoffer() throws InterruptedException {
+        var survivor = deadWhileReporting(survivor(SHORT_DEPARTURE));
+
+        survivor.onSwimHealthy(SUSPECT, 3L);
+        Thread.sleep(2600);
+        assertThat(survivor.memberStates()).as("first re-offer refused: still reporting").containsEntry(SUSPECT, "Dead");
+
+        reporting.remove(SUSPECT);
+
+        await().atMost(6, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(survivor.memberStates()).as("the chain continued after the refused re-offer")
+                                                                       .containsEntry(SUSPECT, "Member"));
+    }
+
+    /// #3028 S3 pin (mutant f4): a refusal is remembered only when the member REPORTED quorum loss at the offer. The
+    /// first query (the DEAD refusal) answers yes, the second (the arming check) no: nothing was refused for quorum loss
+    /// as far as the arming check can see, so nothing is re-offered and the identity stays DEAD.
+    @Test
+    void refusalNotAttributedToQuorumLoss_isNotReoffered() throws InterruptedException {
+        var survivor = deadWhileReporting(survivor(SHORT_DEPARTURE));
+        var firstQuery = new AtomicBoolean(true);
+
+        reporting.clear();
+        survivor.setQuorumLossReport(_ -> firstQuery.getAndSet(false));
+        survivor.onSwimHealthy(SUSPECT, 3L);
+        assertThat(survivor.memberStates()).containsEntry(SUSPECT, "Dead");
+        Thread.sleep(3000);
+
+        assertThat(survivor.memberStates()).as("no quorum-loss report at arming time: no re-offer was scheduled")
+                                           .containsEntry(SUSPECT, "Dead");
+    }
+
+    /// #3028 S3 pin (mutant f3): an offer at or below the incarnation the identity died at is stale gossip, not a refusal
+    /// to re-offer. A stale offer must not start the timer: the refused newer offer 1.4s later owns it and fires 2s
+    /// after ITS offer.
+    @Test
+    void staleOfferWhileReporting_doesNotStartTheReofferTimer() throws InterruptedException {
+        var survivor = deadWhileReporting(survivor(SHORT_DEPARTURE));
+
+        survivor.onSwimHealthy(SUSPECT, 2L);
+        Thread.sleep(1400);
+        survivor.onSwimHealthy(SUSPECT, 3L);
+
+        var refusedAt = System.nanoTime();
+
+        reporting.remove(SUSPECT);
+        await().atMost(6, TimeUnit.SECONDS)
+               .until(() -> "Member".equals(survivor.memberStates().get(SUSPECT)));
+
+        assertThat(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - refusedAt))
+            .as("the timer was started by the newer offer (2s), not by the stale one 1.4s earlier")
+            .isGreaterThanOrEqualTo(1500);
+    }
+
+    /// #3028 S3 pin (mutant f5): one re-offer timer per member. A second refused offer while one is pending must not
+    /// start a second chain; with two chains offset by 1.4s the regained quorum would be noticed at the earlier phase.
+    @Test
+    void secondRefusedOffer_doesNotStartASecondChain() throws InterruptedException {
+        var survivor = deadWhileReporting(survivor(SHORT_DEPARTURE));
+        var start = System.nanoTime();
+
+        survivor.onSwimHealthy(SUSPECT, 3L);
+        Thread.sleep(1400);
+        survivor.onSwimHealthy(SUSPECT, 4L);
+        sleepUntilMillisAfter(start, 2500);
+        reporting.remove(SUSPECT);
+        await().atMost(8, TimeUnit.SECONDS)
+               .until(() -> "Member".equals(survivor.memberStates().get(SUSPECT)));
+
+        assertThat(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start))
+            .as("only the first chain (fires at 2s, 4s) exists: the 3.4s phase of a second chain would admit earlier")
+            .isGreaterThanOrEqualTo(3800);
+    }
+
+    /// #3028 S3 pin (mutant f6): the re-offer carries the HIGHEST refused incarnation. After re-admission the
+    /// member's high-water mark is that incarnation, so a DEPARTING refutation at the highest refused incarnation is
+    /// not newer and does not recover it; had the lower one been kept, it would.
+    @Test
+    void reoffer_carriesTheHighestRefusedIncarnation() {
+        var survivor = survivor(SHORT_DEPARTURE);
+
+        deadWhileReporting(survivor);
+        survivor.onSwimHealthy(SUSPECT, 4L);
+        survivor.onSwimHealthy(SUSPECT, 3L);
+        reporting.remove(SUSPECT);
+        await().atMost(6, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(survivor.memberStates()).containsEntry(SUSPECT, "Member"));
+
+        survivor.onSwimSuspect(SUSPECT, 4L);
+        survivor.onDownHysteresisMet(SUSPECT);
+        survivor.onSwimHealthy(SUSPECT, 4L);
+
+        assertThat(survivor.memberStates().get(SUSPECT)).as("4 is not newer than the re-admitted high-water mark")
+                                                        .isNotEqualTo("Member");
+    }
+
+    /// #3028 S3 pin (mutant f7): a pending re-offer is dropped when the identity left DEAD meanwhile. Here it reopens on
+    /// a further bump, then turns SUSPECT; a stale re-offer of the refused incarnation would recover it to MEMBER.
+    @Test
+    void pendingReoffer_isDroppedWhenTheIdentityLeftDead() throws InterruptedException {
+        var survivor = deadWhileReporting(survivor(SHORT_DEPARTURE));
+
+        survivor.onSwimHealthy(SUSPECT, 3L);
+        reporting.remove(SUSPECT);
+        survivor.onSwimHealthy(SUSPECT, 5L);
+        assertThat(survivor.memberStates()).containsEntry(SUSPECT, "Member");
+        survivor.onSwimSuspect(SUSPECT, 5L);
+        assertThat(survivor.memberStates()).containsEntry(SUSPECT, "Suspect");
+        Thread.sleep(3000);
+
+        assertThat(survivor.memberStates()).as("the pending re-offer found the identity out of DEAD and did nothing")
+                                           .containsEntry(SUSPECT, "Suspect");
+    }
+
+    private MembershipFsm deadWhileReporting(MembershipFsm survivor) {
+        enterDepartingWithoutDeath(survivor);
+        reporting.add(SUSPECT);
+        survivor.onSwimHealthy(SUSPECT, 2L);
+        await().atMost(2, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(survivor.memberStates()).containsEntry(SUSPECT, "Dead"));
+
+        return survivor;
+    }
+
+    private static void sleepUntilMillisAfter(long startNanos, long millis) throws InterruptedException {
+        var remaining = millis - TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+
+        if (remaining > 0) {
+            Thread.sleep(remaining);
+        }
     }
 
     @Test
