@@ -101,7 +101,9 @@ public final class ClusterConfigRoutes implements RouteSource {
     }
 
     public static ClusterConfigRoutes clusterConfigRoutes(Supplier<ManageableNode> nodeSupplier) {
-        return new ClusterConfigRoutes(nodeSupplier, ClusterConfigApplier.NoTopologyManager.INSTANCE, ApplyCommitHook.NONE);
+        return new ClusterConfigRoutes(nodeSupplier,
+                                       ClusterConfigApplier.NoTopologyManager.INSTANCE,
+                                       ApplyCommitHook.NONE);
     }
 
     /// The test seam (S9): the same routes with a hook that runs between the checks and the fenced write.
@@ -476,7 +478,10 @@ public final class ClusterConfigRoutes implements RouteSource {
     /// timestamp for a write that never landed. Sharing the one write path means a rejection can
     /// only surface as a failure, and there is no second place for the trap to reappear.
     private Promise<Object> storeInitialConfig(ClusterBootstrapConfig desired, String tomlContent) {
-        return storeUpdatedConfig(desired, tomlContent, INITIAL_CONFIG_VERSION, WriteFence.writeFence(Option.none()));
+        return storeUpdatedConfig(desired,
+                                  tomlContent,
+                                  INITIAL_CONFIG_VERSION,
+                                  WriteFence.writeFence(Option.none()));
     }
 
     /// The BootstrapModule self-seed is REPLACED, never diffed.
@@ -584,7 +589,8 @@ public final class ClusterConfigRoutes implements RouteSource {
     private WriteFence writeFence(ClusterConfigValue stored, Option<ApplyRoute> route) {
         var base = WriteFence.writeFence(Option.some(stored));
 
-        return route.fold(() -> base, _ -> base.witnessing(AutoHealObservation.autoHealObservation(autoHealState())));
+        return route.fold(() -> base,
+                          _ -> base.witnessing(AutoHealObservation.autoHealObservation(autoHealState())));
     }
 
     private static boolean workerCountChange(DiffAction action) {
@@ -710,9 +716,10 @@ public final class ClusterConfigRoutes implements RouteSource {
                                                  System.currentTimeMillis());
 
         return storeFencedConfig(fence, configValue).map(fresh -> (Object) new ApplyConfigResponse(fresh.configVersion(),
-                                                                                            cluster.name().value(),
-                                                                                            coreCount,
-                                                                                            configValue.updatedAt()));
+                                                                                                   cluster.name()
+                                                                                                          .value(),
+                                                                                                   coreCount,
+                                                                                                   configValue.updatedAt()));
     }
 
     private static Promise<Object> buildDryRunResponse(ClusterConfigValue stored, DiffPlan plan) {
@@ -849,7 +856,8 @@ public final class ClusterConfigRoutes implements RouteSource {
         var previousCount = stored.desiredCountFor(source, role);
         var scaled = stored.withDesiredCount(source, role, count);
 
-        return storeFencedConfig(WriteFence.writeFence(Option.some(stored)), scaled).map(fresh -> new ScaleClusterResponse(true,
+        return storeFencedConfig(WriteFence.writeFence(Option.some(stored)),
+                                 scaled).map(fresh -> new ScaleClusterResponse(true,
                                                                                source,
                                                                                role,
                                                                                previousCount,
@@ -996,7 +1004,8 @@ public final class ClusterConfigRoutes implements RouteSource {
 
     /// S9: the test seam, run after the caller read what the write is fenced on and before the transaction is submitted.
     private Promise<ClusterConfigValue> afterCommitHook(ClusterConfigValue admitted) {
-        return commitHook.beforeFencedWrite().map(_ -> admitted);
+        return commitHook.beforeFencedWrite()
+                         .map(_ -> admitted);
     }
 
     /// M7: the mutation's `expected` is the value the caller fenced on, never a re-read taken here. A re-read at this point
@@ -1023,20 +1032,20 @@ public final class ClusterConfigRoutes implements RouteSource {
                                                      org.pragmatica.cluster.state.kvstore.LeaderValue leader,
                                                      WriteFence fence,
                                                      ClusterConfigValue intended) {
-        var id = java.util.UUID.randomUUID()
-                               .toString();
+        var id = java.util.UUID.randomUUID().toString();
         var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
                                                                       fence.expected().map(value -> value),
                                                                       Option.some(intended));
 
-        return retirementGuards(fence.expected(), intended).map(guards -> withAutoHealWitness(guards, fence))
-                                                         .async()
-                                                         .flatMap(guards -> node.<Object> apply(List.of(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
-                                                                                                                                                              id,
-                                                                                                                                                              leader,
-                                                                                                                                                              guards,
-                                                                                                                                                              List.of(mutation)))))
-                                                         .flatMap(results -> settle(fence, intended, id, results));
+        return retirementGuards(fence.expected(),
+                                intended).map(guards -> withAutoHealWitness(guards, fence))
+                               .async()
+                               .flatMap(guards -> node.<Object> apply(List.of(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
+                                                                                                                                      id,
+                                                                                                                                      leader,
+                                                                                                                                      guards,
+                                                                                                                                      List.of(mutation)))))
+                               .flatMap(results -> settle(fence, intended, id, results));
     }
 
     /// S8: the auto-heal value the route check decided on is part of the read set, `none` included, so the first write of
@@ -1044,9 +1053,7 @@ public final class ClusterConfigRoutes implements RouteSource {
     private static List<KVCommand.ReadWitness<AetherKey>> withAutoHealWitness(List<KVCommand.ReadWitness<AetherKey>> guards,
                                                                               WriteFence fence) {
         return Stream.concat(guards.stream(),
-                             fence.autoHeal()
-                                  .map(AutoHealObservation::witness)
-                                  .stream())
+                             fence.autoHeal().map(AutoHealObservation::witness).stream())
                      .toList();
     }
 
@@ -1072,17 +1079,15 @@ public final class ClusterConfigRoutes implements RouteSource {
         var now = storedClusterConfig();
 
         if (!now.equals(fence.expected())) {
-            return new ClusterConfigError.VersionConflict(fence.expected()
-                                                               .map(ClusterConfigValue::configVersion)
-                                                               .or(0L),
-                                                          now.map(ClusterConfigValue::configVersion)
-                                                             .or(0L));
+            return new ClusterConfigError.VersionConflict(fence.expected().map(ClusterConfigValue::configVersion).or(0L),
+                                                          now.map(ClusterConfigValue::configVersion).or(0L));
         }
 
         var nowState = autoHealState();
 
         return fence.autoHeal()
-                    .filter(observation -> !observation.state().equals(nowState))
+                    .filter(observation -> !observation.state()
+                                                       .equals(nowState))
                     .map(observation -> autoHealChanged(observation, nowState))
                     .or(() -> retirementRefusal(fence, intended));
     }
@@ -1143,7 +1148,6 @@ public final class ClusterConfigRoutes implements RouteSource {
     /// competing write here and so forces the order that makes the fence observable.
     interface ApplyCommitHook {
         ApplyCommitHook NONE = Promise::unitPromise;
-
         Promise<Unit> beforeFencedWrite();
     }
 
@@ -1198,7 +1202,8 @@ public final class ClusterConfigRoutes implements RouteSource {
                                                  stored.configVersion() + 1,
                                                  System.currentTimeMillis());
 
-        return storeFencedConfig(WriteFence.writeFence(Option.some(stored)), configValue).map(fresh -> (Object) fresh);
+        return storeFencedConfig(WriteFence.writeFence(Option.some(stored)),
+                                 configValue).map(fresh -> (Object) fresh);
     }
 
     sealed interface UpgradeError extends Cause {
