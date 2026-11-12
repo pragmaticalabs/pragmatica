@@ -163,6 +163,33 @@ class OwnerLeaseAckParkTest {
         assertThat(visible()).as("the refresh re-read the lease and fell back").isEqualTo(-1L);
     }
 
+    /// Ruling (CTO, s5-join-recheck): the renewal edge fires BETWEEN the lapsed verdict and the waiter joining the park list. The
+    /// edge finds no parked waiter, and no further edge comes until the next lapse, so without the join-time re-check the
+    /// waiter is answered `OwnerLeaseLapsedBeforeAck` at its 5 s budget although its acks arrived (a lost wakeup). With it the
+    /// waiter is answered by its acks, promptly.
+    @Test
+    void renewalEdgeBetweenTheLapsedVerdictAndTheParkJoin_stillAcknowledgesPromptly() {
+        start(replicationWithPeer());
+        var answer = manager.awaitReplication(STREAM, PARTITION, publish("e0"), 1);
+
+        leaseValid.set(false);
+        manager.beforeParkJoinProbe(this::regainWithTheParkListEmpty);
+        var ackedAt = System.nanoTime();
+
+        ack(0L);
+        var outcome = answer.await(ANSWER_WAIT);
+        var waitedMillis = (System.nanoTime() - ackedAt) / 1_000_000L;
+
+        assertThat(outcome.isSuccess()).as("answered by its acks, not PublishOutcomeUnknown at the budget").isTrue();
+        assertThat(waitedMillis).as("well inside the 5 s park budget").isLessThan(2_500L);
+        assertThat(visible()).as("acknowledged => visible").isEqualTo(0L);
+    }
+
+    private void regainWithTheParkListEmpty() {
+        leaseValid.set(true);
+        manager.onLeaseRegained();
+    }
+
     /// Confirmation factor 1 bypasses the check: no park even under a lapsed lease.
     @Test
     void confirmationFactorOne_neverParks() {

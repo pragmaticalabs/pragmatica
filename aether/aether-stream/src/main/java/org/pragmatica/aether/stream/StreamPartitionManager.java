@@ -291,6 +291,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     private volatile OwnerActivatedView ownerActivated = ACTIVATION_UNCHECKED;
     /// #2981 step 2 (design §2.2 check 2): ack waiters whose replicas confirmed while the lease was lapsed ([#awaitReplication]).
     private final Set<ParkedAck> parkedAcks = ConcurrentHashMap.newKeySet();
+
+    /// Test seam (#2981 S12), see [#beforeParkJoinProbe(Runnable)]; nothing until a test sets it.
+    private volatile Runnable beforeParkJoinProbe = () -> {};
+
     /// #2590 P1: where a partition's committed position and its suffix truncations are told, late-bound
     /// ([#partitionLogEvents(PartitionLogEvents)]); nobody until wired.
     private volatile PartitionLogEvents partitionLogEvents = PartitionLogEvents.NONE;
@@ -4920,11 +4924,19 @@ public final class StreamPartitionManager implements AutoCloseable {
     private Promise<Unit> park(AckWaiter waiter) {
         var parked = ParkedAck.parkedAck(waiter);
 
+        beforeParkJoinProbe.run();
         parkedAcks.add(parked);
         SharedScheduler.schedule(() -> expireParked(parked), remainingParkBudget(waiter));
         recheckParked(parked);
 
         return parked.answer();
+    }
+
+    /// Test seam (#2981 S12): runs between the lapsed verdict and the waiter joining the park list, the window in which a
+    /// renewal edge finds no parked waiter to re-check.
+    @Contract
+    void beforeParkJoinProbe(Runnable probe) {
+        beforeParkJoinProbe = probe;
     }
 
     private static TimeSpan remainingParkBudget(AckWaiter waiter) {
