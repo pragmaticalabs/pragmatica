@@ -23,6 +23,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.testing.DockerRequirement;
 import org.testcontainers.containers.PostgreSQLContainer;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -35,7 +36,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// starves the third borrower: its promise never resolves and the bounded await reports a timeout. The assertion is
 /// therefore "every one of the operations completed", with the outcome of each (success, the callback's own cause, the
 /// database's refusal) checked alongside. Self-skips when no Docker daemon is reachable, unless
-/// `-Daether.requireDocker=true`.
+/// `CI_REQUIRE_DOCKER=1`.
 @Timeout(value = 120, unit = TimeUnit.SECONDS)
 class PgAsyncSqlConnectorConnectionReleaseTest {
     private static final int POOL_SIZE = 2;

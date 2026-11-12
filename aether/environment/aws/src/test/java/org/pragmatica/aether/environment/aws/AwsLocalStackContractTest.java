@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
-import org.testcontainers.DockerClientFactory;
+import org.pragmatica.testing.DockerRequirement;
 import org.testcontainers.containers.localstack.LocalStackContainer;
 import org.testcontainers.utility.DockerImageName;
 
@@ -93,7 +93,7 @@ class AwsLocalStackContractTest {
 
     @BeforeAll
     static void startLocalStack() {
-        if (!dockerAvailable()) {
+        if (!DockerRequirement.dockerAvailable()) {
             return;
         }
         localstack = ContainerStartup.startWithRetry(AwsLocalStackContractTest::newLocalStack, STARTUP_ATTEMPTS);
@@ -107,7 +107,7 @@ class AwsLocalStackContractTest {
 
     @BeforeEach
     void requireDocker() {
-        assumeTrue(dockerAvailable(),
+        assumeTrue(DockerRequirement.dockerAvailable(),
                    "AWS LocalStack contract suite requires a Docker daemon (skipped cleanly when absent)");
     }
 
@@ -432,16 +432,6 @@ class AwsLocalStackContractTest {
                                            .await(TEST_AWAIT);
 
             assertThat(outcome.isFailure()).isTrue();
-        }
-    }
-
-    // --- Docker gate (the ONE small helper; mirrors the aether-deployment schema-test pattern) ---
-
-    private static boolean dockerAvailable() {
-        try {
-            return DockerClientFactory.instance().isDockerAvailable();
-        } catch (Throwable t) {
-            return false;
         }
     }
 

@@ -23,6 +23,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.testing.DockerRequirement;
 import org.testcontainers.containers.PostgreSQLContainer;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -37,7 +38,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// every call and nested transaction runs on ONE backend; the pool is never touched (a pool of ONE keeps answering with its own connection);
 /// it is opened OUTSIDE the pool and never borrowed from it; and closing it ends the server session, taking a
 /// session lock even a failed unlock left behind with it. Self-skips when no Docker daemon is reachable, unless
-/// `-Daether.requireDocker=true` makes that a failure.
+/// `CI_REQUIRE_DOCKER=1` makes that a failure.
 @Timeout(value = 45, unit = TimeUnit.SECONDS)
 class JdbcSqlConnectorPinnedTest {
     private static final RowMapper<Integer> PID = row -> row.getInt("pid");

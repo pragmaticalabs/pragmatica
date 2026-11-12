@@ -20,6 +20,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testing.DockerRequirement;
 import org.testcontainers.oracle.OracleContainer;
 
 import static org.assertj.core.api.Assertions.assertThat;

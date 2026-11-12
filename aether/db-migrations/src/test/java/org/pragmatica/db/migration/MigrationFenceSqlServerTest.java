@@ -16,6 +16,7 @@ import org.pragmatica.aether.resource.db.jdbc.JdbcSqlConnectorFactory;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
+import org.pragmatica.testing.DockerRequirement;
 import org.testcontainers.containers.MSSQLServerContainer;
 
 import static org.junit.jupiter.api.Assumptions.assumeTrue;

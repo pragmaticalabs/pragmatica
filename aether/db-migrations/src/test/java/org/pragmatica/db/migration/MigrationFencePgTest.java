@@ -35,6 +35,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.pragmatica.testing.DockerRequirement;
 import org.testcontainers.containers.PostgreSQLContainer;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -50,7 +51,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// (a `gate` table held ACCESS EXCLUSIVE, a history row held FOR UPDATE), and the test waits for the runner's own
 /// session (`application_name` `aether-mig:<node>`) to be lock-waiting: no sleeps decide an interleaving. A
 /// rollback-proof counter (`nextval`) counts entries into a script. Self-skips without Docker unless
-/// `-Daether.requireDocker=true`.
+/// `CI_REQUIRE_DOCKER=1`.
 @Timeout(value = 180, unit = TimeUnit.SECONDS)
 class MigrationFencePgTest {
     private static final int FENCE_CLASS = 0x41455448;
