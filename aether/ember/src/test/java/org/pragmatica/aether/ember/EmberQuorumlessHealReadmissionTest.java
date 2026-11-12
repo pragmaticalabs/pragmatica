@@ -59,6 +59,10 @@ class EmberQuorumlessHealReadmissionTest {
                                                 basePort -> emberCluster(SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "qh"),
                                                 START_BOUND);
         awaitCondition("the booted cluster reports quorum on every node", HEAL_BOUND_MS, this::everyNodeReportsQuorum);
+        // As F4 E06 does before its scenario: every node counts all five core members, so the partition takes MEMBERs
+        // through DEPARTING to DEAD rather than unpromoted OBSERVED entries.
+        awaitCondition("every node counts all five core members", HEAL_BOUND_MS,
+                       () -> cluster.allNodes().stream().allMatch(node -> node.membershipFsm().coreCountedMembers().size() == SIZE));
 
         var silenced = cluster.allNodes().stream().map(node -> node.self().id()).sorted().limit(SILENCED).toList();
 
