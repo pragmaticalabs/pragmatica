@@ -150,7 +150,9 @@ class EmberOwnerBehindBudgetDeferredReplicaTest {
 
                 cluster.killNode(killed).await(STOP_BOUND).onFailure(cause -> org.junit.jupiter.api.Assertions.fail("owner kill failed: " + cause.message()));
                 starved.set(null);
-                assertThat(awaitNewOwner(killed)).as("the owner that took over is the one that was behind").isSameAs(behind);
+                var newOwner = awaitNewOwner(killed);
+
+                assertThat(newOwner.self()).as("the owner that took over is the one that was behind (deferred %s, killed %s)", deferredId, killed).isEqualTo(behindId);
                 awaitUntil(() -> behind.streamPartitionManager().appendedHead(KEY, PARTITION) == EARLY + LATE - 1L,
                            CATCHUP_BUDGET_MS,
                            "the new owner reached the deferred replica's tail (head " + behind.streamPartitionManager().appendedHead(KEY, PARTITION) + ")");
