@@ -553,11 +553,13 @@ final class DefaultReplicationManager implements ReplicationManager {
     /// Whether `pending` comes from the replica process its registry row was confirmed by ([ReplicaRegistry#sameProcess]); a
     /// replica with no row has nothing to keep.
     private boolean ofSameProcess(ReplicationMessage.ReplicateAck pending) {
-        return registry.replicasFor(pending.streamName(), pending.partition())
+        return registry.replicasFor(pending.streamName(),
+                                    pending.partition())
                        .stream()
                        .filter(descriptor -> descriptor.nodeId()
                                                        .equals(pending.replicaId()))
-                       .allMatch(descriptor -> ReplicaRegistry.sameProcess(descriptor, pending.bootToken()));
+                       .allMatch(descriptor -> ReplicaRegistry.sameProcess(descriptor,
+                                                                           pending.bootToken()));
     }
 
     /// The `minAcks`-th highest confirmed offset among the non-self replicas: every offset at or below it

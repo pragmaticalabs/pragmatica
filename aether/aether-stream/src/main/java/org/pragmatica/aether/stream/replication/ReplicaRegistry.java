@@ -309,13 +309,19 @@ public final class ReplicaRegistry {
                                                         Epoch epoch,
                                                         long bootToken) {
         return option(nodeMap.computeIfPresent(nodeId,
-                                               (_, current) -> monotone(current, confirmedOffset, state, epoch, bootToken)));
+                                               (_, current) -> monotone(current,
+                                                                        confirmedOffset,
+                                                                        state,
+                                                                        epoch,
+                                                                        bootToken)));
     }
 
     private static boolean isStale(ReplicaDescriptor current, long confirmedOffset, Epoch epoch, long bootToken) {
         var order = epoch.compareTo(current.epoch());
 
-        return order < 0 || order == 0 && sameProcess(current, bootToken) && current.confirmedOffset() > confirmedOffset;
+        return order < 0 || order == 0
+                            && sameProcess(current, bootToken)
+                            && current.confirmedOffset() > confirmedOffset;
     }
 
     private static ReplicaDescriptor monotone(ReplicaDescriptor current,
