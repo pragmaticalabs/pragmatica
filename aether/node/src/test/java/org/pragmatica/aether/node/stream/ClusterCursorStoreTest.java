@@ -835,42 +835,35 @@ class ClusterCursorStoreTest {
             return kinds;
         }
 
-        private static boolean mirrorLagging(Result<CommitOutcome> outcome) {
-            return outcome.map(o -> o instanceof CommitOutcome.LocalOnly local && local.cause()
-                                                                                       .message()
-                                                                                       .contains("not yet visible in this node's committed state"))
-                          .or(false);
-        }
-
-        @Test
-        void commit_forwardingWorker_cursorKeyFilteredFromReplica_reportsLocalOnly() {
-            var worker = worker();
-
-            var first = worker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
-            var retry = worker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
-
-            assertThat(coreCheckpoint()).describedAs("control: the core's applier ADMITTED the forwarded checkpoint").isEqualTo(Option.some(10L));
-            assertThat(workerReplicaRead(CHECKPOINT_KEY)).describedAs("#2596: the worker's replica read of the cursor key is empty while the core holds it")
-                                                         .isEqualTo(Option.none());
-            assertThat(mirrorLagging(first) && mirrorLagging(retry))
-                    .describedAs("#2596 fixed? If #2590 P2 has landed, enable `commit_forwardingWorker_landedOnCore_reportsPersisted` and delete this tripwire; got %s then %s",
-                                 first,
-                                 retry)
-                    .isTrue();
-        }
-
-        @Disabled("#2590 P2: enable when a worker's checkpoint verdict no longer reads a replica that excludes the cursor key, ported onto the P2 cursor store if ClusterCursorStore and the legacy key are gone; delete the _reportsLocalOnly tripwire then")
         @Test
         void commit_forwardingWorker_landedOnCore_reportsPersisted() {
             var outcome = worker().commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
 
+            assertThat(workerReplicaRead(CHECKPOINT_KEY)).describedAs("control: the worker's replica read of the cursor key is empty").isEqualTo(Option.none());
             assertThat(coreCheckpoint()).isEqualTo(Option.some(10L));
-            assertThat(outcome).describedAs("the core holds this worker's checkpoint, so the commit is Persisted; got %s", outcome)
+            assertThat(outcome).describedAs("#2596: the core holds this worker's checkpoint, so the commit is Persisted; got %s", outcome)
                                .isEqualTo(Result.success(CommitOutcome.persisted()));
         }
 
-        /// #2596: every attempt of a forwarding worker costs two consensus commands, the `Put` and the `Noop` barrier, and since the
-        /// verdict above never reaches `Persisted`, every periodic checkpoint is retried with that same pair.
+        /// #2596: a worker whose assignment moved to a peer is still Fenced, not Persisted, even though its replica cannot show the cursor.
+        @Test
+        void commit_forwardingWorker_assignmentMovedToPeer_reportsFenced() {
+            core.process(core.createBatch(List.of(assignment(PEER, NEXT_EPOCH))));
+            var fencedWorker = ClusterCursorStore.clusterCursorStore(recordingLocal(new AtomicReference<>()),
+                                                                     SELF,
+                                                                     this::workerReplicaRead,
+                                                                     assignmentsIn(core),
+                                                                     this::forwardToCore,
+                                                                     () -> true);
+
+            var outcome = fencedWorker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
+
+            assertThat(outcome).describedAs("#2596: a deposed worker must not read Persisted; got %s", outcome)
+                               .matches(r -> r.map(o -> o instanceof CommitOutcome.Fenced).or(false));
+        }
+
+        /// #2596: every attempt of a forwarding worker costs two consensus commands, the `Put` and the `Noop` barrier, and a
+        /// worker's checkpoint now settles as `Persisted` on the first attempt, so the pair is no longer repeated per retry.
         @Test
         void commit_forwardingWorker_eachAttemptSendsPutAndNoop() {
             var worker = worker();
@@ -880,7 +873,7 @@ class ClusterCursorStoreTest {
             worker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
             var retry = attemptKinds();
 
-            assertThat(List.of(first, retry)).describedAs("#2596 changed? #2590 P2 drops the verdict re-read and the Noop barrier: when it lands, delete this characterisation; commands per attempt")
+            assertThat(List.of(first, retry)).describedAs("commands per attempt (#2590 P2 drops the Noop barrier: when it lands, delete this characterisation)")
                                              .isEqualTo(List.of(List.of("Put", "Noop"), List.of("Put", "Noop")));
         }
     }
