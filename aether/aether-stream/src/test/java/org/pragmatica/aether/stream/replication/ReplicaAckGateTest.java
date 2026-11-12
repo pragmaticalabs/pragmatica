@@ -59,6 +59,7 @@ import static org.pragmatica.aether.stream.replication.ReplicationReceiveHandler
 class ReplicaAckGateTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
+    private static final long BOOT_TOKEN = 7L;
     private static final Epoch E1 = Epoch.epoch(1L, 1L, 1L);
     private static final Epoch E2 = Epoch.epoch(1L, 1L, 2L);
     private static final Epoch E3 = Epoch.epoch(1L, 1L, 3L);
@@ -98,7 +99,8 @@ class ReplicaAckGateTest {
                                             (_, _) -> gapRepairs.incrementAndGet(),
                                             this::sync,
                                             committedOwners(),
-                                            OperatorWarningSink.handingOffTo(warnings::add));
+                                            OperatorWarningSink.handingOffTo(warnings::add),
+                                            () -> BOOT_TOKEN);
         // The production wiring (StreamAssembly).
         handler.ackGate(replica::replicaVerified);
         replica.onEpochVerified(handler::releaseDeferredAck);
