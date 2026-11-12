@@ -31,6 +31,7 @@ import static org.pragmatica.aether.slice.kvstore.ObservedSlicesTest.row;
 class ObservedSliceFeedTest {
     private static final NodeId NODE = NodeId.nodeId("core-1").unwrap();
     private static final Artifact ARTIFACT = Artifact.artifact("org.example:orders:1.0.0").unwrap();
+    private static final NodeId PEER = NodeId.nodeId("core-2").unwrap();
     private static final SliceObservedKey KEY = SliceObservedKey.sliceObservedKey(NODE, ARTIFACT);
 
     private final Map<NodeId, Long> tokens = new HashMap<>();
@@ -146,6 +147,32 @@ class ObservedSliceFeedTest {
         assertThat(recorder.events).containsExactly("show ACTIVE");
     }
 
+    /// A removed row is forgotten: a later departure record for its node does not bring it back.
+    @Test
+    void trafficFeed_aRemovedRowIsNotResurrectedByALaterDepartureRecord() {
+        var feed = traffic();
+
+        feed.onObservedPut(put(row(SliceObservedState.ACTIVE, 7L)));
+        feed.onObservedRemove(remove());
+        feed.onDeparturePut(departure(NODE, DepartureState.DEPARTED));
+        feed.onDeparturePut(departure(NODE, DepartureState.ADMITTED));
+
+        assertThat(recorder.events).containsExactly("show ACTIVE", "gone");
+    }
+
+    /// A departure record re-classifies only its own node's rows: another node's row keeps the classification it was delivered with
+    /// (a token learned later does not flip it; see the lane's staleness-at-delivery decision).
+    @Test
+    void trafficFeed_aDepartureRecordLeavesAnotherNodesRowsAlone() {
+        var feed = traffic();
+
+        feed.onObservedPut(put(row(SliceObservedState.ACTIVE, 7L)));
+        tokens.put(NODE, 9L);
+        feed.onDeparturePut(departure(PEER, DepartureState.DEPARTED));
+
+        assertThat(recorder.events).containsExactly("show ACTIVE");
+    }
+
     private static ValuePut<SliceObservedKey, SliceObservedValue> put(SliceObservedValue row) {
         return new ValuePut<>(new KVCommand.Put<>(KEY, row), Option.none());
     }
@@ -155,13 +182,17 @@ class ObservedSliceFeedTest {
     }
 
     private static ValuePut<NodeDepartureKey, NodeDepartureValue> departure(DepartureState state) {
+        return departure(NODE, state);
+    }
+
+    private static ValuePut<NodeDepartureKey, NodeDepartureValue> departure(NodeId node, DepartureState state) {
         var value = new NodeDepartureValue(state,
                                            1L,
                                            new ProcessIncarnation(1L, 7L),
                                            Option.some(DepartureCause.NODE_REMOVED),
                                            0L);
 
-        return new ValuePut<>(new KVCommand.Put<>(NodeDepartureKey.nodeDepartureKey(NODE), value), Option.none());
+        return new ValuePut<>(new KVCommand.Put<>(NodeDepartureKey.nodeDepartureKey(node), value), Option.none());
     }
 
     private static final class Recorder implements ObservedSliceListener {
