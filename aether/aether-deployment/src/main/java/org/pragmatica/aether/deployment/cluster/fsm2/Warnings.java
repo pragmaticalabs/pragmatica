@@ -494,13 +494,11 @@ public sealed interface Warnings {
         return m;
     }
 
-    /// R-4.1.7: the blueprint's outcome is still the deadline terminal (its attempt is the warned one), else the episode ended between the
-    /// leaders (a republish, a removal) and is closed.
+    /// R-4.1.7: the blueprint's outcome is still a deadline terminal, else the episode ended between the leaders (a republish, a removal, a
+    /// terminal that was in flight when the leader changed) and is closed; a successor's own deadline then raises a new warning.
     private static ClusterModel adoptApplyDeadline(ClusterModel m, Ctx ctx, BlueprintId id) {
         return m.outcomes.get(id)
-                         .filter(outcome -> Deadlines.standing(m,
-                                                               id,
-                                                               outcome.attemptId()))
+                         .filter(outcome -> Deadlines.EXCEEDED.equals(outcome.cause()))
                          .map(outcome -> openApplyDeadline(m,
                                                            id,
                                                            outcome.attemptId()))

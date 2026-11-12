@@ -232,15 +232,14 @@ class ApplyDeadlineTest {
     }
 
     // -- inheritance (#2834 family) -----------------------------------------------------------------------------------
-    private static FsmHarness successorOf(String outcomeAttempt) {
+    private static FsmHarness successorOf(DeploymentOutcomeValue outcome) {
         var bounds = DivergenceBounds.divergenceBounds(TEN_HOURS_MS, TEN_HOURS_MS, TEN_HOURS_MS, TEN_HOURS_MS);
         var h = new FsmHarness(Settings.settings(FsmHarness.SELF, DeploymentAtomicity.ALL_OR_NOTHING, Set.of(), bounds()).withDivergence(bounds));
         var cores = Set.of(CORE_1, CORE_2, CORE_3);
 
         h.commitLeader(FsmHarness.SELF, 1L);
         h.seams = Seams.UNWIRED.withCountedCores(cores).withReady(cores);
-        h.seed(new DeploymentOutcomeKey(ID),
-               new DeploymentOutcomeValue(DeploymentOutcomeStatus.ROLLED_BACK, List.of(ORDERS.asString()), "apply-deadline-exceeded", h.wallMs, 2L, outcomeAttempt));
+        h.seed(new DeploymentOutcomeKey(ID), outcome);
         h.seed(FsmWarningKey.fsmWarningKey("apply-deadline-exceeded", APP), FsmWarningValue.fsmWarningValue(Map.of()));
         h.activate();
 
@@ -251,7 +250,12 @@ class ApplyDeadlineTest {
     /// has no APPLY_DEADLINE arm (the unadopted row is then closed as a stray), or adoption does not rebuild `applyDeadlineWarned`.
     @Test
     void inheritedWarning_whoseTerminalStands_isKeptOpen() {
-        var h = successorOf(ATTEMPT);
+        var h = successorOf(new DeploymentOutcomeValue(DeploymentOutcomeStatus.ROLLED_BACK,
+                                                       List.of(ORDERS.asString()),
+                                                       "apply-deadline-exceeded",
+                                                       FsmHarness.START_WALL,
+                                                       2L,
+                                                       ATTEMPT));
 
         h.advanceBySeconds(5 * 60);
         assertThat(h.warns("apply-deadline-cleared")).as("not closed").isEmpty();
@@ -259,11 +263,11 @@ class ApplyDeadlineTest {
         assertThat(h.store.get(FsmWarningKey.fsmWarningKey("apply-deadline-exceeded", APP)).isPresent()).as("still in the open set").isTrue();
     }
 
-    /// An open warning whose terminal was replaced between the leaders (a republish: another attempt) is closed by the successor. Red when: the
-    /// adoption does not check that the outcome is the deadline terminal, so the stale warning stays open for ever.
+    /// An open warning whose terminal was replaced between the leaders (a republish: another attempt, IN_PROGRESS) is closed by the successor. Red when:
+    /// the adoption does not check that the outcome is a deadline terminal, so the stale warning stays open for as long as the new attempt runs.
     @Test
     void inheritedWarning_whoseTerminalWasReplaced_isClosed() {
-        var h = successorOf("attempt-0");
+        var h = successorOf(DeploymentOutcomeValue.inProgress(FsmHarness.START_WALL, 3L, "attempt-2"));
 
         h.advanceBySeconds(60);
         assertThat(h.warns("apply-deadline-cleared")).as("closed by the successor").hasSize(1);

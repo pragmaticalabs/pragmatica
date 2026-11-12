@@ -230,7 +230,7 @@ public sealed interface Deadlines {
         return m;
     }
 
-    static boolean standing(ClusterModel m, BlueprintId id, String attempt) {
+    private static boolean standing(ClusterModel m, BlueprintId id, String attempt) {
         return m.outcomes.get(id)
                          .filter(outcome -> outcome.describesAttempt(attempt))
                          .map(outcome -> outcome.status() == DeploymentOutcomeStatus.IN_PROGRESS || EXCEEDED.equals(outcome.cause()))

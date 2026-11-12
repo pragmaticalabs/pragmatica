@@ -175,6 +175,131 @@ public final class ConfigValidator {
         }
     }
 
+    /// #970 (R-4.1.7): a zero apply deadline would abandon every apply at once (or, read as unusable, never end one); it is reported rather than
+    /// floored. A negative duration never reaches here (the parser refuses it), so the schema pause cap, which may be zero, needs no check.
+    private static void applyDeadlineErrors(TimeoutsConfig.DeploymentTimeouts deployment, List<String> errors) {
+        positiveTimeSpanError(deployment.applyDeadline(), "timeouts.deployment.apply_deadline", errors);
+    }
+
+    /// #250 review: floor below which a storage-maintenance pass (walks every lifecycle in every
+    /// local tier) is more likely to be re-scheduled on top of itself than to finish and idle. Chosen
+    /// two orders of magnitude below the 5-minute production default, not derived from a measured
+    /// worst-case pass duration.
+    private static final TimeSpan MIN_STORAGE_MAINTENANCE_INTERVAL = timeSpan(1).seconds();
+    /// `[streaming] seal_merge_bytes` upper bound (know 73fd8d9759: below 2 GiB). [guess: 256 MiB, 64 times the default]
+    private static final long MAX_SEAL_MERGE_BYTES = 256L * 1024 * 1024;
+    /// `[streaming] seal_run_age` upper bound, far below the overflow of the age timer's deadline. [guess: one day]
+    private static final TimeSpan MAX_SEAL_RUN_AGE = timeSpan(1).days();
+
+    private ConfigValidator() {}
+
+    public static Result<AetherConfig> validate(AetherConfig config) {
+        return validate(config, FileOps::exists);
+    }
+
+    /// Validation with the host filesystem supplied: the node passes the real one; cluster bootstrap's pre-flight passes
+    /// a probe that finds every file, because the certificate, key and CA paths name files on the NODE, not on the
+    /// operator's machine (#1455).
+    public static Result<AetherConfig> validate(AetherConfig config, Predicate<Path> fileExists) {
+        var security = securityMisconfiguration(config.appHttp());
+
+        if (security.isPresent()) {
+            return security.unwrap()
+                           .result();
+        }
+
+        var errors = new ArrayList<String>();
+
+        clusterErrors(config.cluster(), errors);
+        nodeErrors(config.node(), errors);
+        absenceWindowErrors(config.timeouts().cluster(),
+                            errors);
+        offlineBufferCapErrors(config.timeouts().cluster(),
+                               errors);
+        storageMaintenanceErrors(config.timeouts().storageMaintenance(),
+                                 errors);
+        applyDeadlineErrors(config.timeouts().deployment(),
+                            errors);
+        streamingErrors(config.streaming(), errors);
+        promotionEscapeErrors(config.streaming(),
+                              config.timeouts().swim().suspectTimeout(),
+                              errors);
+        ownerLeaseErrors(config.streaming(),
+                         config.timeouts().swim().suspectTimeout(),
+                         errors);
+        archiveRetentionErrors(config.slice(), errors);
+        uploadErrors(config.appHttp().upload(),
+                     errors);
+        if (config.tlsEnabled()) {
+            config.tls().onPresent(tls -> tlsErrors(tls, fileExists, errors));
+        }
+
+        return toResult(config, errors);
+    }
+
+    /// #909 — `security_mode = "jwt"` on a server that will serve, with nothing to verify a token against.
+    /// The factory and `ConfigLoader` accept it (`jwtConfig` exists only when `jwks_url` is present), and
+    /// the request-time deny floor from #888 only turns every non-public route into a `401`. A declared
+    /// contradiction is refused here, as a typed [ConfigError.SecurityMisconfigured] that names the missing
+    /// setting. A given `--config=` that fails validation refuses the boot (exit 65, #2052), so this is
+    /// what stops the node. A disabled server refuses nothing, so it is not refused.
+    private static Option<ConfigError> securityMisconfiguration(AppHttpConfig appHttp) {
+        if (!appHttp.enabled() || appHttp.securityMode() != SecurityMode.JWT) {
+            return Option.empty();
+        }
+
+        return appHttp.jwtConfig()
+                      .fold(() -> Option.some(ConfigError.securityMisconfigured(JWT_WITHOUT_JWKS_REASON)),
+                            ConfigValidator::unusableJwtKeySource);
+    }
+
+    /// #2880: HS256 mode has no JWKS to check; its secret was checked when the config was built (length) and by the
+    /// node start-up (presence), because pre-flight cannot see the environment that supplies it.
+    private static Option<ConfigError> unusableJwtKeySource(JwtConfig jwt) {
+        return jwt.keyMode() == JwtKeyMode.HS256
+               ? Option.empty()
+               : unusableJwksUrl(jwt.jwksUrl());
+    }
+
+    private static Option<ConfigError> unusableJwksUrl(String jwksUrl) {
+        return JwksUrl.jwksUrl(jwksUrl).fold(cause -> Option.some(ConfigError.securityMisconfigured("[app-http] security_mode = \"jwt\" but " + cause.message()
+                                                                                                   + ". " + JWKS_URL_RULE)),
+                                             _ -> Option.empty());
+    }
+
+    static final String JWKS_URL_RULE = "jwks_url must be an absolute https URL (http only to a loopback host).";
+
+    static final String JWT_WITHOUT_JWKS_REASON = "[app-http] security_mode = \"jwt\" but [app-http] jwks_url is missing:"
+                                                + " there is nothing to verify tokens against. jwks_url is required"
+                                                + " (issuer/audience optional): set [app-http] jwks_url, or change security_mode.";
+
+    /// #590 — the two absence windows are the two halves of one mechanism and their ORDER is a
+    /// correctness property, not a preference. A community must stop serving before the core hands its
+    /// slices to other nodes; inverted (or equal) windows put both live on the same slices at once.
+    ///
+    /// Reported rather than clamped: substituting a working pair would hide that the operator asked
+    /// for something whose failure mode is two live writers. Reported here rather than thrown from a
+    /// factory so it joins every other config problem in one collected report.
+    /// #1996: the cap bounds how long ANY frame may wait in an offline buffer, including a request whose caller waits
+    /// longer. A cap below the shortest caller wait the cluster ships with (the 5s replication ack) silently shortens
+    /// that wait to the cap, and a zero or negative one expires every buffered frame. The 5s floor is a guess matching
+    /// that wait, not a measured value.
+    private static void offlineBufferCapErrors(TimeoutsConfig.ClusterTimeouts cluster, List<String> errors) {
+        if (cluster.offlineBufferCap().nanos() < OFFLINE_BUFFER_CAP_FLOOR.nanos()) {
+            errors.add("timeouts.cluster.offline_buffer_cap (%s) must be at least %s: a smaller cap cuts the wait of every buffered request".formatted(cluster.offlineBufferCap(),
+                                                                                                                                                       OFFLINE_BUFFER_CAP_FLOOR));
+        }
+    }
+
+    private static void absenceWindowErrors(TimeoutsConfig.ClusterTimeouts cluster, List<String> errors) {
+        if (!cluster.absenceWindowsOrdered()) {
+            errors.add(("timeouts.cluster.core_absence (%s) must be strictly less than "
+                       + "timeouts.cluster.community_absence (%s): a community has to stop serving before the core "
+                       + "re-places its slices, or both run at once").formatted(cluster.coreAbsence(),
+                                                                                cluster.communityAbsence()));
+        }
+    }
+
     /// #970 (R-4.1.7): a non-positive apply deadline would abandon every apply at once (or, read as unusable, never end one), and a negative
     /// schema pause cap has no meaning; zero is the cap that disables the pause. Each is reported rather than floored.
     private static void applyDeadlineErrors(TimeoutsConfig.DeploymentTimeouts deployment, List<String> errors) {

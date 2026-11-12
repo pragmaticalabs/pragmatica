@@ -46,19 +46,30 @@ class ApplyDeadlineConfigTest {
         assertThat(deployment.applySchemaPauseMax().millis()).isEqualTo(30 * 60_000L);
     }
 
-    /// Red when: a zero deadline or a negative cap is accepted.
+    /// Red when: a zero deadline is accepted (the validator's refusal is removed or not called).
     @Test
-    void nonPositiveDeadline_andNegativeCap_areRefused() {
+    void zeroDeadline_isRefused() {
         var result = ConfigLoader.loadFromString(MINIMAL_CLUSTER + """
 
                                                  [timeouts.deployment]
                                                  apply_deadline = "0s"
+                                                 """);
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).contains("timeouts.deployment.apply_deadline"));
+    }
+
+    /// Red when: a negative cap is accepted (the key is not parsed as a duration, or its parse is bypassed).
+    @Test
+    void negativeCap_isRefused() {
+        var result = ConfigLoader.loadFromString(MINIMAL_CLUSTER + """
+
+                                                 [timeouts.deployment]
                                                  apply_schema_pause_max = "-5s"
                                                  """);
 
         assertThat(result.isFailure()).isTrue();
-        result.onFailure(cause -> assertThat(cause.message()).contains("timeouts.deployment.apply_deadline")
-                                                             .contains("timeouts.deployment.apply_schema_pause_max"));
+        result.onFailure(cause -> assertThat(cause.message()).contains("timeouts.deployment.apply_schema_pause_max"));
     }
 
     /// Red when: a zero cap (the pause disabled) is refused.
