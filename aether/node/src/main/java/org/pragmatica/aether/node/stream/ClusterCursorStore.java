@@ -236,10 +236,8 @@ public record ClusterCursorStore(ConsumerCursorStore local,
                                   RewindEpoch rewindEpoch) {
         return committedReader.apply(key)
                               .filter(committed -> committed.token()
-                                                            .equals(token)
-                                                   && committed.committedOffset() == offset
-                                                   && committed.rewindEpoch()
-                                                               .equals(rewindEpoch))
+                                                            .equals(token) && committed.committedOffset() == offset && committed.rewindEpoch()
+                                                                                                                                .equals(rewindEpoch))
                               .map(_ -> CommitOutcome.persisted())
                               .or(() -> unreadable(key)
                                         ? blindVerdict(key, token)
