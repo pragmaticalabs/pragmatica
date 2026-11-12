@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaMigrationLockKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaMigrationLockValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
@@ -293,6 +294,41 @@ class G2SchemaScenariosTest {
         h.seed(new SchemaVersionKey("ds"), schema(SchemaStatus.COMPLETED));
         h.advanceBySeconds(60L);
         assertThat(h.warns("schema-migration-progressed")).as("closed by the successor").hasSize(1);
+    }
+
+    // #2773: the report names the slices the record holds (the owning blueprint's targets), so the operator sees what waits on it.
+    // Red when: the slice list is dropped or built from the wrong owner.
+    @Test
+    void stallWarning_namesTheSlicesTheRecordHolds() {
+        var h = threeCores();
+
+        h.seedQuietly(new SliceTargetKey(ORDERS.base()), ownedTarget(ORDERS, 1, 1, OWNER));
+        h.activate();
+        h.seed(new SchemaVersionKey("ds"), schema(SchemaStatus.PENDING));
+        h.advanceBySeconds(600L);
+        assertThat(h.warns("schema-migration-stalled")).hasSize(1);
+        assertThat(h.warns("schema-migration-stalled").getFirst().message()).contains("holds slices [").doesNotContain("holds slices []")
+                  .contains(ORDERS.base().asString());
+    }
+
+    // #2773: a record removed while no leader watched: the successor adopts the inherited open warning and closes it as subject-gone.
+    // Red when: the successor keeps the report of a record that no longer exists open.
+    @Test
+    void stall_recordRemovedBetweenLeaders_closedBySuccessorAsGone() {
+        var h = threeCores();
+
+        h.activate();
+        h.seed(new SchemaVersionKey("ds"), schema(SchemaStatus.PENDING));
+        h.advanceBySeconds(600L);
+        assertThat(h.warns("schema-migration-stalled")).hasSize(1);
+        h.deliver(new ClusterInput.Deactivate());
+        h.seedRemove(new SchemaVersionKey("ds"));
+        h.commitLeader(FsmHarness.SELF, 2L);
+        h.drain();
+        h.activate();
+        h.advanceBySeconds(90L);
+        assertThat(h.warns("schema-migration-progressed")).as("closed by the successor").hasSize(1);
+        assertThat(h.warns("schema-migration-progressed").getFirst().message()).contains("subject-gone");
     }
 
     private static SchemaMigrationLockValue expiredLock() {
