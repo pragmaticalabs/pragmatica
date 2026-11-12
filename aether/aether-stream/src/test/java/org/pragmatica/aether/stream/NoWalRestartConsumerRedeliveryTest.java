@@ -147,6 +147,7 @@ class NoWalRestartConsumerRedeliveryTest {
                                              index::lastSealedOffset);
 
         manager.createStream(config()).onFailure(cause -> fail(cause.message()));
+        manager.ownerLease(OwnerLease.TEST_VALID);
         manager.ownershipRecords((_, _) -> Option.option(committed.get()));
         owner.set(manager);
     }

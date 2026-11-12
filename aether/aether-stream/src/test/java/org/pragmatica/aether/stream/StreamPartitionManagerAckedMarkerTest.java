@@ -9,6 +9,7 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 import java.util.zip.CRC32;
@@ -89,6 +90,7 @@ class StreamPartitionManagerAckedMarkerTest {
     private final AtomicReference<Result<Unit>> gate = new AtomicReference<>(Result.unitResult());
     private final AtomicReference<Option<NodeId>> remoteOwner = new AtomicReference<>(Option.none());
     private final AtomicReference<ReplicaSetController.Role> role = new AtomicReference<>(ReplicaSetController.Role.OWNER);
+    private final AtomicBoolean leaseValid = new AtomicBoolean(true);
 
     @BeforeEach
     void setUp() {
@@ -196,6 +198,18 @@ class StreamPartitionManagerAckedMarkerTest {
         committed.set(record);
         servedRead();
         assertThat(visible()).isEqualTo(4L);
+    }
+
+    /// #2981 step 2 (design §2.2 check 3, §8 `raiseToMarker`): the gate admitted (here it admits regardless of the lease, the
+    /// lapse landing after the admission edge), but the node's lease has lapsed by the time the marker raise runs, so visible stays
+    /// at the replica bound (no committed mark on this owner: nothing) instead of the trusted marker.
+    @Test
+    void lapsedLease_afterTheAdmissionEdge_neverRaisesFromTheMarker() {
+        restartWithMarkerAt4();
+        leaseValid.set(false);
+        assertThat(manager.mayServeAsOwner(STREAM, PARTITION)).as("control: the gate admits").isTrue();
+        assertThat(visible()).as("the marker raise went through ownerAdvance and fell back").isEqualTo(-1L);
+        assertThat(durable()).as("control: the tail is durable").isEqualTo(9L);
     }
 
     /// [StreamPartitionManager#mayServeAsOwner] is an owner-admission site too.
@@ -404,6 +418,7 @@ class StreamPartitionManagerAckedMarkerTest {
                                          Option.some(dir),
                                          index::lastSealedOffset);
         manager.ownerEpochSource((_, _) -> Option.option(committed.get()).map(StreamPartitionOwnershipValue::ownerEpoch).or(Epoch.ZERO));
+        manager.ownerLease(leaseValid::get);
         manager.ownershipRecords((_, _) -> Option.option(committed.get()));
         manager.ownerWriteAdmission((_, _) -> remoteOwner.get());
         manager.ownerServeGate((_, _) -> gate.get());

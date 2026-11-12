@@ -26,6 +26,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLeaseKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
@@ -35,6 +36,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeLeaseValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicPublisherValue;
@@ -513,6 +515,36 @@ class ClusterDeploymentStateWorkerRemovalTest {
     /// Net-new regression: no existing test exercises `handleNodeRemoval` at this FSM layer for a
     /// CORE node. Confirms the #731 WORKER-channel addition left the pre-existing CORE
     /// `MembershipDecisionReceived(NodeRemoved)` arm's cleanup behavior unchanged.
+    /// #2981 step 2 (CTO ruling 2026-11-11): a decommissioned node's lease row goes with its footprint; a removed node (which may rejoin under
+    /// the same id) keeps it, and another node's row is never touched. Mutation: `nodeLeaseRemoval` returning nothing -> RED on the first test.
+    @Nested
+    class NodeLeaseOnDecommission {
+        @Test
+        void decommission_removesTheDecommissionedNodesLeaseRow_andKeepsEveryOthers() {
+            var departed = NodeLeaseKey.nodeLeaseKey(CORE_2);
+            var other = NodeLeaseKey.nodeLeaseKey(CORE_1);
+
+            kvStore.put(departed, NodeLeaseValue.nodeLeaseValue(7L));
+            kvStore.put(other, NodeLeaseValue.nodeLeaseValue(9L));
+
+            harness.dispatch(new MembershipDecisionReceived(MembershipDecision.nodeDecommissioned(CORE_2, List.of(SELF, CORE_1))));
+
+            assertThat(kvStore.get(departed)).as("the decommissioned node never renews again").isEqualTo(Option.empty());
+            assertThat(kvStore.get(other)).as("another node's lease row").isEqualTo(Option.some(NodeLeaseValue.nodeLeaseValue(9L)));
+        }
+
+        @Test
+        void removal_keepsTheRemovedNodesLeaseRow() {
+            var removed = NodeLeaseKey.nodeLeaseKey(CORE_2);
+
+            kvStore.put(removed, NodeLeaseValue.nodeLeaseValue(7L));
+
+            harness.dispatch(new MembershipDecisionReceived(MembershipDecision.nodeRemoved(CORE_2, List.of(SELF, CORE_1))));
+
+            assertThat(kvStore.get(removed)).as("a removed node may rejoin under the same id").isEqualTo(Option.some(NodeLeaseValue.nodeLeaseValue(7L)));
+        }
+    }
+
     @Nested
     class CoreRemovalRegression {
         @Test

@@ -29,6 +29,7 @@ class StreamPublishStatusTest {
     /// The pre-append refusals (`StreamApiRoutes.isPreAppendRefusal`): nothing was written, so a retry is safe.
     private static final Set<String> PRE_APPEND = Set.of("StreamConfigNotYetVisible",
                                                           "OwnerNotActivated",
+                                                          "OwnerLeaseLapsed",
                                                           "NotOwnerAppend",
                                                           "ReshufflePaced",
                                                           "MaterializeBudgetExceeded",

@@ -33,16 +33,8 @@ class OwedWarningCodesTripwireTest {
     private static final List<String> FAMILY_PREFIXES = List.of("STREAM_OWNER_LEASE_", "NODE_CLOCK_", "STREAM_TRUNCATION_");
 
     private static Map<OperatorWarningCode, String> owed() {
-        var map = new LinkedHashMap<OperatorWarningCode, String>();
-
-        map.put(OperatorWarningCode.STREAM_OWNER_LEASE_LAPSED, "steps 1-2");
-        map.put(OperatorWarningCode.STREAM_OWNER_LEASE_RESTORED, "steps 1-2");
-        map.put(OperatorWarningCode.NODE_CLOCK_RATE_DIVERGENCE, "steps 1-2");
-        map.put(OperatorWarningCode.NODE_CLOCK_RATE_NORMAL, "steps 1-2");
-        map.put(OperatorWarningCode.STREAM_TRUNCATION_REFUSED, "step 2");
-        map.put(OperatorWarningCode.STREAM_TRUNCATION_QUARANTINE_CLEARED, "steps 2-3");
-        map.put(OperatorWarningCode.STREAM_TRUNCATION_RETRACTED, "step 2");
-        return map;
+        // Empty since S8 (step 2, truncation below visible) raised the last three; kept so a future registered-but-unraised code has a home.
+        return new LinkedHashMap<>();
     }
 
     @Test

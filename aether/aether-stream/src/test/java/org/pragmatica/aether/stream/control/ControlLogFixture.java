@@ -21,6 +21,7 @@ import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.aether.stream.OwnerLease;
 import org.pragmatica.aether.stream.EvictionListener;
 import org.pragmatica.aether.stream.LastSealedOffsetSource;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
@@ -192,6 +193,16 @@ final class ControlLogFixture {
                       MirrorView mirror,
                       Option<Path> walDir,
                       long isrVersion) {
+        return owner(replicas, confirmationFactor, mirror, walDir, isrVersion, UnaryOperator.identity());
+    }
+
+    /// An owner whose control log reads its partition through `wrap(the real log)`.
+    static Node owner(int replicas,
+                      int confirmationFactor,
+                      MirrorView mirror,
+                      Option<Path> walDir,
+                      long isrVersion,
+                      UnaryOperator<ControlPartitionLog> wrap) {
         var registry = registry(replicas);
         var replication = replicationManager(SELF, registry);
         var manager = streamPartitionManager(Long.MAX_VALUE,
@@ -199,7 +210,7 @@ final class ControlLogFixture {
                                              replication,
                                              walDir,
                                              LastSealedOffsetSource.none());
-        var node = node(manager, replication, mirror, isrVersion, ReplicaSetController.Role.OWNER);
+        var node = node(manager, replication, mirror, isrVersion, ReplicaSetController.Role.OWNER, wrap);
 
         createStream(manager, replicas, confirmationFactor);
 
@@ -238,6 +249,7 @@ final class ControlLogFixture {
 
         manager.ownerEpochSource((_, _) -> ownerEpoch.get());
         manager.placementRoleSupplier((_, _) -> role.get());
+        manager.ownerLease(OwnerLease.TEST_VALID);
         manager.ownershipRecords((_, _) -> Option.some(ownership(ownerEpoch.get(), isrVersion)));
         var controlLog = ControlLog.controlLog(wrap.apply(ControlPartitionLog.partitionManagerLog(manager,
                                                                                                  Option.none(),

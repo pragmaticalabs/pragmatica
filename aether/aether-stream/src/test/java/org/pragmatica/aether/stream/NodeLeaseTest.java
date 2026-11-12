@@ -38,6 +38,7 @@ class NodeLeaseTest {
     private final AtomicBoolean replaying = new AtomicBoolean(false);
     private final List<Long> submitted = new ArrayList<>();
     private final List<String> events = new ArrayList<>();
+    private final List<String> recoveries = new ArrayList<>();
     private NodeLease lease;
 
     @BeforeEach
@@ -141,6 +142,27 @@ class NodeLeaseTest {
         assertThat(events.getFirst()).startsWith("lapsed CLOCK_SUSPEND");
     }
 
+    /// #2981 step 2 (know 018945dae1): a CLOCK_SUSPEND revocation is a reported lapse too, so the renewal that clears it raises the recovery
+    /// once. Mutation: drop `lapseRaised.set(true)` in `revokeOnSuspend` -> RED (no "restored").
+    @Test
+    void restored_isRaisedOnce_afterAClockSuspendRevocation() {
+        lease.renew();
+        deliverOwn(0);
+        advance(500);
+        wall.addAndGet(10_000);
+
+        assertThat(lease.valid()).isFalse();
+
+        lease.renew();
+        deliverOwn(1);
+        advance(10);
+        lease.renew();
+        deliverOwn(2);
+
+        assertThat(lease.valid()).isTrue();
+        assertThat(recoveries).containsExactly("restored");
+    }
+
     @Test
     void crossCheck_renewalSubmittedBeforeTheSuspend_doesNotClearTheRevocation() {
         lease.renew();
@@ -181,6 +203,20 @@ class NodeLeaseTest {
         deliverOwn(2);
 
         assertThat(lease.valid()).isTrue();
+    }
+
+    /// r2b (v3054 survivor): a renewal submitted at the SAME `nanoTime` as the revocation is not "after" it, so it does not clear the
+    /// revocation (NEW-3 boundary). Mutation: `extendedBy`'s `anchor - revokedAt <= 0` -> `< 0` -> RED.
+    @Test
+    void revoke_aRenewalSubmittedAtTheSameInstantAsTheRevocation_doesNotClearIt() {
+        lease.renew();
+        deliverOwn(0);
+        advance(10);
+        lease.revoke();
+        lease.renew();
+        deliverOwn(1);
+
+        assertThat(lease.valid()).isFalse();
     }
 
     @Test
@@ -362,6 +398,81 @@ class NodeLeaseTest {
         assertThat(events).containsExactly("divergence 1000000000 1200000000");
     }
 
+    /// #2981 step 2 (know 018945dae1): the recovery `stream-owner-lease-restored` is raised once per REPORTED lapse, at the renewal edge.
+    /// Mutation: drop the `restored()` call (or raise it on every renewal) -> RED.
+    @Test
+    void restored_isRaisedOncePerReportedLapse_atTheRenewalEdge() {
+        lease.renew();
+        deliverOwn(0);
+
+        assertThat(recoveries).as("the first grant closes no reported lapse").isEmpty();
+
+        advance(3_000);
+
+        assertThat(lease.valid()).isFalse();
+
+        lease.renew();
+        deliverOwn(1);
+        advance(10);
+        lease.renew();
+        deliverOwn(2);
+
+        assertThat(lease.valid()).isTrue();
+        assertThat(recoveries).containsExactly("restored");
+    }
+
+    /// #2981 step 2: the renewal edge (invalid -> valid) tells every regained listener, the first grant included, and a renewal of an
+    /// already valid lease tells none. Mutation: drop the listener call, or call it on every renewal -> RED.
+    @Test
+    void validityRegained_isToldAtEveryInvalidToValidEdgeOnly() {
+        var edges = new ArrayList<String>();
+
+        lease.onValidityRegained(() -> edges.add("edge"));
+        lease.renew();
+        deliverOwn(0);
+        advance(10);
+        lease.renew();
+        deliverOwn(1);
+
+        assertThat(edges).as("first grant only; the second renewal extends a valid lease").containsExactly("edge");
+
+        lease.revoke();
+        advance(10);
+        lease.renew();
+        deliverOwn(2);
+
+        assertThat(edges).containsExactly("edge", "edge");
+    }
+
+    /// #2981 step 2 (know 018945dae1): `node-clock-rate-normal` closes a reported divergence once, at the first renewal whose rate is back
+    /// within `rho`. Mutation: drop the `clockRateNormal()` call -> RED; raise it without a prior divergence -> RED on the second assert.
+    @Test
+    void clockRateNormal_isRaisedOnceAfterADivergence() {
+        lease.renew();
+        deliverOwn(0);
+        mono.addAndGet(1_000 * MS);
+        wall.addAndGet(1_050);
+        lease.renew();
+        deliverOwn(1);
+
+        assertThat(recoveries).as("no divergence was reported, so nothing recovers").isEmpty();
+
+        mono.addAndGet(1_000 * MS);
+        wall.addAndGet(1_200);
+        lease.renew();
+        deliverOwn(2);
+        mono.addAndGet(1_000 * MS);
+        wall.addAndGet(1_000);
+        lease.renew();
+        deliverOwn(3);
+        mono.addAndGet(1_000 * MS);
+        wall.addAndGet(1_000);
+        lease.renew();
+        deliverOwn(4);
+
+        assertThat(recoveries).containsExactly("normal");
+    }
+
     @Test
     void rateDivergence_wallRateWithinRho_isNotReported() {
         lease.renew();
@@ -496,8 +607,18 @@ class NodeLeaseTest {
         }
 
         @Override
+        public void restored() {
+            recoveries.add("restored");
+        }
+
+        @Override
         public void clockRateDivergence(long monotonicNanos, long wallNanos) {
             events.add("divergence " + monotonicNanos + " " + wallNanos);
+        }
+
+        @Override
+        public void clockRateNormal() {
+            recoveries.add("normal");
         }
     }
 }
