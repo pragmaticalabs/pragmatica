@@ -5072,9 +5072,9 @@ public interface AetherNode extends ManageableNode {
                                                          deploymentMap::onNodeArtifactPut)
                                                   .onPut(AetherKey.NodeArtifactKey.class, controlLoop::onNodeArtifactPut)
                                                   .onPut(AetherKey.SliceObservedKey.class,
-                                                         deploymentWiring.fsm2Reader("B22.ControlLoop.SliceObservedKey.put",
-                                                                                     put -> controlLoop.onSliceObservedPut(put,
-                                                                                                                           deploymentWiring.admissions()::tokenOf)))
+                                                         deploymentWiring.<ValuePut<AetherKey.SliceObservedKey, AetherValue.SliceObservedValue>> fsm2Reader("B22.ControlLoop.SliceObservedKey.put",
+                                                                                                                                                            put -> controlLoop.onSliceObservedPut(put,
+                                                                                                                                                                                                  deploymentWiring.admissions()::tokenOf)))
                                                   .onPut(AetherKey.NodeArtifactKey.class,
                                                          eventAggregator::onNodeArtifactPut)
                                                   .onPut(AetherKey.CommunityKey.class, eventAggregator::onCommunityPut)
