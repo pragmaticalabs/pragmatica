@@ -279,6 +279,8 @@ public final class EmberCluster {
 
     /// Per-node engine overrides (phase-3 design 8.2, W-29's misconfigured-newcomer arms), by NodeId; a node absent here takes [#deploymentEngine].
     private final Map<String, DeploymentEngine> nodeEngines = new ConcurrentHashMap<>();
+    /// Per-node `[streaming]` overrides (#2923), keyed by node id; a node without an entry uses [#streamingConfig].
+    private final Map<String, StreamingConfig> nodeStreamingConfigs = new ConcurrentHashMap<>();
 
     /// #715 — the [AetherNodeConfig] object actually passed to the most recently constructed node's
     /// constructor. Captured from the real `config` value itself, never mirrored independently at
@@ -559,6 +561,14 @@ public final class EmberCluster {
         streamingConfig.set(config);
     }
 
+    /// TEST SEAM (#2923) — the `[streaming]` section for the single node `nodeIdStr`, whatever the cluster's is: a per-node
+    /// off-heap budget (`StreamingConfig#withMemoryBudget`) makes that node's replica budget-deferred. MUST be called before
+    /// that node is created. Harness-scoped; production paths never call this.
+    @Contract
+    public void withStreamingConfig(String nodeIdStr, StreamingConfig config) {
+        nodeStreamingConfigs.put(nodeIdStr, config);
+    }
+
     /// Phase-3 design 8.2 — construct every node of this cluster with `engine`. MUST be called before [#start]. Harness-scoped: the engine
     /// has no TOML key in phase 3.
     @Contract
@@ -571,6 +581,10 @@ public final class EmberCluster {
     @Contract
     public void withDeploymentEngine(String nodeIdStr, DeploymentEngine engine) {
         nodeEngines.put(nodeIdStr, engine);
+    }
+
+    private StreamingConfig streamingConfigOf(NodeId nodeId) {
+        return Option.option(nodeStreamingConfigs.get(nodeId.id())).or(streamingConfig::get);
     }
 
     private DeploymentEngine engineOf(NodeId nodeId) {
@@ -1703,7 +1717,7 @@ public final class EmberCluster {
 
         // membership-config override: raised split-timeout ONLY for the #491 pinned convergence variant
         // (via withRaisedSwimTimeouts); otherwise none — forge nodes use MembershipConfig defaults
-        streamingConfig.get(),
+        streamingConfigOf(nodeId),
                                           ClusterFormationConfig.defaults(),
 
         // #298 — in-process nodes never pass through Main, so no cluster
