@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-package org.pragmatica.testing;
 
 package org.pragmatica.testing;
 
