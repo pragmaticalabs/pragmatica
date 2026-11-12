@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream;
 import java.nio.charset.StandardCharsets;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Result;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.stream.OffHeapRingBuffer.offHeapRingBuffer;
@@ -48,9 +49,10 @@ class OffHeapRingBufferCutNeverRaisesVisibleTest {
         }
     }
 
+    /// Ordered appends take offsets but expose nothing: visible stays where the test puts it.
     private static void appendUnexposed(OffHeapRingBuffer ring, int count) {
         for (var i = 0; i < count; i++) {
-            var offset = ring.append("e%d".formatted(i).getBytes(StandardCharsets.UTF_8), i).unwrap();
+            var offset = ring.appendOrdered("e%d".formatted(i).getBytes(StandardCharsets.UTF_8), i, Result::success).unwrap();
 
             ring.markDurable(offset);
         }
