@@ -286,11 +286,11 @@ final class EquivalenceOracle {
 
         liveCores.forEach(node -> admissions.put(node, Admission.UNKNOWN));
 
-        return ClusterInput.Snapshot.snapshot(entries, seams(liveCores), admissions, Option.some(leader));
+        return ClusterInput.Snapshot.snapshot(entries, seams(liveCores), admissions, Option.some(leader), ClusterInput.DeadSet.NONE);
     }
 
     private static Seams seams(Set<NodeId> liveCores) {
-        return Seams.seams(liveCores, liveCores, Set.of(), Option.some(liveCores), Option.some(liveCores), Set.of(), Map.of(), Map.of());
+        return Seams.seams(liveCores, liveCores, Set.of(), Option.some(liveCores), Option.some(liveCores), Set.of(), Map.of(), Map.of(), liveCores);
     }
 
     /// The production settings shape (Fsm2System.clusterSettings) with the default timeouts: ALL_OR_NOTHING, default SWIM, no suspicion lag.
