@@ -1194,6 +1194,13 @@ public enum OperatorWarningCode {
                                   WarningLevel.INFO,
                                   STREAM_DATA_ABANDONED,
                                   true),
+    /// R-4.1.7 (#970): a blueprint apply received no slice report for the whole `[timeouts.deployment] apply_deadline` (less the time its schema
+    /// gate paused the clock) and was closed by the deadline: ROLLED_BACK under ALL_OR_NOTHING, FAILED under BEST_EFFORT, cause
+    /// `apply-deadline-exceeded`. Subject is the blueprint. Closed by [#APPLY_DEADLINE_CLEARED]. Operator action: republish or delete the blueprint.
+    APPLY_DEADLINE_EXCEEDED("apply-deadline-exceeded", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#APPLY_DEADLINE_EXCEEDED], same subject: the blueprint's outcome was replaced (a republish) or removed.
+    /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`).
+    APPLY_DEADLINE_CLEARED("apply-deadline-cleared", "deployment", WarningLevel.INFO, APPLY_DEADLINE_EXCEEDED, true),
     /// The recovery of [#DHT_DEPARTURE_SOLE_COPY_AT_RISK], same subject (#2034): every sole-copy key was acknowledged by a target in its
     /// post-departure responsible set before the node halted. INFO, published by the draining node itself, only after its published
     /// at-risk event (#752 mechanism).

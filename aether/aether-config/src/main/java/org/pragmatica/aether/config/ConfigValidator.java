@@ -93,6 +93,7 @@ public final class ConfigValidator {
                                errors);
         storageMaintenanceErrors(config.timeouts().storageMaintenance(),
                                  errors);
+        applyDeadlineErrors(config.timeouts().deployment(), errors);
         streamingErrors(config.streaming(), errors);
         promotionEscapeErrors(config.streaming(),
                               config.timeouts().swim().suspectTimeout(),
@@ -170,6 +171,16 @@ public final class ConfigValidator {
                        + "timeouts.cluster.community_absence (%s): a community has to stop serving before the core "
                        + "re-places its slices, or both run at once").formatted(cluster.coreAbsence(),
                                                                                 cluster.communityAbsence()));
+        }
+    }
+
+    /// #970 (R-4.1.7): a non-positive apply deadline would abandon every apply at once (or, read as unusable, never end one), and a negative
+    /// schema pause cap has no meaning; zero is the cap that disables the pause. Each is reported rather than floored.
+    private static void applyDeadlineErrors(TimeoutsConfig.DeploymentTimeouts deployment, List<String> errors) {
+        positiveTimeSpanError(deployment.applyDeadline(), "timeouts.deployment.apply_deadline", errors);
+        if (deployment.applySchemaPauseMax().millis() < 0) {
+            errors.add("timeouts.deployment.apply_schema_pause_max must not be negative. Got: "
+                      + deployment.applySchemaPauseMax().millis() + "ms");
         }
     }
 

@@ -93,7 +93,7 @@ public sealed interface Outcomes {
                                                      ctx,
                                                      entry.getKey()));
 
-        return supersededMarks(rollbackMarked(m, ctx));
+        return supersededMarks(Deadlines.sweep(rollbackMarked(m, ctx), ctx));
     }
 
     /// CF-8 (G2 P2 `newLeader_rollbackIntent_rollbackCompleted`): under ALL_OR_NOTHING the decision to roll back is the durable permanent-failure
@@ -127,7 +127,7 @@ public sealed interface Outcomes {
     /// Rolls back the apply `attempt` of `id` once per declared artifact whose mark judged that attempt.
     private static ClusterModel rollbackJudged(ClusterModel m, Ctx ctx, BlueprintId id, String attempt) {
         markedArtifacts(m, id, attempt).filter(artifact -> !m.routings.containsKey(artifact.base()))
-                       .forEach(artifact -> rollback(m, ctx, id, artifact, MARKED_CAUSE));
+                       .forEach(artifact -> rollback(m, ctx, id, List.of(artifact.asString()), MARKED_CAUSE));
 
         return m;
     }
@@ -266,7 +266,7 @@ public sealed interface Outcomes {
         return m;
     }
 
-    private static boolean succeededInFlight(ClusterModel m, BlueprintId id) {
+    static boolean succeededInFlight(ClusterModel m, BlueprintId id) {
         return inFlight(m, SubmitKind.SUCCEEDED, new DeploymentOutcomeKey(id));
     }
 
@@ -311,12 +311,12 @@ public sealed interface Outcomes {
             return m;
         }
 
-        openApplies(m, artifact).forEach(id -> rollback(m, ctx, id, artifact, cause));
+        openApplies(m, artifact).forEach(id -> rollback(m, ctx, id, List.of(artifact.asString()), cause));
 
         return m;
     }
 
-    private static ClusterModel rollback(ClusterModel m, Ctx ctx, BlueprintId id, Artifact failed, String cause) {
+    private static ClusterModel rollback(ClusterModel m, Ctx ctx, BlueprintId id, List<String> failing, String cause) {
         if (rollbackInFlight(m, id)) {
             return m;
         }
@@ -330,7 +330,7 @@ public sealed interface Outcomes {
 
         var committed = m.outcomes.get(id);
         var attempt = apply.map(DeploymentApplyValue::attemptId).or("");
-        var outcome = DeploymentOutcomeValue.rolledBack(List.of(failed.asString()),
+        var outcome = DeploymentOutcomeValue.rolledBack(failing,
                                                         cause,
                                                         ctx.nowMs(),
                                                         successorVersion(committed),
@@ -443,6 +443,42 @@ public sealed interface Outcomes {
                                                                                          .equals(key)) || m.outbox.stream()
                                                                                                                   .anyMatch(draft -> draft.kind() == SubmitKind.ROLLBACK && draft.key()
                                                                                                                                                                                  .equals(key));
+    }
+
+    // -- the apply deadline (R-4.1.7, #970) ------------------------------------------------------------------------
+    /// ALL_OR_NOTHING: the apply that never resolved is rolled back like a retry exhaustion (#922), with the cause `apply-deadline-exceeded`
+    /// and the slices that are not ACTIVE as the failing ones.
+    static ClusterModel rollbackOnDeadline(ClusterModel m, Ctx ctx, BlueprintId id, List<String> failing) {
+        return rollback(m, ctx, id, failing, Deadlines.EXCEEDED);
+    }
+
+    /// BEST_EFFORT: the apply that never resolved is closed FAILED with the slices that are not ACTIVE, in one transaction with the apply
+    /// record's removal; nothing is rolled back. The outcome of an open apply is IN_PROGRESS or absent, so no earlier failure needs merging.
+    static ClusterModel failOnDeadline(ClusterModel m, Ctx ctx, BlueprintId id, List<String> failing) {
+        var apply = m.applies.get(id);
+        var outcomeKey = new DeploymentOutcomeKey(id);
+
+        if (apply.isEmpty() || inFlight(m, SubmitKind.OUTCOME, outcomeKey)) {
+            return m;
+        }
+
+        var committed = m.outcomes.get(id);
+        var outcome = DeploymentOutcomeValue.failed(failing,
+                                                    Deadlines.EXCEEDED,
+                                                    ctx.nowMs(),
+                                                    successorVersion(committed),
+                                                    apply.map(DeploymentApplyValue::attemptId).or(""));
+        var mutations = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
+
+        mutations.add(new KVCommand.Mutation<>(outcomeKey,
+                                               committed.map(v -> (AetherValue) v),
+                                               Option.some((AetherValue) outcome)));
+        apply.onPresent(value -> mutations.add(new KVCommand.Mutation<>(new DeploymentApplyKey(id),
+                                                                        Option.some((AetherValue) value),
+                                                                        Option.none())));
+        Outbox.direct(m, TxDraft.draft(SubmitKind.OUTCOME, outcomeKey, mutations));
+
+        return m;
     }
 
     // -- BEST_EFFORT (B-056) ----------------------------------------------------------------------------------------
