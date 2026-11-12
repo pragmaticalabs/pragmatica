@@ -50,43 +50,45 @@ public final class ContainerLabelInspector {
     /// detection can't proceed (not in a container, socket not mounted, I/O failure).
     /// Logs at DEBUG on skip; INFO on success with the resolved (cluster, node-id) pair.
     public static Option<Map<String, String>> inspectSelfLabels() {
-        return detectContainer().flatMap(_ -> resolveContainerId())
-                              .flatMap(ContainerLabelInspector::queryDocker)
-                              .flatMap(ContainerLabelInspector::extractLabels);
+        return inspectSelfLabels(Path.of(DOCKERENV_MARKER), Path.of(DOCKER_SOCKET), Option.option(System.getenv("HOSTNAME")));
     }
 
-    private static Option<Boolean> detectContainer() {
-        if (Files.exists(Path.of(DOCKERENV_MARKER))) {
+    /// Test seam: marker path, Docker socket path and the HOSTNAME value are supplied by the caller,
+    /// so the outcome does not depend on the host's filesystem or environment.
+    static Option<Map<String, String>> inspectSelfLabels(Path markerPath, Path socketPath, Option<String> hostname) {
+        return detectContainer(markerPath).flatMap(_ -> resolveContainerId(hostname))
+                                          .flatMap(id -> queryDocker(socketPath, id))
+                                          .flatMap(ContainerLabelInspector::extractLabels);
+    }
+
+    private static Option<Boolean> detectContainer(Path markerPath) {
+        if (Files.exists(markerPath)) {
             return Option.some(true);
         }
 
         log.debug("ContainerLabelInspector: no {} marker — not running in Docker, skipping label inspection",
-                  DOCKERENV_MARKER);
+                  markerPath);
 
         return Option.empty();
     }
 
-    private static Option<String> resolveContainerId() {
+    private static Option<String> resolveContainerId(Option<String> hostname) {
         // HOSTNAME defaults to the truncated container id under Docker; integration
         // fixtures override it with a friendly name (e.g. `aether-a-node-1`) which is
         // also accepted as a name parameter by the Docker /containers/{id}/json endpoint.
-        var hostname = System.getenv("HOSTNAME");
+        var id = hostname.filter(name -> !name.isBlank());
 
-        if (hostname == null || hostname.isBlank()) {
+        if (id.isEmpty()) {
             log.debug("ContainerLabelInspector: HOSTNAME env not set, skipping label inspection");
-
-            return Option.empty();
         }
 
-        return Option.some(hostname);
+        return id;
     }
 
-    private static Option<String> queryDocker(String containerId) {
-        var socketPath = Path.of(DOCKER_SOCKET);
-
+    private static Option<String> queryDocker(Path socketPath, String containerId) {
         if (!Files.exists(socketPath)) {
             log.debug("ContainerLabelInspector: {} not present (not mounted into this container) — skipping consistency check",
-                      DOCKER_SOCKET);
+                      socketPath);
 
             return Option.empty();
         }
