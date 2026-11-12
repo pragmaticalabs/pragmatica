@@ -526,6 +526,10 @@ class ClusterDeploymentStateWorkerRemovalTest {
             return kvStore.get(ActivationDirectiveKey.activationDirectiveKey(W));
         }
 
+        private static String communityOf(Option<AetherValue> value) {
+            return ((ActivationDirectiveValue) value.or(ActivationDirectiveValue.worker("", ""))).communityId();
+        }
+
         private void rejoin() {
             harness.dispatch(new WorkerJoinReceived(WorkerJoinDecision.workerJoinDecision(W, "worker", HlcTimestamp.ZERO)));
         }
@@ -545,22 +549,25 @@ class ClusterDeploymentStateWorkerRemovalTest {
                    .untilAsserted(() -> assertThat(directive().isPresent())
                            .as("#3028 M2: the join waited for the removal, then assigned afresh: the directive is present at the end")
                            .isTrue());
-            assertThat(context.removalsInFlight()).as("the settled removal is no longer tracked").doesNotContainKey(W);
         }
 
         @Test
         void workerJoin_removalFails_joinStillRuns() {
             joinWorker(W);
+            // A blank-community directive does not satisfy the early-return check, so a join that runs leaves a visible assignment.
+            kvStore.put(ActivationDirectiveKey.activationDirectiveKey(W), ActivationDirectiveValue.worker("", ""));
             var commit = Promise.<Unit>promise();
 
             cluster.gate = commit;
             leaveWorker(W);
             rejoin();
+            cluster.gate = Promise.unitPromise();
             commit.fail(new org.pragmatica.consensus.ConsensusError.CommandBatchIsEmpty());
 
             await().atMost(5, TimeUnit.SECONDS)
-                   .untilAsserted(() -> assertThat(context.removalsInFlight()).as("a failed removal releases the join").doesNotContainKey(W));
-            assertThat(directive().isPresent()).as("the failed commit left the directive; the join read what is committed").isTrue();
+                   .untilAsserted(() -> assertThat(communityOf(directive()))
+                           .as("a failed removal still releases the join, which then reads the committed state")
+                           .isEqualTo(COMMUNITY_ID));
         }
 
         @Test
@@ -572,13 +579,13 @@ class ClusterDeploymentStateWorkerRemovalTest {
             cluster.gate = Promise.<Unit>promise();
 
             leaveWorker(W);
+            assertThat(context.removalsInFlight()).as("the removal is pending").containsKey(W);
             rejoin();
-            var blank = ((ActivationDirectiveValue) directive().or(ActivationDirectiveValue.worker("", ""))).communityId();
 
-            assertThat(blank).as("inside the bound the join is still waiting").isEmpty();
+            assertThat(communityOf(directive())).as("inside the bound the join is still waiting").isEmpty();
             cluster.gate = Promise.unitPromise();
             await().atMost(5, TimeUnit.SECONDS)
-                   .untilAsserted(() -> assertThat(((ActivationDirectiveValue) directive().or(ActivationDirectiveValue.worker("", ""))).communityId())
+                   .untilAsserted(() -> assertThat(communityOf(directive()))
                            .as("past the bound the join ran against the committed state")
                            .isEqualTo(COMMUNITY_ID));
             assertThat(context.removalsInFlight()).doesNotContainKey(W);

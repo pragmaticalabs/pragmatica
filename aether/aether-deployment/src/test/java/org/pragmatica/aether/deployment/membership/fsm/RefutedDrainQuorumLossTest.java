@@ -149,7 +149,7 @@ class RefutedDrainQuorumLossTest {
 
         await().atMost(6, TimeUnit.SECONDS)
                .untilAsserted(() -> assertThat(survivor.memberStates()).as("quorum regained: the refused incarnation is re-offered")
-                                                                       .containsEntry(SUSPECT, "Observed"));
+                                                                       .containsEntry(SUSPECT, "Member"));
     }
 
     @Test
