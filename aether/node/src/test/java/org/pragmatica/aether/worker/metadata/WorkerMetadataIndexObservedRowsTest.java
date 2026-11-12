@@ -9,6 +9,9 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
@@ -62,6 +65,37 @@ class WorkerMetadataIndexObservedRowsTest {
         assertThat(index.endpointPeersForWorker(WORKER)).isEmpty();
 
         index.put(SliceObservedKey.sliceObservedKey(CORE, ORDERS), observed(SliceObservedState.ACTIVE));
+
+        assertThat(index.endpointPeersForWorker(WORKER)).containsExactly(CORE);
+    }
+
+    /// The pair keys are indexed under BOTH their node scope and their artifact scope (a worker reads its own node scope; the peers come from the artifact scope).
+    @Test
+    void pairKeys_areIndexedUnderTheirNodeAndTheirArtifactScope() {
+        var index = WorkerMetadataIndex.workerMetadataIndex();
+        var desired = new SliceDesiredKey(WORKER, ORDERS);
+        var observed = SliceObservedKey.sliceObservedKey(CORE, ORDERS);
+
+        index.put(desired, new SliceDesiredValue(SliceGoal.ACTIVE, new Generation(1L, 1L), 1L));
+        index.put(observed, observed(SliceObservedState.ACTIVE));
+
+        assertThat(index.snapshot("node:worker")).as("desired, node scope").containsKey(desired);
+        assertThat(index.snapshot("artifact:" + ORDERS.base().asString())).as("desired, artifact scope").containsKey(desired);
+        assertThat(index.snapshot("node:core")).as("observed, node scope").containsKey(observed);
+        assertThat(index.snapshot("artifact:" + ORDERS.base().asString())).as("observed, artifact scope").containsKey(observed);
+    }
+
+    /// A LEGACY endpoint peer is a node whose `NodeArtifactKey` row is ACTIVE; a row in another state is not.
+    @Test
+    void legacyRow_isAnEndpointPeerOnlyWhenActive() {
+        var index = WorkerMetadataIndex.workerMetadataIndex();
+
+        index.put(new SliceDesiredKey(WORKER, ORDERS), new SliceDesiredValue(SliceGoal.ACTIVE, new Generation(1L, 1L), 1L));
+        index.put(NodeArtifactKey.nodeArtifactKey(CORE, ORDERS), NodeArtifactValue.nodeArtifactValue(SliceState.LOADING));
+
+        assertThat(index.endpointPeersForWorker(WORKER)).isEmpty();
+
+        index.put(NodeArtifactKey.nodeArtifactKey(CORE, ORDERS), NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
 
         assertThat(index.endpointPeersForWorker(WORKER)).containsExactly(CORE);
     }
