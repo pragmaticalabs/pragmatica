@@ -328,7 +328,8 @@ public sealed interface StreamAssembly {
     /// apply thread is applying under the store monitor. Absence (inside a reset-to-restore window) reads as "no record", which the
     /// lease checks treat as "not mine" and fail closed.
     static OwnerActivation.OwnershipRecordSource committedOwnershipRecords(KVStore<AetherKey, AetherValue> kvStore) {
-        return (stream, partition) -> kvStore.peekTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream, partition),
+        return (stream, partition) -> kvStore.peekTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
+                                                                                                                partition),
                                                         StreamPartitionOwnershipValue.class);
     }
 
