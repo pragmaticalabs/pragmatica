@@ -15,7 +15,7 @@ import org.pragmatica.aether.resource.db.PgSqlConnector;
 import org.pragmatica.aether.resource.db.async.PgSqlConnectorFactory;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
-import org.testcontainers.DockerClientFactory;
+import org.pragmatica.testing.DockerRequirement;
 import org.testcontainers.containers.PostgreSQLContainer;
 
 import java.lang.reflect.Method;
@@ -139,7 +139,7 @@ class JsonbPostgresRoundTripTest {
 
     @BeforeAll
     static void startPostgres() throws Exception {
-        assumeTrue(DockerClientFactory.instance().isDockerAvailable(), "Docker is required for the live-PostgreSQL round trip");
+        assumeTrue(DockerRequirement.dockerAvailable(), "Docker is required for the live-PostgreSQL round trip");
         scenario = compileScenario();
         postgres = new PostgreSQLContainer<>("postgres:16");
         postgres.start();

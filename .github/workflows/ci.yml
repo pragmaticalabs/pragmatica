@@ -199,7 +199,8 @@ jobs:
         timeout-minutes: 15
 
       # Ember's and Consensus's tests run in their shard jobs; postgres-async's integration tests are off by default and on here.
-      # aether.requireDocker: a live-database test that finds no Docker daemon FAILS here instead of self-skipping (#2591).
+      # aether.requireDocker: a live-database test that finds no Docker daemon FAILS here instead of self-skipping (#2591, #3089).
+      # Every Docker guard goes through org.pragmatica.testing.DockerRequirement; ubuntu-latest runners carry a Docker daemon.
       - name: Test this group's modules
         run: >
           mvn verify -B -pl "${{ steps.plan.outputs.modules }}"
