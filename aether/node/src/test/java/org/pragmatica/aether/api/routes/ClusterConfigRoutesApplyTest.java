@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.BiConsumer;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Nested;
@@ -19,6 +20,8 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.api.ManagementApiResponses.ApplyConfigRequest;
 import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.api.ManagementApiResponses.ApplyConfigResponse;
+import org.pragmatica.aether.api.ManagementApiResponses.ScaleRequest;
+import org.pragmatica.aether.api.ManagementApiResponses.UpgradeRequest;
 import org.pragmatica.aether.config.cluster.ApplyRoute;
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
 import org.pragmatica.aether.config.cluster.DiffAction;
@@ -31,6 +34,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.deployment.cluster.ClusterReplication;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AutoHealStateValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopologyEntry;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -43,6 +47,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -730,6 +735,7 @@ class ClusterConfigRoutesApplyTest {
                                                          Map.entry(new ClusterConfigError.ParseFailed("explicit communities / retirement guard"), "ParseFailed"),
                                                          Map.entry(new ClusterConfigError.UnfencedOverwrite(5), "UnfencedOverwrite"),
                                                          Map.entry(new ClusterConfigError.VersionConflict(5, 6), "VersionConflict"),
+                                                         Map.entry(new ClusterConfigError.AutoHealChanged(ClusterConfigError.AutoHealSetting.ABSENT, ClusterConfigError.AutoHealSetting.DISABLED), "AutoHealChanged"),
                                                          Map.entry(new ClusterConfigError.RouteMismatch(ApplyRoute.LEADER, ApplyRoute.APPLY, scale), "RouteMismatch"),
                                                          Map.entry(new ClusterConfigError.SourceReplaceRefused("hetzner", "region"), "SourceReplaceRefused"),
                                                          Map.entry(new ClusterConfigError.LivePoolRemovalRefused("hetzner", "worker", 2), "LivePoolRemovalRefused"),
@@ -815,6 +821,157 @@ class ClusterConfigRoutesApplyTest {
 
         private static void assertUnchanged(TestKVStore store) {
             assertThat(committedConfig(store).configVersion()).as("a refused apply commits nothing").isEqualTo(STORED_VERSION);
+        }
+    }
+
+    /// #686 A2 (M7, S8, S1, S9): the write is fenced on the exact values the request was checked against. Each test drives the
+    /// forced order through [ClusterConfigRoutes.ApplyCommitHook]: a competing write lands after the checks and before the
+    /// submit, and every test asserts the hook ran, so a pass is known to have exercised the race.
+    @Nested
+    class WriteTimeFence {
+        private static final long STORED_VERSION = 5;
+        private static final AutoHealStateValue AUTO_HEAL_DISABLED = AutoHealStateValue.autoHealStateValue(false, "operator", 1L);
+        private static final AutoHealStateValue AUTO_HEAL_ENABLED = AutoHealStateValue.autoHealStateValue(true, "operator", 2L);
+
+        @Test
+        void autoHealFlipBetweenCheckAndWrite_transactionFails() {
+            var store = storeWith(configAt(STORED_VERSION));
+            var ran = new AtomicBoolean();
+
+            store.seed(AetherKey.AutoHealStateKey.SINGLETON, AUTO_HEAL_DISABLED);
+
+            var cause = refusal(routedApply(store, hook(ran, () -> store.seed(AetherKey.AutoHealStateKey.SINGLETON, AUTO_HEAL_ENABLED))),
+                                ClusterConfigError.AutoHealChanged.class);
+
+            assertThat(ran).as("instrument: the competing flip must have been injected").isTrue();
+            assertThat(cause.observed()).isEqualTo(ClusterConfigError.AutoHealSetting.DISABLED);
+            assertThat(cause.now()).isEqualTo(ClusterConfigError.AutoHealSetting.ENABLED);
+            assertThat(committedConfig(store).configVersion()).as("the refused apply commits nothing").isEqualTo(STORED_VERSION);
+        }
+
+        @Test
+        void storedChangedBetweenCheckAndWrite_refused() {
+            var store = storeWith(configAt(STORED_VERSION));
+            var ran = new AtomicBoolean();
+
+            var cause = refusal(routedApply(store, hook(ran, () -> store.seed(ClusterConfigKey.CURRENT, configAt(STORED_VERSION + 1)))),
+                                ClusterConfigError.VersionConflict.class);
+
+            assertThat(ran).as("instrument: the competing config write must have been injected").isTrue();
+            assertThat(cause.expected()).isEqualTo(STORED_VERSION);
+            assertThat(cause.actual()).isEqualTo(STORED_VERSION + 1);
+            assertThat(committedConfig(store).configVersion()).as("the competing write survives").isEqualTo(STORED_VERSION + 1);
+        }
+
+        @Test
+        void autoHealKeyAbsent_witnessedAsNone_flipRefuses() {
+            var store = storeWith(configAt(STORED_VERSION));
+            var ran = new AtomicBoolean();
+
+            var cause = refusal(routedApply(store, hook(ran, () -> store.seed(AetherKey.AutoHealStateKey.SINGLETON, AUTO_HEAL_ENABLED))),
+                                ClusterConfigError.AutoHealChanged.class);
+
+            assertThat(ran).as("instrument: the first write of the key must have been injected").isTrue();
+            assertThat(cause.observed()).as("an absent key is witnessed as none, not skipped").isEqualTo(ClusterConfigError.AutoHealSetting.ABSENT);
+            assertThat(cause.now()).isEqualTo(ClusterConfigError.AutoHealSetting.ENABLED);
+        }
+
+        @Test
+        void refusedTransaction_reportsAutoHealChanged() {
+            var store = storeWith(configAt(STORED_VERSION));
+            var ran = new AtomicBoolean();
+
+            store.seed(AetherKey.AutoHealStateKey.SINGLETON, AUTO_HEAL_DISABLED);
+
+            var cause = refusal(routedApply(store, hook(ran, () -> store.seed(AetherKey.AutoHealStateKey.SINGLETON, AUTO_HEAL_ENABLED))),
+                                ClusterConfigError.class);
+
+            assertThat(ran).isTrue();
+            assertThat(cause.code()).as("a flip is not reported as a version conflict").isEqualTo("AutoHealChanged");
+            assertThat(cause.httpStatus()).isEqualTo(HttpStatus.CONFLICT);
+        }
+
+        @Test
+        void routedApply_withNoCompetingWrite_lands() {
+            var store = storeWith(configAt(STORED_VERSION));
+            var ran = new AtomicBoolean();
+
+            store.seed(AetherKey.AutoHealStateKey.SINGLETON, AUTO_HEAL_DISABLED);
+
+            var result = routedApply(store, hook(ran, () -> {}));
+
+            assertThat(ran).isTrue();
+            assertThat(result.isSuccess()).as("control: without the competing write the same request lands: %s", result).isTrue();
+            assertThat(committedConfig(store).configVersion()).isEqualTo(STORED_VERSION + 1);
+        }
+
+        @Test
+        void scale_storedChangedBetweenCheckAndWrite_refused() {
+            var store = storeWith(configAt(STORED_VERSION));
+            var ran = new AtomicBoolean();
+
+            var result = ClusterConfigRoutes.clusterConfigRoutes(() -> nodeWith(store),
+                                                                 ClusterConfigApplier.NoTopologyManager.INSTANCE,
+                                                                 hook(ran, () -> store.seed(ClusterConfigKey.CURRENT, configAt(STORED_VERSION + 1))))
+                                            .handleScale(new ScaleRequest("hetzner", "worker", 4, STORED_VERSION))
+                                            .await();
+
+            assertThat(ran).as("instrument: the competing write must have been injected").isTrue();
+            assertThat(refusal(result, ClusterConfigError.VersionConflict.class).actual()).isEqualTo(STORED_VERSION + 1);
+            assertThat(committedConfig(store).configVersion()).isEqualTo(STORED_VERSION + 1);
+        }
+
+        @Test
+        void upgrade_storedChangedBetweenCheckAndWrite_refused() {
+            var store = storeWith(bootstrapSeed());
+            var ran = new AtomicBoolean();
+
+            var result = ClusterConfigRoutes.clusterConfigRoutes(() -> nodeWith(store),
+                                                                 ClusterConfigApplier.NoTopologyManager.INSTANCE,
+                                                                 hook(ran, () -> store.seed(ClusterConfigKey.CURRENT, bootstrapSeedAt(2L))))
+                                            .handleUpgrade(new UpgradeRequest("1.1.0", 1L))
+                                            .await();
+
+            assertThat(ran).as("instrument: the competing write must have been injected").isTrue();
+            assertThat(refusal(result, ClusterConfigError.VersionConflict.class).actual()).isEqualTo(2L);
+            assertThat(committedConfig(store).version()).as("the refused upgrade must not land").isEqualTo("1.0.0");
+        }
+
+        private static ClusterConfigRoutes.ApplyCommitHook hook(AtomicBoolean ran, Runnable competingWrite) {
+            return () -> {
+                ran.set(true);
+                competingWrite.run();
+
+                return Promise.success(Unit.unit());
+            };
+        }
+
+        /// A core AddRole on a second source with auto-heal off: the APPLY route, which witnesses the auto-heal value.
+        private static Result<Object> routedApply(TestKVStore store, ClusterConfigRoutes.ApplyCommitHook hook) {
+            var applier = ClusterConfigApplier.clusterConfigApplier(topologyManager(AUTO_HEAL_OFF, NO_EXPLICIT_COMMUNITIES));
+            var desired = OPERATOR_TOML + RouteCheck.EDGE_SOURCE + RouteCheck.EDGE_CORE;
+
+            return ClusterConfigRoutes.clusterConfigRoutes(() -> nodeWith(store), applier, hook)
+                                      .handleApplyConfig(new ApplyConfigRequest(desired, STORED_VERSION, Option.some(ApplyRoute.APPLY)))
+                                      .await();
+        }
+
+        private static ClusterConfigValue configAt(long configVersion) {
+            return committedOperatorConfig(configVersion);
+        }
+
+        private static ClusterConfigValue bootstrapSeedAt(long configVersion) {
+            return ClusterConfigValue.bootstrapSeed("prod", "1.0.0", List.of(new TopologyEntry("", TopologyEntry.CORE_ROLE, 3)), 3, 3, "bootstrap-seed", configVersion);
+        }
+
+        private static <C extends Cause> C refusal(Result<?> result, Class<C> type) {
+            assertThat(result.isFailure()).as("expected a %s refusal, got %s", type.getSimpleName(), result).isTrue();
+
+            var cause = result.fold(failure -> failure, value -> fail("unreachable: " + value));
+
+            assertThat(cause).isInstanceOf(type);
+
+            return type.cast(cause);
         }
     }
 
@@ -904,6 +1061,7 @@ class ClusterConfigRoutesApplyTest {
             case "isLeader" -> true;
             case "self" -> new org.pragmatica.consensus.NodeId("core");
             case "apply" -> applyBatch(store, args);
+            case "upgradeRunService" -> org.pragmatica.aether.deployment.cluster.UpgradeRunService.unavailable();
             default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
         };
     }
@@ -921,11 +1079,16 @@ class ClusterConfigRoutesApplyTest {
             var key = (AetherKey) mutation.key();
             var value = (AetherValue) mutation.replacement().unwrap();
             boolean accepted = store.raceWinner.isEmpty() && store.get(key).equals(mutation.expected())
-                && store.isSuccessor(key, value);
+                && store.isSuccessor(key, value) && guardsHold(store, transaction);
             if (accepted || store.raceWinner.isPresent()) { store.applyPut(key, value); }
             return new KVCommand.TransactionResult(transaction.transactionId(), accepted);
         }
         return new KVCommand.TransactionResult("unexpected", false);
+    }
+
+    /// The read set of a leader transaction as the real applier judges it: every witnessed key still holds exactly the value read.
+    private static boolean guardsHold(TestKVStore store, KVCommand.LeaderTransaction<?, ?> transaction) {
+        return transaction.guards().stream().allMatch(guard -> store.get((AetherKey) guard.key()).equals(guard.expected()));
     }
 
     private static final class TestKVStore extends KVStore<AetherKey, AetherValue> {

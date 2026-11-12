@@ -31,6 +31,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.ScaleRequest;
 import org.pragmatica.aether.api.ManagementApiResponses.TopologyEntryInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.UpgradeRequest;
 import org.pragmatica.aether.api.ManagementApiResponses.UpgradeResponse;
+import org.pragmatica.aether.config.cluster.ApplyRoute;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigDiff;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
@@ -56,6 +57,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AutoHealStateValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopologyEntry;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -83,19 +85,30 @@ public final class ClusterConfigRoutes implements RouteSource {
 
     private final Supplier<ManageableNode> nodeSupplier;
     private final ClusterConfigApplier applier;
+    private final ApplyCommitHook commitHook;
 
-    private ClusterConfigRoutes(Supplier<ManageableNode> nodeSupplier, ClusterConfigApplier applier) {
+    private ClusterConfigRoutes(Supplier<ManageableNode> nodeSupplier,
+                                ClusterConfigApplier applier,
+                                ApplyCommitHook commitHook) {
         this.nodeSupplier = nodeSupplier;
         this.applier = applier;
+        this.commitHook = commitHook;
     }
 
     public static ClusterConfigRoutes clusterConfigRoutes(Supplier<ManageableNode> nodeSupplier,
                                                           ClusterConfigApplier applier) {
-        return new ClusterConfigRoutes(nodeSupplier, applier);
+        return new ClusterConfigRoutes(nodeSupplier, applier, ApplyCommitHook.NONE);
     }
 
     public static ClusterConfigRoutes clusterConfigRoutes(Supplier<ManageableNode> nodeSupplier) {
-        return new ClusterConfigRoutes(nodeSupplier, ClusterConfigApplier.NoTopologyManager.INSTANCE);
+        return new ClusterConfigRoutes(nodeSupplier, ClusterConfigApplier.NoTopologyManager.INSTANCE, ApplyCommitHook.NONE);
+    }
+
+    /// The test seam (S9): the same routes with a hook that runs between the checks and the fenced write.
+    static ClusterConfigRoutes clusterConfigRoutes(Supplier<ManageableNode> nodeSupplier,
+                                                   ClusterConfigApplier applier,
+                                                   ApplyCommitHook commitHook) {
+        return new ClusterConfigRoutes(nodeSupplier, applier, commitHook);
     }
 
     @Override
@@ -463,7 +476,7 @@ public final class ClusterConfigRoutes implements RouteSource {
     /// timestamp for a write that never landed. Sharing the one write path means a rejection can
     /// only surface as a failure, and there is no second place for the trap to reappear.
     private Promise<Object> storeInitialConfig(ClusterBootstrapConfig desired, String tomlContent) {
-        return storeUpdatedConfig(desired, tomlContent, INITIAL_CONFIG_VERSION);
+        return storeUpdatedConfig(desired, tomlContent, INITIAL_CONFIG_VERSION, WriteFence.writeFence(Option.none()));
     }
 
     /// The BootstrapModule self-seed is REPLACED, never diffed.
@@ -493,7 +506,8 @@ public final class ClusterConfigRoutes implements RouteSource {
         return stored.tomlContent()
                      .fold(() -> storeUpdatedConfig(desired,
                                                     request.tomlContent(),
-                                                    stored.configVersion() + 1),
+                                                    stored.configVersion() + 1,
+                                                    WriteFence.writeFence(Option.some(stored))),
                            toml -> checkVersionAsync(stored.configVersion(),
                                                      request.expectedVersion()).flatMap(_ -> ClusterBootstrapConfigParser.parse(toml).async())
                                                     .flatMap(storedConfig -> executeDiff(stored,
@@ -554,12 +568,23 @@ public final class ClusterConfigRoutes implements RouteSource {
                                 ? plan.allActions().stream().filter(action -> !workerCountChange(action)).toList()
                                 : plan.allActions();
         // #686: with a route, check 2 decides the route of every pool-changing action; without one, the pre-#686 rule.
+        // The write is fenced on `stored`, and on the auto-heal value read here, before check 2 reads it for its own decision.
+        var fence = writeFence(stored, request.route());
+
         return request.route()
                       .fold(() -> applier.validate(validationActions),
                             route -> applier.validateRoute(route, validationActions, storedConfig, desired))
                       .flatMap(_ -> storeUpdatedConfig(desired,
                                                        request.tomlContent(),
-                                                       stored.configVersion() + 1));
+                                                       stored.configVersion() + 1,
+                                                       fence));
+    }
+
+    /// M7 / S8: a write is fenced on the config it was checked against; a routed one also on the auto-heal value, `none` included.
+    private WriteFence writeFence(ClusterConfigValue stored, Option<ApplyRoute> route) {
+        var base = WriteFence.writeFence(Option.some(stored));
+
+        return route.fold(() -> base, _ -> base.witnessing(AutoHealObservation.autoHealObservation(autoHealState())));
     }
 
     private static boolean workerCountChange(DiffAction action) {
@@ -662,7 +687,10 @@ public final class ClusterConfigRoutes implements RouteSource {
         return Promise.unitPromise().map(u -> (Object) u);
     }
 
-    private Promise<Object> storeUpdatedConfig(ClusterBootstrapConfig desired, String tomlContent, long newVersion) {
+    private Promise<Object> storeUpdatedConfig(ClusterBootstrapConfig desired,
+                                               String tomlContent,
+                                               long newVersion,
+                                               WriteFence fence) {
         var cluster = desired.cluster();
         var coreCount = desired.derivedCoreCount();
         var coreMin = desired.coreTopology().min().or(coreCount);
@@ -681,7 +709,7 @@ public final class ClusterConfigRoutes implements RouteSource {
                                                  newVersion,
                                                  System.currentTimeMillis());
 
-        return storeFencedConfig(configValue).map(fresh -> (Object) new ApplyConfigResponse(fresh.configVersion(),
+        return storeFencedConfig(fence, configValue).map(fresh -> (Object) new ApplyConfigResponse(fresh.configVersion(),
                                                                                             cluster.name().value(),
                                                                                             coreCount,
                                                                                             configValue.updatedAt()));
@@ -821,7 +849,7 @@ public final class ClusterConfigRoutes implements RouteSource {
         var previousCount = stored.desiredCountFor(source, role);
         var scaled = stored.withDesiredCount(source, role, count);
 
-        return storeFencedConfig(scaled).map(fresh -> new ScaleClusterResponse(true,
+        return storeFencedConfig(WriteFence.writeFence(Option.some(stored)), scaled).map(fresh -> new ScaleClusterResponse(true,
                                                                                source,
                                                                                role,
                                                                                previousCount,
@@ -959,15 +987,23 @@ public final class ClusterConfigRoutes implements RouteSource {
     /// transaction; correlate the result even when consensus merges this request with another batch.
     /// #1564 (B1): every config this route commits — apply, scale, version upgrade — is refused, typed, unless the
     /// `system:cluster-events` factors it implies resolve ([ClusterReplication#admissible]).
-    private Promise<ClusterConfigValue> storeFencedConfig(ClusterConfigValue intended) {
+    private Promise<ClusterConfigValue> storeFencedConfig(WriteFence fence, ClusterConfigValue intended) {
         return ClusterReplication.admissible(intended)
                                  .async()
-                                 .flatMap(this::commitFencedConfig);
+                                 .flatMap(this::afterCommitHook)
+                                 .flatMap(admitted -> commitFencedConfig(fence, admitted));
     }
 
-    private Promise<ClusterConfigValue> commitFencedConfig(ClusterConfigValue intended) {
+    /// S9: the test seam, run after the caller read what the write is fenced on and before the transaction is submitted.
+    private Promise<ClusterConfigValue> afterCommitHook(ClusterConfigValue admitted) {
+        return commitHook.beforeFencedWrite().map(_ -> admitted);
+    }
+
+    /// M7: the mutation's `expected` is the value the caller fenced on, never a re-read taken here. A re-read at this point
+    /// would adopt whatever a competing write committed between the caller's check and this submit, and the CAS would pass
+    /// against a value the request was never checked against.
+    private Promise<ClusterConfigValue> commitFencedConfig(WriteFence fence, ClusterConfigValue intended) {
         var node = nodeSupplier.get();
-        var expected = storedClusterConfig();
         var committedLeader = node.kvStore()
                                   .getTyped(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
                                             org.pragmatica.cluster.state.kvstore.LeaderValue.class);
@@ -980,37 +1016,135 @@ public final class ClusterConfigRoutes implements RouteSource {
         return committedLeader.filter(leader -> node.isLeader() && leader.leader()
                                                                          .equals(node.self()))
                               .fold(() -> new ManagementServerError.Conflict("Current core leader required for config update").<ClusterConfigValue> promise(),
-                                    leader -> {
-                                        var id = java.util.UUID.randomUUID()
-                                                               .toString();
-                                        var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
-                                                                                                      expected.map(value -> value),
-                                                                                                      Option.some(intended));
+                                    leader -> submitFenced(node, leader, fence, intended));
+    }
 
-                                        return retirementGuards(expected, intended).async()
-                                                               .flatMap(guards -> {
-                                                                            var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
-                                                                                                                                                  id,
-                                                                                                                                                  leader,
-                                                                                                                                                  guards,
-                                                                                                                                                  List.of(mutation));
+    private Promise<ClusterConfigValue> submitFenced(ManageableNode node,
+                                                     org.pragmatica.cluster.state.kvstore.LeaderValue leader,
+                                                     WriteFence fence,
+                                                     ClusterConfigValue intended) {
+        var id = java.util.UUID.randomUUID()
+                               .toString();
+        var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
+                                                                      fence.expected().map(value -> value),
+                                                                      Option.some(intended));
 
-                                                                            return node.<Object> apply(List.of(command))
-                                                                                       .flatMap(results -> {
-                                                                                                    var accepted = results.stream()
-                                                                                                                          .filter(KVCommand.TransactionResult.class::isInstance)
-                                                                                                                          .map(KVCommand.TransactionResult.class::cast)
-                                                                                                                          .anyMatch(result -> result.transactionId()
-                                                                                                                                                    .equals(id) && result.accepted());
+        return retirementGuards(fence.expected(), intended).map(guards -> withAutoHealWitness(guards, fence))
+                                                         .async()
+                                                         .flatMap(guards -> node.<Object> apply(List.of(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
+                                                                                                                                                              id,
+                                                                                                                                                              leader,
+                                                                                                                                                              guards,
+                                                                                                                                                              List.of(mutation)))))
+                                                         .flatMap(results -> settle(fence, intended, id, results));
+    }
 
-                                                                                                    return accepted
-                                                                                                           ? Promise.success(intended)
-                                                                                                           : new ClusterConfigError.VersionConflict(intended.configVersion(),
-                                                                                                                                                    storedClusterConfig().map(ClusterConfigValue::configVersion)
-                                                                                                                                                                       .or(0L)).promise();
-                                                                                                });
-                                                                        });
-                                    });
+    /// S8: the auto-heal value the route check decided on is part of the read set, `none` included, so the first write of
+    /// the key fails the transaction as surely as a flip does. Whole-value witness, as in `RollbackManager`.
+    private static List<KVCommand.ReadWitness<AetherKey>> withAutoHealWitness(List<KVCommand.ReadWitness<AetherKey>> guards,
+                                                                              WriteFence fence) {
+        return Stream.concat(guards.stream(),
+                             fence.autoHeal()
+                                  .map(AutoHealObservation::witness)
+                                  .stream())
+                     .toList();
+    }
+
+    private Promise<ClusterConfigValue> settle(WriteFence fence,
+                                               ClusterConfigValue intended,
+                                               String transactionId,
+                                               List<Object> results) {
+        var accepted = results.stream()
+                              .filter(KVCommand.TransactionResult.class::isInstance)
+                              .map(KVCommand.TransactionResult.class::cast)
+                              .anyMatch(result -> result.transactionId()
+                                                        .equals(transactionId) && result.accepted());
+
+        return accepted
+               ? Promise.success(intended)
+               : refusalAfter(fence, intended).promise();
+    }
+
+    /// S1: a refused transaction is told apart by re-reading what it was fenced on. The config moving, the auto-heal value
+    /// moving, or neither (a retirement guard changed), each one typed so a client does not treat every refusal as a version
+    /// conflict.
+    private Cause refusalAfter(WriteFence fence, ClusterConfigValue intended) {
+        var now = storedClusterConfig();
+
+        if (!now.equals(fence.expected())) {
+            return new ClusterConfigError.VersionConflict(fence.expected()
+                                                               .map(ClusterConfigValue::configVersion)
+                                                               .or(0L),
+                                                          now.map(ClusterConfigValue::configVersion)
+                                                             .or(0L));
+        }
+
+        var nowState = autoHealState();
+
+        return fence.autoHeal()
+                    .filter(observation -> !observation.state().equals(nowState))
+                    .map(observation -> autoHealChanged(observation, nowState))
+                    .or(() -> retirementRefusal(fence, intended));
+    }
+
+    private static Cause autoHealChanged(AutoHealObservation observed, Option<AutoHealStateValue> nowState) {
+        return new ClusterConfigError.AutoHealChanged(observed.setting(),
+                                                      AutoHealObservation.autoHealObservation(nowState).setting());
+    }
+
+    /// Neither value moved, so the community retirement guard did. Its own refusal, as before the typed split; when that
+    /// check passes again (the guard moved and moved back) the transaction lost an ABA and the honest answer is a conflict.
+    private Cause retirementRefusal(WriteFence fence, ClusterConfigValue intended) {
+        return retirementGuards(fence.expected(), intended).fold(cause -> cause,
+                                                                 _ -> new ClusterConfigError.VersionConflict(fence.expected()
+                                                                                                                  .map(ClusterConfigValue::configVersion)
+                                                                                                                  .or(0L),
+                                                                                                             intended.configVersion()));
+    }
+
+    private Option<AutoHealStateValue> autoHealState() {
+        return nodeSupplier.get()
+                           .kvStore()
+                           .getTyped(AetherKey.AutoHealStateKey.SINGLETON, AutoHealStateValue.class);
+    }
+
+    /// What a write is fenced on. `expected` is the config the caller read and checked the request against: the CAS value of
+    /// the mutation. `autoHeal` is present only when the route check decided on the auto-heal value.
+    record WriteFence(Option<ClusterConfigValue> expected, Option<AutoHealObservation> autoHeal) {
+        static WriteFence writeFence(Option<ClusterConfigValue> expected) {
+            return new WriteFence(expected, Option.none());
+        }
+
+        WriteFence witnessing(AutoHealObservation observation) {
+            return new WriteFence(expected, Option.some(observation));
+        }
+    }
+
+    /// The auto-heal value as the route check read it, `none` (key absent) included. A component of its own because a
+    /// witness of an absent key is a different fact from no witness at all, and `Option<Option<...>>` says neither.
+    record AutoHealObservation(Option<AutoHealStateValue> state) {
+        static AutoHealObservation autoHealObservation(Option<AutoHealStateValue> state) {
+            return new AutoHealObservation(state);
+        }
+
+        KVCommand.ReadWitness<AetherKey> witness() {
+            return new KVCommand.ReadWitness<>(AetherKey.AutoHealStateKey.SINGLETON, state.map(value -> (Object) value));
+        }
+
+        ClusterConfigError.AutoHealSetting setting() {
+            return state.fold(() -> ClusterConfigError.AutoHealSetting.ABSENT,
+                              value -> value.enabled()
+                                       ? ClusterConfigError.AutoHealSetting.ENABLED
+                                       : ClusterConfigError.AutoHealSetting.DISABLED);
+        }
+    }
+
+    /// S9: the seam between the route check's reads and the fenced write. Production runs [#NONE]; a test injects a
+    /// competing write here and so forces the order that makes the fence observable.
+    interface ApplyCommitHook {
+        ApplyCommitHook NONE = Promise::unitPromise;
+
+        Promise<Unit> beforeFencedWrite();
     }
 
     /// #1543 part C: the committed TOML's `[cluster] version` is what replacements render (image tag, jar URL),
@@ -1064,7 +1198,7 @@ public final class ClusterConfigRoutes implements RouteSource {
                                                  stored.configVersion() + 1,
                                                  System.currentTimeMillis());
 
-        return storeFencedConfig(configValue).map(fresh -> (Object) fresh);
+        return storeFencedConfig(WriteFence.writeFence(Option.some(stored)), configValue).map(fresh -> (Object) fresh);
     }
 
     sealed interface UpgradeError extends Cause {

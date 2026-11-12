@@ -3580,6 +3580,11 @@ Without `route` the rule above holds unchanged. With `route`:
 - Config-only actions (community placement, non-version cluster-level fields, a new source's declaration,
   and the removal of a role or source whose committed counts are all 0) are admitted on either route.
 - Version, runtime, runtime-profile and immutable-field changes stay refused, whatever `route` says.
+- The write is fenced on exactly what the request was checked against. The stored config the version fence read is the
+  compare-and-set value of the commit (no re-read at write time), and for a routed apply the auto-heal record the route
+  check read, an absent record included, is part of the transaction's read set. A config write, or a flip or first write of
+  the auto-heal record, between the check and the commit refuses the commit. Scale and upgrade use the same config fence.
+  [mechanism: leader transaction with the read config as `expected` and a whole-value read witness on the auto-heal key]
 
 Refusals with `route` present, each a 409 unless noted, checked before the route comparison:
 
@@ -3591,6 +3596,7 @@ Refusals with `route` present, each a 409 unless noted, checked before the route
 | `MultiSourceCoreScaleRefused` | A core scale-up while auto-heal is on and several sources declare the core role. | Disable auto-heal, apply, re-enable. |
 | `ParseFailed` (400) | Explicit communities are configured and the plan adds or rescales a worker role. | Change `community.target_size` instead. |
 | `RouteMismatch` | An action's route differs from the claim. A plan mixing `LEADER` and `APPLY` actions always gets it. | Re-plan against the current state. |
+| `AutoHealChanged` | The auto-heal record moved (a flip, or the first write of the key) between the route check and the commit; the body names `observed` and `now`. Nothing was committed. | Re-plan: re-run `aether cluster apply`. |
 
 **Error codes.** Every config refusal carries a `code` member in its `application/problem+json` body,
 alongside the RFC 9457 members. Classify a refusal by `code`, never by the status alone: a 409 is both
@@ -3598,7 +3604,7 @@ the definitive `RouteMismatch` and the transient "Current core leader required f
 
 | Class | `code` / response |
 |---|---|
-| Definitive (do not retry the same request) | `VersionConflict`, `UnfencedOverwrite`, `RouteMismatch`, `SourceReplaceRefused`, `LivePoolRemovalRefused`, `CoreFillRefused`, `MultiSourceCoreScaleRefused`, `UnsupportedApplyAction` (501), `ImmutableFieldChange`, `ValidationFailed`, `VersionChangeViaApply`, `RuntimeChangeViaApply`, `RuntimeProfileChangeViaApply`, `ParseFailed` (community guards and the community-retirement guard), `ClusterEventsFactorsRefused` |
+| Definitive (do not retry the same request) | `VersionConflict` (also when the config moved between the check and the commit), `UnfencedOverwrite`, `RouteMismatch`, `AutoHealChanged`, `SourceReplaceRefused`, `LivePoolRemovalRefused`, `CoreFillRefused`, `MultiSourceCoreScaleRefused`, `UnsupportedApplyAction` (501), `ImmutableFieldChange`, `ValidationFailed`, `VersionChangeViaApply`, `RuntimeChangeViaApply`, `RuntimeProfileChangeViaApply`, `ParseFailed` (community guards and the community-retirement guard), `ClusterEventsFactorsRefused` |
 | Transient (retry) | 409 "Current core leader required for config update" and 503 during an election: no `code`. `ClusterTopologyManagerUnavailable` (503) is typed and also transient. |
 
 **Request:**
