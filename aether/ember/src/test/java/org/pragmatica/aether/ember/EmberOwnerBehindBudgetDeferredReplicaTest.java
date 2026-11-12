@@ -90,7 +90,7 @@ class EmberOwnerBehindBudgetDeferredReplicaTest {
         StreamTripwireSupport.deleteTree(baseDir);
     }
 
-    /// Tripwire for the open product defect (#2923): asserts today's behaviour. Fails, naming what to enable, once the election
+    /// Tripwire for the open product defect (#3117): asserts today's behaviour. Fails, naming what to enable, once the election
     /// no longer strands the partition on the budget-deferred replica.
     @Test
     @Timeout(1200)
@@ -101,7 +101,7 @@ class EmberOwnerBehindBudgetDeferredReplicaTest {
     /// The intended behaviour: enable (and delete the tripwire above) when a promoted owner that cannot materialize is no longer
     /// left owning the partition.
     @Test
-    @Disabled("#2923: a budget-deferred replica is elected owner and never activates; enable with the product fix and delete the tripwire")
+    @Disabled("#3117: a budget-deferred replica is elected owner and never activates; enable with the product fix and delete the tripwire")
     @Timeout(1200)
     void ownerBehindABudgetDeferredReplica_catchesUpFromReplicaWal_andActivates() {
         scene(false);
@@ -183,13 +183,13 @@ class EmberOwnerBehindBudgetDeferredReplicaTest {
                                    + deferred.streamPartitionManager().appendedHead(KEY, PARTITION) + " tail=" + (EARLY + LATE - 1L));
                 starved.set(null);
                 if (tripwire) {
-                    assertThat(electedOwner).as("tripwire: the election named the budget-deferred replica; the premise changed, enable the intended test").isEqualTo(deferredId.id());
+                    assertThat(electedOwner).as("#3117 fixed? replace this tripwire with the @Disabled assertions: the election no longer names the budget-deferred replica").isEqualTo(deferredId.id());
                     assertThat(headAtElection).as("premise: `behind` was behind the replica's WAL tail at the election").isLessThan(EARLY + LATE - 1L);
                     sleepQuietly(TRIPWIRE_HOLD_MS);
                     assertThat(StreamTripwireSupport.committedRecord(cluster, KEY, PARTITION).map(value -> value.owner().id()).unwrap())
-                        .as("tripwire: the deferred replica still owns the partition (stranded); the defect is fixed, enable the intended test")
+                        .as("#3117 fixed? replace this tripwire with the @Disabled assertions: the deferred replica no longer owns the partition")
                         .isEqualTo(deferredId.id());
-                    assertThat(activated(capture)).as("tripwire: nothing activated at the replica's tail; the defect is fixed, enable the intended test").isFalse();
+                    assertThat(activated(capture)).as("#3117 fixed? replace this tripwire with the @Disabled assertions: an owner activated at the replica's tail").isFalse();
                     return;
                 }
                 awaitOwner(behindId);
