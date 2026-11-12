@@ -241,6 +241,7 @@ public final class ReplicationReceiveHandler {
     private final ReplicaDurability durability;
     private final CommittedStreamOwnerSource committedOwners;
     private final OperatorWarningSink operatorWarnings;
+    private final LongSupplier bootToken;
 
     private ReplicationReceiveHandler(NodeId self,
                                       RecoveredAppender appender,
@@ -249,7 +250,8 @@ public final class ReplicationReceiveHandler {
                                       BiConsumer<String, Integer> onGap,
                                       ReplicaDurability durability,
                                       CommittedStreamOwnerSource committedOwners,
-                                      OperatorWarningSink operatorWarnings) {
+                                      OperatorWarningSink operatorWarnings,
+                                      LongSupplier bootToken) {
         this.self = self;
         this.appender = appender;
         this.localHead = localHead;
@@ -258,7 +260,12 @@ public final class ReplicationReceiveHandler {
         this.durability = durability;
         this.committedOwners = committedOwners;
         this.operatorWarnings = operatorWarnings;
+        this.bootToken = bootToken;
     }
+
+    /// The boot token of a handler wired without a process identity: its acks name no process (#1697), so the owner only ever
+    /// raises its view of this replica on them.
+    private static final LongSupplier NO_BOOT_TOKEN = () -> ReplicationMessage.ReplicateAck.NO_BOOT_TOKEN;
 
     /// Backward-compatible factory with no local-head verification: the incoming `fromOffset` is
     /// trusted to be contiguous (a fresh/empty replica fed strictly in order). Retained for callers
@@ -273,7 +280,8 @@ public final class ReplicationReceiveHandler {
                                              (_, _) -> {},
                                              NO_DURABILITY_BARRIER,
                                              CommittedStreamOwnerSource.none(),
-                                             OperatorWarningSink.logOnly());
+                                             OperatorWarningSink.logOnly(),
+                                             NO_BOOT_TOKEN);
     }
 
     /// Factory with an explicit `onGap` repair seam, fired `(streamName, partition)` whenever a batch
@@ -289,7 +297,8 @@ public final class ReplicationReceiveHandler {
                                              onGap,
                                              NO_DURABILITY_BARRIER,
                                              CommittedStreamOwnerSource.none(),
-                                             OperatorWarningSink.logOnly());
+                                             OperatorWarningSink.logOnly(),
+                                             NO_BOOT_TOKEN);
     }
 
     /// Verifying factory (S1 / #260): `localHead` reports the replica's next-expected offset so an
@@ -306,7 +315,8 @@ public final class ReplicationReceiveHandler {
                                              onGap,
                                              NO_DURABILITY_BARRIER,
                                              CommittedStreamOwnerSource.none(),
-                                             OperatorWarningSink.logOnly());
+                                             OperatorWarningSink.logOnly(),
+                                             NO_BOOT_TOKEN);
     }
 
     /// Verifying factory WITH the replica durability barrier (#634 item 1). No sender validation.
@@ -323,7 +333,8 @@ public final class ReplicationReceiveHandler {
                                              onGap,
                                              durability,
                                              CommittedStreamOwnerSource.none(),
-                                             OperatorWarningSink.logOnly());
+                                             OperatorWarningSink.logOnly(),
+                                             NO_BOOT_TOKEN);
     }
 
     /// Verifying factory WITH the replica durability barrier (#634 item 1) AND sender validation against
@@ -342,12 +353,14 @@ public final class ReplicationReceiveHandler {
                                          onGap,
                                          durability,
                                          committedOwners,
-                                         OperatorWarningSink.logOnly());
+                                         OperatorWarningSink.logOnly(),
+                                         NO_BOOT_TOKEN);
     }
 
-    /// Full factory: the durability barrier, sender validation, and the operator-warning sink that
-    /// carries a withheld-ack fsync failure to the cluster event log (#1574). This is the production
-    /// wiring.
+    /// Full factory: the durability barrier, sender validation, the operator-warning sink that
+    /// carries a withheld-ack fsync failure to the cluster event log (#1574), and the replica process's
+    /// boot token every ack carries (#1697), so the owner keeps the highest ack of one process and lets a
+    /// restarted process (which may hold less) replace it. This is the production wiring.
     public static ReplicationReceiveHandler replicationReceiveHandler(NodeId self,
                                                                       RecoveredAppender appender,
                                                                       LocalHead localHead,
@@ -355,7 +368,8 @@ public final class ReplicationReceiveHandler {
                                                                       BiConsumer<String, Integer> onGap,
                                                                       ReplicaDurability durability,
                                                                       CommittedStreamOwnerSource committedOwners,
-                                                                      OperatorWarningSink operatorWarnings) {
+                                                                      OperatorWarningSink operatorWarnings,
+                                                                      LongSupplier bootToken) {
         return new ReplicationReceiveHandler(self,
                                              appender,
                                              localHead,
@@ -363,7 +377,8 @@ public final class ReplicationReceiveHandler {
                                              onGap,
                                              durability,
                                              committedOwners,
-                                             operatorWarnings);
+                                             operatorWarnings,
+                                             bootToken);
     }
 
     @Contract
@@ -705,7 +720,7 @@ public final class ReplicationReceiveHandler {
     @Contract
     private void sendAck(NodeId owner, String streamName, int partition, long through, Epoch ownerEpoch) {
         var sent = SentAck.sentAck(owner,
-                                   replicateAck(self, streamName, partition, through, ownerEpoch),
+                                   replicateAck(self, streamName, partition, through, ownerEpoch, bootToken.getAsLong()),
                                    nanoClock.getAsLong() + DEFAULT_ACK_TIMEOUT.nanos());
 
         latestAcks.compute(partitionKey(streamName, partition),

@@ -1395,7 +1395,8 @@ public sealed interface StreamAssembly {
                                   ReplicaSetController streamReplicaSetController,
                                   KvCommittedStreamOwnerSource committedStreamOwnerSource,
                                   Option<LinearizableBarrier> linearizableBarrier,
-                                  StreamForwardHandler streamForwardHandler) {}
+                                  StreamForwardHandler streamForwardHandler,
+                                  long bootToken) {}
 
     /// The stream forward routes, the replication receive handler and its routes and the stream forward extensions.
     static Unit streamForwarding(StreamForwardingInputs in) {
@@ -1421,6 +1422,7 @@ public sealed interface StreamAssembly {
         var committedStreamOwnerSource = in.committedStreamOwnerSource();
         var linearizableBarrier = in.linearizableBarrier();
         var streamForwardHandler = in.streamForwardHandler();
+        var bootToken = in.bootToken();
 
         allEntries.add(MessageRouter.Entry.route(StreamForwardMessage.PublishForward.class,
                                                  streamForwardHandler::onPublishForward));
@@ -1446,7 +1448,8 @@ public sealed interface StreamAssembly {
                                                                                                                                                                                                    partition)),
                                                                                                   streamPartitionManager::syncReplicated,
                                                                                                   streamOwnershipViews.writeAuthority(),
-                                                                                                  operatorWarningSink);
+                                                                                                  operatorWarningSink,
+                                                                                                  () -> bootToken);
         // #1730 phase 2 (B7): a copy not yet compared with the committed owner of the current epoch acknowledges nothing.
         streamReplicationReceiveHandler.ackGate(streamPartitionManager::replicaVerified);
         // #2599: the ack of a batch the gate held back is sent once a compare verifies the copy, not left to a later batch.
