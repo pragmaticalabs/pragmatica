@@ -220,6 +220,21 @@ class G2SchemaScenariosTest {
         }
     }
 
+    // #2773: a MIGRATING record whose lock has expired (the holder died) is reported; the lock's expiry, not its presence, decides.
+    // Red when: an expired lock is treated as live.
+    @Test
+    void stall_expiredLock_isReported() {
+        for (var status : List.of(SchemaStatus.PENDING, SchemaStatus.MIGRATING)) {
+            var h = threeCores();
+
+            h.activate();
+            h.seed(SchemaMigrationLockKey.schemaMigrationLockKey("ds"), expiredLock());
+            h.seed(new SchemaVersionKey("ds"), schema(status));
+            h.advanceBySeconds(600L);
+            assertThat(h.warns("schema-migration-stalled")).as(status.name()).hasSize(1);
+        }
+    }
+
     // #2773: a retry (a fresh write) or any terminal status ends the episode: one recovery, then silence.
     // Red when: the open set is never closed, or the recovery is raised twice.
     @Test
@@ -276,6 +291,10 @@ class G2SchemaScenariosTest {
         h.seed(new SchemaVersionKey("ds"), schema(SchemaStatus.COMPLETED));
         h.advanceBySeconds(60L);
         assertThat(h.warns("schema-migration-progressed")).as("closed by the successor").hasSize(1);
+    }
+
+    private static SchemaMigrationLockValue expiredLock() {
+        return new SchemaMigrationLockValue("ds", FsmHarness.SELF, FsmHarness.START_WALL, FsmHarness.START_WALL + 1_000L, 1L);
     }
 
     private static SchemaMigrationLockValue liveLock() {
