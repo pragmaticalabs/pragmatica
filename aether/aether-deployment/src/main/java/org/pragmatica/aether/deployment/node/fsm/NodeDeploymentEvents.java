@@ -31,6 +31,10 @@ public interface NodeDeploymentEvents extends ClusterFsmEvent {
 
     record VersionRoutingPutReceived(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut) implements NodeDeploymentEvents {}
 
+    /// #3028 — a replay burst was delivered: `Active` unloads every slice it holds that has no delivered `NodeArtifactKey` for this node (the
+    /// catch-up sweep); `Dormant` ignores it, because `Active.onEntry` runs the same sweep when quorum returns.
+    record CatchUpSwept() implements NodeDeploymentEvents {}
+
     record LeavingRequested(DrainReason reason) implements NodeDeploymentEvents {}
 
     /// #381 — a `ConfigKey` change applied to this node's dynamic config overlay; `changedKey` is the

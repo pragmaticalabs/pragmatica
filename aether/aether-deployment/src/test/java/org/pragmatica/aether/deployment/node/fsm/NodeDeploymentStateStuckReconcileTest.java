@@ -224,11 +224,18 @@ class NodeDeploymentStateStuckReconcileTest {
 
         activeState().remediateStuckRouting(key);
 
-        assertThat(cluster.batches).as("an absent entry is a removed slice: nothing may be written").isEmpty();
+        assertThat(nonRemovals()).as("an absent entry is a removed slice: every command written is a Remove (its cleanup, #3028)").isEmpty();
         assertThat(activeState().deployments()).as("the local entry goes with it").doesNotContainKey(key);
         assertThat(warnLog.messages(Level.WARN)).anySatisfy(line -> assertThat(line).contains("Node self")
                                                                 .contains("still ROUTING")
                                                                 .contains("ABSENT"));
+    }
+
+    @Test
+    void nonRemovals_countsAnyCommandThatIsNotARemove_notOnlyPuts() {
+        cluster.batches.add(List.of(new KVCommand.Noop<AetherKey>(seed(SliceState.ROUTING))));
+
+        assertThat(nonRemovals()).as("a Noop is not a Remove; the narrower puts-only predicate would have passed it").hasSize(1);
     }
 
     @Test
@@ -238,7 +245,7 @@ class NodeDeploymentStateStuckReconcileTest {
 
         activeState().remediateStuckActivating(key);
 
-        assertThat(cluster.batches).isEmpty();
+        assertThat(nonRemovals()).as("an absent entry is a removed slice: every command written is a Remove (its cleanup, #3028)").isEmpty();
         assertThat(activeState().deployments()).doesNotContainKey(key);
     }
 
@@ -348,6 +355,15 @@ class NodeDeploymentStateStuckReconcileTest {
         serving.add(ARTIFACT);
 
         return seed(state);
+    }
+
+    /// Every command written that is not a `Remove`. A removed slice that is loaded locally is force-cleaned (#3028), and that cleanup's stream-ref
+    /// releases are removals; anything else (a put would resurrect state for the entry the leader removed) is a defect.
+    private List<KVCommand<AetherKey>> nonRemovals() {
+        return cluster.batches.stream()
+                              .flatMap(List::stream)
+                              .filter(command -> !(command instanceof KVCommand.Remove<AetherKey>))
+                              .toList();
     }
 
     private List<NodeArtifactValue> activePuts() {

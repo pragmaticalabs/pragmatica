@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.LongConsumer;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
@@ -470,6 +471,12 @@ public final class DeploymentWiring {
 
     private void restored() {
         system.onPresent(Fsm2System::onStateRestored);
+    }
+
+    /// C3 (#3028): the registrar through which the legacy node manager subscribes to the KV store's replay-end signal: bound under LEGACY, a recorded
+    /// drop under FSM2.
+    public Consumer<LongConsumer> replayEnd(KVStore<AetherKey, AetherValue> kvStore) {
+        return target -> legacyBinding("C3.ndm.ReplayEnd", () -> kvStore.onReplayEnd(target));
     }
 
     /// A one-time legacy registration (B6, the callbacks the NDM is handed): run now under LEGACY, not run under FSM2. Recorded either way; not

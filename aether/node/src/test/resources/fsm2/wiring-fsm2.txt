@@ -92,3 +92,4 @@ B9.cdm.NodeShuttingDown -> dropped
 B9.cdm.SelfShutdown -> dropped
 B9.cdm.WorkerLeave -> fsm2:MembershipInputs.onWorkerLeave
 B9.ndm.NodeShuttingDown -> dropped
+C3.ndm.ReplayEnd -> dropped

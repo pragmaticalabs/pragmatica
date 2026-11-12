@@ -114,6 +114,37 @@ class KVStoreReplaySignalTest {
             .as("diff-replay fires a remove for the vanished key")
             .containsExactly(new ReplayKey("drop"));
     }
+    /// #3028: `delivered` is the view subscribers were told, which trails `storage` after a silent install until the replay burst is delivered; the
+    /// replay-end listener runs after the burst, sees the caught-up delivered view, and fires for replay items only.
+    @Test
+    void delivered_trailsStorageUntilTheReplayBurst_andOnReplayEndFiresAfterItForReplayOnly() {
+        var source = newStore(MessageRouter.mutable());
+        var key = new ReplayKey("alpha");
+        source.process(source.createBatch(List.of(new Put<>(key, "v1"))));
+        var store = newStore(MessageRouter.mutable());
+        var deliveredAtReplayEnd = new ArrayList<Boolean>();
+        var revisions = new ArrayList<Long>();
+
+        store.onReplayEnd(revision -> {
+            revisions.add(revision);
+            deliveredAtReplayEnd.add(store.delivered(key).isPresent());
+        });
+        store.restoreSnapshot(source.makeSnapshot().unwrap()).unwrap();
+
+        assertThat(store.get(key).isPresent()).as("the silent install reached storage").isTrue();
+        assertThat(store.delivered(key).isPresent()).as("but nothing was delivered yet: delivered trails storage").isFalse();
+        assertThat(revisions).as("no replay item yet").isEmpty();
+
+        store.replayNotifications();
+
+        assertThat(store.delivered(key).isPresent()).as("the burst delivered it").isTrue();
+        assertThat(deliveredAtReplayEnd).as("replay-end ran once, after the burst (delivered view already caught up)").containsExactly(true);
+
+        store.process(store.createBatch(List.of(new Put<>(new ReplayKey("beta"), "v2"))));
+
+        assertThat(revisions).as("a live batch is not a replay item").hasSize(1);
+    }
+
     @Test
     void committedRevisionSurvivesSnapshotTransfer() {
         var router = MessageRouter.mutable();
