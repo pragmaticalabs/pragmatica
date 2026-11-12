@@ -218,7 +218,8 @@ public sealed interface ManagementAssembly {
 
         // #1720: operator drain and shutdown honour the slice minAvailable floor,
         // as the automatic drain does (same KV-backed guard, same counting rules).
-        NodeLifecycleRoutes.SliceFloor.sliceFloor(SliceOwnershipQuery.minAvailableDrainViolations(kvStore, in.sliceRows()),
+        NodeLifecycleRoutes.SliceFloor.sliceFloor(SliceOwnershipQuery.minAvailableDrainViolations(kvStore,
+                                                                                                  in.sliceRows()),
                                                   operatorWarningSink));
 
         managementServer.setOperatorWarningSink(operatorWarningSink);

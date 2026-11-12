@@ -152,8 +152,7 @@ public final class WorkerMetadataIndex {
     /// FSM2 (deployment state machine spec 1.6.1, R-2.6): a desired goal of LOADED or ACTIVE assigns the artifact to the node; UNLOADED does
     /// not.
     private static boolean isInstanceGoal(Object value) {
-        return value instanceof AetherValue.SliceDesiredValue desired
-               && (desired.goal() == AetherValue.SliceGoal.LOADED || desired.goal() == AetherValue.SliceGoal.ACTIVE);
+        return value instanceof AetherValue.SliceDesiredValue desired && (desired.goal() == AetherValue.SliceGoal.LOADED || desired.goal() == AetherValue.SliceGoal.ACTIVE);
     }
 
     private void expandArtifacts(Set<String> selected) {
@@ -210,9 +209,7 @@ public final class WorkerMetadataIndex {
 
         for (var scope : scopesForWorker(worker)) {
             if (scope.startsWith("artifact:")) {
-                scopes.getOrDefault(scope,
-                                    Map.of())
-                      .forEach((key, value) -> addEndpointPeer(peers, key, value));
+                scopes.getOrDefault(scope, Map.of()).forEach((key, value) -> addEndpointPeer(peers, key, value));
             }
         }
 
@@ -222,13 +219,9 @@ public final class WorkerMetadataIndex {
     /// A node with an ACTIVE row of the artifact: a LEGACY `NodeArtifactKey` row, or (FSM2, spec 1.6.1) an observed row. The index has no
     /// access to the admission seam, so an observed row reads current (C8: no seam means fail-open).
     private static void addEndpointPeer(Set<NodeId> peers, StructuredKey key, Object value) {
-        if (key instanceof AetherKey.NodeArtifactKey endpoint
-            && value instanceof AetherValue.NodeArtifactValue state
-            && state.state() == SliceState.ACTIVE) {
+        if (key instanceof AetherKey.NodeArtifactKey endpoint && value instanceof AetherValue.NodeArtifactValue state && state.state() == SliceState.ACTIVE) {
             peers.add(endpoint.nodeId());
-        } else if (key instanceof AetherKey.SliceObservedKey observed
-                   && value instanceof AetherValue.SliceObservedValue row
-                   && row.state() == AetherValue.SliceObservedState.ACTIVE) {
+        } else if (key instanceof AetherKey.SliceObservedKey observed && value instanceof AetherValue.SliceObservedValue row && row.state() == AetherValue.SliceObservedState.ACTIVE) {
             peers.add(observed.nodeId());
         }
     }

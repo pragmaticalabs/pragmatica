@@ -7,6 +7,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.lang.Contract;
 
+
 /// A reader of the observed slice rows under FSM2 (deployment state machine spec 1.6.1), fed by an [ObservedSliceFeed]: it sees only rows
 /// the feed shows, so every row it is handed is current and is not the UNLOADED tombstone.
 public interface ObservedSliceListener {

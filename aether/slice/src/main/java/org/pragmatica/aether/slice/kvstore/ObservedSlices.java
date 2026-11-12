@@ -11,6 +11,7 @@ import org.pragmatica.lang.Option;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
+
 /// How a reader outside the two deployment FSMs reads one observed row under FSM2 (deployment state machine spec 1.6.1, R-1.6.2, C8).
 ///
 /// Every such reader uses **current rows only**. A row is stale only on positive evidence: both boot tokens known (non-zero) and different.
@@ -23,10 +24,11 @@ public sealed interface ObservedSlices {
     /// Stale iff both tokens are known (non-zero) and differ (R-1.6.2). `admittedToken` is the reader's registry token for the row's node, `0`
     /// while unknown.
     static boolean isStale(SliceObservedValue row, long admittedToken) {
-        var rowToken = row.incarnation()
-                          .bootToken();
+        var rowToken = row.incarnation().bootToken();
 
-        return rowToken != 0L && admittedToken != 0L && rowToken != admittedToken;
+        return rowToken != 0L
+               && admittedToken != 0L
+               && rowToken != admittedToken;
     }
 
     /// The observed state in the legacy vocabulary; none for the UNLOADED tombstone, which reads as absent (R-1.6.3).

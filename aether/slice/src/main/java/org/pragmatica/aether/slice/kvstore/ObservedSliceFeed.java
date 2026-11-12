@@ -19,6 +19,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 
+
 /// The committed `SliceObservedKey` rows, as the readers outside the two deployment FSMs see them under FSM2 (deployment state machine spec
 /// 1.6.1, R-1.6.2, R-1.6.6, C8). It turns the KV notifications of the observed rows into what its [ObservedSliceListener]s act on:
 ///
@@ -37,7 +38,9 @@ public final class ObservedSliceFeed {
     private final Set<SliceObservedKey> shown = ConcurrentHashMap.newKeySet();
     private final Set<NodeId> departed = ConcurrentHashMap.newKeySet();
 
-    private ObservedSliceFeed(ToLongFunction<NodeId> tokenOf, boolean excludesDeparted, List<ObservedSliceListener> listeners) {
+    private ObservedSliceFeed(ToLongFunction<NodeId> tokenOf,
+                              boolean excludesDeparted,
+                              List<ObservedSliceListener> listeners) {
         this.tokenOf = tokenOf;
         this.excludesDeparted = excludesDeparted;
         this.listeners = List.copyOf(listeners);
@@ -60,10 +63,8 @@ public final class ObservedSliceFeed {
 
     @Contract
     public void onObservedPut(ValuePut<SliceObservedKey, SliceObservedValue> put) {
-        var key = put.cause()
-                     .key();
-        var row = put.cause()
-                     .value();
+        var key = put.cause().key();
+        var row = put.cause().value();
 
         rows.put(key, row);
         reclassify(key, row, true);
@@ -71,8 +72,7 @@ public final class ObservedSliceFeed {
 
     @Contract
     public void onObservedRemove(ValueRemove<SliceObservedKey, SliceObservedValue> remove) {
-        var key = remove.cause()
-                        .key();
+        var key = remove.cause().key();
 
         rows.remove(key);
         hide(key);
@@ -81,26 +81,21 @@ public final class ObservedSliceFeed {
     /// A departure record was committed: DEPARTED hides the node's rows on a traffic feed; ADMITTED (the record superseded) shows them again.
     @Contract
     public void onDeparturePut(ValuePut<NodeDepartureKey, NodeDepartureValue> put) {
-        var node = put.cause()
-                      .key()
-                      .nodeId();
+        var node = put.cause().key().nodeId();
 
-        if (put.cause()
-               .value()
-               .state() == DepartureState.DEPARTED) {
+        if (put.cause().value().state() == DepartureState.DEPARTED) {
             departed.add(node);
         } else {
             departed.remove(node);
         }
+
         reclassifyNode(node);
     }
 
     /// A departure record was removed: the node is no longer recorded as departed.
     @Contract
     public void onDepartureRemove(ValueRemove<NodeDepartureKey, NodeDepartureValue> remove) {
-        var node = remove.cause()
-                         .key()
-                         .nodeId();
+        var node = remove.cause().key().nodeId();
 
         departed.remove(node);
         reclassifyNode(node);
@@ -113,7 +108,9 @@ public final class ObservedSliceFeed {
                                   .nodeId()
                                   .equals(node))
             .toList()
-            .forEach(entry -> reclassify(entry.getKey(), entry.getValue(), false));
+            .forEach(entry -> reclassify(entry.getKey(),
+                                         entry.getValue(),
+                                         false));
     }
 
     /// Shows or hides `key`. A fresh write of a shown row is handed on again (`written`); a re-classification of an unchanged row is handed
@@ -141,7 +138,9 @@ public final class ObservedSliceFeed {
     private boolean isShown(SliceObservedKey key, SliceObservedValue row) {
         var node = key.nodeId();
 
-        return ObservedSlices.currentState(row, tokenOf.applyAsLong(node))
-                             .isPresent() && !(excludesDeparted && departed.contains(node));
+        return ObservedSlices.currentState(row,
+                                           tokenOf.applyAsLong(node))
+                             .isPresent()
+               && !(excludesDeparted && departed.contains(node));
     }
 }

@@ -315,6 +315,7 @@ public interface AetherNode extends ManageableNode {
     default SliceRowSource sliceRows() {
         return deploymentWiring().sliceRows();
     }
+
     MavenProtocolHandler mavenProtocolHandler();
     ArtifactStore artifactStore();
     TopologyManager topologyManager();

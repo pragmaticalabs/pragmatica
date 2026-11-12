@@ -15,6 +15,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 
+
 /// Where a reader that scans the store finds the per-node slice rows (deployment state machine spec 1.6.1), chosen by the deployment engine.
 ///
 /// Under LEGACY the rows are the `NodeArtifactKey` rows, unchanged. Under FSM2 they are the **current** `SliceObservedKey` rows: a row stale on
@@ -37,7 +38,9 @@ public interface SliceRowSource {
     static SliceRowSource legacy() {
         return (store, consumer) -> store.forEach(NodeArtifactKey.class,
                                                   NodeArtifactValue.class,
-                                                  (key, value) -> consumer.accept(key.nodeId(), key.artifact(), value.state()));
+                                                  (key, value) -> consumer.accept(key.nodeId(),
+                                                                                  key.artifact(),
+                                                                                  value.state()));
     }
 
     /// The FSM2 rows: every current `SliceObservedKey` row, with each node's token read from `tokenOf` (`0` while unknown).
@@ -47,8 +50,14 @@ public interface SliceRowSource {
                                                   (key, row) -> acceptCurrent(consumer, tokenOf, key, row));
     }
 
-    private static void acceptCurrent(RowConsumer consumer, ToLongFunction<NodeId> tokenOf, SliceObservedKey key, SliceObservedValue row) {
-        ObservedSlices.currentState(row, tokenOf.applyAsLong(key.nodeId()))
-                      .onPresent(state -> consumer.accept(key.nodeId(), key.artifact(), state));
+    private static void acceptCurrent(RowConsumer consumer,
+                                      ToLongFunction<NodeId> tokenOf,
+                                      SliceObservedKey key,
+                                      SliceObservedValue row) {
+        ObservedSlices.currentState(row,
+                                    tokenOf.applyAsLong(key.nodeId()))
+                      .onPresent(state -> consumer.accept(key.nodeId(),
+                                                          key.artifact(),
+                                                          state));
     }
 }

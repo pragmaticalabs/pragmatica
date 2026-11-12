@@ -62,7 +62,9 @@ public sealed interface SliceOwnershipQuery {
         return nodeId -> nodeHasLiveSlice(kvStore, rows, nodeId);
     }
 
-    private static boolean nodeHasLiveSlice(KVStore<AetherKey, AetherValue> kvStore, SliceRowSource rows, NodeId nodeId) {
+    private static boolean nodeHasLiveSlice(KVStore<AetherKey, AetherValue> kvStore,
+                                            SliceRowSource rows,
+                                            NodeId nodeId) {
         var found = new AtomicBoolean(false);
 
         rows.forEachRow(kvStore, (node, _, state) -> recordIfLiveOwnership(found, nodeId, node, state));
@@ -70,10 +72,7 @@ public sealed interface SliceOwnershipQuery {
         return found.get();
     }
 
-    private static void recordIfLiveOwnership(AtomicBoolean found,
-                                              NodeId nodeId,
-                                              NodeId node,
-                                              SliceState state) {
+    private static void recordIfLiveOwnership(AtomicBoolean found, NodeId nodeId, NodeId node, SliceState state) {
         if (node.equals(nodeId) && isLiveState(state)) {
             found.set(true);
         }
@@ -105,7 +104,7 @@ public sealed interface SliceOwnershipQuery {
     ///   value uses `ceil(instances/2)`, so this holds only for a single-instance slice (floor 1) or an
     ///   operator who set the floor to the count.
     static BiFunction<NodeId, Set<NodeId>, Option<DrainRefusal>> minAvailableDrainGuard(KVStore<AetherKey, AetherValue> kvStore,
-                                                                                       SliceRowSource rows) {
+                                                                                        SliceRowSource rows) {
         return (candidate, remainingNodes) -> firstRefusal(kvStore, rows, candidate, remainingNodes);
     }
 
@@ -114,7 +113,7 @@ public sealed interface SliceOwnershipQuery {
     /// drain and shutdown routes need all of them: the refusal names each slice, and a forced breach warns about
     /// each. Empty when every hosted slice keeps its floor. Same inputs, same counting rules.
     static BiFunction<NodeId, Set<NodeId>, List<DrainRefusal>> minAvailableDrainViolations(KVStore<AetherKey, AetherValue> kvStore,
-                                                                                         SliceRowSource rows) {
+                                                                                           SliceRowSource rows) {
         return (candidate, remainingNodes) -> refusalStream(kvStore, rows, candidate, remainingNodes).toList();
     }
 
@@ -169,7 +168,8 @@ public sealed interface SliceOwnershipQuery {
     }
 
     /// Every LIVE placement in the KV-Store, keyed by `(node, artifact)`, with its state.
-    private static Map<Placement, SliceState> livePlacements(KVStore<AetherKey, AetherValue> kvStore, SliceRowSource rows) {
+    private static Map<Placement, SliceState> livePlacements(KVStore<AetherKey, AetherValue> kvStore,
+                                                             SliceRowSource rows) {
         var placements = new HashMap<Placement, SliceState>();
 
         rows.forEachRow(kvStore, (node, artifact, state) -> recordIfLive(placements, node, artifact, state));
@@ -178,7 +178,10 @@ public sealed interface SliceOwnershipQuery {
     }
 
     @Contract
-    private static void recordIfLive(Map<Placement, SliceState> placements, NodeId node, Artifact artifact, SliceState state) {
+    private static void recordIfLive(Map<Placement, SliceState> placements,
+                                     NodeId node,
+                                     Artifact artifact,
+                                     SliceState state) {
         if (isLiveState(state)) {
             placements.put(new Placement(node, artifact), state);
         }

@@ -72,8 +72,9 @@ final class IndexedDeploymentMap implements DeploymentMap {
     @SuppressWarnings("JBCT-RET-01")
     @Override
     public void onObservedSlice(SliceObservedKey key, SliceObservedValue row) {
-        ObservedSlices.sliceState(row.state())
-                      .onPresent(state -> index.put(new SliceNodeKey(key.artifact(), key.nodeId()), state));
+        ObservedSlices.sliceState(row.state()).onPresent(state -> index.put(new SliceNodeKey(key.artifact(),
+                                                                                             key.nodeId()),
+                                                                            state));
     }
 
     /// FSM2: the pair's row is no longer shown.

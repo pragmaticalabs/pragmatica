@@ -2018,7 +2018,10 @@ public final class ClusterEventAggregator implements ObservedSliceListener {
     }
 
     @Contract
-    private void handleDeploymentFailed(String trackingKey, String artifact, String nodeId, Option<String> failureReason) {
+    private void handleDeploymentFailed(String trackingKey,
+                                        String artifact,
+                                        String nodeId,
+                                        Option<String> failureReason) {
         var durationMs = computeAndRemoveDuration(trackingKey);
         var durationSuffix = durationMs.map(ms -> " after " + formatDuration(ms)).or("");
         var reason = failureReason.or("unknown");
