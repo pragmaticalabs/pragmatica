@@ -22,6 +22,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.lang.io.CoreError;
+import org.pragmatica.lang.io.TimeSpan;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
@@ -39,6 +40,9 @@ import static org.junit.jupiter.api.Assertions.*;
 class PromiseContinueOnTest {
     private static final String HOP_PREFIX = "continue-on-hop-";
     private static final Cause FAULT_CAUSE = new CoreError.Fault("continueOn fault");
+    // A rejected hop must fail the promise, never leave it unresolved: a bounded wait turns "unresolved" into a
+    // CoreError.Timeout, which assertRejected reports, instead of a hang.
+    private static final TimeSpan REJECTION_BOUND = TimeSpan.timeSpan(5).seconds();
 
     private ExecutorService hopPool;
 
@@ -117,14 +121,14 @@ class PromiseContinueOnTest {
 
         source.succeed(1);
 
-        assertRejected(hopped.await());
+        assertRejected(hopped.await(REJECTION_BOUND));
     }
 
     @Test
     void continueOn_rejectedExecutor_resolvedSource_failsReturnedPromise() {
         assertRejected(Promise.success(1)
                               .continueOn(PromiseContinueOnTest::reject)
-                              .await());
+                              .await(REJECTION_BOUND));
     }
 
     @Test
@@ -133,7 +137,7 @@ class PromiseContinueOnTest {
 
         assertRejected(Promise.success(1)
                               .continueOn(hopPool)
-                              .await());
+                              .await(REJECTION_BOUND));
     }
 
     @Test
