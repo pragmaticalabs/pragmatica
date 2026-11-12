@@ -9,6 +9,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testing.RequiresDocker;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.oracle.OracleContainer;
@@ -22,8 +23,6 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
-import static org.testcontainers.DockerClientFactory.instance;
 
 /// Differential test that proves [StatementSplitter] against a real Oracle engine.
 ///
@@ -54,9 +53,10 @@ import static org.testcontainers.DockerClientFactory.instance;
 ///
 /// Heavy: needs a real Oracle engine and the right CPU arch, so the class is tagged `heavy-db` and
 /// excluded from the default build. If Docker is unavailable the whole class is skipped via
-/// [#dockerAvailable] rather than failing.
+/// [RequiresDocker] rather than failing.
 @Tag("heavy-db")
-@Testcontainers(disabledWithoutDocker = true)
+@RequiresDocker
+@Testcontainers
 class StatementSplitterOracleDiffTest {
     private static final DialectSpec ORACLE = Dialects.ORACLE;
 
@@ -65,17 +65,7 @@ class StatementSplitterOracleDiffTest {
         new OracleContainer("gvenzl/oracle-free:23-slim-faststart");
 
     @BeforeAll
-    static void requireDocker() {
-        assumeTrue(dockerAvailable(), "Docker is not available — skipping real-Oracle differential test");
-    }
-
-    /// Whether a Docker daemon is reachable, probed without throwing so the suite skips cleanly.
-    private static boolean dockerAvailable() {
-        try {
-            return instance().isDockerAvailable();
-        } catch (Throwable ignored) {
-            return false;
-        }
+    static void awaitReady() {
     }
 
     // ----- corpus: each script exercises a distinct Oracle split hazard ---------------
@@ -363,7 +353,7 @@ class StatementSplitterOracleDiffTest {
     /// test ran. Best-effort: the shared container is discarded after the class anyway.
     @AfterEach
     void dropCaseObjects() {
-        if (!dockerAvailable() || !ORACLE_DB.isRunning()) {
+        if (!ORACLE_DB.isRunning()) {
             return;
         }
         try (var connection = openConnection();

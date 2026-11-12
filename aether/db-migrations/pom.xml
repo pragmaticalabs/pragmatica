@@ -12,6 +12,12 @@
         <surefire.excludedGroups>Infinite, Slow, Benchmark, S3, quarantine, heavy-db</surefire.excludedGroups>
     </properties>
     <dependencies>
+        <!-- DockerRequirement / RequiresDocker: the one Docker guard (#3089) -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>testing</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>resource-api</artifactId>

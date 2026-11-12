@@ -35,6 +35,12 @@
     </properties>
 
     <dependencies>
+        <!-- DockerRequirement / RequiresDocker: the one Docker guard (#3089) -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>testing</artifactId>
+            <scope>test</scope>
+        </dependency>
         <!-- Pragmatica Core (Result/Option/Cause) — the ONLY runtime dependency -->
         <dependency>
             <groupId>org.pragmatica-lite</groupId>

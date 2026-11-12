@@ -8,6 +8,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.postgresql.PGConnection;
+import org.pragmatica.testing.RequiresDocker;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -25,8 +26,6 @@ import java.util.Properties;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
-import static org.testcontainers.DockerClientFactory.instance;
 
 /// Differential test that proves [StatementSplitter] against a real PostgreSQL engine.
 ///
@@ -48,8 +47,9 @@ import static org.testcontainers.DockerClientFactory.instance;
 /// present, or COPY row count), and case 1 additionally contrasts the splitter against a naive
 /// `split(";")` whose middle fragment fails against the same engine — the real-engine proof of fix.
 ///
-/// If Docker is unavailable the whole class is skipped via [#dockerAvailable] rather than failing.
-@Testcontainers(disabledWithoutDocker = true)
+/// If Docker is unavailable the whole class is skipped via [RequiresDocker] rather than failing.
+@RequiresDocker
+@Testcontainers
 class StatementSplitterPostgresDiffTest {
     private static final DialectSpec PG = Dialects.POSTGRESQL;
 
@@ -57,17 +57,7 @@ class StatementSplitterPostgresDiffTest {
     private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:15-alpine");
 
     @BeforeAll
-    static void requireDocker() {
-        assumeTrue(dockerAvailable(), "Docker is not available — skipping real-PostgreSQL differential test");
-    }
-
-    /// Whether a Docker daemon is reachable, probed without throwing so the suite skips cleanly.
-    private static boolean dockerAvailable() {
-        try {
-            return instance().isDockerAvailable();
-        } catch (Throwable ignored) {
-            return false;
-        }
+    static void awaitReady() {
     }
 
     // ----- corpus: each script exercises a distinct split hazard ----------------------
@@ -457,7 +447,7 @@ class StatementSplitterPostgresDiffTest {
 
     @AfterEach
     void dropCaseSchemas() {
-        if (!dockerAvailable() || !POSTGRES.isRunning()) {
+        if (!POSTGRES.isRunning()) {
             return;
         }
         try (var connection = DriverManager.getConnection(POSTGRES.getJdbcUrl(),

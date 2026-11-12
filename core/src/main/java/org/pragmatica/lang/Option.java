@@ -1153,12 +1153,12 @@ public sealed interface Option<T> permits Some, None {
     static <T> Option<T> any(Option<T> op, Supplier<Option<T>>... ops) {
         return op.fold(() -> {
                            for (var option : ops) {
-                           var result = option.get();
+                               var result = option.get();
 
-                           if (result.isPresent()) {
-                           return result;
-                       }
-                       }
+                               if (result.isPresent()) {
+                                   return result;
+                               }
+                           }
 
                            return op;
                        },

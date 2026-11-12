@@ -24,6 +24,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.testing.DockerRequirement;
 import org.testcontainers.containers.PostgreSQLContainer;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -329,7 +330,6 @@ class PgAsyncSqlConnectorPinnedTest {
     private static Promise<Integer> insertThenFail(SqlConnector tx) {
         return tx.update("INSERT INTO pinned_rows VALUES (2)").flatMap(_ -> BODY_FAILED.promise());
     }
-
 
     @Test
     void pinned_throughThePgSqlConnectorWrapper_isDelegatedNotRefused() {

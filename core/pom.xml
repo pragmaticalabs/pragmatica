@@ -15,6 +15,12 @@
     <name>Pragmatica Core</name>
     <description>Modern functional programming library for Java 25 featuring Result, Option, and Promise monads</description>
 
+    <properties>
+        <!-- #1356: was inherited true from the root pom, which made the CI gate (`jbct-maven-plugin:check`) skip core ("Skipping JBCT check").
+             core declares no jbct-maven-plugin execution, so a lifecycle build is unchanged. -->
+        <jbct.skip>false</jbct.skip>
+    </properties>
+
     <dependencies>
         <dependency>
             <groupId>org.slf4j</groupId>
