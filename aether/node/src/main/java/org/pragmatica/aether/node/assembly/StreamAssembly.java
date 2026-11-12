@@ -1022,6 +1022,8 @@ public sealed interface StreamAssembly {
         // #2960: the all-stalled warning is raised only for a stream that exists, so one destroyed under an in-flight round leaves no report.
         streamPartitionBackfill.streamExists(streamPartitionManager::streamExists);
         streamPartitionManager.ownerServeGate(ownerActivation::admit);
+        // #2981 step 2 (design §2.2 check 3): the owner visibility check reads the activation without starting one.
+        streamPartitionManager.ownerActivated(ownerActivation::isActivated);
         // #1730 phase 2: the gate's relaxation for a divergent peer respects the candidate's durable sealed floor, and a peer it
         // leaves out loses the row this registry kept for it from an earlier tenure.
         ownerActivation.sealedFloor(streamSegmentIndex::lastSealedOffset);

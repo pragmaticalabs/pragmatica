@@ -284,6 +284,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #2981 step 2 (design §2.2): this node's lease, read by the owner checks ([#ownerLease(OwnerLease)]); [OwnerLease#UNWIRED]
     /// (compared by identity) until wired.
     private volatile OwnerLease ownerLease = OwnerLease.UNWIRED;
+    /// #2981 step 2 (design §2.2 check 3): whether this node is activated for the ownership it holds, late-bound
+    /// ([#ownerActivated(OwnerActivatedView)]); unchecked until wired.
+    private volatile OwnerActivatedView ownerActivated = ACTIVATION_UNCHECKED;
     /// #2590 P1: where a partition's committed position and its suffix truncations are told, late-bound
     /// ([#partitionLogEvents(PartitionLogEvents)]); nobody until wired.
     private volatile PartitionLogEvents partitionLogEvents = PartitionLogEvents.NONE;
@@ -782,6 +785,15 @@ public final class StreamPartitionManager implements AutoCloseable {
         Result<Unit> admit(String stream, int partition);
     }
 
+    /// #2981 step 2 (design §2.2 check 3): whether this node is activated for exactly the ownership it holds now, with no side
+    /// effect. `AetherNode` binds [OwnerActivation#isActivated]; the default reports activated (the pre-lease owner rule).
+    @FunctionalInterface
+    public interface OwnerActivatedView {
+        boolean isActivated(String stream, int partition);
+    }
+
+    private static final OwnerActivatedView ACTIVATION_UNCHECKED = (_, _) -> true;
+
     /// Owner promotion block (#1555): the reason this node's promotion of `(stream, partition)` cannot complete
     /// without an operator, if any. `AetherNode` binds [OwnerActivation#blockOf]; the default reports none.
     @FunctionalInterface
@@ -1021,8 +1033,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// which a replayed ring holds durably, so the bound is a guard here rather than a cut.
     @Contract
     private void raiseToMarker(String streamName, int partition, AppendLog.AckedMark marker) {
-        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> ring.advanceVisible(Math.min(ring.durableOffset(),
-                                                                                                     marker.offset())));
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> ownerAdvance(streamName,
+                                                                                     partition,
+                                                                                     confirmationFactorFor(streamName),
+                                                                                     ring,
+                                                                                     Math.min(ring.durableOffset(),
+                                                                                              marker.offset())));
     }
 
     /// A client-facing local read (#1555). On the placement OWNER it passes the owner promotion gate first, so a
@@ -1398,6 +1414,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void ownerLease(OwnerLease lease) {
         this.ownerLease = lease;
+    }
+
+    /// #2981 step 2: late-bind the side-effect-free activation view the owner visibility check reads ([#ownerAdvance]).
+    /// Set once at wiring.
+    @Contract
+    public void ownerActivated(OwnerActivatedView view) {
+        this.ownerActivated = view;
     }
 
     /// #2590 P1: bind the listener told each partition's committed position and suffix truncations. Not a safety seam:
@@ -2728,9 +2751,13 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Reads the ack through the overlay, because this observer runs BEFORE the registry records it.
     @Contract
     private void ackedVisible(OffHeapRingBuffer ring, ReplicationMessage.ReplicateAck ack) {
-        ring.advanceVisible(Math.min(ring.durableOffset(),
-                                     replicationManager.replicatedThrough(ack,
-                                                                          confirmationFactorFor(ack.streamName()) - 1)));
+        var confirmationFactor = confirmationFactorFor(ack.streamName());
+
+        ownerAdvance(ack.streamName(),
+                     ack.partition(),
+                     confirmationFactor,
+                     ring,
+                     Math.min(ring.durableOffset(), replicationManager.replicatedThrough(ack, confirmationFactor - 1)));
     }
 
     /// A rebuilt ring's replayed WAL tail is durable and not visible ([StreamEntry#placeRecord], #1387); this
@@ -2755,8 +2782,16 @@ public final class StreamPartitionManager implements AutoCloseable {
                                 Supplier<PartitionState> state) {
         switch (placementRoleSupplier.roleFor(config.name(), partition)) {
             case REPLICA -> holdRecoveredTailUntilVerified(state, partition, ring);
-            case OWNER -> ring.advanceVisible(replicaAckedBound(config, partition, ring));
-            case NONE -> ring.advanceVisible(replicaAckedBound(config, partition, ring));
+            case OWNER -> ownerAdvance(config.name(),
+                                       partition,
+                                       config.confirmationFactor(),
+                                       ring,
+                                       replicaAckedBound(config, partition, ring));
+            case NONE -> ownerAdvance(config.name(),
+                                      partition,
+                                      config.confirmationFactor(),
+                                      ring,
+                                      replicaAckedBound(config, partition, ring));
         }
 
         ring.addAppendListener(visible -> announceVisible(config.name(), partition, visible));
@@ -2983,8 +3018,11 @@ public final class StreamPartitionManager implements AutoCloseable {
         if (replica) {
             exposeReplicaCommitted(streamName, partition, ring);
         } else {
-            ring.advanceVisible(Math.min(Math.min(offset, ring.durableOffset()),
-                                         peerAcknowledgedThrough(streamName, partition)));
+            ownerAdvance(streamName,
+                         partition,
+                         confirmationFactorFor(streamName),
+                         ring,
+                         Math.min(Math.min(offset, ring.durableOffset()), peerAcknowledgedThrough(streamName, partition)));
         }
 
         if (offset >= ring.headOffset()) {
@@ -3015,7 +3053,47 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Both are volatile accesses, so at least one of the two sees both inputs.
     @Contract
     private void refreshVisible(OffHeapRingBuffer ring, String streamName, int partition) {
-        ring.advanceVisible(Math.min(ring.durableOffset(), peerAcknowledgedThrough(streamName, partition)));
+        ownerAdvance(streamName,
+                     partition,
+                     confirmationFactorFor(streamName),
+                     ring,
+                     Math.min(ring.durableOffset(), peerAcknowledgedThrough(streamName, partition)));
+    }
+
+    /// #2981 step 2 (design §2.2 check 3, F-1a-3): the one owner-role visibility advance. Every non-replica site calls it, and
+    /// nothing else in this class calls `advanceVisible` except it and the REPLICA arm [#exposeReplicaCommitted] (pinned by a
+    /// structural test). It advances to `bound` while [#ownerRoleHolds]; otherwise only to the replica bound, `min(durable,
+    /// committed mark)`, and never past `bound`: what a replica would show, which the owner that announced the mark put under
+    /// its own lease. A lapse therefore pauses owner visibility; a renewal edge re-derives it ([#onLeaseRegained]).
+    @Contract
+    private void ownerAdvance(String streamName,
+                              int partition,
+                              int confirmationFactor,
+                              OffHeapRingBuffer ring,
+                              long bound) {
+        ring.advanceVisible(ownerRoleHolds(streamName, partition, confirmationFactor)
+                            ? bound
+                            : Math.min(bound, Math.min(ring.durableOffset(), committedMarkThrough(streamName, partition))));
+    }
+
+    /// Whether this node may act on the owner path of `(streamName, partition)` now: the lease is read FIRST (it reads the
+    /// clock), then the applied record must name this node (present, no remote committed owner) and the node must be activated
+    /// for it. Confirmation factor 1 and a manager with both the lease and the ownership-record seams unwired keep the pre-lease
+    /// owner rule; a half-wired manager fails closed (an unwired lease is never valid, an unwired record source holds none).
+    private boolean ownerRoleHolds(String streamName, int partition, int confirmationFactor) {
+        return ownerChecksBypassed(confirmationFactor) || ownerLease.valid() && namesThisNodeActivated(streamName, partition);
+    }
+
+    private boolean ownerChecksBypassed(int confirmationFactor) {
+        return confirmationFactor < 2 || ownerLease == OwnerLease.UNWIRED
+                                         && ownershipRecords == OwnerActivation.OwnershipRecordSource.UNWIRED;
+    }
+
+    private boolean namesThisNodeActivated(String streamName, int partition) {
+        return ownershipRecords.committed(streamName, partition)
+                               .isPresent() && ownerWriteAdmission.remoteCommittedOwner(streamName, partition)
+                                                                  .isEmpty() && ownerActivated.isActivated(streamName,
+                                                                                                           partition);
     }
 
     private long peerAcknowledgedThrough(String streamName, int partition) {

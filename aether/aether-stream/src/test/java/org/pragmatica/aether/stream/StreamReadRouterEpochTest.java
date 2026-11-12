@@ -55,6 +55,7 @@ class StreamReadRouterEpochTest {
         for (var i = 0; i < 5; i++) {
             ownerPartitions.publishLocal(STREAM, PARTITION, new byte[]{(byte) i}, 1_000L + i).onFailure(cause -> fail(cause.message()));
         }
+        ownerPartitions.ownerLease(() -> true);
         ownerPartitions.ownershipRecords((_, _) -> Option.some(ownerRecord.get()));
         // The assignee knows the stream (its config is committed cluster-wide) and holds no ring: not a replica of it.
         assigneePartitions = StreamPartitionManager.streamPartitionManager();

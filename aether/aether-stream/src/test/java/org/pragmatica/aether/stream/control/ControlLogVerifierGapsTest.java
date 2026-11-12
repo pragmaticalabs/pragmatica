@@ -166,6 +166,7 @@ class ControlLogVerifierGapsTest {
     @Test
     void admission_noOwnershipRecord_isIndexUnavailable() {
         try (var owner = owner(1, 1)) {
+            owner.manager().ownerLease(() -> true);
             owner.manager().ownershipRecords((_, _) -> Option.none());
 
             assertThat(owner.manager().committedIsrVersion(STREAM, PARTITION)).isZero();

@@ -96,6 +96,7 @@ class StreamSeamRegistryTest {
         manager.ownerEpochSource((_, _) -> Epoch.ZERO);
         manager.partitionFlags(NO_FLAGS);
         manager.operatorWarnings(OperatorWarningSink.logOnly());
+        manager.ownerLease(() -> true);
         manager.ownershipRecords((_, _) -> Option.none());
         manager.tieredReader(new SealedTierFixture().reader());
         manager.epochStarts((_, _) -> List.of());

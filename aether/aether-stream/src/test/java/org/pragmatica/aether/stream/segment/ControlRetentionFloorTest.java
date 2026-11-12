@@ -58,6 +58,7 @@ class ControlRetentionFloorTest {
     @BeforeEach
     void setUp() {
         manager = streamPartitionManager(Long.MAX_VALUE);
+        manager.ownerLease(() -> true);
         manager.ownershipRecords((_, _) -> Option.some(StreamPartitionOwnershipValue.streamPartitionOwnershipValue(NodeId.nodeId("ctl-owner")
                                                                                                                          .unwrap(),
                                                                                                                    Epoch.ZERO,

@@ -39,6 +39,7 @@ class StreamPartitionManagerEpochReadTest {
     void setUp() {
         manager = streamPartitionManager();
         manager.createStream(StreamConfig.streamConfig(STREAM));
+        manager.ownerLease(() -> true);
         manager.ownershipRecords((_, _) -> record.get());
         for (var i = 0; i < 5; i++) {
             manager.publishLocal(STREAM, 0, ("r" + i).getBytes(UTF_8), i).unwrap();

@@ -88,6 +88,7 @@ class ReplicaServesUnrepairedLineageTripwireTest {
                      .restarted(3L, HlcTimestamp.ZERO);
 
         record.set(Option.some(e2));
+        manager.ownerLease(() -> true);
         manager.ownershipRecords((_, _) -> record.get());
         assertThat(manager.readServing(STREAM, PARTITION, 5L, 10, E1).isFailure()).as("control: the cursor is diverged to 3").isTrue();
 
@@ -104,6 +105,7 @@ class ReplicaServesUnrepairedLineageTripwireTest {
 
         manager = streamPartitionManager(Long.MAX_VALUE);
         manager.placementRoleSupplier((_, _) -> role.get());
+        manager.ownerLease(() -> true);
         manager.ownershipRecords((_, _) -> record.get());
         manager.ownerEpochSource((_, _) -> record.get().map(StreamPartitionOwnershipValue::ownerEpoch).or(Epoch.ZERO));
         manager.createStream(StreamConfig.streamConfig(STREAM)).onFailure(cause -> fail(cause.message()));

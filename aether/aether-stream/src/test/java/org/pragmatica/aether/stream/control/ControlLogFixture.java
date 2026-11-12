@@ -238,6 +238,7 @@ final class ControlLogFixture {
 
         manager.ownerEpochSource((_, _) -> ownerEpoch.get());
         manager.placementRoleSupplier((_, _) -> role.get());
+        manager.ownerLease(() -> true);
         manager.ownershipRecords((_, _) -> Option.some(ownership(ownerEpoch.get(), isrVersion)));
         var controlLog = ControlLog.controlLog(wrap.apply(ControlPartitionLog.partitionManagerLog(manager,
                                                                                                  Option.none(),

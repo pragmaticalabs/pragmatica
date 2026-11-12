@@ -162,6 +162,7 @@ class StreamSeamBootCheckTest {
     private static void bindSafetyRelevant(StreamPartitionManager manager) {
         manager.ownerEpochSource((_, _) -> Epoch.ZERO);
         manager.partitionFlags(new SilentFlags());
+        manager.ownerLease(() -> true);
         manager.ownershipRecords((_, _) -> Option.none());
         manager.placementRoleSupplier((_, _) -> org.pragmatica.aether.stream.replication.ReplicaSetController.Role.OWNER);
         manager.replicaCatchupSource((_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(Integer.MAX_VALUE, true));
