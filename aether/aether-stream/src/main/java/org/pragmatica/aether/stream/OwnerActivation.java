@@ -668,18 +668,50 @@ public final class OwnerActivation {
                                alarm,
                                unreachableAlarmAfter,
                                RingIncarnation.NONE,
-                               LineageCommit.NONE,
-                               OwnerLease.UNWIRED,
-                               NO_LEASE_SCOPE);
+                               LineageCommit.NONE);
     }
 
     /// The confirmation factor of the factory without a lease (tests that predate #2981): every stream reads as CF=1, which takes no
     /// lease check (design §0 scope), so those gates admit exactly as before.
     private static final ToIntFunction<String> NO_LEASE_SCOPE = _ -> 1;
 
-    /// The production factory (#1730 phase 2): the activation also commits where the current epoch begins (see
-    /// [LineageCommit]) before the node is marked activated. #2981 step 2: a stream whose `confirmationFactor` is 2 or more is
-    /// admitted only while `lease` is valid ([#admit]).
+    /// The lineage-committing factory (#1730 phase 2) without a node lease (tests that predate #2981): the activation also commits
+    /// where the current epoch begins (see [LineageCommit]) before the node is marked activated; no stream takes the lease check.
+    public static OwnerActivation ownerActivation(NodeId self,
+                                                  OwnershipRecordSource records,
+                                                  PlacementOwner placementOwner,
+                                                  Option<LinearizableBarrier> barrier,
+                                                  Supplier<List<NodeId>> liveMembers,
+                                                  ReplicaWatermarkProbe probe,
+                                                  SelfWatermark selfWatermark,
+                                                  OwnerCatchUp catchUp,
+                                                  BooleanSupplier consensusActive,
+                                                  RecordRange ranges,
+                                                  BlockAlarm alarm,
+                                                  TimeSpan unreachableAlarmAfter,
+                                                  RingIncarnation ringIncarnation,
+                                                  LineageCommit lineage) {
+        return ownerActivation(self,
+                               records,
+                               placementOwner,
+                               barrier,
+                               liveMembers,
+                               probe,
+                               selfWatermark,
+                               catchUp,
+                               consensusActive,
+                               ranges,
+                               alarm,
+                               unreachableAlarmAfter,
+                               ringIncarnation,
+                               lineage,
+                               OwnerLease.UNWIRED,
+                               NO_LEASE_SCOPE);
+    }
+
+    /// The production factory (#1730 phase 2, #2981 step 2): the activation also commits where the current epoch begins (see
+    /// [LineageCommit]) before the node is marked activated, and a stream whose `confirmationFactor` is 2 or more is admitted only
+    /// while `lease` is valid ([#admit]).
     public static OwnerActivation ownerActivation(NodeId self,
                                                   OwnershipRecordSource records,
                                                   PlacementOwner placementOwner,

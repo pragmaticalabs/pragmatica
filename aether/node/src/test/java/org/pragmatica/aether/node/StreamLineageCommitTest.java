@@ -128,9 +128,7 @@ class StreamLineageCommitTest {
                                                                                     (_, _) -> 1L,
                                                                                     StreamAssembly.streamLineageCommit(() -> Option.some(LEADER),
                                                                                                                    commands -> competingThenApplied(competing, commands),
-                                                                                                                   HlcClock.hlcClock(A)),
-                                                                                    org.pragmatica.aether.stream.OwnerLease.UNWIRED,
-                                                                                    _ -> 1);
+                                                                                                                   HlcClock.hlcClock(A)));
 
         seedRecord(held);
 
