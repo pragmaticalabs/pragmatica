@@ -17,6 +17,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.stream.replication.ReplicaDescriptor.replicaDescriptor;
 import static org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry;
 import static org.pragmatica.aether.stream.replication.ReplicationManager.replicationManager;
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateAck.replicateAck;
@@ -113,6 +114,63 @@ class DefaultReplicationManagerAckOrderTest {
         assertThat(replication.replicatedThrough(replicateAck(REPLICA, STREAM, PARTITION, 5L, EPOCH_1, BOOT_B), 1))
                   .as("another process: replaced")
                   .isEqualTo(5L);
+    }
+
+    /// The overlay looks only at the acking replica's own row: another replica of a different process must not make a same-process
+    /// reordered ack look like a process change (#1697). Mutation: `ofSameProcess` without its `nodeId` filter.
+    @Test
+    void overlaidAck_withAnotherReplicaOfAnotherProcess_stillKeepsMaxForTheSameProcess() {
+        var other = new NodeId("replica-2");
+
+        registry.registerReplica(STREAM, PARTITION, other);
+        replication.handleAck(replicateAck(REPLICA, STREAM, PARTITION, 10L, EPOCH_1, BOOT_A));
+        replication.handleAck(replicateAck(other, STREAM, PARTITION, 3L, EPOCH_1, BOOT_B));
+
+        assertThat(replication.replicatedThrough(replicateAck(REPLICA, STREAM, PARTITION, 5L, EPOCH_1, BOOT_A), 1))
+                  .as("a reordered ack of the same process keeps its replica's max, whatever the other replica's process")
+                  .isEqualTo(10L);
+        assertThat(replication.replicatedThrough(replicateAck(REPLICA, STREAM, PARTITION, 5L, EPOCH_1, BOOT_B), 2))
+                  .as("control: the other process's ack replaces, and the other replica still counts")
+                  .isEqualTo(3L);
+    }
+
+    /// The legacy receive-handler factories name no replica process: their ack is taken as the row's own, so it never lowers a row
+    /// another process confirmed. Mutation: the legacy `NO_BOOT_TOKEN` supplier returning a real token.
+    @Test
+    void legacyReceiveHandler_acksNameNoProcess() {
+        replication.handleAck(replicateAck(REPLICA, STREAM, PARTITION, 10L, Epoch.ZERO, BOOT_A));
+
+        var legacy = replicationReceiveHandler(REPLICA,
+                                               (_, _, _, _, _, _) -> Result.success(0L),
+                                               AcceptingReplicationTransport.accepting((_, message) -> replication.handleAck((ReplicationMessage.ReplicateAck) message)));
+
+        legacy.onReplicateEvents(replicateEvents(OWNER, STREAM, PARTITION, 0L, payloads(5), timestamps(5), Epoch.ZERO));
+
+        assertThat(row().confirmedOffset()).as("a legacy ack of 4 is not an ack of another process").isEqualTo(10L);
+        assertThat(row().bootToken()).isEqualTo(BOOT_A);
+    }
+
+    /// The four- and five-argument ack factories name no replica process (the `PartitionBackfill` default sink relies on it).
+    /// Mutation: either default returning a real token.
+    @Test
+    void ackFactoriesWithoutAToken_nameNoProcess() {
+        assertThat(replicateAck(REPLICA, STREAM, PARTITION, 5L).bootToken()).isEqualTo(ReplicationMessage.ReplicateAck.NO_BOOT_TOKEN);
+        assertThat(replicateAck(REPLICA, STREAM, PARTITION, 5L, EPOCH_1).bootToken()).isEqualTo(ReplicationMessage.ReplicateAck.NO_BOOT_TOKEN);
+
+        replication.handleAck(replicateAck(REPLICA, STREAM, PARTITION, 10L, EPOCH_1, BOOT_A));
+        replication.handleAck(replicateAck(REPLICA, STREAM, PARTITION, 5L, EPOCH_1));
+
+        assertThat(row().confirmedOffset()).as("a no-token ack is not an ack of another process").isEqualTo(10L);
+        assertThat(row().bootToken()).isEqualTo(BOOT_A);
+    }
+
+    /// A row built without a token names no replica process. Mutation: either descriptor factory defaulting to a real token.
+    @Test
+    void descriptorFactoriesWithoutAToken_nameNoProcess() {
+        assertThat(replicaDescriptor(REPLICA, STREAM, PARTITION, 5L, ReplicationState.CAUGHT_UP).bootToken())
+                  .isEqualTo(ReplicationMessage.ReplicateAck.NO_BOOT_TOKEN);
+        assertThat(replicaDescriptor(REPLICA, STREAM, PARTITION, 5L, ReplicationState.CAUGHT_UP, EPOCH_1).bootToken())
+                  .isEqualTo(ReplicationMessage.ReplicateAck.NO_BOOT_TOKEN);
     }
 
     /// NT-145b: two processes of ONE node id, each acking through the production receive-handler factory with its own boot
