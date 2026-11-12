@@ -572,6 +572,27 @@ class ClusterDeploymentStateWorkerRemovalTest {
                            .isTrue());
         }
 
+        /// The join is released by whichever comes first, the removal settling or the bound; the other must then do nothing. A second
+        /// release would re-run the join after the directive was dropped again.
+        @Test
+        void workerJoin_removalSettlesBeforeBound_joinRunsOnce() {
+            joinWorker(W);
+            context.setRemovalWaitBound(timeSpan(800).millis());
+            var commit = Promise.<Unit>promise();
+
+            cluster.gate = commit;
+            leaveWorker(W);
+            rejoin();
+            commit.succeed(Unit.unit());
+            await().atMost(5, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(directive().isPresent()).as("the join ran once the removal settled").isTrue());
+            dropDirective();
+
+            await().pollDelay(1500, TimeUnit.MILLISECONDS)
+                   .atMost(3, TimeUnit.SECONDS)
+                   .untilAsserted(() -> assertThat(directive().isPresent()).as("the bound firing afterwards must not run the join again").isFalse());
+        }
+
         @Test
         void workerJoin_removalNeverResolves_joinRunsAfterBound() {
             joinWorker(W);
