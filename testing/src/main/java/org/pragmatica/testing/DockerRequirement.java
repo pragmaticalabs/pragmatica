@@ -14,12 +14,12 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.testing;
 
 import java.util.function.BooleanSupplier;
 
 import org.testcontainers.DockerClientFactory;
+
 
 /// The single Docker precondition of every live-database / testcontainers test (#3089).
 ///
@@ -49,7 +49,8 @@ public final class DockerRequirement {
         var available = probe.getAsBoolean();
 
         if (!available && required.getAsBoolean()) {
-            throw new AssertionError("Docker is unavailable but -D" + REQUIRE_PROPERTY + "=true requires it: refusing to skip");
+            throw new AssertionError("Docker is unavailable but -D" + REQUIRE_PROPERTY
+                                    + "=true requires it: refusing to skip");
         }
 
         return available;

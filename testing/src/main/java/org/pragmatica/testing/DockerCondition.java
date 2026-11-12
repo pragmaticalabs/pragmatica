@@ -14,7 +14,6 @@
  *  limitations under the License.
  *
  */
-
 package org.pragmatica.testing;
 
 import java.util.function.BooleanSupplier;
@@ -22,6 +21,7 @@ import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.extension.ConditionEvaluationResult;
 import org.junit.jupiter.api.extension.ExecutionCondition;
 import org.junit.jupiter.api.extension.ExtensionContext;
+
 
 /// Class-level Docker precondition behind [RequiresDocker]: enabled when a daemon is reachable, otherwise disabled
 /// (skip) - or, under `-Daether.requireDocker=true`, an error that fails the class (see [DockerRequirement]). It replaces
