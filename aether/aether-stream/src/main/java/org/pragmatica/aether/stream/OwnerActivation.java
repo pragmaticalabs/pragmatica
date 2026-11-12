@@ -14,6 +14,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
+import java.util.function.ToIntFunction;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -155,6 +156,9 @@ public final class OwnerActivation {
     @FunctionalInterface
     public interface OwnershipRecordSource {
         Option<StreamPartitionOwnershipValue> committed(String stream, int partition);
+        /// #2981 step 2 (design §2.2 "Unwired seams"): the explicit default of a manager whose record seam was never bound, compared
+        /// BY IDENTITY. Finds no record.
+        OwnershipRecordSource UNWIRED = (_, _) -> Option.none();
     }
 
     /// Which ring serves `(stream, partition)` on this node ([OffHeapRingBuffer#incarnation]): the activation tells a ring
@@ -458,6 +462,9 @@ public final class OwnerActivation {
     private final TimeSpan unreachableAlarmAfter;
     private final RingIncarnation ringIncarnation;
     private final LineageCommit lineage;
+    /// #2981 step 2 (design §2.2 check 1): the node lease, and the confirmation factor that decides whether it gates a stream (>= 2).
+    private final OwnerLease lease;
+    private final ToIntFunction<String> confirmationFactor;
     /// The ring each partition was last activated on, by [RingIncarnation]: an activation on the SAME ring kept its
     /// offsets, one on another ring (a restart, a re-created stream) may assign them again.
     private final Map<PartitionKey, Long> activatedIncarnation = new ConcurrentHashMap<>();
@@ -615,7 +622,9 @@ public final class OwnerActivation {
                             BlockAlarm alarm,
                             TimeSpan unreachableAlarmAfter,
                             RingIncarnation ringIncarnation,
-                            LineageCommit lineage) {
+                            LineageCommit lineage,
+                            OwnerLease lease,
+                            ToIntFunction<String> confirmationFactor) {
         this.self = self;
         this.records = records;
         this.placementOwner = placementOwner;
@@ -630,6 +639,8 @@ public final class OwnerActivation {
         this.unreachableAlarmAfter = unreachableAlarmAfter;
         this.ringIncarnation = ringIncarnation;
         this.lineage = lineage;
+        this.lease = lease;
+        this.confirmationFactor = confirmationFactor;
     }
 
     public static OwnerActivation ownerActivation(NodeId self,
@@ -657,11 +668,18 @@ public final class OwnerActivation {
                                alarm,
                                unreachableAlarmAfter,
                                RingIncarnation.NONE,
-                               LineageCommit.NONE);
+                               LineageCommit.NONE,
+                               OwnerLease.UNWIRED,
+                               NO_LEASE_SCOPE);
     }
 
+    /// The confirmation factor of the factory without a lease (tests that predate #2981): every stream reads as CF=1, which takes no
+    /// lease check (design §0 scope), so those gates admit exactly as before.
+    private static final ToIntFunction<String> NO_LEASE_SCOPE = _ -> 1;
+
     /// The production factory (#1730 phase 2): the activation also commits where the current epoch begins (see
-    /// [LineageCommit]) before the node is marked activated.
+    /// [LineageCommit]) before the node is marked activated. #2981 step 2: a stream whose `confirmationFactor` is 2 or more is
+    /// admitted only while `lease` is valid ([#admit]).
     public static OwnerActivation ownerActivation(NodeId self,
                                                   OwnershipRecordSource records,
                                                   PlacementOwner placementOwner,
@@ -675,7 +693,9 @@ public final class OwnerActivation {
                                                   BlockAlarm alarm,
                                                   TimeSpan unreachableAlarmAfter,
                                                   RingIncarnation ringIncarnation,
-                                                  LineageCommit lineage) {
+                                                  LineageCommit lineage,
+                                                  OwnerLease lease,
+                                                  ToIntFunction<String> confirmationFactor) {
         return new OwnerActivation(self,
                                    records,
                                    placementOwner,
@@ -689,7 +709,9 @@ public final class OwnerActivation {
                                    alarm,
                                    unreachableAlarmAfter,
                                    ringIncarnation,
-                                   lineage);
+                                   lineage,
+                                   lease,
+                                   confirmationFactor);
     }
 
     /// Whether this node may act as owner of `(stream, partition)` right now: its consensus engine is active,
@@ -732,7 +754,17 @@ public final class OwnerActivation {
 
     /// The gate every owner action passes: admitted when activated; otherwise an activation is started and the
     /// action is refused with the transient [StreamError.OwnerNotActivated].
+    ///
+    /// #2981 step 2 (design §2.2 check 1, F-1a-5, F-1a-8): FIRST, a stream with confirmation factor 2 or more whose node lease is
+    /// not valid now is refused with the transient [StreamError.OwnerLeaseLapsed], with NO activation side effect: no gate is
+    /// started (a lapse must not send consensus rounds and probes at the quorum whose slowness caused it) and `activated` is left
+    /// as it was, so the next renewal restores admission without a re-gate. An ADMISSION check, not a read-freshness guarantee: a
+    /// read admitted under a valid lease may be served after the lease lapsed.
     public Result<Unit> admit(String stream, int partition) {
+        if (leaseLapsed(stream)) {
+            return new StreamError.OwnerLeaseLapsed(stream, partition).result();
+        }
+
         if (isActivated(stream, partition)) {
             return Result.unitResult();
         }
@@ -740,6 +772,10 @@ public final class OwnerActivation {
         attempt(stream, partition, REDRIVE_INITIAL_BACKOFF);
 
         return new StreamError.OwnerNotActivated(stream, partition).result();
+    }
+
+    private boolean leaseLapsed(String stream) {
+        return confirmationFactor.applyAsInt(stream) >= 2 && !lease.valid();
     }
 
     /// #2682: the committed-record hook. A committed ownership record that newly names this node (no record before, or an

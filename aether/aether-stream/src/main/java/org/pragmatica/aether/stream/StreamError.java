@@ -624,6 +624,27 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// #2981 step 2 (design §2.2 check 1): this node holds a confirmation-factor >= 2 partition of `streamName` but its node lease is
+    /// not valid now (no own renewal delivered within the lease, a clock suspension, or a store reset or snapshot install revoked it), so
+    /// it neither appends nor serves reads as owner. Refused before anything reached the ring, the WAL or a replica, and no activation
+    /// is started. Transient: the next delivered renewal restores the lease. Read routing treats it as [OwnerNotActivated].
+    record OwnerLeaseLapsed(String streamName, int partition) implements StreamError, Cause.Transient {
+        /// The text every message of this refusal carries; a forwarded refusal reaches the publisher as a string only.
+        public static final String MESSAGE_MARKER = "has no valid node lease on this node";
+
+        @Override
+        public String message() {
+            return "Stream partition %s[%d] %s (owner admission paused until a renewal lands)".formatted(streamName,
+                                                                                                         partition,
+                                                                                                         MESSAGE_MARKER);
+        }
+
+        /// Whether `detail` is the text of this refusal.
+        public static boolean describes(String detail) {
+            return detail.contains(MESSAGE_MARKER);
+        }
+    }
+
     /// Linearizable-read owner mismatch (#345 item 1e): a `LINEARIZABLE` read landed on `actual` but the
     /// committed `StreamPartitionOwnershipValue.owner` for the `(stream, partition)` arc is `expected`, so
     /// `actual` is NOT the authoritative owner (a stale committed view, or a routing race during a

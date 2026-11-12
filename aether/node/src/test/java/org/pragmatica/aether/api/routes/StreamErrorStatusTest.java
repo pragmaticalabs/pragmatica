@@ -86,6 +86,7 @@ class StreamErrorStatusTest {
         all.put(new StreamError.ReplicaQuarantined("s", 0, 1, 2), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.NotOwnerAppend("s", 0, NODE), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.OwnerNotActivated("s", 0), HttpStatus.SERVICE_UNAVAILABLE);
+        all.put(new StreamError.OwnerLeaseLapsed("s", 0), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.NotCurrentOwner("s", 0, NODE, NODE), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.StaleEpochRead("s", 0, EPOCH, EPOCH), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.OwnerCatchupPending("s", 0), HttpStatus.SERVICE_UNAVAILABLE);

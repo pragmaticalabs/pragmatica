@@ -8,6 +8,7 @@ package org.pragmatica.aether.stream.forward;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
@@ -62,6 +63,13 @@ class StreamForwardHandlerTest {
         sentMessages = new ArrayList<>();
         StreamForwardTransport capturingTransport = AcceptingStreamForwardTransport.accepting((target, message) -> sentMessages.add(new SentMessage(target, message)));
         handler = streamForwardHandler(GOVERNOR, partitionManager, capturingTransport);
+    }
+
+    /// #2981 step 2: a lapsed owner lease refuses before anything reached the ring, the WAL or a replica, so the publisher may retry.
+    /// Mutation: `OwnerLeaseLapsed` dropped from `isRetryable` -> RED.
+    @Test
+    void isRetryable_aLapsedOwnerLease_isRetryable() {
+        assertThat(StreamForwardHandler.isRetryable(new StreamError.OwnerLeaseLapsed(STREAM, PARTITION))).isTrue();
     }
 
     @Nested

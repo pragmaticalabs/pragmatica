@@ -278,7 +278,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     private volatile OperatorWarningSink operatorWarnings = OperatorWarningSink.logOnly();
     /// #1730 phase 2 / #1873: the committed ownership records a validated consumer read is checked against, late-bound
     /// ([#ownershipRecords(OwnerActivation.OwnershipRecordSource)]); none until wired.
-    private volatile OwnerActivation.OwnershipRecordSource ownershipRecords = (_, _) -> Option.none();
+    private volatile OwnerActivation.OwnershipRecordSource ownershipRecords = OwnerActivation.OwnershipRecordSource.UNWIRED;
+    /// #2981 step 2 (design §2.2): this node's lease, read by the owner checks ([#ownerLease(OwnerLease)]); [OwnerLease#UNWIRED]
+    /// (compared by identity) until wired.
+    private volatile OwnerLease ownerLease = OwnerLease.UNWIRED;
     /// #2590 P1: where a partition's committed position and its suffix truncations are told, late-bound
     /// ([#partitionLogEvents(PartitionLogEvents)]); nobody until wired.
     private volatile PartitionLogEvents partitionLogEvents = PartitionLogEvents.NONE;
@@ -1387,6 +1390,12 @@ public final class StreamPartitionManager implements AutoCloseable {
     public void ownershipRecords(OwnerActivation.OwnershipRecordSource source) {
         this.ownershipRecords = source;
         boundSeams.add(StreamSeam.OWNERSHIP_RECORDS);
+    }
+
+    /// #2981 step 2: late-bind this node's lease (`AetherNode` wires the node's [NodeLease]). Set once at wiring.
+    @Contract
+    public void ownerLease(OwnerLease lease) {
+        this.ownerLease = lease;
     }
 
     /// #2590 P1: bind the listener told each partition's committed position and suffix truncations. Not a safety seam:

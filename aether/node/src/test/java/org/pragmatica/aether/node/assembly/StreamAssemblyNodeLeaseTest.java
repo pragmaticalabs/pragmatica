@@ -13,6 +13,7 @@ import java.util.function.Consumer;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.StreamingConfig;
+import org.pragmatica.aether.node.AssemblySource;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.stream.NodeLease;
@@ -101,6 +102,18 @@ class StreamAssemblyNodeLeaseTest {
                                            OperatorWarningCode.NODE_CLOCK_RATE_NORMAL);
         assertThat(raised).extracting(OperatorWarning::subject)
                           .containsOnly(SELF.id());
+    }
+
+    /// The assembly hands the SAME lease to CF >= 2 owner admission (with the manager's confirmation factor) and to the partition
+    /// manager, and schedules its renewal. Pinned by source text, like `thePeerLineageEnd_isWiredToTheBackfillMemory`
+    /// [unverified: wiring pinned by text only]. Mutation: any of the three lines changed or removed -> RED.
+    @Test
+    void assembly_wiresTheLeaseIntoOwnerAdmission_andThePartitionManager_andSchedulesItsRenewal() {
+        var source = AssemblySource.stripped();
+
+        assertThat(source).containsOnlyOnce("hlcClock),nodeLease,streamPartitionManager::confirmationFactorFor);");
+        assertThat(source).containsOnlyOnce("streamPartitionManager.ownerLease(nodeLease);");
+        assertThat(source).containsOnlyOnce("defer.accept(()->SharedScheduler.scheduleAtFixedRate(nodeLease::renew,streamingConfig.ownerLeaseRenewal()));");
     }
 
     private NodeLease wiredLease() {

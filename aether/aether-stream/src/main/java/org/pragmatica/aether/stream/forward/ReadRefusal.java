@@ -120,6 +120,10 @@ public record ReadRefusal(Kind kind,
             case StreamError.OwnerNotActivated(var stream, var partition) -> some(readRefusal(Kind.OWNER_NOT_ACTIVATED,
                                                                                               stream,
                                                                                               partition));
+            // #2981 step 2: read routing treats a lapsed lease as not-activated (design §0 row 3); no new wire kind.
+            case StreamError.OwnerLeaseLapsed(var stream, var partition) -> some(readRefusal(Kind.OWNER_NOT_ACTIVATED,
+                                                                                             stream,
+                                                                                             partition));
             case StreamError.ReplicaNotVerified(var stream, var partition, var start) -> some(readRefusal(Kind.REPLICA_NOT_VERIFIED,
                                                                                                           stream,
                                                                                                           partition).withFirst(start));

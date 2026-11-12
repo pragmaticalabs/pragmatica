@@ -947,6 +947,17 @@ public sealed interface StreamAssembly {
         // then writes fail retryable NotOwnerAppend (CTO ruling on #1230). No record admits (the cold-start
         // window, where the fence is inert and HRW routing alone picks the writer).
         streamPartitionManager.ownerWriteAdmission(streamOwnershipViews.writeAdmission(config.self()));
+        // #2981 step 2: the node lease. Renewals go through consensus every owner_lease_renewal; the deferred task is cancelled with the
+        // node's other periodic tasks. CF >= 2 owner admission (below) and the partition manager's owner checks read it.
+        var nodeLease = nodeLease(config.self(),
+                                  streamingConfig,
+                                  kvStore,
+                                  clusterCommandApplier,
+                                  operatorWarningSink,
+                                  allEntries);
+
+        defer.accept(() -> SharedScheduler.scheduleAtFixedRate(nodeLease::renew, streamingConfig.ownerLeaseRenewal()));
+        streamPartitionManager.ownerLease(nodeLease);
         // #1555 owner promotion gate: this node acts as a partition's owner (appends, servedByOwner, owner reads)
         // only after a no-op consensus round has refreshed its committed ownership view, the record still names
         // it, and it has caught up to every live placement member's watermark. The round is ALWAYS ordered here,
@@ -983,7 +994,9 @@ public sealed interface StreamAssembly {
                                                               streamLineageCommit(() -> kvStore.getTyped(LeaderKey.INSTANCE,
                                                                                                          LeaderValue.class),
                                                                                   clusterCommandApplier,
-                                                                                  hlcClock));
+                                                                                  hlcClock),
+                                                              nodeLease,
+                                                              streamPartitionManager::confirmationFactorFor);
         // #1873 (KIP-320): every consumer read is checked, on the node that serves it, against the partition's COMMITTED epoch
         // starts; this is where that node reads them.
         streamPartitionManager.ownershipRecords((stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
@@ -1001,16 +1014,6 @@ public sealed interface StreamAssembly {
         // #2960: the all-stalled warning is raised only for a stream that exists, so one destroyed under an in-flight round leaves no report.
         streamPartitionBackfill.streamExists(streamPartitionManager::streamExists);
         streamPartitionManager.ownerServeGate(ownerActivation::admit);
-        // #2981 step 2: the node lease. Renewals go through consensus every owner_lease_renewal; the deferred task is cancelled with the
-        // node's other periodic tasks.
-        var nodeLease = nodeLease(config.self(),
-                                  streamingConfig,
-                                  kvStore,
-                                  clusterCommandApplier,
-                                  operatorWarningSink,
-                                  allEntries);
-
-        defer.accept(() -> SharedScheduler.scheduleAtFixedRate(nodeLease::renew, streamingConfig.ownerLeaseRenewal()));
         // #1730 phase 2: the gate's relaxation for a divergent peer respects the candidate's durable sealed floor, and a peer it
         // leaves out loses the row this registry kept for it from an earlier tenure.
         ownerActivation.sealedFloor(streamSegmentIndex::lastSealedOffset);
