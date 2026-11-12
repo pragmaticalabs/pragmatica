@@ -8,7 +8,10 @@ import io.netty.buffer.ByteBuf;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 import org.junit.jupiter.api.Test;
@@ -114,6 +117,42 @@ class StreamAssemblyNodeLeaseTest {
         assertThat(source).containsOnlyOnce("hlcClock),nodeLease,streamPartitionManager::confirmationFactorFor);");
         assertThat(source).containsOnlyOnce("streamPartitionManager.ownerLease(nodeLease);");
         assertThat(source).containsOnlyOnce("defer.accept(()->SharedScheduler.scheduleAtFixedRate(nodeLease::renew,streamingConfig.ownerLeaseRenewal()));");
+    }
+
+    /// #2981 step 2 (S11): the partition manager's record source reads lock-free, so it answers while another thread holds the store
+    /// monitor (as the apply thread does for a whole batch). Mutation: the source back to the synchronized `getTyped` -> RED (it waits
+    /// for the monitor past the deadline).
+    @Test
+    void committedOwnershipRecords_whileAnotherThreadHoldsTheStoreMonitor_answersWithoutWaiting() throws Exception {
+        var source = StreamAssembly.committedOwnershipRecords(store);
+        var held = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var holder = Thread.ofVirtual().start(() -> holdMonitor(held, release));
+
+        try {
+            assertThat(held.await(5, TimeUnit.SECONDS)).isTrue();
+            var read = CompletableFuture.supplyAsync(() -> source.committed("orders", 0));
+
+            assertThat(read.get(2, TimeUnit.SECONDS).isEmpty()).isTrue();
+        } finally {
+            release.countDown();
+            holder.join();
+        }
+    }
+
+    private void holdMonitor(CountDownLatch held, CountDownLatch release) {
+        synchronized (store) {
+            held.countDown();
+            awaitQuietly(release);
+        }
+    }
+
+    private static void awaitQuietly(CountDownLatch latch) {
+        try {
+            latch.await(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private NodeLease wiredLease() {

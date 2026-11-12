@@ -323,6 +323,15 @@ public sealed interface StreamAssembly {
         };
     }
 
+    /// The partition manager's committed ownership records (#1873; #2981 step 2, design §2.2 "Lock-free record read"): read with the
+    /// lock-free [KVStore#peekTyped], so the owner checks on the publish, ack and visibility paths never wait behind a batch the
+    /// apply thread is applying under the store monitor. Absence (inside a reset-to-restore window) reads as "no record", which the
+    /// lease checks treat as "not mine" and fail closed.
+    static OwnerActivation.OwnershipRecordSource committedOwnershipRecords(KVStore<AetherKey, AetherValue> kvStore) {
+        return (stream, partition) -> kvStore.peekTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream, partition),
+                                                        StreamPartitionOwnershipValue.class);
+    }
+
     static List<MessageRouter.Entry<?>> committedOwnershipRoutes(OwnerActivation ownerActivation) {
         return KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                    .onPut(StreamPartitionOwnershipKey.class,
@@ -999,9 +1008,7 @@ public sealed interface StreamAssembly {
                                                               streamPartitionManager::confirmationFactorFor);
         // #1873 (KIP-320): every consumer read is checked, on the node that serves it, against the partition's COMMITTED epoch
         // starts; this is where that node reads them.
-        streamPartitionManager.ownershipRecords((stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
-                                                                                                                                                partition),
-                                                                                        StreamPartitionOwnershipValue.class));
+        streamPartitionManager.ownershipRecords(committedOwnershipRecords(kvStore));
         // #2201 C-16: a consumer read below the ring tail is served from the sealed tier (StreamPartitionManager.readServingTiered,
         // the validated read of StreamReadRouter and of the owner's forward handler). Unbound, every consumer behind the ring
         // would be moved to the ring tail; EmberConsumerPathTripwireTest#tierFallbackSeam_isBoundOnEveryBootedNode pins it.
