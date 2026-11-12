@@ -22,6 +22,8 @@ import java.util.function.BooleanSupplier;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ConditionEvaluationResult;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -82,5 +84,33 @@ class DockerRequirementTest {
         var condition = new DockerCondition(() -> DockerRequirement.dockerAvailable(REQUIRED, () -> false));
 
         assertThatThrownBy(() -> condition.evaluateExecutionCondition(null)).isInstanceOf(AssertionError.class);
+    }
+
+    @Test
+    @ResourceLock(Resources.SYSTEM_PROPERTIES)
+    void dockerAvailable_publicEntryReadsBothSystemProperties() {
+        var previousRequire = System.getProperty(DockerRequirement.REQUIRE_PROPERTY);
+        var previousHide = System.getProperty(DockerRequirement.HIDE_PROPERTY);
+
+        try {
+            System.setProperty(DockerRequirement.HIDE_PROPERTY, "true");
+            System.clearProperty(DockerRequirement.REQUIRE_PROPERTY);
+            assertThat(DockerRequirement.dockerAvailable()).isFalse();
+
+            System.setProperty(DockerRequirement.REQUIRE_PROPERTY, "true");
+            assertThatThrownBy(DockerRequirement::dockerAvailable).isInstanceOf(AssertionError.class)
+                                                                  .hasMessageContaining("refusing to skip");
+        } finally {
+            restore(DockerRequirement.REQUIRE_PROPERTY, previousRequire);
+            restore(DockerRequirement.HIDE_PROPERTY, previousHide);
+        }
+    }
+
+    private static void restore(String key, String previous) {
+        if (previous == null) {
+            System.clearProperty(key);
+        } else {
+            System.setProperty(key, previous);
+        }
     }
 }
