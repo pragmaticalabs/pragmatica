@@ -96,6 +96,8 @@ class AetherNodeLeaderAwaitedTargetBootTest {
         var cdm = (ClusterDeploymentManager) node.getClass().getMethod("clusterDeploymentManager").invoke(node);
         var ctx = ((ClusterDeploymentManager.ClusterDeploymentManagerAdapter) cdm).context();
 
+        recordWhatTheLeaderHandsToItsSink(ctx);
+
         // A new leader's case, which is also the shape of a lost target put: the blueprint is committed, its target is not. The leader
         // restores its mirror from the store and nothing ever puts the target (only the watch under test does, past the bound).
         var slice = ResolvedSlice.resolvedSlice(SLICE, 1, 1, false, Set.of()).unwrap();
@@ -107,7 +109,6 @@ class AetherNodeLeaderAwaitedTargetBootTest {
         // tier under the hermetic root, and say so since A0b); the control is about THIS warning, not about silence.
         assertThat(handedToTheSink).as("control: awaiting-target not raised yet").doesNotContain(AWAITING_TARGET);
 
-        recordWhatTheLeaderHandsToItsSink(ctx);
         ctx.setAwaitedTargetBound(timeSpan(1).millis());
         cdm.activate();
         assertThat(ctx.isActive()).as("control: the leader state is active").isTrue();
