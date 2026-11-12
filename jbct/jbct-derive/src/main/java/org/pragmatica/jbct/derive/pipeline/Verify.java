@@ -217,8 +217,8 @@ public sealed interface Verify permits Verify.unused {
 
     // ---- shared ----
     private static Halt toHalt(Verification line) {
-        return Halt.of(Halt.Kind.FLOORS_EXCEED_BUDGET,
-                       line.rule() + " @ " + line.scope() + ": " + line.detail());
+        return Halt.halt(Halt.Kind.FLOORS_EXCEED_BUDGET,
+                         line.rule() + " @ " + line.scope() + ": " + line.detail());
     }
 
     private static List<Verification> concat(List<Verification> head, List<Verification> tail) {

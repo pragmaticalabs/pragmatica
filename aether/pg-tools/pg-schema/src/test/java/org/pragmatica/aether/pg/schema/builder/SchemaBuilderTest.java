@@ -18,7 +18,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class SchemaBuilderTest {
 
-    static final SourceSpan SPAN = SourceSpan.of(SourceLocation.START, SourceLocation.START);
+    static final SourceSpan SPAN = SourceSpan.sourceSpan(SourceLocation.START, SourceLocation.START);
 
     @Nested
     class TableEvents {

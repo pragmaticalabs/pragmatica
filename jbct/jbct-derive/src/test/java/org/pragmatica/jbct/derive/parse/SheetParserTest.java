@@ -101,7 +101,7 @@ class SheetParserTest {
 
     @Test
     void sheetLines_locatesSpacedHeader_atCorrectLine() {
-        var lines = SheetLines.of("""
+        var lines = SheetLines.sheetLines("""
             schema_version = "0.1"
             [[ answers.q1 ]]
             scope = "path:x"

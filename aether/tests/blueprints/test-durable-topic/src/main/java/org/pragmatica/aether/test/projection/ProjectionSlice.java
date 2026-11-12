@@ -42,7 +42,7 @@ import static org.pragmatica.lang.Result.success;
 /// ONE partition and so one assignee, which is the scope those types state.
 @Slice
 public interface ProjectionSlice {
-    Topic<ProjectionEvent> PROJECTION_EVENTS = Topic.of("projection-events", ProjectionEvent.class);
+    Topic<ProjectionEvent> PROJECTION_EVENTS = Topic.topic("projection-events", ProjectionEvent.class);
     String MODEL_KEY = "model";
 
     record PublishRequest(int seq) {
@@ -89,7 +89,7 @@ public interface ProjectionSlice {
     static ProjectionSlice projectionSlice(@ProjectionEventPublisher Publisher<ProjectionEvent> publisher,
                                            @ProjectionEventRuntime ProjectionRuntime runtime) {
         var store = InMemoryProjectionStore.<Long> inMemoryProjectionStore();
-        var projection = runtime.attach(Projection.of(PROJECTION_EVENTS)
+        var projection = runtime.attach(Projection.projection(PROJECTION_EVENTS)
                                                   .into(store, _ -> MODEL_KEY)
                                                   .apply(ProjectionSlice::fold)
                                                   .withClaims(InMemoryProjectionClaims.inMemoryProjectionClaims(),

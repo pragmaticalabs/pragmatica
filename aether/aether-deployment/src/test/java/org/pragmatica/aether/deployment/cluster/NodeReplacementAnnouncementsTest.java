@@ -26,12 +26,12 @@ class NodeReplacementAnnouncementsTest {
     }
 
     private static List<OperatorWarningCode> codes(Option<NodeReplacementValue> before, NodeReplacementValue after) {
-        return NodeReplacementAnnouncements.of(OLD, before, after).stream().map(Announcement::code).toList();
+        return NodeReplacementAnnouncements.nodeReplacementAnnouncements(OLD, before, after).stream().map(Announcement::code).toList();
     }
 
     @Test
     void begin_isStarted_forTheOriginalAsSubject() {
-        var out = NodeReplacementAnnouncements.of(OLD, Option.none(), record(NodeReplacementPhase.PROVISIONING, ""));
+        var out = NodeReplacementAnnouncements.nodeReplacementAnnouncements(OLD, Option.none(), record(NodeReplacementPhase.PROVISIONING, ""));
 
         assertThat(out).extracting(Announcement::code).containsExactly(OperatorWarningCode.NODE_REPLACEMENT_STARTED);
         assertThat(out.getFirst().subject()).isEqualTo("core-OLD");

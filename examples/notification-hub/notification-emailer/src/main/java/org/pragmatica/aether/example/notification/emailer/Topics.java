@@ -24,5 +24,5 @@ import org.pragmatica.aether.slice.topic.Topic;
 /// correct addressing from broken. Publishing from the emailer to the analytics slice makes all
 /// three coordinates distinct, so the bare name resolves only if it is genuinely blueprint-scoped.
 public interface Topics {
-    Topic<DeliveryStatusEvent> DELIVERY_STATUS = Topic.of("delivery-status", DeliveryStatusEvent.class);
+    Topic<DeliveryStatusEvent> DELIVERY_STATUS = Topic.topic("delivery-status", DeliveryStatusEvent.class);
 }

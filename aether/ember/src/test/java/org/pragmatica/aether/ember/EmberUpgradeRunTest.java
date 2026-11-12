@@ -172,7 +172,7 @@ class EmberUpgradeRunTest {
 
     private static List<String> viewedBy(AetherNode viewer, Set<NodeId> ids) {
         return ids.stream()
-                  .map(id -> org.pragmatica.aether.node.AdvertisedVersion.of(id,
+                  .map(id -> org.pragmatica.aether.node.AdvertisedVersion.advertisedVersion(id,
                                                                             EmberNodeReplacementTest.runtime(viewer).topologyManager(),
                                                                             Option.option(viewer.membershipFsm())))
                   .toList();

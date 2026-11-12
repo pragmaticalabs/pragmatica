@@ -41,7 +41,7 @@ public class SaslStepsTest {
     @Test
     public void clientFinalMessage() {
         SASLInitialResponse saslInitialResponse = new SASLInitialResponse(Authentication.SUPPORTED_SASL, null, false, USER_NAME, CLIENT_NONCE);
-        SASLResponse saslResponse = SASLResponse.of(USER_PASSWORD, SERVER_FIRST_MESSAGE, CLIENT_NONCE,
+        SASLResponse saslResponse = SASLResponse.saslResponse(USER_PASSWORD, SERVER_FIRST_MESSAGE, CLIENT_NONCE,
                                                      saslInitialResponse.gs2Header(),
                                                      saslInitialResponse.clientFirstMessageBare(),
                                                      null);

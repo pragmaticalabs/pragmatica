@@ -15,7 +15,7 @@ class TopicTest {
 
     @Test
     void of_withClass_carriesNameAndPayloadType() {
-        var topic = Topic.of("seat-sold", SeatSold.class);
+        var topic = Topic.topic("seat-sold", SeatSold.class);
 
         assertThat(topic.name()).isEqualTo("seat-sold");
         assertThat(topic.payloadType().rawType()).isEqualTo(SeatSold.class);
@@ -24,7 +24,7 @@ class TopicTest {
     @Test
     void of_withTypeToken_carriesGenericPayloadType() {
         var token = new TypeToken<SeatSold>() {};
-        var topic = Topic.of("seat-sold", token);
+        var topic = Topic.topic("seat-sold", token);
 
         assertThat(topic.name()).isEqualTo("seat-sold");
         assertThat(topic.payloadType()).isEqualTo(token);
@@ -32,7 +32,7 @@ class TopicTest {
 
     @Test
     void of_withClass_producesSamePayloadTypeAsMatchingTypeToken() {
-        var topic = Topic.of("seat-sold", SeatSold.class);
+        var topic = Topic.topic("seat-sold", SeatSold.class);
 
         assertThat(topic.payloadType()).isEqualTo(new TypeToken<SeatSold>() {});
     }

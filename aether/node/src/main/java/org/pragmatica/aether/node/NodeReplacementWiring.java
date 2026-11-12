@@ -336,12 +336,12 @@ public final class NodeReplacementWiring {
                                 NodeId original,
                                 Option<NodeReplacementValue> before,
                                 NodeReplacementValue after) {
-        NodeReplacementAnnouncements.of(original, before, after).forEach(a -> OperatorWarnings.raise(LOG,
-                                                                                                     warnings,
-                                                                                                     a.code(),
-                                                                                                     a.subject(),
-                                                                                                     "{}",
-                                                                                                     a.message()));
+        NodeReplacementAnnouncements.nodeReplacementAnnouncements(original, before, after).forEach(a -> OperatorWarnings.raise(LOG,
+                                                                                                                               warnings,
+                                                                                                                               a.code(),
+                                                                                                                               a.subject(),
+                                                                                                                               "{}",
+                                                                                                                               a.message()));
 
         return Unit.unit();
     }

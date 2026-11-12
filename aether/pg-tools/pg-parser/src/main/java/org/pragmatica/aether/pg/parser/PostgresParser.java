@@ -57,7 +57,7 @@ public final class PostgresParser {
     }
 
     public record SourceSpan(SourceLocation start, SourceLocation end) {
-        public static SourceSpan of(SourceLocation start, SourceLocation end) {
+        public static SourceSpan sourceSpan(SourceLocation start, SourceLocation end) {
             return new SourceSpan(start, end);
         }
 

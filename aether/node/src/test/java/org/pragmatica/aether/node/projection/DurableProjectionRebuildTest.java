@@ -143,7 +143,7 @@ class DurableProjectionRebuildTest {
     private static final String TOPIC_ADDRESS = "org.example:" + TOPIC_NAME + ":1.0.0";
     private static final String TOPIC_STREAM = "topic:" + TOPIC_ADDRESS;
     private static final String GROUP = DurableGroupIdentity.groupId(ARTIFACT, ON_PROJECTION_EVENT);
-    private static final Topic<AppEvent> TOPIC = Topic.of(TOPIC_NAME, AppEvent.class);
+    private static final Topic<AppEvent> TOPIC = Topic.topic(TOPIC_NAME, AppEvent.class);
     private static final String MODEL_KEY = "model";
     private static final int PARTITION = 0;
     private static final ConsumerAssignmentKey ASSIGNMENT_KEY = ConsumerAssignmentKey.consumerAssignmentKey(TOPIC_STREAM, PARTITION, GROUP);
@@ -209,7 +209,7 @@ class DurableProjectionRebuildTest {
         projection = support.attach(ARTIFACT.base(),
                                     TOPIC_STREAM,
                                     Option.none(),
-                                    Projection.of(TOPIC)
+                                    Projection.projection(TOPIC)
                                               .into(store, _ -> MODEL_KEY)
                                               .apply(DurableProjectionRebuildTest::fold)
                                               .withClaims(InMemoryProjectionClaims.inMemoryProjectionClaims(),
@@ -401,7 +401,7 @@ class DurableProjectionRebuildTest {
         projection = support.attach(ARTIFACT.base(),
                                     TOPIC_STREAM,
                                     Option.none(),
-                                    Projection.of(TOPIC)
+                                    Projection.projection(TOPIC)
                                               .into(freshStore, _ -> MODEL_KEY)
                                               .apply(DurableProjectionRebuildTest::fold)
                                               .withClaims(InMemoryProjectionClaims.inMemoryProjectionClaims(),

@@ -413,7 +413,7 @@ final class NettyHttpServer implements HttpServer {
         /// A refusal is a response like any other: it waits for the responses of the requests before it (see
         /// [ResponseSequence]), so closing the connection cannot lose one of them.
         private static void inOrder(ChannelHandlerContext ctx, Runnable write, boolean closes) {
-            var sequence = ResponseSequence.of(ctx.channel());
+            var sequence = ResponseSequence.responseSequence(ctx.channel());
 
             sequence.complete(sequence.reserve(), write, closes);
         }
@@ -741,7 +741,7 @@ final class NettyHttpServer implements HttpServer {
             this.keepAlive = keepAlive;
             this.onWritten = onWritten;
             this.lingerClose = lingerClose;
-            this.sequence = ResponseSequence.of(ctx.channel());
+            this.sequence = ResponseSequence.responseSequence(ctx.channel());
             this.slot = sequence.reserve();
             this.responseHeaders = new DefaultHttpHeaders();
         }

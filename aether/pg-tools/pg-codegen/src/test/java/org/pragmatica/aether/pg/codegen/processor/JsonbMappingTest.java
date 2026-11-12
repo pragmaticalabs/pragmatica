@@ -147,12 +147,12 @@ class JsonbMappingTest {
             var nick = """
                 package other;
 
-                import org.pragmatica.aether.slice.mapping.ValueMapping;
+                import org.pragmatica.lang.vo.ValueMapping;
                 import org.pragmatica.lang.Result;
 
                 public record Nick(String value) {
                     public static Result<Nick> nick(String raw) { return Result.success(new Nick(raw)); }
-                    public static ValueMapping<Nick, String> valueMapping() { return ValueMapping.of(Nick::value, Nick::nick); }
+                    public static ValueMapping<Nick, String> valueMapping() { return ValueMapping.valueMapping(Nick::value, Nick::nick); }
                 }
                 """;
             var repo = """
@@ -427,7 +427,7 @@ class JsonbMappingTest {
 
                 import org.pragmatica.aether.resource.db.JsonText;
                 import org.pragmatica.aether.resource.db.PgSql;
-                import org.pragmatica.aether.slice.mapping.ValueMapping;
+                import org.pragmatica.lang.vo.ValueMapping;
                 import org.pragmatica.lang.Option;
                 import org.pragmatica.lang.Promise;
                 import org.pragmatica.lang.Result;
@@ -435,7 +435,7 @@ class JsonbMappingTest {
                 record Settings(String raw) {
                     static Result<Settings> settings(JsonText text) { return Result.success(new Settings(text.value())); }
                     static ValueMapping<Settings, JsonText> valueMapping() {
-                        return ValueMapping.of(settings -> JsonText.jsonText(settings.raw()), Settings::settings);
+                        return ValueMapping.valueMapping(settings -> JsonText.jsonText(settings.raw()), Settings::settings);
                     }
                 }
 
@@ -644,12 +644,12 @@ class JsonbMappingTest {
         @Test
         void valueObjectLoweredToString_isCompileError() throws Exception {
             assertRefused(STRING_REPO_HEADER + """
-                import org.pragmatica.aether.slice.mapping.ValueMapping;
+                import org.pragmatica.lang.vo.ValueMapping;
                 import org.pragmatica.lang.Result;
 
                 record Raw(String text) {
                     static Result<Raw> raw(String text) { return Result.success(new Raw(text)); }
-                    static ValueMapping<Raw, String> valueMapping() { return ValueMapping.of(Raw::text, Raw::raw); }
+                    static ValueMapping<Raw, String> valueMapping() { return ValueMapping.valueMapping(Raw::text, Raw::raw); }
                 }
 
                 @PgSql
@@ -1371,7 +1371,7 @@ class JsonbMappingTest {
 
         import org.pragmatica.aether.pg.codegen.annotation.Query;
         import org.pragmatica.aether.resource.db.PgSql;
-        import org.pragmatica.aether.slice.mapping.ValueMapping;
+        import org.pragmatica.lang.vo.ValueMapping;
         import org.pragmatica.lang.Option;
         import org.pragmatica.lang.Promise;
         import org.pragmatica.lang.Result;
@@ -1379,7 +1379,7 @@ class JsonbMappingTest {
 
         record Nick(String value) {
             static Result<Nick> nick(String raw) { return Result.success(new Nick(raw)); }
-            static ValueMapping<Nick, String> valueMapping() { return ValueMapping.of(Nick::value, Nick::nick); }
+            static ValueMapping<Nick, String> valueMapping() { return ValueMapping.valueMapping(Nick::value, Nick::nick); }
         }
 
         record TagRow(long id, Option<Nick> nick) { static TagRow tagRow(long id, Option<Nick> nick) { return new TagRow(id, nick); } }
@@ -1400,7 +1400,7 @@ class JsonbMappingTest {
         import org.pragmatica.aether.pg.codegen.annotation.Query;
         import org.pragmatica.aether.resource.db.JsonText;
         import org.pragmatica.aether.resource.db.PgSql;
-        import org.pragmatica.aether.slice.mapping.ValueMapping;
+        import org.pragmatica.lang.vo.ValueMapping;
         import org.pragmatica.lang.Option;
         import org.pragmatica.lang.Promise;
         import org.pragmatica.lang.Result;
@@ -1409,7 +1409,7 @@ class JsonbMappingTest {
         record Settings(String raw) {
             static Result<Settings> settings(JsonText text) { return Result.success(new Settings(text.value())); }
             static ValueMapping<Settings, JsonText> valueMapping() {
-                return ValueMapping.of(settings -> JsonText.jsonText(settings.raw()), Settings::settings);
+                return ValueMapping.valueMapping(settings -> JsonText.jsonText(settings.raw()), Settings::settings);
             }
         }
 

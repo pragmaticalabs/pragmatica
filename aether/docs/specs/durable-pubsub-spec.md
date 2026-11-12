@@ -123,7 +123,7 @@ The subscriber handler shape stays `Fn1<Promise<Unit>, T>` in both tiers: in the
 A projection is **nothing but a durable subscriber with an idempotent apply**:
 
 ```java
-Projection.of(ORDERS_COMPLETED)                    // Topic<OrderCompleted>
+Projection.projection(ORDERS_COMPLETED)                 // Topic<OrderCompleted>
           .into(kvStore, key(e -> e.orderId()))    // or an entity ref
           .apply((state, event) -> fold(state, event));
 ```

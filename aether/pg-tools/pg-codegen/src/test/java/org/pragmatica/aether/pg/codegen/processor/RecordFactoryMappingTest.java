@@ -32,7 +32,7 @@ class RecordFactoryMappingTest {
 
         import org.pragmatica.aether.pg.codegen.annotation.Query;
         import org.pragmatica.aether.resource.db.PgSql;
-        import org.pragmatica.aether.slice.mapping.ValueMapping;
+        import org.pragmatica.lang.vo.ValueMapping;
         import org.pragmatica.lang.Cause;
         import org.pragmatica.lang.Option;
         import org.pragmatica.lang.Promise;
@@ -133,7 +133,7 @@ class RecordFactoryMappingTest {
             }
 
             static ValueMapping<OrderStatus, String> valueMapping() {
-                return ValueMapping.of(OrderStatus::value, OrderStatus::orderStatus);
+                return ValueMapping.valueMapping(OrderStatus::value, OrderStatus::orderStatus);
             }
         }
 

@@ -259,7 +259,7 @@ class StaticFileRouteSourceTest {
                                 .to(_ -> org.pragmatica.lang.Promise.success("OK"))
                                 .asText();
 
-            var combined = RouteSource.of(staticRoutes, apiRoute);
+            var combined = RouteSource.routeSource(staticRoutes, apiRoute);
             var routes = combined.routes().toList();
 
             assertThat(routes).hasSize(2);

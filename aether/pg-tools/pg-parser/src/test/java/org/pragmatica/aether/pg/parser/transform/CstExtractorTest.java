@@ -19,7 +19,7 @@ class CstExtractorTest {
 
     private CstNavigator parse(String sql) {
         var cst = PARSER.parseCst(sql).unwrap();
-        return CstNavigator.of((CstNode.NonTerminal) cst);
+        return CstNavigator.cstNavigator((CstNode.NonTerminal) cst);
     }
 
     private CstNavigator dataTypeFrom(String typeName) {

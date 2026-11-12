@@ -230,7 +230,7 @@ public final class CstExtractor {
                     return Option.present(term.text());
                 }
                 case CstNode.NonTerminal nt -> {
-                    var deeper = deepLeafText(CstNavigator.of(nt));
+                    var deeper = deepLeafText(CstNavigator.cstNavigator(nt));
 
                     if (deeper.isPresent()) {
                         return deeper;
@@ -317,7 +317,7 @@ public final class CstExtractor {
                 case CstNode.Token tok -> result.add(classifyRawIdentifier(tok.span(), tok.text()));
                 case CstNode.Terminal term when!term.text().equals(",") -> result.add(classifyRawIdentifier(term.span(),
                                                                                                             term.text()));
-                case CstNode.NonTerminal nt -> result.add(extractIdentifier(CstNavigator.of(nt)));
+                case CstNode.NonTerminal nt -> result.add(extractIdentifier(CstNavigator.cstNavigator(nt)));
                 default -> {}
             }
         }

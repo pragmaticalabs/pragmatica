@@ -24,7 +24,7 @@ public record VisibleBounds(long earliestRetained, long visibleHead) {
     }
 
     /// Decode the wire pair: `-1/-1` is "no ring", anything else is a real answer.
-    public static Option<VisibleBounds> of(long earliestRetained, long visibleHead) {
+    public static Option<VisibleBounds> decodeWire(long earliestRetained, long visibleHead) {
         return earliestRetained == NONE && visibleHead == NONE
                ? Option.none()
                : Option.some(new VisibleBounds(earliestRetained, visibleHead));

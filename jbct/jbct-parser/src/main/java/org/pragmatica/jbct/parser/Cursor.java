@@ -31,7 +31,7 @@ public sealed interface Cursor permits Cursor.Leaf, Cursor.Branch, Cursor.ErrorN
     }
 
     default RuleKind kind() {
-        return RuleKind.of(kindId());
+        return RuleKind.ruleKind(kindId());
     }
 
     default boolean kindIs(RuleKind k) {
