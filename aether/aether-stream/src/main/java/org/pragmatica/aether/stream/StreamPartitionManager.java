@@ -3022,7 +3022,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                          partition,
                          confirmationFactorFor(streamName),
                          ring,
-                         Math.min(Math.min(offset, ring.durableOffset()), peerAcknowledgedThrough(streamName, partition)));
+                         Math.min(Math.min(offset, ring.durableOffset()),
+                                  peerAcknowledgedThrough(streamName, partition)));
         }
 
         if (offset >= ring.headOffset()) {
@@ -3073,7 +3074,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                               long bound) {
         ring.advanceVisible(ownerRoleHolds(streamName, partition, confirmationFactor)
                             ? bound
-                            : Math.min(bound, Math.min(ring.durableOffset(), committedMarkThrough(streamName, partition))));
+                            : Math.min(bound,
+                                       Math.min(ring.durableOffset(), committedMarkThrough(streamName, partition))));
     }
 
     /// Whether this node may act on the owner path of `(streamName, partition)` now: the lease is read FIRST (it reads the
@@ -3081,19 +3083,20 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// for it. Confirmation factor 1 and a manager with both the lease and the ownership-record seams unwired keep the pre-lease
     /// owner rule; a half-wired manager fails closed (an unwired lease is never valid, an unwired record source holds none).
     private boolean ownerRoleHolds(String streamName, int partition, int confirmationFactor) {
-        return ownerChecksBypassed(confirmationFactor) || ownerLease.valid() && namesThisNodeActivated(streamName, partition);
+        return ownerChecksBypassed(confirmationFactor) || ownerLease.valid() && namesThisNodeActivated(streamName,
+                                                                                                       partition);
     }
 
     private boolean ownerChecksBypassed(int confirmationFactor) {
-        return confirmationFactor < 2 || ownerLease == OwnerLease.UNWIRED
-                                         && ownershipRecords == OwnerActivation.OwnershipRecordSource.UNWIRED;
+        return confirmationFactor < 2 || ownerLease == OwnerLease.UNWIRED && ownershipRecords == OwnerActivation.OwnershipRecordSource.UNWIRED;
     }
 
     private boolean namesThisNodeActivated(String streamName, int partition) {
         return ownershipRecords.committed(streamName, partition)
-                               .isPresent() && ownerWriteAdmission.remoteCommittedOwner(streamName, partition)
-                                                                  .isEmpty() && ownerActivated.isActivated(streamName,
-                                                                                                           partition);
+                               .isPresent()
+               && ownerWriteAdmission.remoteCommittedOwner(streamName, partition)
+                                     .isEmpty()
+               && ownerActivated.isActivated(streamName, partition);
     }
 
     private long peerAcknowledgedThrough(String streamName, int partition) {
