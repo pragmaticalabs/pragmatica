@@ -14,7 +14,6 @@ public interface OwnerLease {
     boolean valid();
     /// The unbound default. Never valid, so a half-wired manager that reaches it fails closed.
     OwnerLease UNWIRED = () -> false;
-
     /// The fixed test-scope "valid" lease: the one object every unit fixture that wires the ownership-record seam passes as its lease.
     /// Production never binds it; the boot check in `StreamAssembly` rejects it BY IDENTITY, like [#UNWIRED]. Tests only.
     OwnerLease TEST_VALID = () -> true;
