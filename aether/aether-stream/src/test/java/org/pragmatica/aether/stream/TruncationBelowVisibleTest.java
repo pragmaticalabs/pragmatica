@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -148,7 +149,15 @@ class TruncationBelowVisibleTest {
         assertThat(replica.quarantinedAt(STREAM, PARTITION).isPresent()).as("the quarantine stands").isTrue();
     }
 
+    /// The sink hands off on its own thread: the delivered list is read once it stopped growing for a quiet period.
     private List<OperatorWarningCode> codes() {
+        var last = -1;
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+        while (delivered.size() != last && System.nanoTime() < deadline) {
+            last = delivered.size();
+            sleepQuietly();
+        }
         return delivered.stream().map(OperatorWarning::code).toList();
     }
 
@@ -161,7 +170,7 @@ class TruncationBelowVisibleTest {
                   ? streamPartitionManager(Long.MAX_VALUE, Option.some(walDir))
                   : streamPartitionManager(Long.MAX_VALUE);
         replica.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
-        replica.operatorWarnings((OperatorWarningSink) delivered::add);
+        replica.operatorWarnings(OperatorWarningSink.handingOffTo(delivered::add));
         replica.createStream(configOf(confirmationFactor)).onFailure(cause -> fail(cause.message()));
         for (var i = 0L; i <= VISIBLE; i++) {
             replica.appendRecovered(STREAM, PARTITION, i, ("r" + i).getBytes(UTF_8), 1000L + i, E1)
@@ -171,6 +180,15 @@ class TruncationBelowVisibleTest {
         assertThat(replica.appendRecovered(STREAM, PARTITION, 1L, "other".getBytes(UTF_8), 2000L, E2).isFailure())
             .as("control: a divergence at offset 1").isTrue();
         replica.partitionBuffer(STREAM, PARTITION).or(() -> fail("no ring")).advanceVisible(visibleThrough);
+    }
+
+    private static void sleepQuietly() {
+        try {
+            TimeUnit.MILLISECONDS.sleep(300);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            fail("interrupted");
+        }
     }
 
     private static StreamConfig configOf(int confirmationFactor) {
