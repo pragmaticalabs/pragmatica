@@ -1590,7 +1590,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private static Promise<Unit> boundedWait(Promise<Unit> lane) {
-        return lane.map(_ -> unit()).timeout(PUBLISH_COMMIT_WAIT).recover(_ -> unit());
+        return lane.map(_ -> unit())
+                   .timeout(PUBLISH_COMMIT_WAIT)
+                   .recover(_ -> unit());
     }
 
     /// #1564: create a DECLARED stream — a `[streams.X]` resource, a durable topic (and its dead-letter stream)

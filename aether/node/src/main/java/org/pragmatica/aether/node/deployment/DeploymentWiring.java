@@ -595,7 +595,10 @@ public final class DeploymentWiring {
 
     /// Test seam (#3002): `hop` runs the task that resolves the returned promise ([Promise#continueOn(Executor)]); production uses the async
     /// executor. A test executor that finishes the task before `execute` returns forces the "already resolved when attached" ordering.
-    Promise<Unit> leaveQuorum(Runnable routePassive, Supplier<Promise<Unit>> delivered, Runnable quiesce, Executor hop) {
+    Promise<Unit> leaveQuorum(Runnable routePassive,
+                              Supplier<Promise<Unit>> delivered,
+                              Runnable quiesce,
+                              Executor hop) {
         return leftQuorum(routePassive, delivered, quiesce).continueOn(hop);
     }
 
