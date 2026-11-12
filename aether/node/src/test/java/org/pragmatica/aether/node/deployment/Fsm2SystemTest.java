@@ -904,6 +904,35 @@ class Fsm2SystemTest {
             }
         }
 
+        /// #3002 through the production path: what the caller chains on the returned promise runs on neither the thread that resolved the wait nor
+        /// the pooled thread that ran the quiesce. Without the hop, the `flatMap` into the pooled quiesce resolves the returned promise either on
+        /// the quiesce's thread (the quiesce still pending when `flatMap` looked) or inline on the resolver (the quiesce already finished), so
+        /// this is RED in every round at the base; with the hop, a fresh virtual thread of the async executor resolves it.
+        @Test
+        void leaveQuorum_continuationRunsOffTheQuiesceAndOffTheResolver() {
+            var resolver = Executors.newSingleThreadExecutor(runnable -> new Thread(runnable, "resolver-3002"));
+
+            try (var harness = new Fsm2Harness(DeploymentEngine.LEGACY, false).assembled()) {
+                for (var round = 0; round < ROUNDS; round++) {
+                    var continuedOn = new AtomicReference<Thread>();
+                    var quiescedOn = new AtomicReference<Thread>();
+                    var resolvedOn = new AtomicReference<Thread>();
+                    var delivered = Promise.<Unit> promise();
+                    var left = harness.wiring.leaveQuorum(() -> {}, () -> delivered, () -> quiescedOn.set(Thread.currentThread()))
+                                             .map(_ -> recordOn(continuedOn));
+
+                    resolver.execute(() -> resolveOn(delivered, resolvedOn));
+
+                    assertThat(left.await(LEFT_BOUND).isSuccess()).as("the quorum is left").isTrue();
+                    assertThat(continuedOn.get()).as("off the resolver and off the quiesce's thread, round " + round)
+                                                 .isNotSameAs(resolvedOn.get())
+                                                 .isNotSameAs(quiescedOn.get());
+                }
+            } finally {
+                resolver.shutdownNow();
+            }
+        }
+
         private static final String HOP_THREAD = "hop-3002";
 
         /// Runs the task on a fresh thread and joins it before `execute` returns: the hop's promise is ALREADY resolved when anything is attached.
