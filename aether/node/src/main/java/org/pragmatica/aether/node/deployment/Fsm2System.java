@@ -235,8 +235,8 @@ public final class Fsm2System {
     /// The time constants the operator sets under `[timeouts.deployment]`: the reconcile tick and the apply deadline of R-4.1.7 (#970).
     static Timing timing(TimeoutsConfig.DeploymentTimeouts deployment) {
         return Timing.DEFAULT.withTick(deployment.reconciliationInterval().millis())
-                     .withApplyDeadline(deployment.applyDeadline().millis())
-                     .withApplySchemaPauseMax(deployment.applySchemaPauseMax().millis());
+                             .withApplyDeadline(deployment.applyDeadline().millis())
+                             .withApplySchemaPauseMax(deployment.applySchemaPauseMax().millis());
     }
 
     /// The configured nodes of role `core` (an entry with no role label counts as core), which `Absence.classOf` classes CORE without a directive

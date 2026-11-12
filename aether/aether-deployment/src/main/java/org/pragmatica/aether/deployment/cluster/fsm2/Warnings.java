@@ -303,7 +303,9 @@ public sealed interface Warnings {
             case UNJUDGEABLE -> adoptUnjudgeable(m, key.subject());
             case SUPPRESSED -> adoptSuppressed(m, ctx, key.subject());
             case GROWTH_BLOCKED -> adoptGrowthBlocked(m, key.subject());
-            case APPLY_DEADLINE -> BlueprintId.blueprintId(key.subject()).option().map(id -> adoptApplyDeadline(m, ctx, id)).or(m);
+            case APPLY_DEADLINE -> BlueprintId.blueprintId(key.subject()).option().map(id -> adoptApplyDeadline(m,
+                                                                                                                ctx,
+                                                                                                                id)).or(m);
             default -> m;
         };
     }
@@ -496,9 +498,17 @@ public sealed interface Warnings {
     /// leaders (a republish, a removal) and is closed.
     private static ClusterModel adoptApplyDeadline(ClusterModel m, Ctx ctx, BlueprintId id) {
         return m.outcomes.get(id)
-                .filter(outcome -> Deadlines.standing(m, id, outcome.attemptId()))
-                .map(outcome -> openApplyDeadline(m, id, outcome.attemptId()))
-                .or(() -> gone(m, ctx, APPLY_DEADLINE, id.asString(), "its deadline terminal was replaced or removed between leaders"));
+                         .filter(outcome -> Deadlines.standing(m,
+                                                               id,
+                                                               outcome.attemptId()))
+                         .map(outcome -> openApplyDeadline(m,
+                                                           id,
+                                                           outcome.attemptId()))
+                         .or(() -> gone(m,
+                                        ctx,
+                                        APPLY_DEADLINE,
+                                        id.asString(),
+                                        "its deadline terminal was replaced or removed between leaders"));
     }
 
     private static ClusterModel openApplyDeadline(ClusterModel m, BlueprintId id, String attempt) {

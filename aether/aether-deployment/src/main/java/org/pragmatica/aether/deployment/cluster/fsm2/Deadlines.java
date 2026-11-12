@@ -37,7 +37,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 public sealed interface Deadlines {
     /// The cause of the deadline terminal and the code of its warning.
     String EXCEEDED = "apply-deadline-exceeded";
-
     Set<SchemaStatus> PAUSING = Set.of(SchemaStatus.PENDING, SchemaStatus.MIGRATING);
     long NS_PER_MS = 1_000_000L;
 
@@ -72,8 +71,7 @@ public sealed interface Deadlines {
 
     /// A resumed leader did not observe the suspended interval: every clock starts again at its next pass.
     static ClusterModel restart(ClusterModel m) {
-        m.applyClocks.keys()
-                     .forEach(id -> m.applyClocks = m.applyClocks.remove(id));
+        m.applyClocks.keys().forEach(id -> m.applyClocks = m.applyClocks.remove(id));
 
         return m;
     }
@@ -81,12 +79,14 @@ public sealed interface Deadlines {
     private static List<Map.Entry<BlueprintId, DeploymentApplyValue>> openApplies(ClusterModel m) {
         return m.applies.entries()
                         .stream()
-                        .filter(entry -> declaresSlices(m, entry.getKey()))
+                        .filter(entry -> declaresSlices(m,
+                                                        entry.getKey()))
                         .filter(entry -> Blueprints.isOpen(m,
                                                            entry.getKey(),
                                                            entry.getValue()))
                         .filter(entry -> Outcomes.attemptOf(m,
-                                                            entry.getKey()).equals(entry.getValue().attemptId()))
+                                                            entry.getKey())
+                                                 .equals(entry.getValue().attemptId()))
                         .sorted(Comparator.comparing(entry -> entry.getKey()
                                                                    .asString()))
                         .toList();
@@ -100,9 +100,7 @@ public sealed interface Deadlines {
 
     /// The clock of an apply that is no longer open (completed, rolled back, removed) is dropped, so a republish starts a new one.
     private static ClusterModel forget(ClusterModel m, List<Map.Entry<BlueprintId, DeploymentApplyValue>> open) {
-        var ids = open.stream()
-                      .map(Map.Entry::getKey)
-                      .collect(Collectors.toSet());
+        var ids = open.stream().map(Map.Entry::getKey).collect(Collectors.toSet());
 
         m.applyClocks.keys()
                      .stream()
@@ -123,11 +121,13 @@ public sealed interface Deadlines {
     private static ApplyClock advance(ClusterModel m, Ctx ctx, BlueprintId id, DeploymentApplyValue apply) {
         var now = ctx.monoNs();
         var next = m.applyClocks.get(id)
-                    .filter(clock -> clock.attemptId().equals(apply.attemptId()))
-                    .map(clock -> clock.advanced(now,
-                                                 schemaGateOpen(m, id),
-                                                 pauseMaxNs(ctx)))
-                    .or(ApplyClock.applyClock(apply.attemptId(), now));
+                                .filter(clock -> clock.attemptId()
+                                                      .equals(apply.attemptId()))
+                                .map(clock -> clock.advanced(now,
+                                                             schemaGateOpen(m, id),
+                                                             pauseMaxNs(ctx)))
+                                .or(ApplyClock.applyClock(apply.attemptId(),
+                                                          now));
 
         m.applyClocks = m.applyClocks.put(id, next);
 
@@ -136,15 +136,11 @@ public sealed interface Deadlines {
 
     private static long pauseMaxNs(Ctx ctx) {
         return Math.max(0L,
-                        ctx.settings()
-                           .timing()
-                           .applySchemaPauseMax()) * NS_PER_MS;
+                        ctx.settings().timing().applySchemaPauseMax()) * NS_PER_MS;
     }
 
     private static boolean isExpired(Ctx ctx, ApplyClock clock) {
-        var deadline = ctx.settings()
-                          .timing()
-                          .applyDeadline();
+        var deadline = ctx.settings().timing().applyDeadline();
 
         return deadline > 0L && clock.unpausedNs() >= deadline * NS_PER_MS;
     }
@@ -185,8 +181,10 @@ public sealed interface Deadlines {
                            .map(value -> value.blueprint()
                                               .loadOrder()
                                               .stream()
-                                              .filter(slice -> Rows.activeCount(m, slice.artifact()) == 0)
-                                              .map(slice -> slice.artifact().asString())
+                                              .filter(slice -> Rows.activeCount(m,
+                                                                                slice.artifact()) == 0)
+                                              .map(slice -> slice.artifact()
+                                                                 .asString())
                                               .toList())
                            .or(List.of());
     }
@@ -206,7 +204,10 @@ public sealed interface Deadlines {
         m.applyDeadlineWarned = m.applyDeadlineWarned.put(id, attempt);
         ctx.warn(Warnings.APPLY_DEADLINE,
                  id.asString(),
-                 id.asString() + ": " + EXCEEDED + " after " + elapsedMs + " ms of unpaused time, slices not ACTIVE: " + failing
+                 id.asString()
+                + ": " + EXCEEDED
+                + " after " + elapsedMs
+                + " ms of unpaused time, slices not ACTIVE: " + failing
                 + "; republish or delete the blueprint");
 
         return m;
@@ -222,7 +223,9 @@ public sealed interface Deadlines {
                              .filter(entry -> !standing(m,
                                                         entry.getKey(),
                                                         entry.getValue()))
-                             .forEach(entry -> clear(m, ctx, entry.getKey()));
+                             .forEach(entry -> clear(m,
+                                                     ctx,
+                                                     entry.getKey()));
 
         return m;
     }

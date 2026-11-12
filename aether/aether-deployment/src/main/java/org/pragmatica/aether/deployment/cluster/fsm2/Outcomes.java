@@ -127,7 +127,11 @@ public sealed interface Outcomes {
     /// Rolls back the apply `attempt` of `id` once per declared artifact whose mark judged that attempt.
     private static ClusterModel rollbackJudged(ClusterModel m, Ctx ctx, BlueprintId id, String attempt) {
         markedArtifacts(m, id, attempt).filter(artifact -> !m.routings.containsKey(artifact.base()))
-                       .forEach(artifact -> rollback(m, ctx, id, List.of(artifact.asString()), MARKED_CAUSE));
+                       .forEach(artifact -> rollback(m,
+                                                     ctx,
+                                                     id,
+                                                     List.of(artifact.asString()),
+                                                     MARKED_CAUSE));
 
         return m;
     }
@@ -311,7 +315,11 @@ public sealed interface Outcomes {
             return m;
         }
 
-        openApplies(m, artifact).forEach(id -> rollback(m, ctx, id, List.of(artifact.asString()), cause));
+        openApplies(m, artifact).forEach(id -> rollback(m,
+                                                        ctx,
+                                                        id,
+                                                        List.of(artifact.asString()),
+                                                        cause));
 
         return m;
     }

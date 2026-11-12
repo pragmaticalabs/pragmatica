@@ -93,7 +93,8 @@ public final class ConfigValidator {
                                errors);
         storageMaintenanceErrors(config.timeouts().storageMaintenance(),
                                  errors);
-        applyDeadlineErrors(config.timeouts().deployment(), errors);
+        applyDeadlineErrors(config.timeouts().deployment(),
+                            errors);
         streamingErrors(config.streaming(), errors);
         promotionEscapeErrors(config.streaming(),
                               config.timeouts().swim().suspectTimeout(),
@@ -179,8 +180,9 @@ public final class ConfigValidator {
     private static void applyDeadlineErrors(TimeoutsConfig.DeploymentTimeouts deployment, List<String> errors) {
         positiveTimeSpanError(deployment.applyDeadline(), "timeouts.deployment.apply_deadline", errors);
         if (deployment.applySchemaPauseMax().millis() < 0) {
-            errors.add("timeouts.deployment.apply_schema_pause_max must not be negative. Got: "
-                      + deployment.applySchemaPauseMax().millis() + "ms");
+            errors.add("timeouts.deployment.apply_schema_pause_max must not be negative. Got: " + deployment.applySchemaPauseMax()
+                                                                                                            .millis()
+                      + "ms");
         }
     }
 
