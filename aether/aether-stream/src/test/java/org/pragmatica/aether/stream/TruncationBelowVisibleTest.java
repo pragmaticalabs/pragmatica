@@ -140,6 +140,20 @@ class TruncationBelowVisibleTest {
                                             OperatorWarningCode.STREAM_TRUNCATION_QUARANTINE_CLEARED);
     }
 
+    /// The other close of a refusal: the stream is destroyed while the refusal stands, and `closeRefusedCut` (the replica-goes-away route,
+    /// not the cut-resumed route above) raises the same quarantine-cleared code. Mutation: closeRefusedCut does not raise.
+    @Test
+    void aRefusal_isClosedByQuarantineCleared_whenTheStreamIsDestroyed() {
+        quarantinedReplica(2, false);
+        replica.repairDivergence(STREAM, PARTITION, _ -> true);
+
+        replica.destroyStream(STREAM).onFailure(cause -> fail(cause.message()));
+
+        assertThat(codes()).containsExactly(OperatorWarningCode.STREAM_TRUNCATION_REFUSED,
+                                            OperatorWarningCode.STREAM_TRUNCATION_QUARANTINE_CLEARED);
+        assertThat(delivered.getLast().subject()).isEqualTo(STREAM + "[" + PARTITION + "]");
+    }
+
     private void assertRetracted() {
         var ring = replica.partitionBuffer(STREAM, PARTITION).or(() -> fail("no ring"));
 
