@@ -1313,6 +1313,20 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// #2834: one open warning of a leader-local family of the cluster FSM (D.6), by its opener code and subject. Written by the leader in
+    /// the drain that raised the opener and removed in the drain that raised its recovery, so a new leader inherits the exact open set and
+    /// closes what no longer holds. Runtime state: its subjects name nodes and artifacts a restored cluster no longer has.
+    record FsmWarningKey(String code, String subject) implements RuntimeKey {
+        @Override
+        public String asString() {
+            return "fsm-warning/" + code + "/" + subject;
+        }
+
+        public static FsmWarningKey fsmWarningKey(String code, String subject) {
+            return new FsmWarningKey(code, subject);
+        }
+    }
+
     /// #1543 part F: the one rolling-upgrade run of the cluster. Runtime state: a run names nodes a restored cluster no longer has.
     record UpgradeRunKey() implements RuntimeKey {
         public static final UpgradeRunKey INSTANCE = new UpgradeRunKey();

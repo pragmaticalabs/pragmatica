@@ -188,6 +188,11 @@ public final class ClusterModel {
     PSet<NodeId> unplacedWarned = PSet.empty(scans);
     /// Datasources whose FAILED record was committed while suspended: announced once on the resume (`Schemas.announceWithheld`).
     PSet<String> withheldBlocked = PSet.empty(scans);
+    /// #2834: the mirror of the committed open set of the leader-local families (`FsmWarningKey`), as this leader last saw it committed.
+    PMap<AetherKey.FsmWarningKey, AetherValue.FsmWarningValue> warningRows = PMap.empty(scans);
+    /// #2834: a step raised or closed a warning of a leader-local family, or a write of the open set did not land: the next flush compares
+    /// the open sets with `warningRows` (`Warnings.draft`).
+    boolean warningsDirty;
     // -- the write side (5.7) --------------------------------------------------------------------------------------
     PMap<String, Submitted> submitted = PMap.empty(scans);
     List<TxDraft> outbox = List.of();
@@ -297,6 +302,8 @@ public final class ClusterModel {
         c.assignmentRefusals = assignmentRefusals.rebound(meter);
         c.unplacedWarned = unplacedWarned.rebound(meter);
         c.withheldBlocked = withheldBlocked.rebound(meter);
+        c.warningRows = warningRows.rebound(meter);
+        c.warningsDirty = warningsDirty;
         c.submitted = submitted.rebound(meter);
         c.outbox = outbox;
         c.parked = parked;
@@ -537,7 +544,8 @@ public final class ClusterModel {
         ORPHAN_TARGET,
         STALE_MARK,
         STALE_TOPIC_ROW,
-        DIVERGENCE
+        DIVERGENCE,
+        WARNINGS
     }
 
     /// One transaction the handlers intend to submit at the end of the drain (R-5.7.4): its kind, its primary key,

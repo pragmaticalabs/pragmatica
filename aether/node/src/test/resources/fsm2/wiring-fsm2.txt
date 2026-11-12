@@ -27,6 +27,8 @@ B1.cluster.DeploymentApplyKey.put -> fsm2:Fsm2Routes
 B1.cluster.DeploymentApplyKey.remove -> fsm2:Fsm2Routes
 B1.cluster.DeploymentOutcomeKey.put -> fsm2:Fsm2Routes
 B1.cluster.DeploymentOutcomeKey.remove -> fsm2:Fsm2Routes
+B1.cluster.FsmWarningKey.put -> fsm2:Fsm2Routes
+B1.cluster.FsmWarningKey.remove -> fsm2:Fsm2Routes
 B1.cluster.GovernorAnnouncementKey.put -> fsm2:Fsm2Routes
 B1.cluster.GovernorAnnouncementKey.remove -> fsm2:Fsm2Routes
 B1.cluster.NodeDepartureKey.put -> fsm2:Fsm2Routes

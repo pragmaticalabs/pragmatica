@@ -171,6 +171,35 @@ class CommunityGrowthLedgerTest {
         assertThat(w.h.warns(OperatorWarningCode.COMMUNITY_GROWTH_RESUMED.code())).isEmpty();
     }
 
+    /// #2834: once per episode. Red when: a second refused worker of the same blocked source raises `community-growth-blocked` again.
+    @Test
+    void growthBlocked_secondRefusal_isReportedOncePerSource() {
+        var w = eastAtTheBound();
+
+        w.h.deliver(join(w, W1, 21L));
+        w.h.deliver(join(w, W2, 22L));
+        assertThat(w.h.warns(OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED.code())).hasSize(1);
+    }
+
+    /// #2834: once per episode. Red when: a second give-up of the same worker raises `community-assignment-unplaced` again.
+    @Test
+    void refusedAssignment_givenUpTwice_isReportedOnce() {
+        var w = eastWithACommunity();
+
+        w.h.policy = FsmHarness.SettlePolicy.HOLD;
+        w.h.deliver(join(w, W1, 21L));
+        for (var refusal = 1; refusal < Directory.MAX_ASSIGNMENT_ATTEMPTS; refusal++) {
+            refuseTheAssignment(w, 3 + refusal);
+        }
+        refuseUnmoved(w);
+        w.h.deliver(join(w, W1, 22L));
+        for (var refusal = 1; refusal < Directory.MAX_ASSIGNMENT_ATTEMPTS; refusal++) {
+            refuseTheAssignment(w, 100 + refusal);
+        }
+        refuseUnmoved(w);
+        assertThat(w.h.warns(Directory.ASSIGNMENT_UNPLACED)).hasSize(1);
+    }
+
     /// NT-150: the next admission for a blocked source raises the recovery, same subject, once.
     @Test
     void growthResumed_closesTheBlock_onTheNextAdmission() {

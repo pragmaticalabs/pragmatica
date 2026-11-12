@@ -125,6 +125,20 @@ class AdversarialRound2Test {
         assertThat(w.present(new ActivationDirectiveKey(worker))).isFalse();
     }
 
+    /// #2834: once per episode. Red when: a second join of a worker that no policy matches raises `worker-no-community-policy` again.
+    @Test
+    void workerMatchingNoPolicy_joiningAgain_isReportedOnce() {
+        var worker = node("worker-1");
+        var w = MbWorld.world(CORE_1, CORE_2, CORE_3)
+                       .seams(seams -> seams.withCommunityPolicies(Map.of("p", policyFor("other-source")))
+                                            .withMemberSource(Map.of(worker, "east")))
+                       .activate();
+
+        w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, 21L)));
+        w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, 22L)));
+        assertThat(w.h.warns("worker-no-community-policy")).hasSize(1);
+    }
+
     private static CommunityPlacement policyFor(String source) {
         return new CommunityPlacement("p", 4, List.of(new Location(source, Option.none(), 0, 1)));
     }

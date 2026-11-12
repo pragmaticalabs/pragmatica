@@ -206,6 +206,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$DrainDeadlineKey (nodeId:org
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$EndpointKey (artifact:org.pragmatica.aether.artifact.Artifact,methodName:org.pragmatica.aether.slice.MethodName,instanceNumber:int)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$EntityCheckpointKey (keyspace:java.lang.String,partition:int)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$EntityKeyspaceRegistrationKey (keyspace:java.lang.String,node:org.pragmatica.consensus.NodeId)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$FsmWarningKey (code:java.lang.String,subject:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$GossipKeyRotationKey ()
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$GovernorAnnouncementKey (communityId:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$HttpNodeRouteKey (httpMethod:java.lang.String,pathPrefix:java.lang.String,nodeId:org.pragmatica.consensus.NodeId)
@@ -290,6 +291,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$EndpointValue (nodeId:org.
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$EntityFoldCheckpointValue (throughOffset:long,blockIdHex:java.lang.String,timestamp:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$EntityKeyspaceRegistrationValue (partitionCount:int)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$EpochStart (epoch:org.pragmatica.aether.slice.generation.Epoch,startOffset:long,coversFrom:org.pragmatica.aether.slice.generation.Epoch)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$FsmWarningValue (members:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$Generation (viewSequence:long,counter:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$GossipKeyRotationValue (currentKeyId:int,currentKey:java.lang.String,previousKeyId:int,previousKey:java.lang.String,rotatedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$GovernorAnnouncementValue (governorId:org.pragmatica.consensus.NodeId,memberCount:int,members:java.util.List<org.pragmatica.consensus.NodeId>,tcpAddress:java.lang.String,announcedAt:long,communityTerm:long,communityEpoch:org.pragmatica.aether.slice.generation.Epoch,observedCoreEpoch:org.pragmatica.aether.slice.generation.Epoch,transitionedAt:org.pragmatica.hlc.HlcTimestamp,dissolved:boolean)
@@ -657,6 +659,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherKey$DrainDeadlineKey 1104
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$EndpointKey 1105
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$EntityCheckpointKey 1106
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$EntityKeyspaceRegistrationKey 1107
+TAG  org.pragmatica.aether.slice.kvstore.AetherKey$FsmWarningKey 2902
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$GossipKeyRotationKey 1108
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$GovernorAnnouncementKey 1109
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$HttpNodeRouteKey 1110
@@ -751,6 +754,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$EntityFoldCheckpointValue 1
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$EntityKeyspaceRegistrationValue 1621
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$EpochStart 1748
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$FreedCause 2200
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$FsmWarningValue 2903
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$Generation 2153
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$GossipKeyRotationValue 1622
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$GovernorAnnouncementValue 1623

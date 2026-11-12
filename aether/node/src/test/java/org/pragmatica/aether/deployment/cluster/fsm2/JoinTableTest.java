@@ -13,6 +13,7 @@ import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
@@ -279,7 +280,9 @@ class JoinTableTest {
         w.unforeseen(CORE_2);
         w.h.clearLog();
         w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admit(CORE_2, A)));
-        assertThat(w.h.submits()).isEmpty();
+        assertThat(w.h.submitsBesides(SubmitKind.WARNINGS)).isEmpty();
+        assertThat(w.h.warningPuts()).as("the open join-unmatched warning is persisted")
+                  .containsExactly(new FsmWarningKey("join-unmatched", CORE_2.id()));
         assertThat(w.h.warns("join-unmatched")).hasSize(1);
         var warnsBefore = w.h.warns("join-unmatched").size();
 
