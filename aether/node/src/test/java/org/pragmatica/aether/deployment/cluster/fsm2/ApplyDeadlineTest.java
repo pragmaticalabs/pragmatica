@@ -21,6 +21,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.FsmWarningValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
@@ -75,7 +76,30 @@ class ApplyDeadlineTest {
     }
 
     private static SchemaVersionValue schema(SchemaStatus status) {
-        return new SchemaVersionValue("ds", 1, "m1", status, "g:a:1", ID, 2, FsmHarness.START_WALL);
+        return schemaOwnedBy(status, ID);
+    }
+
+    private static SchemaVersionValue schemaOwnedBy(SchemaStatus status, BlueprintId owner) {
+        return new SchemaVersionValue("ds", 1, "m1", status, "g:a:1", owner, 2, FsmHarness.START_WALL);
+    }
+
+    private static String lastWarning(FsmHarness h) {
+        return h.warns("apply-deadline-exceeded").getLast().message();
+    }
+
+    /// The apply's slice is ACTIVE and the SUCCEEDED outcome is submitted but unsettled (held).
+    private static FsmHarness succeededAndHeld() {
+        var h = publishedApply();
+        var host = hosts(h, ORDERS).getFirst();
+
+        node(h, host, 1L).follows(ORDERS);
+        h.drain();
+        h.policy = FsmHarness.SettlePolicy.HOLD;
+        node(h, host, 1L).follows(ORDERS);
+        h.drain();
+        assertThat(h.submits(ClusterModel.SubmitKind.SUCCEEDED)).as("the success is in flight").isNotEmpty();
+
+        return h;
     }
 
     // -- NT-157 ----------------------------------------------------------------------------------------------------
@@ -229,6 +253,96 @@ class ApplyDeadlineTest {
         h.advanceBySeconds(20 * 60);
         assertThat(status(h)).isNotEqualTo(Option.some(DeploymentOutcomeStatus.ROLLED_BACK));
         assertThat(h.warns("apply-deadline-exceeded")).isEmpty();
+    }
+
+    // -- boundaries and guards (mutation pins) ----------------------------------------------------------------------
+    /// The deadline is inclusive. Red when: an apply whose unpaused time equals the deadline is not terminated at that pass (it waits a tick).
+    @Test
+    void deadline_isInclusive() {
+        var h = publishedApply(DeploymentAtomicity.ALL_OR_NOTHING, timing -> timing.withApplyDeadline(60_000L));
+
+        h.advanceBySeconds(5 * 60);
+        assertThat(status(h)).isEqualTo(Option.some(DeploymentOutcomeStatus.ROLLED_BACK));
+        assertThat(lastWarning(h)).as("terminated at exactly the deadline").contains("after 60000 ms of unpaused time");
+    }
+
+    /// Red when: a datasource owned by another blueprint base pauses this blueprint's clock.
+    @Test
+    void foreignDatasource_doesNotPauseTheClock() {
+        var h = publishedApply();
+
+        h.seed(new SchemaVersionKey("ds"), schemaOwnedBy(SchemaStatus.MIGRATING, blueprintId("org.other:app:1.0.0")));
+        h.advanceBySeconds(16 * 60);
+        assertThat(status(h)).isEqualTo(Option.some(DeploymentOutcomeStatus.ROLLED_BACK));
+    }
+
+    /// Red when: the shipped default of the schema pause cap is not two hours, or of the deadline not fifteen minutes.
+    @Test
+    void defaults_areFifteenMinutes_andTwoHours() {
+        assertThat(Timing.DEFAULT.applyDeadline()).isEqualTo(15 * 60_000L);
+        assertThat(Timing.DEFAULT.applySchemaPauseMax()).isEqualTo(2 * 60 * 60_000L);
+    }
+
+    /// Success wins while it is in flight. Red when: an apply whose slices are ACTIVE and whose SUCCEEDED outcome is unsettled is terminated
+    /// by the deadline.
+    @Test
+    void successInFlight_isNotTerminatedByTheDeadline() {
+        var h = succeededAndHeld();
+
+        h.advanceBySeconds(20 * 60);
+        assertThat(h.warns("apply-deadline-exceeded")).isEmpty();
+        assertThat(h.submits(ClusterModel.SubmitKind.ROLLBACK)).isEmpty();
+    }
+
+    /// Success wins while it is in flight, even when a slice stops being ACTIVE afterwards. Red when: the in-flight SUCCEEDED does not by itself
+    /// stop the deadline.
+    @Test
+    void successInFlight_staysProtected_whenASliceLeavesActive() {
+        var h = succeededAndHeld();
+
+        node(h, hosts(h, ORDERS).getFirst(), 1L).writes(ORDERS, SliceObservedState.LOADED);
+        h.drain();
+        h.advanceBySeconds(20 * 60);
+        assertThat(h.warns("apply-deadline-exceeded")).isEmpty();
+        assertThat(h.submits(ClusterModel.SubmitKind.ROLLBACK)).isEmpty();
+    }
+
+    /// Once per episode. Red when: a deadline terminal whose rollback is still unsettled raises the warning again at every pass.
+    @Test
+    void deadlineWarning_isRaisedOnce_whileTheTerminalIsUnsettled() {
+        var h = publishedApply();
+
+        h.policy = FsmHarness.SettlePolicy.HOLD;
+        h.advanceBySeconds(16 * 60);
+        h.advanceBySeconds(5 * 60);
+        assertThat(h.warns("apply-deadline-exceeded")).hasSize(1);
+    }
+
+    /// Red when: a warning stands for a different terminal of the same attempt (here FAILED by another cause) instead of being closed.
+    @Test
+    void deadlineWarning_isClosed_whenTheSameAttemptEndsOtherwise() {
+        var h = publishedApply();
+
+        h.advanceBySeconds(16 * 60);
+        assertThat(h.warns("apply-deadline-exceeded")).hasSize(1);
+        h.seed(new DeploymentOutcomeKey(ID),
+               new DeploymentOutcomeValue(DeploymentOutcomeStatus.FAILED, List.of(), "slice-failed", FsmHarness.START_WALL, 9L, ATTEMPT));
+        h.advanceBySeconds(60);
+        assertThat(h.warns("apply-deadline-cleared")).hasSize(1);
+    }
+
+    /// Red when: the clock of an apply that ended survives it, so a republish of the same attempt is condemned at its first pass.
+    @Test
+    void closedApply_clockIsForgotten_soARepublishStartsAgain() {
+        var h = publishedApply();
+
+        h.advanceBySeconds(16 * 60);
+        assertThat(status(h)).isEqualTo(Option.some(DeploymentOutcomeStatus.ROLLED_BACK));
+        h.advanceBySeconds(60);
+        h.seedRemove(new DeploymentOutcomeKey(ID));
+        publish(h, blueprint(APP, false, ATTEMPT, slice(ORDERS, 1, 1, Set.of())), Option.none());
+        h.advanceBySeconds(2 * 60);
+        assertThat(status(h)).as("two minutes into a new apply").isEqualTo(Option.some(DeploymentOutcomeStatus.IN_PROGRESS));
     }
 
     // -- inheritance (#2834 family) -----------------------------------------------------------------------------------
