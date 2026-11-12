@@ -384,8 +384,7 @@ public final class DeploymentWiring {
 
     /// The class name without its package; unlike `getSimpleName` it is not empty for an anonymous class.
     private static String typeName(Object reader) {
-        var name = reader.getClass()
-                         .getName();
+        var name = reader.getClass().getName();
 
         return name.substring(name.lastIndexOf('.') + 1);
     }
