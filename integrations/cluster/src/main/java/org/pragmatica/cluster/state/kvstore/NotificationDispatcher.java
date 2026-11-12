@@ -113,12 +113,10 @@ final class NotificationDispatcher {
     private final Map<String, Long> slowReportedAt = new ConcurrentHashMap<>();
     private final AtomicLong slowHandlerMaxNanos = new AtomicLong();
     private final AtomicLong closedDropped = new AtomicLong();
-
     /// Told, on the delivering thread and in registration order, the revision of each replay item BEFORE its burst is computed and delivered, so
     /// an install is signalled even when its burst is empty. A LIST, not one slot (#2981 C1): FSM2's install signal and the node lease's revoke
     /// both listen, and a single slot would let whichever registers second silently displace the other. Appended at wiring.
     private final List<LongConsumer> replayStartListeners = new CopyOnWriteArrayList<>();
-
     private final ThreadLocal<Boolean> replaying = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private final ThreadLocal<Option<DeliveryBatch>> delivering = ThreadLocal.withInitial(Option::none);
     /// Mutation guard holder only (inline mode): true while this thread's drain is running, so a reentrant write appends.

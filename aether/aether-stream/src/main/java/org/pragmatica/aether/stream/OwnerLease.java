@@ -12,7 +12,6 @@ package org.pragmatica.aether.stream;
 public interface OwnerLease {
     /// Whether the lease is valid now. Reads the clock first, then the lease state; never cached.
     boolean valid();
-
     /// The unbound default. Never valid, so a half-wired manager that reaches it fails closed.
     OwnerLease UNWIRED = () -> false;
 }

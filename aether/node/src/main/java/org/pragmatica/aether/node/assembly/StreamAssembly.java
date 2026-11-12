@@ -1003,7 +1003,12 @@ public sealed interface StreamAssembly {
         streamPartitionManager.ownerServeGate(ownerActivation::admit);
         // #2981 step 2: the node lease. Renewals go through consensus every owner_lease_renewal; the deferred task is cancelled with the
         // node's other periodic tasks.
-        var nodeLease = nodeLease(config.self(), streamingConfig, kvStore, clusterCommandApplier, operatorWarningSink, allEntries);
+        var nodeLease = nodeLease(config.self(),
+                                  streamingConfig,
+                                  kvStore,
+                                  clusterCommandApplier,
+                                  operatorWarningSink,
+                                  allEntries);
 
         defer.accept(() -> SharedScheduler.scheduleAtFixedRate(nodeLease::renew, streamingConfig.ownerLeaseRenewal()));
         // #1730 phase 2: the gate's relaxation for a divergent peer respects the candidate's durable sealed floor, and a peer it

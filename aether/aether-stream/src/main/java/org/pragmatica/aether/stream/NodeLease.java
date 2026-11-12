@@ -384,6 +384,7 @@ record LiveNodeLease(NodeId self,
             checkRate(after.anchorNanos() - before.anchorNanos(),
                       TimeUnit.MILLISECONDS.toNanos(after.anchorWallMillis() - before.anchorWallMillis()));
         }
+
         if (!before.validAt(now) && after.validAt(now)) {
             regained();
         }
@@ -395,6 +396,7 @@ record LiveNodeLease(NodeId self,
         if (lapseRaised.compareAndSet(true, false)) {
             events.restored();
         }
+
         regainedListeners.forEach(Runnable::run);
     }
 
