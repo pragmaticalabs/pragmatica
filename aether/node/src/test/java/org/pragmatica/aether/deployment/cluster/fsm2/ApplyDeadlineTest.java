@@ -455,15 +455,16 @@ class ApplyDeadlineTest {
         assertThat(status(h)).isEqualTo(Option.some(DeploymentOutcomeStatus.IN_PROGRESS));
     }
 
-    /// v35. Red when: under BEST_EFFORT a deadline terminal that is submitted and unsettled is submitted again at every pass.
+    /// v35. Red when: under BEST_EFFORT a deadline terminal that is submitted and unsettled is submitted again at the next pass, before the submission expires.
     @Test
     void bestEffort_unsettledTerminal_isSubmittedOnce() {
         var h = publishedApply(DeploymentAtomicity.BEST_EFFORT, UnaryOperator.identity());
 
         h.policy = FsmHarness.SettlePolicy.HOLD;
-        h.advanceBySeconds(16 * 60);
-        h.advanceBySeconds(5 * 60);
-        assertThat(h.submits(ClusterModel.SubmitKind.OUTCOME)).hasSize(1);
+        h.advanceBySeconds(15 * 60);
+        assertThat(h.submits(ClusterModel.SubmitKind.OUTCOME)).as("submitted at the deadline").hasSize(1);
+        h.advanceBySeconds(Timing.DEFAULT.tick() / 1_000L);
+        assertThat(h.submits(ClusterModel.SubmitKind.OUTCOME)).as("one tick later it is still in flight (inside the submission expiry)").hasSize(1);
     }
 
     /// v38. Red when: the BEST_EFFORT deadline terminal does not carry the attempt of the apply it closes (the warning lifecycle keys on it).
