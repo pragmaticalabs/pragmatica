@@ -251,7 +251,7 @@ public final class ClusterDeploymentContext {
     private final ConcurrentMap<org.pragmatica.aether.artifact.ArtifactBase, org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue> pendingTargetPuts = new ConcurrentHashMap<>();
 
     private final AtomicReference<TimeSpan> awaitedTargetBound = new AtomicReference<>(org.pragmatica.aether.slice.SliceState.LOADING.timeout()
-                                                                                                                                                                                             .or(TimeSpan.timeSpan(2).minutes()));
+                                                                                                                                     .or(TimeSpan.timeSpan(2).minutes()));
 
     /// A slice whose LOAD the gate refused since `since`; `warned` once the warning was raised, `lastResubmitMs` when its target put was last re-submitted.
     public record AwaitedTarget(long since, boolean warned, long lastResubmitMs) {}
