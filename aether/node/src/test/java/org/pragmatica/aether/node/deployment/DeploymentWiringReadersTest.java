@@ -53,17 +53,18 @@ class DeploymentWiringReadersTest {
             assertThat(state.shown).as("state reader sees the row").containsExactly(key);
             assertThat(traffic.shown).as("traffic reader sees the row").containsExactly(key);
 
-            harness.put(NodeDepartureKey.nodeDepartureKey(PEER), departure(DepartureState.DEPARTED));
+            harness.commitLeader();
+            harness.leaderPut(NodeDepartureKey.nodeDepartureKey(PEER), departure(DepartureState.DEPARTED));
 
             assertThat(traffic.gone).as("DEPARTED record hides the node for the traffic reader").containsExactly(key);
             assertThat(state.gone).as("state reader ignores departure records").isEmpty();
 
-            harness.put(NodeDepartureKey.nodeDepartureKey(PEER), departure(DepartureState.ADMITTED));
+            harness.leaderPut(NodeDepartureKey.nodeDepartureKey(PEER), departure(DepartureState.ADMITTED));
 
             assertThat(traffic.shown).as("supersession shows the row again").containsExactly(key, key);
 
             harness.bootTokens.admit(PEER, 99L);
-            harness.put(key, row(SliceObservedState.ACTIVE, 5L));
+            harness.put(key, row(SliceObservedState.ACTIVE, 2L, 5L));
 
             assertThat(state.gone).as("a row with a differing known token is stale: gone").containsExactly(key);
         }
@@ -101,7 +102,7 @@ class DeploymentWiringReadersTest {
             assertThat(rows).containsExactly(SliceState.LOADING);
 
             harness.bootTokens.admit(PEER, 99L);
-            harness.put(SliceObservedKey.sliceObservedKey(PEER, ORDERS), row(SliceObservedState.ACTIVE, 5L));
+            harness.put(SliceObservedKey.sliceObservedKey(PEER, ORDERS), row(SliceObservedState.ACTIVE, 2L, 5L));
             rows.clear();
             harness.wiring.sliceRows().forEachRow(harness.store, (_, _, sliceState) -> rows.add(sliceState));
 
@@ -121,7 +122,12 @@ class DeploymentWiringReadersTest {
     }
 
     private static SliceObservedValue row(SliceObservedState state, long token) {
-        return new SliceObservedValue(state, 1L, new Generation(1L, 1L), new ProcessIncarnation(1L, token), Option.none(), false, 0, List.of(), 0L);
+        return row(state, 1L, token);
+    }
+
+    /// `version` is the version-fenced chain: the first write is 1, each later write is the committed version + 1.
+    private static SliceObservedValue row(SliceObservedState state, long version, long token) {
+        return new SliceObservedValue(state, version, new Generation(1L, 1L), new ProcessIncarnation(1L, token), Option.none(), false, 0, List.of(), 0L);
     }
 
     private static NodeDepartureValue departure(DepartureState state) {
