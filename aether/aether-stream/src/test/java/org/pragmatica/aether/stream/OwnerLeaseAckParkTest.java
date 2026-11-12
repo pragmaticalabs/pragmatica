@@ -82,13 +82,15 @@ class OwnerLeaseAckParkTest {
         assertThat(visible()).as("acknowledged => visible (rev1309 F1)").isEqualTo(0L);
     }
 
-    /// F-1a-4: a parked waiter no renewal re-validates answers `OwnerLeaseLapsedBeforeAck` at its 5 s budget, never sooner.
+    /// F-1a-4: a parked waiter no renewal re-validates answers `OwnerLeaseLapsedBeforeAck` at its 5 s budget counted from
+    /// REGISTRATION, never sooner: the acks arrive 1.5 s after registration, and the answer still comes about 5 s after it.
     @Test
-    void parkedWaiter_withNoRenewal_answersLapsedBeforeAck_atItsBudget() {
+    void parkedWaiter_withNoRenewal_answersLapsedBeforeAck_atItsBudgetFromRegistration() throws InterruptedException {
         start(replicationWithPeer());
         var registeredAt = System.nanoTime();
         var answer = manager.awaitReplication(STREAM, PARTITION, publish("e0"), 1);
 
+        Thread.sleep(1_500);
         leaseValid.set(false);
         ack(0L);
         var outcome = answer.await(ANSWER_WAIT);
@@ -96,7 +98,7 @@ class OwnerLeaseAckParkTest {
 
         assertThat(outcome.isFailure()).isTrue();
         outcome.onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.OwnerLeaseLapsedBeforeAck.class));
-        assertThat(waitedMillis).as("the budget runs from registration: 5 s").isBetween(4_900L, 9_000L);
+        assertThat(waitedMillis).as("the budget runs from registration: 5 s").isBetween(4_900L, 6_200L);
         assertThat(visible()).isEqualTo(-1L);
     }
 
