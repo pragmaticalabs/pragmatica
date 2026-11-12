@@ -142,6 +142,27 @@ class NodeLeaseTest {
         assertThat(events.getFirst()).startsWith("lapsed CLOCK_SUSPEND");
     }
 
+    /// #2981 step 2 (know 018945dae1): a CLOCK_SUSPEND revocation is a reported lapse too, so the renewal that clears it raises the recovery
+    /// once. Mutation: drop `lapseRaised.set(true)` in `revokeOnSuspend` -> RED (no "restored").
+    @Test
+    void restored_isRaisedOnce_afterAClockSuspendRevocation() {
+        lease.renew();
+        deliverOwn(0);
+        advance(500);
+        wall.addAndGet(10_000);
+
+        assertThat(lease.valid()).isFalse();
+
+        lease.renew();
+        deliverOwn(1);
+        advance(10);
+        lease.renew();
+        deliverOwn(2);
+
+        assertThat(lease.valid()).isTrue();
+        assertThat(recoveries).containsExactly("restored");
+    }
+
     @Test
     void crossCheck_renewalSubmittedBeforeTheSuspend_doesNotClearTheRevocation() {
         lease.renew();

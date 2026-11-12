@@ -275,6 +275,23 @@ class KVStoreNotificationRevisionTest {
         assertThat(events).containsExactly("second@8");
     }
 
+    /// #2981 step 2, S2 (r7 S2): every reset listener is told, in registration order, BEFORE the store is emptied (the node lease is revoked
+    /// before the view can regress). Mutations: `reset()` not calling the listeners -> RED (no events); listeners told after `resetStorage`
+    /// -> RED (they see 0 entries).
+    @Test
+    void reset_tellsEveryResetListener_beforeTheStoreIsEmptied() {
+        var events = new ArrayList<String>();
+
+        store.processCommitted(store.createBatch(List.of(new KVCommand.Put<>(FIRST, "one"))), 8);
+        store.onReset(() -> events.add("first:" + store.snapshot().size()));
+        store.onReset(() -> events.add("second:" + store.snapshot().size()));
+
+        store.reset();
+
+        assertThat(events).containsExactly("first:1", "second:1");
+        assertThat(store.snapshot()).isEmpty();
+    }
+
     private static void failingListener(long revision) {
         throw new IllegalStateException("listener failure at " + revision);
     }

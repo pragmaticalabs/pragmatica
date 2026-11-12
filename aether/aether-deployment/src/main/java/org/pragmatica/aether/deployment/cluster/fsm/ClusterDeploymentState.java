@@ -77,6 +77,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeLeaseKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaMigrationLockKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
@@ -1684,6 +1685,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             sliceKeysToRemove.forEach(transitionalStateTimestamps::remove);
             var artifactKeysToRemove = findNodeArtifactKeysForNode(departedNode);
             var nodeRouteCommands = cleanupNodeRoutesForNode(departedNode);
+            var leaseCommands = nodeLeaseRemoval(departedNode);
             var consensusCommands = new ArrayList<KVCommand<AetherKey>>();
 
             artifactKeysToRemove.stream()
@@ -1691,6 +1693,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                 .forEach(consensusCommands::add);
             sliceKeysToRemove.stream().<KVCommand<AetherKey>> map(KVCommand.Remove::new).forEach(consensusCommands::add);
             consensusCommands.addAll(nodeRouteCommands);
+            consensusCommands.addAll(leaseCommands);
             workerNodes.remove(departedNode);
             if (consensusCommands.isEmpty()) {
                 log.debug("Snapshot-delta cleanup for {} — no dependent KV entries to remove", departedNode);
@@ -1698,11 +1701,12 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 return;
             }
 
-            log.info("Snapshot-delta cleanup for {}: removing {} node-artifact(s), {} slice-node(s), {} node-route(s) atomically",
+            log.info("Snapshot-delta cleanup for {}: removing {} node-artifact(s), {} slice-node(s), {} node-route(s), {} node lease(s) atomically",
                      departedNode,
                      artifactKeysToRemove.size(),
                      sliceKeysToRemove.size(),
-                     nodeRouteCommands.size());
+                     nodeRouteCommands.size(),
+                     leaseCommands.size());
             termWriter.write(WriteSite.DECOMMISSION_FOOTPRINT,
                              () -> consensusCommands)
                       .onFailure(cause -> log.error("Snapshot-delta cleanup for {} failed: {}",
@@ -3554,6 +3558,17 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             if (rowNode.equals(removedNode)) {
                 commands.add(new KVCommand.Remove<>(key));
             }
+        }
+
+        /// #2981 step 2 (CTO ruling 2026-11-11: delete on decommission): a decommissioned node never renews again, so its lease row goes
+        /// with the rest of its footprint. Only decommissioning removes it; a node that is merely removed may rejoin under the same id.
+        private List<KVCommand<AetherKey>> nodeLeaseRemoval(NodeId departedNode) {
+            var leaseKey = NodeLeaseKey.nodeLeaseKey(departedNode);
+
+            return ctx.kvStore()
+                      .get(leaseKey)
+                      .map(_ -> List.<KVCommand<AetherKey>>of(new KVCommand.Remove<>(leaseKey)))
+                      .or(List.of());
         }
 
         private List<KVCommand<AetherKey>> cleanupNodeRoutesForNode(NodeId removedNode) {
