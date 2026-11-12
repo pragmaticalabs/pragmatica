@@ -132,7 +132,7 @@ class PeerObservationOrderTransportTest {
         router.addRoute(Send.class, (Consumer<Send>) _ -> {});
         built.context().enablePreVote(LONG);
         built.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
-        built.fsm().dispatch(new ClusterFsmEvent.NodeAdded(FOLLOWER, ALL));
+        built.fsm().dispatch(new ClusterFsmEvent.NodeAdded(FOLLOWER, ALL, 1L));
         built.fsm().dispatch(new ConsensusReady());
         built.fsm().dispatch(new LeaderCommitted(LEADER, 1L));
 

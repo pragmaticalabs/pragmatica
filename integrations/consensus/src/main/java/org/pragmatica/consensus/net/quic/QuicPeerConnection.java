@@ -124,6 +124,9 @@ public final class QuicPeerConnection {
     private final int consensusWatermarkLowBytes;
     private final int consensusWatermarkHighBytes;
     private volatile LaneOpener laneOpener = LaneOpener.noop();
+    /// #2981 step 6: the labels the peer presented in its Hello. Set by the dialer after it verified the Hello
+    /// response; empty on a link built without one (the acceptor passes inbound labels to the attach path itself).
+    private volatile Map<String, String> helloLabels = Map.of();
     private volatile QuicActivityKick activityKick;
     /// #1727 — per lane: writes handed to the stream and not yet accepted by quiche, and when the lane was
     /// last written. Read at supersede time to count what the immediate close would discard.
@@ -214,6 +217,17 @@ public final class QuicPeerConnection {
 
     public QuicChannel connection() {
         return connection;
+    }
+
+    /// Record the labels the peer presented in its Hello (immutable copy).
+    @Contract
+    public void helloLabels(Map<String, String> labels) {
+        this.helloLabels = Map.copyOf(labels);
+    }
+
+    /// The labels the peer presented in its Hello; empty when none were recorded.
+    public Map<String, String> helloLabels() {
+        return helloLabels;
     }
 
     /// Install the lazy lane-opener. Called by the transport endpoint that built this connection

@@ -774,6 +774,15 @@ public sealed interface AetherValue {
         }
     }
 
+    /// One node lease renewal (#2981 §2.1), stored under [AetherKey.NodeLeaseKey]. `seq` rises with every renewal the node
+    /// submits, so no two renewals are content-identical and none merges with another; the submitter matches the delivered
+    /// `seq` against the renewals it has in flight to learn which submission time the delivery anchors.
+    record NodeLeaseValue(long seq) implements AetherValue {
+        public static NodeLeaseValue nodeLeaseValue(long seq) {
+            return new NodeLeaseValue(seq);
+        }
+    }
+
     /// The operator's pause of one scheduled task, stored under [AetherKey.ScheduledTaskPauseKey]. Its
     /// presence is the pause; `pausedAt` records when, for the operator.
     record ScheduledTaskPauseValue(long pausedAt) implements AetherValue {
@@ -3928,6 +3937,11 @@ public sealed interface AetherValue {
 
     /// rc6 §4.3: the workflow holding a conflict key, keyed by `WorkflowClaimKey(conflictKey)`.
     record WorkflowClaimValue(String holderRunId) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {}
+
+    /// #1715: the highest ordinal reserved so far for one (source, role), keyed by `NodeIdHighWaterKey(source, role)`. A reservation advances
+    /// it by `count` in one compare-and-set transaction BEFORE any VM is created, so a crash between reserve and provision leaves a gap in the
+    /// ordinals and never a reuse. [LeaderAuthorized]: every write is a `LeaderTransaction` mutation expecting the value the leader read.
+    record NodeIdHighWaterValue(int highWater) implements AetherValue, LeaderAuthorized {}
 
     /// A definitive no-create refusal. The operation itself is the exclusive recovery-probe token.
     record CommunityPlacementAvailabilityValue(String policyIdentity,

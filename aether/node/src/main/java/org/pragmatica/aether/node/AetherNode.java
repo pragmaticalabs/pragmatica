@@ -1754,6 +1754,7 @@ public interface AetherNode extends ManageableNode {
                           Option<ProjectionNodeSupport> projectionNodeSupport,
                           StreamNamespacesService streamNamespacesService,
                           Map<String, StorageFactory.StorageSetup> storageSetups,
+                          StorageMaintenanceDriver storageMaintenanceDriver,
                           ClusterTopologyManager clusterTopologyManagerInstance,
                           EventLoopMetricsCollector eventLoopMetricsCollector,
                           CoreSwimHealthDetector swimHealthDetector,
@@ -1806,6 +1807,16 @@ public interface AetherNode extends ManageableNode {
                           NodeReactors reactors,
                           LeaderDeactivation leaderDeactivation) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
+
+            @Override
+            public StorageMaintenanceProgress storageMaintenanceProgress() {
+                return storageMaintenanceDriver.progress();
+            }
+
+            @Override
+            public Option<String> storageMaintenanceDegradation() {
+                return storageMaintenanceDriver.degradation();
+            }
 
             @Override
             public Option<PrefetchGossipStats> prefetchGossipStats() {
@@ -2795,6 +2806,11 @@ public interface AetherNode extends ManageableNode {
         var clusterEventsOwnerCheck = eventAggregatorOut.clusterEventsOwnerCheck();
         var eventAggregator = eventAggregatorOut.eventAggregator();
         var operatorWarningSink = eventAggregatorOut.operatorWarningSink();
+        // #2825: stream data of an earlier NodeId under the data root is reported, never touched
+        AbandonedStreamData.check(operatorWarningSink,
+                                  streamDataDir(config),
+                                  streamWalBaseDir(config),
+                                  config.self().id());
         // A0b: the storage instances were built before this sink existed; hand it to them now.
         StorageFactory.bindOperatorWarnings(storageSetups, operatorWarningSink);
         // D1 (KVStore dispatcher design §3.6): so was the node's store; its dispatcher events reach this node's sink from here on.
@@ -3008,6 +3024,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                     operatorWarningSink));
         var delegatedStorageAdapter = storageMaintenanceOut.delegatedStorageAdapter();
         var storageMaintenanceDriver = storageMaintenanceOut.storageMaintenanceDriver();
+        // #800: the maintenance gauges, in the registry the Management API scrapes (the management server joins it below).
+        storageMaintenanceDriver.registerMeters(deploymentMeters);
         var consumerGroupRegistry = ConsumerGroupRegistry.consumerGroupRegistry();
         var consumerGroupCoordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(clusterNode,
                                                                                          consumerGroupRegistry,
@@ -3666,6 +3684,7 @@ public interface AetherNode extends ManageableNode {
                                   Option.some(projectionNodeSupport),
                                   streamNamespacesService,
                                   storageSetups,
+                                  storageMaintenanceDriver,
                                   clusterTopologyManager,
                                   eventLoopMetricsCollector,
                                   swimHealthDetector,
@@ -3766,6 +3785,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                               Set::of,
                                                                                                               () -> deploymentMemberSources(membershipFsm),
                                                                                                               Map::of,
+                                                                                                              () -> coreRoleMembers(membershipFsm.memberDescriptors()),
                                                                                                               () -> membershipFsm.memberDescriptors()
                                                                                                                                  .keySet(),
                                                                                                               admissionSeam::tokenOf),
@@ -3881,6 +3901,7 @@ public interface AetherNode extends ManageableNode {
                                                                             Option.some(projectionNodeSupport),
                                                                             streamNamespacesService,
                                                                             storageSetups,
+                                                                            storageMaintenanceDriver,
                                                                             clusterTopologyManager,
                                                                             eventLoopMetricsCollector,
                                                                             swimHealthDetector,
@@ -4202,6 +4223,17 @@ public interface AetherNode extends ManageableNode {
         return node.voterConfiguration()
                    .map(configuration -> Set.copyOf(configuration.members()))
                    .or(Set.of());
+    }
+
+    /// Every tracked member admitted with `role=core`, voter or not (#2887): a surplus core is never a voter, a swapped-out core stops being one
+    /// and a joining core is not yet one, yet each is a core. Includes DEAD members, so a departed core stays classed CORE.
+    static Set<NodeId> coreRoleMembers(Map<NodeId, MemberDescriptor> descriptors) {
+        return descriptors.entrySet()
+                          .stream()
+                          .filter(entry -> entry.getValue()
+                                                .isCore())
+                          .map(Map.Entry::getKey)
+                          .collect(Collectors.toUnmodifiableSet());
     }
 
     static Set<NodeId> configuredVoters(AetherNodeConfig config) {

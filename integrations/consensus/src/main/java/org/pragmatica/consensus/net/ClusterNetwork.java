@@ -153,6 +153,13 @@ public interface ClusterNetwork {
         hook.run();
     }
 
+    /// The labels `nodeId` presented in its Hello, once its handshake has completed on this node; empty before
+    /// that. An empty `Map` inside the `Option` means handshaken with no labels (#2981 step 6 reads it as wire
+    /// generation 1). Default: transports that record no Hello labels report every peer as not handshaken.
+    default Option<Map<String, String>> peerHelloLabels(NodeId nodeId) {
+        return Option.empty();
+    }
+
     @Contract
     @MessageReceiver
     void listNodes(ListConnectedNodes listConnectedNodes);

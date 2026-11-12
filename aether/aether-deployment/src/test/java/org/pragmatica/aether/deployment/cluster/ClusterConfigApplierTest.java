@@ -10,6 +10,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.pragmatica.aether.config.cluster.ApplyRoute;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
 import org.pragmatica.aether.config.cluster.DiffAction;
 import org.pragmatica.aether.config.cluster.NodeRole;
@@ -261,6 +263,40 @@ class ClusterConfigApplierTest {
             result.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(ClusterConfigError.ClusterTopologyManagerUnavailable.class,
                                                                               unavailable -> assertThat(unavailable.httpStatus()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE)));
         }
+
+        @Test
+        void validateRoute_withNoTopologyManager_failsWithServiceUnavailable() {
+            var config = ClusterBootstrapConfigParser.parse(MINIMAL_TOML).unwrap();
+            var plan = List.<DiffAction>of(new DiffAction.ScaleUp(sourceNameOrDefault("default"), NodeRole.CORE, 3, 5));
+
+            var result = ClusterConfigApplier.NoTopologyManager.INSTANCE.validateRoute(ApplyRoute.LEADER, plan, config, config)
+                                                                        .await();
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> assertThat(cause).isInstanceOf(ClusterConfigError.ClusterTopologyManagerUnavailable.class));
+        }
+
+        private static final String MINIMAL_TOML = """
+            config_version = "1.0.0"
+
+            [cluster]
+            name = "prod"
+            version = "1.0.0"
+
+            [runtime.node]
+            type = "container"
+            image = "ghcr.io/pragmaticalabs/aether-node:1.0.0"
+
+            [source.hetzner]
+            type = "cloud"
+            provider = "hetzner"
+            credentials = "hcloud-token"
+            region = "eu-central"
+
+            [source.hetzner.core]
+            count = 3
+            runtime = "node"
+            """;
     }
 
     /// Recording `ClusterTopologyManager` stub — only `setDesiredCount` matters for the applier;

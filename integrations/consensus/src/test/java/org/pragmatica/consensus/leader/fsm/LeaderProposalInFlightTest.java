@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
+import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #1797: the in-flight proposal guard is held from submit until the proposal COMMITS (the FSM leaves
@@ -86,7 +87,7 @@ class LeaderProposalInFlightTest {
 
     private static void enterElecting(FsmTestHarness<LeaderElectionState, ClusterFsmEvent> h) {
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, PEER_A, PEER_B)));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, PEER_A, PEER_B), seq()));
         h.dispatch(new ConsensusReady());
         h.dispatch(new KvSyncGraceTimeout());
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Electing.class);
@@ -94,11 +95,11 @@ class LeaderProposalInFlightTest {
 
     private static void enterReElecting(FsmTestHarness<LeaderElectionState, ClusterFsmEvent> h) {
         h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, PEER_A, PEER_B)));
+        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, List.of(SELF, PEER_A, PEER_B), seq()));
         h.dispatch(new ConsensusReady());
         h.dispatch(new LeaderCommitted(SELF));
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);
-        h.dispatch(new ClusterFsmEvent.NodeGone(SELF, List.of(PEER_A, PEER_B)));
+        h.dispatch(new ClusterFsmEvent.NodeGone(SELF, List.of(PEER_A, PEER_B), seq()));
         assertThat(h.state()).isInstanceOf(LeaderElectionState.ReElecting.class);
     }
 
@@ -152,7 +153,7 @@ class LeaderProposalInFlightTest {
         h.dispatch(new ElectionTick());
         assertThat(proposals.get()).as("first tick proposes").isEqualTo(1);
 
-        h.dispatch(new ClusterFsmEvent.NodeGone(PEER_B, List.of(SELF, PEER_A)));
+        h.dispatch(new ClusterFsmEvent.NodeGone(PEER_B, List.of(SELF, PEER_A), seq()));
         Thread.sleep(400);
 
         assertThat(proposals.get()).as("the tick a topology change reschedules must not re-propose either")
@@ -228,7 +229,7 @@ class LeaderProposalInFlightTest {
         assertThat(proposals).as("no proposal from the left state").containsExactly(1L);
         assertThat(ctx.proposalInFlight()).as("no leaked guard").isFalse();
 
-        h.dispatch(new ClusterFsmEvent.NodeGone(PEER_A, List.of(SELF, PEER_B)));
+        h.dispatch(new ClusterFsmEvent.NodeGone(PEER_A, List.of(SELF, PEER_B), seq()));
         assertThat(h.state()).isInstanceOf(LeaderElectionState.ReElecting.class);
         kvLeader.set(Option.none());
         h.dispatch(new ElectionTick());
