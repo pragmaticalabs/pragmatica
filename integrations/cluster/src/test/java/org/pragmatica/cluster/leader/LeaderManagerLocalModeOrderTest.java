@@ -124,6 +124,34 @@ class LeaderManagerLocalModeOrderTest {
         assertThat(run.watcher().collected()).containsExactly(leaderChange(Option.some(nodeA), false));
     }
 
+    /// A dropped `applyTopology` gate: a lower node reconnects after the leader moved on (a reconnect never adopts), so
+    /// the stored view's first node differs from the leader; an older eviction routed late must then change nothing.
+    /// Without the gate it would adopt the stored first node and swap the leader.
+    @Test
+    void localMode_staleEvictionAfterLowerNodeReconnect_keepsTheAdoptedLeader() {
+        router.route(peerDisconnected(nodeA, List.of(self, nodeC), QUIC, 4));
+        router.route(peerReconnected(nodeA, all, QUIC, 5));
+        router.route(peerDisconnected(nodeC, List.of(self, nodeA), QUIC, 3));
+
+        assertThat(watcher.collected()).containsExactly(leaderChange(Option.some(nodeA), false),
+                                                        leaderChange(Option.some(self), true));
+    }
+
+    /// A dropped `removeFromView` gate: a lower node has reconnected without being adopted (leader is node-b, stored
+    /// first is node-a); a SWIM-FAULTY report of a peer the view never held removes nothing, so it must not adopt
+    /// (adopting would swap the leader to node-a).
+    @Test
+    void localMode_faultyOfAnAbsentPeer_adoptsNothing() {
+        var absent = NodeId.nodeId("node-z").unwrap();
+
+        router.route(peerDisconnected(nodeA, List.of(self, nodeC), QUIC, 4));
+        router.route(peerReconnected(nodeA, all, QUIC, 5));
+        router.route(peerObservedFaulty(absent, all, SWIM));
+
+        assertThat(watcher.collected()).containsExactly(leaderChange(Option.some(nodeA), false),
+                                                        leaderChange(Option.some(self), true));
+    }
+
     private record Run(MessageRouter.MutableRouter router, Watcher watcher) {}
 
     /// A second, independent wiring of a local-mode manager for `node`, for tests that need another self than the
