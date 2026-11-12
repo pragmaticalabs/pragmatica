@@ -54,6 +54,7 @@ class EmberForwardedPublishLoopTripwireTest {
     private static final String STREAM = "c04";
     private static final String ENGINE_KEY = engineKey(STREAM);
 
+    static final java.util.Map<String, Long> PARKED_STACKS = new ConcurrentHashMap<>();
     private final Set<Thread> forwardThreads = ConcurrentHashMap.newKeySet();
     private final AtomicLong forwardsSeen = new AtomicLong();
 
@@ -168,6 +169,8 @@ class EmberForwardedPublishLoopTripwireTest {
 
         forwardThreads.forEach(thread -> names.add(thread.getName()));
 
+        PARKED_STACKS.forEach((stack, count) -> System.out.println("PARKED-STACK x" + count + "\n    " + stack));
+
         return new Samples(forwardsSeen.get() - forwardsBefore, names, inside.get(), parked.get(), example.get());
     }
 
@@ -193,6 +196,7 @@ class EmberForwardedPublishLoopTripwireTest {
         inside.incrementAndGet();
         if (Arrays.stream(frames).limit(12).anyMatch(EmberForwardedPublishLoopTripwireTest::isBlockingFrame)) {
             parked.incrementAndGet();
+            PARKED_STACKS.merge(Arrays.stream(frames).limit(14).map(StackTraceElement::toString).collect(Collectors.joining("\n    ")), 1L, Long::sum);
             example.compareAndSet("none", Arrays.stream(frames).limit(8).map(StackTraceElement::toString).collect(Collectors.joining(" <- ")));
         }
     }
