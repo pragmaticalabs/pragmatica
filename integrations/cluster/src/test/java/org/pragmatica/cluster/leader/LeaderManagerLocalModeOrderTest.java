@@ -96,6 +96,52 @@ class LeaderManagerLocalModeOrderTest {
         assertThat(watcher.collected()).containsExactly(leaderChange(Option.some(nodeA), false));
     }
 
+    /// Refused removal, self = node-a leads and SWIM reports SELF faulty: the removal is refused (the last node
+    /// stays), so nothing is adopted and nothing is dispatched; a refused removal must not cost the leader.
+    @Test
+    void localMode_swimFaultyOfSelf_whileSelfLeads_keepsTheLeader() {
+        var run = freshRun(nodeA);
+
+        run.router().route(peerJoined(nodeA, List.of(nodeA), QUIC, 1));
+        run.router().route(peerJoined(self, List.of(nodeA, self), QUIC, 2));
+        run.router().route(ClusterStateNotification.active());
+        run.router().route(peerJoined(nodeC, all, QUIC, 3));
+        run.router().route(peerObservedFaulty(nodeA, List.of(self, nodeC), SWIM));
+
+        assertThat(run.watcher().collected()).containsExactly(leaderChange(Option.some(nodeA), true));
+    }
+
+    /// Refused removal, self = node-b; the stored view is [node-a] (the last node) and node-a leads. SWIM reports
+    /// node-a faulty: the removal is refused, so nothing is adopted and nothing is dispatched.
+    @Test
+    void localMode_swimFaultyOfLeader_lastInStoredView_keepsTheLeader() {
+        var run = freshRun(self);
+
+        run.router().route(peerJoined(nodeA, List.of(nodeA), QUIC, 1));
+        run.router().route(ClusterStateNotification.active());
+        run.router().route(peerObservedFaulty(nodeA, List.of(self), SWIM));
+
+        assertThat(run.watcher().collected()).containsExactly(leaderChange(Option.some(nodeA), false));
+    }
+
+    private record Run(MessageRouter.MutableRouter router, Watcher watcher) {}
+
+    /// A second, independent wiring of a local-mode manager for `node`, for tests that need another self than the
+    /// one `setUp` started.
+    private Run freshRun(NodeId node) {
+        var freshRouter = MessageRouter.mutable();
+        var freshWatcher = new Watcher(new ArrayList<>());
+
+        freshRouter.addRoute(LeaderChange.class, freshWatcher::watch);
+
+        var leaderManager = LeaderManager.leaderManager(node, freshRouter);
+        freshRouter.addRoute(PeerJoined.class, leaderManager::peerJoined);
+        freshRouter.addRoute(PeerObservedFaulty.class, leaderManager::peerObservedFaulty);
+        freshRouter.addRoute(ClusterStateNotification.class, leaderManager::watchClusterState);
+
+        return new Run(freshRouter, freshWatcher);
+    }
+
     /// Joins at sequences 1..3; quorum arrives before the last join, which elects the lowest node.
     private void startClusterLedBy(NodeId expectedLeader) {
         router.route(peerJoined(nodeA, List.of(nodeA), QUIC, 1));
