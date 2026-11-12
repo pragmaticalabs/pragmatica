@@ -696,8 +696,8 @@ class ClusterCursorStoreTest {
 
     /// TW-O11 of the worker-replica-feed design (W-OBS): the target design excludes the cursor checkpoints from a worker's replica,
     /// so a worker's committed-state mirror NEVER shows its own checkpoint. `WorkerMirrorLag` above models a mirror that is one decision
-    /// behind; this models one that holds the assignment and will never hold the cursor. Today the verdict compares the committed cursor
-    /// read back from that mirror, so a forwarded commit the core admitted is `LocalOnly` forever, however often it is retried.
+    /// behind; this models one that holds the assignment and will never hold the cursor. The verdict used to compare the committed cursor
+    /// read back from that mirror, so a forwarded commit the core admitted was `LocalOnly` forever (#2596).
     @Nested
     class WorkerMirrorWithoutCursors {
         private KVStore<AetherKey, AetherValue> core;
@@ -740,19 +740,15 @@ class ClusterCursorStoreTest {
         }
 
         @Test
-        void commit_onAWorkerWhoseMirrorNeverHoldsTheCursor_isLocalOnlyForever_today() {
+        void commit_onAWorkerWhoseMirrorNeverHoldsTheCursor_isPersisted() {
             var worker = worker();
 
             var first = worker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
             var retry = worker.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
 
             assertThat(coreCheckpoint()).describedAs("control: the authoritative applier ADMITTED the checkpoint").isEqualTo(Option.some(10L));
-            assertThat(first.map(outcome -> outcome instanceof CommitOutcome.LocalOnly))
-                    .describedAs("TW-O11: the verdict reads the mirror, which has no cursor, so an admitted commit is LocalOnly; got %s", first)
-                    .isEqualTo(Result.success(true));
-            assertThat(retry.map(outcome -> outcome instanceof CommitOutcome.LocalOnly))
-                    .describedAs("and the retry cannot change it: this mirror never catches up")
-                    .isEqualTo(Result.success(true));
+            assertThat(List.of(first, retry)).describedAs("#2596 (TW-O11): the mirror has no cursor, yet an admitted commit is Persisted")
+                                             .isEqualTo(List.of(Result.success(CommitOutcome.persisted()), Result.success(CommitOutcome.persisted())));
         }
 
         /// Control for the test above: the identical fixture with a mirror that does receive the cursor is `Persisted`, so the
@@ -773,12 +769,11 @@ class ClusterCursorStoreTest {
             assertThat(holding.commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await()).isEqualTo(Result.success(CommitOutcome.persisted()));
         }
 
-        @Disabled("W6 (cursor reads on forwarding nodes): enable when a forwarding node's verdict comes from its own forwarded batch results ([Put, Get, Get]) instead of a mirror; the fixture's command writer then returns those results")
         @Test
-        void commit_onAForwardingNode_isPersistedFromTheBatchResult_withNoMirror() {
+        void commit_onAForwardingNode_isPersistedWithNoCursorMirror() {
             var outcome = worker().commit(GROUP, STREAM, PARTITION, 10L, EPOCH).await();
 
-            assertThat(outcome).describedAs("the core admitted the checkpoint and the forwarded batch's ordered results prove it, so the commit is Persisted without any mirror; got %s", outcome)
+            assertThat(outcome).describedAs("the core admitted the checkpoint and the assignment record still names this node, so the commit is Persisted without any cursor mirror; got %s", outcome)
                                .isEqualTo(Result.success(CommitOutcome.persisted()));
         }
     }

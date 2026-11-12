@@ -234,14 +234,25 @@ public record ClusterCursorStore(ConsumerCursorStore local,
                                   long offset,
                                   AssignmentToken token,
                                   RewindEpoch rewindEpoch) {
-        return replicaBlind(key)
-               ? blindVerdict(key, token)
-               : readBackVerdict(key, offset, token, rewindEpoch);
+        return committedReader.apply(key)
+                              .filter(committed -> committed.token()
+                                                            .equals(token)
+                                                   && committed.committedOffset() == offset
+                                                   && committed.rewindEpoch()
+                                                               .equals(rewindEpoch))
+                              .map(_ -> CommitOutcome.persisted())
+                              .or(() -> unreadable(key)
+                                        ? blindVerdict(key, token)
+                                        : notOurs(key, token, rewindEpoch));
     }
 
-    /// #2596: a forwarding node whose replica excludes the cursor key ([ReplicaFilter]) can never read the checkpoint back.
-    private boolean replicaBlind(StreamCursorCheckpointKey key) {
-        return forwarding.getAsBoolean() && ReplicaFilter.replicaFilter().excludes(key);
+    /// #2596: a forwarding node whose replica excludes the cursor key ([ReplicaFilter]) and reads nothing for it can never
+    /// read its checkpoint back. A reader that does show a cursor (a mirror one decision behind, #1335 B1) keeps the read-back path.
+    private boolean unreadable(StreamCursorCheckpointKey key) {
+        return forwarding.getAsBoolean()
+               && ReplicaFilter.replicaFilter().excludes(key)
+               && committedReader.apply(key)
+                                 .isEmpty();
     }
 
     /// #2596: the verdict of a node that cannot read its own checkpoint back. The forwarded `Put` and the `Noop` barrier settled on
@@ -258,20 +269,6 @@ public record ClusterCursorStore(ConsumerCursorStore local,
                                                                    .equals(token))
                                    .map(_ -> CommitOutcome.persisted())
                                    .or(() -> fenced(key, token));
-    }
-
-    private CommitOutcome readBackVerdict(StreamCursorCheckpointKey key,
-                                          long offset,
-                                          AssignmentToken token,
-                                          RewindEpoch rewindEpoch) {
-        return committedReader.apply(key)
-                              .filter(committed -> committed.token()
-                                                            .equals(token)
-                                                   && committed.committedOffset() == offset
-                                                   && committed.rewindEpoch()
-                                                               .equals(rewindEpoch))
-                              .map(_ -> CommitOutcome.persisted())
-                              .or(() -> notOurs(key, token, rewindEpoch));
     }
 
     /// The committed checkpoint is not ours. Fenced only if the assignment record agrees — it no longer
