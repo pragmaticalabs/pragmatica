@@ -117,7 +117,9 @@ class ControlLogVerifierGapsTest {
 
             ack(owner, PEER, 0L);
             ack(owner, PEER2, 0L);
-            assertOutcomes(await(pending), Admitted.class);
+            // #2981 step 2 (design §2.2 check 2): the append was registered under EPOCH_1's ownership and confirmed under EPOCH_2's, so
+            // its acknowledgement is unknown (OwnershipMovedBeforeAck); the record itself is committed once the acks are in.
+            assertOutcomes(await(pending), OutcomeUnknown.class);
             awaitTrue("committed", () -> latestReady(owner, "k").isPresent());
         }
     }

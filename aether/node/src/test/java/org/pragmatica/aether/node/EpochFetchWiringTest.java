@@ -19,7 +19,7 @@ class EpochFetchWiringTest {
         var code = assemblyCode();
 
         assertThat(code).containsOnlyOnce("streamPartitionManager.ownershipRecords(committedOwnershipRecords(kvStore));");
-        assertThat(code).containsOnlyOnce("streamPartitionManager.ringIncarnation(stream,partition).or(-1L),streamLineageCommit(()->kvStore.getTyped(LeaderKey.INSTANCE,LeaderValue.class),clusterCommandApplier,hlcClock));");
+        assertThat(code).containsOnlyOnce("streamPartitionManager.ringIncarnation(stream,partition).or(-1L),streamLineageCommit(()->kvStore.getTyped(LeaderKey.INSTANCE,LeaderValue.class),clusterCommandApplier,hlcClock),nodeLease,streamPartitionManager::confirmationFactorFor);");
         assertThat(code).containsOnlyOnce("StreamConsumerRuntime.validatingReader(");
         assertThat(code).containsOnlyOnce("streamReadRouter::readValidated)");
         assertThat(code).containsOnlyOnce("streamConsumerRuntime.operatorWarnings(operatorWarningSink);");
