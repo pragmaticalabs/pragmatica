@@ -15,6 +15,7 @@ import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerGroupKey;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerGroupValue;
 import org.pragmatica.aether.stream.StreamPartitionManager;
@@ -35,6 +36,7 @@ import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
@@ -43,6 +45,7 @@ import io.netty.handler.codec.http.HttpHeaders;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -123,15 +126,15 @@ class ManagementCompositeAndIdParseStatusTest {
 
     @Test
     void consumerGroupJoin_answers409_whenARebalanceIsSuperseded() {
-        var routes = StreamRoutes.streamRoutes(() -> node(Map.of("self", NodeId.nodeId("node-1").unwrap())), supersededCoordinator(), null);
-        var body = new StreamRoutes.JoinGroupRequest("g1", "orders", 4, "c1");
+        var routes = StreamRoutes.streamRoutes(() -> node(Map.of("self", NodeId.nodeId("node-1").unwrap())), supersededCoordinator("orders"), null);
+        var body = new StreamRoutes.JoinGroupRequest("g1", "orders", 4, "c3");
 
         assertThat(statusOf(routes.routes(), ManagementRoute.CONSUMER_GROUP_JOIN, List.of(), body)).isEqualTo(HttpStatus.CONFLICT);
     }
 
     @Test
     void consumerGroupLeave_answers409_whenARebalanceIsSuperseded() {
-        var routes = StreamRoutes.streamRoutes(() -> node(Map.of()), supersededCoordinator(), null);
+        var routes = StreamRoutes.streamRoutes(() -> node(Map.of()), supersededCoordinator("orders"), null);
         var body = new StreamRoutes.LeaveGroupRequest("g1", "orders", "c1");
 
         assertThat(statusOf(routes.routes(), ManagementRoute.CONSUMER_GROUP_LEAVE, List.of(), body)).isEqualTo(HttpStatus.CONFLICT);
@@ -141,7 +144,7 @@ class ManagementCompositeAndIdParseStatusTest {
     void streamsGroupCreate_answers409_whenARebalanceIsSuperseded() {
         var routes = StreamApiRoutes.streamApiRoutes(() -> node(Map.of("self", NodeId.nodeId("node-1").unwrap())),
                                                      null,
-                                                     supersededCoordinator(),
+                                                     supersededCoordinator(ResourceAddress.resourceAddress("ns", "orders", "1.0.0").unwrap().asString()),
                                                      null);
         var body = new StreamApiRoutes.GroupCreateRequest("g1", null);
 
@@ -149,19 +152,24 @@ class ManagementCompositeAndIdParseStatusTest {
             .isEqualTo(HttpStatus.CONFLICT);
     }
 
-    /// A REAL active coordinator (term 1) whose registry already holds an assignment committed under term 5: every rebalance it
-    /// derives is refused with `CoordinatorError.SUPERSEDED` before anything is submitted, so the cluster node is never reached.
+    /// A REAL active coordinator at term 1 with members c1 and c2 already joined (the cluster node accepts every batch), after which the
+    /// registry receives an assignment committed under term 5 for the same group and stream: every further rebalance (a join of c3, the
+    /// leave of c1) is refused with `CoordinatorError.SUPERSEDED` before it is submitted.
     @SuppressWarnings("unchecked")
-    private static ConsumerGroupCoordinator supersededCoordinator() {
+    private static ConsumerGroupCoordinator supersededCoordinator(String streamName) {
         var registry = ConsumerGroupRegistry.consumerGroupRegistry();
-        var committed = Epoch.epoch(1L, 5L, 0L);
+        var self = NodeId.nodeId("node-1").unwrap();
+        var clusterNode = mock(ClusterNode.class);
 
-        registry.onConsumerGroupPut(new ValuePut<>(new KVCommand.Put<>(new ConsumerGroupKey("g1", "orders", 0),
-                                                                       (AetherValue) ConsumerGroupValue.consumerGroupValue(NodeId.nodeId("node-9").unwrap(), "c0", committed)),
+        when(clusterNode.apply(any())).thenReturn(Promise.success(List.of()));
+        var coordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(clusterNode, registry, () -> Epoch.epoch(1L, 1L, 0L));
+
+        coordinator.onLeaderChange(new LeaderChange(Option.some(self), true));
+        coordinator.joinGroup("g1", streamName, 4, "c1", self);
+        coordinator.joinGroup("g1", streamName, 4, "c2", self);
+        registry.onConsumerGroupPut(new ValuePut<>(new KVCommand.Put<>(new ConsumerGroupKey("g1", streamName, 0),
+                                                                       (AetherValue) ConsumerGroupValue.consumerGroupValue(self, "c2", Epoch.epoch(1L, 5L, 0L))),
                                                    Option.none()));
-        var coordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(mock(ClusterNode.class), registry, () -> Epoch.epoch(1L, 1L, 0L));
-
-        coordinator.onLeaderChange(new LeaderChange(Option.some(NodeId.nodeId("node-1").unwrap()), true));
         return coordinator;
     }
 
