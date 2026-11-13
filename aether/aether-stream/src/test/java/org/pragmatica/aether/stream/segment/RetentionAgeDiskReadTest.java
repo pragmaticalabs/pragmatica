@@ -77,8 +77,7 @@ class RetentionAgeDiskReadTest {
         assertThat(maxTimestamp()).as("learned once the file is readable again").isPositive();
     }
 
-    /// A block whose file does not exist is "absent", not an I/O error: remembered, so it is not read again even
-    /// once a file appears under its id. Keeps the deterministic not-found path deterministic.
+    /// Control: an intact block is learned on the first pass, so the failures below are the injected ones.
     @Test
     void anIntactBlock_isLearnedOnTheFirstPass() {
         index.rebuildFromRefs(Map.of(REF, seal()));
@@ -87,6 +86,8 @@ class RetentionAgeDiskReadTest {
         assertThat(maxTimestamp()).as("control: this enforcer learns ages from the disk tier").isPositive();
     }
 
+    /// A block whose file does not exist is "absent", not an I/O error: remembered, so it is not read again even
+    /// once a file appears under its id. Keeps the deterministic not-found path deterministic.
     @Test
     void aMissingBlockFile_isRemembered_notRetried() throws Exception {
         var id = seal();
