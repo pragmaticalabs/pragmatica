@@ -12,6 +12,7 @@ import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -25,9 +26,14 @@ import org.pragmatica.lang.Unit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// Records traces of the closeAll / acquire race for TLA+ trace validation (`tools/tla/trace.py`, spec `SharedPools`).
+/// Records traces of the closeAll / acquire race and validates them against the extracted spec (`tools/tla/trace.py`,
+/// spec `SharedPools`).
 /// Opt-in: runs only with `-Dtla.traces=<dir>`; writes each DISTINCT event sequence once, as `trace-<n>.txt`, and
-/// `counts.tsv` (file, rounds that produced it). The race is `SharedPoolContainmentTest.closeAll_racingAcquire_...`.
+/// `counts.tsv` (file, rounds that produced it). Every recorded trace must be non-empty and carry the race's two
+/// anchor events (`CA_Flag`, `Acq_Admit`). With `-Dtla.spec=<dir holding the extracted SharedPools.tla and
+/// SharedPools_code.cfg>` (what `tools/tla/check.sh` writes) it then runs `trace.py` over them and FAILS when any is
+/// REJECTED; `-Dtla.jar=<tla2tools.jar>` names the jar, `-Dtla.trace.py=<path>` the script (default: the repository's).
+/// Without `tla.spec` it only records. The race is `SharedPoolContainmentTest.closeAll_racingAcquire_...`.
 @EnabledIfSystemProperty(named = "tla.traces", matches = ".+")
 class SharedPoolsTraceTest {
     /// Maps one SharedPools instance's objects to the spec's names: scopes a, b; keys k1, k2; pools 1.. in creation order.
@@ -103,7 +109,7 @@ class SharedPoolsTraceTest {
                 holder[0] = SharedPools.sharedPools(_ -> Promise.unitPromise());
                 holder[0].traceTo(recorder);
                 go.set(r);
-                holder[0].closeAll();
+                awaitAll(holder[0].closeAll());
                 while (done.get() < r) {
                     Thread.onSpinWait();
                 }
@@ -117,6 +123,51 @@ class SharedPoolsTraceTest {
         }
         write(dir, distinct);
         assertThat(distinct).isNotEmpty();
+        distinct.keySet()
+                .forEach(SharedPoolsTraceTest::assertRecorded);
+        Optional.ofNullable(System.getProperty("tla.spec"))
+                .ifPresent(spec -> assertAccepted(dir, spec));
+    }
+
+    private static void awaitAll(List<Promise<Unit>> closes) {
+        closes.forEach(Promise::await);
+    }
+
+    private static void assertRecorded(List<String> trace) {
+        assertThat(trace).as("a round that recorded no events: the hook is not reaching the code")
+                         .isNotEmpty();
+        assertThat(trace).anyMatch(line -> line.startsWith("CA_Flag"));
+        assertThat(trace).anyMatch(line -> line.startsWith("Acq_Admit"));
+    }
+
+    private static void assertAccepted(Path dir, String spec) {
+        var script = System.getProperty("tla.trace.py", "../../../tools/tla/trace.py");
+        var command = new ArrayList<>(List.of("python3", script, "--spec", spec, "--traces", dir.toString()));
+
+        Optional.ofNullable(System.getProperty("tla.jar"))
+                .ifPresent(jar -> command.addAll(List.of("--jar", jar)));
+        assertThat(runTraceCheck(command)).as("trace.py verdict")
+                                          .contains("ACCEPTED")
+                                          .doesNotContain("REJECTED");
+    }
+
+    private static String runTraceCheck(List<String> command) {
+        try {
+            var process = new ProcessBuilder(command).redirectErrorStream(true)
+                                                     .start();
+            var output = new String(process.getInputStream()
+                                           .readAllBytes());
+
+            assertThat(process.waitFor()).as("trace.py exit code, output: " + output)
+                                         .isZero();
+            return output;
+        } catch (IOException e) {
+            throw new IllegalStateException("cannot run trace.py", e);
+        } catch (InterruptedException e) {
+            Thread.currentThread()
+                  .interrupt();
+            throw new IllegalStateException("interrupted running trace.py", e);
+        }
     }
 
     private static void write(Path dir, Map<List<String>, Integer> distinct) throws IOException {

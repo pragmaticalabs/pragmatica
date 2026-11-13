@@ -2,7 +2,8 @@
 # On demand only: never on a pull request, a push or a schedule, and not a required check.
 # Trigger: gh workflow run tla-models.yml -f profile=small -f modules='.*'
 # Every config in tools/tla/models.tsv runs with its expected verdict: the known-bad configs must FAIL, so a model
-# that stopped reaching its code turns the run red. Results are bounds, never proofs.
+# that stopped reaching its code turns the run red, and a known-bad row is satisfied only by a violation of the property
+# it names. Results are bounds, never proofs; the sim profile is random sampling, the weakest of the three.
 name: TLA+ models
 
 on:
@@ -14,13 +15,14 @@ on:
         default: '.*'
         type: string
       profile:
-        description: 'Bounds: small (reduced constants, minutes) or full (every config as written, hours)'
+        description: 'Bounds: small (reduced constants, minutes), full (every config as written, hours) or sim (random simulation of every config as written, a time budget each; sampling, not a proof)'
         required: false
         default: small
         type: choice
         options:
           - small
           - full
+          - sim
 
 permissions:
   contents: read
@@ -77,6 +79,9 @@ jobs:
             echo "::endgroup::"
           done < modules.tsv
 
+      - name: Runner self-test
+        run: bash tools/tla/runselftest.sh
+
       - name: Model check (${{ inputs.profile }})
         env:
           MODULES: ${{ inputs.modules }}
@@ -85,7 +90,7 @@ jobs:
           TLA_OUT: target/tla
         run: |
           set -euo pipefail
-          if [ "$PROFILE" = full ]; then export TLC_TIMEOUT=18000; else export TLC_TIMEOUT=1200; fi
+          case "$PROFILE" in full) export TLC_TIMEOUT=18000 ;; sim) export TLC_TIMEOUT=300 ;; *) export TLC_TIMEOUT=1200 ;; esac
           bash tools/tla/run.sh "$PROFILE" "$MODULES" | tee target-tla-summary.txt
 
       - name: Upload TLC output

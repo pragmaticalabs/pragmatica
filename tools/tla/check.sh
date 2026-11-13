@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Extract <Module> from the Java sources under <roots...>, then model-check it with TLC under config <Variant>.
-# Usage: tools/tla/check.sh <Module> <Variant> <root>...   (env: TLA_JAR, TLC_WORKERS, TLC_OPTS, TLA_OUT)
+# Usage: tools/tla/check.sh <Module> <Variant> <root>...   (env: TLA_JAR, TLC_WORKERS, TLC_OPTS, TLC_JAVA_OPTS, TLA_OUT)
 # Terminal states are normal (bounded acquires), so the deadlock check is off.
 # Every "line N ... of module <Module>" position in TLC's output is annotated with its Java source position.
 set -euo pipefail
@@ -18,7 +18,7 @@ for kv in ${TLC_CONST:-}; do
   sed -i.bak -E "s/^((CONSTANTS?)?[[:space:]]*${kv%%=*}[[:space:]]*=[[:space:]]*).*/\1${kv#*=}/" "$cfg"
 done
 set +e
-( cd "$out" && exec java -XX:+UseParallelGC -cp "$jar" tlc2.TLC -workers "${TLC_WORKERS:-4}" -cleanup -deadlock ${TLC_OPTS:-} \
+( cd "$out" && exec java -XX:+UseParallelGC ${TLC_JAVA_OPTS:-} -cp "$jar" tlc2.TLC -workers "${TLC_WORKERS:-4}" -cleanup -deadlock ${TLC_OPTS:-} \
     -config "${module}_${variant}.cfg" "$module.tla" ) > "$out/${module}_${variant}.raw" 2>&1
 rc=$?
 awk -v map="$out/$module.map.tsv" -v mod="$module" '

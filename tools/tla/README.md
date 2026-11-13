@@ -66,19 +66,22 @@ a sequence of Java locations.
 
 ## Expected verdicts: `models.tsv`
 
-One row per config: module, source root, variant, `expect` (`pass` or `fail`), the constant overrides of the small
-profile, and what the row pins. `run.sh` is red when:
+One row per config: module, source root, variant, `expect` (`pass` or `fail`), `property`, the constant overrides of the
+small profile, and what the row pins. `property` is the property a `fail` row must see violated (a comma-separated
+list: any one of them; `-` for a `pass` row). `run.sh` is red when:
 - a config the extractor finds has no row, or a row names a config that does not exist;
 - a `pass` row finds a violation;
 - a `fail` row (known-bad) finds none (TLC exit 0): the negative control did not fire;
-- TLC ends any other way (parse or config error, timeout).
+- a `fail` row ends in a violation of a property other than the ones it names;
+- TLC ends any other way (parse, config or semantic error, timeout): the row reads `ERROR`, never `fail`.
 
 An expected failure (`expect` = `fail`) must cite an open issue or be a known-bad variant of a fixed defect; when the issue is fixed, flip the row to `pass`.
 
 ## Running
 
 ```
-tools/tla/run.sh [small|full] [module-regex]          # every config with its expected verdict
+tools/tla/run.sh [small|full|sim] [module-regex]      # every config with its expected verdict
+tools/tla/runselftest.sh                              # run.sh's own verdict logic, on a fixture with wrong expectations
 tools/tla/check.sh <Module> <Variant> <source roots...>  # one config
 tools/tla/selftest.sh <Module> <source root>           # the extractor's own checks, on a copy of the root
 # e.g.
@@ -87,7 +90,12 @@ tools/tla/check.sh SharedPools leak aether/resource/api/src/main/java
 ```
 
 `small` applies the row's overrides (minutes in total); `full` runs every config as written (hours: liveness at the
-written bounds is the long pole).
+written bounds is the long pole). `sim` runs every config as written under TLC's random simulation
+(`-simulate num=<SIM_TRACES> -depth <SIM_DEPTH>`, stopped after `SIM_SECONDS` per config by
+`-Dtlc2.TLC.stopAfter`): each row prints its wall time, the trace count and the mean trace length. **Simulation is
+sampling, not a proof**: a `pass` row means no violation among the sampled traces; its gate is that every known-bad
+row still FAILS (a bug the sampler cannot find in the budget turns that row red). Every row of every profile prints its
+wall time, which is the reference for a timing budget.
 
 ### On demand in CI
 
@@ -105,7 +113,7 @@ It pins `tla2tools.jar` (version and sha256 in the workflow), runs `selftest.sh`
 
 Environment: `TLA_JAR` (default `~/tools/tla/tla2tools.jar`), `TLC_WORKERS`, `TLC_OPTS`, `TLA_OUT` (default
 `target/tla/<Module>` for `check.sh`, `target/tla` for `run.sh`), `TLC_CONST` (`check.sh`: space-separated
-`Name=value` overrides of the config's constants, recorded in the log), `TLC_TIMEOUT` (`run.sh`: seconds per config). The deadlock check is off: bounded models end in terminal states by design. The full TLC log
+`Name=value` overrides of the config's constants, recorded in the log), `TLC_TIMEOUT` (`run.sh`: seconds per config), `TLC_JAVA_OPTS` (`check.sh`: extra JVM options), `SIM_SECONDS`, `SIM_TRACES`, `SIM_DEPTH` (`run.sh sim`), `MODELS_TSV` (`run.sh`: a different table; the self-test uses it). The deadlock check is off: bounded models end in terminal states by design. The full TLC log
 is `<out>/<Module>_<Variant>.log`; the console gets the verdict, the counterexample as actions with their Java
 positions, and the state counts.
 

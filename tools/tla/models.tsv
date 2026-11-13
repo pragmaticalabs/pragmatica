@@ -1,26 +1,28 @@
 # Every model config and its expected verdict at the code as it stands. run.sh fails if a config is missing here,
 # if a "pass" config finds a violation, or if a known-bad ("fail") config finds none: a known-bad config that passes
 # means the model no longer reaches the code it was written against.
+# property: for a "fail" row, the property TLC must report violated (comma-separated list: any one of them); "-" for
+# "pass". A known-bad row that dies of another violation, or of a TLC error, is red.
 # small: constant overrides for the small profile (TLC_CONST syntax, comma-separated; "-" = the config as written).
-# The full profile runs every config as written.
-# module	root	variant	expect	small	what it pins
-SharedPools	aether/resource/api/src/main/java	code	pass	MaxAcquires=3	the code: every safety invariant
-SharedPools	aether/resource/api/src/main/java	codeslice	pass	MaxAcquires=3	the code with the per-slice path
-SharedPools	aether/resource/api/src/main/java	live	pass	MaxAcquires=2	the code: closeAll completes, shared pools settle
-SharedPools	aether/resource/api/src/main/java	wedge	fail	MaxAcquires=3	v2978a F1: a throwing factory wedges the pool
-SharedPools	aether/resource/api/src/main/java	wedgeslice	fail	MaxAcquires=3	v2978a F1 on the per-slice path
-SharedPools	aether/resource/api/src/main/java	stale	fail	MaxAcquires=3	v2978a F3: a stop releases another holding
-SharedPools	aether/resource/api/src/main/java	leak	fail	MaxAcquires=3	v2978a F2: no post-admission drain
-SharedPools	aether/resource/api/src/main/java	afterclosed	fail	MaxAcquires=3	v2978c F3: a view after closed was seen
-SharedPools	aether/resource/api/src/main/java	isemptydrain	fail	MaxAcquires=3	N1: closeAll drains on isEmpty()
-SharedPools	aether/resource/api/src/main/java	strict	fail	MaxAcquires=3	closeAll returns before in-flight closes
-SharedPools	aether/resource/api/src/main/java	liveadb7	fail	-	adb7a765da: a shared pool never settles
-Stalled	aether/aether-stream/src/main/java	live	pass	-	the code: an unbacked warning clears
-Stalled	aether/aether-stream/src/main/java	liveremove	pass	-	the code, membership events only
-Stalled	aether/aether-stream/src/main/java	livedestroy	pass	-	the code, destroy and recreate only
-Stalled	aether/aether-stream/src/main/java	liveowner	pass	-	the code, owner and quarantine only
-Stalled	aether/aether-stream/src/main/java	edgeremove	fail	-	v2967b F1: edge-triggered warning outlives removal
-Stalled	aether/aether-stream/src/main/java	edgedestroy	fail	-	v2967b F2: edge-triggered warning outlives destroy
-Stalled	aether/aether-stream/src/main/java	edgeowner	pass	-	edge-triggered, owner flips only: no defect there
-Stalled	aether/aether-stream/src/main/java	settled	fail	-	#3155 known finding, open: a report raised after the reconcile snapshot stays open until the next pass
-Stalled	aether/aether-stream/src/main/java	early	fail	-	#3156 known finding, open: the stall counter survives destroy and recreate
+# The full and sim profiles run every config as written (sim samples them with TLC's -simulate).
+# module	root	variant	expect	property	small	what it pins
+SharedPools	aether/resource/api/src/main/java	code	pass	-	MaxAcquires=3	the code: every safety invariant
+SharedPools	aether/resource/api/src/main/java	codeslice	pass	-	MaxAcquires=3	the code with the per-slice path
+SharedPools	aether/resource/api/src/main/java	live	pass	-	MaxAcquires=2	the code: closeAll completes, shared pools settle
+SharedPools	aether/resource/api/src/main/java	wedge	fail	NoWedge	MaxAcquires=3	v2978a F1: a throwing factory wedges the pool
+SharedPools	aether/resource/api/src/main/java	wedgeslice	fail	NoWedge	MaxAcquires=3	v2978a F1 on the per-slice path
+SharedPools	aether/resource/api/src/main/java	stale	fail	NoStaleRelease	MaxAcquires=3	v2978a F3: a stop releases another holding
+SharedPools	aether/resource/api/src/main/java	leak	fail	NoLeakAfterStop	MaxAcquires=3	v2978a F2: no post-admission drain
+SharedPools	aether/resource/api/src/main/java	afterclosed	fail	NoHandleAfterClosed	MaxAcquires=3	v2978c F3: a view after closed was seen
+SharedPools	aether/resource/api/src/main/java	isemptydrain	fail	NoLeakAfterStop	MaxAcquires=3	N1: closeAll drains on isEmpty()
+SharedPools	aether/resource/api/src/main/java	strict	fail	NoOpenAfterStop	MaxAcquires=3	closeAll returns before in-flight closes
+SharedPools	aether/resource/api/src/main/java	liveadb7	fail	CloseAllCompletes,AllSharedSettle	MaxAcquires=2	adb7a765da: a shared pool never settles
+Stalled	aether/aether-stream/src/main/java	live	pass	-	-	the code: an unbacked warning clears
+Stalled	aether/aether-stream/src/main/java	liveremove	pass	-	-	the code, membership events only
+Stalled	aether/aether-stream/src/main/java	livedestroy	pass	-	-	the code, destroy and recreate only
+Stalled	aether/aether-stream/src/main/java	liveowner	pass	-	-	the code, owner and quarantine only
+Stalled	aether/aether-stream/src/main/java	edgeremove	fail	UnbackedClears	-	v2967b F1: edge-triggered warning outlives removal
+Stalled	aether/aether-stream/src/main/java	edgedestroy	fail	UnbackedClears	-	v2967b F2: edge-triggered warning outlives destroy
+Stalled	aether/aether-stream/src/main/java	edgeowner	pass	-	-	edge-triggered, owner flips only: no defect there
+Stalled	aether/aether-stream/src/main/java	settled	fail	SettledIsBacked	-	#3155 known finding, open: a report raised after the reconcile snapshot stays open until the next pass
+Stalled	aether/aether-stream/src/main/java	early	fail	NoEarlyRaise	-	#3156 known finding, open: the stall counter survives destroy and recreate

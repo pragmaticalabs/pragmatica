@@ -8,6 +8,15 @@ the outcome the event recorded) and lets the unobservable steps (ConcurrentHashM
 of a failed pool) happen silently. TLC reports the invariant `Unmatched` (i < Len(Log)) violated exactly when the whole
 log is matched: ACCEPTED. When it is not, the longest matched prefix is found by re-running with a shorter bound, and
 the first event the spec cannot take is printed: REJECTED. Exit 1 if any trace is rejected.
+
+Two guards keep acceptance from being vacuous: a trace with no events is REJECTED (a prefix of length 0 is a prefix of
+every behaviour), and a matched trace must END quiescent (no close still pending), so a missing Close_Pool note, which
+leaves the closing set non-empty, is REJECTED rather than read as a shorter prefix. The recorded run must therefore
+finish every close before the sequence is written (SharedPoolsTraceTest awaits closeAll and the acquirer).
+
+The model constants of the trace configuration are the ones of the spec's own `code` configuration
+(<spec dir>/SharedPools_code.cfg, written by extract.py), so a constant added to or dropped from the model cannot
+leave this script stale; TRACE_BOUNDS only widens bounds, and only for constants the configuration has.
 """
 import argparse
 import glob
@@ -62,27 +71,50 @@ Silent == /\ i' = i
 
 TraceNext == Logged \/ Silent
 
+\* Prefix match: violated when the first Bound events were all taken.
 Unmatched == i < Bound
+\* Full match: also quiescent, no close still pending (every Close_Pool the run performed was recorded).
+UnmatchedFinal == ~(i = Bound /\ closing = {})
 =============================================================================
 '''
 
-CFG = '''CONSTANTS Keys = {k1, k2}
-          Scopes = {a, b}
-          MaxPools = 3
-          MaxAcquires = 4
-          MaxFaults = 2
-          SlicePath = FALSE
-          Ruling = FALSE
-          ExactEmpty = FALSE
-          A = a
-          B = b
-          K1 = k1
-          K2 = k2
-          Bound = %(bound)d
-INIT TraceInit
+TRACE_CONSTANTS = ('A = a', 'B = b', 'K1 = k1', 'K2 = k2')
+
+# Bounds widened for trace matching (a recorded run may hold more than the model-check bound allows); a name the
+# model configuration does not carry is ignored, never added.
+TRACE_BOUNDS = {'MaxFaults': '2'}
+
+TRACE_TAIL = '''INIT TraceInit
 NEXT TraceNext
-INVARIANT Unmatched
+INVARIANT %(invariant)s
 '''
+
+DECLARED = re.compile(r'^CONSTANTS?\s+([A-Za-z0-9_,\s]+?)\s*$', re.M)
+
+
+def model_constants(spec):
+    """The constant assignments of the spec's `code` configuration, and the constants SharedPools.tla declares."""
+    text = open(os.path.join(spec, 'SharedPools.tla')).read()
+    declared = [n.strip() for m in DECLARED.finditer(text) for n in m.group(1).split(',') if n.strip()]
+    cfg = os.path.join(spec, 'SharedPools_code.cfg')
+    if not os.path.exists(cfg):
+        sys.exit(f'trace: {cfg} not found; run tools/tla/check.sh or extract.py first')
+    keep, taking = [], False
+    for line in open(cfg).read().split('\n'):
+        word = line.split()[0] if line.split() else ''
+        if word in ('CONSTANT', 'CONSTANTS'):
+            taking = True
+        elif word and not line[0].isspace():
+            taking = False
+        if taking and line.strip():
+            keep.append(line)
+    assigned = {re.sub(r'^CONSTANTS?\s+', '', l).strip().split()[0] for l in keep}
+    missing = [n for n in declared if n not in assigned]
+    if missing:
+        sys.exit(f'trace: SharedPools_code.cfg does not assign {", ".join(missing)} declared by SharedPools.tla')
+    for name, value in TRACE_BOUNDS.items():
+        keep = [re.sub(r'(\b' + name + r'\s*=\s*).*', r'\g<1>' + value, l) for l in keep]
+    return '\n'.join(keep) + '\n'
 
 
 def record(line):
@@ -102,16 +134,20 @@ def record(line):
     return '[a |-> "%(a)s", t |-> %(t)s, p |-> %(p)s, k |-> %(k)s, r |-> "%(r)s"]' % rec
 
 
-def tlc(work, jar, bound):
+def tlc(work, jar, bound, constants, final):
+    """True when TLC finds the invariant violated, i.e. the first `bound` events were matched (and, for `final`, the
+    run ended quiescent)."""
+    invariant = 'UnmatchedFinal' if final else 'Unmatched'
     with open(os.path.join(work, 'SharedPoolsTrace.cfg'), 'w') as f:
-        f.write(CFG % {'bound': bound})
+        f.write(constants + ''.join(f'CONSTANT {c}\n' for c in TRACE_CONSTANTS)
+                + f'CONSTANT Bound = {bound}\n' + TRACE_TAIL % {'invariant': invariant})
     out = subprocess.run(['java', '-cp', jar, 'tlc2.TLC', '-workers', '1', '-deadlock', '-cleanup',
                           '-config', 'SharedPoolsTrace.cfg', 'SharedPoolsTrace.tla'],
                          cwd=work, capture_output=True, text=True).stdout
-    if 'Invariant Unmatched is violated' in out:
-        return True, out
+    if f'Invariant {invariant} is violated' in out:
+        return True
     if 'Model checking completed. No error has been found' in out:
-        return False, out
+        return False
     sys.exit(f'trace: TLC failed unexpectedly:\n{out[-3000:]}')
 
 
@@ -128,24 +164,32 @@ def main():
     files = sorted(glob.glob(os.path.join(a.traces, 'trace-*.txt')), key=lambda p: int(re.findall(r'\d+', p)[-1]))
     if not files:
         sys.exit('trace: no trace-*.txt files')
+    constants = model_constants(a.spec)
     rejected = 0
     for path in files:
         lines = [l for l in open(path).read().split('\n') if l.strip()]
+        if not lines:
+            rejected += 1
+            print(f'REJECTED {os.path.basename(path)} events=0: an empty trace matches every behaviour and proves nothing')
+            continue
         work = tempfile.mkdtemp(prefix='tlatrace-')
         shutil.copy(os.path.join(a.spec, 'SharedPools.tla'), work)
         with open(os.path.join(work, 'SharedPoolsTrace.tla'), 'w') as f:
             f.write(TRACE_MODULE % {'log': ',\n        '.join(record(l) for l in lines)})
         name = os.path.basename(path)
-        ok, _ = tlc(work, a.jar, len(lines))
+        ok = tlc(work, a.jar, len(lines), constants, True)
         if ok:
             print(f'ACCEPTED {name} events={len(lines)} rounds={counts.get(name, "?")}')
         else:
             rejected += 1
-            n = len(lines) - 1
-            while n > 0 and not tlc(work, a.jar, n)[0]:
+            n = len(lines)
+            while n > 0 and not tlc(work, a.jar, n, constants, False):
                 n -= 1
-            print(f'REJECTED {name} events={len(lines)} rounds={counts.get(name, "?")}: matched {n}, '
-                  f'the spec cannot take event {n + 1}: "{lines[n]}"  trace: {" | ".join(lines)}')
+            if n == len(lines):
+                why = 'every event matched but the run does not end quiescent (a close the spec still owes was not recorded)'
+            else:
+                why = f'matched {n}, the spec cannot take event {n + 1}: "{lines[n]}"'
+            print(f'REJECTED {name} events={len(lines)} rounds={counts.get(name, "?")}: {why}  trace: {" | ".join(lines)}')
         shutil.rmtree(work)
     print(f'trace: {len(files) - rejected} accepted, {rejected} rejected')
     sys.exit(1 if rejected else 0)
