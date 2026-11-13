@@ -167,7 +167,8 @@ class Fsm2EquivalenceRoundTest {
         voids.addAll(EquivalenceComparison.voids(legacy, fsm2));
 
         oracle.forEach(verdict -> verdict.disagreements().forEach(submit -> divergences.add("ORACLE: " + submit.describe())));
-        var verdict = EquivalenceVerdict.of(silent, voids, divergences);
+        var verdict = EquivalenceVerdict.guarded(() -> EquivalenceVerdict.wired(EquivalenceVerdict.of(silent, voids, divergences), silent, voids, divergences),
+                                                 error -> verdictError(scenario, round, error));
 
         log("arm legacy: o4=%d o5=%d ms o6=%s samples=%d".formatted(legacy.o4Batches(), legacy.o5PlacementMs(), legacy.o6(), legacy.samples().size()));
         log("arm fsm2:   o4=%d o5=%d ms o6=%s samples=%d".formatted(fsm2.o4Batches(), fsm2.o5PlacementMs(), fsm2.o6(), fsm2.samples().size()));
@@ -185,6 +186,13 @@ class Fsm2EquivalenceRoundTest {
     /// An arm threw: the ERROR line, no verdict claimed, the report written (the exception itself is rethrown by [EquivalenceVerdict#guarded]).
     private void armError(Scenario scenario, int round, DeploymentEngine engine, Throwable error) {
         log("arm %s ERROR %s".formatted(engine, error));
+        log("VERDICT ERROR");
+        write(scenario, round);
+    }
+
+    /// The verdict contradicted the round's own findings: the ERROR line, the report written (the exception is rethrown by [EquivalenceVerdict#guarded]).
+    private void verdictError(Scenario scenario, int round, Throwable error) {
+        log("verdict ERROR %s".formatted(error));
         log("VERDICT ERROR");
         write(scenario, round);
     }

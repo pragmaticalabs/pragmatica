@@ -80,4 +80,21 @@ class EquivalenceVerdictTest {
         assertThat(EquivalenceVerdict.guarded(() -> "arm", seen::add)).isEqualTo("arm");
         assertThat(seen).isEmpty();
     }
+
+    /// Mutation: `wired` dropped, or its void test dropped; a round verdict that ignored the voids on its own record goes red.
+    @Test
+    void aVerdictContradictingTheRecordedFindings_isRejected() {
+        assertThatThrownBy(() -> EquivalenceVerdict.wired(EquivalenceVerdict.PASS, NONE, SOME, NONE)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> EquivalenceVerdict.wired(EquivalenceVerdict.PASS, SOME, NONE, NONE)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> EquivalenceVerdict.wired(EquivalenceVerdict.PASS, NONE, NONE, SOME)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> EquivalenceVerdict.wired(EquivalenceVerdict.DIVERGE, NONE, SOME, SOME)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> EquivalenceVerdict.wired(EquivalenceVerdict.VOID, NONE, NONE, NONE)).isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void aVerdictAgreeingWithTheFindings_passesThrough() {
+        assertThat(EquivalenceVerdict.wired(EquivalenceVerdict.PASS, NONE, NONE, NONE)).isEqualTo(EquivalenceVerdict.PASS);
+        assertThat(EquivalenceVerdict.wired(EquivalenceVerdict.VOID, SOME, SOME, SOME)).isEqualTo(EquivalenceVerdict.VOID);
+        assertThat(EquivalenceVerdict.wired(EquivalenceVerdict.DIVERGE, NONE, NONE, SOME)).isEqualTo(EquivalenceVerdict.DIVERGE);
+    }
 }

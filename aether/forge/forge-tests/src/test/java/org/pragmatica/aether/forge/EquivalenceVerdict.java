@@ -30,6 +30,21 @@ enum EquivalenceVerdict {
         return divergences.isEmpty() ? PASS : DIVERGE;
     }
 
+    /// The verdict the round's own findings demand, re-derived from the lists the round logs: PASS with a silent control, a void or a
+    /// divergence on the record, VOID without one, or DIVERGE where a void is on the record, is a round whose verdict line contradicts its own
+    /// log (f4fixB: a call site that dropped `voids` scored a non-quiescent round PASS). Returns `verdict` when it agrees, else throws.
+    static EquivalenceVerdict wired(EquivalenceVerdict verdict, List<String> silentControls, List<String> voids, List<String> divergences) {
+        var voided = !silentControls.isEmpty() || !voids.isEmpty();
+        var demanded = voided ? VOID : divergences.isEmpty() ? PASS : DIVERGE;
+
+        if (verdict != demanded) {
+            throw new IllegalStateException("instrument: the round verdict " + verdict + " contradicts its findings (silent=" + silentControls
+                                            + ", voids=" + voids + ", divergences=" + divergences + "), which demand " + demanded);
+        }
+
+        return verdict;
+    }
+
     /// Runs one arm. An exception (or assertion failure) is passed to `onError` and rethrown: the ERROR outcome.
     static <T> T guarded(Supplier<T> arm, Consumer<Throwable> onError) {
         try {
