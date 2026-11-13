@@ -103,13 +103,13 @@ class OwnerActivationLineageTest {
     /// offset and keeps the epoch.
     @Test
     void firstActivationOfAnEpoch_commitsItsStartAtTheNextOffset_withoutBumping() {
-        record.set(Option.some(committed(List.of(new EpochStart(Epoch.epoch(1L, 2L, 2L), 0L)))));
+        record.set(Option.some(committed(List.of(EpochStart.epochStart(Epoch.epoch(1L, 2L, 2L), 0L, Option.none())))));
 
         assertThat(activate()).isTrue();
 
         assertThat(commits).containsExactly("start@10");
         assertThat(record.get().unwrap().ownerEpoch()).as("the leader's epoch stands").isEqualTo(EPOCH);
-        assertThat(record.get().unwrap().lastEpochStart().unwrap()).isEqualTo(new EpochStart(EPOCH, 10L));
+        assertThat(record.get().unwrap().lastEpochStart().unwrap()).isEqualTo(EpochStart.epochStart(EPOCH, 10L, Option.none()));
         assertThat(activation.isActivated(STREAM, PARTITION)).as("activated for the record it committed").isTrue();
     }
 
@@ -129,7 +129,7 @@ class OwnerActivationLineageTest {
     /// has no memory of the ring, so the offsets above the resume point may be assigned again. A new epoch begins there.
     @Test
     void firstActivationInThisProcess_ofAnEpochThatAlreadyHasAStart_bumpsTheEpoch() {
-        record.set(Option.some(committed(List.of(new EpochStart(EPOCH, 5L)))));
+        record.set(Option.some(committed(List.of(EpochStart.epochStart(EPOCH, 5L, Option.none())))));
         watermark.set(2L);
 
         assertThat(activate()).isTrue();
@@ -138,7 +138,7 @@ class OwnerActivationLineageTest {
         var after = record.get().unwrap();
 
         assertThat(after.ownerEpoch()).isEqualTo(EPOCH.withCounter(after.ownershipTerm())).isNotEqualTo(EPOCH);
-        assertThat(after.lastEpochStart().unwrap()).isEqualTo(new EpochStart(after.ownerEpoch(), 3L));
+        assertThat(after.lastEpochStart().unwrap()).isEqualTo(EpochStart.epochStart(after.ownerEpoch(), 3L, Option.none()));
         assertThat(activation.isActivated(STREAM, PARTITION)).as("activated for the NEW ownership").isTrue();
     }
 
@@ -175,7 +175,7 @@ class OwnerActivationLineageTest {
     /// recovery is told once when the commit finally lands; a refused restart never latches, so each re-run commits again.
     @Test
     void persistentRefusals_raiseOneBlockAtTheThreshold_andClearItOnRecovery() {
-        record.set(Option.some(committed(List.of(new EpochStart(EPOCH, 5L)))));
+        record.set(Option.some(committed(List.of(EpochStart.epochStart(EPOCH, 5L, Option.none())))));
         refusal.set(Option.some(OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED));
 
         for (var attempt = 1; attempt < OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER; attempt++) {
@@ -206,7 +206,7 @@ class OwnerActivationLineageTest {
     @Test
     void aSecondStuckTenure_afterOwnershipLeft_raisesAgain() {
         var other = new NodeId("other");
-        var mine = committed(List.of(new EpochStart(EPOCH, 5L)));
+        var mine = committed(List.of(EpochStart.epochStart(EPOCH, 5L, Option.none())));
 
         record.set(Option.some(mine));
         refusal.set(Option.some(OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED));
@@ -221,7 +221,7 @@ class OwnerActivationLineageTest {
                                                                  1L,
                                                                  false,
                                                                  List.of(),
-                                                                 List.of(new EpochStart(EPOCH, 5L)))));
+                                                                 List.of(EpochStart.epochStart(EPOCH, 5L, Option.none())))));
         assertThat(activate()).as("ownership left this node").isFalse();
         assertThat(resolved).as("the first episode is over").hasSize(1);
 
@@ -234,7 +234,7 @@ class OwnerActivationLineageTest {
     /// Quorum loss ends the tenure the same way.
     @Test
     void aSecondStuckTenure_afterQuorumLoss_raisesAgain() {
-        record.set(Option.some(committed(List.of(new EpochStart(EPOCH, 5L)))));
+        record.set(Option.some(committed(List.of(EpochStart.epochStart(EPOCH, 5L, Option.none())))));
         refusal.set(Option.some(OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED));
         stickFor(OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER);
         assertThat(raised).hasSize(1);
@@ -250,7 +250,7 @@ class OwnerActivationLineageTest {
     /// Refusals below the threshold do not carry across a quorum loss: the count belongs to the tenure that ended.
     @Test
     void refusalsBelowTheThreshold_doNotCarryAcrossQuorumLoss() {
-        record.set(Option.some(committed(List.of(new EpochStart(EPOCH, 5L)))));
+        record.set(Option.some(committed(List.of(EpochStart.epochStart(EPOCH, 5L, Option.none())))));
         refusal.set(Option.some(OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED));
         stickFor(OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER - 2);
         activation.onQuorumStateChange(org.pragmatica.consensus.topology.ClusterStateNotification.passive());
@@ -263,7 +263,7 @@ class OwnerActivationLineageTest {
     /// the per-partition refusal alarm, or every owned partition would raise one when quorum goes. Red when it counts.
     @Test
     void commitsWithoutACommittedLeader_failButNeverRaiseTheRefusalAlarm() {
-        record.set(Option.some(committed(List.of(new EpochStart(EPOCH, 5L)))));
+        record.set(Option.some(committed(List.of(EpochStart.epochStart(EPOCH, 5L, Option.none())))));
         refusal.set(Option.some(OwnerActivation.ActivationError.NO_COMMITTED_LEADER));
 
         stickFor(OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER * 2);
@@ -276,7 +276,7 @@ class OwnerActivationLineageTest {
     /// it a second time (#1955's `ended` and the episode reset share the removal).
     @Test
     void anEpisodeEndedByQuorumLoss_isNotResolvedAgainWhenTheNextActivationLands() {
-        record.set(Option.some(committed(List.of(new EpochStart(EPOCH, 5L)))));
+        record.set(Option.some(committed(List.of(EpochStart.epochStart(EPOCH, 5L, Option.none())))));
         refusal.set(Option.some(OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED));
         stickFor(OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER);
         activation.onQuorumStateChange(org.pragmatica.consensus.topology.ClusterStateNotification.passive());
@@ -372,7 +372,7 @@ class OwnerActivationLineageTest {
 
             lateCommit.set(true);
             commits.clear();
-            record.set(Option.some(committed(List.of(new EpochStart(Epoch.epoch(1L, 2L, 2L), 0L)))));
+            record.set(Option.some(committed(List.of(EpochStart.epochStart(Epoch.epoch(1L, 2L, 2L), 0L, Option.none())))));
             var second = gate.activate(STREAM, PARTITION).flatMap(_ -> gate.activate(STREAM, PARTITION)).await();
 
             if (second.isFailure() || commits.size() != 1) {
@@ -393,7 +393,7 @@ class OwnerActivationLineageTest {
 
             lateCommit.set(true);
             raised.clear();
-            record.set(Option.some(committed(List.of(new EpochStart(EPOCH, 5L)))));
+            record.set(Option.some(committed(List.of(EpochStart.epochStart(EPOCH, 5L, Option.none())))));
             refusal.set(Option.some(OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED));
             for (var attempt = 0; attempt < OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER; attempt++) {
                 gate.activate(STREAM, PARTITION).await();

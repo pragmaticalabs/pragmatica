@@ -15,6 +15,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipV
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
+import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.FrameworkCodecs;
 
 import io.netty.buffer.Unpooled;
@@ -32,8 +33,8 @@ class EpochStartCodecTest {
     @Test
     void aFoldedEntry_keepsItsCoversFrom_throughTheNodeCodec() {
         var codec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
-        var folded = new EpochStart(OWN, 100L, OLDEST_DROPPED);
-        var unfolded = new EpochStart(Epoch.epoch(1L, 2L, 10L), 120L);
+        var folded = new EpochStart(OWN, 100L, OLDEST_DROPPED, Option.none());
+        var unfolded = EpochStart.epochStart(Epoch.epoch(1L, 2L, 10L), 120L, Option.none());
         var value = new StreamPartitionOwnershipValue(NodeId.nodeId("node-1").unwrap(),
                                                       Epoch.epoch(1L, 2L, 10L),
                                                       10L,
@@ -58,8 +59,39 @@ class EpochStartCodecTest {
 
     @Test
     void aNullOrZeroCoversFrom_isReadAsTheEntrysOwnEpoch() {
-        assertThat(new EpochStart(OWN, 5L, null).coversFrom()).isEqualTo(OWN);
-        assertThat(new EpochStart(OWN, 5L, Epoch.ZERO).coversFrom()).isEqualTo(OWN);
-        assertThat(new EpochStart(OWN, 5L).coversFrom()).isEqualTo(OWN);
+        assertThat(new EpochStart(OWN, 5L, null, Option.none()).coversFrom()).isEqualTo(OWN);
+        assertThat(new EpochStart(OWN, 5L, Epoch.ZERO, Option.none()).coversFrom()).isEqualTo(OWN);
+        assertThat(EpochStart.epochStart(OWN, 5L, Option.none()).coversFrom()).isEqualTo(OWN);
+    }
+
+    /// #2981 step 3 (design §2.3 B1, §8): `owner` crosses the consensus wire, folded and unfolded, and an unknown owner stays
+    /// unknown (the fence then waits the full deadline instead of probing a node the codec invented).
+    @Test
+    void epochStartOwner_roundTripsThroughTheNodeCodec_foldedUnfoldedAndUnknown() {
+        var codec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
+        var owner = NodeId.nodeId("node-1").unwrap();
+        var earlier = NodeId.nodeId("node-2").unwrap();
+        var unknown = new EpochStart(Epoch.epoch(1L, 2L, 8L), 90L, OLDEST_DROPPED, Option.none());
+        var folded = new EpochStart(OWN, 100L, OLDEST_DROPPED, Option.some(earlier));
+        var unfolded = EpochStart.epochStart(Epoch.epoch(1L, 2L, 10L), 120L, Option.some(owner));
+        var value = new StreamPartitionOwnershipValue(owner,
+                                                      Epoch.epoch(1L, 2L, 10L),
+                                                      10L,
+                                                      HlcTimestamp.ZERO,
+                                                      List.of(owner),
+                                                      1L,
+                                                      false,
+                                                      List.of(),
+                                                      List.of(unknown, folded, unfolded));
+        var put = new KVCommand.Put<AetherKey, AetherValue>(StreamPartitionOwnershipKey.streamPartitionOwnershipKey("orders", 0), value);
+        var buf = Unpooled.buffer();
+
+        codec.write(buf, put);
+        KVCommand.Put<?, ?> decoded = codec.read(buf);
+        var starts = ((StreamPartitionOwnershipValue) decoded.value()).epochStarts();
+
+        assertThat(starts.stream().map(EpochStart::owner).toList())
+            .isEqualTo(List.of(Option.none(), Option.some(earlier), Option.some(owner)));
+        assertThat(starts).isEqualTo(List.of(unknown, folded, unfolded));
     }
 }

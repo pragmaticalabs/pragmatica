@@ -104,7 +104,7 @@ class OwnerCatchupCommittedLineageTest {
     /// the activation completes at 10 -- it is not left short of a tail no committed lineage owns.
     @Test
     void catchUpOwnerFrom_aReplicaHoldingE1PastACommittedE3Start_servesThem_andTheOwnerDoesNotInstallThem() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 11L, Option.none())));
 
         var outcome = catchUpFrom(List.of(ProvenanceEntry.provenanceEntry(E1, 0)));
 
@@ -213,7 +213,7 @@ class OwnerCatchupCommittedLineageTest {
     /// not short at 15. Red under "rank on the stale cap".
     @Test
     void probePath_ofAReplicaRefilledToExactlyTheObservedTail_isRankedByItsTail_notTheStaleCap() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 11L, Option.none())));
 
         var lineage = List.of(ProvenanceEntry.provenanceEntry(E1, 0), ProvenanceEntry.provenanceEntry(E3, 11));
         var replicas = new java.util.ArrayList<>(List.of(new Replica(SOURCE, 20L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))),
@@ -313,7 +313,7 @@ class OwnerCatchupCommittedLineageTest {
         var fixture = disownedTailFixture();
 
         settled(fixture.backfill().learnLineageEnd("s", 0, SOURCE, 20L, 11L)).onFailure(cause -> fail(cause.message()));
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 13L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 13L, Option.none())));
         settled(fixture.backfill().confirmLineageEnd("s", 0, SOURCE, 20L)).onFailure(cause -> fail(cause.message()));
 
         assertThat(fixture.backfill().lineageEnd("s", 0, SOURCE, 20L)).as("stale cap 10 not kept").isEqualTo(20L);
@@ -373,7 +373,7 @@ class OwnerCatchupCommittedLineageTest {
     /// 11..15 were never read.
     @Test
     void probePath_ofAnOwnerBehindADisownedTail_doesNotActivateBelowAnotherReplicasLineage_andRedrivesFromIt() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 11L, Option.none())));
 
         var fixture = fixture(true,
                               List.of(new Replica(SOURCE, 20L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))),
@@ -397,7 +397,7 @@ class OwnerCatchupCommittedLineageTest {
     /// are learned the best is R1's 12, which the owner already holds, so it activates at 12 instead of waiting forever on R1's raw 30.
     @Test
     void probePath_whenEveryReplicasLineageIsLearned_activatesAtTheMaximumLineageEnd_notAnotherReplicasRawTail() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 9L), new EpochStart(E4, 13L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 9L, Option.none()), EpochStart.epochStart(E4, 13L, Option.none())));
 
         var fixture = fixture(true,
                               List.of(new Replica(SOURCE, 30L, List.of(ProvenanceEntry.provenanceEntry(E1, 0),
@@ -419,7 +419,7 @@ class OwnerCatchupCommittedLineageTest {
     /// run instead of waiting on its disowned raw tail (20).
     @Test
     void probePath_ofTheOnlyReplica_holdingADisownedTail_activatesAtItsLineageEnd() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 11L, Option.none())));
 
         var fixture = fixture(true, List.of(new Replica(SOURCE, 20L, List.of(ProvenanceEntry.provenanceEntry(E1, 0)))));
         var first = settled(fixture.backfill().backfill("s", 0));
@@ -434,7 +434,7 @@ class OwnerCatchupCommittedLineageTest {
     /// R1 is not a survivor ahead of the owner: its cap still holds against the tail it was learned on.
     @Test
     void probePath_aSourceReadAgainByItsLearnedEnd_keepsItsCapAgainstItsRawTail() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 11L, Option.none())));
 
         var fixture = fixture(true,
                               List.of(new Replica(SOURCE, 20L, List.of(ProvenanceEntry.provenanceEntry(E1, 0)))),
@@ -479,7 +479,7 @@ class OwnerCatchupCommittedLineageTest {
     /// activates at 18; no survivor is then ahead.
     @Test
     void registryPath_threeReplicas_twoLearnedCaps_convergesToTheMaximumLineageEnd() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L), new EpochStart(E4, 14L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 11L, Option.none()), EpochStart.epochStart(E4, 14L, Option.none())));
 
         var fixture = fixture(false,
                               List.of(new Replica(SOURCE, 30L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))),
@@ -506,7 +506,7 @@ class OwnerCatchupCommittedLineageTest {
     /// the owner stays short at 12 and the next redrive reads R2.
     @Test
     void probePath_threeReplicas_holdsTheOwnerToTheBestOtherProbedEnd_notTheLowest() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E4, 13L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E4, 13L, Option.none())));
 
         var fixture = fixture(true,
                               List.of(new Replica(SOURCE, 30L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))),
@@ -530,7 +530,7 @@ class OwnerCatchupCommittedLineageTest {
     /// other end, so the owner activates at 12 instead of waiting on R2's raw 30.
     @Test
     void registryPath_aSourceClipped_whileAnotherReplicaHoldsALearnedCap_activatesAtTheLearnedEnd_notTheOthersRawTail() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E4, 13L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E4, 13L, Option.none())));
 
         var fixture = fixture(false,
                               List.of(new Replica(SOURCE, 25L, List.of(ProvenanceEntry.provenanceEntry(E1, 0))),
@@ -1405,7 +1405,7 @@ class OwnerCatchupCommittedLineageTest {
     }
 
     private DisownedTail disownedTailFixture(boolean withOther) {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 11L, Option.none())));
 
         var registry = ReplicaRegistry.replicaRegistry();
         var served = new CopyOnWriteArrayList<NodeId>();
@@ -1464,7 +1464,7 @@ class OwnerCatchupCommittedLineageTest {
     /// Control: a source whose history follows the committed lineage (its 11-12 are E3's) is installed whole.
     @Test
     void catchUpOwnerFrom_aSourceFollowingTheCommittedLineage_isInstalledWhole() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 11L, Option.none())));
 
         var outcome = catchUpFrom(List.of(ProvenanceEntry.provenanceEntry(E1, 0), ProvenanceEntry.provenanceEntry(E3, 11)));
 
@@ -1476,7 +1476,7 @@ class OwnerCatchupCommittedLineageTest {
     /// started: the records of the epoch it succeeds are what it catches up on, whole.
     @Test
     void catchUpOwnerFrom_withTheOwnersEpochPending_installsThePriorEpochsRecordsWhole() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none())));
 
         var outcome = catchUpFrom(List.of(ProvenanceEntry.provenanceEntry(E1, 0)));
 
@@ -1486,7 +1486,7 @@ class OwnerCatchupCommittedLineageTest {
 
     @Test
     void reassignedFrom_isJudgedOnEveryRecordedEpoch_byTheLowestLaterCommittedStart() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 11L), new EpochStart(E4, 9L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 11L, Option.none()), EpochStart.epochStart(E4, 9L, Option.none())));
 
         assertThat(owner.reassignedFrom("s", 0, 0, 12, List.of(ProvenanceEntry.provenanceEntry(E1, 0))))
             .as("the lowest later start, not the first after E1").isEqualTo(Option.some(9L));
@@ -1499,7 +1499,7 @@ class OwnerCatchupCommittedLineageTest {
 
     @Test
     void reassignedFrom_ofARangeEndingBeforeThePage_orAnEmptySlice_isNone() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E2, 3L), new EpochStart(E3, 11L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E2, 3L, Option.none()), EpochStart.epochStart(E3, 11L, Option.none())));
 
         assertThat(owner.reassignedFrom("s", 0, 6, 12, List.of(ProvenanceEntry.provenanceEntry(E1, 0),
                                                                ProvenanceEntry.provenanceEntry(E2, 5),
@@ -1510,7 +1510,7 @@ class OwnerCatchupCommittedLineageTest {
 
     @Test
     void reassignedFrom_ofSeveralClippedRanges_isTheLowestBound() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E2, 2L), new EpochStart(E3, 9L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E2, 2L, Option.none()), EpochStart.epochStart(E3, 9L, Option.none())));
 
         assertThat(owner.reassignedFrom("s", 0, 0, 12, List.of(ProvenanceEntry.provenanceEntry(E1, 0),
                                                                ProvenanceEntry.provenanceEntry(E2, 5))))
@@ -1519,7 +1519,7 @@ class OwnerCatchupCommittedLineageTest {
 
     @Test
     void reassignedFrom_ofARangeEndingExactlyWhereThePageStarts_doesNotJudgeThatRange() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 3L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 3L, Option.none())));
 
         assertThat(owner.reassignedFrom("s", 0, 5, 12, List.of(ProvenanceEntry.provenanceEntry(E1, 0),
                                                                ProvenanceEntry.provenanceEntry(E4, 5))))
@@ -1534,7 +1534,7 @@ class OwnerCatchupCommittedLineageTest {
         var logged = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), LastSealedOffsetSource.none());
 
         logged.createStream(config()).onFailure(cause -> fail(cause.message()));
-        logged.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 5L)));
+        logged.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 5L, Option.none())));
 
         var outcome = catchUpFrom(logged, List.of(ProvenanceEntry.provenanceEntry(E1, 0), ProvenanceEntry.provenanceEntry(E2, 5)));
 
@@ -1553,7 +1553,7 @@ class OwnerCatchupCommittedLineageTest {
         var logged = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), LastSealedOffsetSource.none());
 
         logged.createStream(config()).onFailure(cause -> fail(cause.message()));
-        logged.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L), new EpochStart(E3, 5L)));
+        logged.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none()), EpochStart.epochStart(E3, 5L, Option.none())));
 
         var outcome = catchUpFrom(logged, List.of(ProvenanceEntry.provenanceEntry(E1, 0), ProvenanceEntry.provenanceEntry(E2, 3)));
 
@@ -1566,7 +1566,7 @@ class OwnerCatchupCommittedLineageTest {
     /// the run short, and the activation stays un-activated.
     @Test
     void catchUpOwnerFrom_aShortUnclippedRun_staysUnactivated() {
-        owner.epochStarts((_, _) -> List.of(new EpochStart(E1, 0L)));
+        owner.epochStarts((_, _) -> List.of(EpochStart.epochStart(E1, 0L, Option.none())));
 
         var registry = ReplicaRegistry.replicaRegistry();
 

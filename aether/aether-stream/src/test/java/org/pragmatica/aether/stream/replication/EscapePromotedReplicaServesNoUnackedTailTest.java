@@ -20,6 +20,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
 
@@ -58,7 +59,7 @@ class EscapePromotedReplicaServesNoUnackedTailTest {
         manager.ownerEpochSource((_, _) -> E2);
         manager.createStream(StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 600_000), "earliest"));
         manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
-        manager.epochStarts((_, _) -> List.of(new EpochStart(E2, 5L)));
+        manager.epochStarts((_, _) -> List.of(EpochStart.epochStart(E2, 5L, Option.none())));
         for (var i = 0; i < tailLength; i++) {
             var text = i < 5 ? "shared-" + i : label + "-" + i;
 

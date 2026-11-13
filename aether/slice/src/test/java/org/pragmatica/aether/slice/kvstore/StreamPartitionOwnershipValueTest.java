@@ -8,6 +8,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
+import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -135,8 +136,8 @@ class StreamPartitionOwnershipValueTest {
         var v = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner, epoch, 3L, HlcTimestamp.ZERO, java.util.List.of(owner), 4L);
         var started = v.withEpochStart(10L);
 
-        assertThat(started.epochStarts()).containsExactly(new AetherValue.EpochStart(epoch, 10L));
-        assertThat(started.lastEpochStart().unwrap()).isEqualTo(new AetherValue.EpochStart(epoch, 10L));
+        assertThat(started.epochStarts()).containsExactly(AetherValue.EpochStart.epochStart(epoch, 10L, Option.none()));
+        assertThat(started.lastEpochStart().unwrap()).isEqualTo(AetherValue.EpochStart.epochStart(epoch, 10L, Option.none()));
         assertThat(started.isrVersion()).as("a recorded start is a change of the record").isEqualTo(5L);
         assertThat(started.withEpochStart(10L)).as("the same start again changes nothing").isSameAs(started);
     }
@@ -155,7 +156,7 @@ class StreamPartitionOwnershipValueTest {
         assertThat(next.ownershipTerm()).isEqualTo(4L);
         assertThat(next.ownerEpoch()).isEqualTo(epoch.withCounter(4L)).isNotEqualTo(epoch);
         assertThat(next.epochStarts()).as("the new epoch re-assigns offsets from 3, so the start at 7 is superseded")
-                                      .containsExactly(new AetherValue.EpochStart(epoch.withCounter(4L), 3L));
+                                      .containsExactly(AetherValue.EpochStart.epochStart(epoch.withCounter(4L), 3L, Option.none()));
         assertThat(next.isr()).containsExactly(owner, peer);
     }
 
@@ -169,9 +170,9 @@ class StreamPartitionOwnershipValueTest {
         var second = v.restarted(3L, HlcTimestamp.ZERO);
         var third = second.restarted(0L, HlcTimestamp.ZERO);
 
-        assertThat(second.epochStarts()).containsExactly(new AetherValue.EpochStart(e1, 0L), new AetherValue.EpochStart(e1.withCounter(2L), 3L));
+        assertThat(second.epochStarts()).containsExactly(AetherValue.EpochStart.epochStart(e1, 0L, Option.none()), AetherValue.EpochStart.epochStart(e1.withCounter(2L), 3L, Option.none()));
         assertThat(third.epochStarts()).as("a new life begins at offset 0: nothing before it survives")
-                                       .containsExactly(new AetherValue.EpochStart(e1.withCounter(3L), 0L));
+                                       .containsExactly(AetherValue.EpochStart.epochStart(e1.withCounter(3L), 0L, Option.none()));
     }
 
     /// Bounded, newest kept, and the dropped starts are FOLDED (C2, v1873 round 2): the oldest kept start takes the lowest
@@ -182,13 +183,13 @@ class StreamPartitionOwnershipValueTest {
     void epochStarts_areBounded_keepingTheNewest_andFoldingTheLowestDroppedOffsetIntoTheOldestKept() {
         var owner = NodeId.nodeId("core-1").unwrap();
         var starts = java.util.stream.IntStream.range(0, StreamPartitionOwnershipValue.EPOCH_STARTS_MAX + 3)
-                                               .mapToObj(i -> new AetherValue.EpochStart(Epoch.epoch(1L, 2L, i), i * 10L))
+                                               .mapToObj(i -> AetherValue.EpochStart.epochStart(Epoch.epoch(1L, 2L, i), i * 10L, Option.none()))
                                                .toList();
         var v = new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false, null, starts);
 
         assertThat(v.epochStarts()).hasSize(StreamPartitionOwnershipValue.EPOCH_STARTS_MAX);
         assertThat(v.epochStarts().getFirst()).as("the oldest kept epoch, at the lowest dropped offset")
-                                              .isEqualTo(new AetherValue.EpochStart(starts.get(3).epoch(), 0L, starts.get(0).epoch()));
+                                              .isEqualTo(new AetherValue.EpochStart(starts.get(3).epoch(), 0L, starts.get(0).epoch(), Option.none()));
         assertThat(v.epochStarts().subList(1, v.epochStarts().size())).as("the rest is untouched")
                                                                       .isEqualTo(starts.subList(4, starts.size()));
     }
@@ -199,13 +200,13 @@ class StreamPartitionOwnershipValueTest {
     void refold_keepsTheOldestDroppedEpoch() {
         var owner = NodeId.nodeId("core-1").unwrap();
         var starts = new java.util.ArrayList<>(java.util.stream.IntStream.range(0, StreamPartitionOwnershipValue.EPOCH_STARTS_MAX + 2)
-                                                                           .mapToObj(i -> new AetherValue.EpochStart(Epoch.epoch(1L, 2L, i), i * 10L))
+                                                                           .mapToObj(i -> AetherValue.EpochStart.epochStart(Epoch.epoch(1L, 2L, i), i * 10L, Option.none()))
                                                                            .toList());
         var once = new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false, null, starts);
 
         starts = new java.util.ArrayList<>(once.epochStarts());
-        starts.add(new AetherValue.EpochStart(Epoch.epoch(1L, 2L, 99L), 999L));
-        starts.add(new AetherValue.EpochStart(Epoch.epoch(1L, 2L, 100L), 1_000L));
+        starts.add(AetherValue.EpochStart.epochStart(Epoch.epoch(1L, 2L, 99L), 999L, Option.none()));
+        starts.add(AetherValue.EpochStart.epochStart(Epoch.epoch(1L, 2L, 100L), 1_000L, Option.none()));
 
         var twice = new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false, null, starts);
 
@@ -220,7 +221,7 @@ class StreamPartitionOwnershipValueTest {
     void epochStarts_underTheBound_areKeptAsGiven() {
         var owner = NodeId.nodeId("core-1").unwrap();
         var starts = java.util.stream.IntStream.range(0, StreamPartitionOwnershipValue.EPOCH_STARTS_MAX)
-                                               .mapToObj(i -> new AetherValue.EpochStart(Epoch.epoch(1L, 2L, i), 100L + i * 10L))
+                                               .mapToObj(i -> AetherValue.EpochStart.epochStart(Epoch.epoch(1L, 2L, i), 100L + i * 10L, Option.none()))
                                                .toList();
 
         assertThat(new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false, null, starts).epochStarts())
