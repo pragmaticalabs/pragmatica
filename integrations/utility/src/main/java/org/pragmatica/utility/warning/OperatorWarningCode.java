@@ -199,6 +199,21 @@ public enum OperatorWarningCode {
     /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`), so a successor leader raises
     /// it only for a subject in the inherited open set and publishes it without holding that warning's open mark.
     SCHEMA_HOLD_CLEARED("schema-hold-cleared", "deployment", WarningLevel.INFO, SCHEMA_HOLD, true),
+    /// A schema migration is stalled (#2773): its record has been PENDING or MIGRATING for longer than any live attempt or scheduled
+    /// retry explains, and no live migration lock backs it (a failed lock Put leaves exactly this). Nothing re-dispatches it by itself in
+    /// this term. Subject is the datasource. The message names the recorded status, the slices it holds and the operator lever: the retry
+    /// route only for a status it accepts (PENDING); for MIGRATING the next leader's rebuild resets it to PENDING. Closed by
+    /// [#SCHEMA_MIGRATION_PROGRESSED].
+    SCHEMA_MIGRATION_STALLED("schema-migration-stalled", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#SCHEMA_MIGRATION_STALLED], same subject (#2773): the record left PENDING/MIGRATING-without-a-lock (a live lock, a
+    /// terminal status, or a fresh write by a retry), or the datasource's record was removed. Closes across nodes (#2834): the cluster
+    /// FSM commits the open set of this family (`FsmWarningKey`), so a successor leader raises it only for a subject in the inherited open
+    /// set and publishes it without holding that warning's open mark.
+    SCHEMA_MIGRATION_PROGRESSED("schema-migration-progressed",
+                                "deployment",
+                                WarningLevel.INFO,
+                                SCHEMA_MIGRATION_STALLED,
+                                true),
     /// D.6 row 17: a datasource's schema status does not decode (#964). Subject is the datasource. Closed by [#SCHEMA_STATUS_READABLE].
     SCHEMA_STATUS_UNKNOWN("schema-status-unknown", "deployment", WarningLevel.WARNING),
     /// D.6 row 18: a goal went unanswered in time; the node is excluded for the artifact. Closed by [#SLICE_UNRESPONSIVE_EXPIRED].

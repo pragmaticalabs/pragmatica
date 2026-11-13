@@ -42,6 +42,7 @@ public sealed interface Warnings {
     String INVALID_PLACEMENT = "invalid-placement";
     String RETRY_EXHAUSTED = "retry-exhausted-unsettled";
     String SCHEMA_UNKNOWN = "schema-status-unknown";
+    String SCHEMA_STALLED = "schema-migration-stalled";
     String STRAY = "stray-instance";
     String SCHEMA_HOLD = "schema-hold";
     String JOIN_UNMATCHED = "join-unmatched";
@@ -56,6 +57,7 @@ public sealed interface Warnings {
     Map<String, String> FAMILIES = Map.ofEntries(Map.entry(INVALID_PLACEMENT, Recoveries.PLACEMENT_VALID),
                                                  Map.entry(RETRY_EXHAUSTED, Recoveries.RETRY_EXHAUSTED_SETTLED),
                                                  Map.entry(SCHEMA_UNKNOWN, Recoveries.SCHEMA_STATUS_READABLE),
+                                                 Map.entry(SCHEMA_STALLED, Recoveries.SCHEMA_MIGRATION_PROGRESSED),
                                                  Map.entry(STRAY, Recoveries.STRAY_INSTANCE_REMOVED),
                                                  Map.entry(SCHEMA_HOLD, Recoveries.SCHEMA_HOLD_CLEARED),
                                                  Map.entry(JOIN_UNMATCHED, Recoveries.JOIN_MATCHED),
@@ -218,6 +220,8 @@ public sealed interface Warnings {
                                 m.retryExhaustedWarned.toList().stream().map(Artifact::asString)),
                          single(SCHEMA_UNKNOWN,
                                 m.schemaUnknownWarned.toList().stream()),
+                         single(SCHEMA_STALLED,
+                                m.schemaStalledWarned.toList().stream()),
                          single(JOIN_UNMATCHED,
                                 m.unmatchedWarned.toList().stream().map(NodeId::id)),
                          single(NO_POLICY,
@@ -295,6 +299,7 @@ public sealed interface Warnings {
             case INVALID_PLACEMENT -> artifactOf(key).map(artifact -> adoptPlacement(m, ctx, artifact)).or(m);
             case RETRY_EXHAUSTED -> artifactOf(key).map(artifact -> adoptRetry(m, ctx, artifact)).or(m);
             case SCHEMA_UNKNOWN -> adoptSchema(m, ctx, key.subject());
+            case SCHEMA_STALLED -> adoptStalled(m, ctx, key.subject());
             case STRAY -> artifactOf(key).map(artifact -> adoptStray(m, ctx, artifact, value)).or(m);
             case SCHEMA_HOLD -> artifactOf(key).map(artifact -> adoptHold(m, ctx, artifact, value)).or(m);
             case JOIN_UNMATCHED -> nodeOf(key).map(node -> adoptUnmatched(m, ctx, node)).or(m);
@@ -357,6 +362,18 @@ public sealed interface Warnings {
         }
 
         m.schemaUnknownWarned = m.schemaUnknownWarned.add(datasource);
+
+        return m;
+    }
+
+    /// #2773: the datasource's record was removed between the leaders (gone); else it stays open, and the successor's stall sweep closes it
+    /// once the condition ended. Not raised again (the raise site checks the set).
+    private static ClusterModel adoptStalled(ClusterModel m, Ctx ctx, String datasource) {
+        if (m.schemas.get(datasource).isEmpty()) {
+            return gone(m, ctx, SCHEMA_STALLED, datasource, "its schema record was removed between leaders");
+        }
+
+        m.schemaStalledWarned = m.schemaStalledWarned.add(datasource);
 
         return m;
     }

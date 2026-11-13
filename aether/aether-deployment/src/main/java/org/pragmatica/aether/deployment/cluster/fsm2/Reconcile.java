@@ -11,7 +11,7 @@ import java.util.Map;
 /// reconcile; the pass re-derives everything that should be true from the model. A pass runs only while the committed
 /// leader names this node (R-5.7.1 (a)).
 ///
-/// Order: (1) awaited targets, (2) intake re-drive, (2b) strays, (2c) the activation re-derive (CF-4), (3) placement, (4) drain loops, (5) community states,
+/// Order: (1) awaited targets, (2) intake re-drive, (2b) strays, (2c) the activation re-derive (CF-4), (2d) the schema stall check (#2773), (3) placement, (4) drain loops, (5) community states,
 /// (6) orphans, (6b) orphan targets (CF-8), (7) the departure backstop, (8) divergence, (9) completion repair, (10) garbage collection.
 public sealed interface Reconcile {
     /// R-3.1.5: at most one reconcile is queued; the flag is cleared when it is handled.
@@ -38,6 +38,7 @@ public sealed interface Reconcile {
         Strays.sweep(m, ctx);
         Failures.sweep(m, ctx);
         Slices.reactivate(m, ctx);
+        Schemas.sweepStalls(m, ctx);
         Placement.run(m, ctx);
         Drains.resume(m, ctx);
         Communities.run(m, ctx);
