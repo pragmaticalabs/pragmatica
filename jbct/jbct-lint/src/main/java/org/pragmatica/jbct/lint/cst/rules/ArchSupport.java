@@ -90,9 +90,7 @@ sealed interface ArchSupport permits ArchSupport.unused {
     /// The import node's text also carries the trivia after its terminating `;` (a following `///` block, #3065), so the body
     /// ends at the first `;` rather than at the end of the text.
     private static String importBody(String importText) {
-        var declaration = importText.trim()
-                                    .replaceFirst("^import\\s+", "")
-                                    .replaceFirst("^static\\s+", "");
+        var declaration = importText.trim().replaceFirst("^import\\s+", "").replaceFirst("^static\\s+", "");
         var terminator = declaration.indexOf(';');
 
         return (terminator >= 0

@@ -71,7 +71,6 @@ public sealed interface MapperSafety permits MapperSafety.unused {
 
     /// A matched [#PARTIAL_OP] that is a `getFirst` / `getLast` call, the only operations an emptiness / size guard can dominate.
     Pattern ACCESSOR_OP = Pattern.compile("^\\.get(?:First|Last)\\b");
-
     /// Container partial accessors that take no argument, so a method REFERENCE to them (`List::getFirst`) is as partial as the
     /// lambda `xs -> xs.getFirst()`. Shared by JBCT-TOT-02 (flags the reference by name) and JBCT-STY-05 (must not suggest
     /// rewriting a lambda that TOT-01 catches into a reference TOT-01 cannot see). Bare `get` is deliberately absent, for the
@@ -167,9 +166,10 @@ public sealed interface MapperSafety permits MapperSafety.unused {
 
     private static boolean hasGuardBefore(String masked, int start, String receiver) {
         var guard = Pattern.compile("(?<![\\w$.])" + Pattern.quote(receiver)
-                                    + "\\s*\\.\\s*(?:isEmpty\\s*\\(\\s*\\)|size\\s*\\(\\s*\\)\\s*(?:==|!=|<=|>=|<|>))");
+                                   + "\\s*\\.\\s*(?:isEmpty\\s*\\(\\s*\\)|size\\s*\\(\\s*\\)\\s*(?:==|!=|<=|>=|<|>))");
 
-        return guard.matcher(masked.substring(0, start)).find();
+        return guard.matcher(masked.substring(0, start))
+                    .find();
     }
 
     /// Plain identifier directly before the `.` at `dotIdx`, or `none` when the receiver is any other expression (a call
