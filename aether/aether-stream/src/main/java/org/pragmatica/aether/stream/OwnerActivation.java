@@ -1505,15 +1505,15 @@ public final class OwnerActivation {
     }
 
     /// Every probed peer's learned cap is confirmed after the probe round and before any ranking (#3142 F3).
-    /// Recovery: design-out. A confirmation that fails leaves the cap as learned and never blocks the gate; the cap is only an
-    /// advisory bound, and the catch-up it ranks still verifies what it installs.
+    /// Recovery: design-out. [Promise#allOf] settles with each confirmation's own result and never fails, so a confirmation that
+    /// fails leaves the cap as learned and never blocks the gate; the cap is only an advisory bound, and the catch-up it ranks
+    /// still verifies what it installs.
     private Promise<Unit> confirmCaps(String stream, int partition, List<PeerWatermark> answered) {
         return Promise.allOf(answered.stream()
                                      .map(peer -> peerLineageConfirm.of(stream,
                                                                         partition,
                                                                         peer.node(),
-                                                                        peer.watermark())
-                                                                    .recover(_ -> Unit.unit()))
+                                                                        peer.watermark()))
                                      .toList()).map(_ -> Unit.unit());
     }
 
