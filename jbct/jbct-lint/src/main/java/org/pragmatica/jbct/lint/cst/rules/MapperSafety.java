@@ -140,7 +140,8 @@ public sealed interface MapperSafety permits MapperSafety.unused {
     /// `orElseThrow`, indexed `get`, ...) is never guarded.
     ///
     /// Known limits (text, not flow): a guard whose polarity or reach is not one of the [GuardDominance] forms (another method,
-    /// a compound or negated-compound condition, a conditional early exit) does not exempt, and a receiver that is not a plain
+    /// a compound or negated-compound condition, a guard that is the operand of a comparison or of arithmetic, a conditional early
+    /// exit, an early exit crossing an old-style `case` label, a receiver reassigned or mutated after the guard) does not exempt, and a receiver that is not a plain
     /// identifier (`wire.items().getFirst()`) is never guarded. Used by JBCT-TOT-02's body scan only; the lambda rule keeps
     /// [#containsPartialOperation].
     static boolean containsUnguardedPartialOperation(String code) {

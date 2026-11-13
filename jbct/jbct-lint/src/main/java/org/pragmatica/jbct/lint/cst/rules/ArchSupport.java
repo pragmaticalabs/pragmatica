@@ -3,6 +3,7 @@ package org.pragmatica.jbct.lint.cst.rules;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.regex.Pattern;
 
 import org.pragmatica.jbct.parser.Cursor;
 import org.pragmatica.jbct.parser.RuleKind;
@@ -25,6 +26,9 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /// member import (`import static a.b.C.m;`) reduces to `a.b.C`, whose layer/slice classification is
 /// still correct under segment/prefix matching; a nested-type reference keeps its qualifier.
 sealed interface ArchSupport permits ArchSupport.unused {
+    /// A line (`//`, `///`) or block (`/* */`) comment inside an import node's text.
+    Pattern IMPORT_COMMENT = Pattern.compile("//[^\\n]*|/\\*.*?\\*/", Pattern.DOTALL);
+
     record unused() implements ArchSupport {}
 
     /// A package reference sourced from an import declaration or a fully-qualified type node.
@@ -87,15 +91,20 @@ sealed interface ArchSupport permits ArchSupport.unused {
                : body;
     }
 
-    /// The import node's text also carries the trivia after its terminating `;` (a following `///` block, #3065), so the body
-    /// ends at the first `;` rather than at the end of the text.
+    /// The import node's text also carries the trivia after its terminating `;` (a following `///` block, #3065), so comments are
+    /// stripped first (a `;` inside one must not end the body) and the body then ends at the first `;`; whitespace inside the
+    /// qualified name (an import split over lines) is dropped.
     private static String importBody(String importText) {
-        var declaration = importText.trim().replaceFirst("^import\\s+", "").replaceFirst("^static\\s+", "");
+        var declaration = IMPORT_COMMENT.matcher(importText)
+                                        .replaceAll(" ")
+                                        .trim()
+                                        .replaceFirst("^import\\s+", "")
+                                        .replaceFirst("^static\\s+", "");
         var terminator = declaration.indexOf(';');
 
         return (terminator >= 0
                 ? declaration.substring(0, terminator)
-                : declaration).trim();
+                : declaration).replaceAll("\\s+", "");
     }
 
     /// Qualifier package of a fully-qualified type node's text (generics / array dims stripped), or

@@ -7,10 +7,15 @@ import java.util.regex.Pattern;
 /// check on the same receiver? Input is the string- and comment-masked body ([MapperSafety#maskForOps]).
 ///
 /// Exempt forms (G = the whole guard condition, nothing else inside the parentheses):
-///   - `G-nonEmpty && ... acc` with no `||`, `?`, `:`, `;` or block between the guard and the accessor;
+///   - `G-nonEmpty && ... acc` with no `||`, `?`, `:`, `;`, `,` (at the chain's own level) or block between the guard and the accessor;
 ///   - `G-nonEmpty ? acc : d`, `G-empty ? d : acc`;
 ///   - `if (G-nonEmpty) stmt-containing-acc`;
 ///   - `if (G-empty) <return|throw>;` at statement level, then `acc` later in the same or an enclosing block.
+///
+/// Every form needs, in addition: the guard OPENS its operand (preceded by `(`, `,`, `?`, a ternary `:`, a plain `=`, a lambda
+/// `->`, `return` / `yield`, or, for the `&&` chain only, by `&&` with no `||` earlier in the same expression), so
+/// `flag == xs.isEmpty() ? ..` and `n - xs.size() > 0 && ..` are not guards; the receiver is not reassigned or mutated between
+/// the guard and the accessor; and an early exit does not cross an old-style `case X:` / `default:` label.
 ///
 /// G-nonEmpty: `!r.isEmpty()`, `r.size() > N`, `r.size() >= K` (K >= 1), `r.size() == K` (K >= 1), `r.size() != 0`.
 /// G-empty: `r.isEmpty()` (a leading `!` is not part of the condition start, so it never qualifies), `r.size() == 0`, `r.size() < 1`, `r.size() <= 0`.
@@ -24,6 +29,11 @@ sealed interface GuardDominance permits GuardDominance.unused {
     Pattern IF_OPEN = Pattern.compile("\\bif\\s*\\(\\s*$");
     Pattern EXIT_STATEMENT = Pattern.compile("^\\s*(?:return|throw)\\b");
     Pattern CLOSE_PAREN = Pattern.compile("^\\s*\\)");
+    /// An old-style switch label (`case X:`, `default:`); arrow arms (`case X ->`) and `::` are not labels.
+    Pattern SWITCH_LABEL = Pattern.compile("\\bcase\\b(?:(?!->)[^;{}])*?(?<!:):(?!:)|\\bdefault\\s*:(?!:)");
+
+    /// Member names that read a list without changing it; any other member access on the receiver counts as a possible write.
+    String READS = "isEmpty|size|get|getFirst|getLast|stream|parallelStream|contains|containsAll|indexOf|lastIndexOf|iterator|listIterator|forEach|toString|equals|hashCode|subList|toArray|peekFirst|peekLast|element|reversed|getClass";
 
     static boolean dominates(String masked, int accessorStart, String receiver) {
         var nonEmpty = guard(receiver,
@@ -32,13 +42,19 @@ sealed interface GuardDominance permits GuardDominance.unused {
                           "R\\s*\\.\\s*isEmpty\\s*\\(\\s*\\)|R\\s*\\.\\s*size\\s*\\(\\s*\\)\\s*(?:==\\s*0|<\\s*1|<=\\s*0)\\b").matcher(masked);
 
         while (nonEmpty.find() && nonEmpty.end() <= accessorStart) {
-            if (nonEmptySideReaches(masked, nonEmpty.start(), nonEmpty.end(), accessorStart)) {
+            if (nonEmptySideReaches(masked, nonEmpty.start(), nonEmpty.end(), accessorStart) && !written(masked,
+                                                                                                         receiver,
+                                                                                                         nonEmpty.end(),
+                                                                                                         accessorStart)) {
                 return true;
             }
         }
 
         while (empty.find() && empty.end() <= accessorStart) {
-            if (emptySideReaches(masked, empty.start(), empty.end(), accessorStart)) {
+            if (emptySideReaches(masked, empty.start(), empty.end(), accessorStart) && !written(masked,
+                                                                                                receiver,
+                                                                                                empty.end(),
+                                                                                                accessorStart)) {
                 return true;
             }
         }
@@ -46,15 +62,30 @@ sealed interface GuardDominance permits GuardDominance.unused {
         return false;
     }
 
+    /// True when the receiver is reassigned (`xs = ..`, `xs += ..`) or accessed through anything but a read member between the
+    /// guard and the accessor: the guarded state may no longer hold.
+    private static boolean written(String code, String receiver, int from, int to) {
+        var write = Pattern.compile("(?<![\\w$])" + Pattern.quote(receiver)
+                                   + "\\s*(?:[-+*/%&|^]?=(?!=)|\\.\\s*(?!(?:" + READS
+                                   + ")\\b)[A-Za-z_]\\w*)");
+
+        return write.matcher(code.substring(from, to))
+                    .find();
+    }
+
     private static Pattern guard(String receiver, String shapes) {
         return Pattern.compile("(?<![\\w$.])(?:" + shapes.replace("R", Pattern.quote(receiver)) + ")");
     }
 
     private static boolean nonEmptySideReaches(String code, int guardStart, int guardEnd, int accessor) {
-        return andChainReaches(code, guardEnd, accessor) || ternaryReaches(code, guardStart, guardEnd, accessor, true) || ifThenReaches(code,
-                                                                                                                                        guardStart,
-                                                                                                                                        guardEnd,
-                                                                                                                                        accessor);
+        return andChainReaches(code, guardStart, guardEnd, accessor) || ternaryReaches(code,
+                                                                                       guardStart,
+                                                                                       guardEnd,
+                                                                                       accessor,
+                                                                                       true) || ifThenReaches(code,
+                                                                                                              guardStart,
+                                                                                                              guardEnd,
+                                                                                                              accessor);
     }
 
     private static boolean emptySideReaches(String code, int guardStart, int guardEnd, int accessor) {
@@ -64,10 +95,12 @@ sealed interface GuardDominance permits GuardDominance.unused {
                                                                                                accessor);
     }
 
-    private static boolean andChainReaches(String code, int guardEnd, int accessor) {
+    private static boolean andChainReaches(String code, int guardStart, int guardEnd, int accessor) {
         var next = nextNonSpace(code, guardEnd);
 
-        return code.startsWith("&&", next) && !escapesChain(code, next + 2, accessor);
+        return code.startsWith("&&", next)
+               && opensOperand(code, guardStart, true)
+               && !escapesChain(code, next + 2, accessor);
     }
 
     /// True when anything between `from` and `to` can end the `&&` chain: `||`, a ternary, a statement or block boundary, or a
@@ -83,7 +116,7 @@ sealed interface GuardDominance permits GuardDominance.unused {
                 continue;
             }
 
-            if ("|?:;{}".indexOf(c) >= 0) {
+            if ("|?:;{}".indexOf(c) >= 0 || c == ',' && depth == 0) {
                 return true;
             }
 
@@ -103,7 +136,7 @@ sealed interface GuardDominance permits GuardDominance.unused {
     private static boolean ternaryReaches(String code, int guardStart, int guardEnd, int accessor, boolean thenSide) {
         var question = nextNonSpace(code, guardEnd);
 
-        if (question >= code.length() || code.charAt(question) != '?' || !startsCondition(code, guardStart)) {
+        if (question >= code.length() || code.charAt(question) != '?' || !opensOperand(code, guardStart, false)) {
             return false;
         }
 
@@ -118,13 +151,53 @@ sealed interface GuardDominance permits GuardDominance.unused {
                : accessor > colon && accessor < expressionEnd(code, colon + 1);
     }
 
-    /// The guard is the whole condition: what precedes it opens an expression (`(`, `=`, `,`, `return`), not a `&&` / `||` / `!`.
-    private static boolean startsCondition(String code, int guardStart) {
+    /// The guard is the whole operand: what precedes it opens an expression, so it is not the right side of a comparison or of
+    /// arithmetic (`flag == xs.isEmpty()`, `n - xs.size() > 0`). `afterAnd` also accepts `&&` (the guard then continues a chain
+    /// that has no `||` before it).
+    private static boolean opensOperand(String code, int guardStart, boolean afterAnd) {
         var prev = previousNonSpace(code, guardStart);
 
-        return prev >= 0 && (code.charAt(prev) == '(' || code.charAt(prev) == '=' || code.charAt(prev) == ',' || code.substring(0,
-                                                                                                                                prev + 1)
-                                                                                                                     .matches("(?s).*\\breturn"));
+        if (prev < 0) {
+            return false;
+        }
+
+        var before = prev > 0
+                     ? code.charAt(prev - 1)
+                     : ' ';
+
+        return switch (code.charAt(prev)) {
+            case '(', ',', '?' -> true;
+            case ':' -> before != ':';
+            case '=' -> "=!<>+-*/%&|^".indexOf(before) < 0;
+            case '>' -> before == '-';
+            case '&' -> afterAnd && before == '&' && !disjunctionBefore(code, prev - 1);
+            default -> code.substring(0, prev + 1).matches("(?s).*\\b(?:return|yield)");
+        };
+    }
+
+    /// True when a `||` precedes `end` in the same expression (outside parentheses that close before `end`).
+    private static boolean disjunctionBefore(String code, int end) {
+        var depth = 0;
+
+        for (var i = end - 1; i >= 0; i--) {
+            var c = code.charAt(i);
+
+            if (c == ')') {
+                depth++;
+            } else if (c == '(') {
+                if (depth == 0) {
+                    return false;
+                }
+
+                depth--;
+            } else if (depth == 0 && ",;{}?".indexOf(c) >= 0) {
+                return false;
+            } else if (depth == 0 && c == '|' && i > 0 && code.charAt(i - 1) == '|') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static int matchingColon(String code, int from) {
@@ -206,7 +279,10 @@ sealed interface GuardDominance permits GuardDominance.unused {
 
         return accessor >= statementEnd
                && exits(code.substring(statementStart, statementEnd))
-               && !leavesBlock(code, statementEnd, accessor);
+               && !leavesBlock(code, statementEnd, accessor)
+               && !SWITCH_LABEL.matcher(code)
+                               .region(statementEnd, accessor)
+                               .find();
     }
 
     /// The `if` owning the guard begins a statement (not `else if`, not nested in an expression).
