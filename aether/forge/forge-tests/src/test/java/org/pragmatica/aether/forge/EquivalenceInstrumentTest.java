@@ -479,6 +479,18 @@ class EquivalenceInstrumentTest {
             assertThat(EquivalenceComparison.voids(legacy, fsm2)).isEmpty();
         }
 
+        /// Two quiescent arms that both counted 0 O4 batches measured something: no void (vf4cfable C12). Mutation: `hasO4Count` as `> 0`
+        /// reads 0 as "did not quiesce" and voids the round.
+        @Test
+        void twoQuiescentArms_withZeroBatches_areNoVoid() {
+            var legacy = arm("legacy", false);
+            var fsm2 = arm("fsm2", true);
+            var legacyZero = new Arm("legacy", legacy.quiescent(), legacy.liveNodes(), legacy.samples(), 0, 4_000L, Map.of());
+            var fsm2Zero = new Arm("fsm2", fsm2.quiescent(), fsm2.liveNodes(), fsm2.samples(), 0, 4_000L, Map.of());
+
+            assertThat(EquivalenceComparison.voids(legacyZero, fsm2Zero)).isEmpty();
+        }
+
         /// The E09-r7 shape through `compare` itself (vf4cfable N3, C11/C12): three instances LOADING while the target was put and removed between
         /// two samples. The ring's target events are the only witness of the step, so `compare` must hand them to the monitor for the arm that
         /// carries them. Mutations: the other arm's `check(samples, events)` called without the events (C11, C12); the matching assertion goes red.
