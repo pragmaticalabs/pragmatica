@@ -11,6 +11,7 @@ import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.node.lifecycle.NodeState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.consensus.NodeId;
@@ -66,12 +67,14 @@ class FalseDeadWorkerRejoinTest {
     @Test void fencedWorker_exitsDrained_andFreshReplacementGetsDirective() {
         var id = bootAndCutWorker(FENCE_FIRST, defaultCommunityAbsence(), true);
 
-        // The fence removes its own node from the Ember registry at once (CoreAbsenceFenceOrderingTest); the exit code surfaces
-        // only after the drain, which outlasts the cores' removal. Registry departure is the moment the fence fired.
-        await().alias("the worker's core-absence fence removed it from the cluster")
+        var worker = cluster.getNode(id.id()).unwrap();
+
+        // The fence starts the worker's drain at once; its exit code and its departure from the registry come only after the
+        // drain, which outlasts the cores' removal. The lifecycle leaving ACTIVE is the moment the fence fired.
+        await().alias("the worker's core-absence fence started its drain")
                .atMost(RECOVERY_BOUND.duration())
                .pollInterval(Duration.ofMillis(50))
-               .until(() -> cluster.allNodes().stream().noneMatch(node -> node.self().equals(id)));
+               .until(() -> worker.nodeLifecycle().currentState() != NodeState.ACTIVE);
         assertThat(directiveCommitted(id)).as("the fence precedes the cores' removal of the worker").isTrue();
         await().alias("the fenced worker exited with EXIT_DRAINED")
                .atMost(RECOVERY_BOUND.duration())
