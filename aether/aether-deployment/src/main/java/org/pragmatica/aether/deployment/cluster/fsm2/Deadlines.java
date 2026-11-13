@@ -21,7 +21,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 /// ever. Driven by `Outcomes.sweep` (reconcile step 9), one clock per open apply, no scheduler of its own.
 ///
 /// - Clock: this leader's monotonic reading, from the first pass that held the open apply. A fresh `Rebuild` has no clocks, and a resume
-///   after a suspension drops them ([#restart]), so a leader never judges time it could not observe; a leader change restarts the clock
+///   after a suspension drops them ([#rearm]), so a leader never judges time it could not observe; a leader change restarts the clock
 ///   (L-21). Wall time (`openedAt`) is never compared.
 /// - Pause: while a datasource owned by the blueprint is PENDING or MIGRATING the interval does not count, up to
 ///   `applySchemaPauseMax` in total; a FAILED datasource does not pause. The gate state read at a pass is credited to the interval that
@@ -70,7 +70,7 @@ public sealed interface Deadlines {
     }
 
     /// A resumed leader did not observe the suspended interval: every clock starts again at its next pass.
-    static ClusterModel restart(ClusterModel m) {
+    static ClusterModel rearm(ClusterModel m) {
         m.applyClocks.keys().forEach(id -> m.applyClocks = m.applyClocks.remove(id));
 
         return m;
