@@ -133,7 +133,8 @@ public final class AllInstancesFailedDetector {
                                        SliceObservedValue row,
                                        Predicate<NodeId> countedMember,
                                        ToLongFunction<NodeId> admittedToken) {
-        if (ObservedSlices.isStale(row, admittedToken.applyAsLong(key.nodeId()))) {
+        if (ObservedSlices.isStale(row,
+                                   admittedToken.applyAsLong(key.nodeId()))) {
             return;
         }
 
