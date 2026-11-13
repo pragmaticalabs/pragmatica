@@ -1462,6 +1462,19 @@ public final class MembershipFsm {
         return org.pragmatica.lang.Unit.unit();
     }
 
+    /// #3119 — this node's OWN quorum-loss report (its detector's current `LOST`). Default: never lost (a host without
+    /// a detector, the legacy factories, tests that do not set it), so the #2936 hold applies as before.
+    private volatile BooleanSupplier selfQuorumLost = () -> false;
+
+    /// #3119 — wire this node's own quorum-loss report. While it is lost, a member's report does not hold the member
+    /// out of re-admission: a quorumless observer cannot exclude a quorumless member, since its own report clears only
+    /// after it re-admits its peers. [#forwardableMembers] is unaffected (it does not feed the member count).
+    public org.pragmatica.lang.Unit setSelfQuorumLoss(BooleanSupplier lost) {
+        selfQuorumLost = lost;
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
     /// #1717 — whether THIS node may evict a worker or spot on a single death plane. A core holds evidence
     /// sources for a member (governor reports, worker admission) that veto a wrong signal inside the backstop
     /// window, so one plane is enough there. A worker node holds none of them for its peer workers (governor
@@ -1522,7 +1535,10 @@ public final class MembershipFsm {
     }
 
     private MemberTracking newTracking(NodeId id) {
-        var fsm = Fsm.fsm(FSM_KIND, id.id(), initialStateFactory(id, () -> quorumLossReported.test(id)), observer);
+        var fsm = Fsm.fsm(FSM_KIND,
+                          id.id(),
+                          initialStateFactory(id, () -> quorumLossReported.test(id), () -> selfQuorumLost.getAsBoolean()),
+                          observer);
         var tracking = new MemberTracking(id,
                                           fsm,
                                           this::onEnteredDead,
@@ -1550,10 +1566,12 @@ public final class MembershipFsm {
     /// Explicitly-typed initial-state factory so the [`Fsm#fsm`] constructor-driven overload is
     /// selected unambiguously (the bare lambda is ambiguous against the plain `S initial` overload).
     /// Builds the per-member [`MembershipContext`] bound to the partially-constructed FSM and returns
-    /// its OBSERVED initial state. `quorumLossReported` reads the member's quorum-loss report live (#2936).
+    /// its OBSERVED initial state. `quorumLossReported` reads the member's quorum-loss report live (#2936);
+    /// `observerQuorumLost` reads this node's own (#3119).
     private static Function<Fsm<MembershipState, MembershipEvent>, MembershipState> initialStateFactory(NodeId id,
-                                                                                                        BooleanSupplier quorumLossReported) {
-        return holder -> new MembershipContext(holder, id, quorumLossReported).observed();
+                                                                                                        BooleanSupplier quorumLossReported,
+                                                                                                        BooleanSupplier observerQuorumLost) {
+        return holder -> new MembershipContext(holder, id, quorumLossReported, observerQuorumLost).observed();
     }
 
     /// Mutable per-member bookkeeping: the member's FSM plus the promotion streak counter and the two

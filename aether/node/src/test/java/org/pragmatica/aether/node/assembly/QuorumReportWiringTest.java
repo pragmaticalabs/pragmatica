@@ -10,6 +10,7 @@ import java.net.SocketException;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,6 +38,7 @@ import org.pragmatica.swim.SwimProtocol;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
+import static org.awaitility.Awaitility.await;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #2936 wiring: [`MembershipAssembly#wireQuorumReports`] makes the membership FSM read every peer's SWIM quorum-loss
@@ -165,6 +167,38 @@ class QuorumReportWiringTest {
 
         assertThat(swim.selfIncarnation()).as("the observer report is a change, advertised with one bump")
                                           .isEqualTo(ANNOUNCED_INCARNATION + 1);
+    }
+
+    /// #3119: the FSM reads this node's OWN report too. While this node itself has lost quorum, a peer's LOST report
+    /// does not hold the peer out of a DEAD rejoin (each node's report clears only after it re-admits its peers, so the
+    /// hold would be a circular wait); while this node holds quorum the #2936 hold stands. Same on a worker.
+    @Test
+    void quorumlessNode_reopensAReportingDeadPeer_aQuorateOneHoldsItOut() {
+        assertQuorumlessObserverReopens(false);
+    }
+
+    @Test
+    void quorumlessWorker_reopensAReportingDeadPeer_aQuorateOneHoldsItOut() {
+        assertQuorumlessObserverReopens(true);
+    }
+
+    private void assertQuorumlessObserverReopens(boolean worker) {
+        MembershipAssembly.wireQuorumReports(worker, membership, quorumLossDetector, detector);
+        peerGossips(2L, Map.of("quorum", "lost"));
+        membership.onSwimFaulty(PEER, 1L);
+        membership.onLivenessGone(PEER);
+        await().atMost(2, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(membership.memberStates()).containsEntry(PEER, "Dead"));
+
+        membership.onSwimHealthy(PEER, 2L);
+        assertThat(membership.memberStates()).as("quorate node: a reporting peer stays DEAD (#2936)")
+                                             .containsEntry(PEER, "Dead");
+
+        loseOwnQuorum();
+        membership.onSwimHealthy(PEER, 3L);
+
+        assertThat(membership.memberStates()).as("a quorumless node cannot hold a quorumless peer out (#3119)")
+                                             .containsEntry(PEER, "Member");
     }
 
     private List<NodeId> accessible(boolean worker) {
