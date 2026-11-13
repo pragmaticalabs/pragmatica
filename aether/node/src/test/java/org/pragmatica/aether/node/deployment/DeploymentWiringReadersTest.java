@@ -110,6 +110,33 @@ class DeploymentWiringReadersTest {
         }
     }
 
+    /// Removals are bound too: a removed observed row is gone for BOTH readers, and a removed departure record shows the node's rows again.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    @Test
+    void fsm2_removalsReachTheReaders_observedRowForBoth_departureRecordForTraffic() {
+        try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false)) {
+            var state = new Recorder();
+            var traffic = new Recorder();
+
+            wireReaders(harness, state, traffic);
+            var key = SliceObservedKey.sliceObservedKey(PEER, ORDERS);
+
+            harness.put(key, row(SliceObservedState.ACTIVE, 0L));
+            harness.commitLeader();
+            harness.leaderRemove(key);
+
+            assertThat(state.gone).as("state reader: removed row is gone").containsExactly(key);
+            assertThat(traffic.gone).as("traffic reader: removed row is gone").containsExactly(key);
+
+            harness.put(key, row(SliceObservedState.ACTIVE, 2L, 0L));
+            harness.commitLeader();
+            harness.leaderPut(NodeDepartureKey.nodeDepartureKey(PEER), departure(DepartureState.DEPARTED));
+            harness.leaderRemove(NodeDepartureKey.nodeDepartureKey(PEER));
+
+            assertThat(traffic.shown).as("a removed departure record shows the rows again").hasSize(3);
+        }
+    }
+
     @SuppressWarnings({"unchecked", "rawtypes"})
     private static void wireReaders(Fsm2Harness harness, ObservedSliceListener state, ObservedSliceListener traffic) {
         var builder = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class);
