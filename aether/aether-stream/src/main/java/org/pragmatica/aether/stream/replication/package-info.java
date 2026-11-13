@@ -20,9 +20,12 @@
 /// \* models the earlier version and must fail:
 /// \*   level - the warning is level-triggered: every round and reconcileStalled re-check what backs it, and a raise
 /// \*           needs the stream to exist (bcc2102db6 was edge-triggered: v2967b F1, F2)
+/// \*   reset - the stream-removed listener drops the stream's stall counters and a stream that no longer exists
+/// \*           counts no stalled round, so the counter belongs to one incarnation (#3156)
+/// \*   recheck - a reconcile pass also re-derives the stream, replica and counter backing of every open report
 /// CONSTANTS MAX, EnvSteps, Env, Fixed
 ///
-/// AllFixes == {"level"}
+/// AllFixes == {"level", "reset", "recheck"}
 /// Fix(f) == f \in Fixed
 /// ASSUME Fixed \subseteq AllFixes
 ///
@@ -31,16 +34,17 @@
 ///     replica,     \* this node is a registered replica of the partition (ReplicaSetController)
 ///     owner,       \* this node is the partition's owner
 ///     quar,        \* the partition is quarantined
-///     cnt,         \* the source's stalledRounds counter (nothing removes it when the stream is destroyed)
+///     cnt,         \* the source's stalledRounds counter (dropped with the stream's reports under the fix "reset")
 ///     ep,          \* ghost: stalled rounds counted in this incarnation of the stream
 ///     reported,    \* reportedStalled holds the partition: the CRITICAL warning is open
 ///     rpc,         \* backfill round: "idle" | "read" | "report"
 ///     allStalled,  \* the round's chain ended SOURCE_STALLED
 ///     forget,      \* the stream-removed listener (clearStalledOf) is pending
 ///     env,         \* environment steps left
-///     settled,     \* ghost: a reconcile call returned and nothing changed since
+///     settled,     \* ghost: a reconcile pass completed with nothing changed since its snapshot, and nothing since
 ///     early,       \* ghost: a raise with fewer than MAX stalled rounds in this incarnation
-///     rec,         \* a reconcileStalled call (redrive tick, replica-set pass): "idle" | "apply"
+///     rec,         \* a reconcileStalled call (redrive tick, replica-set pass): "idle" | "apply" | "dirty" (the
+///                  \* environment changed or a report was raised after its snapshot, so the next pass settles it)
 ///     recNotHeld   \* its notHeld read, taken before the monitor
 ///
 /// vars == <<exists, replica, owner, quar, cnt, ep, reported, rpc, allStalled, forget, env, settled, early, rec,
@@ -51,7 +55,9 @@
 /// Backed == exists /\ replica /\ owner /\ ~quar /\ cnt >= MAX
 ///
 /// \* -- Environment: cluster events from other components, each consuming one step of the budget --
-/// Ev(name) == name \in Env /\ env > 0 /\ env' = env - 1 /\ settled' = FALSE /\ UNCHANGED <<rec, recNotHeld>>
+/// Ev(name) == /\ name \in Env /\ env > 0 /\ env' = env - 1 /\ settled' = FALSE
+///             /\ rec' = IF rec = "apply" THEN "dirty" ELSE rec
+///             /\ UNCHANGED recNotHeld
 ///
 /// Destroy == /\ Ev("destroy")
 ///            /\ exists
@@ -118,10 +124,12 @@
 /// \* An unbacked warning eventually clears (or becomes backed again).
 /// UnbackedClears == (reported /\ ~Backed) ~> (~reported \/ Backed)
 ///
-/// \* After a reconcile call returned, and nothing changed since, an open warning is backed.
+/// \* Settled as of the next reconcile pass (#3155): a pass during which nothing changed after its snapshot, and nothing
+/// \* since, leaves only backed warnings. A change after the snapshot (a flip, a raise) may leave a warning open when the
+/// \* call returns; the next pass closes it (UnbackedClears).
 /// SettledIsBacked == settled /\ reported => Backed
 ///
-/// \* Exploratory: a raise needs MAX stalled rounds in this incarnation of the stream.
+/// \* A raise needs MAX stalled rounds in this incarnation of the stream (#3156).
 /// NoEarlyRaise == ~early
 /// ```
 ///
@@ -179,9 +187,21 @@
 /// INVARIANT SettledIsBacked
 /// ```
 ///
+/// ```tlacfg Stalled:settledweak
+/// CONSTANT Env = {"destroy", "recreate", "remove", "add", "owner", "quar"}
+/// CONSTANT Fixed = {"level", "reset"}
+/// INVARIANT SettledIsBacked
+/// ```
+///
 /// ```tlacfg Stalled:early
 /// CONSTANT Env = {"destroy", "recreate", "remove", "add", "owner", "quar"}
 /// CONSTANT Fixed <- AllFixes
+/// INVARIANT NoEarlyRaise
+/// ```
+///
+/// ```tlacfg Stalled:earlynoreset
+/// CONSTANT Env = {"destroy", "recreate", "remove", "add", "owner", "quar"}
+/// CONSTANT Fixed = {"level", "recheck"}
 /// INVARIANT NoEarlyRaise
 /// ```
 package org.pragmatica.aether.stream.replication;
