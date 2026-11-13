@@ -3936,6 +3936,7 @@ public interface AetherNode extends ManageableNode {
                                                                             observabilityBaseline,
                                                                             spokesmanPingLoop,
                                                                             governorAnnouncerHolder,
+                                                                            communityLiveness,
                                                                             streamRetentionEnforcer,
                                                                             streamSegmentSealer,
                                                                             streamConsumerRuntime,
