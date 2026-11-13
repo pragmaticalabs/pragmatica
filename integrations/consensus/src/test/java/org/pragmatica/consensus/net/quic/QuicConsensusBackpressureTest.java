@@ -19,6 +19,7 @@ package org.pragmatica.consensus.net.quic;
 import org.pragmatica.net.tcp.TlsConfig;
 import java.net.SocketAddress;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -26,6 +27,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Pattern;
 
+import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.DefaultChannelPromise;
 import io.netty.handler.codec.quic.QuicChannel;
@@ -164,6 +166,36 @@ class QuicConsensusBackpressureTest {
             // Wait for the async retry to land the delivery (writeAndFlush invoked exactly once).
             awaitWriteFlush(ch, 1);
             verify(ch, times(1)).writeAndFlush(any());
+        }
+
+        /// #3168: a frame held by backpressure is not overtaken by frames sent after the stream became writable again.
+        /// Before the fix the held frame was re-sent by its own 25 ms timer while later frames found the stream writable
+        /// and were written at once, so a paced sender saw one frame arrive after its successors under host load.
+        /// Deterministic: the stream turns writable BEFORE the second frame, well inside the 25 ms retry delay.
+        @Test
+        void writeIfWritable_consensusFrameHeldByBackpressure_isWrittenBeforeLaterFrames() {
+            var ch = mock(QuicStreamChannel.class);
+            var future = mock(ChannelFuture.class);
+            var writable = new AtomicBoolean(false);
+            var order = Collections.synchronizedList(new ArrayList<Integer>());
+
+            when(future.addListener(any())).thenReturn(future);
+            when(ch.isActive()).thenReturn(true);
+            when(ch.isWritable()).thenAnswer(_ -> writable.get());
+            when(ch.writeAndFlush(any())).thenAnswer(invocation -> {
+                order.add((int) ((ByteBuf) invocation.getArgument(0)).getByte(0));
+                return future;
+            });
+
+            var network = network();
+
+            network.writeIfWritableForTest(ch, new byte[]{1}, PEER, StreamType.CONSENSUS);
+            writable.set(true);
+            network.writeIfWritableForTest(ch, new byte[]{2}, PEER, StreamType.CONSENSUS);
+            network.writeIfWritableForTest(ch, new byte[]{3}, PEER, StreamType.CONSENSUS);
+
+            awaitWriteFlush(ch, 3);
+            assertThat(order).as("frames reach the stream in send order").containsExactly(1, 2, 3);
         }
 
         /// A non-CONSENSUS (DHT) backpressured write must return BackpressureRefused

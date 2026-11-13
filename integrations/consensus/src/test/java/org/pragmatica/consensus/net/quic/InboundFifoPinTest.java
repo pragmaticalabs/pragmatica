@@ -11,7 +11,6 @@
 package org.pragmatica.consensus.net.quic;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.NodeId;
@@ -35,21 +34,17 @@ import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.infoOf
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.startedNetwork;
 
 /// Inventory row U-010 and finding A-07 / B-02 (cluster T assessment, rc4 `7c786db0d3`): per-sender, per-lane FIFO on the
-/// REMOTE receive path. No test asserted handler order for frames that arrive over a link. The inbound-dispatch overhaul keeps
-/// "per-sender FIFO" as its central invariant (second review), and writing this down found that the invariant is already broken
-/// in the steady state, on one link with no reconnect.
+/// REMOTE receive path (two senders to one acceptor, one lane).
 ///
-/// Two outcomes, one fixture (two senders to one acceptor, one lane):
-///   - PIN (enabled, permanent): a paced sender (bursts of 20 frames, 5 ms apart) is delivered in send order. The overhaul must
-///     keep this green.
-///   - TRIPWIRE PAIR: a tight burst of large frames outruns the lane's writability, `writeIfWritable` refuses the overflow
-///     frames and `retryBackpressuredWrite` re-sends them 25 ms later, so frames sent after them overtake them (mechanism 3 of
-///     A-07; Rabia and the DHT tolerate this (second review), so it is a contract and documentation matter, not a correctness bug
-///     for those two lanes). The first version of this test asserted FIFO under a burst of small frames and failed one run in
-///     two: it was a flaky pin, which is what made the mechanism visible.
+/// Two pins, both enabled and permanent:
+///   - PACED: a paced sender (bursts of 20 frames, 5 ms apart) is delivered in send order. #3168: this was NOT guaranteed.
+///     One momentary `isWritable() == false` under host load sent one frame to the backpressure retry, 25 ms later, and
+///     the frames sent after it overtook it (1 failure in 40 runs at host load 20-25, 2026-11-13).
+///   - OVERRUN: a tight burst of large frames outruns the lane's writability; the refused frames are held in send order
+///     by the stream's `LaneBacklog` and written head first, so no frame overtakes another. This pin was a tripwire
+///     asserting the opposite (A-07.3, mechanism 3) until #3168 made the held frames ordered.
 ///
-/// The real assertion is the contract the overhaul states, not a decision: if the overhaul decides "per stream, none across
-/// backpressure" the pair is deleted and the paced pin stays.
+/// The receive side cannot reorder: a frame is decoded and routed on the stream's own event loop, synchronously.
 @Timeout(120)
 class InboundFifoPinTest {
     private static final NodeId A = new NodeId("aaa-fifo");
@@ -139,17 +134,6 @@ class InboundFifoPinTest {
         return inversions(arrivalOrderOf("a-")) + inversions(arrivalOrderOf("c-"));
     }
 
-    @Test
-    void overrunBurst_reordersFramesOfOneSenderOnOneLane_throughTheBackpressureRetry() {
-        assertThat(inversionsAfterAnOverrunBurst())
-            .as("TRIPWIRE A-07.3/B-02/U-010: an overrun burst of %d frames per sender was delivered out of send order (frames refused "
-                + "by the watermark are re-sent 25 ms later and overtaken); the burst is now delivered in order. Delete this "
-                + "tripwire and enable overrunBurst_keepsSendOrderOfOneSenderOnOneLane.", OVERRUN_FRAMES)
-            .isPositive();
-    }
-
-    @Disabled("A-07.3/B-02/U-010: enable if the overhaul keeps per-sender per-lane FIFO under backpressure (delete the pair if it states "
-              + "'per stream, none across backpressure'). Today red: the backpressure retry lets later frames overtake refused ones.")
     @Test
     void overrunBurst_keepsSendOrderOfOneSenderOnOneLane() {
         assertThat(inversionsAfterAnOverrunBurst()).as("send-order inversions across both senders").isZero();

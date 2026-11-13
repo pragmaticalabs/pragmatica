@@ -156,10 +156,13 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     private final Map<BackpressureLane, Long> lastRefusalWarnNanos = new ConcurrentHashMap<>();
     private final Map<BackpressureLane, Long> lastGiveUpWarnNanos = new ConcurrentHashMap<>();
-    /// #2583 P0: backpressure retries in flight whose lane is CONSENSUS (not DHT: [#retryBackpressuredWrite] serves
+    /// #2583 P0: backpressure retries in flight whose lane is CONSENSUS (not DHT: [#drainBacklog] serves
     /// both). Incremented before the retry starts, decremented in its terminal handler whether it delivered or gave up.
     /// The pressure signal of the §6.2 gate: above zero, this node has a CONSENSUS write that cannot be written.
     private final AtomicInteger consensusRetriesInFlight = new AtomicInteger();
+    /// #3168: the frames backpressure holds back, per lane stream, in send order. An entry exists only while frames are
+    /// held; it is removed when the last one is written or discarded. Keyed by stream identity.
+    private final ConcurrentHashMap<QuicStreamChannel, LaneBacklog> laneBacklogs = new ConcurrentHashMap<>();
     /// #2580: one open backpressure episode per (peer, lane). The first write that finds the lane unwritable opens
     /// it with one WARN; later ones only count. The first write that finds the lane writable again closes it with one
     /// INFO summary. Logging every backpressured write was measured at 785,923 WARN lines in 4.5 minutes, the log
@@ -2676,16 +2679,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                          StreamType streamType,
                                          Option<QuicPeerConnection> resendVia,
                                          Option<DropSite> afterSent) {
+        if (keepsSendOrderUnderBackpressure(ch, streamType)) {
+            return writeInOrder(ch, bytes, peerId, streamType, resendVia);
+        }
+
         if (ch.isWritable()) {
-            endBackpressureEpisode(peerId, streamType);
-            quicMetrics.onMessageSent();
-            quicMetrics.onBytesSent(bytes.length);
-            trackedWrite(ch, streamType, bytes).addListener(future -> onLaneWriteResult(future,
-                                                                                        ch,
-                                                                                        bytes,
-                                                                                        peerId,
-                                                                                        streamType,
-                                                                                        resendVia));
+            writeDirect(ch, bytes, peerId, streamType, resendVia);
 
             return new WriteOutcome.Sent(peerId);
         }
@@ -2712,13 +2711,141 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // One WARN per backpressure entry, not per write (#2580); per-write and per-retry logging stay at debug.
         var opened = countBackpressuredWrite(peerId, streamType);
 
-        return switch (streamType) {
-            case CONSENSUS -> retryBackpressuredWrite(ch, bytes, peerId, streamType);
-            case DHT -> ch.isActive()
-                        ? retryBackpressuredWrite(ch, bytes, peerId, streamType)
-                        : refuseBackpressured(peerId, streamType, afterSent, opened);
-            default -> refuseBackpressured(peerId, streamType, afterSent, opened);
+        return refuseBackpressured(peerId, streamType, afterSent, opened);
+    }
+
+    /// CONSENSUS, and DHT while its channel is live, hold a backpressured frame instead of refusing it (see the policy
+    /// list in [#writeIfWritable]); those frames keep their send order through [LaneBacklog].
+    private static boolean keepsSendOrderUnderBackpressure(QuicStreamChannel ch, StreamType streamType) {
+        return streamType == StreamType.CONSENSUS || (streamType == StreamType.DHT && ch.isActive());
+    }
+
+    private void writeDirect(QuicStreamChannel ch,
+                             byte[] bytes,
+                             NodeId peerId,
+                             StreamType streamType,
+                             Option<QuicPeerConnection> resendVia) {
+        endBackpressureEpisode(peerId, streamType);
+        quicMetrics.onMessageSent();
+        quicMetrics.onBytesSent(bytes.length);
+        trackedWrite(ch, streamType, bytes).addListener(future -> onLaneWriteResult(future,
+                                                                                    ch,
+                                                                                    bytes,
+                                                                                    peerId,
+                                                                                    streamType,
+                                                                                    resendVia));
+    }
+
+    /// #3168 — one decision per frame, taken by the stream's [LaneBacklog]: written now (nothing held, stream writable),
+    /// or held behind whatever is already held. A held frame is written only by the drain, head first, so a frame never
+    /// overtakes one sent before it on the same stream. Reports `Sent` optimistically for a held frame, as the per-frame
+    /// retry did: the drain, and the layer above's retransmit, own delivery.
+    private WriteOutcome writeInOrder(QuicStreamChannel ch,
+                                      byte[] bytes,
+                                      NodeId peerId,
+                                      StreamType streamType,
+                                      Option<QuicPeerConnection> resendVia) {
+        if (!ch.isWritable() && isPeerRemoved(peerId)) {
+            quicMetrics.onDroppedAfterSent(streamType, DropSite.REMOVED_AT_RETRY, 1);
+            log.debug("{} write to {} dropped: peer is REMOVED (terminal) — not held", streamType, peerId);
+
+            return new WriteOutcome.Sent(peerId);
+        }
+
+        var backlog = laneBacklogs.computeIfAbsent(ch, _ -> new LaneBacklog());
+
+        return switch (backlog.admit(bytes,
+                                     ch::isWritable,
+                                     frame -> writeDirect(ch, frame, peerId, streamType, resendVia))) {
+            case WRITTEN -> new WriteOutcome.Sent(peerId);
+            case HELD_FIRST -> holdAndDrain(backlog, ch, peerId, streamType, true);
+            case HELD_BEHIND -> holdAndDrain(backlog, ch, peerId, streamType, false);
+            case RETIRED -> retiredBacklogRewrite(backlog, ch, bytes, peerId, streamType, resendVia);
         };
+    }
+
+    private WriteOutcome retiredBacklogRewrite(LaneBacklog backlog,
+                                               QuicStreamChannel ch,
+                                               byte[] bytes,
+                                               NodeId peerId,
+                                               StreamType streamType,
+                                               Option<QuicPeerConnection> resendVia) {
+        laneBacklogs.remove(ch, backlog);
+
+        return writeInOrder(ch, bytes, peerId, streamType, resendVia);
+    }
+
+    private WriteOutcome holdAndDrain(LaneBacklog backlog,
+                                      QuicStreamChannel ch,
+                                      NodeId peerId,
+                                      StreamType streamType,
+                                      boolean ownsDrain) {
+        countBackpressuredWrite(peerId, streamType);
+        quicMetrics.onBackpressureRetry();
+        log.debug("{} channel to {} not writable or frames held ahead — holding in send order (not dropping)",
+                  streamType,
+                  peerId);
+        beginRetry(streamType);
+        if (ownsDrain) {
+            drainBacklog(backlog, ch, peerId, streamType);
+        }
+
+        return new WriteOutcome.Sent(peerId);
+    }
+
+    /// Fire-and-forget drain of a stream's held frames: each attempt writes what the stream accepts, head first. An
+    /// attempt that wrote anything counts as progress and the drain continues with a fresh retry budget, as each frame
+    /// had its own budget before; a whole budget with no frame written gives up on everything held.
+    private void drainBacklog(LaneBacklog backlog, QuicStreamChannel ch, NodeId peerId, StreamType streamType) {
+        var _ = consensusRetry.execute(() -> drainAttempt(backlog, ch, peerId, streamType))
+                              .onSuccess(_ -> continueDrain(backlog, ch, peerId, streamType))
+                              .onFailure(cause -> abandonBacklog(backlog, ch, peerId, streamType, cause));
+    }
+
+    private Promise<Unit> drainAttempt(LaneBacklog backlog,
+                                       QuicStreamChannel ch,
+                                       NodeId peerId,
+                                       StreamType streamType) {
+        if (isPeerRemoved(peerId)) {
+            return Causes.terminal(streamType + " stream dropped: peer " + peerId + " is REMOVED (terminal)").promise();
+        }
+
+        var written = backlog.drain(() -> ch.isActive() && ch.isWritable(),
+                                    frame -> writeHeld(ch, frame, peerId, streamType));
+
+        endRetries(streamType, written);
+
+        return written > 0 || backlog.isRetired()
+               ? Promise.success(unit())
+               : Causes.cause(streamType + " stream backpressured or inactive for " + peerId).promise();
+    }
+
+    private void continueDrain(LaneBacklog backlog, QuicStreamChannel ch, NodeId peerId, StreamType streamType) {
+        if (backlog.isRetired()) {
+            laneBacklogs.remove(ch, backlog);
+        } else {
+            drainBacklog(backlog, ch, peerId, streamType);
+        }
+    }
+
+    private void abandonBacklog(LaneBacklog backlog,
+                                QuicStreamChannel ch,
+                                NodeId peerId,
+                                StreamType streamType,
+                                Cause cause) {
+        var discarded = backlog.discardAll();
+
+        laneBacklogs.remove(ch, backlog);
+        endRetries(streamType, discarded);
+        quicMetrics.onDroppedAfterSent(streamType, DropSite.RETRY_GAVE_UP, discarded);
+        warnRetryGaveUp(peerId, streamType, cause);
+    }
+
+    private void writeHeld(QuicStreamChannel ch, byte[] bytes, NodeId peerId, StreamType streamType) {
+        endBackpressureEpisode(peerId, streamType);
+        quicMetrics.onMessageSent();
+        quicMetrics.onBytesSent(bytes.length);
+        trackedWrite(ch, streamType, bytes).addListener(future -> handleWriteResult(future, peerId, streamType));
     }
 
     /// Counts inside `compute`, under the same bin lock `remove` takes, so a summary never misses a write counted
@@ -2894,32 +3021,6 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return consensusRetriesInFlight.get();
     }
 
-    /// Fire-and-forget async retry of a backpressured send on a LIVE peer. The Retry re-invokes
-    /// `rawBackpressuredWrite` after a `SharedScheduler`-scheduled delay, so nothing blocks here.
-    /// Reports `Sent` optimistically — CONSENSUS callers ignore the synchronous outcome (the retry
-    /// plus Rabia's own retransmit owns eventual delivery); for DHT the QuorumCollector waits on
-    /// the real response, which the retry delivers once writability returns.
-    private WriteOutcome retryBackpressuredWrite(QuicStreamChannel ch,
-                                                 byte[] bytes,
-                                                 NodeId peerId,
-                                                 StreamType streamType) {
-        if (isPeerRemoved(peerId)) {
-            quicMetrics.onDroppedAfterSent(streamType, DropSite.REMOVED_AT_RETRY, 1);
-            log.debug("{} retry to {} dropped: peer is REMOVED (terminal) — not rescheduling", streamType, peerId);
-
-            return new WriteOutcome.Sent(peerId);
-        }
-
-        quicMetrics.onBackpressureRetry();
-        log.debug("{} channel to {} not writable — retrying via async backoff (not dropping)", streamType, peerId);
-        beginRetry(streamType);
-        var _ = consensusRetry.execute(() -> rawBackpressuredWrite(ch, bytes, peerId, streamType))
-                              .onFailure(cause -> retryGaveUp(peerId, streamType, cause))
-                              .onResultRun(() -> endRetry(streamType));
-
-        return new WriteOutcome.Sent(peerId);
-    }
-
     @Contract
     private void beginRetry(StreamType streamType) {
         if (streamType == StreamType.CONSENSUS) {
@@ -2927,19 +3028,18 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
     }
 
-    /// The retry's terminal handler: runs for a delivery and for a give-up alike, so the in-flight count cannot leak.
+    /// A held frame left the backlog, written or discarded: `count` frames, so the in-flight count cannot leak.
     @Contract
-    private void endRetry(StreamType streamType) {
+    private void endRetries(StreamType streamType, int count) {
         if (streamType == StreamType.CONSENSUS) {
-            consensusRetriesInFlight.decrementAndGet();
+            consensusRetriesInFlight.addAndGet(-count);
         }
     }
 
-    /// D3: the retries ran out on a frame already reported `Sent`. Counted always; the WARN is limited to one per
+    /// D3: the retries ran out on frames already reported `Sent`; the caller counted them. The WARN is limited to one per
     /// (peer, lane) per [#LOSS_WARN_INTERVAL_NANOS].
     @Contract
-    private void retryGaveUp(NodeId peerId, StreamType streamType, Cause cause) {
-        quicMetrics.onDroppedAfterSent(streamType, DropSite.RETRY_GAVE_UP, 1);
+    private void warnRetryGaveUp(NodeId peerId, StreamType streamType, Cause cause) {
         if (admitLossWarn(lastGiveUpWarnNanos, peerId, streamType)) {
             log.warn("{} send to {} gave up after retries and is lost after Sent — relying on retransmit: {}",
                      streamType,
@@ -2978,9 +3078,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         }
 
         if (ch.isActive() && ch.isWritable()) {
-            quicMetrics.onMessageSent();
-            quicMetrics.onBytesSent(bytes.length);
-            trackedWrite(ch, streamType, bytes).addListener(future -> handleWriteResult(future, peerId, streamType));
+            writeHeld(ch, bytes, peerId, streamType);
 
             return Promise.success(unit());
         }
