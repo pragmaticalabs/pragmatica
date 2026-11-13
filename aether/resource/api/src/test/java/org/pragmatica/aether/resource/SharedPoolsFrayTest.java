@@ -104,7 +104,8 @@ class SharedPoolsFrayTest {
         }
     }
 
-    @FrayTest(iterations = ITERATIONS, scheduler = PCTScheduler.class, resetClassLoaderPerIteration = false)
+    @FrayTest(iterations = ITERATIONS, scheduler = PCTScheduler.class,
+               resetClassLoaderPerIteration = false, abortThreadExecutionAfterMainExit = true)
     void closeAllRacingAcquireAndRelease_issuesNoViewOfAClosedPool_andClosesEveryPoolOnce() throws InterruptedException {
         var race = new Race();
 
