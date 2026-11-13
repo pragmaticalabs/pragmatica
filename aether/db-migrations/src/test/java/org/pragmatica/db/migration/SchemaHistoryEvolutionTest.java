@@ -55,9 +55,9 @@ class SchemaHistoryEvolutionTest {
     @Nested
     class StepOneDdl {
 
-        /// v1 is `CREATE TABLE IF NOT EXISTS` for every dialect but SQL Server, which has no such syntax (#3050).
+        /// v1 is `CREATE TABLE IF NOT EXISTS` for every dialect but SQL Server (#3050) and Oracle, which lack it before 23ai.
         @ParameterizedTest
-        @EnumSource(value = DatabaseType.class, mode = EnumSource.Mode.EXCLUDE, names = "SQLSERVER")
+        @EnumSource(value = DatabaseType.class, mode = EnumSource.Mode.EXCLUDE, names = {"SQLSERVER", "ORACLE"})
         void stepV1_isCreateTableIfNotExists_forEveryDialectButSqlServer(DatabaseType type) {
             var statements = SchemaHistoryEvolution.STEP_V1.ddl().render(type);
 
@@ -78,6 +78,18 @@ class SchemaHistoryEvolutionTest {
                     .startsWith("IF OBJECT_ID(N'aether_schema_history', N'U') IS NULL CREATE TABLE aether_schema_history (")
                     .doesNotContain("IF NOT EXISTS")
                     .contains("PRIMARY KEY (version, type)");
+        }
+
+        /// Oracle 19c+ has no `IF NOT EXISTS`: the create runs in a PL/SQL block that tolerates only ORA-00955 (name already used).
+        @Test
+        void stepV1_oracle_guardsTheCreateWithOra00955Handler() {
+            var statements = SchemaHistoryEvolution.STEP_V1.ddl().render(DatabaseType.ORACLE);
+
+            assertThat(statements).hasSize(1);
+            assertThat(statements.getFirst())
+                    .startsWith("BEGIN EXECUTE IMMEDIATE q'[CREATE TABLE aether_schema_history (")
+                    .endsWith("PRIMARY KEY (version, type)\n)]'; EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF; END;")
+                    .doesNotContain("IF NOT EXISTS");
         }
 
         /// Oracle (ORA-03076) requires DEFAULT before NOT NULL; every other engine accepts that order too (#3069).
@@ -103,16 +115,18 @@ class SchemaHistoryEvolutionTest {
         @ParameterizedTest
         @EnumSource(DatabaseType.class)
         void metaAndOwnerTables_areCreatedIfAbsent_inTheDialectsSpelling(DatabaseType type) {
-            var sqlServer = type == DatabaseType.SQLSERVER;
-
             assertThat(SchemaHistoryEvolution.createMetaTableSql(type))
-                    .isEqualTo(sqlServer
-                               ? "IF OBJECT_ID(N'aether_schema_history_meta', N'U') IS NULL CREATE TABLE aether_schema_history_meta (schema_version INTEGER NOT NULL)"
-                               : "CREATE TABLE IF NOT EXISTS aether_schema_history_meta (schema_version INTEGER NOT NULL)");
+                    .isEqualTo(createIfAbsent(type, "aether_schema_history_meta", "schema_version INTEGER NOT NULL"));
             assertThat(SchemaHistoryEvolution.createOwnerTableSql(type))
-                    .isEqualTo(sqlServer
-                               ? "IF OBJECT_ID(N'aether_schema_owner', N'U') IS NULL CREATE TABLE aether_schema_owner (blueprint_base VARCHAR(256) NOT NULL)"
-                               : "CREATE TABLE IF NOT EXISTS aether_schema_owner (blueprint_base VARCHAR(256) NOT NULL)");
+                    .isEqualTo(createIfAbsent(type, "aether_schema_owner", "blueprint_base VARCHAR(256) NOT NULL"));
+        }
+
+        private static String createIfAbsent(DatabaseType type, String table, String columns) {
+            return switch (type) {
+                case SQLSERVER -> "IF OBJECT_ID(N'" + table + "', N'U') IS NULL CREATE TABLE " + table + " (" + columns + ")";
+                case ORACLE -> "BEGIN EXECUTE IMMEDIATE q'[CREATE TABLE " + table + " (" + columns + ")]'; EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF; END;";
+                default -> "CREATE TABLE IF NOT EXISTS " + table + " (" + columns + ")";
+            };
         }
     }
 

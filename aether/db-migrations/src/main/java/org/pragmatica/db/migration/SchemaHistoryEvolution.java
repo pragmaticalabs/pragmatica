@@ -20,7 +20,7 @@ import org.pragmatica.aether.resource.db.DatabaseType;
 ///
 /// Step model:
 /// - **v1** ([#stepOne]) — the original 8-column `CREATE TABLE aether_schema_history (...)`, created only
-///   when absent (`IF NOT EXISTS`, or the `OBJECT_ID` guard on SQL Server) so an EXISTING cluster's table is
+///   when absent (`IF NOT EXISTS`, the `OBJECT_ID` guard on SQL Server, the ORA-00955 block on Oracle) so an EXISTING cluster's table is
 ///   a no-op while a fresh cluster gets it created.
 /// - **v2** ([#stepTwo]) — adds `status` and `statements_completed` via DIALECT-AWARE `ALTER TABLE`
 ///   syntax keyed off [DatabaseType]. Because the meta-version gates this step (run exactly once),
@@ -93,11 +93,16 @@ public sealed interface SchemaHistoryEvolution {
     }
 
     /// `CREATE TABLE` that is a no-op when the table exists. SQL Server has no `IF NOT EXISTS` for tables (#3050), so it
-    /// gets the `OBJECT_ID` guard; every other engine takes the `IF NOT EXISTS` spelling.
+    /// gets the `OBJECT_ID` guard. Oracle gets it only from 23ai, so earlier releases (19c+) get a PL/SQL block that
+    /// swallows ORA-00955 (name already used) and re-raises anything else; every other engine takes `IF NOT EXISTS`.
     private static String createTableIfAbsent(DatabaseType type, String table, String columns) {
-        return type == DatabaseType.SQLSERVER
-               ? "IF OBJECT_ID(N'" + table + "', N'U') IS NULL CREATE TABLE " + table + " (" + columns + ")"
-               : "CREATE TABLE IF NOT EXISTS " + table + " (" + columns + ")";
+        var create = "CREATE TABLE " + table + " (" + columns + ")";
+
+        return switch (type) {
+            case SQLSERVER -> "IF OBJECT_ID(N'" + table + "', N'U') IS NULL " + create;
+            case ORACLE -> "BEGIN EXECUTE IMMEDIATE q'[" + create + "]'; EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF; END;";
+            default -> "CREATE TABLE IF NOT EXISTS " + table + " (" + columns + ")";
+        };
     }
 
     /// The dialect's `CREATE TABLE ... IF absent` for [#META_TABLE].
