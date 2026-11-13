@@ -36,16 +36,29 @@ import static org.assertj.core.api.Assertions.assertThat;
 @ExtendWith(FrayTestExtension.class)
 class SharedPoolsFrayTest {
     static final int ITERATIONS = 300;
-    /// Race-reached witness, across iterations (the classes are not reloaded, so statics persist): iterations in which a
+    /// Race-reached witness, across iterations: iterations in which a
     /// view was made from an already closed pool and was discarded with `ProviderClosed`, i.e. the drain-before-fill
     /// interleaving of #3171 actually occurred. PCT alone never reached it at this head (0 of 3000 iterations measured),
     /// so every other iteration is armed: node stop runs from the view factory, i.e. between the pool resolving and the
     /// view being made, while the other threads still race it. The unarmed iterations stay pure schedule exploration.
-    private static final AtomicInteger DRAIN_BEFORE_FILL = new AtomicInteger();
-    private static final AtomicInteger ITERATION = new AtomicInteger();
+    private static final String DRAIN_BEFORE_FILL = "sharedpools.fray.drainBeforeFill";
+    private static final String ITERATION = "sharedpools.fray.iteration";
 
-    /// One iteration's world. The classes are not reloaded per iteration (`resetClassLoaderPerIteration = false`), so
-    /// everything but the witness counter is local to the call.
+    /// Cross-iteration counters live in system properties: a static field does not survive between Fray iterations (the
+    /// `@AfterAll` read 0 after 300 iterations that each incremented one), whatever `resetClassLoaderPerIteration` says.
+    private static int bump(String name) {
+        var next = read(name) + 1;
+
+        System.setProperty(name, Integer.toString(next));
+
+        return next - 1;
+    }
+
+    private static int read(String name) {
+        return Integer.getInteger(name, 0);
+    }
+
+    /// One iteration's world; everything is local to the call, the witness counters aside.
     private static final class Race {
         private final FakeShareableFactory factory = new FakeShareableFactory();
         private final AtomicInteger viewsOfClosedPool = new AtomicInteger();
@@ -157,19 +170,19 @@ class SharedPoolsFrayTest {
     @FrayTest(iterations = ITERATIONS, scheduler = PCTScheduler.class,
                resetClassLoaderPerIteration = false, abortThreadExecutionAfterMainExit = true)
     void closeAllRacingAcquireAndRelease_issuesNoViewOfAClosedPool_andClosesEveryPoolOnce() throws InterruptedException {
-        var race = new Race(ITERATION.getAndIncrement() % 2 == 0);
+        var race = new Race(bump(ITERATION) % 2 == 0);
 
         race.run();
         race.assertInvariants();
 
         if (race.reachedDrainBeforeFill()) {
-            DRAIN_BEFORE_FILL.incrementAndGet();
+            bump(DRAIN_BEFORE_FILL);
         }
     }
 
     @AfterAll
     static void drainBeforeFillWasReached() {
-        System.out.println("FRAY-WITNESS drain-before-fill iterations: " + DRAIN_BEFORE_FILL.get() + " of " + ITERATIONS);
-        assertThat(DRAIN_BEFORE_FILL.get()).as("the drain-before-fill interleaving was never reached").isPositive();
+        System.out.println("FRAY-WITNESS drain-before-fill iterations: " + read(DRAIN_BEFORE_FILL) + " of " + ITERATIONS);
+        assertThat(read(DRAIN_BEFORE_FILL)).as("the drain-before-fill interleaving was never reached").isPositive();
     }
 }
