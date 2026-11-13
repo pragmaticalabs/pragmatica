@@ -58,7 +58,7 @@ class FalseDeadWorkerRejoinTest {
     /// the cores remove it only after. Its replacement is a fresh id (production never relaunches the same id), and the
     /// replacement gets its directive.
     @Test void fencedWorker_exitsDrained_andFreshReplacementGetsDirective() {
-        var id = bootAndCutWorker(FENCE_FIRST, defaultCommunityAbsence());
+        var id = bootAndCutWorker(FENCE_FIRST, defaultCommunityAbsence(), true);
 
         await().alias("the worker fenced and exited with EXIT_DRAINED before the cores removed it")
                .atMost(RECOVERY_BOUND.duration())
@@ -78,7 +78,7 @@ class FalseDeadWorkerRejoinTest {
     /// heal the SAME worker is re-admitted. Without #3107 its directive stays lost; this tripwire pins that, and when #3107
     /// merges it goes red: enable `removedWorkerHealed_rejoinsWithDirectiveAndKvLink` and delete this one.
     @Test void removedWorkerHealed_currentBehaviour_directiveStaysLost() {
-        var id = bootAndCutWorker(REMOVAL_FIRST, REMOVAL_FIRST_COMMUNITY);
+        var id = bootAndCutWorker(REMOVAL_FIRST, REMOVAL_FIRST_COMMUNITY, false);
 
         assertThat(cluster.exitCodeOf(id.id())).as("the worker was removed before its fence could fire").isEqualTo(Option.none());
         var worker = cluster.getNode(id.id()).unwrap();
@@ -93,7 +93,7 @@ class FalseDeadWorkerRejoinTest {
 
     @Disabled("#3107 (C2) not merged: enable once it is, and delete removedWorkerHealed_currentBehaviour_directiveStaysLost")
     @Test void removedWorkerHealed_rejoinsWithDirectiveAndKvLink() {
-        var id = bootAndCutWorker(REMOVAL_FIRST, REMOVAL_FIRST_COMMUNITY);
+        var id = bootAndCutWorker(REMOVAL_FIRST, REMOVAL_FIRST_COMMUNITY, false);
         var key = new AetherKey.ActivationDirectiveKey(id);
         var worker = cluster.getNode(id.id()).unwrap();
 
@@ -132,7 +132,7 @@ class FalseDeadWorkerRejoinTest {
         return TimeSpan.timeSpan(20).seconds();
     }
 
-    private NodeId bootAndCutWorker(TimeSpan coreAbsence, TimeSpan communityAbsence) {
+    private NodeId bootAndCutWorker(TimeSpan coreAbsence, TimeSpan communityAbsence, boolean keepQuic) {
         LifecycleAwait.settled("start false-dead fixture", cluster, cluster.start());
         await().atMost(BUDGET.duration()).until(() -> cluster.currentLeader().isPresent());
         // Set after the cores started: only the worker created next gets the fence window under test.
@@ -146,19 +146,23 @@ class FalseDeadWorkerRejoinTest {
         await().alias("every core has observed the worker SWIM-HEALTHY before the cut (the cold-boot gate suppresses a never-HEALTHY death)")
                .atMost(BUDGET.duration())
                .until(() -> cluster.allNodes().stream().filter(node -> !node.self().equals(id)).allMatch(node -> swimHealthy(node, id)));
-        cutSwim(id);
+        cutSwim(id, keepQuic);
         await().atMost(BUDGET.duration()).until(() -> leader().kvStore().getTyped(key, AetherValue.ActivationDirectiveValue.class).isEmpty());
         return id;
     }
 
-    /// Cuts SWIM between the worker and every core, in both directions, and keeps QUIC up: `partitionFrom` also installs a QUIC
-    /// inbound filter, which the follow-up unfilter lifts. The worker is then declared dead by SWIM alone, as in a false death.
-    private void cutSwim(NodeId worker) {
+    /// Cuts SWIM between the worker and every core, in both directions. With `keepQuic` the QUIC inbound filter that
+    /// `partitionFrom` also installs is lifted again, so the worker is declared dead by SWIM alone and its live QUIC links
+    /// contradict a second-hand FAULTY (removal then takes 14-90 s, observed). Without it the transport is cut too and the
+    /// removal is prompt, which the removal-first path needs: the worker's quorum-loss self-fence fires about 75 s after the cut.
+    private void cutSwim(NodeId worker, boolean keepQuic) {
         var cores = cluster.allNodes().stream().map(AetherNode::self).filter(node -> !node.equals(worker)).collect(Collectors.toSet());
 
         cluster.allNodes().forEach(node -> {
             node.partitionFrom(node.self().equals(worker) ? cores : Set.of(worker));
-            node.setInboundFaultFilter((_, _) -> true);
+            if (keepQuic) {
+                node.setInboundFaultFilter((_, _) -> true);
+            }
         });
     }
 
