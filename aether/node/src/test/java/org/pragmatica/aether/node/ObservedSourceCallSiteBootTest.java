@@ -4,13 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
-import java.lang.reflect.Field;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.function.Consumer;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -19,8 +15,6 @@ import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.controller.fsm.ControlLoopContext;
-import org.pragmatica.aether.invoke.SliceFailureEvent.AllInstancesFailed;
-import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.ExecutionOutcome;
 import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
@@ -34,7 +28,6 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.lang.Option;
-import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.FrameworkCodecs;
 
@@ -50,14 +43,14 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// exists is not wiring that delivers: the v3113c swaps left both control-loop routes as no-ops and the boot test green.
 ///
 /// Mutations and what goes red (AetherNode call sites):
-/// - control-loop put route replaced by a no-op: `observedPutRow_reachesTheControlLoop`;
-/// - control-loop remove route replaced by a no-op: `observedRemove_clearsTheControlLoopsSliceState`;
-/// - detector source given `Option.none()` in place of the membership FSM (or any reference that does not count the node):
-///   `detector_readsTheNodesCurrentObservedRows_andPublishesAllInstancesFailed`.
+/// - control-loop put route replaced by a no-op: `observedPutRow_reachesTheControlLoop` and `observedRemove_clearsTheControlLoopsSliceState`;
+/// - control-loop remove route replaced by a no-op: `observedRemove_clearsTheControlLoopsSliceState`.
 ///
-/// Residual, not pinned here: the seam passed to the put route and to the detector (`deploymentWiring.admissions()` against a fresh seam). A
-/// single node's boot-token registry holds no token for any node (it records peers only, and a self-forming node has none), so every admitted
-/// token reads 0 and a fresh seam is indistinguishable from the real one; that needs a peer admitted through the transport (multi-node).
+/// Residual, not pinned here (needs a cluster): (1) the detector's source, `Option.none()` in place of the membership FSM, is pinned by the
+/// forge `AutoRollbackOnAllInstancesFailedFsm2Test`: the detector acts only on the leader, and a single node never becomes leader (a cluster needs
+/// three nodes), so a boot test cannot reach its publish. (2) The seam passed to the put route and to the detector (`deploymentWiring.admissions()`
+/// against a fresh seam): a single node's boot-token registry records peers only, so every admitted token reads 0 and a fresh seam is
+/// indistinguishable from the real one; that needs a peer admitted through the transport.
 class ObservedSourceCallSiteBootTest {
     private static final Artifact ARTIFACT = Artifact.artifact("org.example:call-site:1.0.0").unwrap();
 
@@ -99,32 +92,6 @@ class ObservedSourceCallSiteBootTest {
         remove(row);
 
         await("the removal reached the loop").atMost(Duration.ofSeconds(30)).until(() -> !slicesInProgress(loop));
-    }
-
-    @Test
-    @Timeout(value = 180, unit = SECONDS)
-    void detector_readsTheNodesCurrentObservedRows_andPublishesAllInstancesFailed() throws ReflectiveOperationException {
-        var router = MessageRouter.DelegateRouter.delegate();
-        var published = new CopyOnWriteArrayList<AllInstancesFailed>();
-
-        boot(router);
-        router.replaceDelegate(recording(currentDelegate(router), published::add));
-        commit(row(SliceObservedState.ACTIVE));
-
-        await("the detector published for the node's ACTIVE row").atMost(Duration.ofSeconds(120))
-                                                                 .pollInterval(Duration.ofMillis(250))
-                                                                 .until(() -> recordDefect() && publishedFor(published));
-    }
-
-    private boolean recordDefect() {
-        node.invocationMetrics().recordExecution(ARTIFACT, "call", ExecutionOutcome.DEFECT);
-        System.out.println("DBG leader=" + node.isLeader() + " exec=" + node.metricsCollector().allObservations().get(node.self()).values().keySet().stream().filter(k -> k.startsWith("exec|")).toList() + " counts=" + node.invocationMetrics().executionCounts());
-
-        return true;
-    }
-
-    private static boolean publishedFor(List<AllInstancesFailed> published) {
-        return published.stream().anyMatch(event -> event.artifact().equals(ARTIFACT));
     }
 
     private void boot(MessageRouter.DelegateRouter router) {
@@ -178,31 +145,5 @@ class ObservedSourceCallSiteBootTest {
         } catch (ReflectiveOperationException e) {
             throw new IllegalStateException("the control loop adapter no longer exposes ctx()", e);
         }
-    }
-
-    /// The router the node installed behind its delegate (RabiaNode builds it at construction).
-    private static MessageRouter currentDelegate(MessageRouter.DelegateRouter delegateRouter) throws ReflectiveOperationException {
-        Field field = delegateRouter.getClass().getDeclaredField("delegate");
-
-        field.setAccessible(true);
-        return (MessageRouter) field.get(delegateRouter);
-    }
-
-    /// Routes everything to `original`, handing a copy of each [AllInstancesFailed] to `sink`.
-    private static MessageRouter recording(MessageRouter original, Consumer<AllInstancesFailed> sink) {
-        return new MessageRouter.ImmutableRouter<Message>() {
-            @Override
-            public Map<Class<Message>, List<Consumer<Message>>> routingTable() {
-                return Map.of();
-            }
-
-            @Override
-            public <R extends Message> void route(R message) {
-                if (message instanceof AllInstancesFailed failed) {
-                    sink.accept(failed);
-                }
-                original.route(message);
-            }
-        };
     }
 }
