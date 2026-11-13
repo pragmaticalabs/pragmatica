@@ -63,7 +63,7 @@ final class LossAccountingFixtures {
                                       clientSsl("loss-client"),
                                       ClusterFormationConfig.defaults(),
                                       PeerConnectivityReporter.noop(),
-                                      ObservedEpochSupplier.zero(),
+                                      QuicClusterNetwork.ObservedEpochSupplier.zero(),
                                       tuning);
     }
 
