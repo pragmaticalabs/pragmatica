@@ -1340,6 +1340,17 @@ class CstMapperMethodReferenceRuleTest {
                 """)));
     }
 
+    @Test
+    void analyze_polarityEarlyExitThenArrowArmWithMethodReferenceInWhenGuard_isClean() {
+        assertFalse(hasRule(polarityFixture("""
+                if (xs.isEmpty()) return Option.none();
+                return switch (wire.kind()) {
+                    case Integer i when wire.test(Handler::lastName) -> wire.map(Handler::lastName, xs.getFirst());
+                    default -> Option.none();
+                };
+                """)));
+    }
+
     /// Source whose referenced `lastName` has body `body` over the plain-identifier receiver `xs`.
     private static String polarityFixture(String body) {
         return "package org.example;\n"
