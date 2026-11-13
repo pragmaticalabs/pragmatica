@@ -16,10 +16,13 @@
 package org.pragmatica.consensus.net.quic;
 
 import java.util.Map;
+import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
 
 import org.pragmatica.lang.Contract;
+import org.pragmatica.messaging.StreamType;
 
 
 /// Thread-safe QUIC transport metrics using atomic counters.
@@ -102,6 +105,43 @@ public final class QuicTransportMetrics {
     /// #2030: how the drain of a dual-dial loser ended — every lane flushed, or the bound passed first.
     private final LongAdder loserDrainsFlushed = new LongAdder();
     private final LongAdder loserDrainsBoundHit = new LongAdder();
+    /// #2583 P0: frames reported `Sent` (accepted locally) that this node then dropped, one counter per (lane, site) --
+    /// `droppedAfterSent.<lane>.<site>`, sites D1-D9 of [DropSite]. Kept apart from [#backpressureDrops] and
+    /// [#writeFailures], which a refusal (a frame NOT reported Sent) also moves. Deliberately outside [#snapshot]: the
+    /// key set is lane x site, and the Prometheus surface registers a fixed list (TransportMetricsExposureTripwireTest).
+    private final Map<String, LongAdder> droppedAfterSent = new ConcurrentHashMap<>();
+    /// #2583 P0: sends refused with `BackpressureRefused` (never written), per lane. Counts every refusal, including
+    /// the ones whose WARN the rate limit suppressed.
+    private final Map<StreamType, LongAdder> refusedByLane = new ConcurrentHashMap<>();
+
+    /// The post-`Sent` loss sites of the #2583 inventory. `token` is the `<site>` part of the counter name.
+    public enum DropSite {
+        /// D1: a frame drained from the offline buffer on reattach whose write was refused or failed to encode.
+        DRAIN("drain"),
+        /// D2: a message pending on a lazily opened lane whose write was refused.
+        PENDING_LANE_WRITE("pendingLaneWrite"),
+        /// D3: a CONSENSUS/DHT backpressure retry that gave up.
+        RETRY_GAVE_UP("retryGaveUp"),
+        /// D4: a write future that completed as a failure.
+        WRITE_FAILED("writeFailed"),
+        /// D5: the offline buffer evicted its oldest frame to make room.
+        OFFLINE_OLDEST("offlineOldest"),
+        /// D6: the lane-open pending queue evicted its oldest message to make room.
+        LANE_OPEN_OLDEST("laneOpenOldest"),
+        /// D7: a lane open failed on a replaced connection and the bound connection had no live stream.
+        REPLACED_CONNECTION("replacedConnection"),
+        /// D8: a lane open failed on the bound connection; the backstop evicts it and the pending messages are never written.
+        BACKSTOP_EVICTION("backstopEviction"),
+        /// D9: a backpressure retry entered for a peer already REMOVED.
+        REMOVED_AT_RETRY("removedAtRetry");
+        private final String token;
+        DropSite(String token) {
+            this.token = token;
+        }
+        public String token() {
+            return token;
+        }
+    }
 
     private QuicTransportMetrics() {}
 
@@ -151,6 +191,18 @@ public final class QuicTransportMetrics {
     @Contract
     public void onWriteFailure() {
         writeFailures.increment();
+    }
+
+    /// #2583 P0: records `frames` frames, already reported `Sent`, dropped at `site` on `lane`.
+    @Contract
+    public void onDroppedAfterSent(StreamType lane, DropSite site, long frames) {
+        droppedAfterSent.computeIfAbsent(droppedAfterSentKey(lane, site), _ -> new LongAdder()).add(frames);
+    }
+
+    /// #2583 P0: records one send refused with `BackpressureRefused` on `lane`.
+    @Contract
+    public void onRefused(StreamType lane) {
+        refusedByLane.computeIfAbsent(lane, _ -> new LongAdder()).increment();
     }
 
     @Contract
@@ -456,5 +508,36 @@ public final class QuicTransportMetrics {
     /// Inbound messages dropped from retired (boot-token) identities, cumulative.
     public long bootTokenDropCount() {
         return bootTokenDrops.sum();
+    }
+
+    /// #2583 P0: frames dropped after `Sent` at `site` on `lane`, cumulative.
+    public long droppedAfterSentCount(StreamType lane, DropSite site) {
+        var counter = droppedAfterSent.get(droppedAfterSentKey(lane, site));
+
+        return counter == null
+               ? 0L
+               : counter.sum();
+    }
+
+    /// #2583 P0: every non-zero `droppedAfterSent.<lane>.<site>` counter, by name.
+    public Map<String, Long> droppedAfterSentSnapshot() {
+        var snapshot = new TreeMap<String, Long>();
+
+        droppedAfterSent.forEach((key, counter) -> snapshot.put(key, counter.sum()));
+
+        return Map.copyOf(snapshot);
+    }
+
+    /// #2583 P0: sends refused with `BackpressureRefused` on `lane`, cumulative.
+    public long refusedCount(StreamType lane) {
+        var counter = refusedByLane.get(lane);
+
+        return counter == null
+               ? 0L
+               : counter.sum();
+    }
+
+    private static String droppedAfterSentKey(StreamType lane, DropSite site) {
+        return "droppedAfterSent." + lane + "." + site.token();
     }
 }
