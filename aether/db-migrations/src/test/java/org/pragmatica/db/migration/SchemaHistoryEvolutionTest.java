@@ -88,6 +88,22 @@ class SchemaHistoryEvolutionTest {
                     .contains("VARCHAR(16)  DEFAULT 'VERSIONED' NOT NULL")
                     .doesNotContain("NOT NULL DEFAULT");
         }
+
+        @ParameterizedTest
+        @EnumSource(DatabaseType.class)
+        void metaAndOwnerTables_areCreatedIfAbsent_inTheDialectsSpelling(DatabaseType type) {
+            var sqlServer = type == DatabaseType.SQLSERVER;
+
+            assertThat(SchemaHistoryEvolution.createMetaTableSql(type))
+                    .isEqualTo(sqlServer
+                               ? "IF OBJECT_ID(N'aether_schema_history_meta', N'U') IS NULL CREATE TABLE aether_schema_history_meta (schema_version INTEGER NOT NULL)"
+                               : "CREATE TABLE IF NOT EXISTS aether_schema_history_meta (schema_version INTEGER NOT NULL)");
+            assertThat(SchemaHistoryEvolution.createOwnerTableSql(type))
+                    .isEqualTo(sqlServer
+                               ? "IF OBJECT_ID(N'aether_schema_owner', N'U') IS NULL CREATE TABLE aether_schema_owner (blueprint_base VARCHAR(256) NOT NULL)"
+                               : "CREATE TABLE IF NOT EXISTS aether_schema_owner (blueprint_base VARCHAR(256) NOT NULL)");
+        }
+    }
     }
 
     @Nested

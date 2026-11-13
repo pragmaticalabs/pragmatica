@@ -19,9 +19,9 @@ import org.pragmatica.aether.resource.db.DatabaseType;
 /// differently). The meta table itself never evolves; only the history table does.
 ///
 /// Step model:
-/// - **v1** ([#stepOne]) — the original 8-column `CREATE TABLE aether_schema_history (...)`, kept
-///   `IF NOT EXISTS` so an EXISTING cluster's table is a no-op while a fresh cluster gets it created.
-///   Dialect-independent.
+/// - **v1** ([#stepOne]) — the original 8-column `CREATE TABLE aether_schema_history (...)`, created only
+///   when absent (`IF NOT EXISTS`, or the `OBJECT_ID` guard on SQL Server) so an EXISTING cluster's table is
+///   a no-op while a fresh cluster gets it created.
 /// - **v2** ([#stepTwo]) — adds `status` and `statements_completed` via DIALECT-AWARE `ALTER TABLE`
 ///   syntax keyed off [DatabaseType]. Because the meta-version gates this step (run exactly once),
 ///   the `ALTER` does NOT need `IF NOT EXISTS`.
@@ -72,7 +72,7 @@ public sealed interface SchemaHistoryEvolution {
         List<String> render(DatabaseType type);
     }
 
-    /// v1: the original 8-column history table, created `IF NOT EXISTS` (dialect-independent).
+    /// v1: the original 8-column history table, created only when absent (dialect-aware guard).
     Step STEP_V1 = Step.step(1, SchemaHistoryEvolution::stepOne);
     /// v2: add `status` + `statements_completed`, dialect-aware (#338-B2 consumes these columns).
     Step STEP_V2 = Step.step(2, SchemaHistoryEvolution::stepTwo);
@@ -92,11 +92,30 @@ public sealed interface SchemaHistoryEvolution {
                     .toList();
     }
 
+    /// `CREATE TABLE` that is a no-op when the table exists. SQL Server has no `IF NOT EXISTS` for tables (#3050), so it
+    /// gets the `OBJECT_ID` guard; every other engine takes the `IF NOT EXISTS` spelling.
+    private static String createTableIfAbsent(DatabaseType type, String table, String columns) {
+        return type == DatabaseType.SQLSERVER
+               ? "IF OBJECT_ID(N'" + table + "', N'U') IS NULL CREATE TABLE " + table + " (" + columns + ")"
+               : "CREATE TABLE IF NOT EXISTS " + table + " (" + columns + ")";
+    }
+
+    /// The dialect's `CREATE TABLE ... IF absent` for [#META_TABLE].
+    static String createMetaTableSql(DatabaseType type) {
+        return createTableIfAbsent(type, META_TABLE, "schema_version INTEGER NOT NULL");
+    }
+
+    /// The dialect's `CREATE TABLE ... IF absent` for [#OWNER_TABLE].
+    static String createOwnerTableSql(DatabaseType type) {
+        return createTableIfAbsent(type, OWNER_TABLE, "blueprint_base VARCHAR(256) NOT NULL");
+    }
+
+    /// `DEFAULT` precedes `NOT NULL` (#3069): Oracle refuses the reverse with ORA-03076, every other engine accepts both.
     private static List<String> stepOne(DatabaseType type) {
-        return List.of("""
-            CREATE TABLE IF NOT EXISTS aether_schema_history (
+        return List.of(createTableIfAbsent(type, "aether_schema_history", """
+
                 version        INTEGER      NOT NULL,
-                type           VARCHAR(16)  NOT NULL DEFAULT 'VERSIONED',
+                type           VARCHAR(16)  DEFAULT 'VERSIONED' NOT NULL,
                 description    VARCHAR(256) NOT NULL,
                 script         VARCHAR(512) NOT NULL,
                 checksum       BIGINT       NOT NULL,
@@ -104,7 +123,7 @@ public sealed interface SchemaHistoryEvolution {
                 applied_at     BIGINT       NOT NULL,
                 execution_ms   INTEGER      NOT NULL,
                 PRIMARY KEY (version, type)
-            )""");
+            """));
     }
 
     /// Renders the v2 `ALTER TABLE aether_schema_history ADD ...` adding `status` and
