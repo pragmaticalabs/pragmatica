@@ -517,6 +517,23 @@ class ReplicaAckGateTest {
         drain(e3LiveSync);
     }
 
+    /// #2840: the copy is verified for E2 and acked 7 under E2; a batch of E3 (from another node) lands at offset 8 while this
+    /// replica's view still says E2. The gate reads the view's epoch, so it would open: ack 8 under E3, counting offsets 6..7
+    /// (E2 lineage) as E3's. No ack under E3 until the copy is verified for E3.
+    @Test
+    void liveBatch_ofANewerEpochThanTheLaggingView_isNotAckedUnderTheNewerEpoch() {
+        unverifiedCopyUnderE2();
+        replica.markVerifiedForEpoch(STREAM, PARTITION, E2);
+        handler.onReplicateEvents(liveBatch(5, 3, E2));
+        assertThat(ackOffsets(E2)).as("fixture: acked under E2").containsExactly(7L);
+
+        handler.onReplicateEvents(newerEpochBatch(8, E3));
+
+        assertThat(replica.nextExpectedOffset(STREAM, PARTITION)).as("the E3 batch landed").isEqualTo(9L);
+        assertThat(ackOffsetsUnder(E3)).as("no ack under E3 on a lagging view; all acks = %s", acks).isEmpty();
+        assertThat(gapRepairs.get()).as("the compare is asked for").isEqualTo(1);
+    }
+
     /// #2753 (the v2735d probe): the gate opens only on a verification for the committed epoch, never on the OWNER placement
     /// role (`ReplicaSetController::roleFor`, from HRW placement, not the committed record). While the committed owner is still
     /// the batch's sender at E2, a stale compare's verification (an epoch captured before E2) runs the release, and the deferral
@@ -824,6 +841,16 @@ class ReplicaAckGateTest {
                                fromOffset,
                                IntStream.range(fromOffset, fromOffset + count).mapToObj(ReplicaAckGateTest::payload).toList(),
                                IntStream.range(fromOffset, fromOffset + count).mapToObj(i -> 1000L + i).toList(),
+                               epoch);
+    }
+
+    private ReplicationMessage.ReplicateEvents newerEpochBatch(int fromOffset, Epoch epoch) {
+        return replicateEvents(NODE_C,
+                               STREAM,
+                               PARTITION,
+                               fromOffset,
+                               List.of(payload(fromOffset)),
+                               List.of(1000L + fromOffset),
                                epoch);
     }
 
