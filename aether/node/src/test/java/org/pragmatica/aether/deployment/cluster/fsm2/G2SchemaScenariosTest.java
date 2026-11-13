@@ -18,6 +18,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaMigrationLockValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
+import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
 
@@ -46,7 +47,17 @@ class G2SchemaScenariosTest {
     private static final BlueprintId OWNER = blueprintId("org.example:app:1.0.0");
 
     private static SchemaVersionValue schema(SchemaStatus status) {
-        return new SchemaVersionValue("ds", 1, "m1", status, "g:a:1", OWNER, 2, FsmHarness.START_WALL);
+        return schemaAt("ds", status, FsmHarness.START_WALL);
+    }
+
+    private static SchemaVersionValue schemaAt(String datasource, SchemaStatus status, long updatedAt) {
+        return new SchemaVersionValue(datasource, 1, "m1", status, "g:a:1", OWNER, 2, updatedAt);
+    }
+
+    /// A record whose last write is 600 s old when the harness starts: older than the stall threshold (45 s + 2 ticks), as after a cold restart,
+    /// a failover during a long migration, or a restore (which keeps the backup's `updatedAt`).
+    private static SchemaVersionValue oldRecord(SchemaStatus status) {
+        return schemaAt("ds", status, FsmHarness.START_WALL - 600_000L);
     }
 
     private static List<SchemaStatus> writtenStatuses(FsmHarness h) {
@@ -254,6 +265,9 @@ class G2SchemaScenariosTest {
         h.advanceBySeconds(60L);
         assertThat(h.warns("schema-migration-progressed")).hasSize(1);
         assertThat(h.warns("schema-migration-progressed").getFirst().subject()).isEqualTo("ds");
+        assertThat(h.warns("schema-migration-progressed").getFirst().message())
+                  .isEqualTo("Schema migration for datasource ds progressed: its record has a live lock, was dispatched or reset by the leader,"
+                             + " or left PENDING or MIGRATING");
         h.advanceBySeconds(600L);
         assertThat(h.warns("schema-migration-progressed")).hasSize(1);
         assertThat(h.warns("schema-migration-stalled")).hasSize(1);
@@ -275,11 +289,13 @@ class G2SchemaScenariosTest {
         assertThat(h.warns("schema-migration-progressed").getFirst().message()).contains("subject-gone");
     }
 
-    // #2773 with #2834/#3078: the open warning is committed and the successor leader inherits it: it is not raised again while the stall
-    // lasts, and it is closed when the record moves while no leader watched.
-    // Red when: the family is not in the committed open set (the successor raises it a second time, or never closes it).
+    // #2773 with #2834/#3078: the open warning is committed and the successor leader inherits it: it is not raised again, and the successor's
+    // rebuild re-dispatches the PENDING record, which is the record moving (the dispatch is stamped): the inherited report is closed by it. A record
+    // that stays stuck after the dispatch is a new episode, reported again after the dwell measured from the dispatch.
+    // Red when: the family is not in the committed open set (the successor raises it a second time, or never closes it), or the successor's
+    // dispatch does not count as progress.
     @Test
-    void stall_survivesLeaderLoss_inheritedNotRaisedAgain_closedBySuccessor() {
+    void stall_survivesLeaderLoss_inheritedNotRaisedAgain_closedBySuccessorsDispatch() {
         var h = threeCores();
 
         h.activate();
@@ -290,12 +306,153 @@ class G2SchemaScenariosTest {
         h.commitLeader(FsmHarness.SELF, 2L);
         h.drain();
         h.activate();
-        h.advanceBySeconds(90L);
+        h.drain();
         assertThat(h.warns("schema-migration-stalled")).as("inherited, not raised again").hasSize(1);
-        assertThat(h.warns("schema-migration-progressed")).isEmpty();
-        h.seed(new SchemaVersionKey("ds"), schema(SchemaStatus.COMPLETED));
+        assertThat(h.warns("schema-migration-progressed")).as("closed by the successor's dispatch").hasSize(1);
+        h.advanceBySeconds(90L);
+        assertThat(h.warns("schema-migration-stalled")).as("90 s after the dispatch: inside the dwell").hasSize(1);
         h.advanceBySeconds(60L);
-        assertThat(h.warns("schema-migration-progressed")).as("closed by the successor").hasSize(1);
+        assertThat(h.warns("schema-migration-stalled")).as("150 s after the dispatch: a new episode").hasSize(2);
+    }
+
+    // #2773 F1: the Rebuild dispatches an old PENDING record, and the reconcile queued behind it runs before the dispatch's lock Put can commit.
+    // The dispatch is the record moving: no report for it, and the dwell is measured from the dispatch.
+    // Red when: the quiet time is measured from `updatedAt` alone (a false `schema-migration-stalled` at the Rebuild).
+    @Test
+    void rebuild_oldPending_dispatched_notReportedBeforeTheDwellFromTheDispatch() {
+        var h = threeCores();
+
+        h.seedQuietly(new SchemaVersionKey("ds"), oldRecord(SchemaStatus.PENDING));
+        h.activate();
+        assertThat(h.effects(ClusterEffect.DispatchMigration.class)).as("control: the rebuild dispatched it").hasSize(1);
+        assertThat(h.warns("schema-migration-stalled")).as("the rebuild just dispatched this record").isEmpty();
+        h.advanceBySeconds(90L);
+        assertThat(h.warns("schema-migration-stalled")).as("90 s after the dispatch: inside the dwell").isEmpty();
+        h.advanceBySeconds(60L);
+        assertThat(h.warns("schema-migration-stalled")).as("150 s after the dispatch: reported").hasSize(1);
+    }
+
+    // #2773 F1: the Rebuild resets an old lock-less MIGRATING record (a write, committed one consensus round later); the reset is the record moving.
+    // Red when: the reset is not stamped (the report is raised by the leader whose rebuild has just reset the record).
+    @Test
+    void rebuild_oldMigrating_reset_notReportedBeforeTheDwellFromTheReset() {
+        var h = threeCores();
+
+        h.seedQuietly(new SchemaVersionKey("ds"), oldRecord(SchemaStatus.MIGRATING));
+        h.activate();
+        assertThat(h.submits(ClusterModel.SubmitKind.SCHEMA)).as("control: the rebuild reset it to PENDING").hasSize(1);
+        assertThat(h.warns("schema-migration-stalled")).as("the rebuild just reset this record").isEmpty();
+        h.advanceBySeconds(90L);
+        assertThat(h.warns("schema-migration-stalled")).as("90 s after the reset: inside the dwell").isEmpty();
+        h.advanceBySeconds(60L);
+        assertThat(h.warns("schema-migration-stalled")).as("150 s after the reset: reported").hasSize(1);
+    }
+
+    // #2773 F1, the restore path: `BackupRestoreCoordinator` writes the restored record PENDING and keeps the backup's old `updatedAt`; the live
+    // `onPut` dispatch is the record moving.
+    // Red when: the dispatch of a PENDING Put is not stamped, or the quiet time ignores the stamp.
+    @Test
+    void restore_oldPendingPut_dispatched_notReportedBeforeTheDwellFromTheDispatch() {
+        var h = threeCores();
+
+        h.activate();
+        h.seed(new SchemaVersionKey("ds"), oldRecord(SchemaStatus.PENDING));
+        h.drain();
+        assertThat(h.effects(ClusterEffect.DispatchMigration.class)).as("control: the Put dispatched it").hasSize(1);
+        assertThat(h.warns("schema-migration-stalled")).isEmpty();
+        h.advanceBySeconds(90L);
+        assertThat(h.warns("schema-migration-stalled")).as("90 s after the dispatch: inside the dwell").isEmpty();
+        h.advanceBySeconds(60L);
+        assertThat(h.warns("schema-migration-stalled")).as("150 s after the dispatch: reported").hasSize(1);
+    }
+
+    // #2773 F2: the MIGRATING lever is one the operator can take: it names the leader (this node, the one that raises it) and `nodes shutdown`,
+    // which stops the node (route -> SHUTTING_DOWN -> NodeDeploymentManager.onMembershipDecision -> AetherNode.stop) and so hands leadership over;
+    // `nodes drain` moves slices only and is not named. It says the re-run is unfenced where `schema-migration-unfenced` applies.
+    // Red when: the leader id, the shutdown command or the unfenced caveat is dropped, or drain is named.
+    @Test
+    void stallWarning_migrating_namesTheLeaderAndTheShutdownLever() {
+        var h = threeCores();
+
+        h.activate();
+        h.seed(new SchemaVersionKey("ds"), schema(SchemaStatus.MIGRATING));
+        h.advanceBySeconds(600L);
+        var message = h.warns("schema-migration-stalled").getFirst().message();
+
+        assertThat(message).contains("current leader " + FsmHarness.SELF.id(),
+                                     "`aether nodes shutdown " + FsmHarness.SELF.id() + "`",
+                                     "schema-migration-unfenced")
+                  .doesNotContain("aether nodes drain");
+    }
+
+    // #2773 F3: an operator write that dispatches nothing and takes no lock (`POST /schema/migrate` on MIGRATING, "no orchestrator effect") is not
+    // progress: it must not close an open report. A PENDING write dispatches, which is progress.
+    // Red when: an open report is closed by `updatedAt` alone.
+    @Test
+    void stall_operatorMigratingWrite_withoutDispatch_keepsTheReportOpen_aDispatchClosesIt() {
+        var h = threeCores();
+
+        h.activate();
+        h.seed(new SchemaVersionKey("ds"), schema(SchemaStatus.MIGRATING));
+        h.advanceBySeconds(600L);
+        assertThat(h.warns("schema-migration-stalled")).hasSize(1);
+        h.seed(new SchemaVersionKey("ds"), schemaAt("ds", SchemaStatus.MIGRATING, h.wallMs));
+        h.advanceBySeconds(60L);
+        assertThat(h.warns("schema-migration-progressed")).as("a write with no dispatch and no lock is not progress").isEmpty();
+        assertThat(h.warns("schema-migration-stalled")).as("and it is not raised again").hasSize(1);
+        h.seed(new SchemaVersionKey("ds"), schemaAt("ds", SchemaStatus.PENDING, h.wallMs));
+        h.advanceBySeconds(30L);
+        assertThat(h.warns("schema-migration-progressed")).as("the retry's dispatch is progress").hasSize(1);
+    }
+
+    // #2773: the elapsed time in the message is in seconds. Red when: the unit moves (milliseconds read as seconds).
+    @Test
+    void stallWarning_reportsTheQuietTimeInSeconds() {
+        var h = threeCores();
+
+        h.activate();
+        h.seed(new SchemaVersionKey("ds"), schema(SchemaStatus.PENDING));
+        h.advanceBySeconds(600L);
+        assertThat(h.warns("schema-migration-stalled").getFirst().message()).containsPattern("status PENDING for 1\\d\\ds with no live");
+    }
+
+    // #2773: several stalled datasources are reported in datasource order within one pass. Red when: the order follows the hash order of the mirror.
+    @Test
+    void stalls_ofSeveralDatasources_areReportedInDatasourceOrder() {
+        var h = threeCores();
+        var names = List.of("ds-e", "ds-b", "ds-f", "ds-a", "ds-d", "ds-c");
+
+        h.activate();
+        names.forEach(name -> h.seed(new SchemaVersionKey(name), schemaAt(name, SchemaStatus.MIGRATING, FsmHarness.START_WALL)));
+        h.advanceBySeconds(150L);
+        assertThat(h.warns("schema-migration-stalled").stream().map(ClusterEffect.Warn::subject).toList())
+                  .containsExactly("ds-a", "ds-b", "ds-c", "ds-d", "ds-e", "ds-f");
+    }
+
+    // #2773: Reconcile's documented order is (2c) the activation re-derive, then (2d) the stall check. One pass that does both emits the
+    // re-derive's `schema-hold` (the hold signature gained a record) before the stall check's report.
+    // Red when: `sweepStalls` runs before `Slices.reactivate`.
+    @Test
+    void reconcile_stallCheck_runsAfterTheActivationRederive() {
+        var h = threeCores();
+
+        h.activate();
+        publish(h, blueprint(OWNER.asString(), false, ATTEMPT, slice(ORDERS, 1, 1, Set.of())), Option.none());
+        h.seed(new SchemaVersionKey("held"), schemaAt("held", SchemaStatus.PENDING, FsmHarness.START_WALL));
+        h.drain();
+        node(h, hosts(h, ORDERS).getFirst(), 1L).follows(ORDERS);
+        h.drain();
+        h.clearLog();
+        h.seed(new SchemaVersionKey("old"), schemaAt("old", SchemaStatus.MIGRATING, FsmHarness.START_WALL - 600_000L));
+        h.advanceBySeconds(30L);
+        var codes = h.effects(ClusterEffect.Warn.class)
+                     .stream()
+                     .map(ClusterEffect.Warn::code)
+                     .filter(code -> code.equals("schema-hold") || code.equals("schema-migration-stalled"))
+                     .toList();
+
+        assertThat(codes).as("one pass: the hold signature gained a record, and the new record is already stalled")
+                  .containsExactly("schema-hold", "schema-migration-stalled");
     }
 
     // #2773: the report names the slices the record holds (the owning blueprint's targets), so the operator sees what waits on it.

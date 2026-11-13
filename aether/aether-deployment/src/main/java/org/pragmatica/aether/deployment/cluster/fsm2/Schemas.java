@@ -46,8 +46,17 @@ public sealed interface Schemas {
         };
     }
 
+    /// Every dispatch is stamped (`schemaDispatchedAt`): the stall sweep measures quiet time from the later of the record's `updatedAt` and
+    /// this stamp, because a dispatch is an act on the record that its own commit (the lock Put) has not yet reached, and a restore keeps the
+    /// backup's old `updatedAt`.
     private static ClusterModel dispatch(ClusterModel m, Ctx ctx, String datasource) {
         ctx.emit(new ClusterEffect.DispatchMigration(datasource));
+
+        return stamp(m, ctx, datasource);
+    }
+
+    private static ClusterModel stamp(ClusterModel m, Ctx ctx, String datasource) {
+        m.schemaDispatchedAt = m.schemaDispatchedAt.put(datasource, ctx.nowMs());
 
         return m;
     }
@@ -103,6 +112,7 @@ public sealed interface Schemas {
     static ClusterModel onRemove(ClusterModel m, Ctx ctx, String datasource) {
         readable(m, ctx, datasource, Recoveries.gone(datasource, "its schema record was removed"));
         stallEnded(m, ctx, datasource, Recoveries.gone(datasource, "its schema record was removed"));
+        m.schemaDispatchedAt = m.schemaDispatchedAt.remove(datasource);
 
         return Indexer.removeSchema(m, datasource);
     }
@@ -154,8 +164,8 @@ public sealed interface Schemas {
     /// Reconcile ticks of grace past the ceiling before a record is reported (the tick is the sweep's granularity).
     int STALL_GRACE_TICKS = 2;
 
-    /// Step 2d of the reconcile: the level-triggered stall check. A PENDING or MIGRATING record with no live lock and no write for longer than
-    /// [#RETRY_CEILING_MS] plus the grace is stalled: nothing in this term re-dispatches it (a failed lock Put abandons the attempt without a
+    /// Step 2d of the reconcile: the level-triggered stall check. A PENDING or MIGRATING record with no live lock and no write or dispatch of
+    /// this leader for longer than [#RETRY_CEILING_MS] plus the grace (with the default 30 s tick, 105 s) is stalled: nothing in this term re-dispatches it (a failed lock Put abandons the attempt without a
     /// retry). The leader reports it once per episode and closes the report when the condition ends. It dispatches and writes nothing:
     // Design-out: no recovery writer here. A MIGRATING reset in-term would multiply unfenced re-runs on datasources without a database fence
     // (`schema-migration-unfenced`); the rebuild's reset (C1) stays the only automatic one, and the warning names it. Guarantee: a stall is
@@ -185,15 +195,26 @@ public sealed interface Schemas {
     private static boolean isStalled(ClusterModel m, Ctx ctx, SchemaVersionValue value) {
         return isUnsettled(value)
                && lockExpired(m, ctx, value.datasourceName())
-               && isQuiet(ctx, value);
+               && isQuiet(m, ctx, value);
     }
 
     private static boolean isUnsettled(SchemaVersionValue value) {
         return value.status() == SchemaStatus.PENDING || value.status() == SchemaStatus.MIGRATING;
     }
 
-    private static boolean isQuiet(Ctx ctx, SchemaVersionValue value) {
-        return ctx.nowMs() - value.updatedAt() > stallAfterMs(ctx);
+    private static boolean isQuiet(ClusterModel m, Ctx ctx, SchemaVersionValue value) {
+        return ctx.nowMs() - quietSince(m, value) > stallAfterMs(ctx);
+    }
+
+    /// When the record last moved. A record not yet reported moves with a write (`updatedAt`) or with this leader's dispatch or reset; a
+    /// record already reported moves only with a dispatch or reset: a write that dispatches nothing and takes no lock (the operator's
+    /// `POST /schema/migrate` on MIGRATING, "no orchestrator effect") is not progress and must not close the report.
+    private static long quietSince(ClusterModel m, SchemaVersionValue value) {
+        var dispatched = m.schemaDispatchedAt.get(value.datasourceName()).or(0L);
+
+        return m.schemaStalledWarned.contains(value.datasourceName())
+               ? dispatched
+               : Math.max(value.updatedAt(), dispatched);
     }
 
     private static long stallAfterMs(Ctx ctx) {
@@ -222,7 +243,7 @@ public sealed interface Schemas {
 
     private static String endedMessage(String datasource) {
         return "Schema migration for datasource " + datasource
-             + " progressed: its record has a live lock, a terminal status or a fresh write";
+             + " progressed: its record has a live lock, was dispatched or reset by the leader, or left PENDING or MIGRATING";
     }
 
     /// The report names the datasource, the recorded status, the slices the record holds and the lever. The lever is chosen by the predicate
@@ -233,15 +254,22 @@ public sealed interface Schemas {
                                                                                                                                              (ctx.nowMs() - value.updatedAt()) / 1000L,
                                                                                                                                              slicesOwnedBy(m,
                                                                                                                                                            value.owningBlueprint()),
-                                                                                                                                             lever(value));
+                                                                                                                                             lever(ctx, value));
     }
 
-    private static String lever(SchemaVersionValue value) {
+    /// The MIGRATING lever is a leadership change, because only a rebuild resets the record. `aether nodes shutdown <leader>` is the lever:
+    /// the route marks the node SHUTTING_DOWN, `NodeDeploymentManager.onMembershipDecision` runs the shutdown callback (`AetherNode.stop`) and
+    /// the leader leaves. `aether nodes drain` moves slices only and keeps the leader, so it is not named. The re-run is unfenced where
+    /// `schema-migration-unfenced` applies: a migration still running there can run twice.
+    private static String lever(Ctx ctx, SchemaVersionValue value) {
         return value.status()
                     .canRetryManually()
                ? "Recovery: aether schema retry " + value.datasourceName()
                : "No manual retry (the retry route refuses " + value.status()
-                + "); the next leader's rebuild resets the record to PENDING and re-runs it";
+                + "). Recovery: move leadership off the current leader " + ctx.self().id()
+                + " with `aether nodes shutdown " + ctx.self().id()
+                + "`; the next leader's rebuild resets the record to PENDING and re-runs it (unfenced where schema-migration-unfenced applies:"
+                + " a migration still running there can run twice)";
     }
 
     // -- C1: rebuild-time recovery ---------------------------------------------------------------------------------
@@ -302,7 +330,7 @@ public sealed interface Schemas {
         Outbox.direct(m,
                       TxDraft.draft(SubmitKind.SCHEMA, key, List.of(mutation)));
 
-        return m;
+        return stamp(m, ctx, datasource);
     }
 
     // -- the gate --------------------------------------------------------------------------------------------------
