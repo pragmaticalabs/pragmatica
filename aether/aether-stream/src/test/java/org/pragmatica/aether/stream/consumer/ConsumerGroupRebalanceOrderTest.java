@@ -622,6 +622,43 @@ class ConsumerGroupRebalanceOrderTest {
         }
     }
 
+    @Nested
+    class V3112aTermChanges {
+        @Test
+        void rebalance_epochsStrictlyIncrease_acrossTermChangesAndReactivations() {
+            var term = new java.util.concurrent.atomic.AtomicLong(1L);
+            var c = ConsumerGroupCoordinator.consumerGroupCoordinator(heldClusterNode(),
+                                                                     registry,
+                                                                     () -> Epoch.epoch(1L, term.get(), 0L));
+            c.onLeaderChange(new LeaderChange(Option.some(SELF), true));
+            c.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
+            c.joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);
+            commit(0);
+            term.set(2L);
+            c.onLeaderChange(new LeaderChange(Option.some(NODE_A), false));
+            c.onLeaderChange(new LeaderChange(Option.some(SELF), true));
+            c.joinGroup(GROUP, STREAM, PARTITIONS, "c3", NODE_A);
+            commit(2);
+            term.set(3L);
+            c.onLeaderChange(new LeaderChange(Option.some(NODE_A), false));
+            c.onLeaderChange(new LeaderChange(Option.some(SELF), true));
+            c.joinGroup(GROUP, STREAM, PARTITIONS, "c4", NODE_B);
+            for (int i = 1; i < held.size(); i++) {
+                assertThat(epochOf(held.get(i))).as("held " + i).isGreaterThan(epochOf(held.get(i - 1)));
+            }
+            commit(3);
+            commit(1);
+            assertThat(committedOwners().values()).containsOnly("c4").hasSize(PARTITIONS);
+            // the leader is deposed back to a LOWER term: refused, and the refusal must not corrupt later mints
+            term.set(2L);
+            var refused = c.joinGroup(GROUP, STREAM, PARTITIONS, "c5", NODE_A);
+            assertThat(refused.isFailure()).isTrue();
+            term.set(3L);
+            c.joinGroup(GROUP, STREAM, PARTITIONS, "c6", NODE_A);
+            assertThat(epochOf(held.getLast())).isGreaterThan(epochOf(held.get(3)));
+        }
+    }
+
     /// #2642 item 2: the SUPERSEDED refusal on the member-LEAVE path (a remaining member, so a rebalance, not the
     /// last-member clear). L1 (term 1) is deposed by L2 (term 2).
     @Nested
