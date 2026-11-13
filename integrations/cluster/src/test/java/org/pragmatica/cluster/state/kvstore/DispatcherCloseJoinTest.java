@@ -31,8 +31,10 @@ class DispatcherCloseJoinTest {
 
     /// How long `close()` is given to return while the delivery is held. With the join it cannot return before the release
     /// (its own bound is `JOIN_TIMEOUT_MILLIS`, 5 s); without it, it returns in microseconds. A slow host only makes the
-    /// mutated arm read red later, never the intact one.
-    private static final long CLOSE_RETURN_WINDOW_MILLIS = 500;
+    /// mutated arm read red later, never the intact one. Blind band, stated: a join bound at or above this window (about 2 s)
+    /// is not detected, because the delivery is released when the window ends; a bound below it (for example 700 or 1500 ms)
+    /// lets `close()` return while the handler is still held and goes red.
+    private static final long CLOSE_RETURN_WINDOW_MILLIS = 2_000;
 
     private final MessageRouter.MutableRouter router = MessageRouter.mutable();
     private final CountDownLatch entered = new CountDownLatch(1);

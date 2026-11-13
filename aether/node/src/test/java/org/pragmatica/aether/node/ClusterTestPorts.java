@@ -48,7 +48,7 @@ import java.util.function.IntSupplier;
 ///   the address the node binds.
 ///
 /// Residual, stated: a process that does not use the lock directory and binds an explicit port inside the window can
-/// still take it (none now: the #2731 grep of 61000-65535 found range-validation bounds and config-parse literals, and
+/// still take it (none now on the Linux default range, window 61000-65535; on macOS the window is 32768-49151, which contains `M1StreamLoadTest`'s 44000-46999. The #2731 grep of 61000-65535 found range-validation bounds and config-parse literals, and
 /// `M1StreamLoadTest`'s default base 63000, which #2741 moved to 44000). The lock directory is a fixed path, not `java.io.tmpdir`, so forks with a
 /// redirected tmpdir still meet.
 public final class ClusterTestPorts {
