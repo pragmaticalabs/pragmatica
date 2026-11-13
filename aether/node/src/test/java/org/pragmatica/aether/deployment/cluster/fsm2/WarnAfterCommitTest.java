@@ -4,14 +4,18 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.Submitted;
 import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.junit.jupiter.api.Test;
 
 import static org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind.WARNINGS;
@@ -26,14 +30,17 @@ class WarnAfterCommitTest {
     private static final String RECOVERY = "retry-exhausted-settled";
     private static final FsmWarningKey KEY = FsmWarningKey.fsmWarningKey(OPENER, ORDERS.asString());
 
-    /// ORDERS on core-1 one failure short of exhaustion, the leader active, every submission held from here on.
-    private static FsmHarness oneFailureShort() {
+    /// `artifacts` on core-1, each one failure short of exhaustion, the leader active, every submission held from here on.
+    private static FsmHarness oneFailureShort(Artifact... artifacts) {
         var h = LcSupport.leader(DeploymentAtomicity.ALL_OR_NOTHING, 0.5d, CORE_1);
 
-        SlFixtures.seedTarget(h, ORDERS, 1, 1);
-        SlFixtures.seedGoal(h, CORE_1, ORDERS, SliceGoal.LOADED, SlFixtures.G1);
-        SlFixtures.seedRow(h, CORE_1, ORDERS, SliceObservedState.LOADING, SlFixtures.G1, 11L);
-        SlFixtures.seedJudgment(h, ORDERS, new ArtifactJudgmentValue(false, Map.of(CORE_1, 5), Map.of(), Set.of()));
+        for (var artifact : artifacts) {
+            SlFixtures.seedTarget(h, artifact, 1, 1);
+            SlFixtures.seedGoal(h, CORE_1, artifact, SliceGoal.LOADED, SlFixtures.G1);
+            SlFixtures.seedRow(h, CORE_1, artifact, SliceObservedState.LOADING, SlFixtures.G1, 11L);
+            SlFixtures.seedJudgment(h, artifact, new ArtifactJudgmentValue(false, Map.of(CORE_1, 5), Map.of(), Set.of()));
+        }
+
         h.activate();
         h.policy = FsmHarness.SettlePolicy.HOLD;
 
@@ -41,7 +48,7 @@ class WarnAfterCommitTest {
     }
 
     private static FsmHarness exhausted() {
-        var h = oneFailureShort();
+        var h = oneFailureShort(ORDERS);
 
         LcSupport.node(h, CORE_1, 11L).fails(ORDERS, false);
         h.drain();
@@ -88,5 +95,98 @@ class WarnAfterCommitTest {
 
         assertThat(published).as("a published %s is neither committed nor closed: open for ever", OPENER)
                              .isLessThanOrEqualTo(accountedFor);
+    }
+
+    private static List<String> openedSubjects(FsmHarness h) {
+        return h.warns(OPENER)
+                .stream()
+                .map(ClusterEffect.Warn::subject)
+                .toList();
+    }
+
+    /// Red when: the opener reaches the sink in the step that raised it, before the WARNINGS write carrying it is accepted.
+    @Test
+    void opener_isPublished_onlyOnceItsWarningsWriteIsAccepted() {
+        var h = exhausted();
+
+        assertThat(h.warns(OPENER)).as("held while its write is in flight").isEmpty();
+
+        var write = warningsWrite(h);
+
+        h.settleHeld(write, h.applyTransaction(write));
+
+        assertThat(openedSubjects(h)).as("published once its row committed").containsExactly(ORDERS.asString());
+        assertThat(committed(h)).isTrue();
+    }
+
+    /// A second exhaustion lands while the first WARNINGS write is in flight, so it rides the next write. Red when: the accepted write does not
+    /// publish exactly the warnings it carried (`covering` / `committed`): the first opener waits for the second write, or the second is
+    /// published before its row commits.
+    @Test
+    void acceptedWrite_publishesTheWarningsItCarried_andNotTheLaterOnes() {
+        var h = oneFailureShort(ORDERS, BILLING);
+
+        LcSupport.node(h, CORE_1, 11L).fails(ORDERS, false);
+        h.drain();
+        var first = warningsWrite(h);
+
+        LcSupport.node(h, CORE_1, 11L).fails(BILLING, false);
+        h.drain();
+        assertThat(h.model().retryExhaustedWarned.contains(BILLING)).as("precondition: the second exhaustion is decided").isTrue();
+        assertThat(warningsWrite(h)).as("precondition: no second write beside the one in flight").isSameAs(first);
+
+        h.settleHeld(first, h.applyTransaction(first));
+
+        assertThat(openedSubjects(h)).as("only the warning the accepted write carried").containsExactly(ORDERS.asString());
+
+        var second = warningsWrite(h);
+
+        assertThat(second).as("precondition: the second write is drafted").isNotSameAs(first);
+        h.settleHeld(second, h.applyTransaction(second));
+
+        assertThat(openedSubjects(h)).containsExactly(ORDERS.asString(), BILLING.asString());
+    }
+
+    /// Red when: a family warning whose change is already what the committed mirror holds (no write will carry it) is held for ever instead of
+    /// published at once.
+    @Test
+    void warningWithNothingToWrite_isPublishedAtOnce() {
+        var m = new ClusterModel();
+        var ctx = SurvivorPinSupport.ctx(1_000L, 0L);
+
+        ctx.warn(OPENER, ORDERS.asString(), "raised");
+        Warnings.noteRaised(m, ctx, 0);
+
+        assertThat(ctx.effects()).containsExactly(new ClusterEffect.Warn(OPENER, ORDERS.asString(), "raised"));
+        assertThat(m.warningsHeld).isEmpty();
+    }
+
+    /// Red when: a warning raised before the step's window (`from`) is taken into the held set: an earlier input's effect would be held twice.
+    @Test
+    void warningBeforeTheWindow_isNotWithdrawn() {
+        var ctx = SurvivorPinSupport.ctx(1_000L, 0L);
+
+        ctx.warn(OPENER, ORDERS.asString(), "earlier");
+        ctx.warn(OPENER, BILLING.asString(), "this step");
+
+        assertThat(ctx.withdraw(1, _ -> true)).containsExactly(new ClusterEffect.Warn(OPENER, BILLING.asString(), "this step"));
+        assertThat(ctx.effects()).containsExactly(new ClusterEffect.Warn(OPENER, ORDERS.asString(), "earlier"));
+    }
+
+    /// Red when: a non-family effect (an uncatalogued or node-local code, a metric) is held: only the leader-local families have a WARNINGS row.
+    @Test
+    void nonFamilyEffect_isNotHeld() {
+        var m = new ClusterModel();
+        var ctx = SurvivorPinSupport.ctx(1_000L, 0L);
+
+        m.submitted = m.submitted.put("c1",
+                                      new Submitted("c1", WARNINGS, List.of(), 1L, new LeaderValue(FsmHarness.SELF, 1L), 0L));
+        ctx.warn("some-other-code", ORDERS.asString(), "not a family");
+        ctx.warn(OPENER, ORDERS.asString(), "a family");
+        Warnings.noteRaised(m, ctx, 0);
+
+        assertThat(ctx.effects()).as("the family warning is held while a write is in flight, the other is not")
+                                 .containsExactly(new ClusterEffect.Warn("some-other-code", ORDERS.asString(), "not a family"));
+        assertThat(m.warningsHeld).containsExactly(new ClusterEffect.Warn(OPENER, ORDERS.asString(), "a family"));
     }
 }

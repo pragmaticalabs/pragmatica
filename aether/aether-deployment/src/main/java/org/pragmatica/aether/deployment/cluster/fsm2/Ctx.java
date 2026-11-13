@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 
 import org.pragmatica.consensus.NodeId;
 
@@ -45,6 +46,27 @@ final class Ctx {
 
     List<ClusterEffect> effects() {
         return List.copyOf(effects);
+    }
+
+    /// How many effects the step has collected so far: the start of a window that [#withdraw] reads from.
+    int effectCount() {
+        return effects.size();
+    }
+
+    /// #3085: removes the `Warn` effects at index `from` or later that `which` selects, and returns them in emission order. The FSM takes a
+    /// leader-local family's warnings out of the step this way and holds them until the WARNINGS row that carries them commits
+    /// (`Warnings.noteRaised`).
+    List<ClusterEffect.Warn> withdraw(int from, Predicate<ClusterEffect.Warn> which) {
+        var window = effects.subList(from, effects.size());
+        var taken = window.stream()
+                          .filter(ClusterEffect.Warn.class::isInstance)
+                          .map(ClusterEffect.Warn.class::cast)
+                          .filter(which)
+                          .toList();
+
+        window.removeIf(taken::contains);
+
+        return taken;
     }
 
     /// One rebalance move per reconcile pass (B-061): true while the budget lasts, and spends it.

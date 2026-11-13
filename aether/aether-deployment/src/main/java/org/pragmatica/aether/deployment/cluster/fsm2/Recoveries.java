@@ -15,8 +15,8 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 /// the leader-local families commit their open set (`FsmWarningKey`, `Warnings`), and a successor inherits it at `Rebuild`. A successor
 /// never raises an inherited open warning again, closes one whose subject left the model between the leaders with [#SUBJECT_GONE], and
 /// closes the rest when its own level-triggered checks find the condition ended; its event layer publishes those recoveries although it
-/// never saw the warning. Residual: a warning published in a drain whose leader was deposed before the drain's WARNINGS write committed
-/// is not in the inherited set.
+/// never saw the warning. A family warning or recovery is published only once the WARNINGS write reflecting it commits (#3085,
+/// `Warnings.noteRaised`), so the inherited set covers every warning a deposed leader published.
 public sealed interface Recoveries {
     /// The reason text of a recovery raised because its subject left the FSM's model.
     String SUBJECT_GONE = "subject-gone";

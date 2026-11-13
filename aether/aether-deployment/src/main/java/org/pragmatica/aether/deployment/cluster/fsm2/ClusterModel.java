@@ -201,6 +201,13 @@ public final class ClusterModel {
     /// #2834: a step raised or closed a warning of a leader-local family, or a write of the open set did not land: the next flush compares
     /// the open sets with `warningRows` (`Warnings.draft`).
     boolean warningsDirty;
+    /// #3085: the family warnings raised (and recoveries closed) that wait for the WARNINGS row carrying them to commit, in raise order. A
+    /// deposition or a `Rebuild` discards the model, so a held warning whose row never committed is never published.
+    List<ClusterEffect.Warn> warningsHeld = List.of();
+    /// #3085: how many of `warningsHeld` the WARNINGS transaction in flight carries (the held count when it was drafted).
+    int warningsCovered;
+    /// #3085: how many of `warningsHeld` an accepted WARNINGS transaction committed: published at the end of the step (`Warnings.noteRaised`).
+    int warningsLanded;
     // -- the write side (5.7) --------------------------------------------------------------------------------------
     PMap<String, Submitted> submitted = PMap.empty(scans);
     List<TxDraft> outbox = List.of();
@@ -316,6 +323,9 @@ public final class ClusterModel {
         c.withheldBlocked = withheldBlocked.rebound(meter);
         c.warningRows = warningRows.rebound(meter);
         c.warningsDirty = warningsDirty;
+        c.warningsHeld = warningsHeld;
+        c.warningsCovered = warningsCovered;
+        c.warningsLanded = warningsLanded;
         c.submitted = submitted.rebound(meter);
         c.outbox = outbox;
         c.parked = parked;
