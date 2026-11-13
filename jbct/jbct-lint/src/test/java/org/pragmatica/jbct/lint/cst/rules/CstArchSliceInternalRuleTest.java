@@ -118,6 +118,20 @@ class CstArchSliceInternalRuleTest {
         }
 
         @Test
+        void detects_multiLineBlockCommentWithSemicolonInsideImport_reportsCleanPackage() {
+            var diagnostics = lint("""
+                    package com.example.usecase.registeruser;
+                    import com.example.usecase.loginuser.internal /* a;
+                       b */ .Token;
+                    class RegisterUser {}
+                    """);
+
+            assertTrue(diagnostics.stream().anyMatch(d -> d.ruleId().equals(RULE_ID)
+                                                          && d.message().contains("'com.example.usecase.loginuser.internal'")),
+                       "diagnostics: " + diagnostics);
+        }
+
+        @Test
         void detects_lineCommentWithSemicolonInsideImport_reportsCleanPackage() {
             var diagnostics = lint("""
                     package com.example.usecase.registeruser;
