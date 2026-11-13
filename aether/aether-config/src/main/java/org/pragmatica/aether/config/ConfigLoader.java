@@ -1357,7 +1357,15 @@ public final class ConfigLoader {
                                                      parseInt(doc,
                                                               "timeouts.deployment",
                                                               "max_lifecycle_retries",
-                                                              d.maxLifecycleRetries()));
+                                                              d.maxLifecycleRetries()),
+                                                     parseTimeSpan(doc,
+                                                                   "timeouts.deployment",
+                                                                   "apply_deadline",
+                                                                   d.applyDeadline()),
+                                                     parseTimeSpan(doc,
+                                                                   "timeouts.deployment",
+                                                                   "apply_schema_pause_max",
+                                                                   d.applySchemaPauseMax()));
     }
 
     private static TimeoutsConfig.RollingUpdateTimeouts parseRollingUpdateTimeouts(TomlDocument doc,

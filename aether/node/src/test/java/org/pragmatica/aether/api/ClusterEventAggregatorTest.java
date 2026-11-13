@@ -2084,6 +2084,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.WORKER_COMMUNITY_POLICY_MATCHED,
                 OperatorWarningCode.COMMUNITY_GROWTH_RESUMED,
                 OperatorWarningCode.COMMUNITY_ASSIGNMENT_PLACED,
+                OperatorWarningCode.APPLY_DEADLINE_CLEARED,
                 // #2825: the warning belongs to an earlier boot; the raiser's marker file owns "is it open"
                 OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED,
             });
@@ -2981,6 +2982,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STRAY_INSTANCE_REMOVED,
                 OperatorWarningCode.WORKER_ABSENCE_JUDGEABLE,
                 OperatorWarningCode.WORKER_COMMUNITY_POLICY_MATCHED,
+                OperatorWarningCode.APPLY_DEADLINE_CLEARED,
             });
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(new OperatorWarningCode[]{
@@ -3034,6 +3036,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.SLICE_START_AWAITING_TARGET,
                 OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING,
                 OperatorWarningCode.COMMUNITY_GROWTH_BLOCKED,
+                OperatorWarningCode.APPLY_DEADLINE_EXCEEDED,
                 OperatorWarningCode.COMMUNITY_PLACEMENT_PARKED,
                 OperatorWarningCode.COMMUNITY_ASSIGNMENT_UNPLACED,
                 OperatorWarningCode.STORAGE_PROMOTION_STALLED,
